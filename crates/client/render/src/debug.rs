@@ -86,17 +86,35 @@ pub enum View {
     /// exactly where there is no box, and would be invisible in the very view
     /// meant to find it. See `docs/lighting_world.md`'s backlog.
     Sky = 9,
+    /// What the **flames alone** added, with the ambient taken out: the pool as a
+    /// shape, on black.
+    ///
+    /// [`View::Light`] cannot answer this and it took a person looking at a frame
+    /// to notice. It draws the ambient *plus* the flames through a curve, so a
+    /// pool sits on a floor of `0.36` and is bent towards white above `0.6` — a
+    /// torch's whole falloff is squeezed into the top third of the range, and it
+    /// reads as one flat bright blob whichever shape it actually has. Subtract the
+    /// ambient and the same pool is a gradient from white to black with nothing
+    /// under it: a circle is obviously a circle, and a disc with a flat middle is
+    /// obviously a disc with a flat middle.
+    ///
+    /// Every channel divided by nothing and clamped: what a flame adds is a
+    /// multiplier of its own, `1.0` being "this pixel is doubled", and the values
+    /// above that are the blown-out middle a person is entitled to see as blown
+    /// out.
+    Flames = 10,
 }
 
 impl View {
     /// Every view, in the order [`View::next`] walks them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Lit,
         Self::Place,
         Self::Kind,
         Self::Height,
         Self::Occluders,
         Self::Light,
+        Self::Flames,
         Self::Shadow,
         Self::Reach,
         Self::Sun,
@@ -127,6 +145,7 @@ impl View {
             Self::Reach => "reach",
             Self::Sun => "sun",
             Self::Sky => "sky",
+            Self::Flames => "flames",
         }
     }
 }
@@ -234,6 +253,7 @@ mod tests {
         assert_eq!(View::Reach as u32, 7);
         assert_eq!(View::Sun as u32, 8);
         assert_eq!(View::Sky as u32, 9);
+        assert_eq!(View::Flames as u32, 10);
     }
 
     /// Cycling visits every view and comes back. The key that does it is the

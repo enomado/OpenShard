@@ -58,7 +58,8 @@ const STILL: f32 = 0.0;
 /// A GPU to draw with, or `None` where there is none.
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
 
@@ -86,7 +87,13 @@ fn around() -> openshard_client_render::camera::TileBounds {
 /// Marked always. A plan view with no occluders drawn on it is exactly the
 /// instrument that made "why is there a shadow here" unanswerable in the client
 /// — see `docs/lighting.md`'s step 14, arriving here for the same reason.
-fn picture(device: &wgpu::Device, queue: &wgpu::Queue, name: &str, lighting: &Lighting, view: View) -> Picture {
+fn picture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    name: &str,
+    lighting: &Lighting,
+    view: View,
+) -> Picture {
     let mut drawn = plan::draw(device, queue, lighting, view, around(), SCALE);
     drawn.mark(lighting);
     let directory = directory();
@@ -124,7 +131,13 @@ fn every_scene_draws_a_picture_with_light_and_dark_in_it() {
     for scene in scene::all() {
         let lighting = scene.lighting(STILL);
         let name = slug(&scene);
-        for view in [View::Lit, View::Light, View::Shadow, View::Occluders] {
+        for view in [
+            View::Lit,
+            View::Light,
+            View::Flames,
+            View::Shadow,
+            View::Occluders,
+        ] {
             let drawn = picture(&device, &queue, &name, &lighting, view);
             let (mut dark, mut bright) = (0, 0);
             for y in 0..drawn.height {
@@ -224,7 +237,11 @@ fn a_lone_flame_falls_off_all_the_way_from_its_middle() {
     // of a tile there is under a byte of difference whatever the shape is. What
     // this is about is the middle, where a clipped pool is one flat disc and a
     // fire is not.
-    let inner: Vec<(f32, f32)> = ray.iter().copied().filter(|(out, _)| *out < flame.radius / 2.0).collect();
+    let inner: Vec<(f32, f32)> = ray
+        .iter()
+        .copied()
+        .filter(|(out, _)| *out < flame.radius / 2.0)
+        .collect();
     let flat = inner.windows(2).filter(|pair| pair[0].1 == pair[1].1).count();
     assert!(
         flat < 3,

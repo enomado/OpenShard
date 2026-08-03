@@ -109,6 +109,7 @@ const VIEW_SHADOW: u32 = 6u;
 const VIEW_REACH: u32 = 7u;
 const VIEW_SUN: u32 = 8u;
 const VIEW_SKY: u32 = 9u;
+const VIEW_FLAMES: u32 = 10u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
 
@@ -356,31 +357,26 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
                 exit = select(EDGE_NORTH, EDGE_SOUTH, toward.y > 0);
             }
         }
-        let crossing = entry | exit;
         let stands = occluder_at(cell.x, cell.y);
         let sides = stands.w & EDGE_MASK;
-        // A *named* side: one or more, but not all four. All four is "it stands up
-        // and the art would not say", which is the whole tile decision 3 had.
-        let named = sides != 0u && sides != EDGE_MASK;
-        // The tile being lit is always exempt, so a wall's own face stays the
-        // brightest thing beside a torch. A pixel of a wall claims a fraction
-        // clamped *inside* its tile whichever face of the wall it is on — the two
-        // faces are one tile, which `docs/lighting.md`'s backlog carries — so
-        // testing its own panel would darken whichever of the two the flame is
-        // not behind, and there is no way to know which that is.
+        // **Neither end of the ray is shadowed by the tile it is on.**
         //
-        // The far end's tile is exempt only for a flame (`skip_last`), and then
-        // only while nothing names a side. That
-        // exemption exists so a sconce is not shadowed by the wall it hangs on,
-        // and with a whole-tile occluder there was no alternative. With a panel
-        // there is: the flame is at its tile's centre, which is *inside* the
-        // panel, so a ray crossing that panel is leaving the wall and must be
-        // stopped. Keeping the exemption instead lets a bright wedge straight out
-        // through the wall while the neighbouring tiles' panels cut everything
-        // either side of it, which reads as a starburst — measured, and the reason
-        // this line is not the obvious one.
+        // The lit end, so that a wall's own face stays the brightest thing beside
+        // a torch: a pixel of a wall claims a fraction clamped *inside* its tile
+        // whichever face of the wall it is on — the two faces are one tile — so
+        // testing its own panel would darken whichever of them the flame is not
+        // behind, and there is no way to know which that is.
+        //
+        // And the flame's end (`skip_last`), because a sconce is mounted *on* a
+        // wall. This was tried the other way for one commit — the flame sits at
+        // its tile's centre, which is inside the panel, so a ray leaving it does
+        // cross the wall — and the picture is what settled it: every lamp in
+        // Britain is on a building, so the city came out with its walls lit from
+        // inside and not one pool of light on any street. A lamp that lights
+        // nothing is a worse answer than a lamp that lights both sides of its own
+        // wall, which is the defect this keeps and `docs/lighting.md` names.
         let exempt = (cell.x == first.x && cell.y == first.y)
-            || (skip_last && cell.x == last.x && cell.y == last.y && !named);
+            || (skip_last && cell.x == last.x && cell.y == last.y);
         if !exempt && stands.w != 0u {
             let low = f32(stands.x) - 128.0;
             let high = f32(stands.y) - 128.0;
@@ -638,6 +634,7 @@ fn debug_color(
     at: vec3<f32>,
     sub: vec2<f32>,
     lit: vec3<f32>,
+    flames: vec3<f32>,
     reached: u32,
     nearest: f32,
     nearest_through: f32,
@@ -714,6 +711,13 @@ fn debug_color(
         // clamp and not a tone map either.
         return vec3<f32>(knee(lit.r), knee(lit.g), knee(lit.b));
     }
+    if view == VIEW_FLAMES {
+        // And the same pools with the ambient taken out, on black: what the
+        // *flames* added and nothing else. No curve here — a flame's whole range
+        // is already `0..=1` and a little over, and bending it is what makes the
+        // view above unable to answer whether a pool has a shape at all.
+        return clamp(flames, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
     if view == VIEW_SHADOW {
         // Blue for "no flame reaches here at all", which is a different fact
         // from "a wall is in the way" and the one people confuse.
@@ -787,6 +791,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var reached = 0u;
     var nearest = 1.0e9;
     var nearest_through = 0.0;
+    // What the flames added, apart from the ambient they were added to. Only
+    // `VIEW_FLAMES` reads it, and it is accumulated here rather than recomputed
+    // there for the reason every one of these values is: a diagnostic that lit its
+    // own copy of the frame would answer about that copy.
+    var flames = vec3<f32>(0.0);
     let count = u32(lighting.sky.w);
     for (var i = 0u; i < count; i = i + 1u) {
         let light = lighting.lights[i];
@@ -834,7 +843,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // no cutoff has no radius at all and tints the whole frame. This is the
         // soft pool with a hard end — the shape the reference isometrics draw.
         let fall = 1.0 - d;
-        lit = lit + light.color.rgb * (light.color.w * fall * fall * through * lit_by);
+        let added = light.color.rgb * (light.color.w * fall * fall * through * lit_by);
+        lit = lit + added;
+        flames = flames + added;
     }
 
     // And the sun, which is one direction rather than a place: no distance and no
@@ -848,7 +859,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if view != VIEW_LIT {
         return vec4<f32>(
             debug_color(
-                view, place, at, sub, lit, reached, nearest, nearest_through, sun_through, share,
+                view, place, at, sub, lit, flames, reached, nearest, nearest_through, sun_through,
+                share,
             ),
             color.a,
         );

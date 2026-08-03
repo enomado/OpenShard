@@ -312,6 +312,34 @@ impl Ambient {
         ground: [0.0, 0.0, 0.0],
     };
 
+    /// The same light with the sky's share folded into the floor: one colour for
+    /// every tile, whatever stands over it.
+    ///
+    /// **The ambient this pass had before the sky field existed**, and the switch
+    /// back to it is deliberate rather than a leftover. What a roof does to the
+    /// light under it is a whole plan of its own
+    /// (`docs/lighting_world.md`), and while the *point* lights are being got
+    /// right it is a second thing changing every tile of every picture: a pool
+    /// that looks wrong indoors is then two questions, and the field answers the
+    /// one nobody asked. Flat is also the honest baseline — it is what a shard
+    /// with no time of day and no roofs looks like — so a difference between the
+    /// two pictures is the field's whole contribution, which is what a person
+    /// turning it on wants to see.
+    ///
+    /// The sum and not either half: the two terms were split out of one colour and
+    /// they still add up to it, so a flattened [`NIGHT`] is exactly the night this
+    /// had before the split.
+    pub fn flattened(self) -> Self {
+        let mut ground = self.ground;
+        for (channel, sky) in ground.iter_mut().zip(self.sky) {
+            *channel += sky;
+        }
+        Self {
+            sky: [0.0; 3],
+            ground,
+        }
+    }
+
     /// What a tile is multiplied by, given how much of the sky it can see.
     ///
     /// `blit.wgsl` does this same arithmetic per fragment out of the field
@@ -521,6 +549,34 @@ pub fn flame(graphic: Graphic) -> Flame {
     }
 }
 
+/// Whether a static is a flame at all: it says it is a light source, **and it is
+/// not something light cannot get through**.
+///
+/// The second half is what stops a city burning at every window. 615 of the
+/// install's statics carry `LIGHT_SOURCE` and 80 of the 163 named "window" are
+/// among them — `0x0103`, `0x2BBF`, the shutters at `0x2501`, the windowed walls
+/// at `0x2B7D`. Every one of them is also a wall: `WALL | BLOCK | WINDOW`, which
+/// is an occluder, and [`flame`] answers `TORCH` for any graphic it has no name
+/// for. So a street of houses was a street of six-tile warm pools with nothing
+/// burning in them, each one standing inside the very panel that then cut it into
+/// slices.
+///
+/// **A window is not an emitter.** It is a hole with glass in it, it is already
+/// in the occlusion grid as [`crate::occlusion::PANE`], and what should make it
+/// glow is a candle behind it — which is the one thing this pass can already do.
+/// The flag on those graphics is the client's way of saying "draw a glow here",
+/// and this renderer answers that question with geometry instead.
+///
+/// Stated as "does it stop light" rather than as a list of window graphics,
+/// because that is the property that matters and it is already computed for the
+/// grid: a torch, a candle and a brazier stop nothing and burn; a glazed wall
+/// stops four fifths and does not. A shard's custom lantern goes on burning for
+/// free, and a shard's custom glowing wall stops — which is the conservative
+/// direction, a missing pool being easier to see than sixty invented ones.
+pub fn burns(graphic: Graphic, tile: &openshard_uofiles::tiledata::StaticTile) -> bool {
+    tile.flags.is_light_source() && crate::occlusion::opacity(graphic, tile) == crate::occlusion::CLEAR
+}
+
 /// How far above its tile a flame burns, in `z` units.
 ///
 /// A torch's flame is at the top of the sprite and the pool is centred under it,
@@ -610,7 +666,7 @@ pub fn collect(
 
     crate::statics::for_each_static_in(map, bounds, |item| {
         let tile = tiledata.static_tile(item.tile);
-        if !tile.flags.is_light_source() || !cutaway::shows(cutaway, item.z, tile) {
+        if !burns(Graphic(item.tile), tile) || !cutaway::shows(cutaway, item.z, tile) {
             return;
         }
         lights.push(place(
@@ -622,7 +678,7 @@ pub fn collect(
 
     for item in items {
         let tile = tiledata.static_tile(item.graphic.0);
-        if !tile.flags.is_light_source() || !cutaway::shows(cutaway, item.at.z, tile) {
+        if !burns(item.graphic, tile) || !cutaway::shows(cutaway, item.at.z, tile) {
             continue;
         }
         lights.push(place(item.at, flame(item.graphic), time));
@@ -760,8 +816,7 @@ fn panel_stop(stands: Option<crate::occlusion::Cell>, crossed: u8, z: f32, tall:
     match stands.filter(|stands| stands.edges != 0 && stands.edges & crossed != 0) {
         None => 0.0,
         Some(stands) => {
-            f32::from(stands.opacity) / 255.0
-                * pierces(z, stands.bottom as f32, stands.top as f32, tall)
+            f32::from(stands.opacity) / 255.0 * pierces(z, stands.bottom as f32, stands.top as f32, tall)
         }
     }
 }
@@ -1148,14 +1203,12 @@ fn walk_cells(
             },
         };
         let stands = occlusion.at(cell.0, cell.1);
-        // A *named* side, and the far end's tile is exempt only for a flame, and
-        // then only while nothing names one. `blit.wgsl`'s `walk` argues it at
-        // length: the flame sits at its tile's centre, inside the panel, so a ray
-        // crossing that panel is leaving the wall. The lit tile stays exempt
-        // whatever it holds, because a wall's two faces are one tile and there is
-        // no telling which of them a pixel is on.
-        let named = stands.is_some_and(|stands| stands.edges != 0 && stands.edges != EDGE_ANY);
-        if cell != first && (!skip_last || cell != last || named) {
+        // Neither end of the ray is shadowed by the tile it is on: the lit end
+        // because a wall's two faces are one tile and there is no telling which of
+        // them a pixel is on, and the flame's end because a sconce is mounted on a
+        // wall. `blit.wgsl`'s `walk` argues both, and carries the measurement that
+        // settled the second.
+        if cell != first && (!skip_last || cell != last) {
             if let Some(stands) = stands {
                 let (low, high) = (stands.bottom as f32, stands.top as f32);
                 let opacity = f32::from(stands.opacity) / 255.0;
@@ -1201,7 +1254,8 @@ fn walk_cells(
                         let mut stopped: f32 = 0.0;
                         for (side, at) in [(entry, entered), (exit, leaves)] {
                             if edges & side != 0 {
-                                stopped = stopped.max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
+                                stopped =
+                                    stopped.max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
                             }
                         }
                         stopped

@@ -9,12 +9,30 @@ copied.
 
 ## Where the next session starts
 
-Steps 1–15 and 18 are done; **16 and 17 are not** — the *steps*; decision 17 is
-a decision and landed. Step 15 has just landed and
-it is half of the measurement step 16 needs: a wall's face is now read out of its
-own art, and the window's hole is the same silhouette measured again — a span of
-`v` along the face and a span of `z` — so whoever picks 16 up starts from
-`render/src/facing.rs` rather than from nothing.
+**Read decision 18 and step 19 first.** The pass was reported from the client as
+having gone badly wrong — a lamp with no falloff, thin spokes fanning out of
+every wall, light coming through the seams between tiles — and three of those
+four complaints were one defect and are fixed. What that session did, in order,
+is worth knowing because the order is the method:
+
+- It built the instrument first (step 19, `render/src/plan.rs`): the real blit
+  over a synthetic flat ground, one tile to a square of pixels, with the
+  occluders and the flames' own rims stroked on top. A plan view answers "is
+  this a circle" in one glance where the isometric frame cannot.
+- The first picture of the dumbest scene there is — one torch, one straight
+  wall — showed the spokes immediately, and named them: a panel scaled by the
+  *length* of a crossing lets a ray through the corner between two panels.
+  Decision 18.
+- The second picture was Britain, and it showed the other half: 64 flames in the
+  frame and not one pool on any street, because the flames were *windows*, each
+  standing inside the very wall that then cut it up. Decision 19.
+
+Steps 1–15 and 18–19 are done; **16 and 17 are not** — the *steps*; decisions
+17 and 18 are decisions and landed. Step 15's measurement is half of what step 16
+needs: a wall's face is read out of its own art, and the window's hole is the
+same silhouette measured again — a span of `v` along the face and a span of `z` —
+so whoever picks 16 up starts from `render/src/facing.rs` rather than from
+nothing.
 
 What step 15 changed, and what it is worth knowing about it: a wall's pixels no
 longer all claim the middle of their tile, so a row of walls is one lit surface
@@ -322,7 +340,13 @@ instance's place word, never in the attachment, whose fourth channel is two bits
 of kind and fourteen of fraction with nothing spare.
 
 **14. The shadow ray walks the cells it crosses, and spends the length of each
-crossing.** Not a fixed number of samples along the segment: at two tiles apart
+crossing.** ~~Half superseded by decision 18~~ — the length is what a *body*
+spends and the walk still spends it there; what a **panel** does is decided where
+the ray pierces it, and the paragraph below about how wide the gradient is now
+describes only the vertical half of it. The rest stands, and the first paragraph
+is why the walk visits cells at all.
+
+**14 (as written).** Not a fixed number of samples along the segment: at two tiles apart
 that was one interior point, so whether a fragment was in shadow was decided at
 the resolution of a tile and every shadow in the frame had a tile's straight
 side. A grid traversal visits exactly the cells the ray passes through, and it
@@ -412,16 +436,24 @@ is stopped only where it *crosses* one of them. Three things make that cheap:
   and `present` was a byte holding a bare yes; it is `PRESENT | mask` now.
 - The face is already measured: `Sprite::face`, once, when the picture is packed.
 
-**And the flame's own tile stops being exempt.** That exemption was decision 3's
-— a sconce must not be shadowed by the wall it hangs on, and with a whole-tile
-occluder there was nothing else to do. With a panel there is, because the flame
-sits at its tile's *centre*, which is inside the panel: a ray crossing it is
-leaving the wall. Keeping the exemption is not merely generous, it is *visibly*
-wrong — it lets a bright wedge straight out through the wall while the
-neighbouring tiles' panels cut everything either side of it, so a street lamp
-reads as a starburst and its own street is blown out. Measured on Britain
-1439,1693: the tiles east of the lamp came out at 0.72 with the exemption and
-0.41 without.
+~~**And the flame's own tile stops being exempt.**~~ **Reverted, and the picture
+is what reverted it.** The argument was sound and the frame it produced was not:
+the flame sits at its tile's centre, which is inside the panel, so a ray leaving
+it does cross the wall — and since every lamp in a city is mounted on a building,
+the whole of Britain came out with its walls lit from the inside and **not one
+pool of light on any street**. The starburst that motivated the change was mostly
+decision 18's spokes and went with them; what is left is a lamp that lights both
+sides of the wall it hangs on, which is the defect this file has carried since
+its first backlog and is much the smaller of the two.
+
+So decision 3's rule stands: **neither end of a ray is shadowed by the tile it is
+on.** The lit end because a wall's two faces are one tile and there is no telling
+which of them a pixel is on; the flame's end because a sconce is mounted *on* a
+wall. What would answer it properly is knowing which *side* of its tile a mounted
+light hangs on — the panel's own side is in the grid already, and a lamp pushed
+just outside that plane would light the street and be stopped by its own wall
+going the other way. That is the shape of the fix and it is in the backlog, not
+in the code.
 
 The tile *being lit* stays exempt whatever it holds, and the asymmetry is the
 point. A wall's two faces are one tile — the backlog has carried that since the
@@ -446,6 +478,97 @@ is on the *perpendicular* edge of its tile — 28 pairs out of 28, never once th
 same axis — so a shut door blocks the doorway and an open one blocks the side of
 the tile it swung against, out of the geometry, with nothing knowing what a door
 is. Which is what decision 11 always claimed to be doing.
+
+**18. A panel is *pierced*; a body is *travelled through*. The length of a
+crossing is the wrong question for a surface.**
+
+Decision 14 gave every occluding cell one rule: what it stops is its opacity
+scaled by how far the ray ran inside it, over a softening width. That is right
+for a solid and wrong for a plane, and the wrongness is not subtle — it is what
+drew the **spokes**. A thin bright ray fanned out of every lamp standing near a
+wall, one per tile corner, straight through walls with no hole in them.
+
+The mechanism, because it is worth being able to recognise again: a ray that
+clips the corner between two panels leaves the first cell *sideways*, so that
+cell's own face is never among the sides it crosses; and it enters the second
+cell *across the corner*, where the crossing is a hair long, so `length / soft`
+rounds to nothing. Two cells, both holding a wall, and the ray passes both.
+
+A panel is a surface. What it does to a ray is decided where the ray goes
+through it: at a point, at a height, once. So the walk asks, for each side of the
+cell the ray actually crosses, what height the ray is at *there* — and the tile's
+`z` span answers yes or no. There is no length in it.
+
+Three consequences, all of them measured rather than reasoned:
+
+- **All four sides is a body, not four panels.** A mask of `EDGE_ANY` means "it
+  stands up and the art would not say", which is the whole-tile occluder — and a
+  roof is a lid five `z` deep. Pierce-testing a slab is the "stepped over the top
+  of a wall" failure this file already carries, arriving from the other side: a
+  45° ray that enters a roof's cell at 19 and leaves it at 22 pierces neither
+  side inside the span while passing straight through the middle of it. It lit
+  the floor of a sealed house. Lids and whole tiles keep decision 14's length;
+  only a cell whose art named one, two or three sides is pierced.
+- **The penumbra that survives is vertical.** A ray grazing the top of a wall is
+  dimmed rather than switched, over a band of the same similar-triangles width
+  decision 14 derived. Sideways there is no longer a gradient for a named panel:
+  the shadow's edge is where the geometry says it is, which is a straight line at
+  any angle rather than a staircase on tile boundaries, and that was the actual
+  complaint. The band is centred on the *top* edge and hangs below the bottom
+  one, because a wall is based on the ground it stands on and the ray a person
+  looks at — a torch and a floor, both at `z = 0` — runs exactly along that base.
+  Centred there too, every wall in the frame passes half its light along the
+  ground: measured at `0.378` against an ambient of `0.356` before the line said
+  so.
+- **A corner is answered rather than left open.** Where the two boundaries land
+  together within `CORNER_TIE`, the ray is crossing the point where four tiles
+  meet, and the walk asks *both* of the cells that share it — at the height the
+  ray passes through the corner — before stepping diagonally past them. That is
+  the supercover walk the backlog has asked for since the first version of this
+  pass, at two extra samples on the rays that hit a corner exactly rather than at
+  twice the samples everywhere. It closes the diagonal gap
+  (`a_ray_slips_between_two_walls_that_touch_at_a_corner` used to pin the leak
+  and now pins its absence) and it is also what makes the two implementations of
+  decision 9 agree: a ray through a corner is a knife edge, and the parity test
+  found a pixel where the CPU stopped and the GPU did not.
+
+**19. A window is not an emitter.**
+
+615 of the install's statics carry `LIGHT_SOURCE`, and 80 of the 163 named
+"window" are among them — `0x0103`, `0x2BBF`, the shutters at `0x2501`, the
+windowed walls at `0x2B7D`. `light::flame` answers `TORCH` for any graphic it has
+no name for, so a street of houses was a street of six-tile warm pools with
+nothing burning in them: **64 flames in a Britain frame, of which seven were
+fires.** And every one of the other 57 stood *inside a wall*, which is where the
+whole complaint came from — a light in a panel lights the panel, and what escapes
+it is whatever the geometry lets through. The spokes and the missing pools are
+the same 57 lights seen from two directions.
+
+The backlog offered three answers and this is the third of them: a window is not
+a light. It is a hole with glass in it, it is already in the grid as
+`occlusion::PANE`, and what should make it glow is a candle behind it — which is
+the one thing this pass can already do. The flag is the client's way of saying
+"draw a glow here" and this renderer answers that with geometry.
+
+Stated as **"a light source that stops light is not a flame"** rather than as a
+list of window graphics: the property is the one that matters, it is already
+computed for the grid, and a shard's own lantern goes on burning for free. The
+conservative direction is the right one here too — a missing pool is easier to
+see than sixty invented ones.
+
+**20. While the point lights are the subject, the ambient holds still.**
+
+`docs/lighting_world.md`'s sky field — a room under a roof darker than the road
+outside it, before anything burns — is **off by default** (F6), and the ambient
+is one colour per frame again. Not because it is wrong: because it changes the
+ambient of *every tile in the frame*, and a pool that looks wrong indoors is then
+two questions at once. It is also the larger thing in a picture — in the light
+view a city reads as a field of dark building-shaped blobs with the pools
+somewhere inside them — so it hides exactly what a person judging a falloff needs
+to see. `light::Ambient::flattened` sums the two terms back into the one they
+were split from, so the flat picture is not a lesser version of the field: it is
+the frame this pass had before the field existed, which is what a difference is
+measured against.
 
 ## Steps
 
@@ -723,6 +846,52 @@ is. Which is what decision 11 always claimed to be doing.
       the same scene, which is the only parity fixture whose cone is not
       identically one.
 
+- [x] **19. The plan view, and the two dumbest scenes there are.** The
+      instrument decisions 18 and 19 were found with, and the one this pass did
+      not have: `render/src/plan.rs` draws the **real blit** over a synthetic
+      place attachment that says every pixel is flat ground on the tile above it,
+      one tile to a square of `scale` pixels. The world image is white, so what
+      comes out is the multiplier itself — a circle in the world is a circle in
+      the picture, a tile is a square, and a wall is a line one can point at.
+
+      It is the same seam `tests/frame.rs`'s parity fixture already used, lifted
+      out of the tests so that a person looking at a bug can get a picture
+      without writing one. Nothing here computes lighting: a plan view with its
+      own arithmetic would be a third implementation of decision 9's one formula.
+
+      `Picture::mark` strokes **the reasons** over it — every occluding cell's
+      panel on the side it stands on, coloured from glass to bone by opacity, a
+      lid as a dashed square, the tile grid, each flame and the dashed rim of its
+      reach. That is the half without which a picture cannot be read: a pool that
+      is the wrong shape and a pool that is the right shape behind a wall nobody
+      drew are the same picture until the wall is drawn on it.
+
+      And two scenes as dumb as they can be, because every scene this file had
+      was a room: `scene::torch_on_open_ground` — one torch, nothing else, so a
+      pool that is not a circle here is not a circle anywhere — and
+      `scene::torch_before_a_wall`, one straight nine-tile wall two tiles from a
+      torch, which is one shadow and nothing else. The spokes were visible in the
+      second one at the first attempt.
+
+      `tests/pictures.rs` writes every scene in five views under
+      `target/lighting/` (or `OPENSHARD_LIGHT_PICTURES`) and asserts what a shape
+      can state: the pool is the same brightness in every direction at every
+      distance, it falls off at every step of its inner half, it never brightens
+      outwards, and the wall darkens the ground behind it and not the ground
+      beside it.
+
+      `View::Flames` came out of the same session and is the sixth view: what the
+      flames added, with the ambient subtracted, on black. `View::Light` cannot
+      answer "does this pool have a shape" — it draws the ambient underneath and
+      bends everything over `KNEE` towards white, so a torch's whole falloff is
+      squeezed into the top third of the range and reads as a flat bright blob.
+      Take the ambient out and the same pool is a gradient from white to black
+      with nothing under it.
+
+      ```sh
+      cargo test -p openshard-client-render --test pictures -- --nocapture
+      magick target/lighting/one-torch-on-open-ground.flames.ppm /tmp/look.png
+      ```
 
 ## Backlog
 
@@ -745,10 +914,10 @@ Found while building it:
 - **Nothing a mobile is standing in casts a shadow.** A body between a torch and
   a wall lights the wall as if it were not there. The reference does not shadow
   mobiles either, so this is a note rather than a defect.
-- **The ray is Chebyshev-sampled, one cell a step.** A ray running almost exactly
-  along a diagonal can pass between two wall tiles that touch only at their
-  corners. Real walls are rows, so it has not been seen; a supercover walk that
-  visits both cells of every crossing would close it at about twice the samples.
+- ~~**The ray is Chebyshev-sampled, one cell a step.**~~ Closed by decision 18:
+  where the two boundaries land together the walk asks both cells that share the
+  corner and then steps diagonally past them, which is the supercover answer paid
+  for only on the rays that hit a corner exactly.
 - **`Occlusion` is rebuilt and reallocated every frame.** 140KB at the widest
   zoom, and the texture upload beside it. Both want the buffer kept between
   frames — the rectangle only changes size on a zoom step or a resize.
@@ -816,10 +985,52 @@ Found while drawing the boxes:
   like open ground. `View::Sky` on the ground is the instrument for that half,
   and the two want reading together rather than one replacing the other.
 
+Found while starting again, from the picture rather than from the argument:
+
+- **A lamp mounted on a wall wants pushing off it, not exempting from it.** The
+  exemption is back (decision 17's amendment) and it is a placeholder for the
+  real answer, which the grid already holds: the cell a mounted light stands on
+  carries *which side* its wall is on, so the flame could be placed just outside
+  that plane. Then the street is lit, the room behind the wall is not, and the
+  "a sconce lights through its own wall" entry at the bottom of this backlog is
+  answered rather than pinned. What is not known is which of the two sides the
+  lamp is on — but the art only ever draws the two faces a camera can see (step
+  15), so "outside the panel, on the side the picture is drawn from" is a guess
+  with a measurement behind it.
+- **The flame is still placed by its tile and not by its sprite.** With the pools
+  legible again this is the next visible thing: a torch in a wall sconce burns at
+  the tile's centre and half a tile up, and the flame in the picture is neither.
+- **`View::Flames` is the view a shape is judged in, and nothing says so in the
+  client.** F11 cycles eleven views now and their names go to a log line. A person
+  who does not already know which one answers their question has to walk all
+  eleven.
+- **The plan view is not in the client.** `render/src/plan.rs` needs a device and
+  a queue and draws into its own texture, so a test can call it and the app does
+  not. What the app would want is a key that dumps the current frame's `Lighting`
+  as a plan beside the screenshot — the same instrument pointed at the world the
+  player is standing in rather than at a built room.
+- **A scene has no art, so almost every scene tests the whole-tile occluder.**
+  Two scenes hand `facing::silhouette` to the grid and the rest get `EDGE_ANY`,
+  which after decision 18 is a *different code path* — the body, not the panel.
+  The suite is therefore thin exactly where the change was: `torch_before_a_wall`
+  is the only picture of a named panel's shadow, and the doorway and room scenes
+  all measure the body. Giving every wall scene a silhouette would double the
+  coverage for one line each, and it would also change what those tests assert,
+  which is why it is written down rather than done.
+
 Found while asking why a house's windows burn:
 
-- **Eighty window graphics are flagged `LIGHT_SOURCE`, and every one of them is
-  given a torch.** Scanned over the client's `tiledata.mul`: 615 statics carry
+- ~~**Eighty window graphics are flagged `LIGHT_SOURCE`, and every one of them is
+  given a torch.**~~ Answered by decision 19, with the third of the three answers
+  this entry offered: a light source that stops light is not a flame. Britain's
+  64 flames at the widest zoom are 7. The two the entry names and this does not
+  do are still there to be done — `light.mul`'s shape by the static's `layer`
+  byte, and the reference's rule about something opaque standing over `(x+1,
+  y+1)`.
+
+- **Eighty window graphics are flagged `LIGHT_SOURCE` (as written).** Kept
+  because the scan is the evidence and the two unfixed answers are in it.
+  Scanned over the client's `tiledata.mul`: 615 statics carry
   the flag, and 80 of the 163 named "window" are among them — `0x0103`,
   `0x2BBF`, the shutters at `0x2501`, the windowed walls at `0x2B7D`. `light::flame`
   answers `TORCH` for every graphic it has no name for, so a street of houses is a
@@ -1006,20 +1217,15 @@ Found while measuring a wall's facing out of its art:
 
 Found while asking why a lamp on a house does not light the street:
 
-- **Thin spokes still fan out of a lamp standing against a wall.** Most of the
-  starburst was the flame's own-tile exemption and is gone with it, but not all:
-  a run of wall with a doorway in it passes light where the gap is and stops it
-  either side, and a panel is a line rather than a slab, so the boundary between
-  the two is exact and reads as a blade. It is *correct* geometry drawn without
-  a penumbra worth the name — decision 14's softening is scaled by how far along
-  the ray the occluder is, and says nothing about how narrow the opening was.
-  The honest fix is the several jittered rays the backlog already asks for.
-  Judge it moving, in the client, rather than in a still.
-- **A ray through the corner between two panels passes between them.** The
-  diagonal gap the backlog already carries, arriving with more room to happen in:
-  two walls meeting at a tile corner used to be two solid tiles and are now two
-  panels that touch at a point. A supercover walk closes both at about twice the
-  samples.
+- ~~**Thin spokes still fan out of a lamp standing against a wall.**~~ ~~**A ray
+  through the corner between two panels passes between them.**~~ Both closed by
+  decision 18, and they were one defect: a panel scaled by the length of a
+  crossing passes a ray that clips the corner between two of them, through the
+  first sideways and through the second over nothing. The entry above blamed the
+  penumbra and it was not the penumbra. What is still true of it is that a named
+  panel's shadow edge is now exact sideways — a straight line at the angle the
+  geometry says, rather than a staircase on tile boundaries — and whether that
+  wants softening is a question to ask of a moving picture, not of a still.
 - **A cell merges a lid and a panel into one mask and one span.** `Occlusion::add`
   unions everything on a tile, so a floor over a wall tile contributes its `z` to
   the span while the wall contributes the sides — and the floor's own lid-ness is

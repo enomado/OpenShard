@@ -496,6 +496,9 @@ pub fn run<D: Dial + Send + 'static>(
         // copy the blit has always been.
         night: false,
         sunlit: false,
+        // And the sky field off with it: while the point lights are the subject,
+        // the ambient holds still. See `App::sky_field`.
+        sky_field: false,
         // And a torch in hand for when it is not daylight: see `App::lantern`.
         lantern: true,
         light_view: View::Lit,
@@ -999,6 +1002,18 @@ struct App {
     /// nothing below it changes — the ambient is already a colour per frame
     /// rather than a constant read by the shader.
     night: bool,
+    /// Whether a tile's ambient depends on how much of the sky its column can
+    /// see: a room under a roof darker than the road outside it, before anything
+    /// burns. Toggled with F6.
+    ///
+    /// **Off by default**, and that is a decision rather than an oversight. The
+    /// sky field is a plan of its own — `docs/lighting_world.md` — and what it
+    /// does is change the ambient of every tile in the frame, which is exactly
+    /// the thing that must hold still while the pools of the point lights are
+    /// being judged. A torch that looks wrong indoors is otherwise two questions
+    /// at once, and the flat ambient is the honest baseline to compare against:
+    /// see [`light::Ambient::flattened`].
+    sky_field: bool,
     /// Whether the day has a sun in it: a direction, a wall's shadow lying
     /// across the street, and a lit patch on the floor behind a window. Toggled
     /// with F8, and ignored at night.
@@ -1483,6 +1498,14 @@ impl ApplicationHandler<link::Update> for App {
                     // same instant, one with it and one without.
                     KeyCode::F8 => {
                         self.sunlit = !self.sunlit;
+                        true
+                    }
+                    // The sky field on and off — what a roof does to the light
+                    // under it, against a flat ambient. A key for the third time
+                    // for the same reason: the two pictures of one instant are the
+                    // only way to see which of the two terms a dark room came from.
+                    KeyCode::F6 => {
+                        self.sky_field = !self.sky_field;
                         true
                     }
                     // The torch in the player's own hand, on and off — the same
@@ -4190,6 +4213,13 @@ impl App {
             (true, _) => Some(light::NIGHT),
             (false, true) => Some(light::SKYLIGHT),
             (false, false) => None,
+        };
+        // And whether a tile's share of it depends on what stands over the tile.
+        // Off by default: see `App::sky_field`, and `light::Ambient::flattened`
+        // for why the flat one is the baseline rather than a lesser version.
+        let sky = match self.sky_field {
+            true => sky,
+            false => sky.map(light::Ambient::flattened),
         };
         let mut lighting = match sky {
             Some(ambient) => light::collect(
