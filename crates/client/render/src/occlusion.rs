@@ -259,9 +259,10 @@ fn calc_height(tile: &StaticTile) -> i32 {
 /// all four a *body*, and a ray is stopped by how far it ran inside the span.
 ///
 /// It carries the same four fields [`Cell`] does and that is not an accident:
-/// a cell is what the surfaces of one tile merge to, and the merge is what step
-/// 21.2 takes apart. Until then a tile's surfaces all share its span and its
-/// opacity, which is what makes this step a change of storage and nothing else.
+/// a cell is what the surfaces of one tile *fold* to, and the fold is now only a
+/// view — step 21.2 took the merge out of the builder, so a lid and a wall on
+/// one tile are two surfaces with two spans and two rules rather than one span
+/// that is neither.
 ///
 /// The span is in `z` units — the map's own, not pixels — and it is inclusive of
 /// `bottom` and `top`. A wall based at `z = 0` and 20 tall stops a ray passing
@@ -362,6 +363,8 @@ pub struct Occlusion {
     /// A byte and not an `Option`: every tile has an answer, and the answer for
     /// a tile with nothing over it is [`SKY_OPEN`] rather than "absent".
     sky: Vec<u8>,
+    /// How many surfaces did not fit — see [`Occlusion::dropped`].
+    dropped: usize,
 }
 
 impl Occlusion {
@@ -380,6 +383,7 @@ impl Occlusion {
         index: Vec::new(),
         surfaces: Vec::new(),
         sky: Vec::new(),
+        dropped: 0,
     };
 
     /// The rectangle of tiles this covers.
@@ -507,6 +511,37 @@ impl Occlusion {
         self.surfaces.len()
     }
 
+    /// How many surfaces the frame measured and could not store, because their
+    /// tile was already holding [`MAX_SURFACES_PER_TILE`].
+    ///
+    /// Decision 30.6: a grid that quietly truncates reads as "covered everything"
+    /// when it did not, so what is dropped is counted and whoever measures the
+    /// grid prints it. A frame that drops anything at all is a frame with a wall
+    /// missing from it.
+    pub fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    /// How many tiles hold how many surfaces: `histogram()[n]` is the number of
+    /// tiles holding exactly `n`, open ground included at `n = 0`.
+    ///
+    /// The distribution decision 30.6 asks for rather than the total
+    /// [`Occlusion::surface_count`] is — the question is what a *cell* holds, and
+    /// a mean over a city answers it with the wrong shape: 10,000 tiles of one
+    /// surface and one tile of forty is the case a truncation has to be chosen
+    /// against, and a total cannot tell it from 10,000 tiles of one and a bit.
+    pub fn histogram(&self) -> Vec<usize> {
+        let mut counts = Vec::new();
+        for span in &self.index {
+            let at = usize::from(span.count);
+            if at >= counts.len() {
+                counts.resize(at + 1, 0);
+            }
+            counts[at] += 1;
+        }
+        counts
+    }
+
     /// Where a tile lives in [`Occlusion::index`].
     fn index(&self, x: i32, y: i32) -> Option<usize> {
         let bounds = self.bounds;
@@ -576,7 +611,21 @@ impl Occlusion {
     }
 }
 
-/// Builds one frame's [`Occlusion`]: everything that merges, merges here.
+/// The end of a tile's list of surfaces, in [`Builder::heads`] and in
+/// [`Builder::arena`]'s links.
+const NO_SURFACE: u32 = u32::MAX;
+
+/// How many surfaces one tile may hold: the format's own ceiling and not a
+/// number anybody chose.
+///
+/// A cell's count is one byte — [`Occlusion::bytes`] — so 255 is what an
+/// `(offset, count)` can name, and decision 30.6 asks for the real bound to come
+/// from a distribution measured over a city rather than from a guess. Until that
+/// measurement says otherwise this is the only cap there is, and what it drops is
+/// counted rather than silently thrown away: [`Occlusion::dropped`].
+pub const MAX_SURFACES_PER_TILE: usize = 255;
+
+/// Builds one frame's [`Occlusion`]: a surface at a time, packed at the end.
 ///
 /// The grid is written tile by tile — a static at a time, in whatever order the
 /// map walk finds them — and what comes out is a packed list nothing appends to.
@@ -584,15 +633,25 @@ impl Occlusion {
 /// surfaces have to be contiguous for an `(offset, count)` to name them, and
 /// they cannot be while anything can still be added.
 ///
-/// The **union** lives here and only here, which is what makes
-/// `docs/lighting.md`'s step 21.2 a change to one function.
+/// A tile's surfaces live in [`Builder::arena`] as a linked list rather than in a
+/// `Vec` of their own, and that is a cost decision rather than a taste one: a
+/// widest-zoom grid is 35,000 tiles of which 10,000 stand, so a `Vec` a tile
+/// would be 35,000 allocations a frame on the side of this pass that is already
+/// thirteen times the GPU.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Builder {
     bounds: TileBounds,
-    /// One merged cell a tile, row-major over `bounds` — see [`Builder::add`].
-    cells: Vec<Option<Cell>>,
-    /// How much of the sky each tile can see, in the same order.
+    /// The first surface of each tile, row-major over `bounds`, or
+    /// [`NO_SURFACE`] for open ground.
+    heads: Vec<u32>,
+    /// Every surface added this frame, each with the index of the next one on
+    /// its own tile.
+    arena: Vec<(Surface, u32)>,
+    /// How much of the sky each tile can see, in the same order as `heads`.
     sky: Vec<u8>,
+    /// How many surfaces were refused because their tile was already full — see
+    /// [`MAX_SURFACES_PER_TILE`] and [`Occlusion::dropped`].
+    dropped: usize,
 }
 
 impl Builder {
@@ -602,24 +661,38 @@ impl Builder {
         let tiles = (bounds.width() * bounds.height()) as usize;
         Self {
             bounds,
-            cells: vec![None; tiles],
+            heads: vec![NO_SURFACE; tiles],
+            arena: Vec::new(),
             sky: vec![SKY_OPEN; tiles],
+            dropped: 0,
         }
     }
 
-    /// Add one occluder, merging with whatever already stands on that tile.
+    /// Add one occluder: the surfaces it *is*, standing beside whatever else is
+    /// already on that tile.
     ///
-    /// The merge is the **union** of the two spans, and it is deliberately the
-    /// conservative direction: two walls on one tile with a gap between them
-    /// close the gap. After the cutaway has removed the storeys the player is
-    /// not on, a tile holding two opaque statics is a doorframe and a lintel far
-    /// more often than it is two walls with air between, and darkening a foot of
-    /// air is invisible where leaking a room into the street is not.
+    /// **Nothing is merged here any more**, which is step 21.2 and the one place
+    /// in decision 30 where the picture has to change. What the union used to do
+    /// was take the widest span, the largest opacity and the union of the sides
+    /// over everything on the tile — conservative in the direction that darkens
+    /// for the span and in the direction that *leaks* for the sides, which is not
+    /// one direction. A floor over a wall tile contributed its `z` to the wall's
+    /// span and lost its own lid-ness; two walls with air between them closed the
+    /// gap; a pane beside a wall came out opaque across the whole tile.
     ///
-    /// It is also what step 21.2 takes apart — a lid and a panel on one tile
-    /// have no business sharing a span or a mask — and keeping it while the
-    /// storage changed under it is what lets this step promise that the picture
-    /// does not move.
+    /// Now each of them is its own surface with its own span, its own opacity and
+    /// its own rule — a lid is travelled through, a panel is pierced — and what
+    /// the walk does with a tile that holds several is take the largest, which is
+    /// the rule it already had. [`Occlusion::at`] still folds the union for the
+    /// readers whose question is genuinely about a tile.
+    ///
+    /// An occluder that names two sides — a **corner**, decision 25 — is two
+    /// panels and not one surface with two bits, because a ray crossing both has
+    /// gone through one wall once and the walk says so by taking the largest.
+    ///
+    /// An exact repeat of a surface already on the tile is dropped. Two copies of
+    /// one plane at one span stop exactly what one does, and the list is what
+    /// decision 30.6 is about to count.
     ///
     /// A tile outside the rectangle is dropped rather than clamped: it is a
     /// caller walking wider than it asked the grid for, and folding it onto the
@@ -641,37 +714,69 @@ impl Builder {
             return;
         };
         let bottom = i32::from(z);
-        let span = Cell {
-            bottom,
-            top: bottom + calc_height(tile),
-            opacity,
-            // A floor or a rug is a **lid**: its occlusion is the `z` it lies at
-            // and no vertical side of the tile describes it, so it names no
-            // edge. Everything that stands up names the edge the art gave it, or
-            // all four where the art would not say — see `edges_of`.
-            //
-            // The client's own `FLOOR` bit decides which, exactly as it does for
-            // `place::Stance`, and asking it here rather than trusting the face
-            // to be `None` is deliberate: a floor whose silhouette happened to
-            // read as a wall would otherwise be given one edge out of four and
-            // stop three quarters less light than it does today.
-            edges: match tile.flags.is_background() {
-                true => 0,
-                false => edges_of(facing),
-            },
+        let top = bottom + calc_height(tile);
+        // A floor or a rug is a **lid**: its occlusion is the `z` it lies at and
+        // no vertical side of the tile describes it, so it names no edge.
+        // Everything that stands up names the edge the art gave it, or all four
+        // where the art would not say — see `edges_of`.
+        //
+        // The client's own `FLOOR` bit decides which, exactly as it does for
+        // `place::Stance`, and asking it here rather than trusting the face to be
+        // `None` is deliberate: a floor whose silhouette happened to read as a
+        // wall would otherwise be given one edge out of four and stop three
+        // quarters less light than it does today.
+        let edges = match tile.flags.is_background() {
+            true => 0,
+            false => edges_of(facing),
         };
-        self.cells[index] = Some(match self.cells[index] {
-            None => span,
-            // The union in every field, which is the conservative direction the
-            // span already took: two walls on one tile close the gap between
-            // them, and a wall beside a lid stops what either of them would.
-            Some(had) => Cell {
-                bottom: had.bottom.min(span.bottom),
-                top: had.top.max(span.top),
-                opacity: had.opacity.max(span.opacity),
-                edges: had.edges | span.edges,
-            },
-        });
+        match edges {
+            // A lid, or a body: one surface, and the mask is the whole of what
+            // says which of the walk's two rules it takes.
+            0 | EDGE_ANY => self.push(
+                index,
+                Surface {
+                    bottom,
+                    top,
+                    opacity,
+                    edges,
+                },
+            ),
+            named => {
+                for side in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
+                    if named & side != 0 {
+                        self.push(
+                            index,
+                            Surface {
+                                bottom,
+                                top,
+                                opacity,
+                                edges: side,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Put one surface on a tile, unless the tile already has it or is full.
+    fn push(&mut self, index: usize, surface: Surface) {
+        let mut count = 0;
+        let mut at = self.heads[index];
+        while at != NO_SURFACE {
+            let (had, next) = self.arena[at as usize];
+            if had == surface {
+                return;
+            }
+            count += 1;
+            at = next;
+        }
+        if count >= MAX_SURFACES_PER_TILE {
+            self.dropped += 1;
+            return;
+        }
+        self.arena.push((surface, self.heads[index]));
+        self.heads[index] = self.arena.len() as u32 - 1;
     }
 
     /// Take a tile's sky away, as far as one static standing over it does.
@@ -752,14 +857,26 @@ impl Builder {
     /// One pass in the index's own order, so a tile's surfaces come out
     /// contiguous and in the order the tiles are in — which is what makes the
     /// grid's texture and the list's two views of one thing.
+    ///
+    /// A tile's own surfaces come out in the order they were added. The walk does
+    /// not depend on it — it takes the largest of them — but a stable order is
+    /// what lets a test name a slice and a frame dump be compared with the one
+    /// before it.
     pub fn finish(self) -> Occlusion {
-        let mut index = Vec::with_capacity(self.cells.len());
-        let mut surfaces = Vec::with_capacity(self.cells.len());
-        for cell in &self.cells {
+        let mut index = Vec::with_capacity(self.heads.len());
+        let mut surfaces = Vec::with_capacity(self.arena.len());
+        for head in &self.heads {
             let offset = surfaces.len() as u32;
-            if let Some(cell) = *cell {
-                push_surfaces(cell, &mut surfaces);
+            // The list is built by pushing at the front, so walking it hands back
+            // the newest first; reversing what one tile contributed is what puts
+            // the surfaces in the order the map walk found them.
+            let mut at = *head;
+            while at != NO_SURFACE {
+                let (surface, next) = self.arena[at as usize];
+                surfaces.push(surface);
+                at = next;
             }
+            surfaces[offset as usize..].reverse();
             index.push(Span {
                 offset,
                 count: (surfaces.len() as u32 - offset) as u8,
@@ -770,10 +887,11 @@ impl Builder {
             index,
             surfaces,
             sky: self.sky,
+            dropped: self.dropped,
         }
     }
 
-    /// Where a tile lives in [`Builder::cells`].
+    /// Where a tile lives in [`Builder::heads`].
     fn index(&self, x: i32, y: i32) -> Option<usize> {
         let bounds = self.bounds;
         if x < bounds.min_x || x > bounds.max_x || y < bounds.min_y || y > bounds.max_y {
@@ -781,37 +899,6 @@ impl Builder {
         }
         let (column, row) = (x - bounds.min_x, y - bounds.min_y);
         Some((row * bounds.width() + column) as usize)
-    }
-}
-
-/// The surfaces one merged cell is, appended in the order the sides are numbered
-/// in.
-///
-/// **One to one with what the cell already meant**, which is the whole of why
-/// this step can promise the picture does not move: a lid is one horizontal, a
-/// body — all four sides, "it stands up and the art would not say which way" —
-/// is one solid, and a named mask is a quad on each side it names, every one of
-/// them carrying the cell's own span and opacity.
-///
-/// So a cell is never a mixture: it is one lid, or one body, or panels. That is
-/// the union talking, and step 21.2 is where a tile gets to hold a lid *and* a
-/// panel with spans of their own.
-fn push_surfaces(cell: Cell, out: &mut Vec<Surface>) {
-    let quad = |edges| Surface {
-        bottom: cell.bottom,
-        top: cell.top,
-        opacity: cell.opacity,
-        edges,
-    };
-    match cell.edges {
-        0 | EDGE_ANY => out.push(quad(cell.edges)),
-        named => {
-            for side in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
-                if named & side != 0 {
-                    out.push(quad(side));
-                }
-            }
-        }
     }
 }
 
@@ -1146,25 +1233,188 @@ mod tests {
         assert_eq!(occlusion.finish().at(100, 100).unwrap().top, 10);
     }
 
-    /// Two occluders on one tile become one span covering both. The union is the
-    /// conservative direction and the doc comment on `add` argues for it; this
-    /// pins that it is what happens.
+    /// Two occluders on one tile are **two surfaces**, and the gap between them
+    /// stays open.
+    ///
+    /// Step 21.2, and the one place in decision 30 where the picture had to move.
+    /// The union used to take the widest span over everything on a tile, so a wall
+    /// at `0..=20` and another at `40..=60` came out as one wall from 0 to 60 and
+    /// closed twenty `z` of air — which is a foot of shadow with nothing casting
+    /// it, and the same union leaked the *sides* in the other direction.
+    ///
+    /// The merged view still folds them, and that is deliberate: the readers whose
+    /// question is about a tile — the wireframe, the plan view, which way a
+    /// mounted flame steps out of its own cell — get the same answer they always
+    /// did. What changed is what the *walk* reads.
     #[test]
-    fn two_occluders_on_one_tile_span_both() {
+    fn two_occluders_on_one_tile_stop_closing_the_gap_between_them() {
         let mut occlusion = Builder::new(bounds());
         occlusion.add(105, 105, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
         occlusion.add(105, 105, 40, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
         let occlusion = occlusion.finish();
+        assert_eq!(
+            occlusion.surfaces_at(105, 105),
+            &[
+                Surface {
+                    bottom: 0,
+                    top: 20,
+                    opacity: OPAQUE,
+                    // Neither was given a face, so both are the whole tile.
+                    edges: EDGE_ANY,
+                },
+                Surface {
+                    bottom: 40,
+                    top: 60,
+                    opacity: OPAQUE,
+                    edges: EDGE_ANY,
+                },
+            ],
+            "the two walls merged into one, and the air between them with it",
+        );
         assert_eq!(
             occlusion.at(105, 105),
             Some(Cell {
                 bottom: 0,
                 top: 60,
                 opacity: OPAQUE,
-                // Neither was given a face, so both are the whole tile.
                 edges: EDGE_ANY,
-            })
+            }),
+            "the merged view is what it always was",
         );
+    }
+
+    /// A lid and a panel on one tile keep their own spans, their own opacities
+    /// and their own **rules**.
+    ///
+    /// The other half of step 21.2, and the backlog entry it closes: `add` used to
+    /// union everything on a tile, so a floor over a wall tile contributed its `z`
+    /// to the span and *lost its own lid-ness* — the merged mask was the wall's,
+    /// so the walk pierced the floor as though it were a vertical panel and
+    /// travelled through nothing. Conservative in the direction that darkens for
+    /// the span and in the direction that leaks for the sides, which is not one
+    /// direction.
+    ///
+    /// The two rules are the two masks, so this is also what says the walk sees
+    /// them: a lid names no side and is travelled through, a panel names one and
+    /// is pierced. See `light::walk_cells`.
+    #[test]
+    fn a_lid_and_a_panel_on_one_tile_are_not_one_surface() {
+        use crate::facing::{Face, Facing};
+
+        let mut occlusion = Builder::new(bounds());
+        // A wall on the south side of its tile, twenty `z` tall.
+        occlusion.add(
+            104,
+            104,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT | TileFlags::WALL, 20),
+            Some(Facing::One(Face::South)),
+        );
+        // And a glazed roof lying across the same tile at the top of it.
+        occlusion.add(
+            104,
+            104,
+            20,
+            NOT_A_DOOR,
+            &tile(TileFlags::WINDOW | TileFlags::FLOOR, 0),
+            None,
+        );
+        let occlusion = occlusion.finish();
+
+        assert_eq!(
+            occlusion.surfaces_at(104, 104),
+            &[
+                Surface {
+                    bottom: 0,
+                    top: 20,
+                    opacity: OPAQUE,
+                    edges: EDGE_SOUTH,
+                },
+                Surface {
+                    bottom: 20,
+                    top: 20,
+                    opacity: PANE,
+                    edges: 0,
+                },
+            ],
+        );
+        // The union's three separate wrongnesses, each of which the merged view
+        // still has and the walk no longer reads: the pane was opaque, the lid
+        // was a south panel, and the roof's `z` was part of the wall's span.
+        assert_eq!(
+            occlusion.at(104, 104),
+            Some(Cell {
+                bottom: 0,
+                top: 20,
+                opacity: OPAQUE,
+                edges: EDGE_SOUTH,
+            }),
+        );
+    }
+
+    /// The same surface twice is one surface.
+    ///
+    /// Not a merge — the spans are identical, so nothing is being made
+    /// conservative — but it is what keeps a tile carrying five copies of one
+    /// wall graphic from spending five slots of a count that is one byte wide.
+    /// Decision 30.6 is about to measure that count, and a distribution padded
+    /// with duplicates would name the wrong bound.
+    #[test]
+    fn the_same_surface_twice_is_stored_once() {
+        let mut occlusion = Builder::new(bounds());
+        let wall = tile(TileFlags::NO_SHOOT, 20);
+        occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, None);
+        occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, None);
+        let occlusion = occlusion.finish();
+        assert_eq!(occlusion.surface_count(), 1);
+        assert_eq!(occlusion.dropped(), 0, "a duplicate is not a truncation");
+    }
+
+    /// A tile past the format's ceiling drops what does not fit — and **counts
+    /// it**.
+    ///
+    /// Decision 30.6: a grid that quietly truncates reads as "covered everything"
+    /// when it did not. The count is one byte, so 255 is what an `(offset, count)`
+    /// can name; whether the real bound should be smaller is a distribution
+    /// measured over a city and not a number chosen here.
+    #[test]
+    fn a_tile_past_the_ceiling_drops_and_says_how_many() {
+        let mut occlusion = Builder::new(bounds());
+        // Distinct spans, so nothing is folded away as a duplicate.
+        for step in 0..(MAX_SURFACES_PER_TILE + 3) {
+            let z = (step as i32 - 128).clamp(-128, 127) as i8;
+            occlusion.add(107, 107, z, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 1), None);
+        }
+        let occlusion = occlusion.finish();
+        assert_eq!(occlusion.surfaces_at(107, 107).len(), MAX_SURFACES_PER_TILE);
+        assert_eq!(occlusion.dropped(), 3);
+    }
+
+    /// The distribution decision 30.6 asks for, over a grid a test can count by
+    /// hand: how many tiles hold how many surfaces.
+    #[test]
+    fn the_histogram_counts_tiles_and_not_surfaces() {
+        use crate::facing::{Face, Facing};
+
+        let mut occlusion = Builder::new(bounds());
+        occlusion.add(100, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(
+            101,
+            100,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Some(Facing::Corner {
+                right: Face::East,
+                left: Face::South,
+            }),
+        );
+        let histogram = occlusion.finish().histogram();
+        let tiles = (bounds().width() * bounds().height()) as usize;
+        assert_eq!(histogram[0], tiles - 2, "every other tile is open ground");
+        assert_eq!(histogram[1], 1, "the plain wall");
+        assert_eq!(histogram[2], 1, "the corner, which is two panels");
     }
 
     /// Outside the rectangle is not the edge of it. A caller walking wider than

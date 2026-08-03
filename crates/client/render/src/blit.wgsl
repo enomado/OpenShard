@@ -587,8 +587,10 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
             // What the *cell* stops is the **largest** of what its surfaces stop,
             // and not the product: two panels on one tile are the two faces of
             // one corner, and a ray crossing both has gone through one thing
-            // once. It is also what keeps the picture where it was when a cell
-            // was one merged span — every surface of a tile carries that span.
+            // once. Since step 21.2 a tile's surfaces carry spans of their own —
+            // a lid and a wall no longer share one — so the largest is also what
+            // keeps the air between two walls open where the merged span used to
+            // close it.
             var stopped = 0.0;
             for (var i = 0u; i < span.y; i = i + 1u) {
                 let stands = surface_at(span.x + i);

@@ -1503,9 +1503,10 @@ fn walk_cells(
             // and not the product of them. Two panels on one tile are a corner —
             // two faces of one wall — and a ray that crosses both has gone
             // through one thing once; multiplying would darken every corner in
-            // the world twice over. It is also what keeps this step's promise
-            // that the picture does not move: a tile's surfaces all carry its own
-            // span, so the largest of them is the merged cell's own answer.
+            // the world twice over. Since step 21.2 a tile's surfaces carry
+            // spans of their own — a lid and a wall no longer share one — so the
+            // largest is also what keeps the air between two walls open where
+            // the merged span used to close it.
             let mut stopped: f32 = 0.0;
             for stands in stands {
                 // On the lit end's own cell only the panels the surface admits are

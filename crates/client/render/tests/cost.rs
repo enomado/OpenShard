@@ -511,6 +511,27 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         night.occlusion.surface_count(),
         changed,
     );
+    // Decision 30.6: how many surfaces a cell may hold is a **distribution
+    // measured over a city** and not a number anybody picks, and whatever is
+    // dropped is said out loud rather than silently capped. A total cannot tell
+    // ten thousand tiles of one surface from ten thousand of one and a tile of
+    // forty, and it is the second that names a bound.
+    let histogram = night.occlusion.histogram();
+    let standing: usize = histogram[1..].iter().sum();
+    eprintln!("surfaces a standing cell holds, of {standing} standing cells:");
+    for (count, tiles) in histogram.iter().enumerate().skip(1) {
+        if *tiles > 0 {
+            eprintln!(
+                "  {count:>3}  {tiles:>7}  {:>5.1}%",
+                *tiles as f64 * 100.0 / standing as f64
+            );
+        }
+    }
+    eprintln!(
+        "  and {} surfaces dropped because their tile was full\n",
+        night.occlusion.dropped(),
+    );
+
     eprintln!(
         "CPU a frame: light::collect {:.2}ms — of which the grid {:.2}ms, and {:.2}ms more \
          to lay the three planes out as bytes for the queue\n",

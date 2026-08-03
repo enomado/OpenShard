@@ -1126,3 +1126,115 @@ fn light_runs_along_a_wall_and_stops_across_it() {
          of it arrived, so this test is not measuring the edge at all",
     );
 }
+
+/// A ray through the gap between two walls on one tile goes through it.
+///
+/// **Step 21.2, and the one place in `docs/lighting.md`'s decision 30 where the
+/// picture had to move.** `occlusion::Builder::add` used to union everything
+/// standing on a tile into one span, so a wall from `z 0` to `z 10` and another
+/// from `z 30` to `z 40` came out as one wall from 0 to 40 and closed thirty `z`
+/// of open air between them — a band of shadow with nothing in the picture
+/// casting it, which is the failure this whole pass exists to keep out of a
+/// frame.
+///
+/// The grid is built by hand rather than out of a scene, and deliberately: a
+/// scene is a map, and what this is about is two statics on one tile, which is
+/// the thing a `Map` makes fiddly to say and a `Builder` makes one line. What it
+/// costs is that the flame is placed here rather than collected, and the
+/// assertion is written to survive that — it compares the gap against the wall
+/// beside it rather than against a constant.
+#[test]
+fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
+    use openshard_client_render::camera::TileBounds;
+    use openshard_client_render::light::{Ambient, Light};
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    const WALL: (u16, u16) = (105, 105);
+    /// The air between the two walls, and the height a ray is asked about.
+    const GAP: f32 = 20.0;
+    /// Inside the lower wall, where a ray must still die.
+    const SOLID: f32 = 5.0;
+
+    let bounds = TileBounds {
+        min_x: 100,
+        max_x: 110,
+        min_y: 100,
+        max_y: 110,
+    };
+    let wall = StaticTile {
+        flags: TileFlags::new(TileFlags::NO_SHOOT),
+        height: 10,
+        ..StaticTile::default()
+    };
+    let mut grid = occlusion::Builder::new(bounds);
+    // Two walls on one tile with thirty `z` of air between them. No facing: with
+    // no art an occluder is the whole tile, which is the body rule and the one
+    // the union used to hand a span that covered both.
+    grid.add(
+        WALL.0,
+        WALL.1,
+        0,
+        openshard_protocol::wire::Graphic(0),
+        &wall,
+        None,
+    );
+    grid.add(
+        WALL.0,
+        WALL.1,
+        30,
+        openshard_protocol::wire::Graphic(0),
+        &wall,
+        None,
+    );
+    let lighting = Lighting {
+        ambient: Ambient {
+            sky: [0.0, 0.0, 0.0],
+            ground: [0.0, 0.0, 0.0],
+        },
+        lights: vec![Light {
+            // Due west of the wall, so a ray to it crosses the tile squarely and
+            // the only thing deciding it is the height.
+            at: Vec2::new(f32::from(WALL.0) - 1.5, f32::from(WALL.1) + 0.5),
+            z: GAP,
+            radius: 8.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        }],
+        occlusion: grid.finish(),
+        sun: None,
+        view: openshard_client_render::debug::View::Lit,
+    };
+
+    // Due east of the wall, level with the flame: the ray runs straight through
+    // the air between the two walls.
+    let east = (WALL.0 + 2, WALL.1);
+    let through = |z: f32| light::sample(spot(east, z), &lighting).reaches[0].through;
+
+    assert!(
+        through(GAP) > 0.9,
+        "the gap between the two walls is shut — {:.3} of the ray survived it, \
+         which is the union closing air the map has nothing standing in",
+        through(GAP),
+    );
+    // And the walls themselves are unchanged, which is what says the gap opened
+    // rather than the tile emptying: a ray at the height of the lower wall dies
+    // on it exactly as it always did.
+    let solid = light::sample(
+        Spot::at(Vec2::new(f32::from(east.0) + 0.5, f32::from(east.1) + 0.5), SOLID),
+        &Lighting {
+            lights: vec![Light {
+                z: SOLID,
+                ..lighting.lights[0]
+            }],
+            occlusion: lighting.occlusion.clone(),
+            ..lighting
+        },
+    );
+    assert!(
+        solid.reaches[0].through < 0.01,
+        "the wall itself stopped being a wall — {:.3} of the ray went through the \
+         solid part of it",
+        solid.reaches[0].through,
+    );
+}

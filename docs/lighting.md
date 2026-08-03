@@ -9,18 +9,29 @@ copied.
 
 ## Where the next session starts
 
-**Step 21.1 has landed: the cell is a list now.** A tile is `(offset, count)`
-into `Occlusion::surfaces_at`, both walks iterate it, and the picture did not
-move — every test stayed green, the CPU/GPU parity tests included. What is left
-of the merge lives in one function, `occlusion::Builder::add`.
+**Step 21.2 has landed: the union is gone.** A tile's occluders are surfaces
+standing beside each other rather than one merged span — a wall from `z 0` to
+`z 10` and another from `z 30` to `z 40` no longer close the thirty `z` of air
+between them, and a lid over a wall tile keeps its own span, its own opacity and
+its own rule instead of contributing its `z` to the wall and losing its lid-ness.
+`push_surfaces` is gone with it; the shape a static *is* is decided in
+`Builder::add`, which is the only place that ever knew.
 
-**Start at step 21.2**: split the union. Two statics on one tile stop sharing a
-span and a mask, which is the one place in step 21 where the picture *has* to
-change, and it is now a change to `Builder::add` and to `push_surfaces` beside
-it — nothing downstream of them knows how many surfaces a tile has. Decision 30
-is the argument and its seven micro-decisions are settled; step 21 is the same
-change broken into five pieces that are each testable alone. Decision 31 is why
-the measuring leaves the frame.
+**And decision 30.6 has its distribution**, off Britain at the widest zoom:
+**10,212 standing cells hold 18,071 surfaces**, against 10,653 under the union.
+58.2% of them hold one, 26.5% two, 7.4% three, and the tail runs to 21 on ten
+tiles — a shop with a stack of floors, walls and a roof on one square. Nothing
+was dropped: the only cap is the format's own byte and the worst tile in a city
+is an eighth of it. That is the number the truncation question wanted and it
+answers it by not arising.
+
+**Start at step 21.3**: the aperture in the walk. A surface gets a rectangular
+hole and the crossing test asks whether the ray goes through it — and **no art is
+needed**, because the scenes here are built: `scene::room_with_window` can be
+handed a hole directly and the fan on the ground measured. The mechanism and the
+measurement (steps 20b and 16) are independent and neither waits for the other.
+Decision 30 is the argument and its seven micro-decisions are settled; decision 31
+is why the measuring leaves the frame.
 
 The three sessions below are what that rests on, and the short version is that
 the lighting stopped answering with a *tile* anywhere it was asked about a
@@ -1494,11 +1505,70 @@ everywhere else, arriving as a refusal to *require*.
          step 6's numbers, so the two are not comparable, and what would want
          watching is that the walk now reads two texels a cell where it read one.
          Step 21.5 is where that is bought back several times over.
-      2. **Split the union.** Two statics on one tile stop merging into one span
-         with one mask. This is the one place the picture *has* to change — it is
-         the backlog's "a cell merges a lid and a panel into one mask and one
-         span" — so it is its own change with its own test, and not smuggled in
-         under a refactor that claimed to change nothing.
+      2. ✅ **Split the union.** Two statics on one tile stopped merging into one
+         span with one mask. This is the one place the picture *had* to change —
+         it is the backlog's "a cell merges a lid and a panel into one mask and
+         one span" — so it is its own change with its own test, and not smuggled
+         in under a refactor that claimed to change nothing.
+
+         The union was wrong in two directions at once and the change closes
+         both. For the **span** it was conservative: two walls with air between
+         them closed the gap, so a frame carried a band of shadow with nothing in
+         the picture casting it. For the **mask** it leaked: a floor over a wall
+         tile handed its `z` to the wall's span and lost its own lid-ness, so the
+         walk pierced a horizontal surface as though it were a vertical panel and
+         travelled through nothing — and a pane beside a wall came out opaque
+         across the whole tile, because the opacity was a `max` too.
+
+         `occlusion::Builder::add` now decides what a static *is* — a lid, a body,
+         or a panel per side its art named — and pushes it. Nothing merges. What
+         is left of the fold is `Occlusion::at`, the **merged view**, which is
+         unchanged and is what the wireframe, the plan view and `light::mounted_at`
+         go on reading: their question is genuinely about a tile. A tile's
+         surfaces live in a linked list in one arena rather than in a `Vec` a
+         tile, and that is a cost decision — 35,000 tiles at the widest zoom
+         would otherwise be 35,000 allocations a frame on the side of this pass
+         that is already thirteen times the GPU.
+
+         Three tests pin it and each fails on the union: two walls keep the air
+         between them (`two_occluders_on_one_tile_stop_closing_the_gap_between_them`),
+         a lid and a panel keep their spans and their two rules
+         (`a_lid_and_a_panel_on_one_tile_are_not_one_surface`), and the walk
+         itself passes a ray through the gap
+         (`a_ray_through_the_gap_between_two_walls_on_one_tile_passes` — built by
+         hand rather than out of a scene, because two statics on one tile is the
+         thing a `Map` makes fiddly and a `Builder` makes one line). The union was
+         put back for a run to check they were red, and they were.
+
+         **The distribution decision 30.6 asked for**, Britain at the widest zoom
+         — `tests/cost.rs` prints it now, and `Occlusion::histogram` is what it
+         asks:
+
+         ```
+           surfaces   cells      share
+                  1    5942      58.2%
+                  2    2702      26.5%
+                  3     759       7.4%
+                  4     428       4.2%
+                  5     164       1.6%
+                6–10     186       1.8%
+               11–21      31       0.3%
+         ```
+
+         10,212 standing cells hold **18,071** surfaces, against 10,653 under the
+         union. Nothing was dropped, and the cap is the format's own byte rather
+         than a number anybody chose: the worst tile in a city is 21, an eighth of
+         what an `(offset, count)` can name. `Occlusion::dropped` counts what does
+         not fit and `cost.rs` prints it — a grid that quietly truncates reads as
+         "covered everything" when it did not.
+
+         **The cost, and it is not free.** On the same frame and the same machine
+         as 21.1's numbers: `light::collect` 3.43ms against 3.37, the grid 2.19ms
+         against 2.06 — the walk that builds it is unchanged and what grew is the
+         list. On the GPU `night` is **0.497ms against 0.368**, which is the
+         backlog's "a cell's fetch count went from one to `1 + count`" arriving
+         with a count that is now 1.77 rather than 1.04. It is still 3% of a 60Hz
+         budget, and step 21.5's bake is where the CPU half is bought back.
       3. **The aperture in the walk, tested on a built scene.** A surface gets a
          rectangular hole and the crossing test asks whether it passes through it.
          **No art is needed for this**: the scenes here are built, so
@@ -1990,12 +2060,13 @@ Found while asking why a lamp on a house does not light the street:
   panel's shadow edge is now exact sideways — a straight line at the angle the
   geometry says, rather than a staircase on tile boundaries — and whether that
   wants softening is a question to ask of a moving picture, not of a still.
-- **A cell merges a lid and a panel into one mask and one span.** `Occlusion::add`
-  unions everything on a tile, so a floor over a wall tile contributes its `z` to
-  the span while the wall contributes the sides — and the floor's own lid-ness is
-  lost. Conservative in the direction that darkens for the span and in the
-  direction that leaks for the sides, which is not one direction. Two slots a
-  cell would fix it and want the wider format step 16 is already asking for.
+- ~~**A cell merges a lid and a panel into one mask and one span.**~~ Closed by
+  step 21.2, and the entry's own reading of it was right in both directions: the
+  span darkened air the map had nothing standing in, and the mask leaked a
+  horizontal surface into the panel path. What it did not predict is the third —
+  the *opacity* was a `max` too, so a pane beside a wall was opaque across the
+  whole tile. "Two slots a cell" turned out to want 21 on the worst tile in
+  Britain, which is why the answer was a list and not a second slot.
 - **`crate::doors` is now deletable.** Decision 17 answers an open door out of the
   geometry, so the ported table earns nothing the edge mask does not. It is left
   in for one reason: 40 of the 104 open leaves are graphics `facing` refuses —
@@ -2150,6 +2221,48 @@ Found while turning the cell into a list:
   today, and nothing outside that function is stopped from breaking it either —
   the list and the index are two private `Vec`s that agree by construction and
   not by type.
+
+Found while splitting the union:
+
+- **A change that has to move the picture moved no test.** Every test in the crate
+  stayed green through step 21.2, which is not reassurance — it is the coverage
+  report. A built scene is a `Map` with a handful of items on it and almost none
+  of them puts *two* statics on one tile, so the whole suite had no opinion about
+  the one thing this step is. The three tests that pin it were written for it, and
+  the one that goes through the walk builds its grid with a `Builder` rather than
+  with a scene, because a `Map` makes "two statics on one tile" fiddly to say. The
+  same shape as the backlog's "a scene has no art, so almost every scene tests the
+  whole-tile occluder": the scenes are thin exactly where the format is.
+- **The union was put back to check the tests were red**, by hand, for one run.
+  Worth writing down because it is the only thing that distinguishes a test that
+  pins the new behaviour from a test that pins the arithmetic that happens to be
+  there — and two of the three would have passed a weaker mutation (merging only
+  surfaces with the same mask) that leaves the lid-and-panel case alone.
+- **A cell's fetch count is 1.77 now, and the GPU noticed.** `night` went from
+  0.368ms to 0.497ms on the same frame and the same machine, which is the first
+  time in this file that a representation change has cost something legible. It
+  is still 3% of a 60Hz budget and the CPU is still the expensive half by four
+  times — but the backlog entry that asked for this to land "in the measurement
+  rather than in the surprise" now has a real number in both halves.
+- **The tail of the distribution is a shop, and nothing says which one.**
+  Ten tiles in a Britain frame hold 21 surfaces. That is a stack of floors, walls
+  and roof pieces on one square and it is almost certainly right — but the
+  histogram is a count with no coordinate in it, and `tests/onsite.rs` is the
+  instrument that would name the tile. Worth doing the first time a cap has to be
+  chosen, which is not today.
+- **`Occlusion::dropped` is counted and nothing asserts on it.** `cost.rs` prints
+  it and a frame that dropped a wall would say so to a person reading the output.
+  Nothing fails. The right home for an assertion is the bake of step 21.5, where a
+  region is measured once and a truncation is permanent rather than one frame's.
+- **A surface list makes duplicate suppression a linear scan.** `Builder::push`
+  walks the tile's list looking for an exact repeat, which is one to three
+  comparisons on 99.9% of tiles and twenty-one on ten of them. It is nothing today
+  at 18,000 surfaces a frame; it is the shape that stops being nothing when the
+  bake covers a block rather than a camera.
+- **A tile's surfaces are contiguous, and that is still an invariant nothing
+  states.** The entry below from step 21.1 is unchanged by this step and is now
+  one function further from being checkable: the arena and the heads agree by
+  construction, `finish` is what packs them, and nothing has a type saying so.
 
 Found while giving a corner its two faces:
 
