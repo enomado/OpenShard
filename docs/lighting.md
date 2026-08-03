@@ -17,7 +17,11 @@ record cannot state — and the answer that came out is larger than a tread. Thr
 things were settled and each one removes an argument this file had been making
 for several sessions:
 
-- **A solid is not clipped to its tile; a cell *references* it.** Every seam this
+- **A solid is not clipped to its tile, and nothing bounds how far it reaches; a
+  cell *references* it.** The anchor is the whole invariant — it names the block
+  that owns the solid — and the only number in the neighbourhood is the width of
+  the ring a frame pastes, which is *measured off the table* rather than decreed.
+  An earlier draft of 38.2 invented a one-tile limit and it lasted a day. Every seam this
   file has fought was manufactured by cutting geometry on a tile boundary: the
   spokes of decision 18 were a ray slipping through the corner between two
   panels, and a corner is only a corner because the wall was cut there. A whole
@@ -1736,27 +1740,39 @@ cells may be tested twice on one ray; a visited-set that avoided that would cost
 more, on a ray of a dozen cells, than the redundant test it saves. So it is not
 deduplicated, and the test being exact is what makes that safe.
 
-**38.2 A solid is anchored, and its overhang is bounded — this is the number to
-argue with.** "Relatively free" is right as a model and fatal as an
-implementation detail: the bake is per block (30.4), so a solid anchored outside
-the visible blocks that reaches into them must still be found, and without a
-bound "found" means scanning the map.
+**38.2 A solid is anchored, and its reach is *measured* rather than limited.**
+The anchor — the tile the static stands on — is the whole of the invariant a
+solid needs, because it names the block that owns it. How far the solid extends
+past it is nobody's business but the geometry's.
 
-The bound: **a solid may not extend further than one tile beyond its anchor**
-in `x` or `y`, where the anchor is the tile the static stands on. `z` is
-unbounded and always was. Two things make this cheap rather than restrictive.
-Nothing *derived* ever exceeds its own tile, so the allowance is only ever spent
-by a hand-written row — and a hand-written row is checked when it is authored,
-where the error message can name the graphic. And the bookkeeping is the owner's:
-a `Baked` block carries, beside its cells, a small **spill** list of the
-references that reach outside its own bounds. A frame pastes the blocks it needs
-and then pastes only the *spill* of the ring around them — which is empty for
-every block in a stock install, so the ring costs a lookup and nothing else.
+~~A solid may not extend further than one tile beyond its anchor.~~ *(an invented
+constant, withdrawn the day it was written. This file's own decision 30.6 says
+the shape of the answer: measured, not chosen.)*
 
-One tile is the number because it covers what this world's art actually
-overhangs: a stair's tread, an arch's springing, a sign, a balcony. If something
-wants more, the honest change is to raise it here once and re-measure the ring's
-cost, not to special-case a graphic.
+What genuinely needs a number is not the model but the **bake**. Blocks are baked
+independently (30.4) and a frame pastes the ones it needs, so a solid anchored in
+block `A` and reaching into block `B` puts references into `B`'s cells that only
+`A` can supply. The frame therefore pastes a **ring** around the blocks it wants,
+and the question is how wide the ring is.
+
+It is measured, and the measurement is free: a solid belongs to a *graphic*, so
+the widest reach in the whole world is `max` over the table's solids and is known
+before the first block is baked. Zero on a stock install; one after somebody
+authors an arch; three if somebody authors a bridge. Nothing is refused and no
+graphic is special-cased — a large solid simply costs what it costs, every frame,
+and the ring is exactly as wide as the content made it. This rides on the fact
+decision 37 already tracks: the table changes, the radius is recomputed and the
+bake is dropped, one path.
+
+The bookkeeping is the owner's. A `Baked` block carries, beside its cells, a
+small **spill** list of the references reaching outside its own bounds; the frame
+pastes the ring's spill and nothing else of it, which for every block in a stock
+install is empty.
+
+The one thing that must not happen quietly is a person paying for a reach they
+did not intend, so the radius is **logged**: one line saying how many blocks wide
+this table makes the ring. A cost that is visible is a cost somebody can decide
+about; a silent one is how a frame gets slower for a reason nobody can name.
 
 **38.3 The pixel's face is the same slab test.** The projection is orthographic,
 so "which face of the solid is this drawn pixel on" is a ray from the camera
@@ -2513,18 +2529,20 @@ that twice already for smaller changes.
          solids-per-cell printed beside 30.6's old one. And a bench reading:
          one indirection in the hot loop is the thing most likely to cost
          something, and it is measured rather than argued.
-      2. **The spill, and the bound.** Decision 38.2: a `Baked` block gains a
-         spill list, the frame pastes the ring's spill, and an authored solid
-         that reaches further than one tile from its anchor is refused at
-         authoring time with the graphic named. Still no geometry that spills —
-         this is the plumbing arriving before its first user, on purpose, because
-         a missing reference is a hole in a shadow that looks exactly like a
-         detector failing.
+      2. **The spill, and the ring's measured radius.** Decision 38.2: a `Baked`
+         block gains a spill list, the frame pastes the ring's spill, and the
+         ring's width comes from the widest reach in the table rather than from a
+         constant. Still no geometry that spills — this is the plumbing arriving
+         before its first user, on purpose, because a missing reference is a hole
+         in a shadow that looks exactly like a detector failing.
 
-         **DoD:** a synthetic solid, authored to overhang one tile, that occludes
+         **DoD:** a synthetic solid, authored to overhang, that occludes
          correctly when its anchor's block is *outside* the frame's block set —
-         which is the test that fails if the ring is not pasted; the refusal
-         test; and a cost reading showing the empty ring costs a lookup.
+         which is the test that fails if the ring is not pasted, and it wants a
+         second case at two blocks of reach, because a ring that is hardcoded to
+         one passes the first and fails the second. A radius that follows the
+         table rather than a constant; the log line; and a cost reading showing
+         that a radius of zero costs a lookup.
       3. **The table carries a solid.** `arttable` gains a third verdict and a
          `FORMAT` bump to 3, with `facing::DETECTOR` bumped for the reason the
          last bump had: a table written under the old rules describes yesterday's
