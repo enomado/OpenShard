@@ -206,11 +206,14 @@ fn faces(normal: vec3<f32>, toward: vec3<f32>) -> f32 {
 // How many `z` units make one tile — `light::Z_PER_TILE`, and the same
 // derivation: 44 virtual pixels of tile over 4 pixels a unit of height.
 const Z_PER_TILE: f32 = 11.0;
-// How tall a flame is, for the one question that asks: how much of it a floor
-// cuts off. `light::FLAME_DEPTH`, and half a tile is `FLAME_LIFT`'s own number —
-// the only measurement about a flame's *height* rather than about the softness
-// of what it casts sideways.
-const FLAME_DEPTH: f32 = Z_PER_TILE / 2.0;
+// How tall a flame is: `light::FLAME_DEPTH`, a quarter of a tile — the
+// projection draws four screen pixels to one `z` and a torch's drawn flame is
+// eight or ten of them. **It is what turns a softness in tiles into one in `z`,
+// everywhere** — a penumbra is the size of the source across the edge it spills
+// over, and every edge softened vertically here (a wall's top, a hole's sill, a
+// lid's plane) is horizontal, so what blurs it is the flame's height and not its
+// width. `Z_PER_TILE` did that conversion until a house's corner was measured.
+const FLAME_DEPTH: f32 = Z_PER_TILE / 4.0;
 
 // How many cells of the grid one ray may look at.
 //
@@ -878,7 +881,7 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
                     // `facing` refuses a corner graphic, a refused graphic is all four
                     // sides, and all four sides was the one branch still scaled by a
                     // length.
-                    let tall = soft * Z_PER_TILE;
+                    let tall = soft * FLAME_DEPTH;
                     let stops = EDGE_MASK & ~same_run;
                     if (stops & entry) != 0u {
                         by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
@@ -902,7 +905,7 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
                     // any lamp near a wall, one per tile corner, which is exactly what
                     // it looked like — a wall with no hole in it leaking light in
                     // stripes. See `docs/lighting.md`, decision 18.
-                    let tall = soft * Z_PER_TILE;
+                    let tall = soft * FLAME_DEPTH;
                     // Less whatever of this cell is the same run of wall the lit end
                     // stands in — see `own_run` and `same_run`, and the seam it was
                     // drawing.
@@ -951,7 +954,7 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
                 SOFT_CROSSING_MIN,
                 SOFT_CROSSING_MAX,
             );
-            let tall = wide * Z_PER_TILE;
+            let tall = wide * FLAME_DEPTH;
             var corner = 0.0;
             if !(by_x.x == first.x && by_x.y == first.y)
                 && !(skip_last && by_x.x == last.x && by_x.y == last.y) {

@@ -2975,16 +2975,24 @@ Found while making a floor stop light (decision 32):
   named. `scene::storey_over_a_lit_room` burns its flame at sconce height for
   this reason: on the ground it would be fourteen `z` under the boards, far
   enough that any band at all would pass.
-- **What is left above a wall is the flame's assumed size, not a gap.** On the
-  corner tile at `1509,1635` — a faceless graphic, so an `Upright` pixel and a
-  whole-tile body — a sconce three tiles away inside the house reads `through
-  0.00` at every height inside the wall and `0.34` at `z 42`, which is above the
-  wall's top of `40`. The ray clears the top edge by `1.25` `z` and the vertical
-  penumbra there is `soft * Z_PER_TILE` = `0.7 * 11` ≈ **7.7 `z` units** wide, so
-  two thirds of it survives. That is `FLAME_SPREAD` — a flame assumed to be a
-  tile across, and the constant says in its own doc that the number was invented.
-  On that same ray: `1.0` leaves `0.34`, `0.35` leaves `0.18`, `0.1` leaves
-  nothing. It is the softness knob and it wants a picture, not an argument.
+- ~~**What is left above a wall is the flame's assumed size, not a gap.**~~
+  Mostly closed, and by the same category error one function over: a penumbra is
+  the size of the source **across the edge it spills over**, and every edge this
+  pass softens vertically — a wall's top, a hole's sill, a lid's plane — is
+  horizontal, so what blurs it is how tall the flame is. `pierces` was given
+  `soft * Z_PER_TILE`, a flame as tall as it is wide, and a ray passing three
+  quarters of a `z` under the top of a wall kept two fifths of its light.
+  `FLAME_DEPTH` now does that conversion everywhere. On the corner of Britain's
+  house at `1509,1635`, over the wall beside it: `through 0.21 -> 0.00` at the
+  wall's own top and `0.40 -> 0.11` three `z` above it. The lateral softness is
+  untouched and still `FLAME_SPREAD`'s.
+  What is left is `0.11` at that one height — `0.267` against an ambient of
+  `0.251`, six percent — and it is a real penumbra rather than a leak: the flame
+  burns four and a half `z` under the top of a twenty-tall wall, so the top of it
+  genuinely clears the edge. Shrinking `FLAME_DEPTH` to an eighth of a tile would
+  take it to nothing, and that is choosing a constant to make one pixel dark: at
+  a quarter it is what the pictures show, four screen pixels to a `z` and a
+  torch's drawn flame eight or ten of them.
 - ~~**A strip of wall just above the floor line is still lit from the room
   below.**~~ Superseded by the two entries above: measured at the middle of a
   tile, which is not where a face pixel is. The band it reported at `z 40..42`

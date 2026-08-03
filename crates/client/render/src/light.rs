@@ -911,16 +911,33 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
 /// How tall a flame is, in `z` units, for the one question that asks: how much of
 /// it a floor cuts off ([`crosses`]).
 ///
-/// Half a tile, which is [`FLAME_LIFT`]'s own number and for the same reason —
-/// it is the only measurement in this file that is about a flame's *height*
-/// rather than about the softness of what it casts sideways. A flame sits half a
-/// tile above the thing carrying it, and taking it to be about that tall is the
-/// answer that does not invent a second number.
+/// A **quarter of a tile**, and the art is what says so rather than another
+/// constant: the projection draws four screen pixels to one `z`
+/// ([`crate::camera::Z_STEP`]), and the flame a torch graphic actually has drawn
+/// on it is eight or ten pixels tall — two and a half `z`. Half a tile was the
+/// first answer here, taken from [`FLAME_LIFT`] because it was the only number
+/// in the file about a flame's height, and it is twice what the pictures show.
+///
+/// What the difference is worth, on the corner of Britain's house at
+/// `1509,1635`: a ray passing three quarters of a `z` under the top of the wall
+/// beside it keeps `0.31` of its light at half a tile, `0.11` at a quarter and
+/// nothing at an eighth. The middle one is the picture; the third would be
+/// choosing the number to make one pixel dark.
 ///
 /// Scaled by the caller's `spread` so that a point source stays a point: the sun
 /// passes `0.0` and a plane cuts it cleanly, which is what a floor's own shadow
 /// on the ground under it is made of.
-const FLAME_DEPTH: f32 = Z_PER_TILE / 2.0;
+///
+/// **It is what turns a softness in tiles into one in `z`, everywhere.** A
+/// penumbra is the size of the source *across the edge it spills over*, and
+/// every edge this pass softens vertically — a wall's top, a hole's sill, a
+/// lid's plane — is horizontal, so what blurs it is how tall the flame is and
+/// not how wide. [`Z_PER_TILE`] did that conversion until a house's corner was
+/// measured: a ray passing three quarters of a `z` under the top of a wall kept
+/// two fifths of its light, because the band was seven and a half `z` — a flame
+/// as tall as it is wide. The lateral softness is unchanged and still
+/// [`FLAME_SPREAD`]'s; it is the axis that was being asked the wrong question.
+const FLAME_DEPTH: f32 = Z_PER_TILE / 4.0;
 
 /// How far in front of its own plane a **face** pixel is walked from, in tiles.
 ///
@@ -1841,7 +1858,7 @@ fn walk_cells(
                         // sides, and the pierce is what closes the sliver a ray
                         // clipping a corner used to walk through.
                         //
-                        let tall = soft * Z_PER_TILE;
+                        let tall = soft * FLAME_DEPTH;
                         let stops = EDGE_ANY & !same_run;
                         let mut stopped = travelled;
                         for (side, at) in [(entry, entered), (exit, leaves)] {
@@ -1859,7 +1876,7 @@ fn walk_cells(
                     // a ray through the corner between two panels and drew a fan
                     // of spokes out of every lamp near a wall.
                     edges => {
-                        let tall = soft * Z_PER_TILE;
+                        let tall = soft * FLAME_DEPTH;
                         // Less whatever of this cell is the same run of wall the
                         // lit end stands in — see [`own_run`] and `same_run`.
                         let stops = edges & !same_run;
@@ -1917,7 +1934,7 @@ fn walk_cells(
                 spot.z + delta[2] * next,
             ];
             let wide = (spread * next / (1.0 - next).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
-            let tall = wide * Z_PER_TILE;
+            let tall = wide * FLAME_DEPTH;
             let mut corner: f32 = 0.0;
             let mut blamed = None;
             for (at, crossed) in [
