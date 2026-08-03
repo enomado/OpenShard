@@ -36,6 +36,7 @@ pub mod bench;
 pub mod blit;
 pub mod camera;
 pub mod chart;
+pub mod container;
 pub mod control;
 pub mod cutaway;
 pub mod debug;
