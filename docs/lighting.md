@@ -1328,8 +1328,35 @@ rule's business and never was: decision 27 already refuses it, because a flat
 surface looks up and the flame is not on the side it looks at.
 
 `light::crosses` and `blit.wgsl`'s are one formula, held by the parity test.
-Nothing else in the walk moved — a body keeps decision 24's length and its second
-pierce, a panel keeps decision 18's.
+Nothing else in the walk's *rules* moved — a body keeps decision 24's length and
+its second pierce, a panel keeps decision 18's.
+
+**What did move is three exemptions, and the rule stopping light was worth
+nothing until all three did.** Each was invisible from the others, and a scene
+that read one spot four tiles from the flame would have passed with any two of
+them fixed:
+
+- **Neither end's own cell may exempt a lid.** Both exemptions are statements
+  about things that *stand up* — a pixel lies on the panel it is the face of, a
+  billboard's pixels are inside their own tile, a mounted flame burns outside the
+  plane its tile names (decision 26). None of that is true of a horizontal plane.
+  A sconce at `z 36` and the storey's wall at `z 45` are the **same tile** with
+  the floor at `z 40` between them, which is how a real house is built, and both
+  ends were exempting it. It costs nothing where the exemptions earn their keep:
+  a ray only crosses a plane inside its own cell when the other end is nearly
+  straight above or below it.
+- **A vertical ray still has one cell to ask.** "Straight up or down: the only
+  cells on the line are the exempt ones" was true when the exempt cells were
+  exempt in full, and it is the shortcut a torch directly under a plank falls
+  through. The walk now asks that one cell's lids before returning.
+- **An exemption reaches only as high as the surface it is about**
+  (`on_surface`). A tile of a two-storey house carries a wall per storey —
+  `0..20` and `20..40`, two surfaces since step 21.2 — and a pixel at `z 25` lies
+  on the upper one. The lower one is under its feet and occludes it exactly as
+  anybody else's wall would. Exempting it let every ray out of the room below
+  climb the column of its own wall tile, which is the one tile a house's floor
+  never covers. This is decision 28 said with the `z` it never had, and it
+  narrows `own_run` by the same argument.
 
 ## Steps
 
@@ -2779,15 +2806,25 @@ Found while making a floor stop light (decision 32):
   measured from the *cell's* boundary rather than from the surface's silhouette.
   Consistent, and worth remembering the first time a shaft through a floor is
   looked at closely.
-- **Directly beside a flame, a storey up, the floor still passes light.** Measured
-  in `scene::storey_over_a_torch`: one tile from the torch the upper storey reads
-  `0.428` against an ambient of `0.117`, and four tiles away it is the ambient
-  exactly. The cause is the own-cell exemption, which is not negotiable — a ray
-  climbing a storey in one tile of ground crosses the plane inside the lit end's
-  own cell, and that cell is exempt so that a pixel standing on a floor is not
-  shadowed by the floor it stands on. What would close it is admitting the own
-  tile's lid when it is *strictly below* the lit pixel, which is decision 28's
-  `shadowed_by_own_tile` extended to lids — and it is not done because the same
-  admission would put a second-storey wall's **outward** face in shadow from a
-  lamp in the street below, which is worse and more common. Telling those apart
-  needs the pixel's side of the wall, which is a `Face` the lid does not have.
+- ~~**Directly beside a flame, a storey up, the floor still passes light.**~~
+  Closed by the three exemptions decision 32 had to narrow — the entry as first
+  written blamed the own-cell rule alone and proposed the wrong fix. What it
+  actually took: neither end's cell may exempt a **lid**, a vertical ray must
+  still ask the one cell it stands in, and an exemption reaches only as high as
+  the surface it is about (`on_surface`). The whole row of
+  `scene::storey_over_a_torch` is now the ambient to six decimal places, the
+  torch's own tile included.
+- **A strip of wall just above the floor line is still lit from the room below.**
+  What is left, measured on a real house — the tile at `1490,1635` in Britain,
+  a sconce at `z 36.5` on the tile southeast of it: the face reads `through 1.00`
+  at `z 40` and `z 42`, and `0.18` from `z 45` up. The cause is geometry the map
+  really has: **a house's floor covers the room and stops at the wall tile**, so
+  the wall's own square is a column with no plank over it, and a ray from a flame
+  near the wall crosses `z 40` inside that square rather than over a lid. It is
+  a band a few pixels tall against a wall a storey high.
+  What would close it is deciding that a wall tile is floored by its neighbours —
+  a lid grown one tile into any wall tile that touches one at the same `z`. That
+  is a *model* decision and not a bug fix: it invents a plank the map does not
+  have, and the same invention would darken the street under an overhang. Worth
+  putting to a person with the picture in front of them rather than settling
+  here.

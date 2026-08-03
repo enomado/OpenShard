@@ -588,24 +588,26 @@ fn a_torch_does_not_light_the_storey_above_it() {
     let lighting = scene.lighting(STILL);
     let picture = picture(&scene, &lighting);
 
-    let upstairs = at(&lighting, scene::STOREY_SPOT, scene::STOREY_Z);
-    assert!(
-        (upstairs - ambient(&lighting, scene::STOREY_SPOT)).abs() < 1e-6,
-        "the torch lights the room above its own ceiling: {upstairs} against the \
-         ambient's {}{picture}",
-        ambient(&lighting, scene::STOREY_SPOT),
-    );
-
-    // And the upper storey's *wall*, which is what a player actually sees lit:
-    // the ring tile beyond the far end of the room, at the same height.
-    let upper_wall = (CENTRE.0 + scene::ROOM_HALF, CENTRE.1);
-    let face = at(&lighting, upper_wall, scene::STOREY_Z);
-    assert!(
-        (face - ambient(&lighting, upper_wall)).abs() < 1e-6,
-        "the storey's wall is lit through the floor under it: {face} against the \
-         ambient's {}{picture}",
-        ambient(&lighting, upper_wall),
-    );
+    // **Every tile of the row, the torch's own included.** Three separate leaks
+    // lived on this row and each was invisible from the others: the crossing rule
+    // itself, the two ends' exemptions — a sconce and the storey's wall are one
+    // tile with the floor in between, and both ends used to exempt it — and the
+    // walk's shortcut for a ray with no ground run at all, which returned "open"
+    // for the one geometry a floor is most obviously in the way of. A single spot
+    // four tiles off would have passed with any two of the three fixed.
+    //
+    // The last of the row is the upper storey's *wall*, which is what a player
+    // actually sees lit, and the flat pixels beside it are the storey's floor.
+    for x in CENTRE.0 - scene::ROOM_HALF..=CENTRE.0 + scene::ROOM_HALF {
+        let tile = (x, CENTRE.1);
+        let upstairs = at(&lighting, tile, scene::STOREY_Z);
+        assert!(
+            (upstairs - ambient(&lighting, tile)).abs() < 1e-6,
+            "the torch lights {tile:?} above its own ceiling: {upstairs} against \
+             the ambient's {}{picture}",
+            ambient(&lighting, tile),
+        );
+    }
 
     // The same square of the map, below the floor instead of above it: lit. Half
     // a room away from the flame the pool is thinner than the tile-away margin

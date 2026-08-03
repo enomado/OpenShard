@@ -902,6 +902,24 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
     (beyond / (spread * Z_PER_TILE).max(1e-3) + 0.5).clamp(0.0, 1.0)
 }
 
+/// Whether a lit point lies **on** a surface: its `z` is inside the span that
+/// surface occupies, its two edges included.
+///
+/// What the exemptions are asked, one surface at a time. "A surface does not
+/// shadow itself" needs to know which surface a pixel *is* a point of, and a
+/// tile of a two-storey house holds a wall for each storey: `0..20` and
+/// `20..40`, two surfaces, and a pixel at `z 25` is on the second. The first is
+/// under its feet and occludes it exactly as anybody else's wall would.
+///
+/// Inclusive at both ends on purpose: a wall's base is the ground it stands on
+/// and its top is the cap somebody's floor pixel is lying on, and a pixel is a
+/// point of the surface it is drawn from at both.
+///
+/// `blit.wgsl`'s `on_surface`.
+fn on_surface(z: f32, stands: &crate::occlusion::Surface) -> bool {
+    z >= stands.bottom as f32 && z <= stands.top as f32
+}
+
 /// A soft interval: `1.0` well inside `low..=high`, `0.0` well outside, and a
 /// gradient `band` wide across each edge.
 ///
@@ -1512,12 +1530,40 @@ fn walk_cells(
     };
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
-    if ground < 1e-6 {
-        // Straight up or down: the only cells on the line are the exempt ones,
-        // and there is no direction to walk in.
-        return (1.0, None);
-    }
     let first = (from[0].floor() as i32, from[1].floor() as i32);
+    if ground < 1e-6 {
+        // Straight up or down. There is no direction to walk in and there never
+        // was — but "the only cells on the line are the exempt ones", which is
+        // what this used to say, stopped being true at decision 32: **a lid on
+        // that one cell is between the two ends of the ray**, and a vertical ray
+        // is the case a floor is most obviously in the way of. A torch on the
+        // ground floor and the plank directly over it were the shortcut's own
+        // counterexample.
+        //
+        // Only lids, and for the reason both ends exempt everything else: a panel
+        // stands beside a vertical ray rather than across it, and a body is a
+        // solid one of the ends is standing in.
+        let stopped = occlusion
+            .surfaces_at(first.0, first.1)
+            .iter()
+            .filter(|stands| stands.edges == 0)
+            .map(|stands| {
+                f32::from(stands.opacity) / 255.0
+                    * crosses(
+                        from[2],
+                        to[2],
+                        stands.bottom as f32,
+                        stands.top as f32,
+                        to[2],
+                        spread,
+                    )
+            })
+            .fold(0.0, f32::max);
+        return match stopped >= 1.0 - RAY_CUTOFF {
+            true => (0.0, Some(first)),
+            false => (1.0 - stopped, None),
+        };
+    }
     let last = (to[0].floor() as i32, to[1].floor() as i32);
     let mut cell = first;
     // Which side of its own tile the lit end **is the face of** — see [`own_run`],
@@ -1604,7 +1650,23 @@ fn walk_cells(
             false => 0,
             true => surface.shadowed_by_own_tile(sides),
         };
-        if (!own_cell || lit_by_own_tile != 0) && (!skip_last || cell != last) && !stands.is_empty() {
+        // **Neither exemption is about a lid**, and that is decision 32 arriving
+        // at the two ends of the ray. Both of them are statements about things
+        // that *stand up*: a pixel lies on the panel it is the face of, a
+        // billboard's pixels are inside their own tile, and a mounted flame burns
+        // outside the plane its tile names. None of that is true of a horizontal
+        // plane — the floor over a torch's tile really is between it and
+        // everything above, and the floor over a pixel's tile really is between
+        // it and everything below. It is exactly the case a house has: a sconce
+        // at `z 36` and the upper storey's wall at `z 45` are the *same tile*
+        // with the floor at `z 40` in between, and both ends exempted it.
+        //
+        // It costs nothing where it should: a ray only crosses a plane inside its
+        // own cell when the other end is nearly straight above or below, so a
+        // lamp in the street still lights the outward face of the storey over it
+        // — that ray leaves the cell within a fraction of a tile and crosses the
+        // floor somewhere else, or nowhere.
+        if !stands.is_empty() {
             // How soft this cell's own edge is: the penumbra a source of
             // this size casts from this far along the ray. See
             // [`FLAME_SPREAD`]; a `spread` of zero is a point source, and the
@@ -1622,10 +1684,33 @@ fn walk_cells(
             // the merged span used to close it.
             let mut stopped: f32 = 0.0;
             for stands in stands {
-                // On the lit end's own cell only the panels the surface admits are
-                // asked, and never the body: a pixel standing inside a solid is
-                // not shadowed by the solid it stands in.
-                if own_cell && stands.edges & lit_by_own_tile == 0 {
+                // On either end's own cell only a lid is asked — see `lids_only`
+                // above — and on the lit end's, only the panels the surface
+                // admits beside it: a pixel standing inside a solid is not
+                // shadowed by the solid it stands in.
+                //
+                // **And an exemption reaches only as high as the surface it is
+                // about.** A tile of a two-storey house carries a wall for each
+                // storey — `0..20` and `20..40` — and they are two surfaces. A
+                // pixel at `z 25` lies on the upper one; the lower one is under
+                // its feet and is as much an occluder to it as anybody else's
+                // wall. Exempting it let every ray out of the room below climb
+                // the column of its own wall tile, which is the leak that
+                // survived the two above: the floor stops at the wall, so the
+                // storey's wall was the one tile with no plank over the room.
+                // `on_surface` is the whole of the fix, and it is decision 28
+                // said with the `z` it never had.
+                // And which of this cell's sides are the **same run of wall**
+                // the lit end is part of, which is [`own_run`] with the same `z`
+                // test on it: a run is one surface, and the storey below is
+                // another one that happens to be under it.
+                let same_run = match on_surface(spot.z, stands) {
+                    true => own_run(own, cell, first),
+                    false => 0,
+                };
+                let lit_end = own_cell && on_surface(spot.z, stands);
+                let flame_end = skip_last && cell == last && on_surface(to[2], stands);
+                if stands.edges != 0 && ((lit_end && stands.edges & lit_by_own_tile == 0) || flame_end) {
                     continue;
                 }
                 let (low, high) = (stands.bottom as f32, stands.top as f32);
@@ -1671,7 +1756,7 @@ fn walk_cells(
                         // clipping a corner used to walk through.
                         //
                         let tall = soft * Z_PER_TILE;
-                        let stops = EDGE_ANY & !own_run(own, cell, first);
+                        let stops = EDGE_ANY & !same_run;
                         let mut stopped = travelled;
                         for (side, at) in [(entry, entered), (exit, leaves)] {
                             if stops & side != 0 {
@@ -1690,8 +1775,8 @@ fn walk_cells(
                     edges => {
                         let tall = soft * Z_PER_TILE;
                         // Less whatever of this cell is the same run of wall the
-                        // lit end stands in — see [`own_run`].
-                        let stops = edges & !own_run(own, cell, first);
+                        // lit end stands in — see [`own_run`] and `same_run`.
+                        let stops = edges & !same_run;
                         let mut stopped: f32 = 0.0;
                         for (side, at) in [(entry, entered), (exit, leaves)] {
                             if stops & side != 0 {

@@ -325,6 +325,13 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
     return clamp(beyond / max(spread * Z_PER_TILE, 1.0e-3) + 0.5, 0.0, 1.0);
 }
 
+// Whether a lit point lies **on** a surface: its `z` is inside the span that
+// surface occupies, its two edges included. What the exemptions are asked, one
+// surface at a time — see `walk`, and `light::on_surface`.
+fn on_surface(z: f32, stands: vec4<u32>) -> bool {
+    return z >= f32(stands.x) - 128.0 && z <= f32(stands.y) - 128.0;
+}
+
 // A soft interval: 1 well inside `low..=high`, 0 well outside, and a gradient
 // `band` wide across each edge.
 //
@@ -593,13 +600,37 @@ fn opposite(side: u32) -> u32 {
 fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, spread: f32) -> f32 {
     let delta = finish - start;
     let ground = length(delta.xy);
-    if ground < 1.0e-6 {
-        // Straight up or down: the only cells on the line are the exempt ones,
-        // and there is no direction to walk in.
-        return 1.0;
-    }
     let lit = start;
     let first = vec2<i32>(i32(floor(start.x)), i32(floor(start.y)));
+    if ground < 1.0e-6 {
+        // Straight up or down. There is no direction to walk in and there never
+        // was — but "the only cells on the line are the exempt ones", which is
+        // what this used to say, stopped being true at decision 32: a **lid** on
+        // that one cell is between the two ends of the ray, and a vertical ray is
+        // the case a floor is most obviously in the way of. A torch on the ground
+        // floor and the plank directly over it were the shortcut's own
+        // counterexample. Only lids, for the reason both ends exempt everything
+        // else: a panel stands beside a vertical ray rather than across it, and a
+        // body is a solid one of the ends is standing in. `light::walk_cells`.
+        let straight = surfaces_at(first.x, first.y);
+        var stopped = 0.0;
+        for (var i = 0u; i < straight.y; i = i + 1u) {
+            let stands = surface_at(straight.x + i);
+            if (stands.w & EDGE_MASK) != 0u {
+                continue;
+            }
+            let stops = f32(stands.z) / 255.0 * crosses(
+                start.z,
+                finish.z,
+                f32(stands.x) - 128.0,
+                f32(stands.y) - 128.0,
+                finish.z,
+                spread,
+            );
+            stopped = max(stopped, stops);
+        }
+        return max(0.0, 1.0 - stopped);
+    }
     let last = vec2<i32>(i32(floor(finish.x)), i32(floor(finish.y)));
     var cell = first;
     // Which side of its own tile the lit end **is the face of**. What it is for
@@ -682,15 +713,21 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
         // And the flame's end (`skip_last`) is a whole tile, because a mounted
         // flame now burns outside the plane its tile names (`light::mounted_at`)
         // and what is left on that tile is not between it and anything.
+        //
+        // **Neither exemption is about a lid**, which is decision 32 at the two
+        // ends of the ray: both of them are statements about things that stand
+        // up, and a floor over a torch's tile really is between it and everything
+        // above. A sconce at `z 36` and the storey's wall at `z 45` are one tile
+        // with a floor at `z 40` in between, and both ends used to exempt it. See
+        // `light::walk_cells`, and `lids_only` there.
         let own_shadows = own_cell && stance == STANCE_FLAT && sides != 0u && sides != EDGE_MASK;
-        let exempt = (own_cell && !own_shadows)
-            || (skip_last && cell.x == last.x && cell.y == last.y);
+        let flame_cell = skip_last && cell.x == last.x && cell.y == last.y;
         // Which of this tile's sides may shadow the pixel that is on it: all of
         // them where the pixel is a floor on a walled tile, and none anywhere
         // else. A lid's zero never matches, which is the exemption above said a
         // surface at a time.
         let admitted = select(0u, sides, own_shadows);
-        if !exempt && span.y != 0u {
+        if span.y != 0u {
             // How soft this cell's own edge is: the penumbra a source of this
             // size casts from this far along the ray. See `FLAME_SPREAD`; a
             // `spread` of zero is a point source, and the clamp below leaves it
@@ -712,10 +749,27 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
             for (var i = 0u; i < span.y; i = i + 1u) {
                 let stands = surface_at(span.x + i);
                 let sides = stands.w & EDGE_MASK;
-                // On the lit end's own cell only the panels the pixel admits are
-                // asked, and never the body: a pixel standing inside a solid is not
-                // shadowed by the solid it stands in.
-                if own_cell && (sides & admitted) == 0u {
+                // On either end's own cell only a lid is asked, and on the lit
+                // end's, only the panels the pixel admits beside it: a pixel
+                // standing inside a solid is not shadowed by the solid it stands
+                // in.
+                //
+                // **And an exemption reaches only as high as the surface it is
+                // about.** A tile of a two-storey house carries a wall for each
+                // storey — `0..20` and `20..40`, two surfaces — and a pixel at
+                // `z 25` is on the upper one. The lower one is under its feet and
+                // occludes it exactly as anybody else's wall would; exempting it
+                // let every ray out of the room below climb the column of its own
+                // wall tile, which is the one tile a house's floor never covers.
+                // `on_surface`, and `light::walk_cells`.
+                // And which of this cell's sides are the **same run of wall** the
+                // lit end is part of, which is `own_run` with the same `z` test on
+                // it: a run is one surface, and the storey below is another one
+                // that happens to be under it.
+                let same_run = select(0u, own_run(own, cell, first), on_surface(lit.z, stands));
+                let lit_end = own_cell && on_surface(lit.z, stands);
+                let flame_end = flame_cell && on_surface(finish.z, stands);
+                if sides != 0u && ((lit_end && (sides & admitted) == 0u) || flame_end) {
                     continue;
                 }
                 let low = f32(stands.x) - 128.0;
@@ -785,7 +839,7 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
                     // sides, and all four sides was the one branch still scaled by a
                     // length.
                     let tall = soft * Z_PER_TILE;
-                    let stops = EDGE_MASK & ~own_run(own, cell, first);
+                    let stops = EDGE_MASK & ~same_run;
                     if (stops & entry) != 0u {
                         by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
                     }
@@ -810,8 +864,9 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
                     // stripes. See `docs/lighting.md`, decision 18.
                     let tall = soft * Z_PER_TILE;
                     // Less whatever of this cell is the same run of wall the lit end
-                    // stands in — see `own_run`, and the seam it was drawing.
-                    let stops = sides & ~own_run(own, cell, first);
+                    // stands in — see `own_run` and `same_run`, and the seam it was
+                    // drawing.
+                    let stops = sides & ~same_run;
                     if (stops & entry) != 0u {
                         by_surface = max(by_surface, opacity * pierced(stands, span.x + i, lit + delta * entered, soft, tall));
                     }
