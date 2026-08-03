@@ -619,6 +619,49 @@ fn a_torch_does_not_light_the_storey_above_it() {
     );
 }
 
+/// And light comes up through a **hole** in that floor.
+///
+/// The other half of decision 32, and the half that says the rule reads the grid
+/// rather than covering the world: a lid that stopped everything everywhere would
+/// pass [`a_torch_does_not_light_the_storey_above_it`] and be wrong in a way no
+/// shut room could show. One plank is taken out of the same house —
+/// [`scene::hole_in_a_floor`] differs from it by one item — and what appears
+/// above is a patch, not a glow: the cell the ray crosses the plane in is the one
+/// that decides, so the tiles either side of the gap stay at the ambient exactly.
+///
+/// It lands **beyond** the hole rather than over it, which is geometry and not a
+/// tolerance: from a spot directly above a gap the flame is three tiles off to
+/// the side, so that line of sight passes under the planks of the tile between
+/// them. The patch is where the ray from the flame comes up, and that is a tile
+/// further on.
+#[test]
+fn a_hole_in_a_floor_lets_the_light_through() {
+    let scene = scene::hole_in_a_floor();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+
+    let through = at(&lighting, scene::STOREY_SPOT, scene::STOREY_Z);
+    assert!(
+        through > ambient(&lighting, scene::STOREY_SPOT) + 0.04,
+        "nothing comes up through the hole: {through} against the ambient's \
+         {}{picture}",
+        ambient(&lighting, scene::STOREY_SPOT),
+    );
+
+    // Either side of the gap, at the same height: the planks are still there and
+    // the storey above them is not lit. Without this the assertion above would
+    // pass for a rule that had stopped reading the grid at all.
+    for tile in [scene::FLOOR_HOLE, (CENTRE.0, CENTRE.1)] {
+        let beside = at(&lighting, tile, scene::STOREY_Z);
+        assert!(
+            (beside - ambient(&lighting, tile)).abs() < 1e-6,
+            "the floor leaks at {tile:?}, a tile away from the hole: {beside} \
+             against the ambient's {}{picture}",
+            ambient(&lighting, tile),
+        );
+    }
+}
+
 /// A ray does **not** slip between two walls that touch only at their corners.
 ///
 /// This test used to pin the opposite, and the leak it pinned was real: the walk

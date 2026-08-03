@@ -796,8 +796,39 @@ pub const STOREY_Z: f32 = WALL_HEIGHT as f32 + 5.0;
 /// of the upper storey is an ordinary wall which happens to stand above a lid,
 /// and that nothing about *it* is what should keep the light out.
 pub fn storey_over_a_torch() -> Scene {
+    floored("a torch on the ground floor of a two-storey house", None)
+}
+
+/// The tile of that house's floor which [`hole_in_a_floor`] takes away.
+///
+/// Where it is, is the whole of what makes that scene say anything: a ray from
+/// [`STOREY_SPOT`] to the flame crosses the plane about **one tile** along —
+/// `(STOREY_Z - WALL_HEIGHT)` of the `z` it has to fall, over the four tiles it
+/// has to run — so this is the cell the crossing lands in, and the cells either
+/// side of it are the control.
+pub const FLOOR_HOLE: (u16, u16) = (CENTRE.0 + 1, CENTRE.1);
+
+/// The same house with **one plank missing**.
+///
+/// [`storey_over_a_torch`] with a single item removed, which is the discipline
+/// every pair of scenes here is built to: the difference in the picture is the
+/// difference in the world, and a leak that appeared without the hole would be
+/// some other defect.
+///
+/// What it is for is the other half of decision 32. A rule that stops light at a
+/// floor is only worth having if it stops it **where the floor is** — a lid that
+/// covered the world would pass the shut scene and be indistinguishable from one
+/// that read the grid. So: through the gap the storey above is lit, and on either
+/// side of it, at the same height, it is the ambient exactly.
+pub fn hole_in_a_floor() -> Scene {
+    floored("a two-storey house with a plank missing", Some(FLOOR_HOLE))
+}
+
+/// Both of those houses: the ring, a storey of ring on top of it, planks between
+/// the walls except at `hole`, and the torch on the ground floor.
+fn floored(name: &'static str, hole: Option<(u16, u16)>) -> Scene {
     let (cx, cy) = CENTRE;
-    let mut scene = empty("a torch on the ground floor of a two-storey house");
+    let mut scene = empty(name);
     for tile in room_wall_tiles() {
         scene = scene.with(tile, WALL).with_at(tile, WALL_HEIGHT as i8, WALL);
     }
@@ -808,7 +839,9 @@ pub fn storey_over_a_torch() -> Scene {
     // a lid that happened to be on the same tile.
     for x in cx - ROOM_HALF + 1..=cx + ROOM_HALF - 1 {
         for y in cy - ROOM_HALF + 1..=cy + ROOM_HALF - 1 {
-            scene = scene.with_at((x, y), WALL_HEIGHT as i8, FLOOR);
+            if hole != Some((x, y)) {
+                scene = scene.with_at((x, y), WALL_HEIGHT as i8, FLOOR);
+            }
         }
     }
     scene.with(STOREY_TORCH, TORCH)
@@ -961,6 +994,7 @@ pub fn all() -> Vec<Scene> {
         lantern_in_a_room(),
         cellar_under_street(),
         storey_over_a_torch(),
+        hole_in_a_floor(),
         diagonal_gap(),
         wall_in_the_sun(),
         sunlit_room_with_window(),

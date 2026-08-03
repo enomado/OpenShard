@@ -2727,3 +2727,32 @@ Found while measuring a window off its own art:
   walk's own agreement between shader and Rust, and it is comfortably finer than
   this measurement needs. Nothing to do; the asymmetry between the two axes is
   worth not being surprised by.
+
+Found while making a floor stop light (decision 32):
+
+- **A lid is a plane per *tile*, and it has no sub-tile hole.** A gap in a floor
+  is a tile with no plank on it — `scene::hole_in_a_floor` — and that is what a
+  house's floors are made of, so it is enough for what a house does. An
+  `occlusion::Aperture` is still refused to a lid on purpose (step 21.3): a hole
+  is a rectangle in a plane, and the run coordinate a rectangle would be stated
+  along is a *vertical* panel's. A trapdoor would want one, and reading it would
+  want a silhouette measured from above, which no art in the install is.
+- **The edge of a floor is a hard step at the tile boundary.** The crossing test
+  is per cell and a lid fills its cell, so nothing softens where the planks stop.
+  It is the same shape decision 18 left the walls in — the surviving penumbra is
+  vertical, and the lateral one was removed because a cell-local softening is
+  measured from the *cell's* boundary rather than from the surface's silhouette.
+  Consistent, and worth remembering the first time a shaft through a floor is
+  looked at closely.
+- **Directly beside a flame, a storey up, the floor still passes light.** Measured
+  in `scene::storey_over_a_torch`: one tile from the torch the upper storey reads
+  `0.428` against an ambient of `0.117`, and four tiles away it is the ambient
+  exactly. The cause is the own-cell exemption, which is not negotiable — a ray
+  climbing a storey in one tile of ground crosses the plane inside the lit end's
+  own cell, and that cell is exempt so that a pixel standing on a floor is not
+  shadowed by the floor it stands on. What would close it is admitting the own
+  tile's lid when it is *strictly below* the lit pixel, which is decision 28's
+  `shadowed_by_own_tile` extended to lids — and it is not done because the same
+  admission would put a second-storey wall's **outward** face in shadow from a
+  lamp in the street below, which is worse and more common. Telling those apart
+  needs the pixel's side of the wall, which is a `Face` the lid does not have.
