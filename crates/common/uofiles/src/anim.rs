@@ -234,6 +234,32 @@ pub const fn is_ghost(body: u16) -> bool {
     matches!(body, 0x0192 | 0x0193)
 }
 
+/// Whether a body is a female one.
+///
+/// `Mobile.CheckGraphicChange` in the reference client, which is the *only*
+/// place a client decides this: nothing on the wire says a mobile's sex — not
+/// `0x78`, not `0x88` — and what the drawing needs it for is which of two
+/// pictures to reach for. Four ids, the female half of each playable race and
+/// the female ghost among them, because a ghost's paperdoll is still hers.
+///
+/// Here rather than in the renderer that asks, for [`is_ghost`]'s reason: it is
+/// a fact about the client's body ids, and a body id table written down twice
+/// is a body id table that disagrees with itself.
+pub const fn is_female(body: u16) -> bool {
+    matches!(body, 0x0191 | 0x0193 | 0x025E | 0x029B)
+}
+
+/// Whether a body is a gargoyle one, living or dead.
+///
+/// Asked by exactly one thing — the paperdoll's layer ordering, which puts a
+/// gargoyle's torso where a female body's goes
+/// (`PaperDollInteractable.IsGargoyleBody`) — and it is the four ids rather
+/// than the two, because `0x02B6`/`0x02B7` are the dead pair of `0x029A`/
+/// `0x029B` and a corpse is drawn on a paperdoll like anything else.
+pub const fn is_gargoyle(body: u16) -> bool {
+    matches!(body, 0x029A | 0x029B | 0x02B6 | 0x02B7)
+}
+
 pub const fn animation_body(body: u16) -> u16 {
     match body {
         // The ghosts, drawn from the living body of the same sex.

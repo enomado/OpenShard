@@ -53,6 +53,7 @@ pub mod light;
 pub mod mobiles;
 pub mod occlusion;
 pub mod outline;
+pub mod paperdoll;
 pub mod place;
 pub mod renderer;
 pub mod scene;

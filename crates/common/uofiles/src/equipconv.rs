@@ -20,8 +20,9 @@
 //! no record count to divide the file by — the same def-file shape as
 //! `Body.def`/`Bodyconv.def`, neither of which this crate has needed yet.
 //! Five columns per entry: `body`, the item's `AnimID`, the `AnimID` to draw
-//! instead, a gump graphic (paperdoll icon, not read here — nothing in this
-//! engine draws a paperdoll off this table yet), and a hue that applies only
+//! instead, the *paperdoll* picture to draw instead
+//! ([`EquipConvEntry::gump`] — a second override into a second index space,
+//! read by `openshard_client_render::paperdoll`), and a hue that applies only
 //! when the wire hue is `0`.
 //!
 //! Not read here either: `mobtypes.txt`, which the reference client uses to
@@ -41,6 +42,21 @@ use openshard_protocol::wire::{Graphic, Hue};
 pub struct EquipConvEntry {
     /// The body-animation-space graphic to draw in place of the item's own.
     pub graphic: Graphic,
+    /// The *paperdoll* picture, which is a different index space again and a
+    /// different override: [`graphic`](Self::graphic) answers "what does this
+    /// draw as on a walking body", this answers "what does it draw as on a
+    /// paperdoll", and the two are read out of `anim.mul` and `gumpart` and
+    /// have no reason to agree.
+    ///
+    /// Never zero, and never "no override" — the file's two shorthands are
+    /// resolved on the way in, exactly as `ProcessEquipConvDef` does: a `0`
+    /// column means the item's *own* `AnimID` and a `0xFFFF` (or `-1`) column
+    /// means [`graphic`](Self::graphic). What is left is a number in one of two
+    /// spaces: a bare `AnimID`, or a gump id already offset by 50000/60000.
+    /// Telling those apart is
+    /// `openshard_client_render::paperdoll::gump_of`'s job, because it is the
+    /// same function that applies the offset — see its port of `GetAnimID`.
+    pub gump: Graphic,
     /// Applied only where the item's own wire hue is [`Hue::NONE`] — the same
     /// rule a static's tiledata-driven hue follows.
     pub color: Hue,
@@ -107,7 +123,7 @@ impl EquipConv {
                 None => line,
             };
             let mut columns = line.split_whitespace();
-            let (Some(body), Some(graphic), Some(new_graphic), Some(_gump), Some(color)) = (
+            let (Some(body), Some(graphic), Some(new_graphic), Some(gump), Some(color)) = (
                 columns.next(),
                 columns.next(),
                 columns.next(),
@@ -116,18 +132,33 @@ impl EquipConv {
             ) else {
                 continue;
             };
-            let (Ok(body), Ok(graphic), Ok(new_graphic), Ok(color)) = (
+            let (Ok(body), Ok(graphic), Ok(new_graphic), Ok(gump), Ok(color)) = (
                 body.parse::<u16>(),
                 graphic.parse::<u16>(),
                 new_graphic.parse::<u16>(),
+                // Signed and wide, because the column's two shorthands are
+                // written as `0` and `-1` and one real value is `0xFFFF`. The
+                // narrowing happens below, after they have been resolved.
+                gump.parse::<i64>(),
                 color.parse::<u16>(),
             ) else {
                 continue;
+            };
+            // `ProcessEquipConvDef`, in the same order: a gump id too wide to
+            // be one takes its whole row with it — the entry would be a lookup
+            // that can never be satisfied — and the two shorthands stand for
+            // the two graphics the row already carries.
+            let gump = match gump {
+                0 => graphic,
+                -1 | 0xFFFF => new_graphic,
+                value if (0..=i64::from(u16::MAX)).contains(&value) => value as u16,
+                _ => continue,
             };
             entries.insert(
                 (body, graphic),
                 EquipConvEntry {
                     graphic: Graphic(new_graphic),
+                    gump: Graphic(gump),
                     color: Hue(color),
                 },
             );
@@ -164,6 +195,38 @@ mod tests {
         let entry = table.resolve(400, 7017).expect("the pair above should resolve");
         assert_eq!(entry.graphic, Graphic(7005));
         assert_eq!(entry.color, Hue(0));
+    }
+
+    /// The gump column's two shorthands, which the reader resolves rather than
+    /// passing on: `0` is "the item's own `AnimID`" and `-1`/`0xFFFF` is "the
+    /// animation override". A reader that stored them raw would hand a
+    /// paperdoll a zero to draw, and zero is a real gump.
+    #[test]
+    fn a_zero_gump_column_means_the_items_own_graphic() {
+        let table = EquipConv::parse("400\t7017\t7005\t0\t0\n400\t7018\t7006\t-1\t0\n");
+        assert_eq!(table.resolve(400, 7017).unwrap().gump, Graphic(7017));
+        assert_eq!(table.resolve(400, 7018).unwrap().gump, Graphic(7006));
+    }
+
+    /// A gump id that does not fit the index space takes its row with it: the
+    /// entry could only ever resolve to a picture the client cannot hold.
+    #[test]
+    fn a_gump_column_too_wide_to_be_a_gump_skips_the_row() {
+        let table = EquipConv::parse("400\t7017\t7005\t70000\t0\n");
+        assert!(table.is_empty());
+    }
+
+    /// The fourth column is the paperdoll's, and it is a *different* override
+    /// from the third: a row may send the animation one way and the paperdoll
+    /// another. Both numbers are carried whole — the file writes this one
+    /// either as a bare `AnimID` or already offset into gump space, and which
+    /// of the two it is, is the reader's business and not this one's.
+    #[test]
+    fn the_fourth_column_is_a_paperdoll_override_of_its_own() {
+        let table = EquipConv::parse("605\t9\t11\t50000\t0\n");
+        let entry = table.resolve(605, 9).expect("the pair above should resolve");
+        assert_eq!(entry.graphic, Graphic(11), "the animation goes one way");
+        assert_eq!(entry.gump, Graphic(50000), "the paperdoll another");
     }
 
     #[test]

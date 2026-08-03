@@ -198,6 +198,28 @@ impl Gumps {
         };
         decode_entry(graphic, &raw)
     }
+
+    /// Whether the client ships a picture for this graphic at all, without
+    /// decoding one.
+    ///
+    /// The question a paperdoll asks before it asks for the picture: a worn
+    /// item's gump is its `AnimID` plus a male or a female offset, and the
+    /// female half of the file is *sparse* — the reference falls back to the
+    /// male picture when the female one is missing rather than drawing nothing
+    /// (`PaperDollInteractable.IsAnimExistsInGump`). Answering that with
+    /// [`Gumps::gump`] would inflate and decode a whole image to throw it away,
+    /// twice per worn layer.
+    ///
+    /// A container entry that exists but decodes to nothing still answers
+    /// `true` here: that is the client's own 0x0 shape, and the caller that
+    /// packs it will find out. The distinction the fallback needs is "the
+    /// client has no such gump", which is a missing entry.
+    pub fn has(&self, graphic: Graphic) -> Result<bool, GumpError> {
+        Ok(self
+            .container
+            .raw_entry(&Self::entry_name(graphic.0 as usize))?
+            .is_some())
+    }
 }
 
 /// Undo whichever of the two passes `raw.compression` says were applied, then
