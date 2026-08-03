@@ -3920,7 +3920,11 @@ impl App {
                 .unwrap_or_default();
             let mut pictures = Vec::new();
             for gump in open {
-                if let Err(error) = self.gump_atlas.add(files, gump_art::art_of(&gump.elements)) {
+                let art_files = gump_art::ArtFiles {
+                    gumps: files,
+                    items: &self.art,
+                };
+                if let Err(error) = self.gump_atlas.add(art_files, gump_art::art_of(&gump.elements)) {
                     // Said once per window and then drawn without whatever is
                     // missing: a dialog with a hole in it is still a dialog the
                     // player can read, and a client that refused to draw one

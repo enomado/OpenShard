@@ -10,7 +10,7 @@
 //! under test is placement and scaling, and a solid block proves those where a
 //! real gump would only make a failure harder to read.
 
-use openshard_client_render::gump::{self, Frame, GumpAtlas, GumpPixel, GumpRenderer, Picture};
+use openshard_client_render::gump::{self, Frame, GumpArt, GumpAtlas, GumpPixel, GumpRenderer, Picture};
 use openshard_client_render::hue::HueRamp;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::color::Color16;
@@ -171,8 +171,15 @@ fn render(
 
 fn atlas_of(pictures: impl IntoIterator<Item = (Graphic, Image)>) -> GumpAtlas {
     // Through the same shelf packer the real one uses, with the pictures handed
-    // in directly instead of decoded out of a client's container.
-    GumpAtlas::pack(pictures).expect("small blocks fit an atlas 2048 on a side")
+    // in directly instead of decoded out of a client's container. Gump art, not
+    // item art: every picture in here stands for something out of
+    // `gumpartLegacyMUL.uop`.
+    GumpAtlas::pack(
+        pictures
+            .into_iter()
+            .map(|(graphic, image)| (GumpArt::Gump(graphic), image)),
+    )
+    .expect("small blocks fit an atlas 2048 on a side")
 }
 
 /// One picture, at one scale: the rectangle it covers is its own, at the
@@ -188,7 +195,7 @@ fn a_picture_covers_exactly_its_own_rectangle() {
         &device,
         &queue,
         &atlas,
-        &[Picture::plain(Graphic(1), GumpPixel::new(10, 6))],
+        &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(10, 6))],
         64,
         64,
         1.0,
@@ -215,7 +222,7 @@ fn the_scale_moves_a_picture_as_far_as_it_grows_it() {
         &device,
         &queue,
         &atlas,
-        &[Picture::plain(Graphic(1), GumpPixel::new(10, 6))],
+        &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(10, 6))],
         64,
         64,
         2.0,
@@ -242,7 +249,7 @@ fn a_tiled_strip_fills_its_box_to_the_pixel() {
         &device,
         &queue,
         &atlas,
-        &[Picture::plain(Graphic(1), GumpPixel::new(4, 4)).tiled(20, 7)],
+        &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(4, 4)).tiled(20, 7)],
         64,
         64,
         1.0,
@@ -271,8 +278,8 @@ fn a_later_picture_covers_an_earlier_one() {
         &queue,
         &atlas,
         &[
-            Picture::plain(Graphic(1), GumpPixel::new(4, 4)),
-            Picture::plain(Graphic(2), GumpPixel::new(4, 4)),
+            Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(4, 4)),
+            Picture::plain(GumpArt::Gump(Graphic(2)), GumpPixel::new(4, 4)),
         ],
         64,
         64,

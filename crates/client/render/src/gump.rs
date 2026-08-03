@@ -37,12 +37,13 @@
 //! widgets in points and a bitmap cannot be reinterpreted into them. See
 //! `client/app/src/gump.rs` for the decision this replaces.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use openshard_protocol::gump::layout::Element;
 use openshard_protocol::gump::{RawButtonId, RawSwitchId};
 use openshard_protocol::wire::{Graphic, Hue};
+use openshard_uofiles::art::{Art, ArtError};
 use openshard_uofiles::gumpart::{GumpError, Gumps};
 use openshard_uofiles::image::Image;
 
@@ -87,12 +88,47 @@ impl GumpPixel {
     }
 }
 
+/// Which of the client's two art files a picture in a window comes out of.
+///
+/// A window is not built from one file. Its frame, its buttons and its
+/// background are `gumpartLegacyMUL.uop`; the *things in it* are the world's own
+/// statics — the icons in a container, and what a `{ tilepic }` names — and
+/// those live in `art.mul` beside the ground.
+///
+/// The two are separate 16-bit index spaces and they **overlap numerically**:
+/// `0x003C` is a chest's gump and also an item's graphic. So an atlas holding
+/// both cannot be keyed by a bare [`Graphic`] — one of the two pictures would
+/// silently answer for the other, and the failure would be a window drawn with
+/// the wrong picture rather than an error. This is the key that says which.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum GumpArt {
+    /// A picture from `gumpartLegacyMUL.uop`.
+    Gump(Graphic),
+    /// A static from `art.mul` — an item's icon.
+    Item(Graphic),
+}
+
+/// The two files a window's pictures are read from.
+///
+/// Together rather than one at a time because a single window needs both: a
+/// container is a gump background with statics laid on it, and an atlas asked to
+/// grow for one window has to be able to reach either file.
+#[derive(Clone, Copy, Debug)]
+pub struct ArtFiles<'a> {
+    /// `gumpartLegacyMUL.uop`.
+    pub gumps: &'a Gumps,
+    /// `art.mul` — the same reader the world's statics come out of.
+    pub items: &'a Art,
+}
+
 /// Gump art could not be read or could not be packed.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum GumpAtlasError {
     /// The client's gump container refused a picture.
     Art(GumpError),
+    /// The client's static art refused a picture.
+    Item(ArtError),
     /// The atlas had no room for it, or it is bigger than the whole atlas.
     Atlas(AtlasError),
 }
@@ -101,6 +137,7 @@ impl fmt::Display for GumpAtlasError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Art(source) => write!(f, "{source}"),
+            Self::Item(source) => write!(f, "{source}"),
             Self::Atlas(source) => write!(f, "{source}"),
         }
     }
@@ -110,6 +147,7 @@ impl std::error::Error for GumpAtlasError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Art(source) => Some(source),
+            Self::Item(source) => Some(source),
             Self::Atlas(source) => Some(source),
         }
     }
@@ -118,6 +156,12 @@ impl std::error::Error for GumpAtlasError {
 impl From<GumpError> for GumpAtlasError {
     fn from(source: GumpError) -> Self {
         Self::Art(source)
+    }
+}
+
+impl From<ArtError> for GumpAtlasError {
+    fn from(source: ArtError) -> Self {
+        Self::Item(source)
     }
 }
 
@@ -144,14 +188,23 @@ impl From<AtlasError> for GumpAtlasError {
 #[derive(Debug)]
 pub struct GumpAtlas {
     packed: StaticAtlas,
-    /// Every graphic ever offered, whether or not the client ships art for it.
+    /// Every picture ever offered, whether or not the client ships art for it,
+    /// and the slot the packer under this knows it by.
     ///
-    /// The same guard [`StaticAtlas`] keeps for the same reason: a gump the
-    /// client has no picture for is never packed, so without this the atlas
-    /// would try to decode it again on every frame it is asked for — and
-    /// decoding a gump is a zlib inflate and a second pass over the result, not
-    /// a lookup.
-    asked: BTreeSet<Graphic>,
+    /// Two jobs in one map. The first is the guard [`StaticAtlas`] keeps for the
+    /// same reason: a gump the client has no picture for is never packed, so
+    /// without this the atlas would try to decode it again on every frame it is
+    /// asked for — and decoding a gump is a zlib inflate and a second pass over
+    /// the result, not a lookup.
+    ///
+    /// The second is the reason the value is not `()`. The packer is keyed by a
+    /// [`Graphic`] and this atlas holds two index spaces that collide (see
+    /// [`GumpArt`]), so what goes down to it is a **slot this atlas handed out**
+    /// — a number with no meaning outside these two fields, which is why it
+    /// never leaves them.
+    slots: BTreeMap<GumpArt, Graphic>,
+    /// The next slot to hand out.
+    next_slot: u16,
 }
 
 impl GumpAtlas {
@@ -160,65 +213,114 @@ impl GumpAtlas {
         Self {
             packed: StaticAtlas::pack(std::iter::empty())
                 .expect("packing no pictures cannot overflow an atlas"),
-            asked: BTreeSet::new(),
+            slots: BTreeMap::new(),
+            next_slot: 0,
         }
+    }
+
+    /// The slot for a picture, handing out a fresh one if it has none.
+    ///
+    /// `None` when this atlas has already handed out all 65,536 — which no real
+    /// client reaches (`gumpartLegacyMUL.uop` is 5,556 entries and the statics a
+    /// window ever shows are in the hundreds) and which is a full atlas long
+    /// before it is a full slot space, since the texture is 2048 on a side.
+    fn slot(&mut self, art: GumpArt) -> Option<Graphic> {
+        if let Some(slot) = self.slots.get(&art) {
+            return Some(*slot);
+        }
+        let slot = Graphic(self.next_slot);
+        self.next_slot = self.next_slot.checked_add(1)?;
+        self.slots.insert(art, slot);
+        Some(slot)
     }
 
     /// Pack pictures somebody else decoded.
     ///
-    /// What a test uses, and the seam a paperdoll's own art will come through:
-    /// not every picture a gump window is built from lives in
-    /// `gumpartLegacyMUL.uop` — an item's paperdoll layer is one of them — and
-    /// this is where anything that has been turned into an [`Image`] joins the
-    /// same atlas.
-    pub fn pack(pictures: impl IntoIterator<Item = (Graphic, Image)>) -> Result<Self, GumpAtlasError> {
+    /// What a test uses, and the seam a paperdoll's own art comes through: not
+    /// every picture a gump window is built from lives in either file this
+    /// module reads — an item's paperdoll layer is one of them — and this is
+    /// where anything that has been turned into an [`Image`] joins the same
+    /// atlas.
+    pub fn pack(pictures: impl IntoIterator<Item = (GumpArt, Image)>) -> Result<Self, GumpAtlasError> {
         let mut atlas = Self::empty();
-        let pictures: Vec<(Graphic, Image)> = pictures.into_iter().collect();
-        atlas.asked.extend(pictures.iter().map(|(graphic, _)| *graphic));
-        atlas.packed.pack_more(pictures)?;
+        let mut slotted = Vec::new();
+        for (art, image) in pictures {
+            let Some(slot) = atlas.slot(art) else {
+                return Err(GumpAtlasError::Atlas(AtlasError::Full {
+                    wanted: usize::from(u16::MAX) + 2,
+                    capacity: usize::from(u16::MAX) + 1,
+                }));
+            };
+            slotted.push((slot, image));
+        }
+        atlas.packed.pack_more(slotted)?;
         Ok(atlas)
     }
 
-    /// Pack every graphic in `wanted` that the client actually ships.
-    pub fn build(gumps: &Gumps, wanted: impl IntoIterator<Item = Graphic>) -> Result<Self, GumpAtlasError> {
+    /// Pack every picture in `wanted` that the client actually ships.
+    pub fn build(
+        files: ArtFiles<'_>,
+        wanted: impl IntoIterator<Item = GumpArt>,
+    ) -> Result<Self, GumpAtlasError> {
         let mut atlas = Self::empty();
-        atlas.add(gumps, wanted)?;
+        atlas.add(files, wanted)?;
         atlas.take_dirty();
         Ok(atlas)
     }
 
     /// Pack whichever of `wanted` this atlas has not been offered before.
     ///
-    /// A graphic with no art is skipped rather than refused: a layout naming a
-    /// gump the client has no picture for is the shard's business, and dropping
-    /// the window would be a worse answer than drawing the rest of it.
+    /// A picture the client ships no art for is skipped rather than refused: a
+    /// layout naming a gump the client has no picture for is the shard's
+    /// business, and dropping the window would be a worse answer than drawing
+    /// the rest of it. The same goes for an item graphic with no static — a
+    /// container holding one draws the bag and an empty space in it.
     pub fn add(
         &mut self,
-        gumps: &Gumps,
-        wanted: impl IntoIterator<Item = Graphic>,
+        files: ArtFiles<'_>,
+        wanted: impl IntoIterator<Item = GumpArt>,
     ) -> Result<(), GumpAtlasError> {
-        let fresh: Vec<Graphic> = wanted
+        let fresh: Vec<GumpArt> = wanted
             .into_iter()
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .filter(|graphic| !self.asked.contains(graphic))
+            .filter(|art| !self.slots.contains_key(art))
             .collect();
         if fresh.is_empty() {
             return Ok(());
         }
         let mut images: Vec<(Graphic, Image)> = Vec::with_capacity(fresh.len());
-        for graphic in &fresh {
+        for art in &fresh {
+            let decoded = match art {
+                GumpArt::Gump(graphic) => files.gumps.gump(*graphic)?,
+                GumpArt::Item(graphic) => files.items.static_art(*graphic)?,
+            };
             // A zero-sized entry is a shipped stub, not a failure — see
             // `gumpart`'s "Some entries really are 0x0" — and packing one would
             // ask the shelf for a rectangle with no area.
-            if let Some(image) = gumps.gump(*graphic)? {
-                if image.width() > 0 && image.height() > 0 {
-                    images.push((*graphic, image));
-                }
+            let Some(image) = decoded else { continue };
+            if image.width() == 0 || image.height() == 0 {
+                continue;
             }
+            let Some(slot) = self.slot(*art) else {
+                return Err(GumpAtlasError::Atlas(AtlasError::Full {
+                    wanted: self.slots.len() + 1,
+                    capacity: usize::from(u16::MAX) + 1,
+                }));
+            };
+            images.push((slot, image));
         }
         self.packed.pack_more(images)?;
-        self.asked.extend(fresh);
+        // Everything offered is remembered, art or no art: a picture the client
+        // does not ship must not be decoded again on the next frame that asks.
+        for art in fresh {
+            if self.slot(art).is_none() {
+                return Err(GumpAtlasError::Atlas(AtlasError::Full {
+                    wanted: self.slots.len() + 1,
+                    capacity: usize::from(u16::MAX) + 1,
+                }));
+            }
+        }
         Ok(())
     }
 
@@ -236,8 +338,8 @@ impl GumpAtlas {
     /// Where a graphic sits and how big it is, or `None` if it is not packed —
     /// either because nothing asked for it yet or because the client ships no
     /// art for it.
-    pub fn sprite(&self, graphic: Graphic) -> Option<Sprite> {
-        self.packed.sprite(graphic)
+    pub fn sprite(&self, art: GumpArt) -> Option<Sprite> {
+        self.packed.sprite(*self.slots.get(&art)?)
     }
 
     /// Whether the pixel at `(x, y)` within a graphic's own picture is drawn
@@ -247,8 +349,10 @@ impl GumpAtlas {
     /// [`StaticAtlas::opaque_at`] answers for the world: a gump window is not a
     /// rectangle — a paperdoll's frame has transparent corners, and a click in
     /// one belongs to whatever is behind it.
-    pub fn opaque_at(&self, graphic: Graphic, x: u16, y: u16) -> bool {
-        self.packed.opaque_at(graphic, x, y)
+    pub fn opaque_at(&self, art: GumpArt, x: u16, y: u16) -> bool {
+        self.slots
+            .get(&art)
+            .is_some_and(|slot| self.packed.opaque_at(*slot, x, y))
     }
 
     /// How many pictures landed in it.
@@ -270,8 +374,8 @@ impl GumpAtlas {
 /// other without a sort.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Picture {
-    /// Which gump.
-    pub graphic: Graphic,
+    /// Which picture, and which of the two files it comes out of.
+    pub graphic: GumpArt,
     /// Its top-left corner, in the window's own gump pixels.
     pub at: GumpPixel,
     /// The hue to tint it with, or [`Hue::NONE`].
@@ -289,7 +393,7 @@ pub struct Picture {
 
 impl Picture {
     /// A picture drawn once, at its own size, untinted.
-    pub const fn plain(graphic: Graphic, at: GumpPixel) -> Self {
+    pub const fn plain(graphic: GumpArt, at: GumpPixel) -> Self {
         Self {
             graphic,
             at,
@@ -395,7 +499,7 @@ pub fn resize(atlas: &GumpAtlas, graphic: Graphic, at: GumpPixel, width: i32, he
     // The nine, in `DrawInternal`'s own numbering: 0-3 are the top-left corner,
     // top edge, top-right corner and left edge; 4 is the *right* edge; 5-7 are
     // the bottom row; 8 is the middle. `piece` is the remap.
-    let piece = |slot: u16| Graphic(graphic.0.wrapping_add(RESIZE_PIECES[slot as usize]));
+    let piece = |slot: u16| GumpArt::Gump(Graphic(graphic.0.wrapping_add(RESIZE_PIECES[slot as usize])));
     let size = |slot: u16| {
         atlas
             .sprite(piece(slot))
@@ -455,26 +559,31 @@ const RESIZE_PIECES: [u16; 9] = [0, 1, 2, 3, 5, 6, 7, 8, 4];
 /// its edges go is decided by how big its corners turned out to be. That
 /// dependency is the reason this exists at all rather than the atlas growing
 /// from whatever `window` happened to name.
-pub fn art_of(elements: &[Element]) -> BTreeSet<Graphic> {
+pub fn art_of(elements: &[Element]) -> BTreeSet<GumpArt> {
     let mut wanted = BTreeSet::new();
-    let mut want = |gump: u32| {
-        wanted.insert(Graphic(gump as u16));
-    };
+    let want = |gump: u32| GumpArt::Gump(Graphic(gump as u16));
     for element in elements {
         match element {
             Element::Background { gump, .. } => {
                 for piece in RESIZE_PIECES {
-                    want(u32::from((*gump as u16).wrapping_add(piece)));
+                    wanted.insert(want(u32::from((*gump as u16).wrapping_add(piece))));
                 }
             }
-            Element::Image { gump, .. } | Element::ImageTiled { gump, .. } => want(*gump),
+            Element::Image { gump, .. } | Element::ImageTiled { gump, .. } => {
+                wanted.insert(want(*gump));
+            }
             Element::Button { normal, pressed, .. } => {
-                want(*normal);
-                want(*pressed);
+                wanted.insert(want(*normal));
+                wanted.insert(want(*pressed));
             }
             Element::Check(switch) | Element::Radio(switch) => {
-                want(switch.off);
-                want(switch.on);
+                wanted.insert(want(switch.off));
+                wanted.insert(want(switch.on));
+            }
+            // `{ tilepic }` is the one element whose picture is not a gump at
+            // all — see `GumpArt`.
+            Element::Item { graphic, .. } => {
+                wanted.insert(GumpArt::Item(Graphic(*graphic as u16)));
             }
             _ => {}
         }
@@ -548,7 +657,7 @@ pub fn window(
     // Everything before the first `{ page }` belongs to page 0 — the layer every
     // page shows — which is where a background and a frame almost always are.
     let mut current = 0;
-    let art = |gump: u32| Graphic(gump as u16);
+    let art = |gump: u32| GumpArt::Gump(Graphic(gump as u16));
     for element in elements {
         if let Element::Page(number) = element {
             current = *number;
@@ -566,7 +675,7 @@ pub fn window(
                 gump,
             } => drawn.pictures.extend(resize(
                 atlas,
-                art(*gump),
+                Graphic(*gump as u16),
                 at.offset(GumpPixel::new(*x, *y)),
                 *width,
                 *height,
@@ -608,6 +717,17 @@ pub fn window(
                     at.offset(GumpPixel::new(switch.x, switch.y)),
                 ));
             }
+            // A static from the world's art, laid on a window: an item in a
+            // container, a reagent on a shopping list, the picture beside a
+            // quest's text. The same art the ground draws it with, at its own
+            // size and with no world transform on it at all.
+            Element::Item { x, y, graphic, hue } => drawn.pictures.push(
+                Picture::plain(
+                    GumpArt::Item(Graphic(*graphic as u16)),
+                    at.offset(GumpPixel::new(*x, *y)),
+                )
+                .hued(Hue(hue.unwrap_or(0) as u16)),
+            ),
             Element::Label { x, y, hue, line } => drawn.captions.push(Caption {
                 at: at.offset(GumpPixel::new(*x, *y)),
                 hue: Hue(*hue as u16),
@@ -988,13 +1108,16 @@ mod tests {
         Image::new(width, height, pixels)
     }
 
+    /// An atlas of gump pictures handed in already decoded — through the same
+    /// slot map the real one uses, so a test cannot accidentally look one up by
+    /// a key the packer would never have been given.
     fn atlas_of(pictures: impl IntoIterator<Item = (Graphic, Image)>) -> GumpAtlas {
-        let mut atlas = GumpAtlas::empty();
-        atlas
-            .packed
-            .pack_more(pictures)
-            .expect("a handful of small blocks fit an atlas 2048 on a side");
-        atlas
+        GumpAtlas::pack(
+            pictures
+                .into_iter()
+                .map(|(graphic, image)| (GumpArt::Gump(graphic), image)),
+        )
+        .expect("a handful of small blocks fit an atlas 2048 on a side")
     }
 
     /// The one thing a picture drawn once must get right: it lands where it was
@@ -1002,7 +1125,10 @@ mod tests {
     #[test]
     fn a_plain_picture_is_one_quad_at_its_own_size() {
         let atlas = atlas_of([(Graphic(1), block(20, 10))]);
-        let quads = collect(&[Picture::plain(Graphic(1), GumpPixel::new(30, 40))], &atlas);
+        let quads = collect(
+            &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(30, 40))],
+            &atlas,
+        );
         assert_eq!(quads.len(), 1);
         assert_eq!(quads[0].rect.x, 30.0);
         assert_eq!(quads[0].rect.y, 40.0);
@@ -1016,7 +1142,13 @@ mod tests {
     #[test]
     fn a_picture_with_no_art_draws_nothing() {
         let atlas = atlas_of([(Graphic(1), block(4, 4))]);
-        assert!(collect(&[Picture::plain(Graphic(2), GumpPixel::default())], &atlas).is_empty());
+        assert!(
+            collect(
+                &[Picture::plain(GumpArt::Gump(Graphic(2)), GumpPixel::default())],
+                &atlas
+            )
+            .is_empty()
+        );
     }
 
     /// Tiling repeats and *clips*, never squeezes: the last repetition along
@@ -1025,7 +1157,7 @@ mod tests {
     fn a_tiled_picture_clips_its_last_repetition() {
         let atlas = atlas_of([(Graphic(1), block(10, 10))]);
         let quads = collect(
-            &[Picture::plain(Graphic(1), GumpPixel::new(0, 0)).tiled(25, 10)],
+            &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 0)).tiled(25, 10)],
             &atlas,
         );
         assert_eq!(quads.len(), 3, "two whole repetitions and a clipped one");
@@ -1047,16 +1179,20 @@ mod tests {
         let atlas = atlas_of((0..9).map(|piece| (Graphic(100 + piece), block(8, 8))));
         let pieces = resize(&atlas, Graphic(100), GumpPixel::new(0, 0), 40, 40);
         assert_eq!(pieces.len(), 9);
-        assert_eq!(pieces[0].graphic, Graphic(100), "top-left corner");
-        assert_eq!(pieces[4].graphic, Graphic(105), "the right edge, not the middle");
+        assert_eq!(pieces[0].graphic, GumpArt::Gump(Graphic(100)), "top-left corner");
+        assert_eq!(
+            pieces[4].graphic,
+            GumpArt::Gump(Graphic(105)),
+            "the right edge, not the middle"
+        );
         assert_eq!(
             pieces[8].graphic,
-            Graphic(104),
+            GumpArt::Gump(Graphic(104)),
             "the middle, last and behind nothing"
         );
         assert_eq!(
             pieces[7].graphic,
-            Graphic(108),
+            GumpArt::Gump(Graphic(108)),
             "the bottom-right corner is the last piece, not the ninth graphic"
         );
     }
@@ -1093,8 +1229,11 @@ mod tests {
             },
         ];
         let showing = window(&elements, GumpPixel::default(), 2, &BTreeSet::new(), None, &atlas);
-        let graphics: Vec<Graphic> = showing.pictures.iter().map(|picture| picture.graphic).collect();
-        assert_eq!(graphics, vec![Graphic(10), Graphic(12)]);
+        let graphics: Vec<GumpArt> = showing.pictures.iter().map(|picture| picture.graphic).collect();
+        assert_eq!(
+            graphics,
+            vec![GumpArt::Gump(Graphic(10)), GumpArt::Gump(Graphic(12))]
+        );
     }
 
     /// A button held down is drawn in its second picture, and only the one that
@@ -1120,10 +1259,10 @@ mod tests {
             Some(RawButtonId(2)),
             &atlas,
         );
-        let graphics: Vec<Graphic> = showing.pictures.iter().map(|picture| picture.graphic).collect();
+        let graphics: Vec<GumpArt> = showing.pictures.iter().map(|picture| picture.graphic).collect();
         assert_eq!(
             graphics,
-            vec![Graphic(20), Graphic(23)],
+            vec![GumpArt::Gump(Graphic(20)), GumpArt::Gump(Graphic(23))],
             "the untouched button is up and the held one is down"
         );
     }
@@ -1147,7 +1286,7 @@ mod tests {
         let showing = window(&elements, GumpPixel::default(), 0, &set, None, &atlas);
         assert_eq!(
             showing.pictures[0].graphic,
-            Graphic(31),
+            GumpArt::Gump(Graphic(31)),
             "on, despite initial: false"
         );
     }
@@ -1166,5 +1305,70 @@ mod tests {
             GumpPixel::new(5 + 40 - 8, 5 + 30 - 8),
             "bottom-right"
         );
+    }
+
+    /// The reason [`GumpArt`] exists at all. The two index spaces overlap, so an
+    /// atlas keyed by a bare `Graphic` would answer a container's background
+    /// with an item's icon — a window drawn with the wrong picture, and no error
+    /// anywhere to notice it by.
+    #[test]
+    fn a_gump_and_an_item_of_the_same_number_are_two_pictures() {
+        let atlas = GumpAtlas::pack([
+            (GumpArt::Gump(Graphic(0x003C)), block(20, 10)),
+            (GumpArt::Item(Graphic(0x003C)), block(7, 5)),
+        ])
+        .expect("two small blocks fit an atlas 2048 on a side");
+
+        let background = atlas.sprite(GumpArt::Gump(Graphic(0x003C))).expect("packed");
+        let icon = atlas.sprite(GumpArt::Item(Graphic(0x003C))).expect("packed");
+        assert_eq!((background.width, background.height), (20, 10));
+        assert_eq!((icon.width, icon.height), (7, 5));
+        assert_ne!(
+            (background.region.u, background.region.v),
+            (icon.region.u, icon.region.v),
+            "two pictures under one number must not share a region"
+        );
+    }
+
+    /// A picture the atlas has never been offered has no sprite, whichever file
+    /// it would have come from — the same answer, not a panic and not the other
+    /// namespace's picture.
+    #[test]
+    fn art_that_was_never_offered_has_no_sprite() {
+        let atlas = GumpAtlas::pack([(GumpArt::Gump(Graphic(1)), block(4, 4))])
+            .expect("one small block fits an atlas 2048 on a side");
+        assert!(atlas.sprite(GumpArt::Item(Graphic(1))).is_none());
+        assert!(atlas.sprite(GumpArt::Gump(Graphic(2))).is_none());
+    }
+
+    /// `{ tilepic }` is the one element whose picture comes out of the world's
+    /// art, and it had been dropped on the floor: the layout parsed, and nothing
+    /// drew it.
+    #[test]
+    fn a_tilepic_asks_for_an_item_and_not_a_gump() {
+        let elements = [Element::Item {
+            x: 44,
+            y: 65,
+            graphic: 0x0A28,
+            hue: Some(0x21),
+        }];
+        assert_eq!(
+            art_of(&elements).into_iter().collect::<Vec<_>>(),
+            vec![GumpArt::Item(Graphic(0x0A28))]
+        );
+
+        let atlas = atlas_of([]);
+        let showing = window(
+            &elements,
+            GumpPixel::new(10, 20),
+            0,
+            &BTreeSet::new(),
+            None,
+            &atlas,
+        );
+        assert_eq!(showing.pictures.len(), 1);
+        assert_eq!(showing.pictures[0].graphic, GumpArt::Item(Graphic(0x0A28)));
+        assert_eq!(showing.pictures[0].at, GumpPixel::new(54, 85));
+        assert_eq!(showing.pictures[0].hue, Hue(0x21));
     }
 }
