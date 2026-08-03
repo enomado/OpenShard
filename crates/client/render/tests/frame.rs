@@ -1106,7 +1106,7 @@ fn a_wall_stops_the_light_behind_it() {
     };
 
     // With nothing in the way, every tile of the row is lit.
-    let open = read(&mut blit, Builder::new(bounds).finish());
+    let open = read(&mut blit, Builder::new(bounds).finish(&Cutaway::OPEN));
     let (open_wall, open_behind, open_far) = (at(&open, 101), at(&open, 102), at(&open, 103));
 
     // And with a wall on the second tile, the two behind it are not — while the
@@ -1129,7 +1129,7 @@ fn a_wall_stops_the_light_behind_it() {
         // which is a different test — see `occlusion`'s own.
         Shape::UNREAD,
     );
-    let walled = read(&mut blit, occlusion.finish());
+    let walled = read(&mut blit, occlusion.finish(&Cutaway::OPEN));
     let (wall, behind, far) = (at(&walled, 101), at(&walled, 102), at(&walled, 103));
 
     assert_eq!(

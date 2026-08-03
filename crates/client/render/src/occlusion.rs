@@ -36,11 +36,21 @@
 //! a window is glass. So the grid carries an opacity byte — [`OPAQUE`] for a
 //! wall, [`PANE`] for a window — and the shader multiplies by it either way.
 //!
-//! # Nothing occludes that was not drawn
+//! # Two sets, and the cut between them is at the end
 //!
-//! Every occluder is tested with the frame's [`Cutaway`], exactly as the flames
-//! are. A shadow cast by a wall the cutaway took away is a dark band with
-//! nothing in the picture making it, which is the worse bug of the two.
+//! A tile belongs to two of them: **what a ray may cross**, which is a fact
+//! about the map, and **what this frame draws**, which is a fact about the tile
+//! the player is standing on. [`Builder`] holds the first and [`Builder::finish`]
+//! hands back the second, applying the frame's [`Cutaway`] as it packs — see
+//! `docs/lighting.md`'s decision 33.
+//!
+//! What comes out is unchanged: nothing occludes that was not drawn, because a
+//! shadow cast by a wall the cutaway took away is a dark band with nothing in the
+//! picture making it, which is the worse bug of the two. What changed is *where*
+//! that is decided, and it matters for one reason: everything above the cut is
+//! the same for every frame standing anywhere, so it can be built once and kept.
+//! That is the whole of decision 30.4's cache, and it is why the cut is a filter
+//! over a packed list rather than a test at the map walk.
 //!
 //! # The sky a tile can see
 //!
@@ -444,6 +454,29 @@ pub struct Surface {
     /// direction — a wall with no window in it is what every wall in the world
     /// is today.
     pub aperture: Option<Aperture>,
+    /// Whether the static this came from is a roof, which is the one thing about
+    /// it no rule of the walk asks and [`Builder::finish`] cannot do without.
+    ///
+    /// A [`Cutaway`] cuts on two facts — a height, which is [`Surface::bottom`],
+    /// and roof-ness, which nothing else here needed — and the whole of decision
+    /// 33 is that the cut happens when a *frame* is packed rather than when a
+    /// surface is built. So the surface has to carry it that far. See
+    /// [`Builder::finish`].
+    pub roof: bool,
+}
+
+impl Surface {
+    /// Whether the frame this grid is being packed for draws the static this
+    /// surface came from — [`Cutaway::shows_at`], asked about what a surface
+    /// kept of it.
+    ///
+    /// The other half of [`cutaway::shows`] — the draw ceiling — is not asked
+    /// here and never will be: it is a fact about the static and the map, so it
+    /// is settled where the surface is built, and what is left for a frame to
+    /// decide is exactly the cutaway. See [`Builder::finish`].
+    fn drawn(&self, cutaway: &Cutaway) -> bool {
+        cutaway.shows_at(self.bottom, self.roof)
+    }
 }
 
 /// One tile's worth of occlusion: how much it stops, and between which heights.
@@ -951,6 +984,7 @@ impl Builder {
                     opacity,
                     edges,
                     aperture: None,
+                    roof: tile.flags.is_roof(),
                 },
             ),
             named => {
@@ -977,6 +1011,7 @@ impl Builder {
                                 // above the picture's own base and this static
                                 // is standing at one.
                                 aperture: shape.hole.map(|hole| Aperture::above(bottom, hole)),
+                                roof: tile.flags.is_roof(),
                             },
                         );
                     }
@@ -1078,7 +1113,7 @@ impl Builder {
         self.sky = blurred;
     }
 
-    /// Pack the grid into the list the walk reads.
+    /// Pack the grid into the list the walk reads, keeping what this frame draws.
     ///
     /// One pass in the index's own order, so a tile's surfaces come out
     /// contiguous and in the order the tiles are in — which is what makes the
@@ -1088,7 +1123,21 @@ impl Builder {
     /// not depend on it — it takes the largest of them — but a stable order is
     /// what lets a test name a slice and a frame dump be compared with the one
     /// before it.
-    pub fn finish(self) -> Occlusion {
+    ///
+    /// # This is where the [`Cutaway`] is applied, and that is decision 33
+    ///
+    /// A [`Builder`] holds **what a ray may cross**: every surface standing on
+    /// the map inside the rectangle, whether or not this frame draws it. The
+    /// filter is here, at the one point a *frame's* grid is made, because
+    /// everything above it is a fact about the map and the cutaway is a fact
+    /// about where the player is standing. That is the whole of what lets one
+    /// build serve two frames — which is what decision 30.4's cache is, once its
+    /// storey band is gone.
+    ///
+    /// The test is [`cutaway::shows`]'s own, reconstructed from what a surface
+    /// carries: [`Surface::bottom`] is the `z` the static stood at, and
+    /// [`Surface::roof`] is the flag. Nothing else in the walk asks either.
+    pub fn finish(self, cutaway: &Cutaway) -> Occlusion {
         let mut index = Vec::with_capacity(self.heads.len());
         let mut surfaces = Vec::with_capacity(self.arena.len());
         for head in &self.heads {
@@ -1099,7 +1148,9 @@ impl Builder {
             let mut at = *head;
             while at != NO_SURFACE {
                 let (surface, next) = self.arena[at as usize];
-                surfaces.push(surface);
+                if surface.drawn(cutaway) {
+                    surfaces.push(surface);
+                }
                 at = next;
             }
             surfaces[offset as usize..].reverse();
@@ -1131,15 +1182,16 @@ impl Builder {
 /// Everything on `bounds` that stands between a flame and the ground.
 ///
 /// The same two sources the flames themselves come from — the map's statics and
-/// the items the server has put on the ground — walked with the same bounds and
-/// tested with the same [`Cutaway`]. Both halves matter: a wall is a static, and
-/// **a door is an item**, sent by the server and swapped for its open graphic
-/// when it is opened. A closed door that let the light through would be the one
-/// occluder a player watches change.
-/// The sky field is built out of the same walk, and the two halves of this
-/// function are deliberately not the same rule: everything is shaded into the
-/// sky, and only what the frame *draws* is added to the occluders. See the
-/// module header.
+/// the items the server has put on the ground — walked with the same bounds.
+/// Both halves matter: a wall is a static, and **a door is an item**, sent by the
+/// server and swapped for its open graphic when it is opened. A closed door that
+/// let the light through would be the one occluder a player watches change.
+///
+/// Everything the map has goes into the builder; the frame's [`Cutaway`] is
+/// applied once, by [`Builder::finish`], which is decision 33 and is what makes
+/// everything above that line a fact about the map. What is refused here is the
+/// draw ceiling, which is a fact about the static: a mountain top a hundred and
+/// fifty `z` up is not drawn in any frame from any tile, so no frame wants it.
 pub fn collect(
     map: &Map,
     items: &[GroundItem],
@@ -1181,7 +1233,7 @@ pub fn collect(
             Graphic(item.tile),
             tile,
         );
-        if cutaway::shows(cutaway, item.z, tile) {
+        if cutaway::drawn_in_any_frame(item.z, tile) {
             occlusion.add(
                 item.x,
                 item.y,
@@ -1203,7 +1255,7 @@ pub fn collect(
             item.graphic,
             tile,
         );
-        if cutaway::shows(cutaway, item.at.z, tile) {
+        if cutaway::drawn_in_any_frame(item.at.z, tile) {
             occlusion.add(
                 item.at.x,
                 item.at.y,
@@ -1216,7 +1268,7 @@ pub fn collect(
     }
 
     occlusion.blur_sky();
-    occlusion.finish()
+    occlusion.finish(cutaway)
 }
 
 #[cfg(test)]
@@ -1262,7 +1314,7 @@ mod tests {
         let mut occlusion = Builder::new(bounds());
         occlusion.add(100, 100, 0, shut, &leaf, Shape::UNREAD);
         occlusion.add(101, 100, 0, open, &leaf, Shape::UNREAD);
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert!(occlusion.at(100, 100).is_some(), "the shut leaf left the grid");
         assert_eq!(
             occlusion.at(101, 100),
@@ -1325,7 +1377,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT, 20),
             Shape::UNREAD,
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert_eq!(
             occlusion.at(102, 103),
             Some(Cell {
@@ -1378,7 +1430,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT, 20),
             Shape::faced(corner),
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert_eq!(
             occlusion.at(102, 103).unwrap().edges,
             EDGE_EAST | EDGE_SOUTH,
@@ -1396,6 +1448,7 @@ mod tests {
                     opacity: OPAQUE,
                     edges: EDGE_EAST,
                     aperture: None,
+                    roof: false,
                 },
                 Surface {
                     bottom: 0,
@@ -1403,6 +1456,7 @@ mod tests {
                     opacity: OPAQUE,
                     edges: EDGE_SOUTH,
                     aperture: None,
+                    roof: false,
                 },
             ],
         );
@@ -1438,7 +1492,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT, 20),
             Shape::UNREAD,
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         assert_eq!(
             occlusion.surfaces_at(100, 100),
@@ -1448,6 +1502,7 @@ mod tests {
                 opacity: OPAQUE,
                 edges: 0,
                 aperture: None,
+                roof: false,
             }],
         );
         assert_eq!(
@@ -1458,6 +1513,7 @@ mod tests {
                 opacity: OPAQUE,
                 edges: EDGE_ANY,
                 aperture: None,
+                roof: false,
             }],
         );
         assert_eq!(occlusion.surfaces_at(102, 100), &[], "open ground stands nothing");
@@ -1546,7 +1602,7 @@ mod tests {
                 hole: Some(hole),
             },
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         assert_eq!(occlusion.surfaces_at(100, 100)[0].aperture, Some(placed));
         assert_eq!(
@@ -1612,7 +1668,7 @@ mod tests {
                 }),
             },
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         assert!(occlusion.any_aperture());
         let surfaces = occlusion.surface_bytes();
@@ -1641,7 +1697,7 @@ mod tests {
             &wall,
             Shape::faced(Facing::One(Face::South)),
         );
-        assert!(!solid.finish().any_aperture());
+        assert!(!solid.finish(&Cutaway::OPEN).any_aperture());
     }
 
     /// Stairs count as half their height, the way every other reader of this
@@ -1658,7 +1714,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20),
             Shape::UNREAD,
         );
-        assert_eq!(occlusion.finish().at(100, 100).unwrap().top, 10);
+        assert_eq!(occlusion.finish(&Cutaway::OPEN).at(100, 100).unwrap().top, 10);
     }
 
     /// Two occluders on one tile are **two surfaces**, and the gap between them
@@ -1693,7 +1749,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT, 20),
             Shape::UNREAD,
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert_eq!(
             occlusion.surfaces_at(105, 105),
             &[
@@ -1704,6 +1760,7 @@ mod tests {
                     // Neither was given a face, so both are the whole tile.
                     edges: EDGE_ANY,
                     aperture: None,
+                    roof: false,
                 },
                 Surface {
                     bottom: 40,
@@ -1711,6 +1768,7 @@ mod tests {
                     opacity: OPAQUE,
                     edges: EDGE_ANY,
                     aperture: None,
+                    roof: false,
                 },
             ],
             "the two walls merged into one, and the air between them with it",
@@ -1764,7 +1822,7 @@ mod tests {
             &tile(TileFlags::WINDOW | TileFlags::FLOOR, 0),
             Shape::UNREAD,
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         assert_eq!(
             occlusion.surfaces_at(104, 104),
@@ -1775,6 +1833,7 @@ mod tests {
                     opacity: OPAQUE,
                     edges: EDGE_SOUTH,
                     aperture: None,
+                    roof: false,
                 },
                 Surface {
                     bottom: 20,
@@ -1782,6 +1841,7 @@ mod tests {
                     opacity: PANE,
                     edges: 0,
                     aperture: None,
+                    roof: false,
                 },
             ],
         );
@@ -1812,7 +1872,7 @@ mod tests {
         let wall = tile(TileFlags::NO_SHOOT, 20);
         occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, Shape::UNREAD);
         occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, Shape::UNREAD);
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert_eq!(occlusion.surface_count(), 1);
         assert_eq!(occlusion.dropped(), 0, "a duplicate is not a truncation");
     }
@@ -1839,7 +1899,7 @@ mod tests {
                 Shape::UNREAD,
             );
         }
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert_eq!(occlusion.surfaces_at(107, 107).len(), MAX_SURFACES_PER_TILE);
         assert_eq!(occlusion.dropped(), 3);
     }
@@ -1870,7 +1930,7 @@ mod tests {
                 left: Face::South,
             }),
         );
-        let histogram = occlusion.finish().histogram();
+        let histogram = occlusion.finish(&Cutaway::OPEN).histogram();
         let tiles = (bounds().width() * bounds().height()) as usize;
         assert_eq!(histogram[0], tiles - 2, "every other tile is open ground");
         assert_eq!(histogram[1], 1, "the plain wall");
@@ -1891,7 +1951,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT, 20),
             Shape::UNREAD,
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert_eq!(occlusion.at(99, 100), None);
         assert_eq!(occlusion.at(100, 100), None, "and did not land on the edge");
     }
@@ -1929,7 +1989,7 @@ mod tests {
             &tile(TileFlags::NO_SHOOT, 60),
             Shape::UNREAD,
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         let bytes = occlusion.bytes();
         assert_eq!(bytes.len(), 4 * 4, "one texel a tile");
@@ -1982,7 +2042,7 @@ mod tests {
             Shape::UNREAD,
         );
         assert_eq!(
-            lid.finish().surface_bytes()[3],
+            lid.finish(&Cutaway::OPEN).surface_bytes()[3],
             PRESENT,
             "a floor is present with no side of its own"
         );
@@ -2016,7 +2076,7 @@ mod tests {
             &tile(TileFlags::WINDOW, 10),
             Shape::UNREAD,
         );
-        let occlusion = occlusion.finish();
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
         let boxes: Vec<_> = occlusion.boxes().collect();
         assert_eq!(
             boxes,
@@ -2189,7 +2249,7 @@ mod tests {
             max_y: 1,
         });
         occlusion.shade(1, 0, 20, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 5));
-        let bytes = occlusion.finish().field_bytes();
+        let bytes = occlusion.finish(&Cutaway::OPEN).field_bytes();
         assert_eq!(bytes.len(), 4 * 4, "one texel a tile, four channels");
         assert_eq!(&bytes[0..4], &[SKY_OPEN, 0, 0, 0], "(0,0) is open sky");
         assert_eq!(&bytes[4..8], &[0, 0, 0, 0], "(1,0) is x-fastest, and roofed");
@@ -2231,6 +2291,68 @@ mod tests {
             None,
         );
         assert_eq!(cut.at(4, 4), None);
+    }
+
+    /// One walk of the map serves two frames, and that is decision 33.
+    ///
+    /// The test the *cache* wants and the one the old shape could not pass: the
+    /// map is walked once, and two grids with two different cutaways come out of
+    /// the same [`Builder`]. Before the cut moved to [`Builder::finish`] the
+    /// cutaway was asked at the walk, so a builder was already one frame's — and
+    /// a per-block cache of frames is not a cache, which is what 30.4's storey
+    /// band was an attempt to work around.
+    ///
+    /// The two things it holds apart are the two the cutaway cuts on: a **roof**,
+    /// which goes at any height once the player is under one, and a **storey**,
+    /// which goes by height alone. Both are in one build here, because a builder
+    /// that kept only one of them would pass with the surface's `roof` flag
+    /// hard-coded either way.
+    #[test]
+    fn one_walk_of_the_map_serves_two_cutaways() {
+        let mut builder = Builder::new(TileBounds {
+            min_x: 0,
+            max_x: 7,
+            min_y: 0,
+            max_y: 7,
+        });
+        // A roof over one tile, and the floor of an upper storey over another.
+        // Neither is drawn with the player indoors; both stand in the map.
+        builder.add(
+            2,
+            2,
+            20,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT | TileFlags::ROOF, 5),
+            Shape::UNREAD,
+        );
+        builder.add(
+            3,
+            3,
+            40,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT | TileFlags::FLOOR, 0),
+            Shape::UNREAD,
+        );
+        // A wall on the ground floor: the control, drawn in both frames, so a
+        // grid that came out empty for the wrong reason says so.
+        builder.add(4, 4, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), Shape::UNREAD);
+
+        let outdoors = builder.clone().finish(&Cutaway::OPEN);
+        let indoors = builder.finish(&Cutaway {
+            max_z: 30,
+            no_draw_roofs: true,
+            ..Cutaway::OPEN
+        });
+
+        assert!(outdoors.at(2, 2).is_some(), "the roof is there with nothing cut");
+        assert!(outdoors.at(3, 3).is_some(), "and so is the storey's floor");
+        assert_eq!(indoors.at(2, 2), None, "the roof came off");
+        assert_eq!(indoors.at(3, 3), None, "and the storey above the player with it");
+        assert_eq!(
+            outdoors.at(4, 4),
+            indoors.at(4, 4),
+            "and the wall the player is standing beside is in both",
+        );
     }
 
     /// Britain's houses are dark inside and its streets are not.
@@ -2308,5 +2430,218 @@ mod tests {
         let (inside, outside) = (mean(&indoors), mean(&outdoors));
         assert!(inside < 64, "Britain's rooms average {inside} of the sky");
         assert!(outside > 200, "Britain's streets average {outside} of the sky");
+    }
+
+    /// Where the 2.0ms goes, phase by phase, on the frame `tests/cost.rs` reads
+    /// it off.
+    ///
+    /// **The number decision 30 is built on is a total**, and a total names no
+    /// fix. A bake keyed by block and storey band caches the *statics* — the walk
+    /// of the map and what each occluder is — and it caches nothing else: a
+    /// frame's grid is still a rectangle the camera chose, so the allocation of
+    /// it, the blur of its sky field and the pack of its list are per-frame
+    /// whatever is cached. If those three are most of the 2.0ms then the bake as
+    /// decision 30.4 states it buys a fraction of what it claims, and the shape
+    /// of the cache has to change before it is written rather than after.
+    ///
+    /// So this is the measurement that comes first, and it is cumulative: each
+    /// case adds one phase to the one above it, and what a phase costs is the
+    /// difference. The fastest of [`RUNS`] is the reading, for the reason
+    /// `tests/cost.rs` gives — a minimum is the run the machine did not
+    /// interrupt.
+    ///
+    /// It is the real frame and not a synthetic one: Britain at the widest zoom,
+    /// the bounds `light::lit_tiles` gives it, and **the atlas built**, because
+    /// without one every occluder falls back to a body and a corner stops being
+    /// two panels — which is exactly the half of the list that step 21.2 doubled.
+    ///
+    /// Ignored, and gated on the client's files: a measurement, not an assertion.
+    #[test]
+    #[ignore = "a measurement, not an assertion; needs a client"]
+    fn what_the_grid_costs_to_build() {
+        /// How many times each phase is run. The fastest is the reading.
+        const RUNS: u32 = 16;
+
+        let Some(dir) = std::env::var_os("OPENSHARD_CLIENT").map(std::path::PathBuf::from) else {
+            eprintln!("no client files: nothing measured");
+            return;
+        };
+        let map = Map::load_facet(&dir, 0).expect("Felucca");
+        let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+        let art = openshard_uofiles::art::Art::open(&dir).expect("artLegacyMUL.uop");
+
+        // The same eye `tests/cost.rs` measures through, so the two sets of
+        // numbers are about one frame.
+        let mut camera =
+            crate::camera::Camera::new(openshard_protocol::world::Point::new(1495, 1629, 0), 1920, 1080);
+        let mut zoom = crate::camera::Zoom::ONE;
+        while !zoom.is_widest() {
+            zoom = zoom.scale_down();
+        }
+        camera.zoom_about(0, 0, zoom);
+        let animations = crate::animate::StaticAnimations::default();
+        let atlas = crate::atlas::StaticAtlas::build(
+            &art,
+            crate::statics::visible_graphics(&map, &camera, &animations),
+        )
+        .expect("a screen of statics fits");
+        let bounds = crate::light::lit_tiles(&camera);
+
+        let shape = |graphic: Graphic| Shape {
+            facing: atlas.sprite(graphic).and_then(|s| s.facing),
+            hole: atlas.hole(graphic),
+        };
+        let floor = |x: u16, y: u16| map.land(x, y).map_or(0, |cell| cell.z);
+
+        let fastest = |mut run: Box<dyn FnMut()>| {
+            let mut best = std::time::Duration::MAX;
+            for _ in 0..RUNS {
+                let start = std::time::Instant::now();
+                run();
+                best = best.min(start.elapsed());
+            }
+            best
+        };
+
+        // Each of these is the one above it plus a phase, so the phase is the
+        // difference. `black_box` on what a case produces, because a builder
+        // nobody reads is work a release build may delete.
+        let empty = fastest(Box::new(|| {
+            std::hint::black_box(Builder::new(bounds));
+        }));
+        let walked = fastest(Box::new(|| {
+            let mut count = 0_usize;
+            crate::statics::for_each_static_in(&map, bounds, |_| count += 1);
+            std::hint::black_box(count);
+        }));
+        let shaded = fastest(Box::new(|| {
+            let mut grid = Builder::new(bounds);
+            crate::statics::for_each_static_in(&map, bounds, |item| {
+                let tile = tiledata.static_tile(item.tile);
+                grid.shade(
+                    item.x,
+                    item.y,
+                    item.z,
+                    floor(item.x, item.y),
+                    Graphic(item.tile),
+                    tile,
+                );
+            });
+            std::hint::black_box(grid.sky_at(bounds.min_x, bounds.min_y));
+        }));
+        let added = fastest(Box::new(|| {
+            let mut grid = Builder::new(bounds);
+            crate::statics::for_each_static_in(&map, bounds, |item| {
+                let tile = tiledata.static_tile(item.tile);
+                grid.shade(
+                    item.x,
+                    item.y,
+                    item.z,
+                    floor(item.x, item.y),
+                    Graphic(item.tile),
+                    tile,
+                );
+                if cutaway::shows(&Cutaway::OPEN, item.z, tile) {
+                    grid.add(
+                        item.x,
+                        item.y,
+                        item.z,
+                        Graphic(item.tile),
+                        tile,
+                        shape(Graphic(item.tile)),
+                    );
+                }
+            });
+            std::hint::black_box(grid.sky_at(bounds.min_x, bounds.min_y));
+        }));
+        let whole = fastest(Box::new(|| {
+            std::hint::black_box(
+                collect(&map, &[], bounds, &tiledata, &Cutaway::OPEN, Some(&atlas)).dropped(),
+            );
+        }));
+
+        // And the two tails on their own, built once and timed over a clone, so
+        // that the blur and the pack are read apart rather than as one remainder.
+        let built = {
+            let mut grid = Builder::new(bounds);
+            crate::statics::for_each_static_in(&map, bounds, |item| {
+                let tile = tiledata.static_tile(item.tile);
+                grid.shade(
+                    item.x,
+                    item.y,
+                    item.z,
+                    floor(item.x, item.y),
+                    Graphic(item.tile),
+                    tile,
+                );
+                if cutaway::shows(&Cutaway::OPEN, item.z, tile) {
+                    grid.add(
+                        item.x,
+                        item.y,
+                        item.z,
+                        Graphic(item.tile),
+                        tile,
+                        shape(Graphic(item.tile)),
+                    );
+                }
+            });
+            grid
+        };
+        let blurred = fastest(Box::new(|| {
+            let mut grid = built.clone();
+            grid.blur_sky();
+            std::hint::black_box(grid.sky_at(bounds.min_x, bounds.min_y));
+        }));
+        let packed = fastest(Box::new(|| {
+            std::hint::black_box(built.clone().finish(&Cutaway::OPEN).surface_count());
+        }));
+        let cloned = fastest(Box::new(|| {
+            std::hint::black_box(built.clone().sky_at(bounds.min_x, bounds.min_y));
+        }));
+
+        let grid = collect(&map, &[], bounds, &tiledata, &Cutaway::OPEN, Some(&atlas));
+        let mut statics = 0_usize;
+        crate::statics::for_each_static_in(&map, bounds, |_| statics += 1);
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+
+        // The companion every one of these needs: a frame with no statics in it
+        // would make every reading below a measurement of an empty rectangle.
+        assert!(statics > 10_000, "only {statics} statics in a widest-zoom frame");
+        assert!(
+            grid.surface_count() > 10_000,
+            "only {} surfaces",
+            grid.surface_count()
+        );
+
+        println!(
+            "grid {}x{} = {} tiles, {statics} statics, {} surfaces on {} standing cells\n\
+             \n\
+             phase                       ms     cumulative\n\
+             allocate the builder    {:6.3}     {:6.3}\n\
+             walk the map            {:6.3}     {:6.3}\n\
+             + shade the sky         {:6.3}     {:6.3}\n\
+             + add the surfaces      {:6.3}     {:6.3}\n\
+             + blur and pack         {:6.3}     {:6.3}   (`collect` itself)\n\
+             \n\
+             of that tail, apart:  blur {:.3}ms, pack {:.3}ms, over a clone costing {:.3}ms",
+            bounds.width(),
+            bounds.height(),
+            bounds.width() * bounds.height(),
+            grid.surface_count(),
+            grid.boxes().count(),
+            ms(empty),
+            ms(empty),
+            ms(walked),
+            ms(walked),
+            ms(shaded) - ms(walked),
+            ms(shaded),
+            ms(added) - ms(shaded),
+            ms(added),
+            ms(whole) - ms(added),
+            ms(whole),
+            ms(blurred) - ms(cloned),
+            ms(packed) - ms(cloned),
+            ms(cloned),
+        );
     }
 }

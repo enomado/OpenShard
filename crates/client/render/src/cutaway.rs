@@ -207,10 +207,22 @@ impl Cutaway {
     /// above `max_z` it goes, and a roof goes whatever its height once the
     /// player is under one.
     pub fn shows_static(&self, z: i8, tile: &StaticTile) -> bool {
-        if i32::from(z) >= self.max_z {
+        self.shows_at(i32::from(z), tile.flags.is_roof())
+    }
+
+    /// The same rule with the tiledata row already read: a height and whether the
+    /// art calls it a roof, which is the whole of what the test looks at.
+    ///
+    /// It exists because [`crate::occlusion`] asks this question about a surface
+    /// long after the static it came from is gone — `docs/lighting.md`'s decision
+    /// 33 moved the cut to where a *frame's* grid is packed — and a second
+    /// spelling of the rule there would be a second policy rather than a second
+    /// caller.
+    pub fn shows_at(&self, z: i32, roof: bool) -> bool {
+        if z >= self.max_z {
             return false;
         }
-        !(self.no_draw_roofs && tile.flags.is_roof())
+        !(self.no_draw_roofs && roof)
     }
 
     /// Whether a land tile at `z` is drawn.
@@ -401,7 +413,18 @@ pub fn under_ceiling(priority_z: i32, tile: &StaticTile) -> bool {
 /// picture standing the same way, and the client reads the same tiledata row
 /// for both.
 pub fn shows(cutaway: &Cutaway, z: i8, tile: &StaticTile) -> bool {
-    under_ceiling(depth::static_priority_z(z, tile), tile) && cutaway.shows_static(z, tile)
+    drawn_in_any_frame(z, tile) && cutaway.shows_static(z, tile)
+}
+
+/// The half of [`shows`] that has nothing to do with where the player stands.
+///
+/// A static past the [`DRAW_CEILING`], or one the client marks internal, is
+/// drawn in no frame from any tile — so a caller that is building something a
+/// *frame* is later cut out of asks this and not [`shows`]. That caller is
+/// `occlusion::collect`, and `docs/lighting.md`'s decision 33 is why it wants
+/// the line drawn exactly here.
+pub fn drawn_in_any_frame(z: i8, tile: &StaticTile) -> bool {
+    under_ceiling(depth::static_priority_z(z, tile), tile)
 }
 
 #[cfg(test)]
