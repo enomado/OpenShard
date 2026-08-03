@@ -9,6 +9,36 @@ copied.
 
 ## Where the next session starts
 
+**The instrument was made honest, and 23.1 is next with nothing in front of it.**
+Three of the four items under "Found while drawing the solid" are closed, and
+they were the three 23.1 will be judged by:
+
+- **`solid::Cut`, the second datum** — decision 39.8. Both views drew what stands
+  above the player's feet, so a hole in a floor and a floor below the cut were
+  the same picture. F4 flips between "above your feet" and the whole grid, and it
+  governs the wireframe and the solids pass together, because they are read
+  against each other. "This storey" is *not* a third value and the decision says
+  why.
+- **A panel's drawn box is tied to the plane the shader tests** —
+  `a_panel_is_drawn_on_the_plane_its_face_pixels_lie_on`, deriving the plane from
+  `Face::place_at` rather than restating it, plus the lid-and-body companion.
+  Until this, a panel drawn on the wrong edge would have read as a defect in the
+  *map*.
+- **The nominal thicknesses are named `DRAWN_`** — they are a picture, nothing in
+  the walk reads them, and 23.1's thickness is a different number reached by a
+  different argument. The fence is in the doc comment so the collision cannot be
+  made silently.
+
+The fourth — the solids pass rebuilding its whole vertex buffer every frame — is
+left, on purpose: it is a cost, not a lie, the view is off by default, and the
+fix is named rather than hunted for.
+
+**So: step 23.1, the ownership, with the geometry held still.** Read decision
+38.5 first — the migration is two steps and not one for a reason this file has
+given twice for smaller changes.
+
+Everything below is the session that drew the solid.
+
 **Step 23.0 has landed: the solid is drawn, in the world, where it stands.** F5
 in the client, or `--solids` on the offline viewer, and `--at X,Y` to open on a
 place this plan names. The geometry is `render/src/solid.rs` and it knows nothing
@@ -1976,6 +2006,34 @@ the corner lattice and `WorldSpot::centre` is the only place the half lives.
 Written down because it is invisible in a wireframe of single tiles and obvious
 the moment a box has to contain a sprite.
 
+**39.8 A view of the grid has a second datum, and "this storey" is not one of
+its values.** Both views drew what stands above the player's feet, which is the
+right answer for a picture of *what shadows you* and the wrong one for a picture
+whose subject is geometry: standing in a room at `z = 0`, the room's own floor
+and every lid under it are simply not drawn — and **a hole in a floor and a floor
+below the cut are the same picture.** Counting what was hidden does not close
+that, and the distinction is worth keeping: a count says *how much* is missing,
+never *where*. An instrument that can be wrong in a way indistinguishable from
+the defect it is pointed at is the one failure a diagnostic may not have.
+
+So `solid::Cut` is a switch, with the two values that can be *stated*:
+`BelowFeet(z)` — what could shadow somebody standing here, and why a pier is not
+2,011 boxes — and `Nothing`, the whole grid, unreadable in a town by design. F4
+in the client, a pair beside the two checkboxes, and it governs **both** views,
+because they are read against each other and two grids cut differently cannot be
+compared.
+
+*This storey* is the value a person would reach for most and it is deliberately
+absent: it needs a ceiling, and therefore a rule for which of the four lids over
+your head is *yours*. Inventing that rule to fill out an enum would put a third
+answer into the instrument that no test could hold. It arrives when a room is a
+thing the world can name.
+
+The cut is resolved once per frame (`App::solid_cut`) and never stored: what a
+person picks is one of two questions and holds across frames, while the `z` in
+`BelowFeet` is a fact about the frame it is drawn in. One join, so no stale
+height can be kept anywhere and the two views cannot drift apart.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -2991,17 +3049,11 @@ Found while re-cutting the plan around decision 38 (nothing was built):
   `t`, exactly as `facing::best_prism` already takes the best prism.
 Found while drawing the solid (step 23.0):
 
-- **Both views filter by `Surface::stands`, so a house's floor is invisible from
-  its own floor.** Everything at or below the camera's feet is dropped, which is
-  right for a picture of what shadows *you* and wrong for a view whose subject
-  is geometry: standing in a room at `z = 0`, the room's floor and every lid
-  under it are simply not there, and a person reading the picture cannot tell
-  that from a floor the grid failed to build. Each view says what it hid — the
-  wireframe counts surfaces, the solids pass counts boxes — and that is not the
-  same thing as being able to *see* it: a hole in a floor and a floor below the
-  cut look identical when neither is drawn. What would answer it is a second
-  datum ("everything", "above my feet", "this storey"), which is a decision
-  rather than a patch.
+- ~~**Both views filter by `Surface::stands`, so a house's floor is invisible
+  from its own floor.**~~ Closed by decision 39.8: `solid::Cut` is the second
+  datum, F4 flips it, and it governs both views at once. Two values and not
+  three — "this storey" needs a ceiling and therefore a rule for which lid is
+  yours, and that rule is not inventable here.
 - **The solids pass rebuilds its whole vertex buffer every frame.** 3.3 MB at the
   widest zoom, and the 3.61 ms reading above is mostly that rather than the
   fragments. The geometry is on the CPU deliberately (39.6) and the fix, if one
@@ -3009,19 +3061,20 @@ Found while drawing the solid (step 23.0):
   keep the buffer and rebuild it when the camera moves. Not worth doing for a
   view that is off by default; worth knowing before anybody concludes the
   translucent fill is expensive.
-- **Nothing tests that the solids view and the walk agree.** The two views share
-  `kind_colour` and the grid, which is what keeps the *colours* honest, and
-  nothing at all keeps `Surface::solid`'s box on the plane `blit.wgsl` tests: a
-  panel drawn on the wrong edge would look like a wall a tile out of place and
-  read as a *map* defect. The test that would catch it is the one
-  `panel_edge` already has — derive the edge from `Face::place_at`, which is
-  what the shader places a face pixel with — extended to the solid's own faces.
-- **The nominal thicknesses are drawing numbers with no owner.**
-  `PANEL_THICKNESS` and `LID_THICKNESS` live in `occlusion.rs` because that is
-  where the surface is, but nothing in the walk reads them, and step 23.1 will
-  add numbers with the same names that everything reads. Two constants with one
-  name and two meanings is how a rule and its replacement drift apart — 23.1
-  must either take these over deliberately or rename them.
+- ~~**Nothing tests that the solids view and the walk agree.**~~ Closed:
+  `a_panel_is_drawn_on_the_plane_its_face_pixels_lie_on` derives the plane from
+  `Face::place_at` — what `statics.wgsl` places a face fragment with — and
+  asserts the box has a face on it, lies *inside* its tile rather than
+  straddling the edge, spans the whole run, and carries the span the walk tests.
+  Its companion does the lid (top face on its plane, hanging under it) and the
+  body (its whole tile). What is still untested is a *thickness*, and that is
+  correct: it is a drawing number until step 23.1 makes it geometry.
+- ~~**The nominal thicknesses are drawing numbers with no owner.**~~ Closed by
+  renaming them `DRAWN_PANEL_THICKNESS` and `DRAWN_LID_THICKNESS`, with the
+  fence stated in the doc comment: no ray is tested against either, the only
+  reader is `Surface::solid`, and 23.1's thickness is a different number reached
+  by a different argument. The collision the entry warned about — two constants
+  with one name, one drawn and one tested — is now impossible to make silently.
 - **`Camera::project` is a matrix, and writing it as one would change no pixel.**
   It is an orthographic view-projection with a fixed rotation, spelled as integer
   arithmetic. `docs/camera.md` is the plan that wants this seam — "one pipeline

@@ -208,8 +208,58 @@ pub fn kind_colour(surface: &crate::occlusion::Surface) -> [f32; 3] {
     }
 }
 
-/// Every solid an occlusion grid holds that stands above `floor`, coloured by
-/// kind and ordered back to front.
+/// How much of the grid a view of it draws — **the second datum**, and the
+/// answer to the one thing the first version of this instrument could not say.
+///
+/// A view of the grid drew what stands above the player's feet, and that is
+/// right for a picture of what shadows *you*: a pier is one thin slab on every
+/// plank, and a frame of it was 2,011 boxes with the walls somewhere inside them
+/// (see [`Surface::stands`](crate::occlusion::Surface::stands)). It is wrong for
+/// a view whose subject is geometry. Standing in a room at `z = 0`, the room's
+/// own floor and every lid under it are simply not drawn — and **a hole in a
+/// floor and a floor below the cut are the same picture**, which is an
+/// instrument that cannot be told from the defect it is pointed at.
+///
+/// Counting what was hidden does not close it, and that is worth being explicit
+/// about: both views say how many they dropped, and a number says *how much* is
+/// missing rather than *where*. So the datum is a switch a person throws, and
+/// the two values are the two questions:
+///
+/// - [`Cut::BelowFeet`] — what could shadow somebody standing here.
+/// - [`Cut::Nothing`] — what the grid holds. Unreadable in a town by design;
+///   it is what a person switches to when the question is "is that floor
+///   there at all".
+///
+/// **"This storey" is deliberately not a third value.** It is the one a person
+/// would reach for most and it needs something nothing here has: a ceiling, and
+/// therefore a rule for which lid over your head is *yours* when the grid holds
+/// four of them. Inventing that rule to fill out an enum would put a third
+/// answer in the instrument that no test could hold, which is how a diagnostic
+/// starts lying. It arrives when a room is a thing the world can name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cut {
+    /// Draw every solid the grid holds, wherever the eye is.
+    Nothing,
+    /// Drop everything at or below the feet of somebody standing at this `z`.
+    BelowFeet(i8),
+}
+
+impl Cut {
+    /// Whether a view under this cut draws `surface`.
+    ///
+    /// The one place the rule lives: two views read it, and a wireframe and a
+    /// solids pass disagreeing about what is on screen would make the pair
+    /// useless for exactly the comparison they exist for.
+    pub fn shows(self, surface: &crate::occlusion::Surface) -> bool {
+        match self {
+            Self::Nothing => true,
+            Self::BelowFeet(floor) => surface.stands(floor),
+        }
+    }
+}
+
+/// Every solid an occlusion grid holds that survives `cut`, coloured by kind and
+/// ordered back to front.
 ///
 /// The list both views draw, so that "what is on screen" is one answer. The
 /// order is `depth::Order`'s own key — `x + y`, then height — and **this is
@@ -217,7 +267,7 @@ pub fn kind_colour(surface: &crate::occlusion::Surface) -> [f32; 3] {
 /// solid stands on one tile, and step 23.5's will not. Translucent and
 /// depth-free, a wrong order costs a shade rather than a wrong picture, which is
 /// exactly why that answer was taken first.
-pub fn standing(occlusion: &crate::occlusion::Occlusion, floor: i8) -> Vec<(Solid, [f32; 3])> {
+pub fn standing(occlusion: &crate::occlusion::Occlusion, cut: Cut) -> Vec<(Solid, [f32; 3])> {
     let bounds = occlusion.bounds();
     let mut found: Vec<(i32, i32, &crate::occlusion::Surface)> = (bounds.min_y..=bounds.max_y)
         .flat_map(|y| {
@@ -228,7 +278,7 @@ pub fn standing(occlusion: &crate::occlusion::Occlusion, floor: i8) -> Vec<(Soli
                     .map(move |surface| (x, y, surface))
             })
         })
-        .filter(|(_, _, surface)| surface.stands(floor))
+        .filter(|(_, _, surface)| cut.shows(surface))
         .collect();
     found.sort_by_key(|(x, y, surface)| (x + y, surface.bottom, surface.top));
     found
@@ -330,6 +380,68 @@ mod tests {
             "one tile east should move 22 across and 22 down, moved {:?}",
             (corners[1].x - corners[0].x, corners[1].y - corners[0].y)
         );
+    }
+
+    /// The two cuts differ by exactly the thing the datum exists for: the floor
+    /// under your own feet.
+    ///
+    /// Decision 39.8. The fixture is the case the backlog entry was written
+    /// about — a person standing on a floor at `z = 0` with a wall beside them —
+    /// and under `BelowFeet` the floor is not drawn, which is right for a
+    /// picture of what shadows them and is indistinguishable from a floor the
+    /// grid failed to build. What this holds is that the other answer exists and
+    /// is *strictly* the larger one: a cut that drew a different set rather than
+    /// a superset would be a second opinion about the grid.
+    #[test]
+    fn the_whole_grid_is_the_grid_above_your_feet_plus_the_floor_you_stand_on() {
+        use crate::camera::TileBounds;
+        use crate::cutaway::Cutaway;
+        use crate::occlusion::Builder;
+        use openshard_protocol::wire::Graphic;
+        use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+        let tile = |flags: u64, height: u8| StaticTile {
+            flags: TileFlags::new(flags),
+            height,
+            ..StaticTile::default()
+        };
+        let mut grid = Builder::new(TileBounds {
+            min_x: 100,
+            max_x: 110,
+            min_y: 100,
+            max_y: 110,
+        });
+        // The plank underfoot: a floor is what you cannot shoot through, so it
+        // is in the grid, and its top is exactly the height the body stands at.
+        grid.add(
+            104,
+            104,
+            0,
+            Graphic(0),
+            &tile(TileFlags::NO_SHOOT | TileFlags::FLOOR, 0),
+            crate::occlusion::Shape::UNREAD,
+        );
+        // And a wall on the same tile, twenty tall.
+        grid.add(
+            104,
+            104,
+            0,
+            Graphic(0),
+            &tile(TileFlags::NO_SHOOT | TileFlags::WALL, 20),
+            crate::occlusion::Shape::UNREAD,
+        );
+        let grid = grid.finish(&Cutaway::OPEN);
+
+        let feet = standing(&grid, Cut::BelowFeet(0));
+        let everything = standing(&grid, Cut::Nothing);
+        assert_eq!(feet.len(), 1, "the floor under your feet is not what shadows you");
+        assert_eq!(everything.len(), 2, "and the whole grid is where it can be seen");
+        for solid in &feet {
+            assert!(
+                everything.contains(solid),
+                "the cut should drop solids, not choose different ones",
+            );
+        }
     }
 
     /// The three faces meet at the solid's own centre-top corner and share their

@@ -47,6 +47,7 @@ use openshard_client_render::bench::{Metrics, Reading};
 use openshard_client_render::blit::ViewportRect;
 use openshard_client_render::camera::Camera;
 use openshard_client_render::follow::Rig;
+use openshard_client_render::solid::Cut;
 use openshard_uofiles::hues::Hues;
 use winit::window::Window;
 
@@ -185,6 +186,14 @@ pub struct Hud {
     pub show_occluders: bool,
     /// And whether the same grid is being drawn as solids — step 23.0.
     pub show_solids: bool,
+    /// How much of the grid either view draws — [`Cut`], the second datum.
+    ///
+    /// Resolved rather than chosen: [`Cut::BelowFeet`] carries the player's own
+    /// `z`, which is a fact about this frame, so what the HUD is handed is the
+    /// cut in force and not the person's preference. What comes back through
+    /// [`Request::solid_cut`] is the variant they picked, and the `z` in it is
+    /// whatever was in this one.
+    pub solid_cut: Cut,
     /// What the last frame's solids pass was handed, and what it drew: the rest
     /// fell outside the viewport. Both zero while the view is off.
     pub solids: (usize, usize),
@@ -334,6 +343,10 @@ pub struct Request {
     /// Switch the solids view on or off, likewise. It reads the same grid, so
     /// either box being ticked is what pays for building it.
     pub show_solids: Option<bool>,
+    /// Which of [`Cut`]'s two answers either view should draw from now on, on
+    /// the frame the person picked it. Both views, because they are read against
+    /// each other and two grids cut differently cannot be compared.
+    pub solid_cut: Option<Cut>,
     /// Start or stop a scripted walk.
     pub script: Option<ScriptRequest>,
     /// What the cursor may light from now on, on the frame the picker moved.
@@ -893,7 +906,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     if ui
         .checkbox(
             &mut boxes,
-            "occluders — surfaces that stop light above your feet: \
+            "occluders — the surfaces that stop light: \
              floor amber, wall red, whole-tile violet, pane cyan",
         )
         .changed()
@@ -904,21 +917,24 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         // Both numbers, and the second is the one the picture does not
         // show: an empty picture is a grid with nothing in it and a grid
         // that was never built, and on screen those two are one thing —
-        // the same reason the terrain overlay has counts. See [`stands`]
-        // for what the second number is made of.
+        // the same reason the terrain overlay has counts. What the second
+        // number is made of is the cut below.
         Some(occluders) => {
             let mut total = 0usize;
             let mut drawn = 0usize;
             for (_, _, surface) in surfaces_of(occluders) {
                 total += 1;
-                if surface.stands(hud.position.z) {
+                if hud.solid_cut.shows(surface) {
                     drawn += 1;
                 }
             }
-            ui.label(format!(
-                "{drawn} surfaces above your feet, {} below and not drawn",
-                total - drawn
-            ));
+            ui.label(match hud.solid_cut {
+                Cut::Nothing => format!("{drawn} surfaces, the whole grid"),
+                Cut::BelowFeet(_) => format!(
+                    "{drawn} surfaces above your feet, {} below and not drawn",
+                    total - drawn
+                ),
+            });
         }
         None => {
             ui.label("off");
@@ -952,6 +968,25 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
             ));
         }
     }
+    // The second datum, and it governs both views above — see
+    // [`Cut`](openshard_client_render::solid::Cut). Standing on a floor, that
+    // floor and everything under it are below your feet and are not drawn, so a
+    // hole in a floor and a floor the cut took away are the same picture; this
+    // is the switch that tells them apart. "Everything" is unreadable in a town
+    // on purpose — a pier is a slab on every plank — and that is what makes it
+    // an answer to a question rather than a default.
+    ui.horizontal(|ui| {
+        ui.label("draw (F4)");
+        for (cut, name) in [
+            (Cut::BelowFeet(hud.position.z), "above your feet"),
+            (Cut::Nothing, "everything"),
+        ] {
+            let picked = std::mem::discriminant(&hud.solid_cut) == std::mem::discriminant(&cut);
+            if ui.selectable_label(picked, name).clicked() {
+                request.solid_cut = Some(cut);
+            }
+        }
+    });
     ui.separator();
     // The two axes of the highlight, side by side because they are read
     // together: what may be lit, and how an item says it is.
@@ -1064,7 +1099,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
     // is the pair of facts the two views exist to be read as; the other one
     // hides the measurement behind the drawing.
     if let Some(occluders) = hud.occluders.as_ref().filter(|_| hud.show_occluders) {
-        draw_occluders(&world, &hud.camera, occluders, hud.position.z, viewport.min);
+        draw_occluders(&world, &hud.camera, occluders, hud.solid_cut, viewport.min);
     }
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
@@ -2002,13 +2037,13 @@ fn surfaces_of(
 /// question, had no colour left to be told in. A pane is rare enough to be the
 /// exception rather than the axis.
 ///
-/// What stands up, and not every surface — see [`stands`], and the count beside
+/// What `cut` leaves and not every surface — see [`Cut`], and the count beside
 /// the checkbox for what that leaves out.
 fn draw_occluders(
     painter: &egui::Painter,
     camera: &Camera,
     occluders: &openshard_client_render::occlusion::Occlusion,
-    floor: i8,
+    cut: Cut,
     viewport_origin: egui::Pos2,
 ) {
     use openshard_client_render::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH};
@@ -2018,9 +2053,8 @@ fn draw_occluders(
     // Back to front. Collected rather than drawn as they come, because a solid
     // needs an order and `surfaces_of` walks the grid in rows: a row of wall
     // drawn left to right paints its near end behind its far one.
-    let mut standing: Vec<(i32, i32, &openshard_client_render::occlusion::Surface)> = surfaces_of(occluders)
-        .filter(|(_, _, s)| s.stands(floor))
-        .collect();
+    let mut standing: Vec<(i32, i32, &openshard_client_render::occlusion::Surface)> =
+        surfaces_of(occluders).filter(|(_, _, s)| cut.shows(s)).collect();
     standing.sort_by_key(|(x, y, surface)| (x + y, surface.bottom, surface.top));
 
     for (x, y, surface) in standing {

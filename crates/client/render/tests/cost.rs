@@ -506,7 +506,13 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     // draws in the app. The list is built once and outside the timing: what is
     // being asked is what the *pass* costs, and the walk that produces the list
     // is `light::collect`'s cost, already reported above.
-    let boxes = openshard_client_render::solid::standing(&night.occlusion, BRITAIN.z);
+    // Under the cut the app opens with, which is the reading a person compares
+    // theirs against: `Cut::Nothing` draws a pier's every plank and is a
+    // different picture with a different cost.
+    let boxes = openshard_client_render::solid::standing(
+        &night.occlusion,
+        openshard_client_render::solid::Cut::BelowFeet(BRITAIN.z),
+    );
     let mut solids_pass = SolidsRenderer::new(&device, format);
     let solids_frame = openshard_client_render::solids::Frame {
         target: &surface_view,

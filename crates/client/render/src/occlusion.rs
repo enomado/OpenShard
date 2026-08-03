@@ -589,7 +589,7 @@ impl Surface {
             // drawing it as one leaves a floor and the tile below it telling the
             // same story. The thickness is downwards because the surface a ray
             // is stopped by is the top one.
-            0 => low.z = high.z - LID_THICKNESS,
+            0 => low.z = high.z - DRAWN_LID_THICKNESS,
             // A body. Already a box, and the only kind that was one before this.
             EDGE_ANY => {}
             // A panel: a slab on the named edge, lying *inside* its tile with its
@@ -598,29 +598,39 @@ impl Surface {
             // tiles do not draw one solid inside another and make a joint look
             // like a doubled wall — which is a real defect and would then be
             // invisible against a drawing artefact.
-            EDGE_NORTH => high.y = y + PANEL_THICKNESS,
-            EDGE_SOUTH => low.y = y + 1.0 - PANEL_THICKNESS,
-            EDGE_WEST => high.x = x + PANEL_THICKNESS,
-            _ => low.x = x + 1.0 - PANEL_THICKNESS,
+            EDGE_NORTH => high.y = y + DRAWN_PANEL_THICKNESS,
+            EDGE_SOUTH => low.y = y + 1.0 - DRAWN_PANEL_THICKNESS,
+            EDGE_WEST => high.x = x + DRAWN_PANEL_THICKNESS,
+            _ => low.x = x + 1.0 - DRAWN_PANEL_THICKNESS,
         }
         crate::solid::Solid { min: low, max: high }
     }
 }
 
-/// How thick a panel is drawn, in tiles.
+/// How thick a panel is **drawn**, in tiles.
 ///
 /// A fifth of a tile: about nine screen pixels across the diamond at 1:1, which
 /// is enough that the top face reads as a top face and little enough that a
 /// street of houses still looks like a street. Chosen to be *seen* — the art
 /// cannot measure a wall's depth (decision 3) and nothing has authored one yet
 /// (step 23.3), so any number here would be invented and this one says so.
-pub const PANEL_THICKNESS: f64 = 0.2;
+///
+/// **`DRAWN_` is the whole of the name and it is a fence.** No ray is tested
+/// against this: the walk crosses a panel's *plane*, and the only reader is
+/// [`Surface::solid`], which is a picture. Step 23.1 gives a solid a thickness a
+/// ray is genuinely stopped by, and that number is a different one arrived at by
+/// a different argument — a scene that does not move. Two constants called
+/// `PANEL_THICKNESS`, one drawn and one tested, is how a rule and its
+/// replacement drift apart, so this one says which it is before the other
+/// exists.
+pub const DRAWN_PANEL_THICKNESS: f64 = 0.2;
 
 /// And how thick a lid is drawn, in `z` units.
 ///
 /// Two, which is 8 pixels of visible side band at 1:1 — the same argument as
-/// [`PANEL_THICKNESS`], on the axis the projection squashes by five and a half.
-pub const LID_THICKNESS: f64 = 2.0;
+/// [`DRAWN_PANEL_THICKNESS`], including the fence in its name, on the axis the
+/// projection squashes by five and a half.
+pub const DRAWN_LID_THICKNESS: f64 = 2.0;
 
 /// One tile's worth of occlusion: how much it stops, and between which heights.
 ///
@@ -2133,6 +2143,144 @@ mod tests {
                 opacity: OPAQUE,
                 edges: EDGE_SOUTH,
             }),
+        );
+    }
+
+    /// **A panel is drawn on the plane a pixel of that face lies on**, and the
+    /// plane is derived from [`crate::facing::Face::place_at`] rather than
+    /// restated here.
+    ///
+    /// The instrument's own honesty, and the failure it is aimed at is quiet:
+    /// [`Surface::solid`] is what both views draw, nothing tied its box to the
+    /// geometry the walk crosses, and a panel drawn on the wrong edge of its tile
+    /// would look like a wall standing a tile out of place — which reads as a
+    /// defect in the *map* rather than in the picture of it. An instrument that
+    /// can be wrong in a way indistinguishable from what it is measuring is worse
+    /// than no instrument.
+    ///
+    /// `place_at` is the right other end of the claim because it is what
+    /// `statics.wgsl` places a face fragment with: the point it hands back is
+    /// where that pixel *is*, and the axis that does not move along the run is
+    /// the plane the whole face lies in. That is the plane `light::walk_cells`
+    /// pierces when the ray crosses this edge, so a box with a face on it is a
+    /// box the shader agrees with.
+    ///
+    /// What it does not claim is a thickness: [`DRAWN_PANEL_THICKNESS`] is a
+    /// drawing number and this test reads it rather than checking it. What is
+    /// checked is the *direction* — the slab lies inside its own tile, away from
+    /// [`crate::facing::Face::outward`] — because a slab drawn straddling the
+    /// edge would put two neighbouring walls one inside the other and make an
+    /// honest joint look like a doubled wall.
+    #[test]
+    fn a_panel_is_drawn_on_the_plane_its_face_pixels_lie_on() {
+        use crate::facing::{Face, Facing};
+
+        let (x, y) = (1500, 1600);
+        for face in [Face::North, Face::East, Face::South, Face::West] {
+            let surface = Surface {
+                bottom: 0,
+                top: 20,
+                opacity: OPAQUE,
+                edges: edges_of(Some(Facing::One(face))),
+                aperture: None,
+                roof: false,
+            };
+            let solid = surface.solid(x, y);
+            // Where the two ends of this face's run are, in the tile's own unit
+            // square. The axis they agree on is the one the face is flat in.
+            let (near, far) = (face.place_at(0.0), face.place_at(1.0));
+            let flat_in_x = (near.0 - far.0).abs() < 1e-6;
+            let (axis, plane) = match flat_in_x {
+                true => (0, f64::from(x) + f64::from(near.0)),
+                false => (1, f64::from(y) + f64::from(near.1)),
+            };
+            let (min, max) = ([solid.min.x, solid.min.y][axis], [solid.max.x, solid.max.y][axis]);
+            // Which of the box's two faces on this axis is the outer one is the
+            // face's own outward direction, and the same number says the slab
+            // lies inside the tile rather than straddling the plane.
+            let outward = f64::from(face.outward()[axis]);
+            assert!(
+                outward != 0.0,
+                "{face:?} does not face along the axis it is flat in"
+            );
+            let (outer, inner) = match outward > 0.0 {
+                true => (max, min),
+                false => (min, max),
+            };
+            assert!(
+                (outer - plane).abs() < 1e-9,
+                "{face:?}: the outer face is at {outer} and its pixels are at {plane}",
+            );
+            assert!(
+                ((inner - outer) * outward + DRAWN_PANEL_THICKNESS).abs() < 1e-9,
+                "{face:?}: the slab should lie {DRAWN_PANEL_THICKNESS} inside its tile, it lies \
+                 {} from {outer} to {inner}",
+                inner - outer,
+            );
+            // And across the run it is the whole tile, because a run of wall is
+            // one surface: a panel short of its own edge would leave a hairline
+            // at every join, which is the class decision 38 exists to kill.
+            let along = 1 - axis;
+            let (from, to) = (
+                [solid.min.x, solid.min.y][along],
+                [solid.max.x, solid.max.y][along],
+            );
+            let corner = f64::from([x, y][along]);
+            assert!(
+                (from - corner).abs() < 1e-9 && (to - corner - 1.0).abs() < 1e-9,
+                "{face:?}: the run should span the whole tile, it spans {from}..{to}",
+            );
+            assert!(
+                (solid.min.z - f64::from(surface.bottom)).abs() < 1e-9
+                    && (solid.max.z - f64::from(surface.top)).abs() < 1e-9,
+                "{face:?}: the span drawn is not the span the walk tests",
+            );
+        }
+    }
+
+    /// And the other two kinds: a lid's top face is the plane a ray crosses it
+    /// at, and a body is exactly its tile.
+    ///
+    /// The companion to the test above, and the same argument. A lid is *stopped
+    /// at* by [`crate::light`]'s `crosses`, which asks whether the ray got to the
+    /// other side of the span — so what a person has to be able to see is the
+    /// top, and a slab drawn hanging *above* its own plane would put a floor at
+    /// the height of the storey over it. A body is travelled through and its
+    /// extent is the tile, which is the one kind that was already a box.
+    #[test]
+    fn a_lid_hangs_under_its_plane_and_a_body_is_its_tile() {
+        let (x, y) = (1500, 1600);
+        let of = |edges: u8| {
+            Surface {
+                bottom: 0,
+                top: 20,
+                opacity: OPAQUE,
+                edges,
+                aperture: None,
+                roof: false,
+            }
+            .solid(x, y)
+        };
+        let lid = of(0);
+        assert!(
+            (lid.max.z - 20.0).abs() < 1e-9 && (lid.min.z - (20.0 - DRAWN_LID_THICKNESS)).abs() < 1e-9,
+            "a lid's top is its plane and it hangs under it, it is {lid:?}",
+        );
+        let body = of(EDGE_ANY);
+        assert!(
+            (body.min.x - f64::from(x)).abs() < 1e-9
+                && (body.max.x - f64::from(x) - 1.0).abs() < 1e-9
+                && (body.min.y - f64::from(y)).abs() < 1e-9
+                && (body.max.y - f64::from(y) - 1.0).abs() < 1e-9
+                && (body.min.z).abs() < 1e-9
+                && (body.max.z - 20.0).abs() < 1e-9,
+            "a body is its whole tile and its whole span, it is {body:?}",
+        );
+        // Both of them across the whole tile, which is what tells a lid from a
+        // panel on screen: a panel is a ribbon, a lid is the tile.
+        assert!(
+            (lid.min.x - f64::from(x)).abs() < 1e-9 && (lid.max.x - f64::from(x) - 1.0).abs() < 1e-9,
+            "a lid should cover its tile, it is {lid:?}",
         );
     }
 

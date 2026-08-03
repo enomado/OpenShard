@@ -682,6 +682,7 @@ pub fn run<D: Dial + Send + 'static>(
         show_terrain: false,
         show_occluders: false,
         show_solids: solids,
+        solids_everything: false,
         solids_held: 0,
         solids_drawn: 0,
         occlusion_bake: occlusion::bake::Bake::new(),
@@ -1421,6 +1422,22 @@ struct App {
     /// at once is a legitimate reading and is what the outline over a filled face
     /// is for.
     show_solids: bool,
+    /// Whether either of those two views draws the **whole** grid rather than
+    /// what stands above the player's feet — the second datum, and the enum it
+    /// resolves to is [`solid::Cut`](openshard_client_render::solid::Cut).
+    ///
+    /// A `bool` here and an enum there, and the split is deliberate: what a
+    /// person picks is one of two questions and holds across frames, while the
+    /// cut in force carries the player's own `z` and is a fact about the frame
+    /// it is drawn in. [`App::solid_cut`] is the one place the two are joined,
+    /// so a stale `z` cannot be stored anywhere.
+    ///
+    /// Off, because the whole grid over a town is unreadable — a pier is a slab
+    /// on every plank — and the readable answer is the one a person should get
+    /// without asking. What it costs to have it be a switch at all is the
+    /// backlog entry it closes: a hole in a floor and a floor below the cut are
+    /// the same picture, and no count beside the checkbox can tell them apart.
+    solids_everything: bool,
     /// How many solids the last frame's pass was handed, and how many of those
     /// it drew — the rest fell outside the viewport.
     ///
@@ -1714,6 +1731,15 @@ impl ApplicationHandler<link::Update> for App {
                     // checkbox has moved the camera by the time it is back.
                     KeyCode::F5 => {
                         self.show_solids = !self.show_solids;
+                        true
+                    }
+                    // And how much of the grid either view draws — the second
+                    // datum, and a key for the same reason F5 is one, only more
+                    // so: the question it answers is "is that floor missing, or
+                    // is it under my feet", and the two pictures that answer it
+                    // differ in nothing but this.
+                    KeyCode::F4 => {
+                        self.solids_everything = !self.solids_everything;
                         true
                     }
                     KeyCode::F11 => {
@@ -3103,6 +3129,22 @@ impl App {
     /// is the question actually being asked while dragging the mouse over a
     /// building looking for the way in. One [`find_path`] per frame, and only
     /// while the overlay is on.
+    /// How much of the occlusion grid the two views of it draw this frame.
+    ///
+    /// The one place [`App::solids_everything`] — what the person picked — and
+    /// the player's own `z` — what this frame is — are joined, so that no
+    /// stale height can be stored anywhere and the wireframe and the solids
+    /// pass cannot be cut differently. See
+    /// [`solid::Cut`](openshard_client_render::solid::Cut).
+    fn solid_cut(&self) -> openshard_client_render::solid::Cut {
+        use openshard_client_render::solid::Cut;
+
+        match self.solids_everything {
+            true => Cut::Nothing,
+            false => Cut::BelowFeet(self.player.at.z),
+        }
+    }
+
     fn terrain_overlay(&self, camera: Camera, hover: Option<&shell::PickedTile>) -> shell::TerrainOverlay {
         use openshard_movement::{PLAYER_HEIGHT, Tile, find_path, step_allowed};
 
@@ -3213,6 +3255,12 @@ impl App {
         }
         if let Some(show) = request.show_solids {
             self.show_solids = show;
+        }
+        // The variant and not the `z` in it: what the person picked holds across
+        // frames, and the height they were standing at when they picked it is
+        // this frame's business — see [`App::solid_cut`].
+        if let Some(cut) = request.solid_cut {
+            self.solids_everything = matches!(cut, openshard_client_render::solid::Cut::Nothing);
         }
         if let Some(target) = request.highlight {
             self.highlight = target;
@@ -3360,6 +3408,7 @@ impl App {
                 .then(|| self.terrain_overlay(camera, hover.as_ref())),
             show_occluders: self.show_occluders,
             show_solids: self.show_solids,
+            solid_cut: self.solid_cut(),
             solids: (self.solids_held, self.solids_drawn),
             // The grid the lighting will build a few lines later in the same
             // frame, built here a second time rather than kept from the last
@@ -4100,6 +4149,9 @@ impl App {
         let want = camera.visible_tiles();
         let wanted = self.wanted_since(camera, self.covered);
         let mut drawn = self.drawn_mobiles();
+        // Likewise: the cut the solids view is drawn under reads the player, and
+        // the pass that uses it runs inside the window's borrow.
+        let solid_cut = self.solid_cut();
 
         let Some(window) = self.window.as_mut() else {
             return;
@@ -4611,7 +4663,7 @@ impl App {
         // of the map. A picture of a grid rebuilt beside the one in force would
         // be a claim about a grid nothing rendered.
         if self.show_solids {
-            let standing = openshard_client_render::solid::standing(&lighting.occlusion, self.player.at.z);
+            let standing = openshard_client_render::solid::standing(&lighting.occlusion, solid_cut);
             self.solids_held = standing.len();
             self.solids_drawn = window.solids.render(
                 &window.device,
