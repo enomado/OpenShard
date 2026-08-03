@@ -85,7 +85,10 @@ impl Picture {
     /// half a statement about the neighbour.
     pub fn tile(&self, x: u16, y: u16) -> f32 {
         let (px, py) = self.at(f32::from(x) + 0.5, f32::from(y) + 0.5);
-        let pixel = self.pixel(px.clamp(0, self.width as i32 - 1) as u32, py.clamp(0, self.height as i32 - 1) as u32);
+        let pixel = self.pixel(
+            px.clamp(0, self.width as i32 - 1) as u32,
+            py.clamp(0, self.height as i32 - 1) as u32,
+        );
         pixel[..3].iter().map(|c| f32::from(*c) / 255.0).sum::<f32>() / 3.0
     }
 
