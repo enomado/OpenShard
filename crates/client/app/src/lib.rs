@@ -539,6 +539,30 @@ pub fn run<D: Dial + Send + 'static>(
             // surprises nobody. Sliding is what a player opts into.
             let mut steer = steer::Steering::default();
             steer.set_leeway(Leeway::Eighth);
+            // The other one, and here for the same reason: what a turn costs
+            // the step behind it. The reference client charges its own
+            // `TurnDelay` for one, so a click sideways squares the body up and
+            // sets off a beat later rather than pivoting and leaving in the
+            // same frame — see `steer::Turning`, which is also the default.
+            //
+            // Read from the environment until there is a client config to read
+            // it from, because this one is only judged by feel: the three
+            // answers have to be swapped between on a running shard, by the
+            // person whose hand is on the mouse, or nobody can say which is
+            // right.
+            steer.set_turning(match std::env::var("OPENSHARD_TURN").as_deref() {
+                Ok("immediate") => steer::Turning::Immediate,
+                Ok("fast") => steer::Turning::Fast,
+                Ok("deliberate") => steer::Turning::Deliberate,
+                Ok(other) => {
+                    eprintln!(
+                        "OPENSHARD_TURN={other}: expected deliberate, fast or immediate — \
+                         using the reference client's, deliberate"
+                    );
+                    steer::Turning::Deliberate
+                }
+                Err(_) => steer::Turning::Deliberate,
+            });
             steer
         },
         aiming: false,

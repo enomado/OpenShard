@@ -2970,3 +2970,36 @@ What was found on the way and left undone:
   function per tab, plus `overlays`. A `shell/` module with a file per tab is the
   obvious next split, and the file is close enough to the ~2k line rule that it
   should happen before the next panel is added.
+
+## Backlog, found while giving the turn its own delay
+
+Turning is a whole step in UO, and this client used to charge nothing for one:
+`Steering::charge` treated a direction change as free and `App::about_to_wait`
+looped twice on purpose, so the turn and the step it preceded left in the same
+wake and a player never saw the body square up. The reference does the opposite
+— `PlayerMobile.Walk` leaves `x`/`y`/`z` alone when the direction asked for is
+not the one the body faces and charges `MovementSpeed.TurnDelay`
+(`Constants.TURN_DELAY = 80`, `TURN_DELAY_FAST = 45`) — so a click sideways
+turns first and covers ground a beat later. `steer::Turning` is that setting,
+defaulting to the reference's, with `Turning::Immediate` keeping the old
+behaviour. What was found on the way and left undone:
+
+- **The walk oracle in `dst.rs` does not model the turn.** The harness pins
+  `Turning::Immediate` on its `Steering` so its constant-velocity oracle stays
+  the truth, which means the *shipped* default's timing is only covered by unit
+  tests in `steer.rs`. That is a real hole if the turn ever interacts with
+  latency or wake jitter — a turn charged 80ms while a `0x21` is in flight is
+  exactly the sort of thing the DST exists to find. Closing it is a turn tax
+  term in `Oracle::build`, one knot of standing still per direction change, and
+  a scenario that turns under latency.
+- **`OPENSHARD_TURN` is a stopgap, like `set_leeway` before it.** Two settings
+  now exist that are a player's taste rather than a rule, both set in one place
+  in `lib.rs`, and neither has a config file to come from. That is the shape of
+  a client config: the walk's preferences want to arrive as a struct read once
+  at startup, not as one environment variable per question.
+- **The reference's adaptive coalescing is not ported.** ClassicUO suppresses
+  the direction-only packet entirely once `Walker.UnacceptedPacketsCount >= 3`
+  — it turns the body locally and sends nothing, so a congested link stops
+  spending its budget on turns. Ours always sends the turn. Worth having when
+  there is a real link to congest; our own `Walk` already counts what would be
+  needed.

@@ -56,6 +56,15 @@
 //!
 //! **An input joins the queue or rebuilds it. A step already begun ticks out.**
 //!
+//! A turn is the one step that is not a hold long. A body asked for a direction
+//! it is not facing turns and covers no ground, which the shard takes without
+//! charging its pace budget at all — so what the step behind a turn waits for is
+//! this end's decision, and it is [`Turning`]'s. The default is the reference
+//! client's: [`TURN_HOLD`], ClassicUO's `MovementSpeed.TurnDelay`. A click
+//! sideways therefore squares the body up first and sets off a beat later, which
+//! is the movement people remember; [`Turning::Immediate`] is the other answer,
+//! where the pair leaves in one wake.
+//!
 //! An input never moves the deadline earlier. It changes which way the step the
 //! walk already owes will go — [`Steering::take`] reads the keys at the moment
 //! the step leaves and not at the moment they were pressed, so the queue is one
@@ -163,6 +172,59 @@ use crate::keys::Held;
 /// one of those, `STUCK_STEPS` times over and again on every re-click. A budget
 /// sized for "ample" and not "generous" is what keeps that bounded.
 pub const PLAN_BUDGET: usize = 600;
+
+/// How long the step that follows a turn waits: ClassicUO's
+/// `Constants.TURN_DELAY`, charged in `PlayerMobile.Walk` as
+/// `MovementSpeed.TurnDelay` whenever the direction asked for is not the one
+/// the body is already facing.
+///
+/// A turn is a step of its own in UO, and this is what makes a player *see* it:
+/// the click turns the body, and the ground is only covered by the request
+/// after it. See [`Turning`].
+pub const TURN_HOLD: Duration = Duration::from_millis(80);
+
+/// [`TURN_HOLD`] at ClassicUO's `FastRotation` setting
+/// (`Constants.TURN_DELAY_FAST`) — the same behaviour, spun through quicker.
+pub const TURN_HOLD_FAST: Duration = Duration::from_millis(45);
+
+/// What a turn costs the walk it precedes.
+///
+/// A mobile asked for a direction it is not facing turns and covers no ground —
+/// the shard answers that with a `0x22` and never touches the pace budget, so
+/// *nothing on the wire* forces a gap before the step that follows. What decides
+/// whether there is one is this end, and it is the difference between a body
+/// that visibly squares up before it sets off and one that pivots and leaves in
+/// the same frame. Both are playable; only one of them is what the reference
+/// client does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Turning {
+    /// ClassicUO's, and the default: the turn is a step of its own and the one
+    /// it precedes waits [`TURN_HOLD`] for it.
+    #[default]
+    Deliberate,
+    /// The same, at ClassicUO's `FastRotation` — [`TURN_HOLD_FAST`].
+    Fast,
+    /// The turn and the step it precedes leave in the same wake: no gap at all.
+    ///
+    /// Not the reference's behaviour, and kept because it is defensible on its
+    /// own terms — a walk that starts on the frame the input arrived — and
+    /// because the walk oracle in `dst.rs` is written against it: that harness
+    /// is about the *cadence* of a walk under latency and wake jitter, and a
+    /// turn tax in front of it would only be a constant it had to model twice.
+    Immediate,
+}
+
+impl Turning {
+    /// How long the step after a turn waits, or `None` when it does not wait at
+    /// all.
+    const fn hold(self) -> Option<Duration> {
+        match self {
+            Turning::Deliberate => Some(TURN_HOLD),
+            Turning::Fast => Some(TURN_HOLD_FAST),
+            Turning::Immediate => None,
+        }
+    }
+}
 
 /// How many steps in a row may leave the body exactly where it was before a walk
 /// to a destination gives up.
@@ -279,6 +341,9 @@ pub struct Steering {
     /// moving — see [`Leeway`], and [`Steering::set_leeway`] for where this
     /// comes from.
     leeway: Leeway,
+    /// What a turn costs the step it precedes — see [`Turning`], and
+    /// [`Steering::set_turning`].
+    turning: Turning,
 }
 
 impl Steering {
@@ -352,6 +417,16 @@ impl Steering {
     /// the decision is made, so there is no state to reset when it changes.
     pub fn set_leeway(&mut self, leeway: Leeway) {
         self.leeway = leeway;
+    }
+
+    /// What a turn costs the step it precedes — see [`Turning`]. The default is
+    /// the reference client's, [`Turning::Deliberate`].
+    ///
+    /// The same kind of seam as [`Steering::set_leeway`]: a player's setting,
+    /// read where the decision is made, so it takes effect on the next step and
+    /// there is no state to reset when it changes.
+    pub fn set_turning(&mut self, turning: Turning) {
+        self.turning = turning;
     }
 
     /// Walk to `tile`, from wherever the body is standing now. Answers the step
@@ -675,7 +750,7 @@ impl Steering {
     /// Arm the clock for whatever comes after the step just sent, and remember
     /// which way that step went.
     ///
-    /// # A turn is a step that costs no time
+    /// # A turn is a step, and what it costs is a setting
     ///
     /// Turning is a whole step in UO — a mobile asked for a direction it is not
     /// facing turns and moves nowhere, and the shard answers it with its own
@@ -684,12 +759,15 @@ impl Steering {
     /// (`openshard_movement::Walker::request`), because spinning on the spot is
     /// something clients genuinely do and throttling it would be absurd.
     ///
-    /// So the step a turn precedes is due at once rather than a hold later. The
-    /// hold was ours and nothing asked for it: it put 400ms of standing still
-    /// between the player pressing a new direction and their character setting
-    /// off, which is not what the game does and not what anyone remembers it
-    /// doing. The caller takes both in one wake, so the two `0x02`s leave
-    /// together and the body starts moving on the frame the key went down.
+    /// So nothing on the wire decides how long the step behind a turn waits;
+    /// this end does, and [`Turning`] is the setting. At the default it waits
+    /// [`TURN_HOLD`], which is ClassicUO's `MovementSpeed.TurnDelay` and is
+    /// what makes a click *square the body up* before it sets off — the
+    /// reference client's feel, and what a player who has played one remembers.
+    /// At [`Turning::Immediate`] the pair leaves in one wake instead: the clock
+    /// is left exactly where it was and the *step* is what charges it, so the
+    /// two `0x02`s go out together and the body moves on the frame the input
+    /// arrived.
     fn charge(&mut self, asking: Option<Facing>, now: Instant, facing: Direction) {
         let Some(step) = asking else {
             self.stand();
@@ -701,35 +779,50 @@ impl Steering {
         // right.
         let facing = self.asked.unwrap_or(facing);
         self.asked = Some(step.direction);
+        if step.direction == facing {
+            // Ground is being covered: the real thing, paced at the real rate.
+            self.arm(self.interval(), now);
+            return;
+        }
+        if let Some(hold) = self.turning.hold() {
+            // A turn of its own, and the step it was for waits it out. Nothing
+            // special is needed to *make* it wait — the deadline is the queue
+            // rule's whole mechanism, and arming it for a shorter interval than
+            // a step's is the entire difference between this and the branch
+            // below.
+            self.arm(hold, now);
+            return;
+        }
         // A second direction change with no step between is not the "turn
-        // precedes its step" pattern this exists for — it is exactly what a
-        // heading whose resolved direction keeps changing (`detour`, sliding
-        // around an obstacle) produces call after call, and the free ride
-        // has already been spent this cadence. Pace it like the real step it
-        // is instead of letting it through as another turn — see the field's
+        // precedes its step" pattern the free ride exists for — it is exactly
+        // what a heading whose resolved direction keeps changing (`detour`,
+        // sliding around an obstacle) produces call after call, and the free
+        // ride has already been spent this cadence. Pace it like the real step
+        // it is instead of letting it through as another turn — see the field's
         // own doc for what letting it through cost.
-        if step.direction == facing || self.turned {
-            // Read before the walk is declared under way: what `next_due` needs
-            // to know is whether the deadline it is chaining from belongs to a
-            // walk that was still going.
-            let due = self.next_due(now);
-            self.walking = true;
-            self.turned = false;
-            self.due = Some(due);
+        if self.turned {
+            self.arm(self.interval(), now);
             return;
         }
         self.walking = true;
         self.turned = true;
-        // A turn, and the step it precedes leaves in the same wake. So the clock
-        // is left exactly where it was and the *step* is what charges it: the
-        // pair is one ask against the rate floor, which is what stops a player
-        // spinning through the arrows from buying a step per press.
-        //
-        // Where it was is either a deadline that has just passed — charging from
-        // `now` instead would fold this wake's lateness into the cadence, which
-        // is the drift `next_due` exists to refuse — or nothing at all, which is
-        // the first ask of a walk and is due this instant.
+        // Where the clock was is either a deadline that has just passed —
+        // charging from `now` instead would fold this wake's lateness into the
+        // cadence, which is the drift `next_due` exists to refuse — or nothing
+        // at all, which is the first ask of a walk and is due this instant.
         self.due = Some(self.due.unwrap_or(now));
+    }
+
+    /// Arm the clock for a step of length `interval`, and declare the walk under
+    /// way.
+    fn arm(&mut self, interval: Duration, now: Instant) {
+        // Read before the walk is declared under way: what `next_due` needs to
+        // know is whether the deadline it is chaining from belongs to a walk
+        // that was still going.
+        let due = self.next_due(now, interval);
+        self.walking = true;
+        self.turned = false;
+        self.due = Some(due);
     }
 
     /// Whether the step in flight has run its course, so that the next one may
@@ -798,8 +891,11 @@ impl Steering {
     /// A wake later than a whole step is not jitter — the window was minimised
     /// or the machine asleep — and those steps are deliberately not banked (see
     /// [`Steering::due`]), so the cadence starts again from `now`.
-    fn next_due(&self, now: Instant) -> Instant {
-        let interval = self.interval();
+    ///
+    /// `interval` is what the step being charged actually takes: a walk's, a
+    /// run's, or a turn's ([`Turning`]) — the chaining is the same for all
+    /// three, and the interval is the only thing that differs.
+    fn next_due(&self, now: Instant, interval: Duration) -> Instant {
         match self.due {
             Some(due) if self.walking && now < due + interval => due + interval,
             _ => now + interval,
@@ -1435,10 +1531,17 @@ mod tests {
     /// is different every call; only [`Steering::turned`] does. Before it
     /// existed, every one of the 30 calls below bought a step — a real body
     /// slid around a real corner noticeably faster than a straight walk.
+    ///
+    /// Stated at [`Turning::Immediate`], because that is the mode the free
+    /// turn — and so the guard against a second one — exists in at all. The
+    /// default charges every turn its own delay, which cannot buy a step by
+    /// construction; `spinning_the_cursor_never_covers_ground_faster_than_a_walk`
+    /// is that half.
     #[test]
     fn a_heading_that_keeps_changing_direction_does_not_buy_a_step_each() {
         let start = Instant::now();
         let mut steering = Steering::default();
+        steering.set_turning(Turning::Immediate);
         // None of these is the facing the body is standing at below, so the
         // very first call is a genuine turn — the body starting to walk,
         // same as the arrow mash above — and not, by coincidence, already
@@ -1516,6 +1619,151 @@ mod tests {
         );
     }
 
+    /// The click that turns before it steps, which is the reference client's
+    /// movement and the default here: a body facing north, asked for east,
+    /// sends the turn now and covers the ground a `TURN_HOLD` later.
+    ///
+    /// ClassicUO's `PlayerMobile.Walk` is where the shape comes from — a
+    /// request whose direction is not the one the body faces leaves `x`, `y`
+    /// and `z` alone and charges `MovementSpeed.TurnDelay`, so the ground is
+    /// only covered by the request after it.
+    #[test]
+    fn a_turn_is_a_step_of_its_own_and_the_walk_waits_it_out() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        let turn = TURN_HOLD.as_millis() as u64;
+
+        // Facing north, asking east: this is the turn, and it is all it is.
+        assert_eq!(
+            steering.steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::North,
+                &OpenWorld
+            ),
+            Some(Facing::walking(Direction::East))
+        );
+        assert_eq!(
+            steering.deadline(),
+            Some(at(start, turn)),
+            "a turn's delay, not a whole hold and not nothing"
+        );
+        assert_eq!(
+            steering.due(at(start, turn - 1), here(), Direction::East, &OpenWorld),
+            None,
+            "the body is squaring up; nothing else has come due"
+        );
+        // Facing east now — the shard has acked the turn — so this one is the
+        // step the turn was for.
+        assert_eq!(
+            steering.due(at(start, turn), here(), Direction::East, &OpenWorld),
+            Some(Facing::walking(Direction::East))
+        );
+        assert_eq!(
+            steering.deadline(),
+            Some(at(start, turn + 400)),
+            "and from there it is an ordinary walk"
+        );
+    }
+
+    /// The other mode, stated: the turn and the step it precedes leave in one
+    /// wake, which is what `dst.rs`'s oracle is written against and what this
+    /// client did before the reference's own delay was put back.
+    #[test]
+    fn an_immediate_turn_takes_its_step_in_the_same_wake() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        steering.set_turning(Turning::Immediate);
+
+        assert_eq!(
+            steering.steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::North,
+                &OpenWorld
+            ),
+            Some(Facing::walking(Direction::East)),
+            "the turn"
+        );
+        assert_eq!(
+            steering.due(start, here(), Direction::East, &OpenWorld),
+            Some(Facing::walking(Direction::East)),
+            "and the step it was for, in the same instant"
+        );
+        assert_eq!(steering.deadline(), Some(at(start, 400)));
+    }
+
+    /// Fast rotation is the same rule at ClassicUO's own faster number, and
+    /// nothing else about the walk changes with it.
+    #[test]
+    fn fast_rotation_only_shortens_the_turn() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        steering.set_turning(Turning::Fast);
+
+        steering
+            .steer(
+                Some(Heading::centred(Direction::East)),
+                here(),
+                start,
+                Direction::North,
+                &OpenWorld,
+            )
+            .expect("the turn");
+        let turn = TURN_HOLD_FAST.as_millis() as u64;
+        assert_eq!(steering.deadline(), Some(at(start, turn)));
+        assert_eq!(
+            steering.due(at(start, turn), here(), Direction::East, &OpenWorld),
+            Some(Facing::walking(Direction::East))
+        );
+        assert_eq!(steering.deadline(), Some(at(start, turn + 400)));
+    }
+
+    /// A turn is a step and is paced like one, so spinning the cursor round the
+    /// body cannot be a way to move faster than a body walks: the ground is
+    /// only ever covered by an ask that keeps the facing, and each of those is
+    /// a whole hold apart.
+    #[test]
+    fn spinning_the_cursor_never_covers_ground_faster_than_a_walk() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        let headings = [
+            Direction::East,
+            Direction::South,
+            Direction::West,
+            Direction::North,
+        ];
+
+        // Facing north throughout: the shard is never told otherwise, so every
+        // ask below that is not north is a turn and covers nothing.
+        let mut ground = 0;
+        for (tick, &direction) in headings.iter().cycle().take(200).enumerate() {
+            let now = at(start, 5 * tick as u64);
+            if let Some(step) = steering.steer(
+                Some(Heading::centred(direction)),
+                here(),
+                now,
+                Direction::North,
+                &OpenWorld,
+            ) {
+                // What the body was facing when this left — `asked` is set to
+                // this step's own direction by then, so the caller's facing is
+                // the honest one to measure against.
+                if step.direction == Direction::North {
+                    ground += 1;
+                }
+            }
+        }
+        // A second of spinning at 5ms an event. Two and a half walking steps is
+        // the ceiling, and the run above is nowhere near even that.
+        assert!(
+            ground <= 2,
+            "spinning the cursor covered ground {ground} times in a second of walking"
+        );
+    }
+
     /// A rollback makes the facing this end believed it had asked for a lie, and
     /// the shard's word replaces it. Without that, the step after a `0x21` is
     /// decided against a direction nobody is facing: it is timed as a turn when
@@ -1530,16 +1778,28 @@ mod tests {
             .unwrap();
         // The shard refuses it and says the body is still facing north.
         steering.corrected(Direction::North);
-        // Facing north, asking east: a turn, so the step it precedes is due in
-        // the same wake rather than a hold after it.
+        // Facing north, asking east: a turn, so what leaves at the deadline is
+        // the turn and the step it precedes is a turn's delay behind it — not a
+        // whole hold, which is what it would be if the facing this end believed
+        // in had survived the rollback.
         assert_eq!(
             steering.due(at(start, 400), here(), Direction::North, &OpenWorld),
             Some(Facing::walking(Direction::East))
         );
         assert_eq!(
             steering.due(at(start, 400), here(), Direction::North, &OpenWorld),
+            None,
+            "the turn is a step of its own; the wake it left in owes nothing more"
+        );
+        assert_eq!(
+            steering.due(
+                at(start, 400 + TURN_HOLD.as_millis() as u64),
+                here(),
+                Direction::North,
+                &OpenWorld
+            ),
             Some(Facing::walking(Direction::East)),
-            "the step the turn was for, in the same wake"
+            "the step the turn was for"
         );
     }
 
@@ -1666,20 +1926,24 @@ mod tests {
                 &Boxed,
             )
             .expect("the turn");
-        for step in 1..4u64 {
+        // The turn is a step of its own, so the retries are measured from the
+        // end of it and not from the ask.
+        let turn = TURN_HOLD.as_millis() as u64;
+        assert_eq!(steering.deadline(), Some(at(start, turn)));
+        for step in 0..3u64 {
             assert_eq!(
-                steering.due(at(start, 400 * step), here(), Direction::East, &Boxed),
+                steering.due(at(start, turn + 400 * step), here(), Direction::East, &Boxed),
                 None
             );
             assert_eq!(
                 steering.deadline(),
-                Some(at(start, 400 * (step + 1))),
+                Some(at(start, turn + 400 * (step + 1))),
                 "step {step}: paced like a walk, so the retry is not a spin"
             );
         }
         // The door opens, the crate is moved, the body in the way walks off.
         assert_eq!(
-            steering.due(at(start, 400 * 4), here(), Direction::East, &OpenWorld),
+            steering.due(at(start, turn + 400 * 3), here(), Direction::East, &OpenWorld),
             Some(Facing::walking(Direction::East)),
             "nothing was asked for again; the heading was held the whole time"
         );

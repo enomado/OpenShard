@@ -443,7 +443,21 @@ impl Sim {
         Self {
             now: Duration::ZERO,
             base: Instant::now(),
-            steering: crate::steer::Steering::default(),
+            steering: {
+                // The oracle below is constant velocity from the moment of the
+                // ask, and that is the point of it: what this harness is about
+                // is the *cadence* of a walk under latency and wake jitter.
+                // A turn is not part of that question — it covers no ground,
+                // costs the shard's pace budget nothing, and the client's own
+                // default delay in front of it (`Turning::Deliberate`, the
+                // reference client's) would only be a constant the oracle had
+                // to model twice to say the same thing. So the harness states
+                // the turn away, and `steer.rs`'s own unit tests are what pin
+                // what a turn costs.
+                let mut steering = crate::steer::Steering::default();
+                steering.set_turning(crate::steer::Turning::Immediate);
+                steering
+            },
             walk: Walk::new(START, facing),
             crowd,
             player,
