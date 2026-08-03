@@ -1928,6 +1928,52 @@ them fixed:
          longer the largest thing in the pass: the GPU side of a night frame is
          0.50ms against this 1.15ms, where it was 0.50 against 2.30.
 
+         **The handoff, in the order the next session should take it.**
+
+         *First, and it is a blocker rather than a caveat:* **30.4's band is the
+         cutaway's, and the cutaway is being changed.** The key that
+         micro-decision hangs the whole cache on is "the storeys the player is
+         on" — `collect` puts a static in the grid only where `cutaway::shows`
+         says the frame draws it, so a bake keyed by band lets the cutaway
+         *select* a band rather than rebuild one. That holds exactly as long as
+         the occluder set is "what the frame draws". It is being made to stop
+         being that: light from a torch on the ground floor is to reach the
+         storey above it, which means rays cross storeys and the surfaces
+         between them — the floor of the upper storey, decision 32's lid — have
+         to be in the grid whether or not the frame drew them. So **do not write
+         the band key until that lands**, and when it does, re-argue 30.4 rather
+         than porting it: the question it answers is no longer the one it was
+         written for. What can be read off the answer is which of the two sets a
+         cell belongs to — what a ray may cross, and what is drawn — and the
+         cache is keyed by the first.
+
+         *What is not in question, and can be built against today:*
+
+         - **The sky field bakes per block with no band at all.** `shade` is the
+           one reader of the walk that deliberately ignores the cutaway — the
+           module header says why — so a block's `sky` column is a fact about
+           the map. What cannot be baked per block is the blur: it is a 3×3 over
+           the frame's rectangle, so a block would need a one-tile apron or the
+           blur stays where it is. It is 0.145ms and staying is defensible.
+         - **`add` is the 0.72ms and therefore the subject.** Per static it is
+           `opacity` (which asks `doors` before it asks a flag), `shape` (two
+           atlas lookups), and `push` (a linear scan of the tile's list, to drop
+           an exact repeat). A bake pays all three once per block per band
+           instead of once per frame.
+         - **A block is 8×8 and a frame is 187×187**, so a widest-zoom frame is
+           about 550 blocks — the unit is right and the assembly of a frame from
+           cached blocks is a copy rather than a walk.
+         - **What the server changes stays per-frame.** Ground items are a
+           handful and a door is one of them; that path exists and is small.
+           Note that a door changing its graphic changes an *occluder*, which is
+           the one thing in the grid a player watches change.
+
+         *What to measure when it is done*, and the companion matters: rerun
+         `what_the_grid_costs_to_build` for the phases and `tests/cost.rs` for
+         the frame, and print what fraction of blocks were served from the cache.
+         A cache that is never hit reads exactly like a cache that works, and
+         the camera moving a tile a frame is the case that decides it.
+
       Read decision 30's micro-decisions before starting: 30.5 decides the format
       (WebGL2 — a texture read with `textureLoad`, not a storage buffer), 30.6
       decides how many surfaces a cell may hold (a distribution printed over
