@@ -477,6 +477,43 @@ pub fn collect(pictures: &[Picture], atlas: &GumpAtlas) -> Vec<SpriteQuad> {
     quads
 }
 
+/// Which picture in a laid-out window the cursor is over, topmost first.
+///
+/// The hit test the whole interface is picked by, and deliberately the same walk
+/// [`collect`] draws by: a window is a list of pictures in painter's order, so
+/// the *last* one drawn is the first one picked, and anything asking a different
+/// question of a different list would eventually disagree with what is on the
+/// screen. The answer is an index into `pictures`, because what a hit *means* —
+/// a window to drag, an item to lift, a button to press — is the caller's and
+/// differs per window kind.
+///
+/// Against opaque texels rather than bounding boxes, for the reason
+/// [`GumpAtlas::opaque_at`] exists: gump art is mostly empty space, and a
+/// paperdoll's frame is a picture with a large transparent middle that its own
+/// doll is drawn into.
+///
+/// A picture the atlas does not hold is not pickable — it is not drawn either
+/// (see [`collect`]), and picking something invisible is the one answer that is
+/// certainly wrong. A tiled picture is tested against the box it fills, with the
+/// texel taken modulo the art's own size, which is where the repetition puts it.
+pub fn pick(pictures: &[Picture], cursor: GumpPixel, atlas: &GumpAtlas) -> Option<usize> {
+    pictures.iter().enumerate().rev().find_map(|(index, picture)| {
+        let sprite = atlas.sprite(picture.graphic)?;
+        let (art_width, art_height) = (i32::from(sprite.width), i32::from(sprite.height));
+        if art_width <= 0 || art_height <= 0 {
+            return None;
+        }
+        let (width, height) = picture.tiled.unwrap_or((art_width, art_height));
+        let (x, y) = (cursor.x - picture.at.x, cursor.y - picture.at.y);
+        if x < 0 || y < 0 || x >= width || y >= height {
+            return None;
+        }
+        atlas
+            .opaque_at(picture.graphic, (x % art_width) as u16, (y % art_height) as u16)
+            .then_some(index)
+    })
+}
+
 /// A `resizepic`: a window background of any size, out of nine pictures.
 ///
 /// The server names one graphic and a rectangle; the client draws `graphic` to
@@ -1118,6 +1155,78 @@ mod tests {
                 .map(|(graphic, image)| (GumpArt::Gump(graphic), image)),
         )
         .expect("a handful of small blocks fit an atlas 2048 on a side")
+    }
+
+    /// A picture with a transparent middle — a frame, as far as picking is
+    /// concerned: what a window's own art mostly is.
+    fn framed(side: u16, hole: std::ops::Range<u16>) -> Image {
+        let mut pixels = vec![Color16(0x7FFF); usize::from(side) * usize::from(side)];
+        for y in hole.clone() {
+            for x in hole.clone() {
+                pixels[usize::from(y) * usize::from(side) + usize::from(x)] = Color16::TRANSPARENT;
+            }
+        }
+        Image::new(side, side, pixels)
+    }
+
+    /// Painter's order is picking order: the last picture drawn over a point is
+    /// the one the click belongs to, which is what makes a hat over a frame the
+    /// hat and not the frame.
+    #[test]
+    fn the_last_picture_drawn_over_a_point_is_the_one_picked() {
+        let atlas = atlas_of([(Graphic(1), block(40, 40)), (Graphic(2), block(10, 10))]);
+        let window = [
+            Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(100, 100)),
+            Picture::plain(GumpArt::Gump(Graphic(2)), GumpPixel::new(120, 120)),
+        ];
+        assert_eq!(pick(&window, GumpPixel::new(125, 125), &atlas), Some(1));
+        assert_eq!(
+            pick(&window, GumpPixel::new(105, 105), &atlas),
+            Some(0),
+            "clear of the second picture, still inside the first"
+        );
+    }
+
+    /// The reason a window is picked by its pictures and not by a rectangle: a
+    /// click through a frame's transparent middle belongs to whatever is drawn
+    /// into it, and a click through a hole with nothing behind it belongs to the
+    /// world.
+    #[test]
+    fn a_transparent_texel_is_not_a_hit() {
+        let atlas = atlas_of([(Graphic(1), framed(40, 10..30)), (Graphic(2), block(4, 4))]);
+        let frame = Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 0));
+        assert_eq!(pick(&[frame], GumpPixel::new(20, 20), &atlas), None);
+        assert_eq!(pick(&[frame], GumpPixel::new(5, 5), &atlas), Some(0));
+
+        let doll = Picture::plain(GumpArt::Gump(Graphic(2)), GumpPixel::new(18, 18));
+        assert_eq!(
+            pick(&[frame, doll], GumpPixel::new(20, 20), &atlas),
+            Some(1),
+            "the picture drawn into the hole is what is there"
+        );
+    }
+
+    /// A picture the atlas does not hold is not drawn (see `collect`) and so is
+    /// not pickable either — the two walks answer about the same window.
+    #[test]
+    fn a_picture_with_no_art_is_not_pickable() {
+        let atlas = atlas_of([(Graphic(1), block(4, 4))]);
+        let missing = Picture::plain(GumpArt::Gump(Graphic(2)), GumpPixel::default());
+        assert_eq!(pick(&[missing], GumpPixel::new(1, 1), &atlas), None);
+    }
+
+    /// A tiled picture is picked over the whole box it fills, not over one
+    /// repetition of the art — the box is what was drawn.
+    #[test]
+    fn a_tiled_picture_is_picked_across_its_whole_box() {
+        let atlas = atlas_of([(Graphic(1), block(10, 10))]);
+        let strip = [Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 0)).tiled(25, 10)];
+        assert_eq!(pick(&strip, GumpPixel::new(22, 5), &atlas), Some(0));
+        assert_eq!(
+            pick(&strip, GumpPixel::new(26, 5), &atlas),
+            None,
+            "past the box, where nothing was drawn"
+        );
     }
 
     /// The one thing a picture drawn once must get right: it lands where it was

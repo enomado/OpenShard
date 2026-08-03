@@ -83,29 +83,26 @@ pub fn window(gump: Graphic, contents: &[ContainedItem], at: GumpPixel) -> Vec<P
 /// [`opaque_at`](GumpAtlas::opaque_at) in the world. Later in the list wins,
 /// because later is what was drawn on top.
 ///
-/// The background is never picked. A click on the bag itself is a click on the
-/// window, which is the caller's business — dragging it, raising it — and not an
-/// item at all.
+/// Both of those are [`crate::gump::pick`]'s rules, and this is that walk over
+/// the list [`window`] laid out — the same list the frame is drawn from, so what
+/// is clicked and what is drawn cannot drift the way two separate walks would.
+///
+/// The background is never picked, which is why the first picture is dropped
+/// from the answer rather than never offered: a click on the bag itself is a
+/// click on the window, which is the caller's business — dragging it, raising it
+/// — and not an item at all.
 pub fn pick(
+    gump: Graphic,
     contents: &[ContainedItem],
     at: GumpPixel,
     cursor: GumpPixel,
     atlas: &GumpAtlas,
 ) -> Option<ContainedItem> {
-    contents.iter().rev().copied().find(|item| {
-        let art = GumpArt::Item(item.graphic);
-        let Some(sprite) = atlas.sprite(art) else {
-            return false;
-        };
-        let left = at.x + item.at.x;
-        let top = at.y + item.at.y;
-        let x = cursor.x - left;
-        let y = cursor.y - top;
-        if x < 0 || y < 0 || x >= i32::from(sprite.width) || y >= i32::from(sprite.height) {
-            return false;
-        }
-        atlas.opaque_at(art, x as u16, y as u16)
-    })
+    let pictures = window(gump, contents, at);
+    // Index zero is the background, and every one after it is `contents` in
+    // order — the layout `window` built a picture at a time.
+    let index = crate::gump::pick(&pictures, cursor, atlas)?;
+    contents.get(index.checked_sub(1)?).copied()
 }
 
 #[cfg(test)]
@@ -182,6 +179,7 @@ mod tests {
     fn the_topmost_icon_is_the_one_picked() {
         let contents = [item(0x4000_0002, CANDLE, 20, 30), item(0x4000_0003, COIN, 20, 30)];
         let picked = pick(
+            BAG,
             &contents,
             GumpPixel::new(100, 100),
             GumpPixel::new(122, 132),
@@ -199,6 +197,7 @@ mod tests {
         // Inside the window, well clear of the one icon in it.
         assert!(
             pick(
+                BAG,
                 &contents,
                 GumpPixel::new(100, 100),
                 GumpPixel::new(200, 180),

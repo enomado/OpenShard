@@ -614,6 +614,7 @@ pub fn run<D: Dial + Send + 'static>(
         pointer_inside: false,
         pointer_gump: GumpPixel::new(0, 0),
         own_windows: Vec::new(),
+        drawn_windows: Vec::new(),
         dragging: None,
         show_terrain: false,
         show_occluders: false,
@@ -910,10 +911,10 @@ struct OwnWindow {
 /// One list holds both, because dragging, raising, hit-testing and closing are
 /// the same gesture over either — decision 5 in `docs/client.md`, and the
 /// reason the container's window machinery was written in this client's own
-/// gump pixels rather than as an egui window. The two differ in exactly three
-/// places, and each is a `match` two arms long: which art is the background
-/// ([`App::window_background`]), what is drawn on it, and what closing one
-/// means to the [`WorldView`].
+/// gump pixels rather than as an egui window. The two differ in exactly two
+/// places, and each is a `match` two arms long: what is laid out for it (see
+/// [`App::drawn_windows`], which is also what the pointer is tested against),
+/// and what closing one means to the [`WorldView`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum WindowSubject {
     /// A container the shard has opened, by its serial.
@@ -1248,6 +1249,21 @@ struct App {
     /// over the others and the first one picking finds. One list and not two,
     /// because a bag dragged over a paperdoll has to stay over it.
     own_windows: Vec<OwnWindow>,
+    /// Every open window as the last frame laid it out: its subject, and the
+    /// pictures that were drawn for it in painter's order.
+    ///
+    /// **What is clicked is what was drawn**, which is why this is remembered
+    /// rather than recomputed at the press. A paperdoll's layout is not a
+    /// function of the window alone — it reads the view, the tiledata and the
+    /// client's own `gumpart` to decide which picture a worn item is — and a
+    /// second walk asking those questions again is a second answer waiting to
+    /// disagree with the one on the screen. It is the same rule
+    /// [`items::place`] follows in the world, one layer up.
+    ///
+    /// A frame behind, therefore: a window that has just opened is not pickable
+    /// until it has been drawn once, which is also the frame its art is packed
+    /// on and so the frame it first has any pixels to be picked by.
+    drawn_windows: Vec<(WindowSubject, Vec<gump_art::Picture>)>,
     /// The window being dragged and where inside it the player grabbed it, or
     /// `None` when nothing is being dragged.
     ///
@@ -2182,64 +2198,29 @@ impl App {
         }
     }
 
-    /// The picture a window is *made of*: a container's background gump, or a
-    /// paperdoll's frame.
-    ///
-    /// The one thing the two kinds of window disagree about that everything
-    /// else here is written in terms of — its size is the window's size, and
-    /// its pixels are what a click is tested against. `None` while the atlas
-    /// has yet to hold it.
-    ///
-    /// A paperdoll's frame does not depend on the body inside it, which is the
-    /// point of asking the frame rather than the doll: a window over a mobile
-    /// this client has never been told the body of still picks up the pointer
-    /// and still closes, and the body appears in it when the `0x77` arrives.
-    fn window_background(&self, subject: WindowSubject) -> Option<gump_art::GumpArt> {
-        let view = self.view.as_ref()?;
-        match subject {
-            WindowSubject::Container(serial) => Some(gump_art::GumpArt::Gump(*view.containers.get(&serial)?)),
-            WindowSubject::Paperdoll(serial) => Some(gump_art::GumpArt::Gump(paperdoll::frame(
-                self.paperdoll_whose(serial),
-            ))),
-        }
-    }
-
-    /// Whether a paperdoll is this client's own, which is the only thing the
-    /// frame is chosen by — `LocalSerial == World.Player` in the reference.
-    ///
-    /// Offline there is no player, and a window that cannot exist is answered
-    /// for as a stranger's rather than with an `Option` every caller would have
-    /// to unwrap into the same picture.
-    fn paperdoll_whose(&self, serial: Serial) -> paperdoll::Whose {
-        match self
-            .view
-            .as_ref()
-            .is_some_and(|view| view.player.serial == serial)
-        {
-            true => paperdoll::Whose::Own,
-            false => paperdoll::Whose::Another,
-        }
-    }
-
     /// Which window the cursor is over, topmost first, or `None`.
     ///
-    /// Against the background's own pixels and not its bounding box, the same
-    /// rule [`container::pick`] uses inside a window: a bag's art has
-    /// transparent corners and a paperdoll's body picture is mostly corner, and
-    /// a click in one belongs to whatever is behind it — which is usually the
-    /// world.
+    /// Against **every picture the window drew**, and each against its own
+    /// opaque texels rather than a bounding box: a bag's art has transparent
+    /// corners, a paperdoll's frame has a large transparent middle, and a click
+    /// in either belongs to whatever is behind it — which is usually the world.
+    /// A hat that the doll wears past the edge of its frame is the window's, and
+    /// a hole in the frame's own corner is not: both fall out of asking the
+    /// list, and neither did when this asked the background alone.
+    ///
+    /// The list is the last frame's — see [`App::drawn_windows`] for why it is
+    /// remembered rather than laid out again here — and the z-order is
+    /// [`App::own_windows`]'s, which is current: raising a window on the press
+    /// must not wait for a frame.
     fn window_under_pointer(&self) -> Option<WindowSubject> {
         let cursor = self.pointer_gump;
         self.own_windows.iter().rev().find_map(|window| {
-            let art = self.window_background(window.subject)?;
-            let sprite = self.gump_atlas.sprite(art)?;
-            let (x, y) = (cursor.x - window.at.x, cursor.y - window.at.y);
-            if x < 0 || y < 0 || x >= i32::from(sprite.width) || y >= i32::from(sprite.height) {
-                return None;
-            }
-            self.gump_atlas
-                .opaque_at(art, x as u16, y as u16)
-                .then_some(window.subject)
+            let pictures = self
+                .drawn_windows
+                .iter()
+                .find(|(subject, _)| *subject == window.subject)
+                .map(|(_, pictures)| pictures.as_slice())?;
+            gump_art::pick(pictures, cursor, &self.gump_atlas).map(|_| window.subject)
         })
     }
 
@@ -4400,7 +4381,12 @@ impl App {
             //
             // The layouts are built before the loop that packs them, so that
             // nothing borrows the view while the atlas is being grown.
-            let mut windows: Vec<Vec<gump_art::Picture>> = Vec::new();
+            // Paired with their subjects rather than left parallel to
+            // `own_windows`: a container whose entry has gone from the view is
+            // skipped below, and an index into one list would then name the
+            // wrong window in the other. This list is what the pointer is
+            // tested against next frame — see `App::drawn_windows`.
+            let mut windows: Vec<(WindowSubject, Vec<gump_art::Picture>)> = Vec::new();
             if let Some(view) = self.view.as_ref() {
                 for open in &self.own_windows {
                     match open.subject {
@@ -4410,18 +4396,19 @@ impl App {
                             };
                             let contents: Vec<ContainedItem> =
                                 view.contents.get(&serial).cloned().unwrap_or_default();
-                            windows.push(container::window(gump, &contents, open.at));
+                            windows.push((open.subject, container::window(gump, &contents, open.at)));
                         }
                         WindowSubject::Paperdoll(serial) => {
                             // Whose body and whose equipment, read off the view
-                            // here rather than through `App::paperdoll_body` —
-                            // a method call borrows the whole of `self`, and
-                            // the surface's window is held mutably across this
-                            // loop. Both read the same two places in the same
-                            // order, and they have to: the one that hit-tests
-                            // the window and the one that draws it disagreeing
-                            // about which body it is, is a window that cannot
-                            // be closed.
+                            // inline rather than through a method: the
+                            // surface's window is held mutably across this
+                            // loop, and a `&self` call would borrow all of it.
+                            // Nothing else asks these questions — the hit test
+                            // reads the list this builds (`drawn_windows`)
+                            // rather than working out the body a second time,
+                            // which is what used to make a paperdoll whose two
+                            // answers disagreed a window that could not be
+                            // closed.
                             let own = view.player.serial == serial;
                             let body = match own {
                                 true => Some((view.player.body.0, view.player.hue)),
@@ -4449,18 +4436,15 @@ impl App {
                                 true => paperdoll::Whose::Own,
                                 false => paperdoll::Whose::Another,
                             };
-                            windows.push(paperdoll::window(
-                                wearer.as_ref(),
-                                whose,
-                                &self.equip_conv,
-                                files,
-                                open.at,
+                            windows.push((
+                                open.subject,
+                                paperdoll::window(wearer.as_ref(), whose, &self.equip_conv, files, open.at),
                             ));
                         }
                     }
                 }
             }
-            for window in &windows {
+            for (_, window) in &windows {
                 let art_files = gump_art::ArtFiles {
                     gumps: files,
                     items: &self.art,
@@ -4474,6 +4458,11 @@ impl App {
                 }
                 pictures.extend(window.iter().copied());
             }
+            // What the pointer is tested against from here on, and the atlas it
+            // is tested in is the one just grown for it: the hit test and the
+            // frame are now the same list. Kept even when it is empty — the
+            // windows this frame drew none of are windows nothing can click.
+            self.drawn_windows = windows;
             if let Some(rows) = self.gump_atlas.take_dirty() {
                 pass.upload_rows(&window.queue, self.gump_atlas.pixels(), rows);
             }

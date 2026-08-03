@@ -493,13 +493,13 @@ pub fn gump_of(body: u16, anim_id: u16, female: bool, equip_conv: &EquipConv, gu
 }
 
 // There is no `size` here, deliberately, and [`crate::container::size`] has
-// lost its caller to the same decision: a window's size is its background
-// picture's, whichever kind of window it is, so the client asks the atlas for
-// that one sprite once — see `App::window_background` — rather than through two
-// functions that would have to agree about which picture the background is. For
-// a paperdoll that picture is the [`frame`], which is why the background no
-// longer depends on knowing whose body it is: a doll of a mobile the client has
-// not been shown still has a window, and the window still has a size.
+// lost its caller to the same decision: a window is not a rectangle at all. It
+// is the list of pictures [`window`] lays out, and what the pointer is tested
+// against is that list — [`crate::gump::pick`], over what was drawn — so
+// nothing ever has to ask how big the window is or which of its pictures is the
+// background. That is what lets a hat drawn past the edge of the frame belong
+// to the window and a click through the frame's transparent corner fall to the
+// world, neither of which a size can express.
 
 /// Lay a paperdoll out at `at`: the frame, then the body inside it, then every
 /// worn layer over that, then the backpack.

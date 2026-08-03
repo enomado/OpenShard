@@ -1155,25 +1155,45 @@ does not carry yet.
    ...)`), one offset applied to the whole stack rather than per garment, since
    every layer already shares one origin.
 
-   Making the frame the background is also what lets a window outlive not
-   knowing what is in it: `paperdoll::window` takes the wearer as an `Option`,
-   the frame is drawn either way, and a doll the client has not been told the
-   body of is a window that still picks up the pointer and still closes — the
-   backlog entry that used to say it drew nothing. `App::window_background` no
-   longer reads the mobile at all, only whose serial it is.
+   Drawing the frame first is also what lets a window outlive not knowing what
+   is in it: `paperdoll::window` takes the wearer as an `Option`, the frame is
+   drawn either way, and a doll the client has not been told the body of is a
+   window that still picks up the pointer and still closes — the backlog entry
+   that used to say it drew nothing.
 
    The machinery is shared by having the *subject* of a window say what kind it
    is: `App::own_windows` is one list of `WindowSubject::Container` and
    `WindowSubject::Paperdoll`, so a bag dragged over a paperdoll stays over it,
-   and the two kinds differ in exactly three `match`es — which art is the
-   background, what is drawn on it, and what closing one means to the
-   `WorldView`. A window's size is its background picture's, whichever kind it
-   is, which is why `container::size` lost its caller and `paperdoll` never grew
-   one.
+   and the two kinds differ in exactly two `match`es — what is laid out for it,
+   and what closing one means to the `WorldView`.
+
+   **A window has no size, and is picked by every picture it drew.** That is the
+   third `match` gone, and the backlog entry that said a paperdoll was picked by
+   its frame alone. `gump::pick` is one walk over a laid-out window — last
+   picture first, because last is what was drawn on top, each against its own
+   opaque texels — and it answers an *index*, because what a hit means differs
+   per window kind and the walk does not. `container::pick` is that walk with
+   the background dropped from the answer, and `App::window_under_pointer` is
+   the same walk keeping only whether there was one. Nothing asks how big a
+   window is any more, which is why `container::size` has no caller and
+   `paperdoll` never grew one: a hat drawn past the edge of the frame belongs to
+   the window and a click through the frame's transparent corner falls to the
+   world, and neither of those is expressible as a rectangle.
+
+   What the walk is picked over is the list the *last frame drew*
+   (`App::drawn_windows`), not one laid out again at the press. A paperdoll's
+   layout is not a function of the window alone — it reads the view, the
+   tiledata and `gumpart` to decide which picture a worn item is — so a second
+   walk asking those questions again is a second answer waiting to disagree with
+   what is on the screen; it is `items::place`'s rule one layer up. The cost is
+   that a window just opened is not pickable until it has been drawn once, which
+   is the same frame its art is packed on and so the first frame it has any
+   pixels to be picked by.
 
    What a paperdoll adds is *buttons* over its own art, which a container has
-   none of: that is the `GumpAtlas::opaque_at` hit test the gump backlog already
-   names, and it is still to come — see the backlog below.
+   none of. The hit test they want is now written — a button is a picture in the
+   list and `gump::pick`'s index names it — and what is left is the layout and
+   the `PaperdollFlags` behind it. See the backlog below.
 
 Done: double-clicking a mobile — or ourselves — opens a framed window that draws
 its body and its equipment in the reference's order and hues, with the backpack
@@ -2715,10 +2735,12 @@ Each is a seam the work made visible. None blocks the next milestone.
   frame is transparent, the buttons are invisible click targets over their own
   art, and the art is placed at the rectangle egui allocated. What egui still
   owns is dragging, the close box, z-order between two open gumps, and the
-  click. Owning those here means a hit test against `GumpAtlas::opaque_at`
-  (already written, unused), a window list with an order, and `{ nomove }` /
-  `{ noclose }` honoured by us — and that is also the step where a paperdoll and
-  a container can stop being egui windows with pictures in them.
+  click. Owning those here means the hit test (`gump::pick`, written and in use
+  by this client's own windows — decision 5 in M4), a window list with an order,
+  and `{ nomove }` / `{ noclose }` honoured by us. A server gump is a laid-out
+  list of pictures like any other window, so what is missing is not the picking
+  but the list: `App::own_windows` holding a third kind of subject, and the
+  layout built where egui's rectangle is built today.
 - **A button's click target is `BUTTON_SIZE`, not its art.** egui is put at a
   fixed rectangle because this half does not know how big the picture is; the
   atlas does. Wrong in both directions on a big button, and it will be right for
@@ -3355,19 +3377,13 @@ that the ring reaches it. What was found on the way and left undone:
   that puts the cloak on top when a body faces away and behind when it faces the
   viewer. `mobiles::push_quads` pushes layers in wire order today. Cheap now
   that `paperdoll::order` exists and `EquipmentLayer` carries its layer.
-- **A paperdoll is picked by its frame alone.** `App::window_background`
-  hit-tests the one sprite the window is sized by, which is now the frame rather
-  than the body — so the doll is inside the picked area and the old symptom (a
-  click on a hat falling through to the world) is gone by construction, but
-  anything the art reaches *outside* the frame still is not picked, and the
-  frame's own transparent corners are still a hole. The fix is to test the
-  window's whole picture list, which is the same walk `pick` will need for
-  lifting an item off a doll.
 - **No buttons, no tooltips, no lifting.** The `0x88`'s `PaperdollFlags` says
   whether this client may lift off this doll, and nothing reads it yet; the
   reference's own paperdoll has Help, Options, Log Out, War Mode, Status and
-  Quest buttons over the picture. All of them want `GumpAtlas::opaque_at` over a
-  list of pictures rather than one, which is the entry above.
+  Quest buttons over the picture. The hit test all of them wanted is written —
+  `gump::pick` over the window's whole picture list, decision 5 — so what is
+  left is the layout: which picture each button is, where it goes in the frame,
+  and a press and release over the same one being what a click means.
 - **A window has no memory.** Both kinds cascade from a fixed corner and are
   forgotten when they close; the reference client remembers a per-container and
   per-paperdoll position across sessions. `desk.rs` already persists the
