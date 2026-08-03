@@ -257,7 +257,7 @@ fn what_the_lighting_knows_about_a_place() {
     // in reach lights the whole of it.
     if let Some(cell) = grid.at(i32::from(at_x), i32::from(at_y)) {
         let at = Vec2::new(f32::from(at_x) + 0.5, f32::from(at_y) + 0.5);
-        let sample = light::sample(Spot::at(at, cell.top as f32), &lighting);
+        let sample = light::sample(Spot::flat(at, cell.top as f32), &lighting);
         match sample.reaches.iter().find(|reach| reach.within) {
             None => println!("lid at z {}: no flame reaches it", cell.top),
             Some(reach) => println!(
@@ -288,14 +288,7 @@ fn what_the_lighting_knows_about_a_place() {
             10.0,
         ),
     ] {
-        let sample = light::sample(
-            Spot {
-                at,
-                z,
-                face: Some(face),
-            },
-            &lighting,
-        );
+        let sample = light::sample(Spot::face(at, z, face), &lighting);
         let nearest = sample
             .reaches
             .iter()

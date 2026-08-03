@@ -134,6 +134,7 @@ const KIND_NOTHING: u32 = 0u;
 const PLACE_STANCE_SHIFT: u32 = 8u;
 const PLACE_STANCE_MASK: u32 = 15u;
 const PLACE_Z_MASK: u32 = 255u;
+const STANCE_FLAT: u32 = 1u;
 const STANCE_FACE_NORTH: u32 = 2u;
 const STANCE_FACE_EAST: u32 = 3u;
 const STANCE_FACE_SOUTH: u32 = 4u;
@@ -147,13 +148,23 @@ const STANCE_FACE_WEST: u32 = 5u;
 // so a south face looks towards `+y` and an east face towards `+x`. North and
 // west are five graphics out of 1197 and are here because the geometry has four
 // edges. `docs/lighting.md`, step 15.
-fn outward(stance: u32) -> vec2<f32> {
+fn outward(stance: u32) -> vec3<f32> {
     switch stance {
-        case STANCE_FACE_NORTH: { return vec2<f32>(0.0, -1.0); }
-        case STANCE_FACE_EAST: { return vec2<f32>(1.0, 0.0); }
-        case STANCE_FACE_SOUTH: { return vec2<f32>(0.0, 1.0); }
-        case STANCE_FACE_WEST: { return vec2<f32>(-1.0, 0.0); }
-        default: { return vec2<f32>(0.0); }
+        case STANCE_FACE_NORTH: { return vec3<f32>(0.0, -1.0, 0.0); }
+        case STANCE_FACE_EAST: { return vec3<f32>(1.0, 0.0, 0.0); }
+        case STANCE_FACE_SOUTH: { return vec3<f32>(0.0, 1.0, 0.0); }
+        case STANCE_FACE_WEST: { return vec3<f32>(-1.0, 0.0, 0.0); }
+        // A **flat** surface looks up, and this is where that was missing. A
+        // wall's top cap is a `Flat` static, so nothing tested which way it looked
+        // and a lamp beside a wall lit its top as fully as one standing over it —
+        // reported from the client as two walls "adding up" at a corner, which is
+        // the bright diamond a corner's cap makes between two lit faces. Decision
+        // 27.
+        case STANCE_FLAT: { return vec3<f32>(0.0, 0.0, 1.0); }
+        // And `STANCE_UPRIGHT` looks nowhere: a billboard has no side, so every
+        // flame that reaches it lights it. That is a statement about what is not
+        // known, and `light::Surface::normal` returns nothing for the same reason.
+        default: { return vec3<f32>(0.0); }
     }
 }
 
@@ -176,7 +187,7 @@ const FACE_EDGE: f32 = 0.2;
 // like glass, and it is what this fixes.
 //
 // `light::faces`, and the two are one formula.
-fn faces(normal: vec2<f32>, toward: vec2<f32>) -> f32 {
+fn faces(normal: vec3<f32>, toward: vec3<f32>) -> f32 {
     return clamp(dot(normal, toward) / FACE_EDGE + 0.5, 0.0, 1.0);
 }
 
@@ -305,6 +316,20 @@ fn panel_stop(cell: vec2<i32>, crossed: u32, z: f32, tall: f32) -> f32 {
 // still is: a wall tile that also carries the perpendicular face of a corner
 // stops the ray on that face as it always did.
 //
+// Which side of its own tile a stance is the face of, as an edge bit. Nothing
+// for a flat or faceless pixel: neither is part of a run of wall.
+//
+// `light::Surface::face`, put through `occlusion::edges_of`.
+fn own_side(stance: u32) -> u32 {
+    switch stance {
+        case STANCE_FACE_NORTH: { return EDGE_NORTH; }
+        case STANCE_FACE_EAST: { return EDGE_EAST; }
+        case STANCE_FACE_SOUTH: { return EDGE_SOUTH; }
+        case STANCE_FACE_WEST: { return EDGE_WEST; }
+        default: { return 0u; }
+    }
+}
+
 // `light::own_run`.
 fn own_run(own: u32, cell: vec2<i32>, first: vec2<i32>) -> u32 {
     var line = 0u;
@@ -395,7 +420,7 @@ fn opposite(side: u32) -> u32 {
 // of the crossing that is inside that span which counts, so a ray grazing the
 // top of a wall is dimmed rather than switched. That is what keeps a cellar's
 // wall out of the street above it, without a step where the two meet.
-fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f32 {
+fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, spread: f32) -> f32 {
     let delta = finish - start;
     let ground = length(delta.xy);
     if ground < 1.0e-6 {
@@ -407,9 +432,13 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
     let first = vec2<i32>(i32(floor(start.x)), i32(floor(start.y)));
     let last = vec2<i32>(i32(floor(finish.x)), i32(floor(finish.y)));
     var cell = first;
-    // Which sides the lit end's *own* tile has a wall on. What it is for is
-    // `own_run` below: a wall does not shadow the rest of the wall it is part of.
-    let own = occluder_at(first.x, first.y).w & EDGE_MASK;
+    // Which side of its own tile the lit end **is the face of**. What it is for
+    // is `own_run` below: a run of wall is one surface and no part of a surface
+    // shadows another part of it. The pixel's own side and not its tile's whole
+    // mask, which is what decision 23 says in words — a corner's *perpendicular*
+    // panel is a different surface and stops the ray as it always did. A pixel
+    // that is not a face is part of no run and gets nothing. `light::walk_cells`.
+    let own = own_side(stance);
     // Which way each axis steps, how much of the whole segment one tile of it is
     // worth, and how far along the segment the first boundary is. An axis the
     // ray does not move along never reaches its boundary, which is what the
@@ -450,23 +479,29 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
         }
         let stands = occluder_at(cell.x, cell.y);
         let sides = stands.w & EDGE_MASK;
-        // **Neither end of the ray is shadowed by the tile it is on.**
+        // **A surface does not shadow itself**, which is what "neither end of the
+        // ray is shadowed by the tile it is on" was always reaching for.
         //
-        // The lit end, so that a wall's own face stays the brightest thing beside
-        // a torch: a pixel of a wall claims a fraction clamped *inside* its tile
-        // whichever face of the wall it is on — the two faces are one tile — so
-        // testing its own panel would darken whichever of them the flame is not
-        // behind, and there is no way to know which that is.
+        // A **face** lies *on* the panel it is the face of, so that panel cannot
+        // be between it and anything, and a pixel of a wall claims a fraction
+        // clamped inside its tile whichever face it is on. An **upright**
+        // billboard's pixels are inside their tile too. But a **floor** pixel on a
+        // wall tile is not ambiguous at all: it is the ground, it is inside the
+        // room, and the ray from it to a lamp in the street crosses the panel its
+        // own tile stands on — so a wall tile's own square of floor came out fully
+        // lit against a dark room. Decision 28.
         //
-        // And the flame's end (`skip_last`), because a sconce is mounted *on* a
-        // wall. This was tried the other way for one commit — the flame sits at
-        // its tile's centre, which is inside the panel, so a ray leaving it does
-        // cross the wall — and the picture is what settled it: every lamp in
-        // Britain is on a building, so the city came out with its walls lit from
-        // inside and not one pool of light on any street. A lamp that lights
-        // nothing is a worse answer than a lamp that lights both sides of its own
-        // wall, which is the defect this keeps and `docs/lighting.md` names.
-        let exempt = (cell.x == first.x && cell.y == first.y)
+        // Only a *named* panel, though. All four sides is "it stands up and the
+        // art would not say", which is every tree, post and barrel, and testing
+        // those would put a dark square under each of them out of a fallback
+        // rather than out of a measurement.
+        //
+        // And the flame's end (`skip_last`) is a whole tile, because a mounted
+        // flame now burns outside the plane its tile names (`light::mounted_at`)
+        // and what is left on that tile is not between it and anything.
+        let own_cell = cell.x == first.x && cell.y == first.y;
+        let own_shadows = own_cell && stance == STANCE_FLAT && sides != 0u && sides != EDGE_MASK;
+        let exempt = (own_cell && !own_shadows)
             || (skip_last && cell.x == last.x && cell.y == last.y);
         if !exempt && stands.w != 0u {
             let low = f32(stands.x) - 128.0;
@@ -700,7 +735,7 @@ const MAX_SUN_TILES: f32 = 32.0;
 // `walk` draws. The fragment's own tile is skipped there as it is for a flame,
 // which is what lights a wall on the side the sun is on instead of shadowing it
 // with itself.
-fn sunlight(at: vec3<f32>) -> f32 {
+fn sunlight(at: vec3<f32>, stance: u32) -> f32 {
     let horizontal = length(lighting.sun.xy);
     if horizontal < 1.0e-6 {
         // Straight overhead: nothing but the fragment's own tile is in the way,
@@ -722,7 +757,7 @@ fn sunlight(at: vec3<f32>) -> f32 {
         // which arrives here as a ceiling below every fragment there is.
         return 1.0;
     }
-    return walk(at, at + step * tiles, false, 0.0);
+    return walk(at, at + step * tiles, stance, false, 0.0);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -908,7 +943,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // And which way the surface drawn here looks, where it is a wall's face. Zero
     // for the ground, for a mobile and for anything standing up whose art would
     // not name an edge — none of those has a side to be lit from.
-    let normal = outward((place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK);
+    let stance = (place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK;
+    let normal = outward(stance);
 
     // The ambient this *tile* has: the sky's share of it scaled by how much of
     // the sky the column over the tile can see, plus the floor everything gets.
@@ -969,13 +1005,17 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // Reported from the client at Britain's `(1441, 1692)`. What answers it is
         // moving the mounted flame instead of excusing it — `light::mounted_at`,
         // and `docs/lighting.md`'s decision 26.
-        if any(normal != vec2<f32>(0.0)) {
-            lit_by = lit_by * faces(normal, vec2<f32>(to.x - at.x, to.y - at.y));
+        // `offset` is already the flame less the fragment with `z` divided into
+        // tiles, which is the space the normal is stated in — so a lid's answer is
+        // how far *above* its plane the flame is, in tiles, through the same
+        // formula and the same soft band.
+        if any(normal != vec3<f32>(0.0)) {
+            lit_by = lit_by * faces(normal, offset);
         }
         // The flame's own tile is exempt, and a flame is a body a tile wide:
         // `walk`'s two parameters, and the only two things that make this ray
         // different from the sun's.
-        let through = walk(at, vec3<f32>(to.x, to.y, to.z), true, FLAME_SPREAD);
+        let through = walk(at, vec3<f32>(to.x, to.y, to.z), stance, true, FLAME_SPREAD);
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
         // from open ground nothing reaches. That difference is the one the whole
@@ -1002,7 +1042,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // falloff, only whether anything stands between this pixel and the sky.
     var sun_through = 0.0;
     if lighting.sun_color.w > 0.0 {
-        sun_through = sunlight(at);
+        sun_through = sunlight(at, stance);
         lit = lit + lighting.sun_color.rgb * (lighting.sun_color.w * sun_through);
     }
 

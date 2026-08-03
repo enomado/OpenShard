@@ -22,7 +22,7 @@ use openshard_client_render::debug::View;
 use openshard_client_render::geometry::{Rect, Vec2};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
-use openshard_client_render::light::{Light, Lighting};
+use openshard_client_render::light::{Light, Lighting, Surface};
 
 /// The reach the lighting tests give their flame, in tiles.
 ///
@@ -3528,7 +3528,8 @@ fn parity_frame(
     lighting: &Lighting,
     width: u32,
     height: u32,
-    face: Option<openshard_client_render::facing::Face>,
+    surface: Surface,
+    z: i8,
 ) -> Frame {
     let world = openshard_client_render::blit::world_texture(device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
@@ -3547,15 +3548,26 @@ fn parity_frame(
             // The stance is what the facing test reads, and a fixture without one
             // would leave the whole of that test uncompared: `light::sample` would
             // agree with the shader about a formula neither of them ran.
-            let (kind, stance) = match face {
-                None => (1u16, 0u16),
-                Some(face) => (
+            let (kind, stance) = match surface {
+                // Land with no stance: what every fixture that predates surfaces
+                // is, and a billboard's answer — nothing is known about which way
+                // it looks, so every flame that reaches it lights it.
+                Surface::Upright => (1u16, openshard_client_render::place::Stance::Upright as u16),
+                // A floor, a rug, the top of a wall: it looks up, and that is the
+                // fixture decision 27 needed. Without one the shader could return
+                // any normal at all for a flat pixel and every parity test here
+                // would still pass.
+                Surface::Flat => (
+                    openshard_client_render::place::Kind::Static as u16,
+                    openshard_client_render::place::Stance::Flat as u16,
+                ),
+                Surface::Face(face) => (
                     openshard_client_render::place::Kind::Static as u16,
                     openshard_client_render::place::Stance::face(face) as u16,
                 ),
             };
-            let z = 128 | stance << openshard_client_render::place::STANCE_SHIFT;
-            texels.extend_from_slice(&[x, y, z, kind | sub_x << 2 | sub_y << 9]);
+            let height = (i32::from(z) + 128) as u16 | stance << openshard_client_render::place::STANCE_SHIFT;
+            texels.extend_from_slice(&[x, y, height, kind | sub_x << 2 | sub_y << 9]);
         }
     }
     let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -3731,6 +3743,29 @@ fn the_shader_and_light_sample_agree_about_the_sun() {
 /// room and from in front by nothing, so a sweep that happened to land entirely
 /// on one side of the plane would compare a formula that was never exercised.
 /// What is checked is that both sides are in it.
+/// And that a **flat** surface looks up, on both sides of its own plane.
+///
+/// Decision 27's half of the same seam, and it needs its own fixture for the
+/// reason the wall did: every other parity frame is `Upright`, which has no normal
+/// at all, so a shader that returned any direction it liked for a flat pixel would
+/// agree with `sample` on all of them.
+///
+/// Two heights and not one, because a flat surface has two sides and a fixture on
+/// one of them proves half a formula. `scene::room`'s torch burns at `z = 5.5`, so
+/// a floor at 0 is under it — lit — and a lid at 20 is over it, which is the wall's
+/// top cap and the picture the report came in as: a bright diamond where a corner's
+/// cap is, lit by a lamp standing well below it.
+#[test]
+fn the_shader_and_light_sample_agree_about_a_surface_that_looks_up() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let lighting = openshard_client_render::scene::room().lighting(0.0);
+    for z in [0, 20] {
+        assert_parity_of(&device, &queue, &lighting, Surface::Flat, z);
+    }
+}
+
 #[test]
 fn the_shader_and_light_sample_agree_about_a_wall_that_faces_away() {
     let Some((device, queue)) = gpu() else {
@@ -3744,16 +3779,14 @@ fn the_shader_and_light_sample_agree_about_a_wall_that_faces_away() {
     for py in 0..64 {
         for px in 0..64 {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
-            let spot = openshard_client_render::light::Spot {
-                face: Some(face),
-                ..openshard_client_render::light::Spot::at(
-                    Vec2::new(
-                        f32::from(x) + f32::from(sub_x) / 127.0,
-                        f32::from(y) + f32::from(sub_y) / 127.0,
-                    ),
-                    0.0,
-                )
-            };
+            let spot = openshard_client_render::light::Spot::face(
+                Vec2::new(
+                    f32::from(x) + f32::from(sub_x) / 127.0,
+                    f32::from(y) + f32::from(sub_y) / 127.0,
+                ),
+                0.0,
+                face,
+            );
             let reach = openshard_client_render::light::sample(spot, &lighting).reaches[0];
             if !reach.within {
                 continue;
@@ -3769,7 +3802,7 @@ fn the_shader_and_light_sample_agree_about_a_wall_that_faces_away() {
         "{lit} pixels of face towards the flame, {behind} away from it",
     );
 
-    assert_parity_of(&device, &queue, &lighting, Some(face));
+    assert_parity_of(&device, &queue, &lighting, Surface::Face(face), 0);
 }
 
 /// And the same for a frame with a beam in it.
@@ -3887,35 +3920,37 @@ fn the_shader_and_light_sample_agree_about_the_sky_a_tile_can_see() {
 /// divergence in the falloff, in either ray walk or in the exemptions all show
 /// up here.
 fn assert_parity(device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting) {
-    assert_parity_of(device, queue, lighting, None);
+    assert_parity_of(device, queue, lighting, Surface::Upright, 0);
 }
 
-/// The same, over a frame whose every pixel is a wall's face rather than ground.
+/// The same, over a frame whose every pixel is a stated *surface* at a stated
+/// height, rather than a faceless one on the ground.
 ///
-/// One more fixture and not a second test for every scene: what a face changes is
-/// one term of the loop — see `light::faces` — and the loop is what parity is
-/// about. `docs/lighting.md`, decision 22.
+/// One more fixture and not a second test for every scene: what a surface changes
+/// is one term of the loop — see `light::faces` — and the loop is what parity is
+/// about. `docs/lighting.md`, decisions 22 and 27.
 fn assert_parity_of(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     lighting: &Lighting,
-    face: Option<openshard_client_render::facing::Face>,
+    surface: Surface,
+    z: i8,
 ) {
     let (width, height) = (64, 64);
-    let frame = parity_frame(device, queue, lighting, width, height, face);
+    let frame = parity_frame(device, queue, lighting, width, height, surface, z);
 
     let mut compared = 0;
     for py in 0..height {
         for px in 0..width {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
             let spot = openshard_client_render::light::Spot {
-                face,
+                surface,
                 ..openshard_client_render::light::Spot::at(
                     Vec2::new(
                         f32::from(x) + f32::from(sub_x) / 127.0,
                         f32::from(y) + f32::from(sub_y) / 127.0,
                     ),
-                    0.0,
+                    f32::from(z),
                 )
             };
             let sample = openshard_client_render::light::sample(spot, lighting);
@@ -3959,7 +3994,7 @@ fn the_light_view_keeps_a_pools_shape_where_it_is_brightest() {
     let scene = openshard_client_render::scene::room();
     let mut lighting = scene.lighting(0.0);
     lighting.view = View::Light;
-    let frame = parity_frame(&device, &queue, &lighting, width, height, None);
+    let frame = parity_frame(&device, &queue, &lighting, width, height, Surface::Upright, 0);
 
     // The torch is at the room's centre, which the fixture puts at the middle of
     // the frame: a row through it runs from the pool's rim to its brightest
@@ -4030,7 +4065,7 @@ fn dump_the_lighting_views() {
         for view in View::ALL {
             let mut lighting = scene.lighting(0.0);
             lighting.view = view;
-            let frame = parity_frame(&device, &queue, &lighting, width, height, None);
+            let frame = parity_frame(&device, &queue, &lighting, width, height, Surface::Upright, 0);
             let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
             for pixel in frame.pixels.chunks_exact(4) {
                 ppm.extend_from_slice(&pixel[..3]);
@@ -4058,7 +4093,7 @@ fn a_debug_view_reaches_the_shader() {
     let scene = openshard_client_render::scene::room();
     let mut lighting = scene.lighting(0.0);
     lighting.view = View::Kind;
-    let frame = parity_frame(&device, &queue, &lighting, width, height, None);
+    let frame = parity_frame(&device, &queue, &lighting, width, height, Surface::Upright, 0);
 
     // Every pixel of the fixture is land, and the kind view paints land one
     // colour whatever the lighting did — so a frame that still shows a pool of

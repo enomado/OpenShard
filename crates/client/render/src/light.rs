@@ -920,23 +920,125 @@ pub struct Spot {
     pub at: Vec2,
     /// Its height, in the map's own `z` units.
     pub z: f32,
-    /// Which way the surface here looks, where it is a wall's face.
+    /// What surface of the world this is a point of.
     ///
-    /// `None` is the ground, a mobile, and anything standing up whose art would
-    /// not name an edge — none of those has a side to be lit from, and every
-    /// caller that predates faces passes it. A face is one-sided:
-    /// see [`faces`], and `docs/lighting.md`'s decision 22 for why the attachment
-    /// carries this at all when it already carries a fraction.
-    pub face: Option<Face>,
+    /// The polygon and not the tile: which way it looks, and therefore which
+    /// flames can light it and which parts of its own tile can shadow it. It is
+    /// what the place attachment's stance carries, per pixel, after
+    /// `statics.wgsl` has resolved a corner to the face of the half the fragment
+    /// is on. See [`Surface`].
+    pub surface: Surface,
 }
 
 impl Spot {
-    /// A point with no facing: the ground, or anything else with no side to it.
+    /// A point of something that stands up and names no side: a tree, a body, a
+    /// wall whose art the detector would not read.
     ///
-    /// Most callers, and the reason it is a constructor rather than a `Default`:
-    /// a spot always has a place, and only the face is ever absent.
+    /// The neutral answer, and what every caller that predates surfaces means:
+    /// nothing is known about which way it looks, so every flame that reaches it
+    /// lights it. See [`Spot::flat`] and [`Spot::face`] for the two that do know.
     pub fn at(at: Vec2, z: f32) -> Self {
-        Self { at, z, face: None }
+        Self {
+            at,
+            z,
+            surface: Surface::Upright,
+        }
+    }
+
+    /// A point of the ground, a floor, a rug, or the top of a wall: a surface
+    /// lying in its tile, looking up.
+    pub fn flat(at: Vec2, z: f32) -> Self {
+        Self {
+            at,
+            z,
+            surface: Surface::Flat,
+        }
+    }
+
+    /// A point of one of a tile's four vertical faces.
+    pub fn face(at: Vec2, z: f32, face: Face) -> Self {
+        Self {
+            at,
+            z,
+            surface: Surface::Face(face),
+        }
+    }
+}
+
+/// What kind of surface a lit point is a point of — the three the place
+/// attachment can hold, and the whole of what the lighting asks about a pixel
+/// beyond where it is.
+///
+/// [`crate::place::Stance`] is the same question at the other end of the wire and
+/// has ten values; a corner is resolved to one of its two faces per fragment
+/// before the attachment is written, so what arrives here is always one surface
+/// with one normal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Surface {
+    /// Standing up with nothing known about which way it runs.
+    Upright,
+    /// Lying in its tile, looking up: the ground, a floor, a rug, the lid on top
+    /// of a wall.
+    Flat,
+    /// One of the tile's four vertical faces.
+    Face(Face),
+}
+
+impl Surface {
+    /// Which way this surface looks, in tiles — `x` and `y` across the map and
+    /// `z` in tiles as well, which is the space a flame's offset is stated in.
+    ///
+    /// `None` for [`Surface::Upright`], which is a statement about what is *not*
+    /// known: a billboard has no side, so every flame that reaches it lights it.
+    ///
+    /// A **flat** surface looks up, and that is the one this had missing. A wall's
+    /// top cap is a flat static, so nothing tested which way it looked and a lamp
+    /// standing beside a wall lit its top as fully as one standing over it —
+    /// reported from the client as two walls "adding up" at a corner, and it is a
+    /// bright diamond where a corner's cap is. `docs/lighting.md`, decision 27.
+    pub fn normal(self) -> Option<[f32; 3]> {
+        match self {
+            Self::Upright => None,
+            Self::Flat => Some([0.0, 0.0, 1.0]),
+            Self::Face(face) => {
+                let [x, y] = face.outward();
+                Some([x, y, 0.0])
+            }
+        }
+    }
+
+    /// The face this is, where it is one.
+    pub fn face(self) -> Option<Face> {
+        match self {
+            Self::Face(face) => Some(face),
+            _ => None,
+        }
+    }
+
+    /// What this surface's own tile may shadow it with.
+    ///
+    /// **Neither end of a ray is shadowed by the tile it is on** was the rule, and
+    /// it is a rule about a *tile* where every other rule here is now about a
+    /// surface. What it is really saying is that a surface does not shadow
+    /// itself: a wall's face lies *on* the panel it is the face of, so the panel
+    /// cannot be between it and anything; a tree's pixels are inside its own tile.
+    ///
+    /// A **floor** pixel on the same tile is not ambiguous in that way at all. It
+    /// is the ground, it is inside the room, and a ray from it to a lamp in the
+    /// street crosses the panel its own tile stands on — so the corner tile's own
+    /// square of floor came out fully lit against a dark room. Which is the seam
+    /// on the ground the corner report ended with.
+    ///
+    /// Only a **named** panel, though: a mask of all four is "it stands up and the
+    /// art would not say", which is every tree, post and barrel, and testing those
+    /// would put a dark square under each of them out of a fallback rather than
+    /// out of a measurement. An unread graphic keeps today's behaviour exactly,
+    /// which is the direction this file takes at every one of these forks.
+    fn shadowed_by_own_tile(self, edges: u8) -> u8 {
+        match self {
+            Self::Flat if edges != crate::occlusion::EDGE_ANY => edges,
+            _ => 0,
+        }
     }
 }
 
@@ -950,11 +1052,17 @@ const FACE_EDGE: f32 = 0.2;
 
 /// How much of a flame `toward` reaches a surface facing `normal` — `1.0` in
 /// front of it, `0.0` behind it, and a gradient [`FACE_EDGE`] wide across the
-/// plane. Both in tiles.
+/// plane. Both in tiles, `z` included: a horizontal surface is a surface, and
+/// what decides for it is how far *above* its plane the flame is.
+///
+/// A half-space test and deliberately not a cosine. UO's art is pre-shaded —
+/// every wall's picture already has a light in it — so a Lambert term would be a
+/// second light fighting the first. What this answers is only whether the flame
+/// is on the side the surface looks at.
 ///
 /// `blit.wgsl`'s `faces`, and the two are one formula.
-fn faces(normal: [f32; 2], toward: [f32; 2]) -> f32 {
-    let along = normal[0] * toward[0] + normal[1] * toward[1];
+fn faces(normal: [f32; 3], toward: [f32; 3]) -> f32 {
+    let along = normal[0] * toward[0] + normal[1] * toward[1] + normal[2] * toward[2];
     (along / FACE_EDGE + 0.5).clamp(0.0, 1.0)
 }
 
@@ -1135,9 +1243,9 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
         // and nothing else. `blit.wgsl` argues why there is no longer an
         // exemption for a flame standing in the wall's own line, and
         // [`mounted_at`] is what replaced it.
-        let facing = match spot.face {
+        let facing = match spot.surface.normal() {
             None => 1.0,
-            Some(face) => faces(face.outward(), [offset[0], offset[1]]),
+            Some(normal) => faces(normal, offset),
         };
         let (through, stopped_by) = walk(spot, light, &lighting.occlusion);
         let fall = 1.0 - d;
@@ -1232,7 +1340,7 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i
     ];
     // No tile to exempt at the far end, and a point source: the sun subtends half
     // a degree, so its penumbra is the narrowest the walk draws.
-    walk_cells(from, to, false, 0.0, occlusion)
+    walk_cells(from, to, spot.surface, false, 0.0, occlusion)
 }
 
 /// The ray from a spot to a flame: [`walk_cells`] with a flame's two ends.
@@ -1244,6 +1352,7 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
     walk_cells(
         [spot.at.x, spot.at.y, spot.z],
         [light.at.x, light.at.y, light.z],
+        spot.surface,
         true,
         FLAME_SPREAD,
         occlusion,
@@ -1273,11 +1382,16 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
 fn walk_cells(
     from: [f32; 3],
     to: [f32; 3],
+    surface: Surface,
     skip_last: bool,
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<(i32, i32)>) {
-    let spot = Spot::at(Vec2::new(from[0], from[1]), from[2]);
+    let spot = Spot {
+        at: Vec2::new(from[0], from[1]),
+        z: from[2],
+        surface,
+    };
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
@@ -1288,9 +1402,16 @@ fn walk_cells(
     let first = (from[0].floor() as i32, from[1].floor() as i32);
     let last = (to[0].floor() as i32, to[1].floor() as i32);
     let mut cell = first;
-    // Which sides the lit end's own tile has a wall on — see [`own_run`], and the
-    // seam it was drawing down every wall.
-    let own = occlusion.at(first.0, first.1).map_or(0, |cell| cell.edges);
+    // Which side of its own tile the lit end **is the face of** — see [`own_run`],
+    // and the seam it was drawing down every wall. The pixel's own side and not
+    // the tile's whole mask, which is what decision 23 says in words: a run of
+    // wall is one surface, and a corner's *perpendicular* panel is a different
+    // surface that stops the ray as it always did. A pixel that is not a face is
+    // part of no run and gets nothing.
+    let own = match surface.face() {
+        Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
+        None => 0,
+    };
     // Which way each axis steps, how much of the whole segment one tile of it is
     // worth, and how far along the segment the first boundary is. An axis the
     // ray does not move along never reaches its boundary, which is what the
@@ -1340,12 +1461,24 @@ fn walk_cells(
             },
         };
         let stands = occlusion.at(cell.0, cell.1);
-        // Neither end of the ray is shadowed by the tile it is on: the lit end
-        // because a wall's two faces are one tile and there is no telling which of
-        // them a pixel is on, and the flame's end because a sconce is mounted on a
-        // wall. `blit.wgsl`'s `walk` argues both, and carries the measurement that
-        // settled the second.
-        if cell != first && (!skip_last || cell != last) {
+        // **A surface does not shadow itself**, which is what "neither end of the
+        // ray is shadowed by the tile it is on" was always reaching for. The
+        // flame's end is a whole tile — a sconce burns outside the plane its tile
+        // names (`mounted_at`) and what is left on that tile is not between it and
+        // anything. The lit end is a *surface*: a face lies on its own panel and a
+        // billboard's pixels are inside their tile, but a **floor** pixel on a wall
+        // tile is inside the room, and the ray from it to a lamp in the street
+        // crosses the panel its own tile stands on. See
+        // [`Surface::shadowed_by_own_tile`], and `blit.wgsl`'s `walk`.
+        let own_cell = cell == first;
+        let lit_by_own_tile = match own_cell {
+            false => 0,
+            true => match stands {
+                None => 0,
+                Some(stands) => surface.shadowed_by_own_tile(stands.edges),
+            },
+        };
+        if (!own_cell || lit_by_own_tile != 0) && (!skip_last || cell != last) {
             if let Some(stands) = stands {
                 let (low, high) = (stands.bottom as f32, stands.top as f32);
                 let opacity = f32::from(stands.opacity) / 255.0;
@@ -1356,7 +1489,14 @@ fn walk_cells(
                 let middle = (entered + leaves) * 0.5;
                 let soft =
                     (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
-                let stopped = match stands.edges {
+                // On the lit end's own cell only the panels the surface admits are
+                // asked, and never the body: a pixel standing inside a solid is
+                // not shadowed by the solid it stands in.
+                let edges = match own_cell {
+                    true => lit_by_own_tile,
+                    false => stands.edges,
+                };
+                let stopped = match edges {
                     // A **body** — a lid (a floor, a roof) or a whole tile that
                     // stands up and whose art would not say which way. Either is a
                     // solid the ray travels through, so what it stops is scaled by

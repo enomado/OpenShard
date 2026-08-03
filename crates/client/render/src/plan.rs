@@ -295,7 +295,14 @@ pub fn draw(
         [
             tile_x as u16,
             tile_y as u16,
-            128,
+            // A floor **says** it is one, in the stance above the height. It said
+            // `Upright` while this comment said "flat ground" — which cost
+            // nothing while a stance was only read for a wall's facing, and
+            // stopped being free the day a flat surface got a normal of its own
+            // and its tile's panels got the right to shadow it. An instrument
+            // that does not write what the world pass writes answers about
+            // itself. Decisions 27 and 28.
+            128 | (crate::place::Stance::Flat as u16) << crate::place::STANCE_SHIFT,
             1 | (sub_x as u16) << 2 | (sub_y as u16) << 9,
         ]
     });

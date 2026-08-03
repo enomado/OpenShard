@@ -9,6 +9,26 @@ copied.
 
 ## Where the next session starts
 
+**Read decisions 26, 27 and 28 — they are three answers to one objection**, and
+the objection is worth stating in the words it arrived in: *deciding who is lit
+should be by polygon, not by tile.* Every one of the three was a rule that
+answered with a **tile** where the question was about a **surface**.
+
+- 26: a flame in a wall's row or column was "part of" that wall — a whole street
+  long. Now a mounted flame is *placed* outside the plane its tile names, and the
+  facing test has no exception in it.
+- 27: a flat surface had no normal at all, so a wall's top cap took the whole of
+  any pool that reached it. Now it looks up.
+- 28: the exemption from self-shadowing was asked of the tile. Now it is asked of
+  the surface — a face and an upright exempt their own cell, a floor pixel does
+  not.
+
+**Decision 29 is the next one and it is written but not built**: a cell should
+hold a small list of panels rather than one merged span, which is what a window's
+aperture (step 16) needs, what stops a lid and a wall on one tile from merging,
+and what "polygons, honestly" means in a world where every surface is
+tile-aligned. Read it before touching the grid's format.
+
 **Read decision 26 first, then 25.** They are one session and the second half is
 the one a player pointed at: a lamp post standing in the street lit the far side
 of a house's east wall, because the facing test excused any flame in a wall's own
@@ -920,6 +940,104 @@ the lamp post the report was about. Neither is one whose sides cancel — a lid,
 the whole-tile `EDGE_ANY` of a graphic the art would not name — because there is
 no direction in those to move along, and a guess would be a wrong one.
 
+**27. A horizontal surface is a surface: it looks up.**
+
+`Stance::Flat` carried no direction, so `blit.wgsl`'s facing test was skipped for
+it and a flat pixel took the whole of every pool that reached it, from any side.
+Reported from the client as two walls "adding up" at a corner — a bright diamond
+wedged between a lit face and a dark one. Nothing adds; a fragment is lit once.
+The diamond is the corner's **top cap**, a `Flat` static at the top of the wall,
+and it was lit by a lamp standing two tiles *below* it as fully as one standing
+over it. Measured at the reported corner before the change:
+
+```
+lid at z 25: through 1.000  facing 1.000
+East:        through 1.000  facing 0.000
+```
+
+So a lid's normal is `(0, 0, 1)` and the facing test takes the third component of
+an offset it already had — `blit.wgsl` computes the flame's offset with `z`
+divided into tiles, which is the space the normal is stated in, so what comes out
+for a lid is *how far above its plane the flame is, in tiles*, through the same
+formula and the same [`FACE_EDGE`] band. One `select` in the shader, one arm in
+`light::Surface::normal`.
+
+**Still a half-space test and deliberately not a cosine.** UO's art is
+pre-shaded: every wall's picture already has a light painted into it, so a
+Lambert term would be a second light fighting the first. What this answers is
+only which side of the surface the flame is on. The backlog has carried that
+argument since decision 22 and it is what keeps this a rule rather than a
+lighting model.
+
+`Spot` stopped carrying `Option<Face>` and started carrying a `Surface` — flat,
+one of the four faces, or upright — which is exactly what the attachment holds
+per pixel after `statics.wgsl` has resolved a corner. `Upright` is still "nothing
+is known, so every flame lights it", and it is still what a tree, a body and an
+unread wall get.
+
+**28. A surface does not shadow itself — which is not the same as a tile.**
+
+*"Neither end of the ray is shadowed by the tile it is on"* (decisions 3 and 17)
+was always reaching for this, and the tile was the only handle available at the
+time. The reason it gave is a reason about a *face*: a wall's face lies **on** the
+panel it is the face of, so that panel cannot be between it and anything, and a
+pixel of a wall claims a fraction clamped inside its tile whichever face it is
+on. An **upright** billboard's pixels are inside their tile too.
+
+A **floor** pixel on the same tile is not ambiguous at all. It is the ground, it
+is inside the room, and the ray from it to a lamp in the street crosses the panel
+its own tile stands on — so a wall tile's own square of floor came out fully lit
+against a dark room, which is the seam on the ground the corner report ended
+with. It is visible in the plan view of `scene::sconce_on_wall` as a lit band
+along the wall's own row, with the wall's shadow starting only beyond it.
+
+So the exemption is asked of the **surface**: a face and an upright exempt their
+own cell, a flat pixel does not. Two things bound it, and both are the direction
+this file always takes:
+
+- **Only a named panel.** A mask of all four is "it stands up and the art would
+  not say", which is every tree, post and barrel — testing those would put a dark
+  square under each of them out of a *fallback* rather than out of a measurement.
+  A lid is not asked either: it has no vertical side, and the ground standing on a
+  pier's plank is the open question the backlog already carries.
+- **The flame's end stays a whole tile**, because decision 26 moved a mounted
+  flame outside the plane its tile names, so what is left on that tile is not
+  between it and anything.
+
+`own_run` narrowed with it. It took the lit end's whole tile mask and it now takes
+the side the pixel **is the face of** — which is what decision 23 says in words:
+a corner's perpendicular panel is a different surface and stops the ray as it
+always did. A pixel that is not a face is part of no run and gets nothing.
+
+**29. What a cell should hold: panels, not one merged span.** *(the shape of the
+next format change, not built)*
+
+A cell is `(z_bottom, z_top, opacity, PRESENT | edges)` — one `Rgba8Uint` texel a
+tile — which is an axis-aligned box with four bits saying which of its sides are
+real surfaces. That is already the "polygonal wall" this pass needs and it is why
+a corner is a proper object in it: `(1441, 1692), z 0..=25, sides E|S`. What it
+cannot say is anything a tile holds **twice**:
+
+- a lid and a wall on one tile merge into one span — conservative in the direction
+  that darkens for the `z` and in the direction that leaks for the sides, which is
+  not one direction;
+- a window is a hole *in* a panel, so an aperture is a rectangle in that panel's
+  own `(v, z)` — step 16, and the thing that makes a real shaft of light;
+- two walls at different heights on one tile close the gap between them.
+
+So a cell wants a small list of **panels**: a side, a `z` span, an opacity, an
+aperture. The grid stays exactly as it is — a uniform grid over a world whose
+every surface is tile-aligned *is* the acceleration structure, and the walk, the
+per-frame build and the upload do not change shape. What changes is the texel.
+
+Two things to decide when it is picked up, and neither is decided here: how many
+panels a cell may hold before it truncates (two covers a corner, three covers a
+corner with a lid, and the tail wants measuring on Britain rather than guessing),
+and whether the second plane `Occlusion::field_bytes` already uploads is where
+they go. What is **not** on the table is a list of boxes with an index of its own:
+the CPU is already thirteen times the GPU on this pass and the grid build is most
+of it.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -1743,7 +1861,13 @@ the entries it closes are struck through with what the fix turned out to be.
   removed from 76% of Britain's walls, still standing in the 24% — and a corner
   is the place it is most visible, because it always has a faced run on both
   sides of it to be compared against.
-- **The floor under a wall tile is lit from outside the house.** Neither end of a
+- ~~**The floor under a wall tile is lit from outside the house.**~~ Decision 28,
+  and the entry's own shape is what was built — exempt a face and an upright, test
+  a flat — with one bound it did not name: only a *named* panel, so the tree, the
+  post and the barrel keep the answer they had. The pier question below is still
+  open and is now the only part of it left.
+- **The floor under a wall tile is lit from outside the house (as written).**
+  Neither end of a
   ray is shadowed by the tile it is on (decisions 3 and 17), and the reason is
   about a *wall's* pixels: its two faces are one tile and there is no telling
   which of them a pixel is on. A **ground** pixel on that same tile is not
@@ -1761,17 +1885,15 @@ the entries it closes are struck through with what the fix turned out to be.
 
 Found while giving a corner its two faces:
 
-- **A lid has no normal, so it takes the whole pool from any side.** Reported from
-  the client as two walls "adding up" at a corner — a bright diamond wedged
-  between a lit face and a dark one. Nothing adds: a fragment is lit once. The
-  diamond is the wall's **top cap**, a `Flat` static, and `Stance::Flat` carries no
-  outward direction — so `blit.wgsl`'s facing test is skipped for it and a lamp
-  standing beside the wall lights its top as fully as one standing over it.
-  Measured at the reported corner: `lid at z 25: through 1.000, facing 1.000`
-  against the east face's `facing 0.000` beside it. The fix is the same shape as
-  decision 22's, one axis further: a horizontal surface is a surface with a `+z`
-  normal, and the flame has to be **above its plane**. The stance already tells a
-  lid from a face, and the dot product already has a `z` in it.
+- ~~**A lid has no normal, so it takes the whole pool from any side.**~~ Decision
+  27, and the estimate held: the stance already told a lid from a face and the dot
+  product already had a `z` in it.
+- **The plan view said `Upright` while its own comment said "flat ground".**
+  Found by the change above, which is the point worth keeping: a fixture that
+  writes a different attachment from the world pass answers about *itself*, and
+  it cost nothing at all until the day a stance meant something for a floor. It
+  writes `Stance::Flat` now. Worth a look at every other synthetic attachment in
+  the tests for the same reason.
 
 - **A pillar in the open loses two of its four sides.** A solid filling its whole
   tile reads as a corner, which is right about the *picture* and half right about

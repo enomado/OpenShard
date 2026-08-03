@@ -704,11 +704,7 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
     // `INSIDE`, and decision 16 for what a clean 1 would do to the walk.
     let inside = 1.0 - 1.0 / 127.0;
     let reach = |at: Vec2, face: Face| {
-        let spot = Spot {
-            at,
-            z: f32::from(scene::WALL_HEIGHT) / 2.0,
-            face: Some(face),
-        };
+        let spot = Spot::face(at, f32::from(scene::WALL_HEIGHT) / 2.0, face);
         light::sample(spot, &lighting)
             .reaches
             .iter()
@@ -1056,9 +1052,14 @@ fn every_scene_prints_a_diagram_that_is_not_blank() {
 ///
 /// Three rays, and the third is what makes the other two mean anything:
 ///
-/// - *Along* the wall — the torch and the spot on the wall's own row, so the ray
-///   enters each tile through one side and leaves through the other without
-///   crossing the face. All of it arrives.
+/// - *Along* the wall — a point of the wall's own **face**, three tiles west of
+///   the lamp, so the ray runs down the run and enters each tile through one side
+///   and leaves through the other without ever crossing a panel it is not part
+///   of. All of it arrives.
+///
+///   The face and not the ground of the wall's tiles, which is what this sampled
+///   before decision 28: a floor pixel on a wall tile is a different surface, it
+///   is inside the room, and its own tile's panel is now allowed to shadow it.
 /// - *Across* it — a spot south of the row, so the ray goes through a face.
 ///   Most of it does not arrive; not all, because it clips the tile obliquely
 ///   and decision 14's penumbra is doing its job.
@@ -1070,17 +1071,28 @@ fn every_scene_prints_a_diagram_that_is_not_blank() {
 fn light_runs_along_a_wall_and_stops_across_it() {
     let scene = scene::wall_with_a_torch_beside_it();
     let (cx, cy) = CENTRE;
-    let through = |scene: &Scene, tile: (u16, u16)| {
+    let through = |scene: &Scene, spot: Spot| {
         let lighting = scene.lighting(STILL);
-        let sample = light::sample(spot(tile, 0.0), &lighting);
+        let sample = light::sample(spot, &lighting);
         let reach = sample.reaches[0];
-        assert!(reach.within, "{tile:?} is outside the torch's radius: {sample}");
+        assert!(reach.within, "{spot:?} is outside the torch's radius: {sample}");
         reach.through
     };
+    // A point of the wall's south face, halfway along the tile and halfway up it.
+    // The fraction is held one step inside its own tile, which is where
+    // `statics.wgsl` writes it — decision 16.
+    let inside = 1.0 - 1.0 / 127.0;
+    let face = |x: u16| {
+        Spot::face(
+            Vec2::new(f32::from(x) + 0.5, f32::from(cy) + inside),
+            f32::from(scene::WALL_HEIGHT) / 2.0,
+            openshard_client_render::facing::Face::South,
+        )
+    };
 
-    // Along: three tiles west of the torch, on the wall's own row, with four
+    // Along: three tiles west of the torch, on the wall's own face, with four
     // tiles of the same wall in between.
-    let along = through(&scene, (cx, cy));
+    let along = through(&scene, face(cx));
     assert!(
         along > 0.99,
         "{}: the wall shadows the light running along it — {along:.3} of it arrives",
@@ -1093,7 +1105,7 @@ fn light_runs_along_a_wall_and_stops_across_it() {
     // from the lamp is the room and not the street it hangs over. Two tiles back
     // and one tile west, so the ray crosses a panel that is not the flame's own
     // cell's — a flame's own tile never shadows it.
-    let across = through(&scene, (cx - 1, cy - 2));
+    let across = through(&scene, spot((cx - 1, cy - 2), 0.0));
     assert!(
         across < 0.5,
         "{}: the wall let light through its own face — {across:.3} of it arrives",
@@ -1107,7 +1119,7 @@ fn light_runs_along_a_wall_and_stops_across_it() {
         art: None,
         ..scene::wall_with_a_torch_beside_it()
     };
-    let along_blind = through(&blind, (cx, cy));
+    let along_blind = through(&blind, face(cx));
     assert!(
         along_blind < 0.01,
         "with no art an occluder is the whole tile and the along-ray must die — {along_blind:.3} \
