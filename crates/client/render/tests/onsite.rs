@@ -185,6 +185,9 @@ fn what_the_lighting_knows_about_a_place() {
         light::NIGHT,
         0.0,
         Some(&atlas),
+        // No bake: one frame, and the instrument reports what the plain walk
+        // built.
+        None,
     );
     println!("\n=== the flames, nearest first ===");
     let mut flames: Vec<_> = lighting

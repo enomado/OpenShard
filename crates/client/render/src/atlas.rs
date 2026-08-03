@@ -785,6 +785,10 @@ pub struct StaticAtlas {
     /// such tile repacked every atlas on every frame. Asking each graphic once
     /// is what makes the question terminate.
     asked: BTreeSet<Graphic>,
+    /// How many times the answers [`StaticAtlas::sprite`], [`StaticAtlas::hole`]
+    /// and [`StaticAtlas::prism`] give have changed — see
+    /// [`StaticAtlas::revision`].
+    revision: u64,
     /// Where the next sprite goes, kept between growths.
     shelf: Shelf,
     /// `ATLAS_SIDE * ATLAS_SIDE` RGBA8 pixels, row-major.
@@ -844,6 +848,7 @@ impl StaticAtlas {
             prisms: BTreeMap::new(),
             table: None,
             asked: BTreeSet::new(),
+            revision: 0,
             shelf: Shelf::default(),
             pixels: vec![0u8; side * side * 4],
             dirty: Dirty::default(),
@@ -941,6 +946,12 @@ impl StaticAtlas {
             if self.sprites.contains_key(&graphic) {
                 continue;
             }
+            // A growth that actually packs something is what a reader keyed on
+            // `revision` has to notice, and a growth that packs nothing must not
+            // look like one: the app offers this atlas every visible graphic on
+            // every frame, so bumping per *call* would tell an occlusion bake its
+            // shapes had changed sixty times a second. See `StaticAtlas::revision`.
+            self.revision += 1;
             let (width, height) = (image.width(), image.height());
             // A sprite wider or taller than the whole atlas cannot be packed at
             // any offset. The client ships nothing near it — the tallest art is
@@ -1058,6 +1069,7 @@ impl StaticAtlas {
     /// staircase convincing enough to be measured.
     pub fn state_prism(&mut self, graphic: Graphic, prism: crate::facing::Prism) {
         self.prisms.insert(graphic, prism);
+        self.revision += 1;
     }
 
     /// Say what hole a graphic has, without measuring one.
@@ -1074,6 +1086,31 @@ impl StaticAtlas {
     /// not, and refusing here would make the order of two unrelated calls matter.
     pub fn state_hole(&mut self, graphic: Graphic, hole: crate::facing::Hole) {
         self.holes.insert(graphic, hole);
+        self.revision += 1;
+    }
+
+    /// How many times what this atlas says about a graphic's *shape* has changed.
+    ///
+    /// Monotonic, and it counts three answers and no others:
+    /// [`sprite`](Self::sprite)'s facing, [`hole`](Self::hole) and
+    /// [`prism`](Self::prism) — which are exactly what
+    /// [`occlusion::Shape`](crate::occlusion::Shape) is made of, and therefore
+    /// exactly what a grid derived from this atlas depends on.
+    ///
+    /// It exists for [`occlusion::Bake`](crate::occlusion::Bake), and the failure
+    /// it prevents is the quiet one. An atlas *grows*: a graphic the camera has
+    /// not reached yet is not in it, so a block baked before that graphic was
+    /// packed holds the whole-tile fallback, and nothing about the baked block
+    /// would ever say it was built from a poorer answer than the one available
+    /// now. A wall would stay a body for as long as the player stood still. So
+    /// the bake keeps the revision it was built under and throws the cache away
+    /// when it moves, which is a handful of times in a session and never in a
+    /// steady frame.
+    ///
+    /// Pixels are deliberately not in it. A dirty row is a texture upload and
+    /// changes no geometry.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Whether the pixel at `(x, y)` *within* a graphic's own picture is drawn

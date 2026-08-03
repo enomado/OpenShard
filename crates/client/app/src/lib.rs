@@ -650,6 +650,7 @@ pub fn run<D: Dial + Send + 'static>(
         dragging: None,
         show_terrain: false,
         show_occluders: false,
+        occlusion_bake: occlusion::bake::Bake::new(),
         // The item under the cursor, ringed and lit, and the ground otherwise:
         // see `shell::HighlightTarget` and `shell::HighlightStyle`.
         highlight: shell::HighlightTarget::default(),
@@ -1369,6 +1370,15 @@ struct App {
     /// overlay: the grid is a second walk of the map's statics over the same
     /// bounds the frame's lighting walks a moment later.
     show_occluders: bool,
+    /// The blocks of the occlusion grid built for earlier frames — see
+    /// [`occlusion::bake`](openshard_client_render::occlusion::bake) and
+    /// `docs/lighting.md`'s step 21.5.
+    ///
+    /// Owned by the app because it is the app that has more than one frame. It
+    /// is one map's, and this client has one map; a second facet would want a
+    /// second bake, and the field being here rather than global is what would
+    /// make that a change to one line.
+    occlusion_bake: occlusion::bake::Bake,
     /// What the cursor is allowed to light up, and how an item says it is the
     /// one lit. Both are the HUD's to set — see [`shell::HighlightTarget`].
     highlight: shell::HighlightTarget,
@@ -4455,6 +4465,13 @@ impl App {
                 // atlas the statics pass is about to draw from, so the grid and
                 // the picture cannot be about two different sets of sprites.
                 Some(&window.atlases.statics),
+                // And the blocks of that grid built for earlier frames. A camera
+                // that has moved a tile wants the same five hundred and fifty
+                // blocks it wanted last frame bar a handful — see
+                // `occlusion::bake`, and `StaticAtlas::revision` for what makes
+                // this let go when the atlas learns something new about a
+                // graphic.
+                Some(&mut self.occlusion_bake),
             ),
             None => Lighting::NONE,
         };

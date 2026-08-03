@@ -97,6 +97,8 @@
 //! over the same rectangle, and the surface list, whose length is what the
 //! camera happens to be looking at rather than how big it is.
 
+pub mod bake;
+
 use openshard_protocol::wire::Graphic;
 
 use crate::facing::{Face, Facing, Hole};
@@ -1279,75 +1281,117 @@ pub fn collect(
     atlas: Option<&crate::atlas::StaticAtlas>,
 ) -> Occlusion {
     let mut occlusion = Builder::new(bounds);
-    // The ground each tile's column is measured from. Off the map it is zero:
-    // there is no floor there and nothing draws, and a static hanging over the
-    // void still has to shade something rather than be skipped by an `unwrap`.
-    let floor = |x: u16, y: u16| map.land(x, y).map_or(0, |cell| cell.z);
-    // Which edge each graphic's wall stands on, measured once when its picture
-    // was packed. `None` for the whole atlas is a caller that has no pictures —
-    // a built scene, a test — and every occluder is then the whole tile it always
-    // was. `None` for one graphic is the atlas not holding it, which happens at
-    // the rim: the grid is grown by the widest pool's reach and the atlas by what
-    // is drawn, and those are not the same rectangle. Both fall back the safe
-    // way. See `Occlusion::add` and `crate::facing`.
-    //
-    // The hole comes off the same lookup and for the same reasons: a graphic the
-    // atlas does not hold has none, which is a solid wall, which is what all but
-    // fifty-eight of the install's pictures are.
-    let shape = |graphic: Graphic| Shape {
-        facing: atlas
-            .and_then(|atlas| atlas.sprite(graphic))
-            .and_then(|s| s.facing),
-        hole: atlas.and_then(|atlas| atlas.hole(graphic)),
-        prism: atlas.and_then(|atlas| atlas.prism(graphic)),
-    };
 
     crate::statics::for_each_static_in(map, bounds, |item| {
-        let tile = tiledata.static_tile(item.tile);
-        occlusion.shade(
+        place(
+            &mut occlusion,
+            map,
+            tiledata,
+            atlas,
             item.x,
             item.y,
             item.z,
-            floor(item.x, item.y),
             Graphic(item.tile),
-            tile,
         );
-        if cutaway::drawn_in_any_frame(item.z, tile) {
-            occlusion.add(
-                item.x,
-                item.y,
-                item.z,
-                Graphic(item.tile),
-                tile,
-                shape(Graphic(item.tile)),
-            );
-        }
     });
-
-    for item in items {
-        let tile = tiledata.static_tile(item.graphic.0);
-        occlusion.shade(
-            item.at.x,
-            item.at.y,
-            item.at.z,
-            floor(item.at.x, item.at.y),
-            item.graphic,
-            tile,
-        );
-        if cutaway::drawn_in_any_frame(item.at.z, tile) {
-            occlusion.add(
-                item.at.x,
-                item.at.y,
-                item.at.z,
-                item.graphic,
-                tile,
-                shape(item.graphic),
-            );
-        }
-    }
+    put_items(&mut occlusion, map, items, tiledata, atlas);
 
     occlusion.blur_sky();
     occlusion.finish(cutaway)
+}
+
+/// What one graphic standing at one place contributes to a grid: the sky it
+/// takes, and the surfaces it is.
+///
+/// One function and not two lines written at every walk, because there are three
+/// walks now — the map's statics, the server's ground items, and
+/// [`bake`]'s block — and "the sky is shaded whatever the cutaway says, the
+/// surfaces are refused above the draw ceiling" is the pair that has to be the
+/// same in all of them.
+///
+/// The **draw ceiling** is refused here and the frame's [`Cutaway`] is not: a
+/// mountain top a hundred and fifty `z` up is drawn in no frame from any tile, so
+/// it is a fact about the static, while what the player is standing under is a
+/// fact about the frame and belongs in [`Builder::finish`]. Decision 33.
+// Eight: the grid, the three things a shape and a floor are looked up in, and
+// the four that say which static this is. A struct for the last four would be
+// `StaticItem` with the graphic already unwrapped — which is a fourth spelling of
+// a thing that has three.
+#[allow(clippy::too_many_arguments)]
+fn place(
+    grid: &mut Builder,
+    map: &Map,
+    tiledata: &TileData,
+    atlas: Option<&crate::atlas::StaticAtlas>,
+    x: u16,
+    y: u16,
+    z: i8,
+    graphic: Graphic,
+) {
+    let tile = tiledata.static_tile(graphic.0);
+    // The ground this tile's column is measured from. Off the map it is zero:
+    // there is no floor there and nothing draws, and a static hanging over the
+    // void still has to shade something rather than be skipped by an `unwrap`.
+    let floor = map.land(x, y).map_or(0, |cell| cell.z);
+    grid.shade(x, y, z, floor, graphic, tile);
+    if cutaway::drawn_in_any_frame(z, tile) {
+        grid.add(x, y, z, graphic, tile, shape_of(atlas, graphic));
+    }
+}
+
+/// What the art said about one graphic, or the safe fallback where it said
+/// nothing.
+///
+/// Which edge a wall stands on is measured once, when its picture is packed.
+/// `None` for the whole atlas is a caller that has no pictures — a built scene, a
+/// test — and every occluder is then the whole tile it was before
+/// [`crate::facing`] existed. `None` for one graphic is the atlas not holding it,
+/// which happens at the rim: the grid is grown by the widest pool's reach and the
+/// atlas by what is drawn, and those are not the same rectangle. Both fall back
+/// the same way.
+///
+/// The hole and the prism come off the same lookup and for the same reasons: a
+/// graphic the atlas does not hold has neither, which is a solid wall, which is
+/// what all but fifty-eight of the install's pictures are.
+fn shape_of(atlas: Option<&crate::atlas::StaticAtlas>, graphic: Graphic) -> Shape {
+    Shape {
+        facing: atlas
+            .and_then(|atlas| atlas.sprite(graphic))
+            .and_then(|sprite| sprite.facing),
+        hole: atlas.and_then(|atlas| atlas.hole(graphic)),
+        prism: atlas.and_then(|atlas| atlas.prism(graphic)),
+    }
+}
+
+/// Put the server's ground items into a grid, after the map's own statics.
+///
+/// Never baked and always per frame: a door is a ground item, and a door
+/// changing its graphic changes the one occluder a player watches change. There
+/// are a handful of them in a frame against twenty-five thousand statics, so this
+/// is the cheap half.
+///
+/// **After** the statics, which is what keeps a baked grid and a walked one the
+/// same list: a tile's surfaces come out in the order they were added, and the
+/// items of a tile that also holds a wall must land behind that wall in both.
+fn put_items(
+    grid: &mut Builder,
+    map: &Map,
+    items: &[GroundItem],
+    tiledata: &TileData,
+    atlas: Option<&crate::atlas::StaticAtlas>,
+) {
+    for item in items {
+        place(
+            grid,
+            map,
+            tiledata,
+            atlas,
+            item.at.x,
+            item.at.y,
+            item.at.z,
+            item.graphic,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2729,6 +2773,38 @@ mod tests {
             std::hint::black_box(built.clone().sky_at(bounds.min_x, bounds.min_y));
         }));
 
+        // Step 21.5, and the two states a cache has. A **still** camera is the
+        // ceiling — every block it wants is one it holds — and a camera moving a
+        // tile a frame is the case that decides whether the thing is worth
+        // having: a widest-zoom frame is about 550 blocks and a tile of pan buys
+        // at most one new column of them.
+        //
+        // Both are timed over the same `RUNS` and the fastest is the reading, so
+        // both are the *steady* state rather than an average with the first
+        // frame's misses folded in. The hits and misses are printed beside them
+        // because they are the companion: a bake that rebuilt every block costs
+        // what the walk costs and looks identical in a millisecond.
+        let cached = |pan: i32| {
+            let mut bake = bake::Bake::new();
+            let mut best = std::time::Duration::MAX;
+            for run in 0..RUNS as i32 {
+                let at = TileBounds {
+                    min_x: bounds.min_x + run * pan,
+                    max_x: bounds.max_x + run * pan,
+                    ..bounds
+                };
+                let start = std::time::Instant::now();
+                std::hint::black_box(
+                    bake::collect(&mut bake, &map, &[], at, &tiledata, &Cutaway::OPEN, Some(&atlas))
+                        .surface_count(),
+                );
+                best = best.min(start.elapsed());
+            }
+            (best, bake.served(), bake.len())
+        };
+        let (still, still_served, still_held) = cached(0);
+        let (panning, panning_served, _) = cached(1);
+
         let grid = collect(&map, &[], bounds, &tiledata, &Cutaway::OPEN, Some(&atlas));
         let mut statics = 0_usize;
         crate::statics::for_each_static_in(&map, bounds, |_| statics += 1);
@@ -2772,6 +2848,32 @@ mod tests {
             ms(blurred) - ms(cloned),
             ms(packed) - ms(cloned),
             ms(cloned),
+        );
+
+        // The companion, and it is not optional: `still` and `panning` would read
+        // exactly as they do here if the cache were never hit once.
+        assert!(
+            still_served.0 > 0,
+            "the bake served nothing to a camera that never moved"
+        );
+        assert!(
+            panning_served.1 > still_served.1,
+            "a panning camera wanted no block a still one had not already built"
+        );
+        println!(
+            "the same grid out of a bake — `collect` itself is {:6.3}ms\n\
+             \n\
+             camera                      ms     served   built   blocks held\n\
+             still                   {:6.3}   {:8}{:8}{:14}\n\
+             one tile a frame        {:6.3}   {:8}{:8}",
+            ms(whole),
+            ms(still),
+            still_served.0,
+            still_served.1,
+            still_held,
+            ms(panning),
+            panning_served.0,
+            panning_served.1,
         );
     }
 }

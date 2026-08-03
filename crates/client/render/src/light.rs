@@ -646,11 +646,16 @@ pub fn lit_tiles(camera: &Camera) -> crate::camera::TileBounds {
 /// list and no art at all. Without it every occluder is the whole tile it was
 /// before [`crate::facing`] existed, which is the safe answer and not a broken
 /// one — see [`occlusion::collect`](crate::occlusion::collect).
-// Eight, and every one of them is a different thing the frame knows: the world,
+/// `bake` is the blocks of the occlusion grid a caller has already derived, and
+/// it is an `Option` for the same reason `atlas` is: not every caller keeps one
+/// across frames. `None` builds the grid from nothing, which is the same grid —
+/// see [`occlusion::bake`](crate::occlusion::bake), whose first test is that the
+/// two are equal.
+// Nine, and every one of them is a different thing the frame knows: the world,
 // what the server has put in it, where the eye is, what the client's files say,
-// what the frame has cut away, what the sky is doing, when, and the pictures.
-// Grouping them into a struct would be one more type to keep in step with the
-// call sites for no fewer facts — and the call sites are three.
+// what the frame has cut away, what the sky is doing, when, the pictures, and
+// what was built for the last frame. Grouping them into a struct would be one
+// more type to keep in step with the call sites for no fewer facts.
 #[allow(clippy::too_many_arguments)]
 pub fn collect(
     map: &Map,
@@ -661,6 +666,7 @@ pub fn collect(
     ambient: Ambient,
     time: f32,
     atlas: Option<&crate::atlas::StaticAtlas>,
+    bake: Option<&mut crate::occlusion::bake::Bake>,
 ) -> Lighting {
     let bounds = lit_tiles(camera);
     let mut lights = Vec::new();
@@ -687,7 +693,10 @@ pub fn collect(
 
     // The grid before the flames are placed, because where a mounted flame burns
     // is a fact about what it is mounted *on* — see `mounted_at`.
-    let occlusion = crate::occlusion::collect(map, items, bounds, tiledata, cutaway, atlas);
+    let occlusion = match bake {
+        Some(bake) => crate::occlusion::bake::collect(bake, map, items, bounds, tiledata, cutaway, atlas),
+        None => crate::occlusion::collect(map, items, bounds, tiledata, cutaway, atlas),
+    };
     for light in &mut lights {
         light.at = mounted_at(light.at, &occlusion);
     }
@@ -2135,6 +2144,7 @@ mod tests {
             NIGHT,
             0.0,
             None,
+            None,
         );
         assert_eq!(lighting.lights.len(), 1);
         let light = lighting.lights[0];
@@ -2166,6 +2176,7 @@ mod tests {
             &Cutaway::OPEN,
             NIGHT,
             0.0,
+            None,
             None,
         );
         assert!(lighting.lights.is_empty());
@@ -2201,6 +2212,7 @@ mod tests {
                 &Cutaway::OPEN,
                 NIGHT,
                 0.0,
+                None,
                 None,
             );
             assert_eq!(lighting.lights[0].radius, TORCH.radius, "at {zoom}");
@@ -2322,6 +2334,7 @@ mod tests {
             NIGHT,
             0.0,
             None,
+            None,
         );
         assert_eq!(lighting.occlusion.bounds(), lit_tiles(&camera));
         assert!(
@@ -2384,6 +2397,7 @@ mod tests {
             },
             NIGHT,
             0.0,
+            None,
             None,
         );
         assert!(lighting.lights.is_empty());

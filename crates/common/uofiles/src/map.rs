@@ -608,6 +608,35 @@ impl Map {
             .filter(move |item| item.x >= from_x && item.x <= to_x)
     }
 
+    /// Every static in one block, in the block's own order.
+    ///
+    /// The whole slice and no search at all, which is what a *per-block* reader
+    /// wants: `client/render`'s occlusion bake derives one block's surfaces once
+    /// and keeps them, so it asks about a block rather than about a rectangle,
+    /// and eight calls to [`Map::statics_in_row`] would be eight binary searches
+    /// for a run that is already contiguous.
+    ///
+    /// The order is [`tile_key`]'s — `(y, x)` — which is [`Map::statics_in_row`]'s
+    /// own order restricted to the block, so a reader that walks a block sees one
+    /// tile's statics in exactly the order a reader walking rows sees them. That
+    /// is what lets the two build the same grid, and `client/render`'s
+    /// `occlusion::tests::a_baked_grid_is_the_one_the_walk_builds` is what says
+    /// so.
+    ///
+    /// A block the facet does not have is empty.
+    pub fn statics_in_block(&self, block_x: u32, block_y: u32) -> &[StaticItem] {
+        /// A block the facet does not have.
+        const NONE: &[StaticItem] = &[];
+
+        let (columns, rows) = (self.width / BLOCK_SIZE, self.height / BLOCK_SIZE);
+        if block_x >= columns || block_y >= rows {
+            return NONE;
+        }
+        self.statics
+            .get((block_x * rows + block_y) as usize)
+            .map_or(NONE, Vec::as_slice)
+    }
+
     fn block_index(&self, x: u16, y: u16) -> Option<usize> {
         if !self.contains(x, y) {
             return None;
@@ -1192,5 +1221,55 @@ mod tests {
         // The sweep found something: an empty map would agree with itself.
         assert_eq!(map.statics_in_row(5, 0, 23).count(), 21);
         assert_eq!(map.statics_in_row(1, 0, 23).count(), 0, "a row nothing stands on");
+    }
+
+    /// A block hands back its eight rows, in the order a reader of rows sees
+    /// them.
+    ///
+    /// The property `client/render`'s occlusion bake rests on, and the one that
+    /// would be silent if it broke: a per-block reader and a per-row reader build
+    /// the same grid only because a tile's statics come out in the same order in
+    /// both, and a resort of the block would change which of two statics on one
+    /// tile is on top without failing anything else here.
+    #[test]
+    fn a_block_is_its_own_rows_end_to_end() {
+        let mut map = Map::from_blocks(3, 2, |_, _| LandCell::default());
+        let mut tile = 0;
+        for y in [5u16, 0, 12, 5, 7] {
+            for x in [23u16, 0, 8, 15, 7, 9] {
+                tile += 1;
+                map.place_static(StaticItem {
+                    tile,
+                    x,
+                    y,
+                    z: 0,
+                    hue: 0,
+                });
+            }
+        }
+
+        let named = |item: &StaticItem| (item.tile, item.x, item.y);
+        for block_x in 0..3u32 {
+            for block_y in 0..2u32 {
+                let (from_x, to_x) = (block_x as u16 * 8, block_x as u16 * 8 + 7);
+                let by_row: Vec<_> = (block_y as u16 * 8..block_y as u16 * 8 + 8)
+                    .flat_map(|y| map.statics_in_row(y, from_x, to_x))
+                    .map(named)
+                    .collect();
+                let by_block: Vec<_> = map.statics_in_block(block_x, block_y).iter().map(named).collect();
+                assert_eq!(by_block, by_row, "block ({block_x}, {block_y})");
+            }
+        }
+
+        // The sweep found something, and a block off the facet is empty rather
+        // than a panic or a neighbour's contents.
+        // Four of the five rows are in the first block row and two of the six
+        // columns are in the first block column.
+        assert_eq!(map.statics_in_block(0, 0).len(), 8);
+        assert!(
+            map.statics_in_block(3, 0).is_empty(),
+            "a column the facet has not"
+        );
+        assert!(map.statics_in_block(0, 2).is_empty(), "a row the facet has not");
     }
 }

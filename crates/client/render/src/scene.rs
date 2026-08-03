@@ -225,6 +225,10 @@ impl Scene {
             },
             time,
             self.art.as_ref(),
+            // No bake. A scene is asked for its lighting once and its map is a
+            // few blocks, so a cache would only be a second thing to be wrong —
+            // and it is the *uncached* grid these tests are the oracle for.
+            None,
         );
         lighting.sun = self.sun;
         if let Some((at, facing)) = self.carried {

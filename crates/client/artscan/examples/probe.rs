@@ -51,6 +51,7 @@ fn main() {
         light::NIGHT,
         0.0,
         Some(&atlas),
+        None,
     );
     println!("{} flames in the frame", lighting.lights.len());
     for (index, flame) in lighting.lights.iter().enumerate() {

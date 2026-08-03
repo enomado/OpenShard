@@ -351,6 +351,9 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             light::NIGHT.flattened(),
             time,
             Some(&static_atlas),
+            // Uncached on purpose: `cpu` below is the frame this pass costs
+            // without a bake, and the bake is timed against it a few lines down.
+            None,
         )
     };
     // Three readings and not one, because they have three different fixes: the
@@ -359,6 +362,12 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     // allocations of the same rectangle on the way to the queue. A single
     // "2.8ms" names none of them.
     let (mut cpu, mut cpu_grid, mut cpu_bytes) = (Duration::MAX, Duration::MAX, Duration::MAX);
+    // The same grid again out of a cache that survives the loop — step 21.5. The
+    // first batch is all misses and the rest are all hits, and taking the fastest
+    // is what makes this the *steady* reading rather than an average of the two
+    // states.
+    let mut bake = openshard_client_render::occlusion::bake::Bake::new();
+    let mut cpu_baked = Duration::MAX;
     for batch in 0..BATCHES {
         let start = Instant::now();
         let built = collect(batch as f32);
@@ -374,6 +383,26 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             Some(&static_atlas),
         );
         cpu_grid = cpu_grid.min(start.elapsed());
+
+        let start = Instant::now();
+        let cached = openshard_client_render::occlusion::bake::collect(
+            &mut bake,
+            &map,
+            &[],
+            light::lit_tiles(&camera),
+            &tiledata,
+            &Cutaway::OPEN,
+            Some(&static_atlas),
+        );
+        cpu_baked = cpu_baked.min(start.elapsed());
+        // The oracle, on the real map rather than on a built town: the cache is
+        // only worth anything if what comes out of it is the grid the walk
+        // builds, and 25,702 statics over 187x187 tiles is where a per-block
+        // read-out that dropped a rim tile or reordered a run would show.
+        assert_eq!(
+            cached, grid,
+            "the baked grid is not the one the walk builds, batch {batch}"
+        );
 
         // What the upload sends. Timed apart and `black_box`ed, because a length
         // nobody reads is an allocation a release build may delete.
@@ -538,6 +567,19 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         cpu.as_secs_f64() * 1e3,
         cpu_grid.as_secs_f64() * 1e3,
         cpu_bytes.as_secs_f64() * 1e3,
+    );
+    // The companion the plan asked for, and it is the whole reading: a cache that
+    // is never hit costs what the walk costs and looks identical in a total. The
+    // camera does not move in this test, so this is the ceiling — every block
+    // wanted is a block already held — and `what_the_grid_costs_to_build` is
+    // where a panning eye is measured.
+    let (hits, misses) = bake.served();
+    eprintln!(
+        "the same grid out of a bake: {:.2}ms against {:.2}ms, {} blocks held, \
+         {hits} served and {misses} built over {BATCHES} frames of a still camera\n",
+        cpu_baked.as_secs_f64() * 1e3,
+        cpu_grid.as_secs_f64() * 1e3,
+        bake.len(),
     );
 
     let floor = readings

@@ -9,19 +9,28 @@ copied.
 
 ## Where the next session starts
 
-**Step 21.5's blocker is gone: the grid is what a ray may cross, and the frame is
-cut out of it at the end.** `Builder::finish` applies the `Cutaway` as it packs,
-so what a `Builder` holds is a fact about the map and one walk serves two frames
-(`one_walk_of_the_map_serves_two_cutaways`). **Decision 33** is the argument;
-**30.4's storey band is gone with it** and the bake's key is the block. Nothing
-in the picture moved — every test that pins the cutaway is green and each goes
-red with the new filter forced true.
+**Step 21.5 has landed, and step 21 with it: the grid is baked per block.**
+`occlusion::bake` keeps one `Baked` per map block — the surfaces its statics
+stand and the sky they take — and a frame is those blocks pasted, plus the three
+things that are genuinely per frame: the server's ground items, the blur, and the
+pack with the frame's `Cutaway`. **1.22ms to 0.37ms**, and the reading that
+decides it is the *panning* one: a camera moving a tile a frame builds about
+three and a half blocks and costs the same 0.36ms as a still one.
 
-**Start at step 21.5, the bake itself**, and it is now a plain per-block cache
-with no key to argue about: `add` is 0.72ms of the 1.15ms and is the subject, the
-sky field bakes per block beside it, and the blur and the pack stay per-frame.
-Read the step's own handoff for what to measure and for the companion it needs —
-a cache that is never hit reads exactly like one that works.
+What comes out is the grid the walk builds **to the byte**, asserted on a built
+town and on every batch of Britain in `tests/cost.rs`. The one thing the plan did
+not name is **decision 37**: a surface is derived from the map *through the
+atlas*, an atlas grows, and a block baked before a graphic was packed would hold
+the whole-tile fallback for ever — so `StaticAtlas::revision` counts the three
+answers a `Shape` is made of and the bake lets go when it moves.
+
+**Start at step 22, decision 34's five changes — a body's footprint.** It is the
+next thing in the grid that a real tile in Britain is visibly wrong about
+(`1509,1635` is drawn and behaved as a full square), it is written up step by step
+with a DoD each, and none of it waits on anything. Step 17, the shaft, is the
+other open one. And the backlog has three new entries from this session, the first
+of which is the one to read if a frame indoors ever looks expensive: **the paste
+is now the largest thing left in the build.**
 
 Everything below this line is the session before it.
 
@@ -1208,7 +1217,9 @@ would put its build on the CPU, which is the side that is already thirteen times
 the GPU.
 
 **30.4 Baked per block, and ~~per storey band~~ by block alone.** *(the band is
-gone — decision 33 is why, and it landed before the bake did)*
+gone — decision 33 is why, and it landed before the bake did; the bake itself is
+step 21.5 and `occlusion::bake`, and what it turned out to also need is decision
+37)*
 
 The band was here because the cutaway removed the storeys the player is not on
 *at the map walk*, which made a built grid one frame's: a cache keyed by block
@@ -1557,6 +1568,44 @@ still deferred and still right — a bilinear patch reopens three rules that eac
 cost a day. A box does not. A flight of steps is horizontals and verticals, which
 is exactly what this world is made of, and the shape that was missing was never a
 slope.
+
+**37. What invalidates the bake is the *art*, and the art has a revision.**
+
+Decision 33 made a `Builder` a fact about the map, and decision 30.4 read that as
+"so a block can be built once". Both are true and neither is the whole of it: a
+surface is derived from the map **through the atlas** — which edge a wall stands
+on, the hole in it, the solid a stair is — and `occlusion::shape_of` falls back to
+the whole-tile answer for a graphic the atlas does not hold.
+
+**An atlas grows.** A graphic the camera has not reached yet is not in it, so a
+block baked a second before that graphic was packed holds `EDGE_ANY` where the
+atlas can now name a face — and nothing about the baked block would ever say so.
+The wall would stay a body for as long as the player stood still. That is the
+whole class of bug a cache has that a rebuild does not, and it is the quiet kind:
+the picture is a *little* wrong, in a way that looks like the detector failing
+rather than like a cache being stale.
+
+So the fact the bake depends on is given a name and a counter.
+`StaticAtlas::revision` counts changes to exactly the three answers
+`occlusion::Shape` is made of — a facing, a hole, a prism — and a `Bake` keeps the
+revision it was built under and drops **everything** when it moves. Three things
+about that shape are deliberate:
+
+- **A counter and not a comparison of contents.** "Has the atlas changed" asked of
+  the maps themselves is a scan of a few thousand entries every frame, to answer
+  no.
+- **Bumped where something is actually packed, not per call.** The app offers the
+  atlas every visible graphic on every frame, and a bump per *call* would tell the
+  bake its shapes had changed sixty times a second — a cache that is cleared every
+  frame is not a cache, and it costs exactly what having none costs while looking
+  like it works.
+- **Pixels are not in it.** A dirty row is a texture upload and changes no
+  geometry.
+
+The map itself is the other input, and it is not versioned: a `Bake` is one map's,
+the caller owns that, and this client has one map. That is stated rather than
+enforced because the alternative — a map that could tell you it had changed —
+would be a facet-wide dirty bit for a case the client does not have.
 
 ## Steps
 
@@ -1915,9 +1964,9 @@ slope.
       and two need a real install — every graphic's row against a live
       `facing_of`, and a stale table refused through the real reader over the real
       art file.
-- [ ] **21. The surface list.** Decision 30, **and it is five changes rather than
-      one**. They are listed in the order that keeps every one of them testable on
-      its own, and nothing here waits on anything else:
+- [x] **21. The surface list.** Decision 30, **and it was five changes rather than
+      one**. They are listed in the order that kept every one of them testable on
+      its own, and nothing here waited on anything else:
 
       1. ✅ **The list and the walk over it, with the union kept.** A cell stopped
          being one merged span and became `(offset, count)` into a list of
@@ -2084,99 +2133,89 @@ slope.
          pierce. No like-for-like number was taken, because there is nothing yet
          to measure: the frame that will want measuring is the first one with
          windows in it, and that is step 21.4's.
-      4. **The tool, the table and the measured aperture** — steps 20b and 16.
-         **The tool and the table have landed**; what is left of this is step 16,
-         the measurement itself, and it now has a place to be written down and a
-         budget to be made in. Until it lands no window in Britain has a hole and
-         every one of them behaves exactly as it does today, which is a feature:
-         the mechanism is already held by a test by then.
-      5. **Bake it.** Decision 30.4's block-and-band cache — and **read the
-         breakdown below before starting, because it is no longer 2.0ms.**
+      4. ✅ **The tool, the table and the measured aperture** — steps 20b and 16,
+         both landed and both written up at the top of this file. The tool reads
+         an install once and writes a table beside the client; the measurement is
+         `facing::aperture_of`, 58 pictures of 39,189 and 85 wall statics standing
+         in Britain.
+      5. ✅ **Bake it.** Decision 30.4's block cache, and it is **1.22ms to
+         0.37ms** on the frame the breakdown below was taken on.
 
-         The number decision 30 was written on was a *total*, and a total names
-         no fix. `occlusion::tests::what_the_grid_costs_to_build` takes it apart
-         on the frame `tests/cost.rs` reads — Britain at the widest zoom, the
-         atlas built, 187×187 tiles, 25,702 statics, 18,071 surfaces on 10,212
-         standing cells — one phase added to the one above it, the fastest of
-         sixteen runs:
+         `crates/client/render/src/occlusion/bake.rs`. A `Bake` holds one
+         `Baked` per map block — the surfaces its statics stand and the sky they
+         take, in cell coordinates so the same bytes serve a frame at any offset
+         — and `bake::collect` assembles a frame by pasting the blocks its
+         rectangle overlaps, then does the three things that are genuinely per
+         frame: the server's ground items, the blur, and the pack with the
+         frame's `Cutaway`. Everything a block holds goes through the same
+         `occlusion::place` the uncached walk uses, which is now one function
+         rather than two copies of a pair of lines.
+
+         **The property it rests on is equality and not similarity**, and it is
+         asserted twice. `a_baked_grid_is_the_one_the_walk_builds` compares the
+         packed `Occlusion` of a baked frame against a walked one on a built
+         town — four blocks, a run of wall crossing a block boundary, two
+         statics on one tile, a ground item, and both of the cutaway's two cuts
+         — and `tests/cost.rs` makes the same comparison on **Britain, every
+         batch**: 25,702 statics over 187×187 tiles, which is where a read-out
+         that dropped a rim tile or reordered a tile's run would show. Both were
+         run against the two mutations that should break them (drop the per-tile
+         reverse; do not paste the sky) and both go red.
+
+         Equality to the byte is available because nothing about the assembly is
+         approximate. A tile's statics all live in its own block, so a block's
+         surfaces and its sky are entirely its own; within a block the map's
+         order is `(y, x)`, which is the row walk's order restricted to that
+         block, so a tile's surfaces arrive in the same order either way; and the
+         sky is *assigned* rather than multiplied in, because no two blocks share
+         a tile and the ground items come after — so the integer rounding of
+         `sky * passes / 255` happens in the same sequence in both.
+
+         **What it cost to get right that the plan did not name: decision 37.**
+         A surface is derived from the map *through the atlas*, and an atlas
+         grows — so a block baked before a graphic was packed holds the
+         whole-tile fallback for ever. `StaticAtlas::revision` is the counter and
+         the `Bake` drops everything when it moves.
+
+         **The numbers**, `what_the_grid_costs_to_build` and `tests/cost.rs`,
+         release, Britain at the widest zoom — 187×187 tiles, 25,702 statics,
+         17,201 surfaces on 10,212 standing cells:
 
          ```
          phase                       ms     cumulative
          allocate the builder     0.001      0.001
-         walk the map             0.080      0.080
-         + shade the sky          0.140      0.220
-         + add the surfaces       0.722      0.942
-         + blur and pack          0.207      1.149   (`collect` itself)
+         walk the map             0.073      0.073
+         + shade the sky          0.125      0.199
+         + add the surfaces       0.668      0.867
+         + blur and pack          0.352      1.220   (`collect` itself)
+
+         camera                      ms     served   built   blocks held
+         still                    0.366       9000     600           600
+         one tile a frame         0.363       9050     650
          ```
 
-         **The walk was 0.980ms of it and is now 0.080ms**, which is the whole
-         of why the total is 1.15ms rather than 2.30. `Map::statics_at` scanned
-         a block and filtered by tile, and `statics::for_each_static_in` asked
-         it about all sixty-four of that block's tiles — so a frame read every
-         block sixty-four times. A block is sorted by `(y, x)` now and a row of
-         one is a contiguous slice; the order is unchanged, which it has to be,
-         because a tie between two statics at one depth is broken by taking the
-         last one walked. That is not a lighting fix: the same walk is what
-         `statics::collect` draws from, what `pick` reads, what the atlas is
-         built from and where the flames come from.
+         **The companion is the "served" column and it is asserted, not just
+         printed**: a bake that rebuilt every block would cost what the walk
+         costs and read identically in a millisecond. A still camera serves 600
+         of 600 after the first frame; a camera moving a tile a frame builds
+         about three and a half blocks a frame and costs *the same* 0.36ms,
+         which is the reading that decides the thing — a widest-zoom frame is
+         550 blocks and a tile of pan buys at most one new column of them.
 
-         So what a bake can still buy is **0.94ms** — the walk, the sky and the
-         surfaces — of which `add` is three quarters. The 0.21ms of blur and
-         pack is over the *frame's* rectangle rather than over a block, so it is
-         per-frame whatever is cached, and a bake that claimed the whole 1.15ms
-         would be claiming a number that is not there. Worth having and no
-         longer the largest thing in the pass: the GPU side of a night frame is
-         0.50ms against this 1.15ms, where it was 0.50 against 2.30.
+         What is left in the 0.37ms is the paste (~0.15ms), the blur (0.14ms)
+         and the pack (0.08ms). The last two are over the frame's rectangle and
+         are per frame whatever is cached, exactly as the handoff said; the paste
+         is a copy through `Builder::push`, whose per-tile scan is the only thing
+         in it that is not linear. In `tests/cost.rs`'s whole-frame reading the
+         grid falls from 1.26ms to 0.42ms, against a GPU side of 0.35ms for a
+         night frame — so **the CPU half of this pass has stopped being the
+         larger one**, which is what decision 30 was written to do.
 
-         **The handoff, in the order the next session should take it.**
-
-         *~~First, and it is a blocker rather than a caveat: 30.4's band is the
-         cutaway's, and the cutaway is being changed.~~* **Cleared, and the band
-         with it — decision 33.** The blocker was that `collect` put a static in
-         the grid only where `cutaway::shows` said the frame drew it, so a
-         builder was already one frame's and the cache had to be keyed by
-         something the cutaway could select from. The cut now happens in
-         `Builder::finish`, over the packed list: a `Builder` holds what a ray
-         may cross, which is a fact about the map, and a frame is filtered out of
-         it. **So the key is the block, and there is no band to write.** The
-         question of whether a ray *should* cross a storey the frame took away is
-         untouched by that and stays open — when it is answered it is a change to
-         which set `finish` keeps, and it invalidates nothing that was baked.
-
-         *What is not in question, and can be built against today:*
-
-         - **The sky field bakes per block with no band at all.** `shade` is the
-           one reader of the walk that deliberately ignores the cutaway — the
-           module header says why — so a block's `sky` column is a fact about
-           the map. What cannot be baked per block is the blur: it is a 3×3 over
-           the frame's rectangle, so a block would need a one-tile apron or the
-           blur stays where it is. It is 0.145ms and staying is defensible.
-         - **`add` now runs for every static, and the measured 1.15ms is
-           unchanged.** Decision 33 moved the cutaway out of the map walk, so a
-           frame indoors builds the surfaces it is about to cut away and drops
-           them at the pack. The breakdown above is off `Cutaway::OPEN`, where
-           nothing was ever cut, so it stands as it is — what is not measured is
-           a frame *inside* a house, where the builder now does the work of an
-           open one. That is the cost the bake pays it back for, and it is worth
-           printing the two side by side when the cache lands.
-         - **`add` is the 0.72ms and therefore the subject.** Per static it is
-           `opacity` (which asks `doors` before it asks a flag), `shape` (two
-           atlas lookups), and `push` (a linear scan of the tile's list, to drop
-           an exact repeat). A bake pays all three once per block per band
-           instead of once per frame.
-         - **A block is 8×8 and a frame is 187×187**, so a widest-zoom frame is
-           about 550 blocks — the unit is right and the assembly of a frame from
-           cached blocks is a copy rather than a walk.
-         - **What the server changes stays per-frame.** Ground items are a
-           handful and a door is one of them; that path exists and is small.
-           Note that a door changing its graphic changes an *occluder*, which is
-           the one thing in the grid a player watches change.
-
-         *What to measure when it is done*, and the companion matters: rerun
-         `what_the_grid_costs_to_build` for the phases and `tests/cost.rs` for
-         the frame, and print what fraction of blocks were served from the cache.
-         A cache that is never hit reads exactly like a cache that works, and
-         the camera moving a tile a frame is the case that decides it.
+         Two things a cache has that a rebuild does not, both bounded rather than
+         argued about: it lets go of the coldest blocks past `KEEP_BLOCKS`
+         (4,096, about seven frames of walking, and never a block this frame
+         touched — a cache that thrashes is worse than none), and it is one map's,
+         which decision 37 states because nothing here can check it.
 
       Read decision 30's micro-decisions before starting: 30.5 decides the format
       (WebGL2 — a texture read with `textureLoad`, not a storage buffer), 30.6
@@ -2377,6 +2416,33 @@ Carried from `client.md`'s firelight backlog and still true:
 - Nothing a mobile carries burns — a player holding a torch makes no light.
 - The ambient is a key (F10), not a clock.
 - A light is placed by its tile, not by its sprite.
+
+Found while baking it (step 21.5):
+
+- **The paste is now the largest single thing in the build, and it is a linear
+  scan.** Of the 0.37ms a cached frame spends, roughly 0.15ms is
+  `Builder::paste` — pushing 17,201 surfaces into the frame's arena through
+  `Builder::push`, which walks the tile's existing list on every one of them to
+  drop an exact repeat. Pasting a *baked* block cannot produce a repeat: the block
+  was deduplicated when it was built and no two blocks share a tile. So the scan
+  is provably dead work on this path, and the shape of the fix is a `push` that
+  does not dedup, used only by `paste`. It was left undone because "provably" is
+  an argument and not a test, and the test that would hold it — a paste that
+  silently doubled a tile's surfaces — wants naming before the code is written.
+- **A frame indoors is not measured.** Every number in this file is off
+  `Cutaway::OPEN`. Decision 33 moved the cut to `finish`, so a frame inside a
+  house now *builds* the surfaces it is about to drop — which was the cost the
+  bake was meant to pay back, and the bake does pay it back, but nobody has put
+  the two side by side. It is one more call in `what_the_grid_costs_to_build`
+  with a cutaway that cuts, and it is worth having because it is the case where a
+  cached frame and an uncached one differ most.
+- **`Occlusion::dropped` is double-counted at a block boundary, harmlessly.**
+  `paste` adds a block's whole `dropped` count whether or not the tile that
+  overflowed is inside the frame's rectangle. The number is a diagnostic about
+  the map and the worst tile in Britain holds 21 of a cap of 255, so it is not
+  reachable today; it is written down because the two implementations of the grid
+  are otherwise equal *to the byte*, and this is the one field where "equal" rests
+  on the cap never being hit rather than on the arithmetic.
 
 Found while building it:
 
