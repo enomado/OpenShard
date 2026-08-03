@@ -1863,8 +1863,43 @@ pierce, a panel keeps decision 18's.
          budget to be made in. Until it lands no window in Britain has a hole and
          every one of them behaves exactly as it does today, which is a feature:
          the mechanism is already held by a test by then.
-      5. **Bake it.** Decision 30.4's block-and-band cache, and the **2.0ms of a
-         3.3ms CPU budget** that is the largest number in this pass.
+      5. **Bake it.** Decision 30.4's block-and-band cache — and **read the
+         breakdown below before starting, because it is no longer 2.0ms.**
+
+         The number decision 30 was written on was a *total*, and a total names
+         no fix. `occlusion::tests::what_the_grid_costs_to_build` takes it apart
+         on the frame `tests/cost.rs` reads — Britain at the widest zoom, the
+         atlas built, 187×187 tiles, 25,702 statics, 18,071 surfaces on 10,212
+         standing cells — one phase added to the one above it, the fastest of
+         sixteen runs:
+
+         ```
+         phase                       ms     cumulative
+         allocate the builder     0.001      0.001
+         walk the map             0.080      0.080
+         + shade the sky          0.140      0.220
+         + add the surfaces       0.722      0.942
+         + blur and pack          0.207      1.149   (`collect` itself)
+         ```
+
+         **The walk was 0.980ms of it and is now 0.080ms**, which is the whole
+         of why the total is 1.15ms rather than 2.30. `Map::statics_at` scanned
+         a block and filtered by tile, and `statics::for_each_static_in` asked
+         it about all sixty-four of that block's tiles — so a frame read every
+         block sixty-four times. A block is sorted by `(y, x)` now and a row of
+         one is a contiguous slice; the order is unchanged, which it has to be,
+         because a tie between two statics at one depth is broken by taking the
+         last one walked. That is not a lighting fix: the same walk is what
+         `statics::collect` draws from, what `pick` reads, what the atlas is
+         built from and where the flames come from.
+
+         So what a bake can still buy is **0.94ms** — the walk, the sky and the
+         surfaces — of which `add` is three quarters. The 0.21ms of blur and
+         pack is over the *frame's* rectangle rather than over a block, so it is
+         per-frame whatever is cached, and a bake that claimed the whole 1.15ms
+         would be claiming a number that is not there. Worth having and no
+         longer the largest thing in the pass: the GPU side of a night frame is
+         0.50ms against this 1.15ms, where it was 0.50 against 2.30.
 
       Read decision 30's micro-decisions before starting: 30.5 decides the format
       (WebGL2 — a texture read with `textureLoad`, not a storage buffer), 30.6
