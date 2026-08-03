@@ -138,6 +138,7 @@ use openshard_client_render::light::{self, Lighting};
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::occlusion;
 use openshard_client_render::outline::{self, Outline, Ring};
+use openshard_client_render::paperdoll;
 use openshard_client_render::place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::sprite::SpriteQuad;
@@ -609,7 +610,7 @@ pub fn run<D: Dial + Send + 'static>(
         // resting cursor hears `CursorEntered` on the first move.
         pointer_inside: false,
         pointer_gump: GumpPixel::new(0, 0),
-        container_windows: Vec::new(),
+        own_windows: Vec::new(),
         dragging: None,
         show_terrain: false,
         show_occluders: false,
@@ -884,19 +885,40 @@ struct Screen {
     gump_pass: Option<GumpRenderer>,
 }
 
-/// A container's window, and the one thing about it the shard never says.
+/// One of this client's own windows, and the one thing about it the shard never
+/// says.
 ///
-/// A `0x24` carries a serial and a gump and **no position**: where a container
-/// window goes is entirely the client's, and once the player has dragged one it
-/// is the player's. That is the whole of this type — everything else about the
-/// window is looked up in the [`WorldView`] by serial, so a window can never
-/// hold a stale copy of what is in the bag.
+/// Neither packet carries a position: a `0x24` names a container and a gump, a
+/// `0x88` names a mobile, and where the window goes is entirely the client's —
+/// once the player has dragged one it is the player's. That is the whole of
+/// this type. Everything else about the window is looked up in the
+/// [`WorldView`] by serial every frame, so a window can never hold a stale copy
+/// of what is in the bag or on the body.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct ContainerWindow {
-    /// Which container it is over.
-    container: Serial,
+struct OwnWindow {
+    /// What it is a window over.
+    subject: WindowSubject,
     /// Its top-left corner on the surface.
     at: GumpPixel,
+}
+
+/// What a window is over: a bag's contents, or a body.
+///
+/// One list holds both, because dragging, raising, hit-testing and closing are
+/// the same gesture over either — decision 5 in `docs/client.md`, and the
+/// reason the container's window machinery was written in this client's own
+/// gump pixels rather than as an egui window. The two differ in exactly three
+/// places, and each is a `match` two arms long: which art is the background
+/// ([`App::window_background`]), what is drawn on it, and what closing one
+/// means to the [`WorldView`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum WindowSubject {
+    /// A container the shard has opened, by its serial.
+    Container(Serial),
+    /// A mobile whose paperdoll the shard has opened, by its serial. The same
+    /// serial may name a container *and* a paperdoll — a player is both — which
+    /// is why this is the identity and not the serial alone.
+    Paperdoll(Serial),
 }
 
 /// Where the first container window opens, and how far each one after it is
@@ -1203,19 +1225,21 @@ struct App {
     /// into the other at each use is the arithmetic the two pixel types exist to
     /// stop being done wrong once.
     pointer_gump: GumpPixel,
-    /// The container windows this client has open, bottom to top.
+    /// The windows this client has open of its own — containers and paperdolls
+    /// alike — bottom to top.
     ///
     /// Painter's order *is* z-order here, the same as the pictures inside one:
     /// the pass has no depth, so the last window in the list is the one drawn
-    /// over the others and the first one picking finds.
-    container_windows: Vec<ContainerWindow>,
+    /// over the others and the first one picking finds. One list and not two,
+    /// because a bag dragged over a paperdoll has to stay over it.
+    own_windows: Vec<OwnWindow>,
     /// The window being dragged and where inside it the player grabbed it, or
     /// `None` when nothing is being dragged.
     ///
-    /// Keyed by serial rather than by index: raising a window on the press
+    /// Keyed by subject rather than by index: raising a window on the press
     /// reorders the list, so an index taken at the press names a different
     /// window by the time the mouse moves.
-    dragging: Option<(Serial, GumpPixel)>,
+    dragging: Option<(WindowSubject, GumpPixel)>,
     /// Whether the HUD is drawing what `common/movement` thinks of the ground —
     /// see [`App::terrain_overlay`].
     ///
@@ -1557,7 +1581,7 @@ impl ApplicationHandler<link::Update> for App {
                     (position.y as f32 / scale) as i32,
                 );
                 let mut changed = self.control.cursor_moved(x, y);
-                changed |= self.drag_container();
+                changed |= self.drag_own_window();
                 // Held, the button steers: a heading toward wherever the cursor
                 // is, by default, or a Ctrl-held move order — see
                 // `walk_toward_cursor` and `steer.rs`'s module docs for why
@@ -1588,7 +1612,7 @@ impl ApplicationHandler<link::Update> for App {
                 // double-click pair that would use whatever is under there.
                 if button == winit::event::MouseButton::Left
                     && state == ElementState::Pressed
-                    && self.press_on_container()
+                    && self.press_on_own_window()
                 {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
@@ -1626,7 +1650,7 @@ impl ApplicationHandler<link::Update> for App {
                 // world cannot be a heading into it.
                 if button == winit::event::MouseButton::Right
                     && state == ElementState::Pressed
-                    && self.close_container_under_pointer()
+                    && self.close_window_under_pointer()
                 {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
@@ -1980,11 +2004,11 @@ impl App {
     /// this. [`items::pick`] hits the sprite's own opaque texels instead, which
     /// is what the player thinks they clicked on.
     ///
-    /// Ground items only, so far: the map's statics are not entities and have no
-    /// serial to name, and a mobile is a paperdoll request rather than a use —
-    /// a different arm of the same packet, waiting on a paperdoll to show. What
-    /// this covers is doors, containers and everything else the shard has put on
-    /// the ground.
+    /// Entities only: the map's statics are not entities and have no serial to
+    /// name. What this covers is doors, containers, everything else the shard
+    /// has put on the ground — and now mobiles, whose double-click the shard
+    /// answers with a `0x88` and which this client can finally draw (see
+    /// [`paperdoll`] and `WindowSubject::Paperdoll`).
     ///
     /// Nothing is done locally on the way out. The door swings when the `0x1A`
     /// that redraws it arrives; a client that also opened it itself would show
@@ -2006,24 +2030,29 @@ impl App {
         // barrel hidden under a roof this client is not drawing is not something
         // the player can have pointed at.
         let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
-        // A creature under the cursor takes the click and nothing is used: it is
-        // what the highlight is telling the player they are pointing at, and
+        // A creature under the cursor takes the click, and no item is used: it
+        // is what the highlight is telling the player they are pointing at, and
         // using the barrel *behind* the shopkeeper is the one answer that is
-        // certainly wrong. What a mobile's own double-click asks for — a
-        // paperdoll — waits on there being a paperdoll to show.
+        // certainly wrong. What a mobile's double-click asks for is the
+        // paperdoll — the same `0x06` an item gets, answered differently by the
+        // shard (`DoubleClick::interpret`), which is why nothing here says
+        // "paperdoll" on the way out.
+        let drawn = self.drawn_now(&window.atlases.mobiles);
         let on_mobile = mobiles::pick(
-            &self
-                .drawn_now(&window.atlases.mobiles)
-                .into_iter()
-                .map(|(_, mobile)| mobile)
-                .collect::<Vec<_>>(),
+            &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
             &camera,
             &window.atlases.mobiles,
             &cutaway,
             &self.equip_conv,
             self.control.cursor(),
         );
-        if on_mobile.is_some() {
+        if let Some(index) = on_mobile {
+            // A body with no serial is one this client is drawing without the
+            // shard having named it — the offline viewer's placeholder — and
+            // there is nothing to ask about.
+            if let (Some(serial), Some(link)) = (drawn[index].0, self.link.as_ref()) {
+                link.use_object(serial);
+            }
             return;
         }
         let Some(index) = items::pick(
@@ -2058,38 +2087,51 @@ impl App {
             .unwrap_or(1.0)
     }
 
-    /// Open a window for every container the shard has opened and this client
-    /// has not placed yet, and drop the windows whose container is gone.
+    /// Open a window for everything the shard has opened and this client has
+    /// not placed yet, and drop the windows whose subject is gone.
     ///
     /// Run once a frame rather than when the packet arrived, and idempotent for
-    /// that reason: the `0x24` is folded into the [`WorldView`] by
-    /// `client/net`, which knows nothing about screens, so the window is this
-    /// end noticing that the view has grown a container it has nowhere to put.
+    /// that reason: the `0x24` and the `0x88` are folded into the [`WorldView`]
+    /// by `client/net`, which knows nothing about screens, so the window is
+    /// this end noticing that the view has grown something it has nowhere to
+    /// put.
     ///
     /// The drop is the other direction of the same idea: a container removed
-    /// from the world takes its entry in the view with it (see
-    /// `WorldView::apply`'s `Remove` arm), and a window over nothing must not
-    /// outlive it.
-    fn sync_container_windows(&mut self) {
+    /// from the world — or a mobile destroyed — takes its entry in the view
+    /// with it (see `WorldView::apply`'s `Remove` arm), and a window over
+    /// nothing must not outlive it.
+    fn sync_own_windows(&mut self) {
         let Some(view) = self.view.as_ref() else {
             // No world, no windows: a map viewer has no shard to have opened
             // one, and anything left over is from a session that has ended.
-            self.container_windows.clear();
+            self.own_windows.clear();
             return;
         };
-        self.container_windows
-            .retain(|window| view.containers.contains_key(&window.container));
-        for container in view.containers.keys() {
-            if self
-                .container_windows
-                .iter()
-                .any(|window| window.container == *container)
-            {
+        self.own_windows.retain(|window| match window.subject {
+            WindowSubject::Container(serial) => view.containers.contains_key(&serial),
+            WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
+        });
+        // Containers first and paperdolls after, and both in the view's own
+        // iteration order — which is a `HashMap`'s and therefore not stable.
+        // That decides only where two windows opened on the *same frame*
+        // cascade to, and nothing else: a window's position is its own from the
+        // moment it is placed.
+        let wanted = view
+            .containers
+            .keys()
+            .map(|serial| WindowSubject::Container(*serial))
+            .chain(
+                view.paperdolls
+                    .keys()
+                    .map(|serial| WindowSubject::Paperdoll(*serial)),
+            );
+        for subject in wanted.collect::<Vec<_>>() {
+            if self.own_windows.iter().any(|window| window.subject == subject) {
                 continue;
             }
-            let step = self.container_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
-            self.container_windows.push(ContainerWindow {
-                container: *container,
+            let step = self.own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
+            self.own_windows.push(OwnWindow {
+                subject,
                 at: GumpPixel::new(
                     CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
                     CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
@@ -2098,53 +2140,89 @@ impl App {
         }
     }
 
-    /// Which container window the cursor is over, topmost first, or `None`.
+    /// The picture a window is *made of*: a container's background gump, or the
+    /// body picture a paperdoll is drawn on.
+    ///
+    /// The one thing the two kinds of window disagree about that everything
+    /// else here is written in terms of — its size is the window's size, and
+    /// its pixels are what a click is tested against. `None` while the atlas
+    /// has yet to hold it, or for a paperdoll of a mobile this client has never
+    /// been told the body of.
+    fn window_background(&self, subject: WindowSubject) -> Option<gump_art::GumpArt> {
+        let view = self.view.as_ref()?;
+        match subject {
+            WindowSubject::Container(serial) => Some(gump_art::GumpArt::Gump(*view.containers.get(&serial)?)),
+            WindowSubject::Paperdoll(serial) => {
+                let (picture, _) = paperdoll::body_gump(self.paperdoll_body(serial)?.0, Hue::NONE);
+                Some(gump_art::GumpArt::Gump(picture))
+            }
+        }
+    }
+
+    /// The body and hue a paperdoll of this mobile draws, or `None` for a
+    /// mobile this client knows nothing about.
+    ///
+    /// The player's own body is not in `WorldView::mobiles` — a shard never
+    /// sends a client a `0x77` about itself — so its own paperdoll is the one
+    /// that has to read [`Player`](openshard_client_net::view::Player), which
+    /// is also the only place its equipment is.
+    fn paperdoll_body(&self, serial: Serial) -> Option<(u16, Hue)> {
+        let view = self.view.as_ref()?;
+        if view.player.serial == serial {
+            return Some((view.player.body.0, view.player.hue));
+        }
+        let mobile = view.mobiles.get(&serial)?;
+        Some((mobile.body.0, mobile.hue))
+    }
+
+    /// Which window the cursor is over, topmost first, or `None`.
     ///
     /// Against the background's own pixels and not its bounding box, the same
     /// rule [`container::pick`] uses inside a window: a bag's art has
-    /// transparent corners, and a click in one belongs to whatever is behind it
-    /// — which is usually the world.
-    fn container_under_pointer(&self) -> Option<Serial> {
-        let view = self.view.as_ref()?;
+    /// transparent corners and a paperdoll's body picture is mostly corner, and
+    /// a click in one belongs to whatever is behind it — which is usually the
+    /// world.
+    fn window_under_pointer(&self) -> Option<WindowSubject> {
         let cursor = self.pointer_gump;
-        self.container_windows.iter().rev().find_map(|window| {
-            let gump = *view.containers.get(&window.container)?;
-            let (width, height) = container::size(&self.gump_atlas, gump)?;
+        self.own_windows.iter().rev().find_map(|window| {
+            let art = self.window_background(window.subject)?;
+            let sprite = self.gump_atlas.sprite(art)?;
             let (x, y) = (cursor.x - window.at.x, cursor.y - window.at.y);
-            if x < 0 || y < 0 || x >= width || y >= height {
+            if x < 0 || y < 0 || x >= i32::from(sprite.width) || y >= i32::from(sprite.height) {
                 return None;
             }
             self.gump_atlas
-                .opaque_at(gump_art::GumpArt::Gump(gump), x as u16, y as u16)
-                .then_some(window.container)
+                .opaque_at(art, x as u16, y as u16)
+                .then_some(window.subject)
         })
     }
 
     /// Raise a window to the top of the pile, so that the one just clicked is
     /// the one drawn over the others.
-    fn raise_container(&mut self, container: Serial) {
+    fn raise_window(&mut self, subject: WindowSubject) {
         if let Some(index) = self
-            .container_windows
+            .own_windows
             .iter()
-            .position(|window| window.container == container)
+            .position(|window| window.subject == subject)
         {
-            let window = self.container_windows.remove(index);
-            self.container_windows.push(window);
+            let window = self.own_windows.remove(index);
+            self.own_windows.push(window);
         }
     }
 
-    /// A left press over a container window: raise it and take hold of it.
+    /// A left press over one of this client's windows: raise it and take hold
+    /// of it.
     ///
     /// Answers whether the press belonged to a window, so the caller can leave
-    /// the world's own click alone when it did — a press that opened a bag's
-    /// window must not also select the tile behind it.
-    fn press_on_container(&mut self) -> bool {
-        let Some(container) = self.container_under_pointer() else {
+    /// the world's own click alone when it did — a press that raised a bag must
+    /// not also select the tile behind it.
+    fn press_on_own_window(&mut self) -> bool {
+        let Some(subject) = self.window_under_pointer() else {
             return false;
         };
-        self.raise_container(container);
+        self.raise_window(subject);
         let grab = self
-            .container_windows
+            .own_windows
             .last()
             .map(|window| {
                 GumpPixel::new(
@@ -2153,21 +2231,21 @@ impl App {
                 )
             })
             .unwrap_or_default();
-        self.dragging = Some((container, grab));
+        self.dragging = Some((subject, grab));
         true
     }
 
     /// Move the window being dragged so that the point the player grabbed stays
     /// under the cursor. Answers whether anything moved.
-    fn drag_container(&mut self) -> bool {
-        let Some((container, grab)) = self.dragging else {
+    fn drag_own_window(&mut self) -> bool {
+        let Some((subject, grab)) = self.dragging else {
             return false;
         };
         let at = GumpPixel::new(self.pointer_gump.x - grab.x, self.pointer_gump.y - grab.y);
         let Some(window) = self
-            .container_windows
+            .own_windows
             .iter_mut()
-            .find(|window| window.container == container)
+            .find(|window| window.subject == subject)
         else {
             return false;
         };
@@ -2176,27 +2254,35 @@ impl App {
         moved
     }
 
-    /// Close the container window under the cursor, if there is one.
+    /// Close the window under the cursor, if there is one.
     ///
     /// The right button, which is what the reference client closes a gump with,
     /// and it is *not* a conflict with the right-hold that steers: a press over
     /// a window never reaches the world, the same way a press over a panel does
     /// not. Answers whether a window was closed.
     ///
-    /// Nothing goes out on the wire. There is no close-container packet — the
-    /// shard keeps its own list of who has what open and will keep pushing
-    /// `0x25`s at it — which is why `WorldView::container_closed` drops the
-    /// contents as well as the window.
-    fn close_container_under_pointer(&mut self) -> bool {
-        let Some(container) = self.container_under_pointer() else {
+    /// Nothing goes out on the wire, for either kind. There is no
+    /// close-container packet and no close-paperdoll packet — the shard keeps
+    /// its own list of who has what open — which is why the view is told: see
+    /// `WorldView::container_closed`, which drops the contents with the window,
+    /// and `WorldView::paperdoll_closed`, which drops nothing else at all
+    /// because the equipment belongs to the body.
+    fn close_window_under_pointer(&mut self) -> bool {
+        let Some(subject) = self.window_under_pointer() else {
             return false;
         };
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        view.container_closed(container);
-        self.container_windows
-            .retain(|window| window.container != container);
+        match subject {
+            WindowSubject::Container(serial) => {
+                view.container_closed(serial);
+            }
+            WindowSubject::Paperdoll(serial) => {
+                view.paperdoll_closed(serial);
+            }
+        }
+        self.own_windows.retain(|window| window.subject != subject);
         self.dragging = None;
         true
     }
@@ -3513,7 +3599,7 @@ impl App {
         // What the shard has opened, and what it has taken away: the view is
         // filled by `client/net`, which knows nothing about screens, so a
         // window appearing is this end noticing.
-        self.sync_container_windows();
+        self.sync_own_windows();
         // The animation clock moves here, at the top of the frame that is about
         // to show its answer — not when the timer that asked for this frame
         // fired.
@@ -4246,39 +4332,88 @@ impl App {
                     .pictures,
                 );
             }
-            // The container windows, over the dialogs. Not egui windows at all,
-            // unlike the `0xB0`s above: a container has no widget in it to
+            // This client's own windows, over the dialogs. Not egui windows at
+            // all, unlike the `0xB0`s above: a container has no widget in it to
             // answer with — no button, no field, nothing that would need
             // egui's hit test — so its position, its drag and its z-order are
             // this client's, in gump pixels, and there is nothing left for a
-            // frame to be laid out by. See `container_windows` and
-            // `openshard_client_render::container`.
+            // frame to be laid out by. A paperdoll is the same machinery's
+            // second caller, which is decision 5 in `docs/client.md`. See
+            // `own_windows`, `openshard_client_render::container` and
+            // `openshard_client_render::paperdoll`.
             //
             // Bottom to top, which is the list's own order: the pass has no
             // depth, so later is over.
-            let containers: Vec<(Graphic, Vec<ContainedItem>, GumpPixel)> = self
-                .view
-                .as_ref()
-                .map(|view| {
-                    self.container_windows
-                        .iter()
-                        .filter_map(|open| {
-                            let gump = *view.containers.get(&open.container)?;
-                            let contents = view.contents.get(&open.container).cloned().unwrap_or_default();
-                            Some((gump, contents, open.at))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            for (gump, contents, at) in &containers {
+            //
+            // The layouts are built before the loop that packs them, so that
+            // nothing borrows the view while the atlas is being grown.
+            let mut windows: Vec<Vec<gump_art::Picture>> = Vec::new();
+            if let Some(view) = self.view.as_ref() {
+                for open in &self.own_windows {
+                    match open.subject {
+                        WindowSubject::Container(serial) => {
+                            let Some(gump) = view.containers.get(&serial).copied() else {
+                                continue;
+                            };
+                            let contents: Vec<ContainedItem> =
+                                view.contents.get(&serial).cloned().unwrap_or_default();
+                            windows.push(container::window(gump, &contents, open.at));
+                        }
+                        WindowSubject::Paperdoll(serial) => {
+                            // Whose body and whose equipment, read off the view
+                            // here rather than through `App::paperdoll_body` —
+                            // a method call borrows the whole of `self`, and
+                            // the surface's window is held mutably across this
+                            // loop. Both read the same two places in the same
+                            // order, and they have to: the one that hit-tests
+                            // the window and the one that draws it disagreeing
+                            // about which body it is, is a window that cannot
+                            // be closed.
+                            let own = view.player.serial == serial;
+                            let (body, hue) = match own {
+                                true => (view.player.body.0, view.player.hue),
+                                false => match view.mobiles.get(&serial) {
+                                    Some(mobile) => (mobile.body.0, mobile.hue),
+                                    // A paperdoll of a mobile this client has
+                                    // never been told the body of: nothing to
+                                    // draw, and the window is still in the list
+                                    // for the frame the `0x77` arrives on.
+                                    None => continue,
+                                },
+                            };
+                            // The `0x88` carries no equipment — see
+                            // `WorldView::paperdolls` — so it is read off the
+                            // body the window names.
+                            let equipment = match own {
+                                true => crowd::worn(&view.player.equipment, &self.tiledata),
+                                false => match view.mobiles.get(&serial) {
+                                    Some(mobile) => crowd::worn(&mobile.equipment, &self.tiledata),
+                                    None => Vec::new(),
+                                },
+                            };
+                            let wearer = paperdoll::Wearer {
+                                body,
+                                hue,
+                                equipment: &equipment,
+                            };
+                            windows.push(paperdoll::window(&wearer, &self.equip_conv, files, open.at));
+                        }
+                    }
+                }
+            }
+            for window in &windows {
                 let art_files = gump_art::ArtFiles {
                     gumps: files,
                     items: &self.art,
                 };
-                if let Err(error) = self.gump_atlas.add(art_files, container::art_of(*gump, contents)) {
-                    eprintln!("packing container art for gump 0x{:04X}: {error}", gump.0);
+                // Everything the window will draw, packed before it is drawn —
+                // a picture the atlas grew on the *next* frame would draw the
+                // window with a hole in it once. Said and drawn anyway on a
+                // failure, for `gump::art_of`'s reason above.
+                if let Err(error) = self.gump_atlas.add(art_files, paperdoll::art_of(window)) {
+                    eprintln!("packing window art: {error}");
                 }
-                pictures.extend(container::window(*gump, contents, *at));
+                pictures.extend(window.iter().copied());
             }
             if let Some(rows) = self.gump_atlas.take_dirty() {
                 pass.upload_rows(&window.queue, self.gump_atlas.pixels(), rows);

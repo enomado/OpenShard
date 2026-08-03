@@ -3,7 +3,7 @@
 //!
 //! [`crate::container`]'s twin, and deliberately built out of the same pieces —
 //! a list of [`Picture`]s at an origin the caller owns, packed into the same
-//! [`GumpAtlas`]. What a paperdoll adds to a container is not a window kind, it
+//! [`GumpAtlas`](crate::gump::GumpAtlas). What a paperdoll adds to a container is not a window kind, it
 //! is two questions a bag never has to ask:
 //!
 //! # 1. Which picture a worn item is, which is a third index space
@@ -48,7 +48,7 @@ use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::gumpart::Gumps;
 
-use crate::gump::{GumpArt, GumpAtlas, GumpPixel, Picture};
+use crate::gump::{GumpArt, GumpPixel, Picture};
 use crate::mobiles::EquipmentLayer;
 
 /// What a male body's worn items are offset by to reach their gump.
@@ -451,18 +451,11 @@ pub fn gump_of(body: u16, anim_id: u16, female: bool, equip_conv: &EquipConv, gu
     }
 }
 
-/// How big the window is: the body picture's own size, or `None` while the
-/// atlas has yet to hold it.
-///
-/// [`crate::container::size`]'s twin, and `None` means the same thing — a
-/// window whose size is unknown cannot be placed, dragged or hit-tested, and
-/// waiting the one frame the atlas needs is better than drawing it at the
-/// origin.
-pub fn size(atlas: &GumpAtlas, body: u16) -> Option<(i32, i32)> {
-    let (picture, _) = body_gump(body, Hue::NONE);
-    let sprite = atlas.sprite(GumpArt::Gump(picture))?;
-    Some((i32::from(sprite.width), i32::from(sprite.height)))
-}
+// There is no `size` here, deliberately, and [`crate::container::size`] has
+// lost its caller to the same decision: a window's size is its background
+// picture's, whichever kind of window it is, so the client asks the atlas for
+// that one sprite once — see `App::window_background` — rather than through two
+// functions that would have to agree about which picture the background is.
 
 /// Lay a paperdoll out at `at`: the body, then every worn layer over it, then
 /// the backpack.
