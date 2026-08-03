@@ -341,6 +341,32 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    // What was measured off that art before this run — which edge of its tile
+    // each wall stands on, and eventually the hole in each window.
+    // `docs/lighting.md`'s decision 31: the measurement is a tool's, and this is
+    // the client reading what it wrote.
+    //
+    // **A missing table is a log line and not a failure** (decision 31.6). The
+    // atlas measures as it packs, exactly as it did before the tool existed, so
+    // what is lost is a slow first frame after a scroll rather than a client that
+    // will not start. Saying which of the reasons it was matters: "no file" is a
+    // tool nobody ran, and "stale" is a tool somebody must run *again*, and those
+    // want different things done about them.
+    let surfaces = match openshard_client_artscan::load(dir) {
+        Ok(table) => {
+            eprintln!(
+                "art table: {} of {} pictures read, {} written by hand",
+                table.decided(),
+                table.examined(),
+                table.authored(),
+            );
+            Some(table)
+        }
+        Err(error) => {
+            eprintln!("art table: measuring as we pack — {error}");
+            None
+        }
+    };
     // The two files a slope needs: the square textures, and the table that says
     // which of them a land graphic uses.
     let texmaps = match TexMaps::open(dir) {
@@ -505,6 +531,7 @@ pub fn run<D: Dial + Send + 'static>(
         flame_clock: std::time::Duration::ZERO,
         map,
         art,
+        surfaces,
         texmaps,
         tiledata,
         hues,
@@ -732,6 +759,7 @@ impl Atlases {
     /// accident on every miss.
     fn build(
         art: &Art,
+        surfaces: Option<&openshard_client_render::arttable::ArtTable>,
         texmaps: &TexMaps,
         tiledata: &TileData,
         anim: &mut Anim,
@@ -740,7 +768,10 @@ impl Atlases {
         Ok(Self {
             land: LandAtlas::build(art, wanted.land.iter().copied())?,
             texmaps: TexmapAtlas::build(texmaps, tiledata, wanted.land.iter().copied())?,
-            statics: StaticAtlas::build(art, wanted.statics.iter().copied())?,
+            // The table is cloned into the atlas rather than borrowed: an atlas
+            // outlives the frame it was built in and packs more art on every
+            // scroll, so it has to keep what it reads a graphic's surface out of.
+            statics: StaticAtlas::build_from(art, wanted.statics.iter().copied(), surfaces.cloned())?,
             mobiles: AnimAtlas::build(anim, wanted.animations.iter().copied())?,
         })
     }
@@ -945,6 +976,14 @@ struct App {
     /// The facet, shared with the shard thread — see [`link::connect`].
     map: Arc<Map>,
     art: Art,
+    /// What was measured off that art off the clock, or `None` for a run with no
+    /// table beside the install — see `run`, which says which it is and carries
+    /// on either way.
+    ///
+    /// It lives here rather than in [`Atlases`] because the atlases are thrown
+    /// away and rebuilt when one fills up, and a measurement of an install does
+    /// not become untrue when a texture runs out of shelf space.
+    surfaces: Option<openshard_client_render::arttable::ArtTable>,
     texmaps: TexMaps,
     /// Shared with the shard thread, the same way [`App::map`] is — see
     /// [`link::connect`]: the walk prediction weighs a pier's or a bridge's
@@ -3439,8 +3478,15 @@ impl App {
         self.control.resize(config.width, config.height);
 
         let wanted = self.wanted_now();
-        let atlases = Atlases::build(&self.art, &self.texmaps, &self.tiledata, &mut self.anim, &wanted)
-            .map_err(StartupError::Atlas)?;
+        let atlases = Atlases::build(
+            &self.art,
+            self.surfaces.as_ref(),
+            &self.texmaps,
+            &self.tiledata,
+            &mut self.anim,
+            &wanted,
+        )
+        .map_err(StartupError::Atlas)?;
         // What the atlases were built for, which is what the band walk in
         // `draw` subtracts from on the next frame.
         self.covered = Some(self.control.camera().visible_tiles());
@@ -3869,6 +3915,7 @@ impl App {
                 self.covered = None;
                 match Atlases::build(
                     &self.art,
+                    self.surfaces.as_ref(),
                     &self.texmaps,
                     &self.tiledata,
                     &mut self.anim,

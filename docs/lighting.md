@@ -9,7 +9,32 @@ copied.
 
 ## Where the next session starts
 
-**Step 21.3 has landed: a surface can have a hole in it.** A panel carries a
+**Step 20b has landed: the measurement has left the frame.**
+`openshard-client-artscan` reads an install, offers every picture in it to
+`facing::facing_of`, and writes one table beside the client; the atlas looks a
+graphic up in that table instead of walking its pixels on the frame it is first
+seen. Measured on a 2D install: **39,189 pictures, 6,150 read, four seconds** in
+an ordinary `cargo run`. The client with no table behaves exactly as it did
+before and says so in a log line — decision 31.6 — and the two lines it can print
+are the two states a person can do something about:
+
+```
+art table: 6150 of 39189 pictures read, 0 written by hand
+art table: measuring as we pack — …/openshard-art.table: No such file or directory
+```
+
+**Start at step 16**, and start it in the tool. The budget for a measurement is
+now a minute and today's measurement spends four seconds of it, which is what
+decision 31 was for: an aperture is a hole to be *found*, and a runtime pass
+would have had to be a scanline trick. The seams are `facing.rs` (a pure function
+of an `Image`, which is where an `aperture_of` goes beside `facing_of`),
+`arttable.rs` (a row grammar with room for a second verdict, and `FORMAT` to bump
+when it grows one) and `StaticAtlas::state_aperture`, still one method with one
+caller.
+
+Everything below this line is the session before it.
+
+**Step 21.3 landed before it: a surface can have a hole in it.** A panel carries a
 rectangle in its own coordinates — a span along the run and a span of `z` — and
 the crossing test asks whether the ray went through it. A wall with a hole in
 one tile throws a **fan** onto the ground behind it: narrow at the wall, wider
@@ -23,11 +48,12 @@ plane is not laid out or uploaded, and the `HOLED` bit is never set — which is
 what makes the walk's extra fetch cost nothing until there is something to
 fetch. **Decision 30.8** is that storage choice and the argument for it.
 
-**Start at step 20b, then step 16** — the two that turn "a hole a scene states"
-into "a hole the art has". 20b is decision 31: the silhouette work leaves the
-frame for a tool and a table, which is what lets 16's measurement be as expensive
-as it needs to be. 16 is the measurement. `StaticAtlas::state_aperture` is the
-seam they arrive through, and it is one method with one caller today.
+~~**Start at step 20b, then step 16**~~ — 20b is the session above. The two turn
+"a hole a scene states" into "a hole the art has": 20b is decision 31, the
+silhouette work leaving the frame for a tool and a table, which is what lets 16's
+measurement be as expensive as it needs to be, and 16 is the measurement.
+`StaticAtlas::state_aperture` is the seam they arrive through, and it is one
+method with one caller today.
 
 Everything below this line is the session before it.
 
@@ -1499,13 +1525,72 @@ everywhere else, arriving as a refusal to *require*.
       a hole that reaches the silhouette's edge is not a hole, a graphic whose
       "hole" is the gap between two separate things is not a window, and a
       coverage count is what says the detector reads anything at all.
-- [ ] **20b. The measuring tool, and the table it writes.** Decision 31: the
-      silhouette work leaves the frame. `tests/facing.rs`'s sweep is most of it
+- [x] **20b. The measuring tool, and the table it writes.** Decision 31: the
+      silhouette work leaves the frame. `tests/facing.rs`'s sweep was most of it
       already — it walks an install, reads every `WALL` graphic and prints the
-      shares — so what is missing is the file, the loader, the staleness key and
+      shares — so what this added is the file, the loader, the staleness key and
       the override merge. Doing it *before* step 16 is what lets step 16's
       measurement be as expensive as it needs to be, and it closes the backlog
       entry about the atlas walking the same pixels twice.
+
+      **Where it went**, and the split is the one this workspace already has:
+      `client/render` never opens a file (its `Cargo.toml` says so and means it),
+      so `render/src/arttable.rs` holds the *type* and its text and nothing else,
+      and the new crate `crates/client/artscan` holds everything with a path in
+      it — the sweep, the file, and the reader `client/app` loads through. The
+      reader lives with the tool rather than in the app on purpose: they are the
+      two ends of one file, and a client that looked for it somewhere the tool
+      does not write is a bug that reads as "the table does nothing".
+
+      **The format is one file and hand-editable**, which is decision 31.2 rather
+      than a taste: a row is `0x0104 corner E S`, a comment is `#`, and an
+      override is the same row with `authored` on the end — the tool re-derives
+      everything else and leaves those alone. `data/overrides.table` is what this
+      repository ships (decision 31.3: the tool and the overrides are checked in,
+      the generated table never is, because it is derived from copyrighted art),
+      and it holds **no rows today** — the mechanism is held by tests, because a
+      row invented to exercise it would be a wrong answer shipped to every shard.
+
+      **An absent row means measured and refused**, and the header's `examined`
+      count is what makes that legible: a table that had swept the `WALL` graphics
+      alone would be claiming a verdict about fifty thousand pictures it never
+      opened. So the sweep offers *every* graphic the install ships, which is also
+      exactly what the atlas does — the table has to answer the questions the
+      atlas asks, not the ones a wall would.
+
+      **Staleness is detected** (31.4): the stamp is the art container's name and
+      byte length plus `facing::DETECTOR`, a version to bump when a gate in
+      `facing.rs` changes. Two independent halves because they fail
+      independently — a different install, and the same install read by different
+      rules, the second of which nothing else in the file could ever say.
+
+      Measured on a 2D install, `cargo run` with no `--release`:
+
+      ```
+      pictures with art: 39189
+      read:              6150  (15.7%)
+      corners:           4362
+        East         824
+        East+South   4359
+        North        46
+        North+West   3
+        South        872
+        West         46
+      ```
+
+      **Four seconds**, which is the number step 16 gets to spend against: the
+      budget decision 31 bought is a minute and this is the first thing in it.
+      The corner count is the one to look at twice — see the backlog.
+
+      Held by nine tests. Five are the format (a round trip that keeps every
+      verdict, a derived refusal that is an absent row, a re-derivation that
+      leaves an authored row alone *in both directions*, a sheet of overrides
+      handing its rows to a measured table, and a stamp that is stale if either
+      half differs); two are the seam (`a_packed_sprite_takes_its_surface_from_the_table`
+      and the same with no table, which is the fallback decision 31.6 promises);
+      and two need a real install — every graphic's row against a live
+      `facing_of`, and a stale table refused through the real reader over the real
+      art file.
 - [ ] **21. The surface list.** Decision 30, **and it is five changes rather than
       one**. They are listed in the order that keeps every one of them testable on
       its own, and nothing here waits on anything else:
@@ -1676,9 +1761,11 @@ everywhere else, arriving as a refusal to *require*.
          to measure: the frame that will want measuring is the first one with
          windows in it, and that is step 21.4's.
       4. **The tool, the table and the measured aperture** — steps 20b and 16.
-         Until this lands no window in Britain has a hole and every one of them
-         behaves exactly as it does today, which is a feature: the mechanism is
-         already held by a test by then.
+         **The tool and the table have landed**; what is left of this is step 16,
+         the measurement itself, and it now has a place to be written down and a
+         budget to be made in. Until it lands no window in Britain has a hole and
+         every one of them behaves exactly as it does today, which is a feature:
+         the mechanism is already held by a test by then.
       5. **Bake it.** Decision 30.4's block-and-band cache, and the **2.0ms of a
          3.3ms CPU budget** that is the largest number in this pass.
 
@@ -2132,11 +2219,13 @@ Found while measuring a wall's facing out of its art:
 - **The sweep reads the whole art file to answer a question about 3,212
   graphics.** It takes a couple of seconds, which is fine for an `#[ignore]`d
   test and would not be if it ever moved into CI.
-- **`facing_of` is a second walk of pixels the atlas has just copied.** One pass
-  per graphic, on the frame it is first packed, and the packing pass is already
-  touching every one of them. Measurable only on a scroll that introduces four
-  hundred graphics at once, which is the frame `StaticAtlas::add` already owns as
-  the expensive one.
+- ~~**`facing_of` is a second walk of pixels the atlas has just copied.**~~ Closed
+  by step 20b: with a table beside the install the atlas does a lookup, and the
+  walk happens once in a tool that is allowed to take four seconds. The entry's
+  own reading of the cost was right and incomplete — it is measurable on a scroll
+  that introduces four hundred graphics, and the reason it had to go was not the
+  cost but the *ceiling*: a measurement that has to fit in a frame can never be a
+  search.
 - **A wall's *top* surface is shaded as if it were the face.** The pixels past
   the tile's centre column — the thickness `SPILL` allows — clamp to the near end
   of the edge, so the top of a low garden wall is lit as though it were the
@@ -2409,6 +2498,55 @@ Found while writing this plan:
   closed by decision 26. It wanted the wall's facing and it got it — by way of
   step 15 measuring one and decision 26 using it to place the flame rather than to
   excuse it.
+
+Found while moving the measurement out of the frame:
+
+- **The detector is offered 39,189 pictures and calls 4,362 of them corners**,
+  where the `WALL` graphics alone hold 297. That is not new and not the table's
+  doing — `StaticAtlas::insert` has always asked `facing_of` about every graphic
+  it packs, `WALL` or not, and `place::Stance::of` reads the client's `FLOOR` bit
+  and then takes whatever the art said. What is new is that somebody finally
+  *counted* it. A solid filling its own tile reads as a corner because it is one
+  shape (see the pillar entry above), so a crate, a rock and a tree stump are
+  shaded as two vertical faces with a normal each. It costs nothing in the
+  occlusion grid — a crate is not `NO_SHOOT`, so it is not a cell — and it is
+  pure shading, which is why nobody has reported it. Whether it is *wrong* is a
+  question for a picture: a barrel lit only on the two sides a camera can see is
+  arguably better than one lit flat. The measurement to make is the same one
+  `tests/facing.rs` makes for walls — the share of what actually stands in a city
+  — for the graphics no `WALL` flag vouches for.
+- **A tool that measures pictures has to build a renderer.** `artscan` depends on
+  `client/render` for `facing` and `arttable`, and `client/render` depends on
+  `wgpu`, so a build of the tool is a build of the graphics stack. Nothing about
+  a silhouette needs a GPU. The shape of the fix is a crate under both of them —
+  the measurement is a pure function of an `Image` and the table is text — and it
+  is not worth doing for one tool; it is worth doing the moment a second reader
+  appears, which is the same rule `doors.rs` states about its own table.
+- **The staleness key cannot see a patch that keeps the file's length.** The
+  stamp is `artLegacyMUL.uop`'s name and byte count, which tells two *installs*
+  apart and would not notice an art patch that replaced a sprite in place. The
+  honest alternatives both cost: a hash of a 150MB file every start, or a
+  modification time, which changes on a copy and would re-derive for nothing. The
+  install-gated test — every row against a live measurement — is what catches it
+  on the machine that has the files, and it is the only thing that does.
+- **`DETECTOR` is a number somebody has to remember to bump.** Nothing enforces
+  it and nothing can: it is a claim about a diff. What makes it survivable is the
+  same install-gated test, which compares the table against today's rules rather
+  than against the version it says it was written by. Worth remembering when
+  step 16 changes `facing.rs`.
+- **The table's row grammar has one verdict and step 16 brings a second.** A row
+  is a graphic and a facing today. An aperture is a rectangle in a surface's own
+  coordinates, which is four more numbers and a question about which surface of a
+  corner they belong to — and the version gate (`FORMAT`, refused rather than
+  half-read) is what keeps a client from answering confidently out of a table
+  written before the field existed.
+- **Nothing runs the tool for the player.** A first run with no table is a client
+  that measures as it packs, which is what it always did, and the log line says
+  so — but somebody has to notice the line and run a command. The obvious next
+  step is for the client to *write* the table when it finds none, which is a
+  four-second stall at startup on one run in the lifetime of an install, and it is
+  deliberately not done yet: it would put file writing into `client/app`'s startup
+  path on the strength of one measurement of one install's size.
 
 Found while cutting a hole in a wall:
 

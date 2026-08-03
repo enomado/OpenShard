@@ -1,0 +1,28 @@
+# Overrides: what a person says about a picture, where the detector is wrong.
+#
+# `docs/lighting.md`'s decision 31.2. This is a table in the same format the tool
+# writes — one grammar, one parser — with no `art` or `detector` line, because it
+# describes no install: it is rows, and a row marked `authored` survives every
+# re-derivation of the table beside somebody's client.
+#
+# What it is checked into this repository for is decision 31.3: the *generated*
+# table is derived from copyrighted art and never lands here, and this file is
+# what can. A shard correcting one wall edits this, or the table beside its own
+# install, and either way the tool leaves the row alone.
+#
+#     0x02D8 face W authored     — this picture is the west face of its tile
+#     0x0104 corner E S authored — and this one is both of the two a camera sees
+#     0x0171 none authored       — and nothing may be read off this one at all
+#
+# `face` and `corner` are the two verdicts `facing::facing_of` can reach, and
+# `none` is the one only a person can write down: a *derived* refusal is the
+# absence of a row, so it is re-derived every run, and this is how a graphic the
+# detector reads wrongly is made to stop being read.
+#
+# **Empty of rows today, and that is the honest state.** Every graphic the client
+# ships is read by the rules in `facing.rs` or refused by them, and nobody has yet
+# had to correct one by hand. The mechanism is held by tests rather than by a
+# row — see `an_override_sheet_hands_its_rows_to_a_measured_table` in
+# `arttable.rs` — because a row invented to exercise it would be a wrong answer
+# shipped to every shard.
+table 1

@@ -754,6 +754,21 @@ pub struct StaticAtlas {
     /// from the art, and until then the only entries are the ones a built scene
     /// states with [`StaticAtlas::state_aperture`].
     apertures: BTreeMap<Graphic, crate::occlusion::Aperture>,
+    /// What was measured off this install's art before the client started, or
+    /// `None` for an atlas that has to measure as it packs.
+    ///
+    /// **The whole of `docs/lighting.md`'s decision 31 at the seam it arrives
+    /// through.** With a table, packing a graphic is a lookup; without one it is
+    /// a second walk of the pixels [`copy_sprite`] has just copied, which is
+    /// what this did on every frame that introduced a graphic. A client with no
+    /// table still works and says so in a log line — decision 31.6 — which is
+    /// why this is an `Option` and not a required argument.
+    ///
+    /// Owned rather than borrowed: an atlas outlives the frame it was built in
+    /// and is rebuilt from scratch when it fills up, and a lifetime on
+    /// [`StaticAtlas`] would travel into every renderer that holds one. It is a
+    /// few thousand rows.
+    table: Option<crate::arttable::ArtTable>,
     /// Every graphic ever offered, whether or not the client ships art for it.
     ///
     /// The one that most needed writing down: "does the atlas hold everything
@@ -785,7 +800,28 @@ impl StaticAtlas {
     /// land atlas skips an empty land slot: a map naming a static the client has
     /// no picture for is the file's business.
     pub fn build(art: &Art, wanted: impl IntoIterator<Item = Graphic>) -> Result<Self, AtlasError> {
+        Self::build_from(art, wanted, None)
+    }
+
+    /// The same, reading each graphic's surface out of a table measured off the
+    /// clock instead of measuring it here.
+    ///
+    /// `docs/lighting.md`'s decision 31: what the client does per frame is a
+    /// lookup, and the measurement happened in a tool with a budget of a minute.
+    /// `None` is the client that has no table — it measures as it packs, exactly
+    /// as it did before one existed.
+    ///
+    /// The table travels into the atlas rather than into this call alone because
+    /// [`add`](Self::add) packs too: a scroll introduces graphics for the rest of
+    /// the session, and an atlas that read the table once at startup would go
+    /// back to measuring the moment the camera moved.
+    pub fn build_from(
+        art: &Art,
+        wanted: impl IntoIterator<Item = Graphic>,
+        table: Option<crate::arttable::ArtTable>,
+    ) -> Result<Self, AtlasError> {
         let mut atlas = Self::empty();
+        atlas.table = table;
         atlas.add(art, wanted)?;
         atlas.dirty.take();
         Ok(atlas)
@@ -797,6 +833,7 @@ impl StaticAtlas {
         Self {
             sprites: BTreeMap::new(),
             apertures: BTreeMap::new(),
+            table: None,
             asked: BTreeSet::new(),
             shelf: Shelf::default(),
             pixels: vec![0u8; side * side * 4],
@@ -843,7 +880,23 @@ impl StaticAtlas {
     /// beside it. Deterministic given the same input — same order in, same
     /// pixels out — which the frame tests depend on.
     pub fn pack(images: impl IntoIterator<Item = (Graphic, Image)>) -> Result<Self, AtlasError> {
+        Self::pack_from(images, None)
+    }
+
+    /// The same, reading each picture's surface out of a table instead of
+    /// measuring it — [`build_from`](Self::build_from) for pictures somebody else
+    /// decoded.
+    ///
+    /// It exists for the same reason [`pack`](Self::pack) does beside
+    /// [`build`](Self::build): the readers that hand this atlas pictures directly
+    /// are the tests and the built scenes, and a seam that only the file-reading
+    /// path went through would be a seam no test could stand on.
+    pub fn pack_from(
+        images: impl IntoIterator<Item = (Graphic, Image)>,
+        table: Option<crate::arttable::ArtTable>,
+    ) -> Result<Self, AtlasError> {
         let mut atlas = Self::empty();
+        atlas.table = table;
         atlas.pack_more(images)?;
         atlas.dirty.take();
         Ok(atlas)
@@ -919,9 +972,20 @@ impl StaticAtlas {
                         region: region_at(origin_x, origin_y, width, height),
                         width,
                         height,
-                        // One more walk over the pixels just copied, on the one
-                        // frame this graphic is first seen. See `Sprite::face`.
-                        facing: crate::facing::facing_of(&image),
+                        // A lookup where there is a table, and one more walk
+                        // over the pixels just copied where there is not — see
+                        // `Sprite::facing` for what it is, and `self.table` for
+                        // why the walk is no longer the only answer.
+                        //
+                        // A table's *absent* row is a graphic it measured and
+                        // refused, so this does not fall back to measuring on a
+                        // miss: doing that would put the frame cost back on
+                        // precisely the graphics the tool already decided
+                        // nothing can be said about, which is most of them.
+                        facing: match &self.table {
+                            Some(table) => table.facing(graphic),
+                            None => crate::facing::facing_of(&image),
+                        },
                     },
                     origin: (origin_x, origin_y),
                 },
@@ -2032,6 +2096,70 @@ mod tests {
         // And the shorter two share that row rather than starting their own.
         assert_eq!(atlas.sprite(Graphic(3)).expect("packed").region.v, 0.0);
         assert_eq!(atlas.sprite(Graphic(1)).expect("packed").region.v, 0.0);
+    }
+
+    /// **The table answers, and the detector is not asked** — the seam
+    /// `docs/lighting.md`'s decision 31 arrives through.
+    ///
+    /// The fixture is a picture the detector reads confidently: a silhouette of
+    /// an east face, which `facing::facing_of` names on its own and which every
+    /// other test in this workspace relies on it naming. Packed against a table
+    /// that says something else, the sprite carries what the *table* said —
+    /// including the one row only a person can write, which is that nothing may
+    /// be read off this picture at all.
+    ///
+    /// Both arms matter, and the second is the one a weaker implementation
+    /// passes: an atlas that consulted the table and fell back to measuring on a
+    /// miss would get the first assertion right and put the detector's answer
+    /// back for the second, which is exactly the override a shard writes when the
+    /// detector is wrong about its wall.
+    #[test]
+    fn a_packed_sprite_takes_its_surface_from_the_table() {
+        use crate::arttable::{ArtTable, Stamp};
+        use crate::facing::{Face, Facing};
+
+        let wall = crate::facing::silhouette(Face::East, 80);
+        assert_eq!(
+            crate::facing::facing_of(&wall),
+            Some(Facing::One(Face::East)),
+            "the fixture is one the detector reads, or this test is about nothing",
+        );
+
+        let mut table = ArtTable::measured(Stamp {
+            art: "artLegacyMUL.uop".to_string(),
+            bytes: 1,
+            detector: crate::facing::DETECTOR,
+        });
+        table.author(Graphic(1), Some(Facing::One(Face::South)));
+        table.author(Graphic(2), None);
+
+        let atlas = StaticAtlas::pack_from([(Graphic(1), wall.clone()), (Graphic(2), wall)], Some(table))
+            .expect("two sprites fit");
+        assert_eq!(
+            atlas.sprite(Graphic(1)).expect("packed").facing,
+            Some(Facing::One(Face::South)),
+            "the table's row, not the picture's",
+        );
+        assert_eq!(
+            atlas.sprite(Graphic(2)).expect("packed").facing,
+            None,
+            "a row a person wrote to say nothing may be read off this picture",
+        );
+    }
+
+    /// And with no table at all, the picture is measured as it always was —
+    /// which is the client decision 31.6 promises: a slow first frame rather
+    /// than a shard that will not start.
+    #[test]
+    fn a_packed_sprite_with_no_table_is_measured_as_it_is_packed() {
+        use crate::facing::{Face, Facing};
+
+        let atlas = StaticAtlas::pack([(Graphic(1), crate::facing::silhouette(Face::East, 80))])
+            .expect("one sprite fits");
+        assert_eq!(
+            atlas.sprite(Graphic(1)).expect("packed").facing,
+            Some(Facing::One(Face::East)),
+        );
     }
 
     /// A sprite bigger than the atlas is its own error, because it is not a

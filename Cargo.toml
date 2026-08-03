@@ -65,6 +65,7 @@ opt-level = 1
 openshard-ai = { path = "crates/server/ai", version = "0.0.1" }
 openshard-chat = { path = "crates/server/chat", version = "0.0.1" }
 openshard-client-app = { path = "crates/client/app", version = "0.0.1" }
+openshard-client-artscan = { path = "crates/client/artscan", version = "0.0.1" }
 openshard-client-net = { path = "crates/client/net", version = "0.0.1" }
 openshard-client-render = { path = "crates/client/render", version = "0.0.1" }
 openshard-combat = { path = "crates/server/combat", version = "0.0.1" }

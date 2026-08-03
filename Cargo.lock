@@ -2690,6 +2690,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "openshard-client-artscan",
  "openshard-client-net",
  "openshard-client-render",
  "openshard-movement",
@@ -2702,6 +2703,16 @@ dependencies = [
  "tracing",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "openshard-client-artscan"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "openshard-client-render",
+ "openshard-protocol",
+ "openshard-uofiles",
 ]
 
 [[package]]

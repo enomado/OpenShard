@@ -72,6 +72,22 @@
 
 use openshard_uofiles::image::Image;
 
+/// Which version of the rules below a measurement was made by.
+///
+/// It rides in an [`ArtTable`](crate::arttable::ArtTable)'s stamp, and what it
+/// buys is the staleness this file's numbers would otherwise be invisible in: a
+/// table written when `SPILL` was six describes a detector that read 40% of a
+/// city, and it looks exactly as fresh as one written today. The art it was
+/// measured from has not changed, so nothing else in the stamp can say so.
+///
+/// **Bump it when a gate here changes** — `MIN_FILLED`, `SPILL`, `OVERHANG`,
+/// `STRAIGHT`, `SQUARE`, `OFF_EDGE`, `MIN_STANDING`, or the shape of
+/// [`facing_of`] itself. Nothing enforces that, and nothing can: it is a claim
+/// about a diff. What catches a bump that was forgotten is the sweep in
+/// `openshard-client-artscan`, which reads a real install and compares every row
+/// of a table against a live measurement — see that crate's `agrees` test.
+pub const DETECTOR: u32 = 1;
+
 /// Which edge of its tile a wall stands on.
 ///
 /// Named for the world direction the edge faces *out* of the tile, which is the

@@ -31,6 +31,7 @@
 
 pub mod animate;
 pub mod animation;
+pub mod arttable;
 pub mod atlas;
 pub mod bench;
 pub mod blit;
