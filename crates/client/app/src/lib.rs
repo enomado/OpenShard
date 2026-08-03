@@ -200,7 +200,7 @@ const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
 
 /// How near the body the cursor may sit while the steering button is held
 /// without asking for anything — in **world pixels**, measured from the body's
-/// own drawn pixel by [`heading_between`].
+/// own drawn pixel by [`ask_between`].
 ///
 /// A radius and not a rectangle, because the ask is a bearing and a bearing has
 /// no preferred axis: a square dead zone would let the same distance count on
@@ -210,29 +210,51 @@ const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
 /// tremor over the character name no direction, but the arithmetic in
 /// [`heading_between`] will happily resolve them to one of eight, and without
 /// this every twitch of a mouse held still over the body re-rolls that choice
-/// and the body wanders off at random.
+/// and the body wanders off at random. A turn would be a mild version of the
+/// same nonsense — the sprite spinning under a still hand — so the innermost
+/// ring asks for nothing at all rather than for a facing.
 ///
-/// **Ten and not the 24 the geometry asks for**, which is a deliberate trade
-/// and the one thing here that is a taste. A step is 44 world pixels at its
-/// longest (the on-screen cardinals — see [`on_screen`]) and the cursor may sit
-/// up to 22.5° off the bearing of the direction that wins its sector, so a step
-/// from distance `d` ends nearer the cursor than it began only for
+/// **Ten and not the 24 the geometry asks for**, and what used to be the trade
+/// in that is now [`TURN_ZONE`]'s job. A step is 44 world pixels at its longest
+/// (the on-screen cardinals — see [`on_screen`]) and the cursor may sit up to
+/// 22.5° off the bearing of the direction that wins its sector, so a step from
+/// distance `d` ends nearer the cursor than it began only for
 /// `d > 22 / cos 22.5° ≈ 23.8` — pinned by
-/// `a_step_stops_overshooting_further_out_than_the_dead_zone`. Between this
-/// radius and that one a step can carry the body *past* the cursor and leave it
-/// asking for the way back. What makes the small number the right one anyway is
-/// that a zone half a tile wide is a hole in the picture a player can feel: the
-/// character stops answering the mouse well before the cursor looks like it is
-/// on him. The overshoot is bounded (one tile, and the next ask corrects it)
-/// and the jitter is not, so the radius is set to kill the jitter and no more.
-/// See `docs/client.md`'s backlog: the recompute that would let the overshoot
-/// actually oscillate is missing today, and closing it is where this number
-/// gets re-argued.
+/// `a_step_stops_overshooting_further_out_than_the_dead_zone`. That whole band
+/// is the turn ring now: inside it the body faces the cursor and covers no
+/// ground, so the overshoot it names cannot happen, and this radius is left to
+/// answer the one question it was ever good at — where the bearing stops being
+/// the hand's own tremor.
 ///
 /// Deliberately in world pixels rather than screen ones, so it stays the same
 /// fraction of a tile at every zoom — the projection is what makes a step
 /// overshoot, and the projection is what this is measured in.
 const DEAD_ZONE: f64 = 10.0;
+
+/// Where the cursor stops asking for a facing and starts asking for a walk:
+/// inside this radius of the body (and outside [`DEAD_ZONE`]) a held right
+/// button turns the character on the spot and sends it nowhere — see
+/// [`steer::Ask`].
+///
+/// The ring is the classic client's, and it is the only way a mouse can say
+/// "face that way" at all: every other ask a cursor makes also sets the body
+/// walking, so a player who wants to face a door, or face whoever they are
+/// speaking to, has nothing to ask with. ClassicUO does *not* have it —
+/// `MoveCharacterByMouseInput` walks on any non-zero offset and its one radius,
+/// `mouseRange >= 190`, chooses running rather than whether to move — so this is
+/// the stock client's behaviour and not the reference's, and it is why the ring
+/// is a zone in this file rather than a number copied out of `Constants.cs`.
+///
+/// The radius is the overshoot bound, which is what makes it a decision and not
+/// a taste: `22 / cos 22.5° ≈ 23.8` world pixels is where a step *stops* ending
+/// past the cursor it was asked for (see
+/// `a_step_stops_overshooting_further_out_than_the_dead_zone`). Nearer than
+/// that, walking is the wrong answer to the ask no matter how it is paced —
+/// the body lands beyond the cursor and the next ask points back the way it
+/// came. So the band where a step overshoots is exactly the band where the
+/// body turns instead, and the two constants stop being a trade-off with a
+/// hole between them.
+const TURN_ZONE: f64 = 23.9;
 
 /// How much of the event loop's recent past the frame panel keeps.
 ///
@@ -1885,7 +1907,7 @@ impl App {
         } else {
             let terrain = self.clutter.over(&self.map, &self.tiledata);
             self.steer.steer(
-                self.heading_to_cursor(*self.control.camera()),
+                self.ask_to_cursor(*self.control.camera()),
                 self.player.at,
                 Instant::now(),
                 self.player.facing,
@@ -1935,13 +1957,18 @@ impl App {
     /// `camera::project` itself rather than from constants copied out of it, so
     /// there is one projection in this client and this reads it.
     ///
-    /// `None` when the cursor is exactly on the body: no bearing exists, and
-    /// picking one would be inventing an ask.
-    fn heading_to_cursor(&self, camera: Camera) -> Option<Heading> {
+    /// How far it is asking from is the other half, and it decides *what* is
+    /// asked for rather than only which way: a cursor held close in turns the
+    /// body and walks it nowhere. [`ask_between`] is the rings; [`TURN_ZONE`]
+    /// is the one that matters here.
+    ///
+    /// `None` when the cursor is on the body: no bearing exists, and picking
+    /// one would be inventing an ask.
+    fn ask_to_cursor(&self, camera: Camera) -> Option<steer::Ask> {
         let (cursor_x, cursor_y) = self.control.cursor();
         // The body's *drawn* pixel, height and all: what a player aims relative
         // to is the sprite they can see, not the tile beneath it.
-        heading_between(camera::project(self.player.at), camera.pick(cursor_x, cursor_y))
+        ask_between(camera::project(self.player.at), camera.pick(cursor_x, cursor_y))
     }
 
     /// Double-click whatever the cursor is over: ask the shard to use it.
@@ -4340,16 +4367,37 @@ impl App {
 /// [`camera::project`] rather than from constants copied out of it, so there is
 /// one projection in this client and this reads it.
 ///
+/// Three rings, and the distance is what picks one.
+///
 /// `None` inside [`DEAD_ZONE`] of the body: a cursor that close is not naming a
 /// direction, and answering one anyway is what makes a body with the button
 /// held and the mouse sitting still walk at random — the vector is a couple of
 /// pixels long, so which of the eight sectors it lands in is decided by the
 /// hand's own jitter, and every twitch of the mouse re-rolls it.
-fn heading_between(body: camera::WorldPixel, cursor: camera::WorldPixel) -> Option<Heading> {
+///
+/// [`steer::Ask::Turn`] out to [`TURN_ZONE`]: the bearing is real by then, and
+/// what is not real is the *step* — from that close it lands past the cursor
+/// that asked for it. So the body faces the way it was pointed and stays where
+/// it is, which is also the only way a mouse can ask a character to turn.
+///
+/// [`steer::Ask::Walk`] beyond it.
+fn ask_between(body: camera::WorldPixel, cursor: camera::WorldPixel) -> Option<steer::Ask> {
     let (dx, dy) = (cursor.x - body.x, cursor.y - body.y);
-    if f64::from(dx * dx + dy * dy) <= DEAD_ZONE * DEAD_ZONE {
+    let reach = f64::from(dx * dx + dy * dy);
+    if reach <= DEAD_ZONE * DEAD_ZONE {
         return None;
     }
+    let heading = heading_between(dx, dy)?;
+    Some(match reach < TURN_ZONE * TURN_ZONE {
+        true => steer::Ask::Turn(heading),
+        false => steer::Ask::Walk(heading),
+    })
+}
+
+/// Which of the eight ways the offset `(dx, dy)` points, and which side of it —
+/// the whole of the arithmetic and none of the zones, so that
+/// [`ask_between`]'s rings and this can be argued with one at a time.
+fn heading_between(dx: i32, dy: i32) -> Option<Heading> {
     let direction = Direction::ALL.into_iter().max_by(|a, b| {
         let cosine = |direction| {
             let (sx, sy) = on_screen(direction);
@@ -4390,6 +4438,12 @@ fn on_screen(direction: Direction) -> (i32, i32) {
 mod tests {
     use super::*;
 
+    /// Which way the cursor points, for the tests that are about the bearing
+    /// and not about the ring it fell in.
+    fn heading_to(body: camera::WorldPixel, cursor: camera::WorldPixel) -> Option<Heading> {
+        ask_between(body, cursor).map(steer::Ask::heading)
+    }
+
     /// The screen bearings of the eight directions, as the isometric actually
     /// draws them — and they are not the grid's. On screen the diamond is
     /// turned an eighth: north-east points due right, south-east due down.
@@ -4417,7 +4471,7 @@ mod tests {
         for direction in Direction::ALL {
             let (sx, sy) = on_screen(direction);
             let cursor = camera::WorldPixel { x: sx * 7, y: sy * 7 };
-            let heading = heading_between(body, cursor).expect("the cursor is not on the body");
+            let heading = heading_to(body, cursor).expect("the cursor is not on the body");
             assert_eq!(heading.direction, direction, "screen bearing {sx},{sy}");
             assert_eq!(
                 heading.lean,
@@ -4475,11 +4529,11 @@ mod tests {
     #[test]
     fn a_cursor_off_the_bearing_leans_toward_the_side_it_is_on() {
         let body = camera::WorldPixel { x: 0, y: 0 };
-        let down_and_right = heading_between(body, camera::WorldPixel { x: 6, y: 300 }).unwrap();
+        let down_and_right = heading_to(body, camera::WorldPixel { x: 6, y: 300 }).unwrap();
         assert_eq!(down_and_right.direction, Direction::SouthEast);
         assert_eq!(down_and_right.lean, Lean::Counter);
 
-        let down_and_left = heading_between(body, camera::WorldPixel { x: -6, y: 300 }).unwrap();
+        let down_and_left = heading_to(body, camera::WorldPixel { x: -6, y: 300 }).unwrap();
         assert_eq!(down_and_left.direction, Direction::SouthEast);
         assert_eq!(down_and_left.lean, Lean::Clockwise);
     }
@@ -4489,7 +4543,7 @@ mod tests {
     #[test]
     fn a_cursor_on_the_body_asks_for_nothing() {
         let body = camera::WorldPixel { x: 17, y: -3 };
-        assert_eq!(heading_between(body, body), None);
+        assert_eq!(ask_between(body, body), None);
     }
 
     /// And neither does one merely *near* it, all the way round: the dead zone
@@ -4510,19 +4564,73 @@ mod tests {
                 y: body.y + (unit_y * distance).round() as i32,
             };
             assert_eq!(
-                heading_between(body, at(DEAD_ZONE - 2.0)),
+                ask_between(body, at(DEAD_ZONE - 2.0)),
                 None,
                 "{degrees}° inside the dead zone"
             );
             assert!(
-                heading_between(body, at(DEAD_ZONE + 2.0)).is_some(),
+                ask_between(body, at(DEAD_ZONE + 2.0)).is_some(),
                 "{degrees}° outside the dead zone"
             );
         }
     }
 
-    /// Where a step stops overshooting — and that [`DEAD_ZONE`] is inside it,
-    /// which is the trade the constant's own comment argues.
+    /// The ring between the two radii: the cursor names a direction, and what
+    /// it asks for is a facing rather than a walk. The classic client's, and
+    /// the only way a mouse can turn a character on the spot — every other ask
+    /// it makes also sets the body walking.
+    ///
+    /// Swept all the way round, because the ring is a ring: the same distance
+    /// has to mean the same thing on the diagonal as on the cardinal, and a
+    /// zone written as two axis comparisons would be a square.
+    #[test]
+    fn a_cursor_inside_the_turn_ring_asks_for_a_facing_and_no_ground() {
+        let body = camera::WorldPixel { x: -8, y: 42 };
+        let mut checked = 0;
+        for degrees in 0..360 {
+            let radians = f64::from(degrees).to_radians();
+            let (unit_x, unit_y) = (radians.cos(), radians.sin());
+            let at = |distance: f64| camera::WorldPixel {
+                x: body.x + (unit_x * distance).round() as i32,
+                y: body.y + (unit_y * distance).round() as i32,
+            };
+            // Inside the ring and outside it, on one bearing: the pair is what
+            // pins the radius rather than merely the existence of a zone.
+            let inside = ask_between(body, at(TURN_ZONE - 2.0)).expect("outside the dead zone");
+            assert!(
+                matches!(inside, steer::Ask::Turn(_)),
+                "{degrees}° inside the turn ring asked to walk: {inside:?}"
+            );
+            let outside = ask_between(body, at(TURN_ZONE + 2.0)).expect("outside the dead zone");
+            assert!(
+                matches!(outside, steer::Ask::Walk(_)),
+                "{degrees}° outside the turn ring asked only to turn: {outside:?}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 360, "every bearing is a case, and every one was checked");
+
+        // And the ring decides what is asked for, never which way: on the eight
+        // screen bearings, where rounding a two-pixel offset onto whole pixels
+        // cannot tip the answer into a neighbouring sector, both sides of it
+        // name the same direction.
+        for direction in Direction::ALL {
+            let (sx, sy) = on_screen(direction);
+            let unit = f64::from(sx).hypot(f64::from(sy));
+            let at = |distance: f64| camera::WorldPixel {
+                x: body.x + (f64::from(sx) * distance / unit).round() as i32,
+                y: body.y + (f64::from(sy) * distance / unit).round() as i32,
+            };
+            let inside = ask_between(body, at(TURN_ZONE - 2.0)).expect("outside the dead zone");
+            let outside = ask_between(body, at(TURN_ZONE + 2.0)).expect("outside the dead zone");
+            assert_eq!(inside.heading().direction, direction);
+            assert_eq!(outside.heading().direction, direction);
+        }
+    }
+
+    /// Where a step stops overshooting — and that [`TURN_ZONE`] reaches it,
+    /// which is what makes the walk ring start where walking becomes the right
+    /// answer rather than at a number somebody liked.
     ///
     /// From `22 / cos 22.5°` out, the step this answers with ends *nearer* the
     /// cursor than the body started, so the ask cannot reverse. Nearer than
@@ -4552,6 +4660,13 @@ mod tests {
             DEAD_ZONE < overshoot_free,
             "the dead zone is the smaller of the two on purpose: {DEAD_ZONE} against {overshoot_free}"
         );
+        // The band between them is the turn ring, and it has to cover the whole
+        // of the overshoot: a cursor anywhere a step would land past is
+        // answered with a facing and no ground.
+        assert!(
+            TURN_ZONE >= overshoot_free,
+            "the turn ring stops short of the overshoot: {TURN_ZONE} against {overshoot_free}"
+        );
 
         let body = camera::WorldPixel { x: 0, y: 0 };
         // Counted, because a sweep is only worth what it got to.
@@ -4563,13 +4678,13 @@ mod tests {
             // the whole-pixel grid can move it inward, so every bearing is a
             // case this actually gets to claim something about rather than a
             // skip.
-            let distance = overshoot_free + 0.75;
+            let distance = TURN_ZONE + 0.75;
             let (cursor_x, cursor_y) = (radians.cos() * distance, radians.sin() * distance);
             let cursor = camera::WorldPixel {
                 x: cursor_x.round() as i32,
                 y: cursor_y.round() as i32,
             };
-            let heading = heading_between(body, cursor).expect("well outside the dead zone");
+            let heading = heading_to(body, cursor).expect("well outside the dead zone");
             let (step_x, step_y) = on_screen(heading.direction);
             let after = f64::from(cursor.x - step_x).hypot(f64::from(cursor.y - step_y));
             let before = f64::from(cursor.x).hypot(f64::from(cursor.y));

@@ -6,7 +6,10 @@
 //! A held right button, with no modifier, says the same thing from the mouse —
 //! *which way*, not *where to*: [`Steering::steer`] takes the compass direction
 //! from the body to the cursor, recomputed every move, and drives it exactly
-//! like a held arrow. A held right button *with* Ctrl says *where to*: the
+//! like a held arrow. How far from the body it is held is a question of its
+//! own: close in, the same button asks the body to *face* that way and go
+//! nowhere ([`Ask::Turn`], the classic client's ring — the only way a mouse can
+//! turn a character on the spot). A held right button *with* Ctrl says *where to*: the
 //! strategy game's move order, [`Steering::go_to`], a destination tile planned
 //! and walked to on its own.
 //!
@@ -187,6 +190,42 @@ pub const TURN_HOLD: Duration = Duration::from_millis(80);
 /// (`Constants.TURN_DELAY_FAST`) — the same behaviour, spun through quicker.
 pub const TURN_HOLD_FAST: Duration = Duration::from_millis(45);
 
+/// What the mouse is asking for, which is not always a walk.
+///
+/// The cursor's *distance* from the body is a question of its own, and the
+/// classic client answers it with a ring: close in, the body turns to face the
+/// cursor and stands there; further out, it walks that way. A player spinning a
+/// character on the spot — to face a door, to face who they are talking to — is
+/// using that ring, and a client without one cannot do it with the mouse at all:
+/// every ask that changes the facing also sets the body walking.
+///
+/// So the zone is decided where the pixels are (`App::ask_to_cursor`) and
+/// arrives here already resolved. What this module adds is what each one means
+/// to the clock and the wire — see [`Steering::take`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Ask {
+    /// Face this way, and go nowhere: the cursor is inside the turn ring.
+    ///
+    /// One `0x02` while the body is not already facing that way — a mobile
+    /// asked for a direction it is not facing turns and moves nowhere, which
+    /// the shard answers with a `0x22` — and nothing at all once it is. The
+    /// same shape as a body wedged in a corner, and for the same reason: a step
+    /// this end knows will not be taken is not a harmless packet.
+    Turn(Heading),
+    /// Face this way and keep walking, which is the ordinary held-heading
+    /// idiom.
+    Walk(Heading),
+}
+
+impl Ask {
+    /// Which way, whichever the ask is.
+    pub const fn heading(self) -> Heading {
+        match self {
+            Ask::Turn(heading) | Ask::Walk(heading) => heading,
+        }
+    }
+}
+
 /// What a turn costs the walk it precedes.
 ///
 /// A mobile asked for a direction it is not facing turns and covers no ground —
@@ -241,16 +280,18 @@ const STUCK_STEPS: u8 = 4;
 pub struct Steering {
     /// The arrows, and shift.
     keys: Held,
-    /// The compass heading a held right button (with no modifier) is asking
-    /// for, recomputed from the body to the cursor on every move — see
-    /// [`Steering::steer`]. `None` when the mouse is not steering, which is
-    /// not the same as [`Steering::goal`] being absent: this is a direction,
-    /// not a destination, and has no "arrived" of its own.
+    /// What a held right button (with no modifier) is asking for, recomputed
+    /// from the body to the cursor on every move — see [`Steering::steer`].
+    /// `None` when the mouse is not steering, which is not the same as
+    /// [`Steering::goal`] being absent: this is a direction, not a destination,
+    /// and has no "arrived" of its own.
     ///
-    /// A [`Heading`] and not a bare direction, because a cursor says more than
-    /// one of eight sectors: which side of the sector it is on is what decides
-    /// a tie between two ways round an obstacle. See [`Detour::step`].
-    mouse: Option<Heading>,
+    /// An [`Ask`] rather than a direction, twice over. The cursor's distance
+    /// says whether the body walks or only turns; and its heading says more
+    /// than one of eight sectors, since which side of the sector it is on is
+    /// what decides a tie between two ways round an obstacle (see
+    /// [`Detour::step`]).
+    mouse: Option<Ask>,
     /// The tile a Ctrl-held right button last asked for — a destination, not
     /// a heading; see [`Steering::go_to`].
     ///
@@ -466,15 +507,18 @@ impl Steering {
         self.take(from, now, facing, terrain)
     }
 
-    /// The mouse is asking to walk along `heading` — or, at `None`, has nothing
-    /// to ask (the cursor left the map, or the button came up: see
+    /// The mouse is asking for `ask` — or, at `None`, has nothing to ask (the
+    /// cursor left the map, or the button came up: see
     /// [`Steering::mouse_up`]). The default right-hold idiom: not an order to
     /// reach a tile, a compass heading recomputed from the cursor on every
     /// move and driven exactly like a held arrow key — see the module docs for
     /// why. Answers the step to send now, if any, the same as [`press`](Self::press).
     ///
+    /// [`Ask::Turn`] is the same thing at a cursor held close in: the heading
+    /// is answered with a facing and no ground — see [`Ask`].
+    ///
     /// A [`Heading`] rather than a direction, and measured on the screen from
-    /// where the body is drawn: see `App::heading_to_cursor`, which is the one
+    /// where the body is drawn: see `App::ask_to_cursor`, which is the one
     /// place that knows what the projection is. What the extra half of it buys
     /// is the tie at a corner — with two ways round and no reason in the
     /// terrain to prefer either, the cursor's own side of the sector is the
@@ -500,22 +544,24 @@ impl Steering {
     /// working a corner with the mouse almost never hits.
     pub fn steer(
         &mut self,
-        heading: Option<Heading>,
+        ask: Option<Ask>,
         from: Point,
         now: Instant,
         facing: Direction,
         terrain: &dyn Terrain,
     ) -> Option<Facing> {
-        if self.mouse == heading {
-            // The same heading restated — most mouse-move events while the
-            // cursor sits still relative to the body, and not a fresh ask any
-            // more than the operating system repeating a held key is.
+        if self.mouse == ask {
+            // The same ask restated — most mouse-move events while the cursor
+            // sits still relative to the body, and not a fresh ask any more
+            // than the operating system repeating a held key is. The zone is
+            // part of it: a cursor crossing the turn ring at an unchanged
+            // bearing is a different ask and is answered as one.
             return None;
         }
-        self.mouse = heading;
+        self.mouse = ask;
         self.goal = None;
         self.route.clear();
-        if heading.is_none() {
+        if ask.is_none() {
             if self.keys.asking().is_none() {
                 self.stand();
             }
@@ -683,6 +729,21 @@ impl Steering {
         match asking {
             Some((step, lean)) => {
                 self.was = Some(from);
+                // The cursor is inside the turn ring: the ask is a facing and
+                // nothing else, so no ground is being covered and there is
+                // nothing for the terrain to have an opinion about — a turn
+                // into a wall is as legal as a turn into a field. The one
+                // thing that decides whether a packet leaves is whether the
+                // body is already facing that way, exactly as at the corner
+                // below: a turn it is already at is a `0x02` the shard would
+                // answer by telling this end what it already knows.
+                if matches!(self.mouse, Some(Ask::Turn(_))) {
+                    let facing_it = step.direction == self.asked.unwrap_or(facing);
+                    // Charged either way — the clock is what keeps a held
+                    // button from re-asking on a deadline already passed.
+                    self.charge(Some(step), now, facing);
+                    return (!facing_it).then_some(step);
+                }
                 // A route already answers for what is in its way — replanned
                 // above, on its own patience. Only a held direction (keys or
                 // the mouse heading) reaches here with nothing between it and
@@ -863,7 +924,11 @@ impl Steering {
             true => Facing::running(direction),
             false => Facing::walking(direction),
         };
-        if let Some(heading) = self.mouse {
+        if let Some(ask) = self.mouse {
+            // A turn's pace is nobody's business — it covers no ground — so
+            // the running flag rides along on both and means something on
+            // only one of them.
+            let heading = ask.heading();
             return Some((pace(heading.direction), heading.lean));
         }
         self.goal?;
@@ -1553,7 +1618,7 @@ mod tests {
             let now = at(start, 5 * tick as u64);
             if steering
                 .steer(
-                    Some(Heading::centred(direction)),
+                    Some(Ask::Walk(Heading::centred(direction))),
                     here(),
                     now,
                     Direction::South,
@@ -1636,7 +1701,7 @@ mod tests {
         // Facing north, asking east: this is the turn, and it is all it is.
         assert_eq!(
             steering.steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::North,
@@ -1667,6 +1732,82 @@ mod tests {
         );
     }
 
+    /// The turn ring, at this end of it: the body faces the way it was pointed
+    /// and stays where it is, however long the button is held.
+    ///
+    /// One `0x02` — the turn itself, which the shard answers by turning the
+    /// body and moving it nowhere — and then nothing at all. Not "nothing
+    /// because a step was refused": a step is never asked for, so the terrain
+    /// is never even consulted, and a turn toward a wall is as good as a turn
+    /// toward a field.
+    #[test]
+    fn a_cursor_in_the_turn_ring_turns_the_body_and_walks_it_nowhere() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        // A wall exactly where the body would step if this were a walk: what
+        // pins that no step is even considered.
+        let wall = Wall { blocked: (101, 100) };
+
+        assert_eq!(
+            steering.steer(
+                Some(Ask::Turn(Heading::centred(Direction::East))),
+                here(),
+                start,
+                Direction::North,
+                &wall
+            ),
+            Some(Facing::walking(Direction::East)),
+            "the turn is sent; the body is facing north and was asked to face east"
+        );
+        // Held, at the walking pace, for a good while: the body is facing east
+        // now and there is nothing left to say.
+        for step in 1..20u64 {
+            assert_eq!(
+                steering.due(at(start, 400 * step), here(), Direction::East, &wall),
+                None,
+                "step {step}: a turn-only ask sent something once it was already facing"
+            );
+        }
+    }
+
+    /// And the ring is not a stop: pushing the cursor out past it walks, and
+    /// pulling it back in turns and stands again. The zone is part of the ask,
+    /// so crossing it is a fresh one even when the bearing never changed.
+    #[test]
+    fn crossing_the_turn_ring_at_an_unchanged_bearing_is_a_fresh_ask() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        let east = Heading::centred(Direction::East);
+
+        steering
+            .steer(Some(Ask::Turn(east)), here(), start, Direction::North, &OpenWorld)
+            .expect("the turn");
+        // Facing east and still inside the ring: nothing.
+        assert_eq!(
+            steering.steer(
+                Some(Ask::Turn(east)),
+                here(),
+                at(start, 400),
+                Direction::East,
+                &OpenWorld
+            ),
+            None,
+            "the same ask restated"
+        );
+        // The cursor is pushed out past the ring. Same bearing, different ask.
+        assert_eq!(
+            steering.steer(
+                Some(Ask::Walk(east)),
+                here(),
+                at(start, 500),
+                Direction::East,
+                &OpenWorld
+            ),
+            Some(Facing::walking(Direction::East)),
+            "out past the ring, the same bearing is a walk"
+        );
+    }
+
     /// The other mode, stated: the turn and the step it precedes leave in one
     /// wake, which is what `dst.rs`'s oracle is written against and what this
     /// client did before the reference's own delay was put back.
@@ -1678,7 +1819,7 @@ mod tests {
 
         assert_eq!(
             steering.steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::North,
@@ -1705,7 +1846,7 @@ mod tests {
 
         steering
             .steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::North,
@@ -1742,7 +1883,7 @@ mod tests {
         for (tick, &direction) in headings.iter().cycle().take(200).enumerate() {
             let now = at(start, 5 * tick as u64);
             if let Some(step) = steering.steer(
-                Some(Heading::centred(direction)),
+                Some(Ask::Walk(Heading::centred(direction))),
                 here(),
                 now,
                 Direction::North,
@@ -1833,7 +1974,7 @@ mod tests {
 
         assert_eq!(
             steering.steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::East,
@@ -1843,7 +1984,7 @@ mod tests {
         );
         assert_eq!(
             steering.steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 at(start, 10),
                 Direction::East,
@@ -1889,7 +2030,7 @@ mod tests {
         // wall expects.
         assert_eq!(
             steering.steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::North,
@@ -1919,7 +2060,7 @@ mod tests {
 
         steering
             .steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::North,
@@ -1971,7 +2112,7 @@ mod tests {
 
         let detoured = steering
             .steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::East,
@@ -2008,7 +2149,7 @@ mod tests {
 
         let detoured = steering
             .steer(
-                Some(Heading::centred(Direction::NorthEast)),
+                Some(Ask::Walk(Heading::centred(Direction::NorthEast))),
                 here(),
                 start,
                 Direction::NorthEast,
@@ -2053,7 +2194,7 @@ mod tests {
 
         assert_eq!(
             steering.steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::North,
@@ -2118,7 +2259,7 @@ mod tests {
 
         let detoured = steering
             .steer(
-                Some(Heading::centred(Direction::SouthEast)),
+                Some(Ask::Walk(Heading::centred(Direction::SouthEast))),
                 here(),
                 start,
                 Direction::SouthEast,
@@ -2163,7 +2304,7 @@ mod tests {
 
         let first = steering
             .steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::East,
@@ -2228,7 +2369,7 @@ mod tests {
             steering.set_leeway(Leeway::Quarter);
             let answer = steering
                 .steer(
-                    Some(Heading::centred(direction)),
+                    Some(Ask::Walk(Heading::centred(direction))),
                     here(),
                     start,
                     direction,
@@ -2261,7 +2402,7 @@ mod tests {
         // mid-step — see the queue rule in the module docs.
         assert_eq!(
             steering.steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 at(start, 10),
                 Direction::North,
@@ -2286,7 +2427,7 @@ mod tests {
 
         steering
             .steer(
-                Some(Heading::centred(Direction::East)),
+                Some(Ask::Walk(Heading::centred(Direction::East))),
                 here(),
                 start,
                 Direction::East,

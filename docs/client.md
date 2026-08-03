@@ -2934,7 +2934,10 @@ jitter and no more. What was found on the way and left undone:
   step that carries the body past the cursor is not answered by a step back, and
   the small radius costs nothing today. Closing the recompute is what makes the
   10-against-24 gap live, and is where the constant gets re-argued rather than
-  assumed to have survived.
+  assumed to have survived. **Closed by `TURN_ZONE`** (see the turn-ring section
+  below): the whole 10-to-24 band answers a cursor with a facing and no ground,
+  so there is no step to overshoot with. The recompute is still missing, and is
+  still worth doing for the unlocked camera.
 - **The reference has no dead zone here at all.** ClassicUO's
   `MoveCharacterByMouseInput` (`Game/Scenes/GameSceneInputHandler.cs`) measures
   from the viewport's centre and walks on any non-zero offset; `mouseRange >= 190`
@@ -3078,3 +3081,40 @@ behaviour. What was found on the way and left undone:
   spending its budget on turns. Ours always sends the turn. Worth having when
   there is a real link to congest; our own `Walk` already counts what would be
   needed.
+
+## The turn ring, and where it is not the reference's
+
+`TURN_ZONE` in `client/app/src/lib.rs`: between `DEAD_ZONE` and it, a held right
+button asks the body to *face* the cursor and covers no ground — `steer::Ask`
+carries which of the two the cursor is asking for, and `Steering::take` answers
+`Ask::Turn` with one `0x02` while the body is not facing that way and with
+nothing at all once it is.
+
+It is the stock 2D client's ring and **not ClassicUO's**, which is worth being
+explicit about since everything else about the walk here is argued from CU:
+`MoveCharacterByMouseInput` walks on any non-zero offset from the viewport's
+centre, and its one radius (`mouseRange >= 190`) chooses running rather than
+whether to move. So a mouse in CU cannot turn a character on the spot at all.
+The reason to have it anyway is that a player needs to face a door, or face
+whoever they are talking to, and every other ask a cursor makes also sets the
+body walking.
+
+The radius is the overshoot bound and not a taste — `22 / cos 22.5° ≈ 23.8`
+world pixels, where a step stops ending past the cursor that asked for it — so
+the band where walking is the wrong answer is exactly the band where the body
+turns instead. `a_step_stops_overshooting_further_out_than_the_dead_zone` pins
+that the ring reaches it. What was found on the way and left undone:
+
+- **The ring has no cursor of its own.** The classic client tells the player
+  which zone they are in by changing the cursor graphic; ours looks identical
+  either side of the ring, so "why is my character not moving" is answered only
+  by moving the mouse further. The art is in the client's files
+  (`Art`/`Gumps` cursors) and the zone is already computed in one place.
+- **`Ask` is only the mouse's.** A held arrow key cannot ask for a facing at
+  all — the keyboard's own idiom for that in the stock client is a modifier,
+  and `keys.rs` has no notion of one. It wants the same enum, not a second
+  mechanism.
+- **The turn ring and `Turning` are two answers to one player question.** One
+  says what a turn costs, the other where a turn is all that is asked for; both
+  are set from `lib.rs` and neither has a config file. When the client config
+  lands they belong in the same struct as `Leeway`.
