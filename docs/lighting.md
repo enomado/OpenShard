@@ -1290,6 +1290,47 @@ way it does today and says so in a log line. A missing cache is a slow first
 frame, not a shard that will not start — the same refusal-to-guess this pass takes
 everywhere else, arriving as a refusal to *require*.
 
+**32. A lid is a plane, and a plane is crossed rather than travelled through.**
+
+Decision 24 gave the walk two rules — a panel is *pierced at a point*, a body is
+*travelled through* and scaled by the length of the run inside its span — and a
+lid was put with the bodies. It reads right and it is wrong by a number: **a
+floor is `height 0`**. Over the block of Britain `artscan`'s `column` example
+reads, 4,534 of the 4,647 lids are zero deep. A span of no depth has no length
+inside it, so `share` came out `0.0` for every floor in the world and a lid
+stopped exactly nothing. What a player sees is a house whose upper storey is lit
+from under its own floorboards, the upper wall brightest of all, because a wall's
+face takes the ray head on. Reported from the client, reproduced in
+`scene::storey_over_a_torch`.
+
+So a lid gets the third rule, and it is the one its geometry asks for: **did the
+ray get from one side of the plane to the other inside this cell**. Not a pierce
+either — a pierce is a point on a *vertical* plane at a height, and a lid has no
+height to be pierced at.
+
+Two things about it are decisions rather than arithmetic:
+
+- **The crossing is strict.** A ray that runs exactly along the top of a lid — a
+  candle standing on the floor it lights, both at one `z` — has gone through
+  nothing. This is `pierces`'s own asymmetry (its band hangs *below* the bottom
+  edge because a wall stands on the ground a ray runs along) arriving at the
+  surface that has no thickness for a band to hang under. Counting a touch would
+  lay half a floor's shadow across every room lit from inside it.
+- **The softness is the flame's, and it is measured at the flame.** The plane
+  cuts the source, so what gets through is the share of the source left on the lit
+  side: a flame standing in the plane of a lid is half cut by it, one a storey
+  below it is wholly under it. A sunbeam is a point source and gets the hard edge
+  a point source casts, which is the same `spread` parameter that already tells
+  the two ends apart.
+
+What a floor pixel of an upper storey gets from a torch *below* it is not this
+rule's business and never was: decision 27 already refuses it, because a flat
+surface looks up and the flame is not on the side it looks at.
+
+`light::crosses` and `blit.wgsl`'s are one formula, held by the parity test.
+Nothing else in the walk moved — a body keeps decision 24's length and its second
+pierce, a panel keeps decision 18's.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built

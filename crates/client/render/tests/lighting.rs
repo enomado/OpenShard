@@ -607,9 +607,13 @@ fn a_torch_does_not_light_the_storey_above_it() {
         ambient(&lighting, upper_wall),
     );
 
+    // The same square of the map, below the floor instead of above it: lit. Half
+    // a room away from the flame the pool is thinner than the tile-away margin
+    // the other scenes assert — which is the point of reading it here rather than
+    // beside the torch, where a floor that stopped nothing would still pass.
     let downstairs = at(&lighting, scene::STOREY_SPOT, 0.0);
     assert!(
-        downstairs > ambient(&lighting, scene::STOREY_SPOT) + 0.2,
+        downstairs > ambient(&lighting, scene::STOREY_SPOT) + 0.05,
         "the ground floor itself is dark, so the scene proves nothing: \
          {downstairs}{picture}"
     );

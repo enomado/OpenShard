@@ -290,6 +290,41 @@ fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
     return clamp(inside / band + 0.5, 0.0, 1.0);
 }
 
+// How much of a **lid** is in the way of a ray that runs from `from` to `to` in
+// `z` across one cell: 1 where the ray went through the plane and out the other
+// side, 0 where it stayed on one side of it, and a gradient between where the
+// flame itself straddles the plane.
+//
+// **A lid is a plane and not a slab**, which is why this is neither `pierces` nor
+// the length rule beside it. A floor is `height 0` in `tiledata.mul` — 4,534 of
+// the 4,647 lids over the block of Britain `artscan`'s `column` example reads —
+// so its span is zero deep, and scaling what it stops by how far the ray ran
+// *inside* that span gets zero out of every floor in the world. That is what lit
+// the storey above a torch through its own floorboards; see
+// `scene::storey_over_a_torch`.
+//
+// The crossing test is **strict**: a ray running exactly along the top of a lid —
+// a candle standing on the floor it lights — has not gone through anything, and
+// counting a touch would lay half a floor's shadow across every room lit from
+// inside it. It is `pierces`'s asymmetry, arriving at the surface that has no
+// thickness for a band to hang under.
+//
+// The softness is the flame's own size and is measured at the flame: the plane
+// cuts the source, so what gets through is the share of it left on the lit side.
+// A sunbeam passes a `spread` of 0 and gets the hard edge a point source casts.
+//
+// `light::crosses`, and the two are one formula.
+fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread: f32) -> f32 {
+    let under = min(entering, leaving);
+    let over = max(entering, leaving);
+    if under >= high || over <= low {
+        return 0.0;
+    }
+    // How far past the lid the flame itself stands, on the side the ray left by.
+    let beyond = select(low - source, source - high, leaving >= entering);
+    return clamp(beyond / max(spread * Z_PER_TILE, 1.0e-3) + 0.5, 0.0, 1.0);
+}
+
 // A soft interval: 1 well inside `low..=high`, 0 well outside, and a gradient
 // `band` wide across each edge.
 //
@@ -687,10 +722,24 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
                 let high = f32(stands.y) - 128.0;
                 let opacity = f32(stands.z) / 255.0;
                 var by_surface = 0.0;
-                if sides == 0u || sides == EDGE_MASK {
-                    // A **body** — a lid (a floor, a roof, a plank) or a whole tile
-                    // that stands up and whose art would not say which way (a corner,
-                    // a post, a tree). Either way it is a solid the ray travels
+                if sides == 0u {
+                    // A **lid** — a floor, a rug, a plank. A *plane*, and what a plane
+                    // does to a ray is decided by whether the ray got to the other
+                    // side of it inside this cell. See `crosses`, and `light::crosses`
+                    // for the same three lines: a floor is zero `z` deep, so the
+                    // length rule below gets nothing out of one and a torch lit the
+                    // storey above its own ceiling.
+                    by_surface = opacity * crosses(
+                        lit.z + delta.z * entered,
+                        lit.z + delta.z * leaves,
+                        low,
+                        high,
+                        finish.z,
+                        spread,
+                    );
+                } else if sides == EDGE_MASK {
+                    // A **body** — a whole tile that stands up and whose art would not
+                    // say which way (a corner, a post, a tree). A solid the ray travels
                     // *through*, so what it stops is scaled by how far the ray ran
                     // inside the span it occupies.
                     //
@@ -735,18 +784,13 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
                     // `facing` refuses a corner graphic, a refused graphic is all four
                     // sides, and all four sides was the one branch still scaled by a
                     // length.
-                    //
-                    // A lid names no side, so `sides == 0u` skips this entirely: a
-                    // floor has no vertical surface for a ray to pierce.
-                    if sides == EDGE_MASK {
-                        let tall = soft * Z_PER_TILE;
-                        let stops = EDGE_MASK & ~own_run(own, cell, first);
-                        if (stops & entry) != 0u {
-                            by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
-                        }
-                        if (stops & exit) != 0u {
-                            by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
-                        }
+                    let tall = soft * Z_PER_TILE;
+                    let stops = EDGE_MASK & ~own_run(own, cell, first);
+                    if (stops & entry) != 0u {
+                        by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
+                    }
+                    if (stops & exit) != 0u {
+                        by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
                     }
                 } else {
                     // A **panel** — a wall standing on one side of its tile. It is a

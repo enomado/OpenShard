@@ -863,6 +863,45 @@ fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
     ((z - low + band * 0.5).min(high - z) / band + 0.5).clamp(0.0, 1.0)
 }
 
+/// How much of a **lid** is in the way of a ray that runs from `from` to `to` in
+/// `z` across one cell: `1.0` where the ray went through the plane and out the
+/// other side, `0.0` where it stayed on one side of it, and a gradient between
+/// where the flame itself straddles the plane.
+///
+/// **A lid is a plane and not a slab, and that is the whole of why this is not
+/// [`pierces`] and not the length rule beside it.** A floor is `height 0` in
+/// `tiledata.mul` — 4,534 of the 4,647 lids over the block of Britain
+/// `artscan`'s `column` example reads — so its span is zero deep, and a rule that
+/// scales what an occluder stops by how far the ray ran *inside* the span gets
+/// zero out of every floor in the world. That is what lit the storey above a
+/// torch through its own floorboards; see `scene::storey_over_a_torch`.
+///
+/// The crossing test is **strict**, and that is the one thing here that has to be
+/// argued rather than stated. A ray that runs exactly along the top of a lid — a
+/// candle standing on the floor it lights, both at one `z` — has not gone through
+/// anything, and a test that counted a touch would put half a floor's shadow
+/// across every room lit from inside it. It is [`pierces`]'s asymmetry arriving
+/// at the surface that has no thickness for a band to hang under.
+///
+/// The softness is the flame's own size and is measured at the *flame*: the plane
+/// cuts the source, so what gets through is the share of it left on the lit
+/// side. `source` is the ray's far end in `z` and `spread` how big the flame is,
+/// in tiles — a sunbeam passes `0.0` and gets the hard edge a point source casts.
+///
+/// `blit.wgsl`'s `crosses`, and the two are one formula.
+fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread: f32) -> f32 {
+    let (under, over) = (entering.min(leaving), entering.max(leaving));
+    if under >= high || over <= low {
+        return 0.0;
+    }
+    // How far past the lid the flame itself stands, on the side the ray left by.
+    let beyond = match leaving >= entering {
+        true => source - high,
+        false => low - source,
+    };
+    (beyond / (spread * Z_PER_TILE).max(1e-3) + 0.5).clamp(0.0, 1.0)
+}
+
 /// A soft interval: `1.0` well inside `low..=high`, `0.0` well outside, and a
 /// gradient `band` wide across each edge.
 ///
@@ -1592,14 +1631,22 @@ fn walk_cells(
                 let (low, high) = (stands.bottom as f32, stands.top as f32);
                 let opacity = f32::from(stands.opacity) / 255.0;
                 let by_surface = match stands.edges {
-                    // A **body** — a lid (a floor, a roof) or a whole tile that
-                    // stands up and whose art would not say which way. Either is a
-                    // solid the ray travels through, so what it stops is scaled by
-                    // the length of the run inside the span. `blit.wgsl`'s `walk`
-                    // argues why all four sides belongs here: a roof five `z` deep
-                    // is pierced by neither of its sides at 45°, and a sealed
-                    // house came out sunlit.
-                    0 | EDGE_ANY => {
+                    // A **lid** — a floor, a rug, a plank — is a *plane*, and what
+                    // a plane does to a ray is decided by whether the ray got to
+                    // the other side of it inside this cell. See [`crosses`], and
+                    // `blit.wgsl`'s `walk` for the same three lines.
+                    0 => {
+                        let from = spot.z + delta[2] * entered;
+                        let to = spot.z + delta[2] * leaves;
+                        opacity * crosses(from, to, low, high, spot.z + delta[2], spread)
+                    }
+                    // A **body** — a whole tile that stands up and whose art would
+                    // not say which way. A solid the ray travels through, so what
+                    // it stops is scaled by the length of the run inside the span.
+                    // `blit.wgsl`'s `walk` argues why all four sides belongs here:
+                    // a roof five `z` deep is pierced by neither of its sides at
+                    // 45°, and a sealed house came out sunlit.
+                    EDGE_ANY => {
                         let from = spot.z + delta[2] * entered;
                         let to = spot.z + delta[2] * leaves;
                         let (bottom, top) = (from.min(to), from.max(to));
@@ -1623,23 +1670,16 @@ fn walk_cells(
                         // sides, and the pierce is what closes the sliver a ray
                         // clipping a corner used to walk through.
                         //
-                        // A lid names no side and this is skipped for it, which is
-                        // what `panel_stop` says with `edges != 0`.
-                        match stands.edges == EDGE_ANY {
-                            false => travelled,
-                            true => {
-                                let tall = soft * Z_PER_TILE;
-                                let stops = EDGE_ANY & !own_run(own, cell, first);
-                                let mut stopped = travelled;
-                                for (side, at) in [(entry, entered), (exit, leaves)] {
-                                    if stops & side != 0 {
-                                        stopped = stopped
-                                            .max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
-                                    }
-                                }
-                                stopped
+                        let tall = soft * Z_PER_TILE;
+                        let stops = EDGE_ANY & !own_run(own, cell, first);
+                        let mut stopped = travelled;
+                        for (side, at) in [(entry, entered), (exit, leaves)] {
+                            if stops & side != 0 {
+                                stopped =
+                                    stopped.max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
                             }
                         }
+                        stopped
                     }
                     // A **panel** — a surface on one side of the tile. What it does
                     // to a ray is decided where the ray *pierces* it, at a point
@@ -1842,6 +1882,34 @@ mod tests {
     /// client install.
     fn bare() -> Map {
         Map::from_blocks(1, 1, |_, _| LandCell { tile: 0, z: 0 })
+    }
+
+    /// A lid stops a ray that goes through it and nothing that runs along it.
+    ///
+    /// The three cases [`crosses`] exists for, on a floor of the height a real
+    /// one has — **zero** — which is the number the rule it replaced could not
+    /// answer for. A candle standing on a floor and the floor it lights are at
+    /// one `z`, so the ray between them runs exactly along the plane; a test
+    /// that only asked about the crossing would pass with a rule that laid half
+    /// a floor's shadow across every room lit from inside it.
+    ///
+    /// The flame's own `z` is the fourth argument, and it is what softens the
+    /// answer: a torch a storey below the floor is wholly under it, and what
+    /// comes through is nothing.
+    #[test]
+    fn a_floor_stops_a_ray_through_it_and_not_one_along_it() {
+        // A ray from a wall pixel at 25 down to a torch at 5, crossing this
+        // cell between 22 and 18: through the floor at 20.
+        assert_eq!(crosses(22.0, 18.0, 20.0, 20.0, 5.0, FLAME_SPREAD), 1.0);
+        // The same floor, and a flame standing on it: the ray runs along the
+        // plane and has gone through nothing.
+        assert_eq!(crosses(20.0, 20.0, 20.0, 20.0, 20.0, FLAME_SPREAD), 0.0);
+        // And a ray wholly above it — a lamp on the upper storey lighting the
+        // upper storey — is not touched by the floor under both of them.
+        assert_eq!(crosses(25.0, 23.0, 20.0, 20.0, 26.0, FLAME_SPREAD), 0.0);
+        // A flame *in* the plane of the lid is half cut by it: it is a body
+        // about a tile across, and half of it is on either side.
+        assert!((crosses(22.0, 18.0, 20.0, 20.0, 20.0, FLAME_SPREAD) - 0.5).abs() < 1e-6);
     }
 
     /// The identity is exactly that: the blit has a case where it must not touch

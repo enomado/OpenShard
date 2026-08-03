@@ -413,10 +413,17 @@ Written while drafting this, and not to be lost:
   cutaway's tests walk: **203 roof statics, 203 of them `NO_SHOOT`**. So the
   height comparison stands, no flag lookup is needed, and
   `occlusion::britains_rooms_are_dark_and_its_streets_are_not` is what says so if
-  a patch ever changes it. The wider question that entry was really asking —
-  whether an upper storey's *floor* is a lid for the storey below — is untouched
-  and still open: a floor plank is not `NO_SHOOT`, so a cellar under a house
-  currently reads whatever the house's roof gives it.
+  a patch ever changes it. **The wider question that entry was really asking —
+  whether an upper storey's floor is a lid for the storey below — was answered by
+  measuring it, and the answer is that membership was never the problem.** A
+  house's floor plank *is* `NO_SHOOT`: over the same block, 2,755 of the 4,647
+  `FLOOR` statics are opaque, and the open ones are rugs, grass and road decals.
+  Every real floor was in the grid all along. What it was not was an *occluder*,
+  because it is `height 0` and the walk scaled a lid by the length of the ray
+  inside its span — [`lighting.md`](lighting.md)'s decision 32, and the storey
+  above a torch was lit through its own floorboards until it landed. The sky half
+  of this is unaffected: `Builder::shade` reads the same opacity and always did
+  take a floor's column away.
 - **A wall tile has no sky of its own, and decision 13 is what that costs.** A
   wall shades its own column, so every wall tile reads 0 and the ring of a house
   is as dark as the room inside it. That is invisible today — nothing samples the

@@ -309,7 +309,11 @@ fn tiledata() -> TileData {
     // The zero is load-bearing: it is what makes the lid a plane rather than a
     // slab, and a scene that gave it a thickness would pass a rule that a house
     // does not.
-    set(FLOOR, TileFlags::FLOOR | TileFlags::NO_SHOOT | TileFlags::PLATFORM, 0);
+    set(
+        FLOOR,
+        TileFlags::FLOOR | TileFlags::NO_SHOOT | TileFlags::PLATFORM,
+        0,
+    );
     tiledata
 }
 
