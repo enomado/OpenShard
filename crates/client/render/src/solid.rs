@@ -56,6 +56,35 @@ pub enum Side {
     South,
 }
 
+impl Side {
+    /// The lid, full strength — it is the face that looks at the light.
+    pub const TOP_SHADE: f32 = 1.0;
+    /// The `+x` face.
+    pub const EAST_SHADE: f32 = 0.78;
+    /// The `+y` face, a step darker again.
+    pub const SOUTH_SHADE: f32 = 0.56;
+
+    /// How much of its colour this face keeps.
+    ///
+    /// The fixed light this view is lit by, from above and to the east — not a
+    /// simulation of anything, and deliberately not the world's own sun, which
+    /// would leave the instrument unreadable at dusk, exactly when the picture
+    /// is hardest to read. What it is for is that two faces meeting at one line
+    /// come out as two tones, so an edge is visible without a stroke having to
+    /// say where it is.
+    ///
+    /// One table, read by the solids pass and by the wireframe beside it: two
+    /// views shading the same box differently would be two claims about which
+    /// side of it is which.
+    pub fn shade(self) -> f32 {
+        match self {
+            Self::Top => Self::TOP_SHADE,
+            Self::East => Self::EAST_SHADE,
+            Self::South => Self::SOUTH_SHADE,
+        }
+    }
+}
+
 impl Solid {
     /// The three faces, in viewport pixels, each as four corners in ring order.
     ///
@@ -112,6 +141,100 @@ impl Solid {
             ),
         ]
     }
+
+    /// The lines that make a box read as a box: its silhouette, and the three
+    /// edges inside it where the faces meet.
+    ///
+    /// Nine, and **not** the four edges of each face, which is twelve with three
+    /// drawn twice. The difference is not tidiness: a run of wall stroked
+    /// per-face is a lattice of doubled lines, and a tile carrying several
+    /// surfaces goes black. The shape a stroke belongs on is the outline of the
+    /// solid — the hexagon of decision 39.3 — plus the interior star that says
+    /// which of the three faces is which.
+    ///
+    /// Derived from [`Solid::faces`] rather than projected again, so a change to
+    /// the corner order moves the strokes with the fills.
+    pub fn outline(&self, camera: &Camera) -> [[Vec2; 2]; 9] {
+        let faces = self.faces(camera);
+        let (top, east, south) = (faces[0].1, faces[1].1, faces[2].1);
+        // The hexagon, walked round: over the top's north and east corners, down
+        // the east face's far edge, along the bottom, and back up the south's.
+        [
+            [top[0], top[1]],
+            [top[1], east[3]],
+            [east[3], east[2]],
+            [east[2], south[3]],
+            [south[3], top[3]],
+            [top[3], top[0]],
+            // And the star: the two edges the top shares with the faces under
+            // it, and the vertical where those two meet.
+            [top[1], top[2]],
+            [top[3], top[2]],
+            [top[2], east[2]],
+        ]
+    }
+}
+
+/// What colour a surface is drawn in — **the hue is the kind**.
+///
+/// It was the opacity first, and that is the mistake worth keeping written
+/// down: opacity is nearly a constant in a real town (5,459 `OPAQUE` against 74
+/// panes over the block this view was built on), so the picture came out one
+/// flat red and the geometry, which is the entire question, had no colour left
+/// to be told in. A pane is rare enough to be the exception rather than the
+/// axis.
+///
+/// Here rather than in either view because both read it: the solids pass and the
+/// wireframe are looked at against each other — a red plane standing inside an
+/// amber box is a defect, and it is invisible if the two chose their own reds.
+pub fn kind_colour(surface: &crate::occlusion::Surface) -> [f32; 3] {
+    use crate::occlusion::{EDGE_ANY, OPAQUE};
+
+    match (surface.opacity < OPAQUE, surface.edges) {
+        // A pane, whatever shape it is: the one thing here that is about how
+        // much light gets through rather than about where a plane is.
+        (true, _) => [60.0, 200.0, 255.0],
+        // A lid — a floor, a roof, a plank. Warm, because it is the face that
+        // looks at the light, and because its *absence* over a tile is what a
+        // person opening this view is usually hunting.
+        (false, 0) => [255.0, 190.0, 70.0],
+        // A body: a graphic whose art named no edge, so the whole tile stops
+        // light. Violet, and deliberately the odd colour out — it is a fallback
+        // rather than a measurement, and a street with one of these standing
+        // among panels is worth seeing from across the room.
+        (false, EDGE_ANY) => [190.0, 90.0, 255.0],
+        // A panel: a wall on one named edge.
+        (false, _) => [255.0, 70.0, 60.0],
+    }
+}
+
+/// Every solid an occlusion grid holds that stands above `floor`, coloured by
+/// kind and ordered back to front.
+///
+/// The list both views draw, so that "what is on screen" is one answer. The
+/// order is `depth::Order`'s own key — `x + y`, then height — and **this is
+/// where decision 39.2 will bite**: one key per solid is right only while a
+/// solid stands on one tile, and step 23.5's will not. Translucent and
+/// depth-free, a wrong order costs a shade rather than a wrong picture, which is
+/// exactly why that answer was taken first.
+pub fn standing(occlusion: &crate::occlusion::Occlusion, floor: i8) -> Vec<(Solid, [f32; 3])> {
+    let bounds = occlusion.bounds();
+    let mut found: Vec<(i32, i32, &crate::occlusion::Surface)> = (bounds.min_y..=bounds.max_y)
+        .flat_map(|y| {
+            (bounds.min_x..=bounds.max_x).flat_map(move |x| {
+                occlusion
+                    .surfaces_at(x, y)
+                    .iter()
+                    .map(move |surface| (x, y, surface))
+            })
+        })
+        .filter(|(_, _, surface)| surface.stands(floor))
+        .collect();
+    found.sort_by_key(|(x, y, surface)| (x + y, surface.bottom, surface.top));
+    found
+        .into_iter()
+        .map(|(x, y, surface)| (surface.solid(x, y), kind_colour(surface)))
+        .collect()
 }
 
 #[cfg(test)]

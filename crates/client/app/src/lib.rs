@@ -142,6 +142,7 @@ use openshard_client_render::paperdoll;
 use openshard_client_render::place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::select::{self, Select, Selection};
+use openshard_client_render::solids::{self, SolidsRenderer};
 use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::statics::PickedStatic;
 use openshard_client_render::text::{self, Label};
@@ -681,6 +682,8 @@ pub fn run<D: Dial + Send + 'static>(
         show_terrain: false,
         show_occluders: false,
         show_solids: solids,
+        solids_held: 0,
+        solids_drawn: 0,
         occlusion_bake: occlusion::bake::Bake::new(),
         // The item under the cursor, ringed and lit, and the ground otherwise:
         // see `shell::HighlightTarget` and `shell::HighlightStyle`.
@@ -963,6 +966,14 @@ struct Screen {
     /// The pass that washes that silhouette, and the ground under it, after the
     /// blit — see `openshard_client_render::select`.
     select: Select,
+    /// The pass that draws the lighting's occlusion grid as solids over the
+    /// finished picture — `openshard_client_render::solids`, and step 23.0.
+    ///
+    /// Always built and only ever *used* while the view is on: it is one
+    /// pipeline pair and an empty buffer, and the alternative — an `Option`
+    /// filled on the frame somebody ticks the box — puts a shader compile in the
+    /// middle of a frame a person is looking at.
+    solids: SolidsRenderer,
     /// The interface's pass, bound to [`App::gump_atlas`]'s texture and to the
     /// *surface's* format: it draws over the finished frame, not into the world
     /// image. `None` exactly when `App::gumps` is.
@@ -1410,6 +1421,17 @@ struct App {
     /// at once is a legitimate reading and is what the outline over a filled face
     /// is for.
     show_solids: bool,
+    /// How many solids the last frame's pass was handed, and how many of those
+    /// it drew — the rest fell outside the viewport.
+    ///
+    /// Kept and shown because a view that quietly draws a fraction of a grid
+    /// looks exactly like a grid with little in it, which is
+    /// [`Surface::stands`](openshard_client_render::occlusion::Surface::stands)'
+    /// argument applied to the other end of the same picture. Zero on a frame
+    /// the view was off, which the checkbox beside it already says.
+    solids_held: usize,
+    /// The half of that pair that reached the target.
+    solids_drawn: usize,
     /// The blocks of the occlusion grid built for earlier frames — see
     /// [`occlusion::bake`](openshard_client_render::occlusion::bake) and
     /// `docs/lighting.md`'s step 21.5.
@@ -3338,6 +3360,7 @@ impl App {
                 .then(|| self.terrain_overlay(camera, hover.as_ref())),
             show_occluders: self.show_occluders,
             show_solids: self.show_solids,
+            solids: (self.solids_held, self.solids_drawn),
             // The grid the lighting will build a few lines later in the same
             // frame, built here a second time rather than kept from the last
             // one: the HUD is drawn before the world passes, and a wireframe a
@@ -3349,7 +3372,7 @@ impl App {
             // by the widest pool's reach, and a box drawn over a rectangle the
             // shader did not walk would be a picture of this overlay's own
             // bounds rather than of the lighting's.
-            occluders: (self.show_occluders || self.show_solids).then(|| {
+            occluders: self.show_occluders.then(|| {
                 occlusion::collect(
                     &self.map,
                     &self.items,
@@ -3722,6 +3745,11 @@ impl App {
         // And the selection's wash, over the same finished picture and for the
         // same reason: what is held must stay legible after dark.
         let select = Select::new(&device, format);
+        // The occlusion grid as solids — `docs/lighting.md` step 23.0. Over the
+        // lit picture for the third time and for the third statement of the same
+        // reason: a diagnostic that dimmed at night would stop working exactly
+        // when the picture is hardest to read.
+        let solids = SolidsRenderer::new(&device, format);
         // And the interface's, bound to the surface's format for the same
         // reason: a gump is drawn on the finished picture, and the night that
         // dimmed the world has already been applied to it.
@@ -3755,6 +3783,7 @@ impl App {
             outline,
             select_mask,
             select,
+            solids,
             gump_pass,
         })
     }
@@ -4495,7 +4524,14 @@ impl App {
         let sky = match (self.night, self.sunlit) {
             (true, _) => Some(light::NIGHT),
             (false, true) => Some(light::SKYLIGHT),
-            (false, false) => None,
+            // Daylight, where the pass is a copy and no grid is built at all —
+            // unless the solids view is on, and then the grid *is* the subject.
+            // `Ambient::DAY` flattened is the identity, so the picture under the
+            // boxes is the same daylight frame it was; what it buys is that the
+            // list drawn is the one the shader would walk, out of the same bake,
+            // rather than a second walk of the map made for the view. See
+            // `docs/lighting.md` step 23.0.
+            (false, false) => self.show_solids.then_some(light::Ambient::DAY),
         };
         // And whether a tile's share of it depends on what stands over the tile.
         // Off by default: see `App::sky_field`, and `light::Ambient::flattened`
@@ -4566,6 +4602,30 @@ impl App {
             },
             &lighting,
         );
+        // The occlusion grid as solids, when somebody asked for it — step 23.0.
+        // First of what is drawn over the lit picture, so the highlights stay on
+        // top of it: a diagnostic must not hide the thing the cursor is naming.
+        //
+        // The grid drawn is the frame's **own** — `lighting.occlusion`, which is
+        // the list the shader is walking this same frame — and not a second walk
+        // of the map. A picture of a grid rebuilt beside the one in force would
+        // be a claim about a grid nothing rendered.
+        if self.show_solids {
+            let standing = openshard_client_render::solid::standing(&lighting.occlusion, self.player.at.z);
+            self.solids_held = standing.len();
+            self.solids_drawn = window.solids.render(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                solids::Frame {
+                    target: &view,
+                    size: (window.config.width, window.config.height),
+                    rect: viewport,
+                },
+                &camera,
+                &standing,
+            );
+        }
         // The held selection's wash, first of the two things drawn over the lit
         // picture: the wall the click named and the ground it stands on. Under
         // the ring rather than over it, because they answer different questions

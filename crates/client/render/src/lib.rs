@@ -61,6 +61,7 @@ pub mod renderer;
 pub mod scene;
 pub mod select;
 pub mod solid;
+pub mod solids;
 pub mod sprite;
 pub mod statics;
 pub mod text;

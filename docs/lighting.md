@@ -15,6 +15,16 @@ place this plan names. The geometry is `render/src/solid.rs` and it knows nothin
 about who paints it — decision 39.6 is the finding that split it that way, and
 39.7 is the half-tile trap that was found on the way.
 
+It is a **real pass** (`render/src/solids.rs`), not an overlay, and the reason is
+worth carrying into the next session: `render` takes its pictures headless, so
+what the client's UI toolkit draws can be neither captured nor timed. The picture
+and the number both come out of `tests/cost.rs` now —
+
+```sh
+OPENSHARD_CLIENT=… OPENSHARD_FRAME_DUMP=/tmp/britain.ppm OPENSHARD_FRAME_SOLIDS=1 \
+    cargo test --release -p openshard-client-render --test cost -- --ignored --nocapture
+```
+
 **Next is 23.1, the migration**, and it now has the instrument it was waiting
 for: the picture below to compare against, and a person able to stand in a place
 and see a solid rather than infer one from twelve strokes. Read the backlog under
@@ -22,9 +32,10 @@ and see a solid rather than infer one from twelve strokes. Read the backlog unde
 filter, and no test tying a solid's face to the plane the shader tests) are about
 the instrument's own honesty, and 23.1 is the step that will be judged with it.
 
-The cost reading at the widest zoom is the one piece of 23.0's DoD left open: it
-needs a wheel and a headless window has no input. At 1:1 in a debug build the
-frame is vsync-bound with 1,524 surfaces on screen.
+The DoD is closed, cost reading included: **3.61 ms at the widest zoom** for
+3,768 boxes, against 0.34 ms for the whole lighting pass on the same frame. It
+stays a debug view, and the backlog says where the time goes if that ever has to
+change.
 
 Everything below is the session before it.
 
@@ -1917,29 +1928,44 @@ ordering or the picture stops matching the client the engine exists to serve. So
 this is not a renderer on its way to being general — it is a three-dimensional
 scene with a fixed camera, sprite primitives, and now a solid one beside them.
 
-**39.6 The pass is not what makes it a solid; the projection is.** Built, and the
-finding is which half of 39 was the work. Everything above argues that a GPU pass
-for boxes is cheap — and it is — but the first version of step 23.0 draws its
-boxes through the *egui painter*, beside the wireframe, and looks right. What
-made that possible is that `Camera::project` already had a float core waiting to
-be named: `project_exact` takes a place between the tiles, `project` is it at a
-whole one, and one test pins the two together over the whole map. Twelve points
-through that, three convex polygons out, and the geometry a real pass would need
-is already written and already looked at.
+**39.6 The pass is not what makes it a solid; the projection is. But a picture
+nothing can capture is not an instrument.** Both halves of this were learned in
+one sitting, in that order.
 
-So the split to hold onto is: **the geometry is the durable half and the pass is
-an implementation of it.** `render/src/solid.rs` knows nothing about egui or
-wgpu; it takes a box in world coordinates and hands back three faces in viewport
-pixels. A `wgpu` pass replaces the painter and inherits geometry that has been on
-a screen, which is the right order — the alternative was writing a pipeline in
-order to find out whether the corner order was right.
+The first: `Camera::project` already had a float core waiting to be named, so
+`project_exact` takes a place between the tiles, `project` is it at a whole one,
+and one test pins the two together over the whole map. Twelve points through
+that, three polygons out. The geometry is the durable half —
+`render/src/solid.rs` knows nothing about who paints it — and the first version
+of 23.0 painted it through the *egui painter*, beside the wireframe, and looked
+right.
 
-Two things the painter route genuinely cannot do, so that its ceiling is stated
-rather than discovered: a solid can never be **occluded by the sprites in front
-of it** (the overlay is painted after the blit, so 39.2's second answer is out of
-reach), and nothing about it can be **captured by `render`'s frame tests** — it
-is a window or nothing. Neither is wanted for the instrument; both are wanted the
-day a solid stops being a diagnostic.
+The second is why that version did not survive the day. **`render` takes its
+pictures headless**: `tests/cost.rs` builds Britain at the widest zoom on a real
+adapter, times the passes and writes the frame out; `tests/pictures.rs` does the
+same for the plan views. A diagnostic drawn by the client's UI toolkit appears in
+none of them, and cannot be timed beside the passes it runs with — so the one
+number 23.0's DoD asked for was the one number that arrangement could not
+produce. A view whose whole job is to be looked at has to be capturable by the
+thing that takes the pictures.
+
+So the solids are `render/src/solids.rs`: two pipelines over one shader — a
+triangle list for the faces, a line list for the silhouette — drawn after the
+blit, on the surface, translucent, writing no depth. And the split above is what
+made that a small change rather than a rewrite: **the projection stayed in
+Rust.** The corners arrive already in viewport pixels from `Solid::faces`, and
+`solids.wgsl` does the one thing no CPU can do for it — a pixel into clip space,
+and the blend. A vertex shader deriving a box from its two corners would be a
+second implementation of the arithmetic every sprite in the frame is placed by,
+which is exactly what `statics.wgsl` refuses to do about depth and for the same
+reason. The cost of keeping it in Rust is one buffer write a frame, and it is
+measured rather than argued.
+
+What the pass still cannot do, stated so it is not rediscovered: a solid is not
+**occluded by the sprites in front of it**, because it draws over the finished
+picture. That is 39.2's first answer and it is the wanted one for an instrument;
+the second answer — per-fragment depth through `depth::Order` — is what a solid
+that has stopped being a diagnostic will need.
 
 **39.7 The lattice is the corners, and the tiles are the centres.** The one trap
 the projection had left in it. `project` takes a `Point` and returns where that
@@ -2686,33 +2712,36 @@ the moment a box has to contain a sprite.
          the widest zoom, because a translucent overlay over a town is overdraw
          and the number decides whether it stays a debug view or gets a bound.
 
-         **What landed**, and the one place it differs from the paragraph above:
-         the boxes are painted by the **egui painter** beside the wireframe and
-         not by a `wgpu` pass. Decision 39.6 is the finding that decided it — the
-         durable half of decision 39 is the *geometry*, and once
-         `Camera::project` had its float core named (`project_exact`,
-         `WorldSpot`, `Camera::to_viewport_exact`) the whole primitive was
-         `render/src/solid.rs`: a box in world coordinates, three faces out, no
-         knowledge of who paints them. A pass now inherits geometry that has been
-         on a screen rather than being written in order to find out whether the
-         corner order was right. What that costs is stated in 39.6.
+         **What landed.** Decision 39.6 has the two findings behind the shape of
+         it: the geometry is the durable half and stayed in Rust, and the pass is
+         a real one because `render`'s pictures are taken headless and an overlay
+         drawn by the client's UI toolkit is in none of them.
 
          Built:
          - `camera::WorldSpot` and `project_exact` — a place between the tiles,
            on the corner lattice (39.7), with `project` delegating to it and a
            test pinning the two over the whole map;
-         - `solid::Solid` and `Solid::faces` — the three faces, in the order
-           `Camera::tile_facet` uses, with a test that a unit solid's top *is*
-           its tile's diamond;
+         - `solid::Solid`, `Solid::faces` and `Solid::outline` — the three faces
+           in the order `Camera::tile_facet` uses, with a test that a unit
+           solid's top *is* its tile's diamond, and the nine lines of the
+           silhouette and the star inside it;
          - `occlusion::Surface::solid` — the drawing-only nominal thickness
            (`PANEL_THICKNESS` a fifth of a tile, `LID_THICKNESS` two `z`), which
-           step 23.1 must re-decide rather than inherit;
-         - `shell::draw_solids` behind its own checkbox and F5, sharing the
-           wireframe's colour table (`kind_colour`) so the two views cannot
-           disagree about what is a panel;
+           step 23.1 must re-decide rather than inherit — and `Surface::stands`,
+           which the wireframe used to keep to itself;
+         - `solid::standing` and `solid::kind_colour` — the one list and the one
+           palette both views draw, so that "what is on screen" has one answer;
+         - `render/src/solids.rs` and `solids.wgsl` — the pass, over the lit
+           frame, translucent, no depth. In the app it is fed the frame's *own*
+           grid (`Lighting::occlusion`, the list the shader is walking) rather
+           than a second walk of the map;
+         - the toggle: F5, the checkbox beside the wireframe's, and the pass's
+           own count of what it drew against what it was handed;
          - `--at X,Y` and `--solids` on the offline viewer, and
            `client_app::Opening` behind them: this plan names places, and until
-           now the only way to reach one was to walk there with a shard running.
+           now the only way to reach one was to walk there with a shard running;
+         - `tests/cost.rs` draws it over Britain at the widest zoom and times
+           it — `OPENSHARD_FRAME_SOLIDS=1` beside `OPENSHARD_FRAME_DUMP`.
 
          **What was seen**, at 1:1 over Britain, in a debug build:
          - **The staircase at `(1493, 1639)` is a stepped mass of whole-tile
@@ -2736,13 +2765,20 @@ the moment a box has to contain a sprite.
            brick. Nothing here is a defect; it is the first picture of decision
            3's opacity actually being about a *place*.
 
-         **The cost**, and the part of the DoD left open: at 1:1 with 1,524
-         standing surfaces on screen — 4,572 polygons a frame — a **debug** build
-         stays vsync-bound at 16 ms, so the view is not close to paying for
-         itself at this zoom. The widest-zoom reading was **not taken**: it needs
-         a wheel, and a headless window has no input. It is a person's step, it
-         is small, and it is the one number that decides whether this view ever
-         needs a bound.
+         **The cost, at the widest zoom, from `tests/cost.rs`: 3.61 ms a frame**,
+         drawing 3,768 of the grid's 16,729 boxes — the rest are off the edge of
+         the picture and dropped before a vertex is written. Beside it on the
+         same frame: the whole lighting pass is 0.34 ms and a plain blit is 0.18.
+
+         So the number decides what the DoD said it would, and the answer is
+         **it stays a debug view**: ten times the pass it is a picture of is fine
+         for something switched on to answer a question and not fine for
+         anything else. What it is *not* is the shader — the fill is a translucent
+         quad over a fifth of the screen — and the honest reading is that most of
+         it is the frame's own vertex buffer being rebuilt and uploaded, 3.3 MB
+         of it, because the geometry is on the CPU by choice (39.6). If this ever
+         has to be cheap, the fix is named by that sentence rather than hunted
+         for: keep the buffer between frames and rebuild it when the camera moves.
       1. **The ownership, with the geometry held still.** `occlusion::Surface`
          becomes `Solid` — a box in world coordinates plus the fields it already
          has (`opacity`, the hole flag) — and a cell holds `(offset, count)` into
@@ -2955,22 +2991,24 @@ Found while re-cutting the plan around decision 38 (nothing was built):
   `t`, exactly as `facing::best_prism` already takes the best prism.
 Found while drawing the solid (step 23.0):
 
-- **The solids view filters by `stands`, so a house's floor is invisible from
-  its own floor.** `shell::stands` drops everything at or below the camera's
-  feet, which is right for a wireframe of what shadows *you* and wrong for a
-  view whose subject is geometry: standing in a room at `z = 0`, the room's
-  floor and every lid under it are simply not there, and a person reading the
-  picture cannot tell that from a floor the grid failed to build. The wireframe
-  says so in a label ("1,043 below and not drawn"); the solids view inherits the
-  label and not the honesty, because a *hole* in a floor and a floor below the
-  cut look identical when neither is drawn.
-- **A black edge under every face is one stroke too many.** Each solid is three
-  polygons with a near-black outline, so a run of wall is a lattice of lines and
-  a pile of surfaces on one tile goes dark. The stroke is what makes two faces
-  of one box findable, but the shape it belongs on is the box's **silhouette**,
-  not each face — the hexagon, plus the two interior edges where the three faces
-  meet. `Solid::faces` already hands the corners back so that a face's shared
-  edge is its first two points, which is the half of that work that is done.
+- **Both views filter by `Surface::stands`, so a house's floor is invisible from
+  its own floor.** Everything at or below the camera's feet is dropped, which is
+  right for a picture of what shadows *you* and wrong for a view whose subject
+  is geometry: standing in a room at `z = 0`, the room's floor and every lid
+  under it are simply not there, and a person reading the picture cannot tell
+  that from a floor the grid failed to build. Each view says what it hid — the
+  wireframe counts surfaces, the solids pass counts boxes — and that is not the
+  same thing as being able to *see* it: a hole in a floor and a floor below the
+  cut look identical when neither is drawn. What would answer it is a second
+  datum ("everything", "above my feet", "this storey"), which is a decision
+  rather than a patch.
+- **The solids pass rebuilds its whole vertex buffer every frame.** 3.3 MB at the
+  widest zoom, and the 3.61 ms reading above is mostly that rather than the
+  fragments. The geometry is on the CPU deliberately (39.6) and the fix, if one
+  is ever wanted, is the same one the occlusion grid already took in step 21.5:
+  keep the buffer and rebuild it when the camera moves. Not worth doing for a
+  view that is off by default; worth knowing before anybody concludes the
+  translucent fill is expensive.
 - **Nothing tests that the solids view and the walk agree.** The two views share
   `kind_colour` and the grid, which is what keeps the *colours* honest, and
   nothing at all keeps `Surface::solid`'s box on the plane `blit.wgsl` tests: a

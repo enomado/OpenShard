@@ -185,6 +185,9 @@ pub struct Hud {
     pub show_occluders: bool,
     /// And whether the same grid is being drawn as solids — step 23.0.
     pub show_solids: bool,
+    /// What the last frame's solids pass was handed, and what it drew: the rest
+    /// fell outside the viewport. Both zero while the view is off.
+    pub solids: (usize, usize),
     /// The lighting's own occlusion grid, gathered only while they are — the
     /// boxes a shadow ray walks through, drawn as the boxes they are.
     ///
@@ -908,7 +911,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
             let mut drawn = 0usize;
             for (_, _, surface) in surfaces_of(occluders) {
                 total += 1;
-                if stands(surface.top, hud.position.z) {
+                if surface.stands(hud.position.z) {
                     drawn += 1;
                 }
             }
@@ -932,6 +935,22 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         .changed()
     {
         request.show_solids = Some(solids);
+    }
+    // The pass's own count and not a second walk of the grid: what is on screen
+    // is what the pass drew, and a number derived beside it would be a claim
+    // about a list nothing rendered. The pair matters — held against drawn is
+    // how much of the grid is off the edge of the picture, which at the widest
+    // zoom is most of it.
+    match hud.solids {
+        (0, 0) => {
+            ui.label("off");
+        }
+        (held, drawn) => {
+            ui.label(format!(
+                "{drawn} solids drawn, {} off screen",
+                held.saturating_sub(drawn)
+            ));
+        }
     }
     ui.separator();
     // The two axes of the highlight, side by side because they are read
@@ -1037,18 +1056,15 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
     // Then what stands up out of it. Over the wash and under the markers: the
     // boxes are read against the ground the wash colours, and a highlight the
     // player is pointing with must not be hidden by a diagnostic.
-    if let Some(occluders) = &hud.occluders {
-        // The solids first and the wireframe over them, whichever the person
-        // switched on: a stroke of the plane the walk actually tests, drawn over
-        // the box that only says how thick it is drawn, is the pair of facts the
-        // two views exist to be read as. The other order would hide the
-        // measurement behind the drawing.
-        if hud.show_solids {
-            draw_solids(&world, &hud.camera, occluders, hud.position.z, viewport.min);
-        }
-        if hud.show_occluders {
-            draw_occluders(&world, &hud.camera, occluders, hud.position.z, viewport.min);
-        }
+    //
+    // The **wireframe** only. Its neighbour, the solids view, is a real pass in
+    // the frame (`openshard_client_render::solids`) and is drawn before this
+    // ever runs — deliberately, so that a stroke of the plane the walk actually
+    // tests lands over the box that only says how thick it is drawn. That order
+    // is the pair of facts the two views exist to be read as; the other one
+    // hides the measurement behind the drawing.
+    if let Some(occluders) = hud.occluders.as_ref().filter(|_| hud.show_occluders) {
+        draw_occluders(&world, &hud.camera, occluders, hud.position.z, viewport.min);
     }
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
@@ -1923,27 +1939,6 @@ fn draw_terrain(
     }
 }
 
-/// Whether a cell is above the height the looker is standing at.
-///
-/// The first frame of this wireframe was a dock, and it was **2011 boxes**: a
-/// deck plank stops an arrow — a floor is what you cannot shoot *through* to the
-/// storey above — so every tile of the pier is a thin slab in the grid, and the
-/// picture was a red hatch over the whole ground with the walls somewhere inside
-/// it. Nothing about it was wrong and nothing in it was readable.
-///
-/// So the view draws what is above the floor the *player* is standing on. It is
-/// a datum and not a threshold: the deck underfoot has its top at exactly the
-/// height the body stands at and drops out, a wall beside it is twenty units
-/// tall and stays, the floor of the storey above stays because it is a lid, and
-/// the cellar below drops. Nothing is invented and nothing is tuned.
-///
-/// What it hides, the panel counts — a view that silently drops most of a grid
-/// reads as a grid with nothing in it, which is the one failure an instrument
-/// may not have.
-fn stands(top: i32, floor: i8) -> bool {
-    top > i32::from(floor)
-}
-
 /// Every surface in the grid, with the tile it stands on.
 ///
 /// **A surface and not a tile**, which is the whole of what this view is for
@@ -2017,13 +2012,14 @@ fn draw_occluders(
     viewport_origin: egui::Pos2,
 ) {
     use openshard_client_render::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH};
+    use openshard_client_render::solid::Side;
 
     let clip = painter.clip_rect();
     // Back to front. Collected rather than drawn as they come, because a solid
     // needs an order and `surfaces_of` walks the grid in rows: a row of wall
     // drawn left to right paints its near end behind its far one.
     let mut standing: Vec<(i32, i32, &openshard_client_render::occlusion::Surface)> = surfaces_of(occluders)
-        .filter(|(_, _, s)| stands(s.top, floor))
+        .filter(|(_, _, s)| s.stands(floor))
         .collect();
     standing.sort_by_key(|(x, y, surface)| (x + y, surface.bottom, surface.top));
 
@@ -2060,7 +2056,7 @@ fn draw_occluders(
         if !clip.intersects(bounds) {
             continue;
         }
-        let (red, green, blue) = kind_colour(surface);
+        let [red, green, blue] = openshard_client_render::solid::kind_colour(surface);
         // A face's own shade, and a **near-black edge** under it. Two faces of
         // one box meet at a line and the two tones alone leave finding it to the
         // eye; the stroke is also what makes a tile of floor a tile rather than
@@ -2088,8 +2084,8 @@ fn draw_occluders(
             // box rather than as a tangle. `Face::outward` names the two: an
             // isometric camera sees `+x` and `+y`.
             EDGE_ANY => {
-                face(wall_of(panel_edge(EDGE_SOUTH)), SOUTH_SHADE);
-                face(wall_of(panel_edge(EDGE_EAST)), EAST_SHADE);
+                face(wall_of(panel_edge(EDGE_SOUTH)), Side::SOUTH_SHADE);
+                face(wall_of(panel_edge(EDGE_EAST)), Side::EAST_SHADE);
                 face(high.clone(), 1.0);
             }
             // A **panel** — a wall standing on one named edge of its tile. One
@@ -2102,8 +2098,8 @@ fn draw_occluders(
             named => face(
                 wall_of(panel_edge(named)),
                 match named {
-                    EDGE_EAST => EAST_SHADE,
-                    EDGE_SOUTH => SOUTH_SHADE,
+                    EDGE_EAST => Side::EAST_SHADE,
+                    EDGE_SOUTH => Side::SOUTH_SHADE,
                     EDGE_NORTH => 0.42,
                     _ => 0.58,
                 },
@@ -2111,148 +2107,6 @@ fn draw_occluders(
         }
     }
 }
-
-/// **The hue is the kind, and it is not the opacity.** Opacity was the first
-/// answer and it is nearly a constant: over the block of Britain this view was
-/// built on, 5,459 of 5,533 surfaces are `OPAQUE` and 74 are panes, so colouring
-/// by it painted the whole picture one red and left the geometry — which is the
-/// entire question — with no colour to be told in. A pane is rare enough to be
-/// the exception it is, so it keeps the cyan; everything else is coloured by
-/// which of the walk's three kinds it is.
-///
-/// One table for both views, because the wireframe and the solids are read
-/// against each other: a red plane inside an amber box is a defect, and it would
-/// not be visible if the two had each chosen their own reds.
-fn kind_colour(surface: &openshard_client_render::occlusion::Surface) -> (f32, f32, f32) {
-    use openshard_client_render::occlusion::{EDGE_ANY, OPAQUE};
-
-    match (surface.opacity < OPAQUE, surface.edges) {
-        // A pane, whatever shape it is: the one thing here that is about how much
-        // light gets through rather than about where a plane is.
-        (true, _) => (60.0, 200.0, 255.0),
-        // A lid — a floor, a roof, a plank. Warm, because it is the face that
-        // looks at the light, and because its *absence* over a tile is what a
-        // person opening this view is usually hunting.
-        (false, 0) => (255.0, 190.0, 70.0),
-        // A body: a graphic whose art named no edge, so the whole tile stops
-        // light. Violet, and deliberately the odd colour out — it is a fallback
-        // rather than a measurement, and a street with one of these standing
-        // among panels is worth seeing from across the room.
-        (false, EDGE_ANY) => (190.0, 90.0, 255.0),
-        // A panel: a wall on one named edge. The red the whole view used to be,
-        // now meaning one thing.
-        (false, _) => (255.0, 70.0, 60.0),
-    }
-}
-
-/// The same grid as **solids**: every surface given the thickness
-/// [`Surface::solid`] draws it with, and painted as the box it is.
-///
-/// `docs/lighting.md` step 23.0, and the instrument steps 23.1 onwards are
-/// judged with. What it can show that [`draw_occluders`] cannot is the whole
-/// reason it exists: a face rather than a line, a thickness, and one solid
-/// standing inside another. Nothing here is a second geometry — the boxes come
-/// from `Surface::solid` and the projection from
-/// [`Solid::faces`](openshard_client_render::solid::Solid::faces), which is the
-/// arithmetic every sprite in the frame is placed by.
-///
-/// **Translucent, over the world, writing no depth** — decision 39.2's first
-/// answer. The static's own sprite stays visible *inside* the solid that claims
-/// to contain it, which is precisely what is being looked at; a solid hidden
-/// behind the wall it is a claim about would report nothing. The cost of that is
-/// stated rather than hidden: this is overdraw, and the count beside the
-/// checkbox is what a person watches at the widest zoom.
-fn draw_solids(
-    painter: &egui::Painter,
-    camera: &Camera,
-    occluders: &openshard_client_render::occlusion::Occlusion,
-    floor: i8,
-    viewport_origin: egui::Pos2,
-) {
-    use openshard_client_render::solid::Side;
-
-    let clip = painter.clip_rect();
-    let scale = 1.0 / painter.ctx().pixels_per_point();
-    // Back to front, by the same key the wireframe sorts on: `depth::Order`'s
-    // own `x + y`, then height. **This is where decision 39.2 will bite** — one
-    // key per solid is right only while a solid stands on one tile, and step
-    // 23.5's solids will not. Translucent and depth-free, the cost of a wrong
-    // order here is a shade rather than a wrong picture, which is exactly why
-    // that answer was the one taken first.
-    let mut standing: Vec<(i32, i32, &openshard_client_render::occlusion::Surface)> = surfaces_of(occluders)
-        .filter(|(_, _, s)| stands(s.top, floor))
-        .collect();
-    standing.sort_by_key(|(x, y, surface)| (x + y, surface.bottom, surface.top));
-
-    for (x, y, surface) in standing {
-        // The grid reaches past the map's corner by the widest pool's reach, so
-        // a tile of it can be off the map — skipped rather than folded onto the
-        // edge, for `Occlusion::add`'s reason.
-        if u16::try_from(x).is_err() || u16::try_from(y).is_err() {
-            continue;
-        }
-        // The clamp `Occlusion::bytes` makes on the way to the shader, so a
-        // solid is drawn where the shader believes it is rather than where the
-        // map says. A static's top is `z + height` and need not fit an `i8`.
-        let clamp = |z: i32| z.clamp(i32::from(i8::MIN), i32::from(i8::MAX));
-        let surface = openshard_client_render::occlusion::Surface {
-            bottom: clamp(surface.bottom),
-            top: clamp(surface.top),
-            ..*surface
-        };
-        let faces = surface.solid(x, y).faces(camera);
-        // Off screen before a shape is allocated: at the widest zoom most of the
-        // grid is outside the viewport, and this is the difference between
-        // building three polygons for each of those and none.
-        let bounds =
-            faces
-                .iter()
-                .flat_map(|(_, corners)| corners)
-                .fold(egui::Rect::NOTHING, |rect, corner| {
-                    rect.union(egui::Rect::from_pos(
-                        viewport_origin + egui::vec2(corner.x * scale, corner.y * scale),
-                    ))
-                });
-        if !clip.intersects(bounds) {
-            continue;
-        }
-        let (red, green, blue) = kind_colour(&surface);
-        for (side, corners) in faces {
-            // The face's own shade, by which way it looks — the same fixed light
-            // the wireframe's faces are lit by, so the two views agree about
-            // which side of a box is which.
-            let shade = match side {
-                Side::Top => 1.0,
-                Side::East => EAST_SHADE,
-                Side::South => SOUTH_SHADE,
-            };
-            let tone = |c: f32| (c * shade) as u8;
-            // Lighter than the wireframe's fill: a solid covers three times the
-            // area a plane does and the art underneath is what the whole view is
-            // read against. A near-black edge under it for the wireframe's
-            // reason — two faces of one box meet at a line, and two tones alone
-            // leave finding it to the eye.
-            let fill = egui::Color32::from_rgba_unmultiplied(tone(red), tone(green), tone(blue), 110);
-            let edge = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(10, 8, 16, 200));
-            let points = corners
-                .iter()
-                .map(|corner| viewport_origin + egui::vec2(corner.x * scale, corner.y * scale))
-                .collect();
-            painter.add(egui::Shape::convex_polygon(points, fill, edge));
-        }
-    }
-}
-
-/// How much of its colour a face keeps, by which way it looks: the fixed light
-/// this view is lit by, from above and to the east.
-///
-/// Not a simulation of anything and not the world's own sun — a diagnostic that
-/// changed brightness with the time of day would be unreadable at dusk. What it
-/// is for is that two faces meeting at one line are two tones, so an edge is
-/// visible without a stroke having to say where it is.
-const EAST_SHADE: f32 = 0.78;
-/// The other face a camera can see, a step darker.
-const SOUTH_SHADE: f32 = 0.56;
 
 /// Which two corners of a tile's diamond a panel on `named` stands between.
 ///

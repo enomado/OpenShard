@@ -70,6 +70,7 @@ use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Lighting};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
+use openshard_client_render::solids::SolidsRenderer;
 use openshard_client_render::{ground, statics};
 use openshard_protocol::world::Point;
 use openshard_uofiles::art::Art;
@@ -494,6 +495,52 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         "the flames changed {changed} of {total} pixels: the `night` reading is a measurement of `dark`"
     );
 
+    // What the solids view costs on this same frame — `docs/lighting.md` step
+    // 23.0's open DoD item, and the reason that view is a pass rather than an
+    // overlay drawn by the client's UI toolkit: a picture drawn by egui appears
+    // in none of the tests that take the pictures, and a cost drawn by egui
+    // cannot be timed beside the passes it runs with.
+    //
+    // Measured the way the cases above are — a warm batch, then the fastest of
+    // several — and over the frame the blit has already lit, which is where it
+    // draws in the app. The list is built once and outside the timing: what is
+    // being asked is what the *pass* costs, and the walk that produces the list
+    // is `light::collect`'s cost, already reported above.
+    let boxes = openshard_client_render::solid::standing(&night.occlusion, BRITAIN.z);
+    let mut solids_pass = SolidsRenderer::new(&device, format);
+    let solids_frame = openshard_client_render::solids::Frame {
+        target: &surface_view,
+        size: VIEWPORT,
+        rect: ViewportRect {
+            x: 0,
+            y: 0,
+            width: VIEWPORT.0,
+            height: VIEWPORT.1,
+        },
+    };
+    let mut drawn = 0;
+    let mut solids_batch = |passes: u32| {
+        let start = Instant::now();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        for _ in 0..passes {
+            drawn = solids_pass.render(&device, &queue, &mut encoder, solids_frame, &camera, &boxes);
+        }
+        queue.submit([encoder.finish()]);
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("waiting on our own submission");
+        start.elapsed()
+    };
+    solids_batch(REPEATS);
+    let mut solids_fastest = Duration::MAX;
+    for _ in 0..BATCHES {
+        solids_fastest = solids_fastest.min(solids_batch(REPEATS));
+    }
+    let solids = Reading {
+        what: "solids",
+        per_frame: solids_fastest / REPEATS,
+    };
+
     // A picture for a person, beside the numbers, because step 6 asks for both.
     //
     // `OPENSHARD_FRAME_VIEW` picks which of `debug::View`'s pictures to write,
@@ -509,14 +556,23 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .and_then(|v| openshard_client_render::debug::View::ALL.get(v).copied());
-        let frame = match wanted {
-            Some(view) => {
-                let mut shown = night.clone();
-                shown.view = view;
-                picture(&shown)
-            }
-            None => lit.clone(),
-        };
+        let mut shown = night.clone();
+        if let Some(view) = wanted {
+            shown.view = view;
+        }
+        // Redrawn here rather than reusing `lit`, because what follows draws
+        // *over* the surface and the surface currently holds whichever picture
+        // was taken last.
+        let mut frame = picture(&shown);
+        // And the geometry over it, when asked: `OPENSHARD_FRAME_SOLIDS=1`. This
+        // is the picture step 23.0 is judged on, and the whole reason it can be
+        // taken here rather than by pointing a camera at a window.
+        if std::env::var_os("OPENSHARD_FRAME_SOLIDS").is_some() {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            solids_pass.render(&device, &queue, &mut encoder, solids_frame, &camera, &boxes);
+            queue.submit([encoder.finish()]);
+            frame = read_back(&device, &queue, &surface);
+        }
         let mut ppm = format!("P6\n{} {}\n255\n", VIEWPORT.0, VIEWPORT.1).into_bytes();
         for pixel in frame.chunks_exact(4) {
             ppm.extend_from_slice(&pixel[..3]);
@@ -600,6 +656,16 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             100.0 * over / floor.per_frame.as_secs_f64(),
         );
     }
+    // Beside the table rather than in it: the cases above are one pass with one
+    // thing changed, and this is a different pass over the same frame — putting
+    // it in the same column as `dark` would invite a percentage that compares
+    // two unrelated things.
+    eprintln!(
+        "\nsolids over the same frame: {:.3}ms, {drawn} of {} boxes drawn — \
+         `docs/lighting.md` step 23.0",
+        solids.per_frame.as_secs_f64() * 1e3,
+        boxes.len(),
+    );
 }
 
 /// Move a flame out of every fragment's reach, keeping everything else about it.

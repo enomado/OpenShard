@@ -517,6 +517,31 @@ impl Surface {
         cutaway.shows_at(self.bottom, self.roof)
     }
 
+    /// Whether a view of the grid drawn for somebody standing at `floor` should
+    /// show this surface.
+    ///
+    /// The first frame of the wireframe overlay was a dock, and it was **2,011
+    /// boxes**: a deck plank stops an arrow — a floor is what you cannot shoot
+    /// *through* to the storey above — so every tile of the pier is a thin slab
+    /// in the grid, and the picture was a red hatch over the whole ground with
+    /// the walls somewhere inside it. Nothing about it was wrong and nothing in
+    /// it was readable.
+    ///
+    /// So a view draws what is above the floor the *player* stands on. It is a
+    /// datum and not a threshold: the deck underfoot has its top at exactly the
+    /// height the body stands at and drops out, a wall beside it is twenty units
+    /// tall and stays, the floor of the storey above stays because it is a lid,
+    /// and the cellar below drops. Nothing is invented and nothing is tuned.
+    ///
+    /// What it hides, a view has to count and say — a picture that silently
+    /// drops most of a grid reads as a grid with nothing in it, which is the one
+    /// failure an instrument may not have. See the backlog entry in
+    /// `docs/lighting.md` about a floor that is cut and a hole in a floor
+    /// looking identical.
+    pub fn stands(&self, floor: i8) -> bool {
+        self.top > i32::from(floor)
+    }
+
     /// The box this surface would be, on the tile it was found on.
     ///
     /// **A drawing, not a measurement**, and the distinction is the whole of why
@@ -539,16 +564,23 @@ impl Surface {
         use crate::camera::WorldSpot;
 
         let (x, y) = (f64::from(x), f64::from(y));
+        // The same clamp [`Occlusion::bytes`] makes on the way to the shader: a
+        // static's top is `z + height` and does not have to fit an `i8`, and a
+        // wall reaching past the top of the world may as well stop there. Made
+        // here so that the box is drawn where the *shader* believes it is rather
+        // than where the map says — which is the whole point of a view of the
+        // grid, and it is why this clamp is not the caller's to remember.
+        let height = |z: i32| f64::from(z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)));
         let (mut low, mut high) = (
             WorldSpot {
                 x,
                 y,
-                z: f64::from(self.bottom),
+                z: height(self.bottom),
             },
             WorldSpot {
                 x: x + 1.0,
                 y: y + 1.0,
-                z: f64::from(self.top),
+                z: height(self.top),
             },
         );
         match self.edges {
