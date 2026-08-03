@@ -68,6 +68,41 @@ struct Cli {
     /// why.
     #[arg(long, env = "OPENSHARD_TTF_FONT", value_name = "FILE")]
     ttf_font: Option<PathBuf>,
+
+    /// Open the camera on this tile instead of the default one.
+    ///
+    /// `X,Y` in the facet's own coordinates, which is how every plan in `docs/`
+    /// names a place — "the staircase at 1493,1639". Offline it is simply where
+    /// the viewer looks; logged in it only moves the eye, and the first thing
+    /// that relocks the camera on the character (Home) undoes it.
+    #[arg(long, value_name = "X,Y", value_parser = tile)]
+    at: Option<(u16, u16)>,
+
+    /// Draw the lighting's occlusion grid as solids from the first frame.
+    ///
+    /// The same view F5 toggles — `docs/lighting.md` step 23.0. As a flag
+    /// because a picture of a place is taken with a command line and not with a
+    /// hand on a checkbox, and because the two together (`--at` and this) are
+    /// what make one reproducible.
+    #[arg(long)]
+    solids: bool,
+}
+
+/// `X,Y` off the command line, as a tile.
+///
+/// A `Result` because this is outside the process — the same rule the wire's
+/// bytes follow — and the message is what a person sees, so it names the form
+/// rather than the parser's own complaint.
+fn tile(text: &str) -> Result<(u16, u16), String> {
+    let (x, y) = text
+        .split_once(',')
+        .ok_or_else(|| format!("expected a tile as X,Y, got {text:?}"))?;
+    let read = |part: &str, axis: &str| {
+        part.trim()
+            .parse::<u16>()
+            .map_err(|error| format!("{axis} of {text:?}: {error}"))
+    };
+    Ok((read(x, "the x")?, read(y, "the y")?))
 }
 
 /// The login this run was asked to make, if it was asked for one.
@@ -97,5 +132,9 @@ fn main() -> ExitCode {
         eprintln!("logging in to {}", cli.server);
         (Tcp::at(cli.server), plan)
     });
-    openshard_client_app::run(&cli.client, shard, cli.ttf_font)
+    let opening = openshard_client_app::Opening {
+        at: cli.at,
+        solids: cli.solids,
+    };
+    openshard_client_app::run(&cli.client, shard, cli.ttf_font, opening)
 }

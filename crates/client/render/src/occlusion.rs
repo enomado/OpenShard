@@ -516,7 +516,79 @@ impl Surface {
     fn drawn(&self, cutaway: &Cutaway) -> bool {
         cutaway.shows_at(self.bottom, self.roof)
     }
+
+    /// The box this surface would be, on the tile it was found on.
+    ///
+    /// **A drawing, not a measurement**, and the distinction is the whole of why
+    /// this returns a value instead of the surface simply *being* one. What the
+    /// walk stores today is a plane and a span; what a person needs to *look* at
+    /// is a solid, because a plane seen edge-on from a fixed camera is a line and
+    /// a wall the eye cannot find is a wall this view failed to report. So the
+    /// two nominal numbers below give a plane the thickness it is drawn with, and
+    /// they change no answer any ray gets — see `docs/lighting.md` step 23.0.
+    ///
+    /// Step 23.1 is where a solid becomes what the world *owns*, and it must
+    /// re-decide these two numbers rather than inherit them: at that point they
+    /// are geometry a ray is tested against, and the test that a nominal
+    /// thickness has to pass is that no scene moves.
+    ///
+    /// The `z` span is `bottom..top` and not `bottom..top + 1`, matching what the
+    /// wireframe has always drawn, so the two views cannot disagree about how
+    /// tall a wall is while they stand beside each other.
+    pub fn solid(&self, x: i32, y: i32) -> crate::solid::Solid {
+        use crate::camera::WorldSpot;
+
+        let (x, y) = (f64::from(x), f64::from(y));
+        let (mut low, mut high) = (
+            WorldSpot {
+                x,
+                y,
+                z: f64::from(self.bottom),
+            },
+            WorldSpot {
+                x: x + 1.0,
+                y: y + 1.0,
+                z: f64::from(self.top),
+            },
+        );
+        match self.edges {
+            // A lid — a floor, a roof, a plank. The whole tile across, and a
+            // slab hanging under the height it lies at: it *is* a plane, and
+            // drawing it as one leaves a floor and the tile below it telling the
+            // same story. The thickness is downwards because the surface a ray
+            // is stopped by is the top one.
+            0 => low.z = high.z - LID_THICKNESS,
+            // A body. Already a box, and the only kind that was one before this.
+            EDGE_ANY => {}
+            // A panel: a slab on the named edge, lying *inside* its tile with its
+            // outer face on the plane the walk tests. Inside rather than
+            // straddling, so that two walls on the shared edge of neighbouring
+            // tiles do not draw one solid inside another and make a joint look
+            // like a doubled wall — which is a real defect and would then be
+            // invisible against a drawing artefact.
+            EDGE_NORTH => high.y = y + PANEL_THICKNESS,
+            EDGE_SOUTH => low.y = y + 1.0 - PANEL_THICKNESS,
+            EDGE_WEST => high.x = x + PANEL_THICKNESS,
+            _ => low.x = x + 1.0 - PANEL_THICKNESS,
+        }
+        crate::solid::Solid { min: low, max: high }
+    }
 }
+
+/// How thick a panel is drawn, in tiles.
+///
+/// A fifth of a tile: about nine screen pixels across the diamond at 1:1, which
+/// is enough that the top face reads as a top face and little enough that a
+/// street of houses still looks like a street. Chosen to be *seen* — the art
+/// cannot measure a wall's depth (decision 3) and nothing has authored one yet
+/// (step 23.3), so any number here would be invented and this one says so.
+pub const PANEL_THICKNESS: f64 = 0.2;
+
+/// And how thick a lid is drawn, in `z` units.
+///
+/// Two, which is 8 pixels of visible side band at 1:1 — the same argument as
+/// [`PANEL_THICKNESS`], on the axis the projection squashes by five and a half.
+pub const LID_THICKNESS: f64 = 2.0;
 
 /// One tile's worth of occlusion: how much it stops, and between which heights.
 ///

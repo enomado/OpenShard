@@ -142,15 +142,85 @@ pub struct ViewPixel {
     pub y: i32,
 }
 
+/// A place in the world's own coordinates, between the tiles as well as on them.
+///
+/// The world the map states is a lattice — a tile is a whole `x`, a whole `y`
+/// and a whole `z` — but the *geometry* standing in it is not: a wall of stated
+/// thickness has faces a fifth of a tile apart, and a solid spanning several
+/// tiles has corners on none of them. This is that place, in the same units the
+/// map uses, so a number here is read the way a number in `docs/lighting.md` is
+/// read: `x` and `y` in tiles, `z` in the map's own height units.
+///
+/// **The lattice is the tiles' corners and not their centres**, which is the one
+/// thing here that has to be got right on the way in. Tile `(x, y)` is the
+/// square `x..x+1` by `y..y+1`, so its four corners are whole numbers and its
+/// centre is a half — the other way round from [`Point`], where the whole number
+/// *is* the centre and [`project`] measures from there. Choosing corners is what
+/// makes a solid's extent read the same way the map states one: a body fills its
+/// tile, `x..x+1`, rather than reaching half a tile out of it in each direction.
+/// [`WorldSpot::centre`] is the bridge, and it is the only place the half lives.
+///
+/// `f64` for [`WorldPoint`]'s reason — the far corner of the map is 157,000
+/// virtual pixels out, where an `f32` has resolved to about a hundredth of a
+/// pixel and two roundings of one position can already disagree.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct WorldSpot {
+    /// East, in tiles.
+    pub x: f64,
+    /// South, in tiles.
+    pub y: f64,
+    /// Up, in the map's height units.
+    pub z: f64,
+}
+
+impl WorldSpot {
+    /// The middle of the tile a [`Point`] names — the place [`project`]
+    /// projects it to.
+    ///
+    /// The half-tile on each ground axis is the corner lattice meeting the
+    /// centre lattice, and nothing but `z` crosses unchanged: heights are
+    /// measured from the same zero in both.
+    pub fn centre(point: Point) -> WorldSpot {
+        WorldSpot {
+            x: f64::from(point.x) + 0.5,
+            y: f64::from(point.y) + 0.5,
+            z: f64::from(point.z),
+        }
+    }
+}
+
 /// Where the centre of a tile's diamond falls in world pixel space.
+///
+/// [`project_exact`] at a whole lattice point, and it delegates to it rather
+/// than repeating the arithmetic: the two are the same projection or geometry
+/// placed between the tiles lands somewhere a sprite would not. The delegation
+/// costs nothing in accuracy — every term is an integer under 2^24 in `f64`, so
+/// the truncation on the way back is exact, and the test beside this pins that
+/// against the whole map.
 pub fn project(point: Point) -> WorldPixel {
-    // Widened before subtracting: `x - y` is negative across half the map, and
-    // both are `u16` on the wire.
-    let x = i32::from(point.x);
-    let y = i32::from(point.y);
+    let at = project_exact(WorldSpot::centre(point));
     WorldPixel {
-        x: (x - y) * HALF_WIDTH,
-        y: (x + y) * HALF_HEIGHT - i32::from(point.z) * Z_STEP,
+        x: at.x as i32,
+        y: at.y as i32,
+    }
+}
+
+/// The same projection for a place that is not a tile: [`project`]'s float core.
+///
+/// One arithmetic for the lattice and for everything standing on it. The
+/// anisotropy is the part to keep in mind on the way in — a step of one in `x`
+/// is 22 pixels across and 22 down, and a step of one in `z` is 4 up, so a solid
+/// authored with equal numbers on the three axes is five and a half times too
+/// tall. That scale is part of the projection and is carried, never corrected;
+/// see `docs/lighting.md` decision 39.1.
+pub fn project_exact(at: WorldSpot) -> WorldPoint {
+    WorldPoint {
+        x: (at.x - at.y) * f64::from(HALF_WIDTH),
+        // The half tile subtracted here is [`WorldSpot`]'s corner lattice, not a
+        // fudge: at the corner `(x, y)` the sum `x + y` is one less than at the
+        // centre of tile `(x, y)`, so without it every solid would be drawn half
+        // a tile down the screen from the sprite it is meant to contain.
+        y: (at.x + at.y - 1.0) * f64::from(HALF_HEIGHT) - at.z * f64::from(Z_STEP),
     }
 }
 
@@ -718,6 +788,18 @@ impl Camera {
     /// painter can use. `f32` because a highlight is drawn at whatever
     /// magnification the blit lands on, not on a texel grid.
     pub fn to_viewport(&self, at: ViewPixel) -> Vec2 {
+        self.to_viewport_exact(Vec2::new(at.x as f32, at.y as f32))
+    }
+
+    /// The same for a render-space point that is not on a whole virtual pixel.
+    ///
+    /// [`Camera::to_viewport`]'s core, and the reason it is split out: geometry
+    /// that is not on the tile lattice — a slab a fifth of a tile thick — has
+    /// corners between the virtual pixels, and rounding each one to reach the
+    /// viewport would put a face's two ends on different fractions of the same
+    /// plane. The integer entry point is this one at whole coordinates, so there
+    /// is no second projection to disagree with.
+    pub fn to_viewport_exact(&self, at: Vec2) -> Vec2 {
         // From `projection`'s origin and not from half the extent, so the eye's
         // sub-virtual-pixel offset is in here too. Without it this lands where
         // the world *would* be if the camera were on a whole virtual pixel,
@@ -731,8 +813,8 @@ impl Camera {
         // the transform is not.
         let scale = self.zoom.numerator() as f32 / self.zoom.denominator() as f32;
         Vec2::new(
-            (at.x as f32 - projection.origin.x) * scale + self.width as f32 / 2.0,
-            (at.y as f32 - projection.origin.y) * scale + self.height as f32 / 2.0,
+            (at.x - projection.origin.x) * scale + self.width as f32 / 2.0,
+            (at.y - projection.origin.y) * scale + self.height as f32 / 2.0,
         )
     }
 
@@ -888,6 +970,57 @@ mod tests {
             (at.x as f32 - projection.origin.x) * projection.scale + target.0 as f32 / 2.0,
             (at.y as f32 - projection.origin.y) * projection.scale + target.1 as f32 / 2.0,
         )
+    }
+
+    /// [`project`] now goes through [`project_exact`], and this is the gate on
+    /// that: the integer arithmetic it used to do, written out once more here,
+    /// against the float path over the map's whole extent and the whole of `z`.
+    ///
+    /// Not a tautology and not a formality — the delegation is only free because
+    /// every term stays an exact integer in `f64` (the largest is 7,168 × 22,
+    /// well inside 2^53) and because [`WorldSpot`]'s corner lattice is half a
+    /// tile off the centre one. Either claim failing shows up here, and the
+    /// second one shows up as exactly 22 pixels.
+    #[test]
+    fn the_float_projection_is_the_integer_one_at_a_whole_tile() {
+        // The corners of the map, the middle, and a tile whose `x + y` is odd on
+        // purpose: the half tile lives in that sum.
+        for (x, y) in [
+            (0, 0),
+            (7167, 7167),
+            (0, 7167),
+            (7167, 0),
+            (1500, 1601),
+            (4096, 4096),
+        ] {
+            for z in [i8::MIN, -50, 0, 1, 27, i8::MAX] {
+                let point = Point::new(x, y, z);
+                let want = WorldPixel {
+                    x: (i32::from(x) - i32::from(y)) * HALF_WIDTH,
+                    y: (i32::from(x) + i32::from(y)) * HALF_HEIGHT - i32::from(z) * Z_STEP,
+                };
+                assert_eq!(project(point), want, "at {point:?}");
+            }
+        }
+    }
+
+    /// And the other direction of the same seam: the tile a [`Point`] names is
+    /// the *centre* of the square its four corners are whole numbers at, so the
+    /// corner and the centre differ by half a tile on each ground axis and by
+    /// nothing at all in `z`.
+    #[test]
+    fn a_tile_centre_sits_half_a_tile_from_its_own_corner() {
+        let point = Point::new(1500, 1600, 12);
+        let centre = project_exact(WorldSpot::centre(point));
+        let corner = project_exact(WorldSpot {
+            x: f64::from(point.x),
+            y: f64::from(point.y),
+            z: f64::from(point.z),
+        });
+        // Straight up the screen by half a tile's height: `(x - y)` is unchanged
+        // by adding a half to both, and `(x + y)` gains one.
+        assert_eq!(centre.x, corner.x);
+        assert_eq!(centre.y - corner.y, f64::from(HALF_HEIGHT));
     }
 
     /// Unmagnified, the whole of D11 is a no-op: a virtual pixel is a real one,

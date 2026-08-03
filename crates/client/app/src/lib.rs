@@ -174,6 +174,26 @@ use winit::window::{Window, WindowId};
 /// Where the camera starts: Britain, by the bank.
 const START: Point = Point::new(1495, 1629, 0);
 
+/// What a run opens on: the state a person would otherwise have to reach by
+/// hand before the picture they came to take is on the screen.
+///
+/// Every field is a *diagnostic's* starting position and never a gameplay
+/// setting — the plans in `docs/` name places and views ("the staircase at
+/// 1493,1639, as solids"), and reaching one meant walking there and finding a
+/// checkbox, which is two variables moved between the picture and the claim it
+/// is about. Nothing here is remembered: this is where a window opens, not what
+/// it is.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Opening {
+    /// The tile to open the camera on, if not [`START`]. See the field's use in
+    /// [`run`] for what it does when there is a shard.
+    pub at: Option<(u16, u16)>,
+    /// Whether the occlusion grid is drawn as solids from the first frame —
+    /// `docs/lighting.md` step 23.0, F5 in the window, and the checkbox in the
+    /// dev panel.
+    pub solids: bool,
+}
+
 /// The facet to open. Felucca: `0x1B` carries the facet's *size* and not its
 /// number, so a shard serving another one is noticed by the size test in
 /// [`App::entered`] rather than followed.
@@ -325,7 +345,9 @@ pub fn run<D: Dial + Send + 'static>(
     dir: &Path,
     shard: Option<(D, Plan)>,
     ttf_font: Option<PathBuf>,
+    opening: Opening,
 ) -> ExitCode {
+    let Opening { at, solids } = opening;
     // Reading the whole facet takes a moment and a few hundred megabytes. That
     // is the shape `uofiles` has today — see the backlog in docs/client.md — and
     // it is honest to do it up front rather than to stall on the first frame.
@@ -494,10 +516,18 @@ pub fn run<D: Dial + Send + 'static>(
 
     // Where the character stands at boot: the camera's tile, at the height the
     // ground there actually is.
+    //
+    // `at` overrides [`START`] and is for looking at a *place* — the plans in
+    // `docs/` name coordinates ("the staircase at 1493,1639"), and until this
+    // existed the only way to reach one was to walk there, which needs a shard
+    // and puts a body in front of the thing being looked at. It moves the camera
+    // and nothing else: logged in, the shard still says where the character is
+    // and the eye returns to them the moment anything relocks it (Home).
+    let (start_x, start_y) = at.unwrap_or((START.x, START.y));
     let start = Point::new(
-        START.x,
-        START.y,
-        map.land(START.x, START.y).map_or(START.z, |cell| cell.z),
+        start_x,
+        start_y,
+        map.land(start_x, start_y).map_or(START.z, |cell| cell.z),
     );
 
     // The connection, if this run was asked for one. Started before the window
@@ -547,7 +577,7 @@ pub fn run<D: Dial + Send + 'static>(
         equip_conv,
         // The device's own limit replaces WebGL2's floor once there is a device
         // to ask; the floor is the smallest thing this has to run on.
-        control: Control::new(Camera::new(START, 1024, 768), 2048, STARTUP_RIG),
+        control: Control::new(Camera::new(start, 1024, 768), 2048, STARTUP_RIG),
         zoom_limit_reported: false,
         // 400 is the male human body. Its group and frame come from the crowd
         // on the first redraw, which is also what decides that a placeholder
@@ -650,6 +680,7 @@ pub fn run<D: Dial + Send + 'static>(
         dragging: None,
         show_terrain: false,
         show_occluders: false,
+        show_solids: solids,
         occlusion_bake: occlusion::bake::Bake::new(),
         // The item under the cursor, ringed and lit, and the ground otherwise:
         // see `shell::HighlightTarget` and `shell::HighlightStyle`.
@@ -1370,6 +1401,15 @@ struct App {
     /// overlay: the grid is a second walk of the map's statics over the same
     /// bounds the frame's lighting walks a moment later.
     show_occluders: bool,
+    /// Whether the HUD is drawing the same grid as *solids* — decision 39 and
+    /// step 23.0 of `docs/lighting.md`, and [`shell::draw_solids`](crate::shell).
+    ///
+    /// Beside the wireframe rather than instead of it, and that is the design: a
+    /// solid hides what stands behind it and a wireframe shows it, so the two
+    /// answer different halves of "is the geometry where I think it is". Both on
+    /// at once is a legitimate reading and is what the outline over a filled face
+    /// is for.
+    show_solids: bool,
     /// The blocks of the occlusion grid built for earlier frames — see
     /// [`occlusion::bake`](openshard_client_render::occlusion::bake) and
     /// `docs/lighting.md`'s step 21.5.
@@ -1642,6 +1682,16 @@ impl ApplicationHandler<link::Update> for App {
                     // fires are doing without a beam swinging across them.
                     KeyCode::F7 => {
                         self.lantern = !self.lantern;
+                        true
+                    }
+                    // The occlusion grid as solids — step 23.0. A key beside the
+                    // checkbox for the reason F10 and F8 are keys: what is being
+                    // read is the difference between two pictures of one
+                    // instant, here the world with the geometry drawn over it
+                    // and the world without, and a hand that has to find a
+                    // checkbox has moved the camera by the time it is back.
+                    KeyCode::F5 => {
+                        self.show_solids = !self.show_solids;
                         true
                     }
                     KeyCode::F11 => {
@@ -3139,6 +3189,9 @@ impl App {
         if let Some(show) = request.show_occluders {
             self.show_occluders = show;
         }
+        if let Some(show) = request.show_solids {
+            self.show_solids = show;
+        }
         if let Some(target) = request.highlight {
             self.highlight = target;
         }
@@ -3284,6 +3337,7 @@ impl App {
                 .show_terrain
                 .then(|| self.terrain_overlay(camera, hover.as_ref())),
             show_occluders: self.show_occluders,
+            show_solids: self.show_solids,
             // The grid the lighting will build a few lines later in the same
             // frame, built here a second time rather than kept from the last
             // one: the HUD is drawn before the world passes, and a wireframe a
@@ -3295,7 +3349,7 @@ impl App {
             // by the widest pool's reach, and a box drawn over a rectangle the
             // shader did not walk would be a picture of this overlay's own
             // bounds rather than of the lighting's.
-            occluders: self.show_occluders.then(|| {
+            occluders: (self.show_occluders || self.show_solids).then(|| {
                 occlusion::collect(
                     &self.map,
                     &self.items,

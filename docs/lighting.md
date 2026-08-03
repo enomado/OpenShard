@@ -9,7 +9,26 @@ copied.
 
 ## Where the next session starts
 
-**Nothing was built this session. The plan was re-cut, and what re-cut it is
+**Step 23.0 has landed: the solid is drawn, in the world, where it stands.** F5
+in the client, or `--solids` on the offline viewer, and `--at X,Y` to open on a
+place this plan names. The geometry is `render/src/solid.rs` and it knows nothing
+about who paints it — decision 39.6 is the finding that split it that way, and
+39.7 is the half-tile trap that was found on the way.
+
+**Next is 23.1, the migration**, and it now has the instrument it was waiting
+for: the picture below to compare against, and a person able to stand in a place
+and see a solid rather than infer one from twelve strokes. Read the backlog under
+"Found while drawing the solid" first — two of its four items (the `stands`
+filter, and no test tying a solid's face to the plane the shader tests) are about
+the instrument's own honesty, and 23.1 is the step that will be judged with it.
+
+The cost reading at the widest zoom is the one piece of 23.0's DoD left open: it
+needs a wheel and a headless window has no input. At 1:1 in a debug build the
+frame is vsync-bound with 1,524 surfaces on screen.
+
+Everything below is the session before it.
+
+**Nothing was built that session. The plan was re-cut, and what re-cut it is
 decision 38: the tile grid stops being a container and becomes an index.**
 
 The question that started it was about stairs — a tread is a shape the surface
@@ -1898,6 +1917,39 @@ ordering or the picture stops matching the client the engine exists to serve. So
 this is not a renderer on its way to being general — it is a three-dimensional
 scene with a fixed camera, sprite primitives, and now a solid one beside them.
 
+**39.6 The pass is not what makes it a solid; the projection is.** Built, and the
+finding is which half of 39 was the work. Everything above argues that a GPU pass
+for boxes is cheap — and it is — but the first version of step 23.0 draws its
+boxes through the *egui painter*, beside the wireframe, and looks right. What
+made that possible is that `Camera::project` already had a float core waiting to
+be named: `project_exact` takes a place between the tiles, `project` is it at a
+whole one, and one test pins the two together over the whole map. Twelve points
+through that, three convex polygons out, and the geometry a real pass would need
+is already written and already looked at.
+
+So the split to hold onto is: **the geometry is the durable half and the pass is
+an implementation of it.** `render/src/solid.rs` knows nothing about egui or
+wgpu; it takes a box in world coordinates and hands back three faces in viewport
+pixels. A `wgpu` pass replaces the painter and inherits geometry that has been on
+a screen, which is the right order — the alternative was writing a pipeline in
+order to find out whether the corner order was right.
+
+Two things the painter route genuinely cannot do, so that its ceiling is stated
+rather than discovered: a solid can never be **occluded by the sprites in front
+of it** (the overlay is painted after the blit, so 39.2's second answer is out of
+reach), and nothing about it can be **captured by `render`'s frame tests** — it
+is a window or nothing. Neither is wanted for the instrument; both are wanted the
+day a solid stops being a diagnostic.
+
+**39.7 The lattice is the corners, and the tiles are the centres.** The one trap
+the projection had left in it. `project` takes a `Point` and returns where that
+tile's diamond is *centred*, so a solid whose extent is stated in the same
+numbers — "tile `(x, y)`, from `x` to `x+1`" — is half a tile off, in both ground
+axes at once, which on screen is one clean step down. `WorldSpot` is therefore
+the corner lattice and `WorldSpot::centre` is the only place the half lives.
+Written down because it is invisible in a wireframe of single tiles and obvious
+the moment a box has to contain a sprite.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -2599,7 +2651,7 @@ scene with a fixed camera, sprite primitives, and now a solid one beside them.
       first and is not bookkeeping: it is the oracle the rest is judged with.
       23.1 is deliberately invisible, and that is the property being bought.
 
-      0. **The solid, drawn — in the world, not against a sprite.** Decision 39:
+      0. **[x] The solid, drawn — in the world, not against a sprite.** Decision 39:
          a pass that draws a box as a box, in the frame, where it stands.
          Translucent and over the world, so the static's own sprite is visible
          *inside* the solid that claims to contain it and the top face makes its
@@ -2633,6 +2685,64 @@ scene with a fixed camera, sprite primitives, and now a solid one beside them.
          a person's step and not a test's; and a cost reading with the view on at
          the widest zoom, because a translucent overlay over a town is overdraw
          and the number decides whether it stays a debug view or gets a bound.
+
+         **What landed**, and the one place it differs from the paragraph above:
+         the boxes are painted by the **egui painter** beside the wireframe and
+         not by a `wgpu` pass. Decision 39.6 is the finding that decided it — the
+         durable half of decision 39 is the *geometry*, and once
+         `Camera::project` had its float core named (`project_exact`,
+         `WorldSpot`, `Camera::to_viewport_exact`) the whole primitive was
+         `render/src/solid.rs`: a box in world coordinates, three faces out, no
+         knowledge of who paints them. A pass now inherits geometry that has been
+         on a screen rather than being written in order to find out whether the
+         corner order was right. What that costs is stated in 39.6.
+
+         Built:
+         - `camera::WorldSpot` and `project_exact` — a place between the tiles,
+           on the corner lattice (39.7), with `project` delegating to it and a
+           test pinning the two over the whole map;
+         - `solid::Solid` and `Solid::faces` — the three faces, in the order
+           `Camera::tile_facet` uses, with a test that a unit solid's top *is*
+           its tile's diamond;
+         - `occlusion::Surface::solid` — the drawing-only nominal thickness
+           (`PANEL_THICKNESS` a fifth of a tile, `LID_THICKNESS` two `z`), which
+           step 23.1 must re-decide rather than inherit;
+         - `shell::draw_solids` behind its own checkbox and F5, sharing the
+           wireframe's colour table (`kind_colour`) so the two views cannot
+           disagree about what is a panel;
+         - `--at X,Y` and `--solids` on the offline viewer, and
+           `client_app::Opening` behind them: this plan names places, and until
+           now the only way to reach one was to walk there with a shard running.
+
+         **What was seen**, at 1:1 over Britain, in a debug build:
+         - **The staircase at `(1493, 1639)` is a stepped mass of whole-tile
+           violet bodies** — nine of them, each a full tile of solid from the
+           ground to its own step's height, so the shape on screen is a ziggurat
+           and not a stair. This is step 23.5's headline defect, and it is now a
+           picture rather than an argument.
+         - **A wall's thickness reads.** A run of panels is a ribbon with a
+           visible top face, and where two runs meet the joint is legible — which
+           is the thing twelve strokes could not show.
+         - **Ends and corners of wall runs are whole-tile bodies** (violet posts
+           standing in red ribbons), not panels. Worth knowing before 23.5
+           argues about corners: some of them are already solid by accident.
+         - **The tile the staircase descends through carries no solid at all**,
+           and the art there is the black opening the client draws for a hole in
+           a floor. Correct — nothing stands on it — and worth having seen: it
+           is a tile a ray passes through vertically with nothing to stop it,
+           which is what a cellar looks like from above.
+         - **The house's windows and doors are panes** (cyan) standing in the
+           same plane as the wall's panels, and they read as glass in a run of
+           brick. Nothing here is a defect; it is the first picture of decision
+           3's opacity actually being about a *place*.
+
+         **The cost**, and the part of the DoD left open: at 1:1 with 1,524
+         standing surfaces on screen — 4,572 polygons a frame — a **debug** build
+         stays vsync-bound at 16 ms, so the view is not close to paying for
+         itself at this zoom. The widest-zoom reading was **not taken**: it needs
+         a wheel, and a headless window has no input. It is a person's step, it
+         is small, and it is the one number that decides whether this view ever
+         needs a bound.
       1. **The ownership, with the geometry held still.** `occlusion::Surface`
          becomes `Solid` — a box in world coordinates plus the fields it already
          has (`opacity`, the hole flag) — and a cell holds `(offset, count)` into
@@ -2843,6 +2953,37 @@ Found while re-cutting the plan around decision 38 (nothing was built):
   wherever the top is visible. The way to settle it is the instrument, not an
   argument — score a box of thickness `t` against the sprite and take the best
   `t`, exactly as `facing::best_prism` already takes the best prism.
+Found while drawing the solid (step 23.0):
+
+- **The solids view filters by `stands`, so a house's floor is invisible from
+  its own floor.** `shell::stands` drops everything at or below the camera's
+  feet, which is right for a wireframe of what shadows *you* and wrong for a
+  view whose subject is geometry: standing in a room at `z = 0`, the room's
+  floor and every lid under it are simply not there, and a person reading the
+  picture cannot tell that from a floor the grid failed to build. The wireframe
+  says so in a label ("1,043 below and not drawn"); the solids view inherits the
+  label and not the honesty, because a *hole* in a floor and a floor below the
+  cut look identical when neither is drawn.
+- **A black edge under every face is one stroke too many.** Each solid is three
+  polygons with a near-black outline, so a run of wall is a lattice of lines and
+  a pile of surfaces on one tile goes dark. The stroke is what makes two faces
+  of one box findable, but the shape it belongs on is the box's **silhouette**,
+  not each face — the hexagon, plus the two interior edges where the three faces
+  meet. `Solid::faces` already hands the corners back so that a face's shared
+  edge is its first two points, which is the half of that work that is done.
+- **Nothing tests that the solids view and the walk agree.** The two views share
+  `kind_colour` and the grid, which is what keeps the *colours* honest, and
+  nothing at all keeps `Surface::solid`'s box on the plane `blit.wgsl` tests: a
+  panel drawn on the wrong edge would look like a wall a tile out of place and
+  read as a *map* defect. The test that would catch it is the one
+  `panel_edge` already has — derive the edge from `Face::place_at`, which is
+  what the shader places a face pixel with — extended to the solid's own faces.
+- **The nominal thicknesses are drawing numbers with no owner.**
+  `PANEL_THICKNESS` and `LID_THICKNESS` live in `occlusion.rs` because that is
+  where the surface is, but nothing in the walk reads them, and step 23.1 will
+  add numbers with the same names that everything reads. Two constants with one
+  name and two meanings is how a rule and its replacement drift apart — 23.1
+  must either take these over deliberately or rename them.
 - **`Camera::project` is a matrix, and writing it as one would change no pixel.**
   It is an orthographic view-projection with a fixed rotation, spelled as integer
   arithmetic. `docs/camera.md` is the plan that wants this seam — "one pipeline

@@ -164,7 +164,15 @@ fn main() -> ExitCode {
     // On this thread, because `winit` requires the event loop to own the one it
     // was built on. The shard is the one that moved.
     let plan = openshard_e2e_shard::plan_for(&cli.account, &cli.character);
-    let code = openshard_client_app::run(&dir, Some((dial, plan)), cli.ttf_font);
+    // Nothing to open on: the shard says where the character stands, and a
+    // playground that looked somewhere else would be looking away from the
+    // thing it just logged in to play. `--at` is the offline viewer's.
+    let code = openshard_client_app::run(
+        &dir,
+        Some((dial, plan)),
+        cli.ttf_font,
+        openshard_client_app::Opening::default(),
+    );
 
     // The window is gone, so the shard is asked to stop and waited for. The wait
     // is not a formality any more: with a config naming a database, the last
