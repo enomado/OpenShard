@@ -3031,6 +3031,30 @@ Carried from `client.md`'s firelight backlog and still true:
 - The ambient is a key (F10), not a clock.
 - A light is placed by its tile, not by its sprite.
 
+Found while making the instrument honest:
+
+- **The walk's rules are keyed on `Surface::edges`, and a box does not have one —
+  which is the real shape of step 23.1's work.** Every rule in `walk_cells` and
+  in `blit.wgsl`'s `walk` branches on the mask: a lid is `crosses`, a body is
+  travelled through *and* pierced on the two sides it is crossed by, a panel is
+  pierced where the ray goes through the named plane. So are the exemptions —
+  `own_run`, `shadowed_by_own_tile`, the vertical-ray shortcut that reads only
+  lids. Under decision 38 the record is six numbers and the kind is a
+  *consequence* of them, so 23.1 has to choose, once and deliberately: derive the
+  kind from the box (a thin box on an edge is a panel, a flat one is a lid), or
+  carry a kind field beside the box and delete it in 23.5. The DoD says the
+  picture may not move, and reproducing `pierced`'s three-dimensional crossing
+  test from a slab test is where that will be won or lost. It is written here
+  because it is the one thing a reading of 23.1's four lines does not show.
+- **Nothing renders a picture of either view and asserts anything about it.** The
+  new tests hold the geometry a view is built from — the plane a panel is drawn
+  on, and that the two cuts are a subset and its superset — and `tests/cost.rs`
+  draws Britain with the pass on and times it. Between those two there is no test
+  that the pass put a box on the screen at all, and `Cut::Nothing` in particular
+  has never been drawn by anything but a person. The shape of the answer is the
+  one `tests/pictures.rs` already has for the lighting: a small built scene, one
+  frame, and a claim about a pixel that a wrong cut or a dropped face would move.
+
 Found while re-cutting the plan around decision 38 (nothing was built):
 
 - **A wall's thickness may be measurable after all, and the number is already in
