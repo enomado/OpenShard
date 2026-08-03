@@ -1,16 +1,15 @@
 //! The door table, against the client that has to agree with it.
 //!
-//! `data/doors.json` is thirteen numbers ported out of ServUO, and a ported table
-//! with no oracle is thirteen chances to have mistyped a hex digit into something
-//! that still compiles. The client is the oracle available: every graphic a
+//! `data/doors.json` is twenty-two rows ported out of ServUO, and a ported table
+//! with no oracle is twenty-two chances to have mistyped a hex digit into
+//! something that still compiles. The client is the oracle available: every graphic a
 //! family claims has to be a door in `tiledata.mul`, which a base off by one or a
 //! family length off by eight would break immediately.
 //!
-//! The second test is the module's own premise, and it is worth having as a test
-//! rather than as a paragraph: `crate::doors` exists **only** because the client
-//! does not distinguish an open leaf from a shut one. The day a client ships that
-//! does, this fails, and the right answer is to delete the table rather than to
-//! update it.
+//! The second test is what the table is *worth*: how many open leaves the
+//! client's own flags would already have let light through, and how many only
+//! this table does. If that second number ever collapses, the table has stopped
+//! earning its place and should be deleted rather than updated.
 //!
 //! Ignored and gated on `OPENSHARD_CLIENT`: no client files live in this
 //! repository, ever.
@@ -18,9 +17,6 @@
 use openshard_client_render::{doors, occlusion};
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::tiledata::{TileData, TileFlags};
-
-/// How many graphics one family occupies: eight facings, shut and open.
-const FAMILY: u16 = 16;
 
 fn tiledata() -> Option<TileData> {
     let dir = std::env::var_os("OPENSHARD_CLIENT").map(std::path::PathBuf::from)?;
@@ -37,8 +33,8 @@ fn every_graphic_the_table_claims_is_a_door_in_the_client_s() {
     let Some(tiledata) = tiledata() else { return };
     let mut checked = 0usize;
     let mut missing = Vec::new();
-    for base in bases() {
-        for offset in 0..FAMILY {
+    for (base, count) in families() {
+        for offset in 0..count {
             let id = base + offset;
             checked += 1;
             if !tiledata.static_tile(id).flags.has(TileFlags::DOOR) {
@@ -48,7 +44,10 @@ fn every_graphic_the_table_claims_is_a_door_in_the_client_s() {
     }
     // A count, not just a verdict: the families are recovered by walking, and a
     // walk that found nothing would pass every assertion about what it found.
-    assert_eq!(checked, 13 * usize::from(FAMILY), "the table lost a family");
+    assert_eq!(
+        checked, 328,
+        "the table claims a different number of graphics than it did"
+    );
     println!(
         "{checked} graphics across 13 families; {} not flagged DOOR: {missing:04X?}",
         missing.len()
@@ -63,88 +62,82 @@ fn every_graphic_the_table_claims_is_a_door_in_the_client_s() {
     );
 }
 
-/// **The premise.** An open leaf and its shut twin carry the same flags, so
-/// nothing but this table can tell them apart.
+/// **What the table is actually worth**, and where the client could have said so
+/// on its own.
 ///
-/// If it ever fails, `crate::doors` should be deleted and `occlusion::opacity`
-/// should go back to reading the flags — which is a better world, and the reason
-/// the assertion is written as the *presence* of the problem rather than as a
-/// property to preserve.
+/// Not "the client can never tell", which was the first version of this and is
+/// false: over the twenty-two families the answer splits, and the split is worth
+/// having written down.
+///
+/// - The six **secret** doors distinguish the two: a shut leaf is `NO_SHOOT` and
+///   an open one is nothing at all, so `occlusion::opacity` would have got those
+///   right with no table. Decision 11's original claim was true — for six
+///   families out of twenty-two.
+/// - The plain doors and the gates do not: their two leaves carry the same
+///   stopping flags, so without the table an open one is a wall.
+///
+/// The assertion is on the *work done*: every open leaf is `CLEAR` now, and a
+/// solid share of them would not have been. A table that had stopped matching
+/// the client would show up as that share collapsing.
 #[test]
 #[ignore]
-fn the_client_still_cannot_tell_an_open_door_from_a_shut_one() {
+fn the_table_is_what_makes_an_open_leaf_clear() {
     let Some(tiledata) = tiledata() else { return };
     let mut pairs = 0;
-    let mut blind = 0;
-    let mut opaque_open = 0;
-    let mut differ: Vec<String> = Vec::new();
-    for base in bases() {
-        for facing in 0..8u16 {
+    let mut clear_without_the_table = 0;
+    for (base, count) in families() {
+        for facing in 0..count / 2 {
             let (shut, open) = (base + 2 * facing, base + 2 * facing + 1);
             assert!(!doors::is_open(Graphic(shut)), "{shut:#06X} read as open");
             assert!(doors::is_open(Graphic(open)), "{open:#06X} read as shut");
             pairs += 1;
-            // The two bits `occlusion::opacity` would decide on if this table did
-            // not exist. Not every bit: an open leaf differs from its twin in
-            // `0x0400_0000`, which is a naming flag and stops nothing. Asserting
-            // on the whole word would make this fail for a reason that has no
-            // bearing on light, which is the sort of test that gets deleted.
-            let stopping = |id: u16| {
-                let f = tiledata.static_tile(id).flags;
-                (f.has(TileFlags::NO_SHOOT), f.has(TileFlags::WINDOW))
-            };
-            if stopping(shut) == stopping(open) {
-                blind += 1;
-            } else {
-                differ.push(format!(
-                    "{shut:#06X}/{open:#06X} {:?} vs {:?}",
-                    stopping(shut),
-                    stopping(open)
-                ));
-            }
             // What the band on screen was: the leaf swung out of the way and the
             // grid still holding a whole tile of wall.
-            if occlusion::opacity(Graphic(open), tiledata.static_tile(open)) != occlusion::CLEAR {
-                opaque_open += 1;
+            assert_eq!(
+                occlusion::opacity(Graphic(open), tiledata.static_tile(open)),
+                occlusion::CLEAR,
+                "{open:#06X} still stops light",
+            );
+            let flags = tiledata.static_tile(open).flags;
+            if !flags.has(TileFlags::NO_SHOOT) && !flags.has(TileFlags::WINDOW) {
+                clear_without_the_table += 1;
             }
         }
     }
-    println!("{pairs} open/shut pairs, {blind} whose stopping flags are identical");
-    println!("  the exceptions: {differ:?}");
-    // One pair, and it is named rather than tolerated by a percentage: the last
-    // `MetalDoor` facing has a `WINDOW` open leaf against a `NO_SHOOT` shut one,
-    // which is a single graphic's worth of data slip in `tiledata.mul` and not a
-    // rule anybody could read a door's state off. If this ever grows past a
-    // couple, the client has started distinguishing them and this table should
-    // go.
-    assert!(
-        pairs - blind <= 2,
-        "{} pairs are told apart by the flags that stop light — the client may have started \
-         distinguishing them, in which case delete this table and read the flags: {differ:?}",
-        pairs - blind,
+    println!(
+        "{pairs} open/shut pairs; {clear_without_the_table} open leaves the client's own flags \
+         already let light through, {} the table had to",
+        pairs - clear_without_the_table,
     );
-    assert_eq!(opaque_open, 0, "an open leaf still stops light");
+    assert!(
+        pairs - clear_without_the_table > pairs / 4,
+        "the flags now answer for nearly every door on their own — check whether this table is \
+         still earning its place",
+    );
 }
 
-/// The thirteen bases, recovered rather than restated here.
+/// Every family, recovered rather than restated here.
 ///
-/// Restating them would make the walk circular in the one way that matters —
-/// a typo copied into both places. A base is the graphic `doors` calls facing 0,
-/// shut, which is a property of the table and needs no second list. Not "the
-/// first door after a gap": the eight wooden and metal families are *adjacent*,
-/// `0x0675 + 16` being `BarredMetalDoor`'s own base, and looking for gaps found
-/// six of the thirteen.
-fn bases() -> Vec<u16> {
-    let mut found = Vec::new();
+/// Restating them would make the walk circular in the one way that matters — a
+/// typo copied into both places. A base is the graphic `doors` calls facing 0,
+/// shut, and the count is how far the same family reaches; both are properties
+/// of the table and need no second list. Not "the first door after a gap": the
+/// eight wooden and metal families are *adjacent*, `0x0675 + 16` being
+/// `BarredMetalDoor`'s own base, and looking for gaps found six of the
+/// twenty-two.
+fn families() -> Vec<(u16, u16)> {
+    let mut found: Vec<(u16, u16)> = Vec::new();
     for id in 0..=u16::MAX {
-        if let Some((_, 0, false)) = doors::family(Graphic(id)) {
-            found.push(id);
+        match doors::family(Graphic(id)) {
+            Some((_, 0, false)) => found.push((id, 1)),
+            Some(_) => found.last_mut().expect("a family starts before it continues").1 += 1,
+            None => {}
         }
     }
     assert_eq!(
         found.len(),
-        13,
-        "the table has {} families, not thirteen",
+        22,
+        "the table has {} families, not twenty-two",
         found.len()
     );
     found

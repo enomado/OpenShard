@@ -28,9 +28,16 @@
 //!
 //! ServUO, `Scripts/Items/Functional/Doors.cs`: every `BaseDoor` subclass is
 //! `base(closed + 2 * facing, closed + 1 + 2 * facing, …)` over the eight
-//! `DoorFacing` values. A family is therefore sixteen consecutive graphics with
-//! the shut leaves on the even offsets and the open ones on the odd — and the
-//! thirteen family bases are `data/doors.json`.
+//! `DoorFacing` values. A family is therefore a run of consecutive graphics with
+//! the shut leaves on the even offsets and the open ones on the odd — sixteen of
+//! them where all eight facings are used, and eight for the three sliding doors
+//! that use four. The bases and the counts are `data/doors.json`, gathered from
+//! `Doors.cs`, `SecretDoors.cs` and `SlidingDoors.cs`.
+//!
+//! **A portcullis is not in there and cannot be.** `Portcullis.cs` is
+//! `base(0x6F5, 0x6F5, …)` — one graphic for both states, because a portcullis
+//! is raised in `z` rather than swung — so there is nothing to tell apart and a
+//! table cannot invent it.
 //!
 //! **A graphic this does not know keeps today's behaviour exactly**, which is the
 //! safe direction: a shard's own door goes on occluding as it always did, rather
@@ -50,34 +57,26 @@ use openshard_protocol::wire::Graphic;
 
 include!(concat!(env!("OUT_DIR"), "/doors.rs"));
 
-/// How many graphics one family occupies: eight facings, shut and open.
-///
-/// The same 16 `build.rs` checks the families do not overlap by. Stated in both
-/// because the check has to run before this file compiles.
-const FAMILY: u16 = 16;
-
 /// Whether this graphic is a door leaf that has swung open.
 ///
 /// `false` for a shut door, for anything that is not a door, and for a door this
 /// does not know — see the module header for why the last of those is the answer
 /// and not a failure.
 pub fn is_open(graphic: Graphic) -> bool {
-    let Some(offset) = offset_in_family(graphic) else {
-        return false;
-    };
-    offset % 2 == 1
+    matches!(offset_in_family(graphic), Some((_, offset)) if offset % 2 == 1)
 }
 
-/// How far into its family a graphic is, or `None` if it is in none of them.
+/// Which family a graphic is in and how far into it, or `None` for neither.
 ///
 /// A binary search over thirteen sorted bases: `partition_point` gives the last
 /// family that starts at or below the graphic, and the graphic is in it when it
 /// has not run past its sixteen.
-fn offset_in_family(graphic: Graphic) -> Option<u16> {
-    let at = FAMILIES.partition_point(|(base, _)| *base <= graphic.0);
-    let (base, _) = *FAMILIES.get(at.checked_sub(1)?)?;
+fn offset_in_family(graphic: Graphic) -> Option<(usize, u16)> {
+    let at = FAMILIES.partition_point(|(base, _, _)| *base <= graphic.0);
+    let at = at.checked_sub(1)?;
+    let (base, count, _) = *FAMILIES.get(at)?;
     let offset = graphic.0 - base;
-    (offset < FAMILY).then_some(offset)
+    (offset < count).then_some((at, offset))
 }
 
 /// Which family a graphic belongs to, by ServUO's name for it, or `None`.
@@ -85,9 +84,8 @@ fn offset_in_family(graphic: Graphic) -> Option<u16> {
 /// Only a failing test prints this — a verdict about a door is a lot easier to
 /// argue with when it says `MetalDoor facing 3, open` than when it says `0x067C`.
 pub fn family(graphic: Graphic) -> Option<(&'static str, u16, bool)> {
-    let offset = offset_in_family(graphic)?;
-    let at = FAMILIES.partition_point(|(base, _)| *base <= graphic.0) - 1;
-    Some((FAMILIES[at].1, offset / 2, offset % 2 == 1))
+    let (at, offset) = offset_in_family(graphic)?;
+    Some((FAMILIES[at].2, offset / 2, offset % 2 == 1))
 }
 
 #[cfg(test)]
@@ -115,25 +113,37 @@ mod tests {
         assert_eq!(family(Graphic(0x067C)), Some(("MetalDoor", 3, true)));
     }
 
-    /// Every family is sixteen graphics and the sixteenth is the last.
+    /// Every family ends after its own count, and the count is not one number.
     ///
     /// The bound is what keeps a lookup from claiming the graphics *after* a
     /// family — which for `MetalDoor` is `BarredMetalDoor`'s own base, so the
-    /// error would be invisible there and wrong everywhere the next family is
-    /// not a door at all.
+    /// error is invisible there and wrong wherever the next family is not a door.
+    /// The sliding doors are where it actually bites: eight wide and eight apart,
+    /// so a family read as sixteen swallows its neighbour whole and flips the
+    /// parity of every one of its graphics.
     #[test]
-    fn a_family_ends_after_sixteen_graphics() {
-        for (base, name) in FAMILIES {
-            assert_eq!(offset_in_family(Graphic(base)), Some(0), "{name}");
-            assert_eq!(offset_in_family(Graphic(base + 15)), Some(15), "{name}");
-            let after = Graphic(base + 16);
+    fn a_family_ends_after_its_own_count() {
+        let mut widths: std::collections::BTreeSet<u16> = Default::default();
+        for (at, (base, count, name)) in FAMILIES.iter().enumerate() {
+            widths.insert(*count);
+            assert_eq!(offset_in_family(Graphic(*base)), Some((at, 0)), "{name}");
+            assert_eq!(
+                offset_in_family(Graphic(base + count - 1)),
+                Some((at, count - 1)),
+                "{name}",
+            );
             // Either nothing, or the *next* family's own first graphic — never
-            // this one's seventeenth.
+            // one past this one's end.
+            let after = offset_in_family(Graphic(base + count));
             assert!(
-                matches!(offset_in_family(after), None | Some(0)),
-                "{name} claims a seventeenth graphic",
+                matches!(after, None | Some((_, 0))),
+                "{name} claims a graphic past its {count}: {after:?}",
             );
         }
+        assert!(
+            widths.len() > 1,
+            "every family is {widths:?} wide, so this test would pass with the count hardcoded",
+        );
     }
 
     /// Nothing outside a family is a door, including the graphic just below one.
@@ -153,11 +163,12 @@ mod tests {
     fn the_families_are_sorted_and_do_not_overlap() {
         for pair in FAMILIES.windows(2) {
             assert!(
-                pair[0].0 + FAMILY <= pair[1].0,
-                "{} at {:#06X} runs into {} at {:#06X}",
-                pair[0].1,
+                pair[0].0 + pair[0].1 <= pair[1].0,
+                "{} at {:#06X} runs {} graphics into {} at {:#06X}",
+                pair[0].2,
                 pair[0].0,
-                pair[1].1,
+                pair[0].1,
+                pair[1].2,
                 pair[1].0,
             );
         }
