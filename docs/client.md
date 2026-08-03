@@ -964,6 +964,57 @@ What is still M4 proper: the gump art (`gumpart.mul`), which is why a
 `{ gumppic }` is drawn as a placeholder naming its graphic; hue lookup for gump
 text; and the journal, of which the speech strip is a six-line stand-in.
 
+### Containers — the wire and the memory, not yet the window
+
+A chest was **write-only**: the shard encodes `0x24`, `0x25` and `0x3C` and
+nothing in the tree could read one back, so a client double-clicking a container
+heard three `Undecoded` ids and drew nothing. Two of the three pieces are now in.
+
+- **The protocol reads back.** `OpenContainer` (`0x24`), `AddToContainer`
+  (`0x25`) and `ContainerContents` (`0x3C`) decode, and the first two became
+  `ServerPacket` variants on the way. They had been kept out because
+  `EncodePacket::LENGTH` is a `const` that cannot ask its payload's version and
+  both change size across a `Feature` seam — an excuse the *enum* never had, so
+  `ServerPacket::length` takes the version now and the two hand-written encoders
+  stay as thin wrappers for the shard, which sends them as bytes with the value
+  already in hand.
+- **`ContainerContents::container` is an `Option`, and that is the wire's shape.**
+  A `0x3C` has no header field naming the container — every item record names its
+  own — so a listing with no items has named nothing at all, and opening an empty
+  chest sends exactly that. The client learns which container it was from the
+  `0x24` before it.
+- **`WorldView` holds two tables, not one.** `containers` is which art each open
+  window uses; `contents` is what each container holds. A **vendor** is what
+  separates them: the shop window is a `0x24` naming the *vendor* and the goods
+  are a `0x3C` naming the crate worn on its shop layer, so a listing whose
+  container has no window is a shape the shard sends on purpose.
+- **Three things the wire never says**, each one a line in `view.rs`: taking an
+  item out of a bag is a plain `0x1D` and nothing else, so a `Remove` that does
+  not reach the contents leaves the icon in the window forever; closing a window
+  is a click, so `container_closed` is `gump_closed`'s twin and drops the
+  contents with it; and a `0x25` for an item already listed is a stack that grew,
+  not a second item.
+
+**What is left is the window**, and it stops at the same place `{ tilepic }`
+does: the icons inside a container come from the *world's* art and the gump pass
+binds one atlas, which holds `gumpart`. Neither of the two ways round is a new
+kind of pass —
+
+- a second `GumpAtlas` packed from static art with a second `GumpRenderer` over
+  it: no new types at all, `Picture`/`collect` already take an atlas, and the
+  cost is a duplicated hue ramp and pipeline;
+- or a key type on `GumpAtlas` — `Gump(Graphic)` versus `Item(Graphic)` — so one
+  atlas holds both. Gump ids and art ids are separate 16-bit namespaces and a
+  collision is certain (`0x003C` is a chest's gump *and* an item's graphic), so a
+  bare `Graphic` key cannot be made to work.
+
+Whichever lands, it closes `{ tilepic }` in the same move — a container is the
+same question a layout has been asking since the gump reader was written.
+
+The background itself is a plain `gumppic` and not a `resizepic`: a `0x24` names
+one graphic and the art's own size *is* the window's, so nothing here needs
+egui's rectangle the way `.admin` does.
+
 ## M5 — interaction
 
 Single and double click (`0x09`, `0x06`), drag and drop (`0x07`, `0x08`),
