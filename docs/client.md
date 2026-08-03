@@ -168,6 +168,18 @@ reader filling a kernel queue rather than blocking a writer. The socket tests in
 its deadlines are there because a broken pipe arrangement hangs rather than
 refusing.
 
+**A third `Dial` is expected, and it is why the trait is worth its keep.** A
+browser cannot open a TCP socket, so a client compiled to WebAssembly reaches a
+shard through a WebSocket and something on the far side that speaks TCP to the
+gateway. That is not scheduled here and it is not a milestone; what it does is
+fix the rule the two existing implementations already follow — **nothing above
+`Dial` may name TCP**, not in a type, not in an error, and not in a timeout that
+only makes sense for a kernel queue. `crates/client/render` and
+`crates/client/app` already carry `cfg(target_arch = "wasm32")` dependency
+sections for the same eventual reason. The cost of the relay when it is written
+is one `impl Dial` and a small binary; the cost of letting TCP leak upward
+first is every caller.
+
 ### Stopping is one word, and everything hears it
 
 A shard has three loops that never end on their own — the accept loop, a
@@ -1148,8 +1160,10 @@ does not carry yet.
    the frame is drawn either way, and a doll the client has not been told the
    body of is a window that still picks up the pointer and still closes — the
    backlog entry that used to say it drew nothing. `App::window_background` no
-   longer reads the mobile at all, only whose serial it is. It became one by having the *subject* of a window say what
-   kind it is: `App::own_windows` is one list of `WindowSubject::Container` and
+   longer reads the mobile at all, only whose serial it is.
+
+   The machinery is shared by having the *subject* of a window say what kind it
+   is: `App::own_windows` is one list of `WindowSubject::Container` and
    `WindowSubject::Paperdoll`, so a bag dragged over a paperdoll stays over it,
    and the two kinds differ in exactly three `match`es — which art is the
    background, what is drawn on it, and what closing one means to the
@@ -1284,6 +1298,78 @@ double click on one sends a `0x06` naming its serial and a single click a
 behind a wall picks nothing; and the pick and the draw cannot disagree, because
 a test asserts that what `pick` answers for a cursor inside a frame is the
 mobile `collect` drew there.
+
+## M6 — sound
+
+The shard has been speaking and the client has never heard a word of it.
+`PlaySound` (`0x54`) is encoded in seventeen places across `crates/server`, and
+nothing in `crates/client` mentions it; `PlayMusic` (`0x6D`) is the same story.
+This is not a gap in the wire, it is a gap in exactly one direction, and it is
+the one the engine's own rule cares about most: **every visible action plays a
+sound and an animation, not just a state change** — a system that changes state
+and nothing else passes its test and feels dead in front of a player. A door
+that swings in silence is the whole complaint.
+
+Five pieces, and the first is the smallest.
+
+- **The packets have to decode.** `ServerPacket::PlaySound` and
+  `ServerPacket::PlayMusic` are variants that can only be *written*:
+  `ServerPacket::decode` is an explicit list of arms and neither is in it,
+  because `feedback.rs` implements `EncodePacket` and no `DecodePacket` at all.
+  So this is M0's move one more time, on a file M0 skipped. **`Animation`
+  (`0x6E`), `NewAnimation` (`0xE2`) and the two effects (`0x70`, `0xC0`) are
+  behind the same hole** and are worth doing in the same pass — the crowd's
+  walk cycles are inferred from position today (`crowd.rs`), and a swing or a
+  bow is a thing the shard *says* and this client cannot yet be told.
+- **The file.** `sound.mul` + `soundidx.mul`, or `soundLegacyMUL.uop` under the
+  pattern `build/soundlegacymul/{:08}.dat` — which is the shape
+  `uofiles::uop` already reads for art, anims and gumps, so this is a new
+  `sounds.rs` beside `gumpart.rs` and not a new format. An entry is a **40-byte
+  name followed by raw PCM**: 22050 Hz, mono, 16-bit, and **no RIFF header** —
+  the reference feeds the bytes straight to a device it has already configured
+  (`ClassicUO.Assets/SoundsLoader.TryGetSound` skips 40;
+  `ClassicUO.IO/Audio/Sound.cs` holds `Frequency = 22050`,
+  `Channels = Mono`). Anything that expects to sniff a WAV header will read the
+  name as a format chunk and produce noise.
+- **Do not port `UOSound.Delay`.** It is
+  `(buffer.Length - 32) / 88.2f` over a buffer whose header the loader has
+  *already* removed, and 22050 Hz mono 16-bit is 44.1 bytes per millisecond, not
+  88.2. Two errors in one line — a header subtracted twice at the wrong size,
+  and a rate for a format this is not — and what comes out is roughly half the
+  true duration. Take the format from the reference and compute the length here,
+  with a test that says a known entry is as long as it sounds.
+- **`Sound.def` is an alias table**, the same shape as the `.def` files
+  `equipconv.rs` already reads: an id whose entry has zero length is redirected
+  to a member of a group, so ids the shard sends legitimately resolve to another
+  id's bytes. Skip it and a working sound id is silently a missing one.
+- **Music is not in the `.mul`.** `Music/Digital/Config.txt` — `Music/Config.txt`
+  before 4.0.1.1c, which is a `Feature::since` boundary and **never** an `Era`
+  check — maps a track id to an mp3 name and an optional `loop` flag, and the
+  files are ordinary mp3s in `Music/`. The reference carries a 67-entry table as
+  the fallback for an install with no config. Music is separable from sound
+  effects and should be, because it needs a decoder and the effects do not: a
+  first pass can be silent on `0x6D` and still be finished on `0x54`.
+
+**Distance is the client's decision, not the wire's.** A `0x54` carries a world
+location; the reference (`Game/Managers/AudioManager.cs`) takes Chebyshev
+`max(|dx|, |dy|)` from the player — the same metric as everything else here —
+plays nothing at all beyond the view range, and attenuates linearly inside it.
+That is a rule this client owns and can test without a device.
+
+**What plays it is a decision to take deliberately.** There is no audio
+dependency in this workspace yet, and the thing that must not happen is a client
+that needs a sound card to be tested: the DST runs, the playground and every
+headless session are the majority of how this client is exercised. So the mixer
+sits behind a trait with a **null sink** as a first-class implementation, chosen
+where the renderer is chosen and not discovered at the bottom of a call tree —
+and the reader itself belongs in `crates/common/uofiles`, since the shard picks
+sound ids and may one day want to know an id exists.
+
+Done when: a door opened across the room is heard and one at your feet is
+louder; a sound past the view range is silent; a `Sound.def` alias resolves to
+the bytes it points at; the length of a known entry is asserted rather than
+assumed; and `cargo test --workspace` runs on a machine with no audio device at
+all, because nothing in the test tree ever asks for one.
 
 ## Decisions to take before they are taken by accident
 
