@@ -9,11 +9,53 @@ copied.
 
 ## Where the next session starts
 
-**23.1 has landed and 23.2 is next: the spill, and the ring's measured radius.**
-The ownership moved and no picture did — which is the property the step existed
-to buy, and it is worth saying what "no picture" is held by: `tests/lighting.rs`'s
-31 scenes, `tests/frame.rs`'s 37 including the parity pass that walks both
-implementations over one scene, and the whole-grid equality the bake rests on.
+**23.2 has landed and 23.3 is next: the table carries a solid.** The spill and
+the ring exist, and the number decision 38.2 asked for — the widest reach in the
+table — is **zero today, honestly rather than by omission**: `ring_radius` reads
+the atlas it is handed and every `Shape` this build can produce still puts its
+box on the one tile the static stands on, so there is nothing wider to find until
+23.3 gives the table a fourth verdict that can. Reading it off the atlas rather
+than writing `0` in `collect` is what makes that a fact this build could get
+wrong rather than a promise; see `bake::ring_radius`'s own doc for the argument.
+
+What is real regardless of that number: `Baked::spill` and `Builder::paste`
+place a solid on every tile its box touches, not only the tile it is anchored
+on, whether that tile is in the same block or a neighbour's — decision 38.1's
+"reference, not clip", finished for whatever geometry a solid turns out to have
+rather than only the cross-block case decision 38.2 was written about. Nothing
+built today produces such a box (`Solid::box_of` is still one tile, as 23.1 left
+it), so the two tests that hold this — `a_solid_anchored_outside_the_frame_still_occludes_through_the_ring`
+and `a_wider_reach_needs_a_wider_ring` — author one directly rather than through
+the map walk, which is `Baked::synthetic`, a `#[cfg(test)]` seam that skips
+straight to a solid list. The second test is the one decision 38.2's own text
+asked for by name: a ring hardcoded to one block passes the first case and
+fails it, because the same solid authored to reach two blocks needs a ring of
+two to be found.
+
+`bake::collect_ring` is where the widening happens — `collect`'s own body,
+with the radius taken as an argument instead of read off the atlas, so the
+tests above can hold it fixed while they vary what the solid reaches. `collect`
+is `collect_ring` called with `ring_radius(atlas)`, and nothing else changed
+shape: a block in the ring is baked and pasted exactly as a block the frame
+asked for is, and `Builder::index`'s own clamp is what tells the two apart —
+a ring block's own tiles land outside the frame's rectangle and are dropped,
+its spill is the one thing that does something. No second code path for
+"a block that is only here for its spill."
+
+The log line decision 38.2 asked for is `tracing::debug!` in `collect_ring`,
+one line, every frame — cheap enough not to matter at `radius: 0`, and `render`
+gained a dependency on `tracing` for it, which no crate below the client's `net`
+and `app` had needed before. `docs/architecture.md`'s layering is unaffected:
+`tracing` emits nothing without a subscriber, so the crate's own claim of never
+touching I/O is still true.
+
+Everything below is the session before it.
+
+**23.1 landed the ownership.** The ownership moved and no picture did — which is
+the property the step existed to buy, and it is worth saying what "no picture"
+is held by: `tests/lighting.rs`'s 31 scenes, `tests/frame.rs`'s 37 including the
+parity pass that walks both implementations over one scene, and the whole-grid
+equality the bake rests on.
 
 Two things it decided that the step as written had left open, and both are
 argued where the code is:
@@ -27,12 +69,6 @@ argued where the code is:
   body with a degenerate span and is flat in `z` exactly as a floor is, so
   "flat in `z` is a lid" would silently re-kind it. `Solid::edges` goes in 23.5,
   with the rules that ask it.
-
-**Nothing is shared yet, and the id plane is the identity** — deliberately, and
-it is why 23.2 is next rather than 23.3: the level exists and both walks read it,
-so the first thing to reference one solid from two cells changes one function
-instead of a format, a shader, two walks and three views. That first thing is the
-spill.
 
 The numbers are under step 23.1, including a bound rather than a reading for what
 the extra fetch costs, and the reason it is only a bound (the bench's own control
@@ -2999,12 +3035,12 @@ height can be kept anywhere and the two views cannot drift apart.
          whole night pass is 0.8ms against a 16.7ms frame. A number small enough
          to need a better instrument is a number that does not decide anything
          here, and the backlog carries what a better one would take.
-      2. **The spill, and the ring's measured radius.** Decision 38.2: a `Baked`
-         block gains a spill list, the frame pastes the ring's spill, and the
-         ring's width comes from the widest reach in the table rather than from a
-         constant. Still no geometry that spills — this is the plumbing arriving
-         before its first user, on purpose, because a missing reference is a hole
-         in a shadow that looks exactly like a detector failing.
+      2. **[x] The spill, and the ring's measured radius.** Decision 38.2: a
+         `Baked` block gains a spill list, the frame pastes the ring's spill, and
+         the ring's width comes from the widest reach in the table rather than
+         from a constant. Still no geometry that spills — this is the plumbing
+         arriving before its first user, on purpose, because a missing reference
+         is a hole in a shadow that looks exactly like a detector failing.
 
          **DoD:** a synthetic solid, authored to overhang, that occludes
          correctly when its anchor's block is *outside* the frame's block set —
@@ -3013,6 +3049,43 @@ height can be kept anywhere and the two views cannot drift apart.
          one passes the first and fails the second. A radius that follows the
          table rather than a constant; the log line; and a cost reading showing
          that a radius of zero costs a lookup.
+
+         **What landed, and the one thing the DoD could not yet ask for
+         honestly.** `Baked::spill` (`occlusion/bake.rs`) and `Solid::footprint`
+         (`occlusion.rs`) are decision 38.1 finished for whatever box a solid
+         turns out to have, not only the cross-block case 38.2 was written
+         about: every tile a solid's box touches besides its own anchor is a
+         spill entry, in absolute map coordinates, so `Builder::paste` places it
+         with no translation and no case split between "this block was wanted"
+         and "this block is only here for its spill" — `Builder::index`'s
+         existing clamp is what tells the two apart. `bake::collect_ring` widens
+         the block range by a radius and is what `collect` calls with
+         `ring_radius(atlas)`; the tests hold the radius themselves and author
+         the overhanging solid through `Baked::synthetic`, a `#[cfg(test)]` seam,
+         because nothing `Solid::box_of` builds today is wider than one tile —
+         23.1 left it that way on purpose and this step does not move it.
+
+         **`ring_radius` is zero, and it earns that answer rather than stating
+         it.** The table has nothing to carry a reach in yet — that is 23.3, the
+         next step — so there is no per-graphic number to take a `max` over. What
+         this step could honestly build is a function that reads the atlas it is
+         handed and finds nothing wider than a tile in it, which is what
+         `bake::ring_radius` is, and its doc says why in place of the number
+         changing later without this comment moving. The alternative — a
+         hardcoded `0` with no argument — was rejected as the same invented
+         constant decision 38.2 already withdrew once for the ring's width
+         itself; a function that ignores what it is handed is not "measured", it
+         only reads like it.
+
+         **Green:** `cargo test --workspace`, `clippy --all-targets` and `fmt`
+         silent; the two DoD tests above, plus
+         `the_measured_radius_is_zero_until_something_authors_a_reach`, which is
+         the "cost reading" for `radius: 0` — the function is an atlas read and a
+         comparison, not a scan, so the honest reading is that lookup rather
+         than a bench number with nothing to measure against yet. `render`
+         gained a dependency on `tracing` for the log line, which is inert
+         without a subscriber and does not touch the crate's own claim of never
+         doing I/O.
       3. **The table carries a solid.** `arttable` gains a third verdict and a
          `FORMAT` bump to 3, with `facing::DETECTOR` bumped for the reason the
          last bump had: a table written under the old rules describes yesterday's
@@ -3187,12 +3260,14 @@ Found while migrating the ownership (step 23.1):
   What a better instrument wants is not more runs: it is the same frame timed
   with a GPU timestamp query around the blit alone rather than a wall clock round
   a submit, and a case whose *only* difference is the thing under test.
-- **`solid::standing` lists a solid once per cell that references it.** Harmless
-  today, because nothing is referenced twice; the day 38.2's spill lands, a solid
-  overhanging four cells is drawn four times, translucent, and reads as four
-  weights of colour on one box. The fix is a dedup on the id, and the reason it is
-  not written yet is that a view of a *shared* solid also wants to say which cells
-  found it, which is a question about what the instrument is for.
+- **`solid::standing` lists a solid once per cell that references it.** 38.2's
+  spill has landed and the mechanism is real, but still harmless: nothing built
+  today produces a box wider than one tile, so nothing is referenced twice yet. A
+  solid overhanging four cells, once 23.5 authors one, will be drawn four times,
+  translucent, and read as four weights of colour on one box. The fix is a dedup
+  on the id, and the reason it is not written yet is that a view of a *shared*
+  solid also wants to say which cells found it, which is a question about what
+  the instrument is for.
 - **A lid with a span of its own is drawn two `z` deep, not as deep as it is.**
   `solid::drawn` replaces a lid's bottom rather than lowering it to reach, which
   is what step 23.0 drew and is kept to the pixel because 23.1's whole claim is
@@ -3234,6 +3309,23 @@ Found while re-cutting the plan around decision 38 (nothing was built):
   wherever the top is visible. The way to settle it is the instrument, not an
   argument — score a box of thickness `t` against the sprite and take the best
   `t`, exactly as `facing::best_prism` already takes the best prism.
+Found while building the spill (step 23.2):
+
+- **`bake::collect_ring`'s widened range still bakes and caches an empty block
+  for every ring tile past the facet's own edge.** `Baked::of` answers correctly
+  — `Map::statics_in_block` is empty out of range — but a frame in a facet's
+  corner, once a real reach exists, pays a `Bake` cache entry for blocks that can
+  never hold anything. Not a bug at `radius: 0`, where the widened range is the
+  core range; worth a clamp against `map.width()`/`map.height()` in the same
+  change that gives `ring_radius` a real number to return.
+- **`ring_radius` has nothing to read yet, and it shows in the test:**
+  `the_measured_radius_is_zero_until_something_authors_a_reach` asserts a
+  constant against an atlas that cannot hold anything else. That test earns its
+  place once 23.3 gives a graphic a reach to author — until then it is a
+  regression guard against the function being *replaced* by a literal, not a
+  measurement of anything. Said so in the step's own "What landed" note rather
+  than left implicit.
+
 Found while drawing the solid (step 23.0):
 
 - ~~**Both views filter by `Surface::stands`, so a house's floor is invisible
@@ -4298,3 +4390,34 @@ Found while chasing a client that took half a minute to open a window:
   none for solids, because a floor is a number measured off a real install and
   nobody has run the sweep since format 3. It prints `solids:`; the floor goes in
   the day that print has a number in it.
+
+- **An architectural alternative to decision 30/38's block cache, raised while
+  building the spill (step 23.2), and worth arguing rather than losing.** The
+  spill and the ring exist to patch a leak that is an artefact of one specific
+  choice — caching the occlusion grid by baking it in the map file's own 8×8
+  blocks (`bake.rs`) — rather than being inherent to "what stands between a
+  flame and the ground" as a question. If solids were held in a structure
+  queried directly by a frame's rectangle instead — an R-tree or a BVH over
+  every solid in the facet, built once — there would be no block boundary for a
+  solid to leak across, and no spill/ring to build at all.
+
+  Why it was not built that way, as best this can be reconstructed without
+  measuring: the shader still needs a **flat per-tile texture**
+  (`Occlusion::bytes`/`id_bytes`/`solid_bytes`) to walk in `blit.wgsl`, and
+  WGSL has no tree traversal — so a tree only ever helps the CPU side, "which
+  solids does this rectangle see", and the rasterisation into a flat grid
+  (this step's `Solid::footprint`, in different clothes) is still a separate
+  step afterwards either way. Block-based baking also happens to align with
+  the file's own I/O chunking (`Map::statics_in_block` is a contiguous slice
+  per block for free), which a tree built from the same statics would not
+  give up for nothing, but would not obviously need either.
+
+  What would settle it rather than argue it: whether a persistent tree,
+  queried per frame, actually beats "bake per block, cache blocks, paste a
+  ring" on the numbers `tests/cost.rs` already reads — build cost once at
+  load, per-frame query cost, and memory, over Britain at the widest zoom. If
+  it wins, the honest scope is large: decision 38.1's grid-of-references, the
+  cache in `bake::Bake`, and the whole shape of the spill this step just
+  built would be replaced rather than extended, which is why this stays a
+  backlog entry and not a step under decision 38 — it is a challenge to
+  decision 30/38 itself, not a thing decision 38 asks for.

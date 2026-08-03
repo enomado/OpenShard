@@ -629,6 +629,31 @@ impl Solid {
         }
         crate::solid::Solid { min, max }
     }
+
+    /// Which tiles this solid's box touches, as inclusive ranges on each axis.
+    ///
+    /// Off [`Solid::space`], not off a kind: a panel is flat on the axis it
+    /// has no extent on, and flooring that axis to itself is what recovers
+    /// the one tile it stands on rather than reading the boundary as
+    /// belonging to the neighbour on the other side of it.
+    ///
+    /// [`bake`]'s spill (decision 38.2) is the one caller, and it is why this
+    /// exists rather than being folded into it: nothing [`Solid::box_of`]
+    /// builds today reaches past the tile it was given, so every call this
+    /// makes returns that one tile on both axes — the honest state of step
+    /// 23.2, and not a case nobody hit. The day a box is wider, this is where
+    /// the extra tiles come from, unchanged.
+    pub(crate) fn footprint(&self) -> (std::ops::RangeInclusive<i32>, std::ops::RangeInclusive<i32>) {
+        fn axis(min: f64, max: f64) -> std::ops::RangeInclusive<i32> {
+            let lo = min.floor() as i32;
+            let hi = if max > min { max.ceil() as i32 - 1 } else { lo };
+            lo..=hi
+        }
+        (
+            axis(self.space.min.x, self.space.max.x),
+            axis(self.space.min.y, self.space.max.y),
+        )
+    }
 }
 
 /// One tile's worth of occlusion: how much it stops, and between which heights.

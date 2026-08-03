@@ -88,6 +88,17 @@ pub struct Baked {
     /// `y * SIDE + x` inside the block — in the order the map walk found them,
     /// which is the order a tile's solids have to come out in.
     solids: Vec<(u8, Solid)>,
+    /// Every tile besides its own anchor that a solid's box touches, as
+    /// `(x, y, solid)` in absolute map coordinates — decision 38.2's spill.
+    ///
+    /// Absolute rather than a cell index, and that is what lets this be
+    /// pasted without knowing this block's own origin: [`Solid::space`] is
+    /// already in world coordinates, so the tile it spills onto is too, and
+    /// [`Builder::paste`] reads it straight through [`Builder::index`]
+    /// exactly as it reads any other tile.
+    ///
+    /// Empty for every block a stock install bakes: see [`Solid::footprint`].
+    spill: Vec<(i32, i32, Solid)>,
     /// How much of the sky each of the block's tiles can see, **before the
     /// blur**, which is the frame's.
     sky: [u8; CELLS],
@@ -142,12 +153,56 @@ impl Baked {
 
         let mut sky = [SKY_OPEN; CELLS];
         sky.copy_from_slice(&grid.sky);
+        let spill = spill_of((origin_x, origin_y), &solids);
         Self {
             solids,
+            spill,
             sky,
             dropped: grid.dropped,
         }
     }
+
+    /// Built directly from a solid list, bypassing the map walk — the seam
+    /// step 23.2's own tests use to author a solid wide enough to overhang
+    /// its block, which nothing [`super::place`] can build yet. See
+    /// [`Solid::footprint`].
+    #[cfg(test)]
+    fn synthetic(block_x: u32, block_y: u32, solids: Vec<(u8, Solid)>) -> Self {
+        let origin = origin(block_x, block_y);
+        Self {
+            spill: spill_of(origin, &solids),
+            solids,
+            sky: [SKY_OPEN; CELLS],
+            dropped: 0,
+        }
+    }
+}
+
+/// Every tile besides its own anchor that a solid's box touches, over a
+/// block's solids — decision 38.2's spill, computed once when the block is
+/// built rather than at every frame that pastes it.
+///
+/// `cell`'s own tile is always excluded: it is what [`Baked::solids`] already
+/// holds it at, and a caller pasting both would reference it twice. Nothing
+/// distinguishes a spill tile still inside this block from one genuinely in a
+/// neighbour — [`Builder::paste`] does not need to, since it places both by
+/// the same absolute coordinate — so this is the whole of decision 38.1's
+/// "reference, not clip" for whatever geometry a solid turns out to have, not
+/// only the cross-block case decision 38.2 was written for.
+fn spill_of(origin: (i32, i32), solids: &[(u8, Solid)]) -> Vec<(i32, i32, Solid)> {
+    let mut spill = Vec::new();
+    for &(cell, solid) in solids {
+        let anchor = tile_of(origin, usize::from(cell));
+        let (xs, ys) = solid.footprint();
+        for y in ys {
+            for x in xs.clone() {
+                if (x, y) != anchor {
+                    spill.push((x, y, solid));
+                }
+            }
+        }
+    }
+    spill
 }
 
 /// Where a block's north-west tile is.
@@ -185,6 +240,18 @@ impl Builder {
             let (x, y) = tile_of(origin, usize::from(*cell));
             if let Some(index) = self.index(x, y) {
                 self.push(index, *solid);
+            }
+        }
+        // The spill, unconditionally: a block pasted for its own tiles and a
+        // block pasted only because it is in the ring are the same call, and
+        // `self.index` is what tells the two apart — a ring block's own
+        // tiles land outside the frame's rectangle and are dropped exactly as
+        // above, while a spill tile is the one place a ring block's paste
+        // does something. No translation through `origin`, because a spill
+        // entry already carries its own absolute tile — see [`Baked::spill`].
+        for &(x, y, solid) in &baked.spill {
+            if let Some(index) = self.index(x, y) {
+                self.push(index, solid);
             }
         }
         // Counted whole rather than per tile. A block that overflowed a tile did
@@ -346,16 +413,68 @@ pub fn collect(
     cutaway: &Cutaway,
     atlas: Option<&StaticAtlas>,
 ) -> Occlusion {
+    collect_ring(
+        bake,
+        map,
+        items,
+        bounds,
+        tiledata,
+        cutaway,
+        atlas,
+        ring_radius(atlas),
+    )
+}
+
+/// How many blocks wide the ring pasted around a frame's own blocks must be,
+/// so that a solid anchored just outside them but reaching in is not missing
+/// — decision 38.2, measured rather than decreed.
+///
+/// **Zero today, and honestly so.** The measurement is `max` over what the
+/// table's solids reach past their own tile, and every [`Shape`](crate::occlusion::Shape)
+/// this build can produce — a plane on one edge, a corner of two, or
+/// [`facing::Prism`](crate::facing::Prism)'s stepped height — puts its box on
+/// the one tile the static stands on; nothing wider exists until step 23.3
+/// authors one. So this returns zero on every install today, taking the atlas
+/// anyway: the day a graphic's box can reach past its tile, this is the one
+/// place that reads the widest one, before the first block is baked, and
+/// nothing above it has to change.
+fn ring_radius(_atlas: Option<&StaticAtlas>) -> u32 {
+    0
+}
+
+/// [`collect`] with the ring's width stated rather than measured off the
+/// atlas — the seam step 23.2's own tests use to hold the radius fixed while
+/// they vary the reach a synthetic solid is authored with, since
+/// [`ring_radius`] cannot yet be made to answer anything but zero.
+#[allow(clippy::too_many_arguments)]
+fn collect_ring(
+    bake: &mut Bake,
+    map: &Map,
+    items: &[GroundItem],
+    bounds: TileBounds,
+    tiledata: &TileData,
+    cutaway: &Cutaway,
+    atlas: Option<&StaticAtlas>,
+    radius: u32,
+) -> Occlusion {
     bake.begin(atlas);
     let mut grid = Builder::new(bounds);
+    tracing::debug!(radius, "occlusion: ring width around a frame's blocks");
 
     // The same clamp the walk makes, and it has to be the same one: a rectangle
     // that runs off the facet names blocks the map does not have, and a bake that
     // kept an entry for each of them would grow a cache of nothing.
     if let Some((xs, ys)) = bounds.clamp_to(map.width(), map.height()) {
         let side = BLOCK_SIZE;
-        let columns = (u32::from(*xs.start()) / side)..=(u32::from(*xs.end()) / side);
-        let rows = (u32::from(*ys.start()) / side)..=(u32::from(*ys.end()) / side);
+        let core_columns = (u32::from(*xs.start()) / side)..=(u32::from(*xs.end()) / side);
+        let core_rows = (u32::from(*ys.start()) / side)..=(u32::from(*ys.end()) / side);
+        // Widened by the ring on every side, and clamped to zero rather than
+        // wrapping: `block_x`/`block_y` are unsigned, and a frame in the
+        // facet's corner has no block to its west. `Baked::of` (through
+        // `Map::statics_in_block`) answers empty for a block past the far
+        // edge, so there is nothing to clamp there.
+        let columns = core_columns.start().saturating_sub(radius)..=(core_columns.end() + radius);
+        let rows = core_rows.start().saturating_sub(radius)..=(core_rows.end() + radius);
         for block_x in columns {
             for block_y in rows.clone() {
                 let baked = bake.block(map, tiledata, atlas, block_x, block_y);
@@ -582,5 +701,139 @@ mod tests {
             Some(&atlas),
         );
         assert_eq!(bake.served(), (0, 8));
+    }
+
+    /// A solid built wide enough to overhang its own tile, as no
+    /// [`Solid::box_of`] does today — the synthetic authoring step 23.2's DoD
+    /// asks for, since nothing else can build one yet. `width` tiles across
+    /// from `(anchor_x, anchor_y)`, one deep, opaque.
+    fn overhanging(anchor_x: i32, anchor_y: i32, width: i32) -> Solid {
+        use crate::camera::WorldSpot;
+        Solid {
+            space: crate::solid::Solid {
+                min: WorldSpot {
+                    x: f64::from(anchor_x),
+                    y: f64::from(anchor_y),
+                    z: 0.0,
+                },
+                max: WorldSpot {
+                    x: f64::from(anchor_x + width),
+                    y: f64::from(anchor_y + 1),
+                    z: 20.0,
+                },
+            },
+            opacity: super::super::OPAQUE,
+            edges: super::super::EDGE_ANY,
+            aperture: None,
+            roof: false,
+        }
+    }
+
+    /// **The DoD's first case.** A solid anchored in one block, authored wide
+    /// enough to overhang the block beside it, occludes correctly in a frame
+    /// whose block set does not include the anchor's block at all — which is
+    /// exactly the shape a missing ring produces no error for, only a hole in
+    /// a shadow. `radius: 0`, the production default, is the control: the
+    /// same frame with no ring pasted proves the gap is real and not already
+    /// closed some other way.
+    #[test]
+    fn a_solid_anchored_outside_the_frame_still_occludes_through_the_ring() {
+        let map = Map::from_blocks(3, 1, |_, _| LandCell { tile: 3, z: 0 });
+        let tiledata = TileData::empty();
+        // Anchored at the last tile of block (0, 0) and authored two tiles
+        // wide, so its footprint's second tile — (8, 7) — lands in block
+        // (1, 0), the one and only block the frame below asks for.
+        let baked = Baked::synthetic(0, 0, vec![(63, overhanging(7, 7, 2))]);
+        let mut bake = Bake::new();
+        bake.blocks.insert(0 << 16, Cached { baked, used: 0 });
+
+        // Block (1, 0)'s own rectangle, holding nothing of its own.
+        let frame = TileBounds {
+            min_x: 8,
+            max_x: 15,
+            min_y: 0,
+            max_y: 7,
+        };
+
+        let missing = collect_ring(&mut bake, &map, &[], frame, &tiledata, &Cutaway::OPEN, None, 0);
+        assert_eq!(
+            missing.at(8, 7),
+            None,
+            "no ring pasted, and no reference reaches this tile"
+        );
+
+        let mut bake = Bake::new();
+        bake.blocks.insert(
+            0 << 16,
+            Cached {
+                baked: Baked::synthetic(0, 0, vec![(63, overhanging(7, 7, 2))]),
+                used: 0,
+            },
+        );
+        let found = collect_ring(&mut bake, &map, &[], frame, &tiledata, &Cutaway::OPEN, None, 1);
+        let cell = found
+            .at(8, 7)
+            .expect("the spill reached the tile through the ring");
+        assert_eq!(cell.opacity, super::super::OPAQUE);
+    }
+
+    /// **The DoD's second case.** A ring hardcoded to one block wide passes
+    /// the first test above and fails this one: the same solid, authored to
+    /// reach two blocks rather than one, needs a ring of two to be found —
+    /// which is the whole argument decision 38.2 makes for measuring the
+    /// radius rather than choosing it.
+    #[test]
+    fn a_wider_reach_needs_a_wider_ring() {
+        let map = Map::from_blocks(3, 1, |_, _| LandCell { tile: 3, z: 0 });
+        let tiledata = TileData::empty();
+        // Anchored at (7, 7) in block (0, 0) and authored ten tiles wide, so
+        // its footprint's far tile — (16, 7) — lands in block (2, 0).
+        let block = |anchor: (u8, i32, i32, i32)| {
+            Baked::synthetic(0, 0, vec![(anchor.0, overhanging(anchor.1, anchor.2, anchor.3))])
+        };
+        let frame = TileBounds {
+            min_x: 16,
+            max_x: 23,
+            min_y: 0,
+            max_y: 7,
+        };
+
+        let mut bake = Bake::new();
+        bake.blocks.insert(
+            0 << 16,
+            Cached {
+                baked: block((63, 7, 7, 10)),
+                used: 0,
+            },
+        );
+        let narrow = collect_ring(&mut bake, &map, &[], frame, &tiledata, &Cutaway::OPEN, None, 1);
+        assert_eq!(
+            narrow.at(16, 7),
+            None,
+            "block (0, 0) is outside a ring of one from block (2, 0)"
+        );
+
+        let mut bake = Bake::new();
+        bake.blocks.insert(
+            0 << 16,
+            Cached {
+                baked: block((63, 7, 7, 10)),
+                used: 0,
+            },
+        );
+        let wide = collect_ring(&mut bake, &map, &[], frame, &tiledata, &Cutaway::OPEN, None, 2);
+        assert!(wide.at(16, 7).is_some(), "a ring of two reaches block (0, 0)");
+    }
+
+    /// The radius the table measures today: zero, on every install this
+    /// build can read, because nothing it can build reaches past its own
+    /// tile — see [`ring_radius`]'s own doc for the argument. What this holds
+    /// is only that the answer is not a made-up constant: it is read off the
+    /// atlas the caller hands it, whatever that atlas turns out to hold.
+    #[test]
+    fn the_measured_radius_is_zero_until_something_authors_a_reach() {
+        assert_eq!(ring_radius(None), 0);
+        let atlas = StaticAtlas::pack(Vec::new()).expect("an empty atlas");
+        assert_eq!(ring_radius(Some(&atlas)), 0);
     }
 }
