@@ -31,7 +31,7 @@ use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::layout::{Element, parse};
 use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
-use openshard_protocol::mobile::{Equipment, Notoriety, StatusFlags};
+use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::speech::{Font, SpokenMessage, TalkMode, UnicodeMessage};
@@ -248,6 +248,41 @@ pub struct WorldView {
     /// here: a container's icons overlap, and the shard's order is the order the
     /// reference client draws them in.
     pub contents: HashMap<Serial, Vec<ContainedItem>>,
+    /// Whose paperdoll the shard has opened a window for (`0x88`), by the
+    /// mobile's serial.
+    ///
+    /// # What is deliberately not here
+    ///
+    /// The equipment. A `0x88` carries a serial, a title and a flag byte and
+    /// says nothing about what is worn, because the client already has that: a
+    /// `0x78` dressed [`mobiles`](Self::mobiles), or [`player`](Self::player)
+    /// when the mobile is us. So this table is the *window*, and what it draws
+    /// is read out of the mobile it names — which is also what keeps a
+    /// paperdoll standing open honest, since taking a hat off is a `0x78` and
+    /// reaches the window without a packet of its own.
+    ///
+    /// Keyed by serial, so a second `0x88` about the same mobile replaces the
+    /// title rather than stacking a window. Removed by
+    /// [`paperdoll_closed`](Self::paperdoll_closed): closing one is a click,
+    /// exactly as it is for a container and a gump.
+    pub paperdolls: HashMap<Serial, Paperdoll>,
+}
+
+/// A paperdoll window the shard has opened here.
+///
+/// Two fields and no equipment — see [`WorldView::paperdolls`]. The serial is
+/// the key rather than a field, for [`WorldView::containers`]' reason: nothing
+/// can hold a paperdoll for a mobile other than the one it is filed under.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Paperdoll {
+    /// The title across the top: the name, plus any honorific the shard chose to
+    /// put in front of it. Not the mobile's name as anything else knows it — the
+    /// wire's `0x88` is the only place this string exists.
+    pub name: String,
+    /// War mode, and whether this client may lift what is worn. The second is
+    /// the shard's answer and not a guess: it is set for your own paperdoll and
+    /// for a pet's, and clear for a stranger's.
+    pub flags: PaperdollFlags,
 }
 
 /// A dialog the server has opened on this client, layout already read.
@@ -305,7 +340,20 @@ impl WorldView {
             gumps: Vec::new(),
             containers: HashMap::new(),
             contents: HashMap::new(),
+            paperdolls: HashMap::new(),
         }
+    }
+
+    /// Forget a paperdoll window this client has just closed.
+    ///
+    /// [`container_closed`](Self::container_closed)'s twin, and the third time
+    /// the same fact shows up: no packet closes a window. Nothing else is
+    /// dropped with it — the equipment a paperdoll draws belongs to the mobile
+    /// and outlives the window over it.
+    ///
+    /// Answers whether one was actually open.
+    pub fn paperdoll_closed(&mut self, mobile: Serial) -> bool {
+        self.paperdolls.remove(&mobile).is_some()
     }
 
     /// Forget a container window this client has just closed.
@@ -582,6 +630,23 @@ impl WorldView {
                     }
                 }
             }
+            // A paperdoll. Only the window: the equipment it draws is already
+            // held on the mobile this names — see `WorldView::paperdolls`.
+            //
+            // Recorded even for a mobile this client has never been shown. The
+            // packet is the shard saying "open a window on this serial", and a
+            // client that dropped it because the body is not on screen would be
+            // deciding what it was told; the window can draw a title and no
+            // body, which is honest, where nothing at all is not.
+            ServerPacket::OpenPaperdoll(paperdoll) => {
+                let fresh = Paperdoll {
+                    name: paperdoll.text.clone(),
+                    flags: paperdoll.flags,
+                };
+                let changed = self.paperdolls.get(&paperdoll.serial) != Some(&fresh);
+                self.paperdolls.insert(paperdoll.serial, fresh);
+                changed
+            }
             // Mobiles walking out of range and items being picked up arrive the
             // same way — the client does not distinguish, it just forgets the
             // serial. Only one of the three places can ever hold it: a serial is
@@ -602,7 +667,14 @@ impl WorldView {
                 // A container that is itself removed takes its window with it.
                 let had_window = self.containers.remove(&remove.serial).is_some();
                 self.contents.remove(&remove.serial);
-                had_mobile || had_item || was_held || had_window
+                // And so does a mobile: a body that walked out of range cannot
+                // be looked at any more, and the window over it would keep
+                // drawing the equipment as it stood when the body left. The
+                // reference does exactly this, in `Mobile.Destroy` — and only
+                // for a mobile that is not the player, which needs no guard
+                // here because a `0x1D` never names our own serial.
+                let had_paperdoll = self.paperdolls.remove(&remove.serial).is_some();
+                had_mobile || had_item || was_held || had_window || had_paperdoll
             }
             _ => false,
         }
@@ -1033,6 +1105,94 @@ mod tests {
             !view.apply(&ServerPacket::Remove(Remove { serial: item.serial })),
             "forgetting something already gone changes nothing"
         );
+    }
+
+    fn paperdoll_of(serial: Serial) -> ServerPacket {
+        ServerPacket::OpenPaperdoll(openshard_protocol::mobile::OpenPaperdoll {
+            serial,
+            text: "Lord British".to_owned(),
+            flags: PaperdollFlags::CAN_LIFT,
+        })
+    }
+
+    /// A `0x88` opens a window and dresses nobody: the equipment it draws came
+    /// in a `0x78` and stays on the mobile. Asserted together because the
+    /// tempting shape — a paperdoll that carries its own copy of the equipment —
+    /// is exactly what would go stale the next time a hat came off.
+    #[test]
+    fn a_paperdoll_is_a_window_over_equipment_the_mobile_already_has() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::MobileIncoming(MobileIncoming {
+            serial: other(),
+            body: Graphic(0x0190),
+            position: Point::new(1476, 1770, 20),
+            facing: Facing::walking(Direction::South),
+            hue: Hue(0x83EA),
+            flags: StatusFlags::NONE,
+            notoriety: Notoriety::Innocent,
+            equipment: vec![shirt()],
+        }));
+
+        assert!(view.apply(&paperdoll_of(other())));
+        let open = view.paperdolls.get(&other()).expect("the window was recorded");
+        assert_eq!(open.name, "Lord British");
+        assert_eq!(open.flags, PaperdollFlags::CAN_LIFT);
+        assert_eq!(
+            view.mobiles.get(&other()).unwrap().equipment,
+            vec![shirt()],
+            "and the equipment is still the mobile's"
+        );
+        assert!(
+            !view.apply(&paperdoll_of(other())),
+            "the same window twice settles"
+        );
+    }
+
+    /// Closing a window is a click and no packet carries it — the third place
+    /// this is true. What must *not* go with it is the equipment: it belongs to
+    /// the mobile and the body is still standing there.
+    #[test]
+    fn closing_a_paperdoll_leaves_the_mobile_dressed() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::MobileIncoming(MobileIncoming {
+            serial: other(),
+            body: Graphic(0x0190),
+            position: Point::new(1476, 1770, 20),
+            facing: Facing::walking(Direction::South),
+            hue: Hue(0x83EA),
+            flags: StatusFlags::NONE,
+            notoriety: Notoriety::Innocent,
+            equipment: vec![shirt()],
+        }));
+        view.apply(&paperdoll_of(other()));
+
+        assert!(view.paperdoll_closed(other()));
+        assert!(view.paperdolls.is_empty());
+        assert_eq!(view.mobiles.get(&other()).unwrap().equipment, vec![shirt()]);
+        assert!(!view.paperdoll_closed(other()), "a stale click closes nothing");
+    }
+
+    /// A body that walked out of range takes its paperdoll with it — the window
+    /// would otherwise keep drawing the equipment as it stood when the mobile
+    /// left. `Mobile.Destroy` in the reference does the same.
+    #[test]
+    fn a_mobile_leaving_closes_its_paperdoll() {
+        let mut view = WorldView::entered(start());
+        view.apply(&paperdoll_of(other()));
+        assert!(view.apply(&ServerPacket::Remove(Remove { serial: other() })));
+        assert!(view.paperdolls.is_empty());
+    }
+
+    /// The shard may open a paperdoll on a serial this client has never been
+    /// shown — a `0x88` is an instruction, not a description of the screen.
+    /// Recording it is what lets the window draw a title over an empty body
+    /// rather than nothing at all.
+    #[test]
+    fn a_paperdoll_for_a_mobile_never_seen_is_still_recorded() {
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&paperdoll_of(other())));
+        assert!(view.paperdolls.contains_key(&other()));
+        assert!(!view.mobiles.contains_key(&other()));
     }
 
     fn chest() -> Serial {

@@ -37,7 +37,7 @@
 //! argument for the ease living on the body rather than on the eye.
 
 use openshard_protocol::direction::Direction;
-use openshard_protocol::wire::Hue;
+use openshard_protocol::wire::{Hue, Layer};
 use openshard_protocol::world::Point;
 use openshard_uofiles::equipconv::EquipConv;
 
@@ -127,6 +127,15 @@ pub struct EquipmentLayer {
     pub graphic: u16,
     /// Its hue, or [`Hue::NONE`] for none.
     pub hue: Hue,
+    /// Which slot it is worn on.
+    ///
+    /// Carried because the *picture* is not enough to draw a body correctly:
+    /// the reference skips hair and a beard on the dead ([`worn_graphic`]), and
+    /// nothing about a hair graphic says it is hair. It is also the field a
+    /// paperdoll's layer ordering needs — see `docs/client.md` — which is why
+    /// it is the wire's [`Layer`] and not a smaller local enum: the ordering
+    /// table is written against these numbers.
+    pub layer: Layer,
 }
 
 /// Where a mobile is asking to be looked at.
@@ -213,12 +222,25 @@ pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(u16
 /// as somebody else's legs walking about beside the character, which is
 /// exactly what it was found as.
 ///
+/// The other `None` is the dead. A shard dresses a ghost in whatever it was
+/// wearing that death does not take off — for a relogged player that is a death
+/// shroud, its backpack and *its hair* — and the reference draws neither hair
+/// nor beard on a corpse or a ghost:
+/// `IsDead && (layer == Layer.Hair || layer == Layer.Beard)` in `MobileView.Draw`.
+/// So a ghost is bald under its hood, and this is the one place that decides it,
+/// which is what [`EquipmentLayer::layer`] exists for.
+///
 /// Shared by [`needed_animations`] and [`collect`] because they must agree on
 /// every part of this — which layers exist and which graphic each one is under.
 /// A layer packed and not drawn is waste; a layer drawn and not packed is a
 /// hole.
 fn worn_graphic(mobile: &Mobile, layer: EquipmentLayer, equip_conv: &EquipConv) -> Option<(u16, Hue)> {
     if layer.graphic == 0 {
+        return None;
+    }
+    if openshard_uofiles::anim::is_ghost(mobile.body)
+        && (layer.layer == Layer::HAIR || layer.layer == Layer::BEARD)
+    {
         return None;
     }
     // Keyed on the body the *shard* named and not on the one the animation is
@@ -613,6 +635,19 @@ mod tests {
         EquipConv::default()
     }
 
+    /// A worn layer in an ordinary slot — `Layer.InnerTorso`, a shirt.
+    ///
+    /// The slot is only ever asked about for hair and a beard (see
+    /// [`worn_graphic`]), so everything else stands for "a piece of clothing"
+    /// and the tests below say so once, here, rather than choosing a number each.
+    fn worn_on_torso(graphic: u16, hue: Hue) -> EquipmentLayer {
+        EquipmentLayer {
+            graphic,
+            hue,
+            layer: Layer(0x05),
+        }
+    }
+
     /// A body standing still on its tile, hue and equipment free.
     fn body_at(x: u16, facing: Direction) -> Mobile {
         Mobile {
@@ -759,10 +794,7 @@ mod tests {
             )])
             .expect("both frames fit");
         let mobile = Mobile {
-            equipment: vec![EquipmentLayer {
-                graphic: 7005,
-                hue: Hue::NONE,
-            }],
+            equipment: vec![worn_on_torso(7005, Hue::NONE)],
             ..body_at(100, Direction::SouthEast)
         };
         let at = placed(&mobile, &camera, &atlas);
@@ -832,10 +864,7 @@ mod tests {
         // Their own hues, so the assertion is "replaced" and not "set".
         let dressed = |x: u16| Mobile {
             hue: Hue(0x03B2),
-            equipment: vec![EquipmentLayer {
-                graphic: 7005,
-                hue: Hue(0x0455),
-            }],
+            equipment: vec![worn_on_torso(7005, Hue(0x0455))],
             ..body_at(x, Direction::SouthEast)
         };
         let quads = collect(
@@ -1307,10 +1336,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![EquipmentLayer {
-                graphic: 7017,
-                hue: Hue::NONE,
-            }],
+            equipment: vec![worn_on_torso(7017, Hue::NONE)],
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &equip_conv, None);
         assert_eq!(quads.len(), 2, "the body and its one worn item");
@@ -1373,10 +1399,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![EquipmentLayer {
-                graphic: 0,
-                hue: Hue::NONE,
-            }],
+            equipment: vec![worn_on_torso(0, Hue::NONE)],
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&mobile), &no_equip()),
@@ -1387,6 +1410,81 @@ mod tests {
             collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None).len(),
             1,
             "the body alone, with no monster's frame worn over it",
+        );
+    }
+
+    /// A ghost is bald, and the shard is not wrong to have dressed it.
+    ///
+    /// A relogged dead player wears a death shroud, its backpack and its hair —
+    /// checked against a real save — and the reference refuses to draw the last
+    /// of the three on the dead. The graphic alone cannot say which layer is
+    /// hair, which is what [`EquipmentLayer::layer`] is carried for, so this
+    /// test gives one body two identical pictures on different slots: only the
+    /// slot can tell them apart, and only one of them draws.
+    #[test]
+    fn a_ghost_wears_no_hair() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        // Body 0x0192 is drawn from the living body two below it, which is what
+        // the atlas is packed under — `anim::animation_body`.
+        let atlas = AnimAtlas::pack([
+            (
+                FrameKey {
+                    body: 0x0190,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 20,
+                    center_y: -2,
+                    image: Image::new(40, 60, vec![Color16(0x7C00); 40 * 60]),
+                },
+            ),
+            (
+                FrameKey {
+                    body: 7005,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 20,
+                    center_y: -2,
+                    image: Image::new(40, 60, vec![Color16(0x7C00); 40 * 60]),
+                },
+            ),
+        ])
+        .expect("both frames fit");
+        let dressed = |body: u16| Mobile {
+            body,
+            equipment: vec![
+                worn_on_torso(7005, Hue::NONE),
+                EquipmentLayer {
+                    graphic: 7005,
+                    hue: Hue::NONE,
+                    layer: Layer::HAIR,
+                },
+            ],
+            ..body_at(100, Direction::SouthEast)
+        };
+
+        let living = dressed(0x0190);
+        assert_eq!(
+            collect(&[living], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None).len(),
+            3,
+            "a living body wears both of them: the body, the shirt and the hair",
+        );
+
+        let ghost = dressed(0x0192);
+        assert_eq!(
+            needed_animations(std::slice::from_ref(&ghost), &no_equip()),
+            vec![(0x0190, 4, 0), (7005, 4, 0)],
+            "the hair is not packed either — the pack and the draw must agree",
+        );
+        assert_eq!(
+            collect(&[ghost], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None).len(),
+            2,
+            "and a ghost wears only the shirt: the body, the shirt, no hair",
         );
     }
 
@@ -1423,10 +1521,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![EquipmentLayer {
-                graphic: 7017,
-                hue: Hue::NONE,
-            }],
+            equipment: vec![worn_on_torso(7017, Hue::NONE)],
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(
@@ -1452,10 +1547,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![EquipmentLayer {
-                graphic: 7017,
-                hue: Hue::NONE,
-            }],
+            equipment: vec![worn_on_torso(7017, Hue::NONE)],
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(

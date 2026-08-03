@@ -123,6 +123,18 @@ pub struct ClilocId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct Layer(pub u8);
 
+impl Layer {
+    /// `Layer.Hair`. Hair is an ordinary worn item on this wire, and the two
+    /// ends disagree about what to do with it: the shard dresses a corpse and a
+    /// ghost in it, and the client refuses to draw it on either
+    /// (`IsDead && (layer == Layer.Hair || layer == Layer.Beard)`).
+    pub const HAIR: Self = Self(0x0B);
+    /// `Layer.FacialHair` — a beard. [`HAIR`](Self::HAIR)'s twin everywhere it
+    /// is asked about, which is why the pair is named here rather than at the
+    /// two call sites that had one each.
+    pub const BEARD: Self = Self(0x10);
+}
+
 /// A layer exactly as a client packet proposed it.
 ///
 /// Only `0x13` carries one inbound — the client works the slot out from the

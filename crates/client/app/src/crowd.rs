@@ -65,6 +65,11 @@ pub fn worn(equipment: &[Equipment], tiledata: &TileData) -> Vec<EquipmentLayer>
         .map(|item| EquipmentLayer {
             graphic: tiledata.static_tile(item.graphic.0).anim_id,
             hue: item.hue,
+            // The wire's slot, carried through rather than resolved here: what
+            // it decides — hair on a ghost, and the order a paperdoll draws in —
+            // is the renderer's, and a layer this end reinterpreted would be a
+            // second opinion about a number the shard already stated.
+            layer: item.layer,
         })
         .collect()
 }

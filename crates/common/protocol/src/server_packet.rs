@@ -195,7 +195,7 @@ impl ServerPacket {
             Self::LogoutAck(_) => LogoutAck::ID,
             Self::MapChange(_) => MapChange::ID,
             Self::Remove(_) => <Remove as EncodePacket>::ID,
-            Self::OpenPaperdoll(_) => OpenPaperdoll::ID,
+            Self::OpenPaperdoll(_) => <OpenPaperdoll as EncodePacket>::ID,
             Self::MobileStatus(_) => <MobileStatus as EncodePacket>::ID,
             Self::MobileMove(_) => <MobileMove as EncodePacket>::ID,
             Self::MobileIncoming(_) => <MobileIncoming as EncodePacket>::ID,
@@ -258,7 +258,7 @@ impl ServerPacket {
             Self::LogoutAck(_) => LogoutAck::LENGTH,
             Self::MapChange(_) => MapChange::LENGTH,
             Self::Remove(_) => Remove::LENGTH,
-            Self::OpenPaperdoll(_) => OpenPaperdoll::LENGTH,
+            Self::OpenPaperdoll(_) => <OpenPaperdoll as EncodePacket>::LENGTH,
             Self::MobileStatus(_) => MobileStatus::LENGTH,
             Self::MobileMove(_) => MobileMove::LENGTH,
             Self::MobileIncoming(_) => MobileIncoming::LENGTH,
@@ -453,6 +453,9 @@ impl ServerPacket {
             <ContainerContents as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::ContainerContents)
                 .map_err(ServerDecodeError::ContainerContents)?,
+            <OpenPaperdoll as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::OpenPaperdoll)
+                .map_err(ServerDecodeError::OpenPaperdoll)?,
             _ => return Ok(None),
         };
         Ok(Some(decoded))
@@ -507,6 +510,8 @@ pub enum ServerDecodeError {
     AddToContainer(DecodeError),
     /// `0x3C` did not decode.
     ContainerContents(DecodeError),
+    /// `0x88` did not decode.
+    OpenPaperdoll(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -532,6 +537,7 @@ impl fmt::Display for ServerDecodeError {
             Self::OpenContainer(error) => ("0x24 open container", error),
             Self::AddToContainer(error) => ("0x25 add to container", error),
             Self::ContainerContents(error) => ("0x3C container contents", error),
+            Self::OpenPaperdoll(error) => ("0x88 paperdoll", error),
         };
         write!(f, "{name}: {error}")
     }
@@ -620,7 +626,7 @@ pub fn server_packet_length(id: u8, version: ClientVersion) -> Option<PacketLeng
         0x82 => <LoginDenied as EncodePacket>::LENGTH,
         0x85 => DeleteReject::LENGTH,
         0x86 => CharacterListUpdate::LENGTH,
-        0x88 => OpenPaperdoll::LENGTH,
+        0x88 => <OpenPaperdoll as EncodePacket>::LENGTH,
         0x8C => <Relay as EncodePacket>::LENGTH,
         0x9E => SellList::LENGTH,
         0xA1 => HealthBar::LENGTH,

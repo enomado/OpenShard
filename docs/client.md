@@ -1039,6 +1039,82 @@ Still open, in rough order:
 - **The gump pass has no blending**, so a `{ checkertrans }` is skipped and a
   container's own art is drawn opaque. Fine for a bag; not for a paperdoll.
 
+### The paperdoll — the wire and the memory, not yet the window
+
+A `0x88` is the shard's answer to double-clicking a body, and it *was* the one
+packet this engine sends that its own client could not read: `OpenPaperdoll`
+encoded and was a `ServerPacket` variant, with no `DecodePacket` behind it, so a
+client was handed `Ok(None)` and read on. It decodes now, and `WorldView` holds
+what is open. What is left is the drawing — decisions 2, 3 and 5 below.
+
+The five decisions, the first and fourth of them taken:
+
+1. **A `0x88` is not a listing, and `WorldView::paperdolls` is built on that.**
+   It carries a serial, a 60-byte name and a flag byte (`PaperdollFlags`:
+   warmode, can-lift) and nothing about equipment, because the client already
+   has it: a `0x78` carries the wearer's layers, and `WorldView` folds them into
+   the mobile (and into `Player` for our own, which is the only `0x78` a shard
+   ever sends us about ourselves). So the table holds what is *open* — name and
+   flags, keyed by the mobile — and reads the equipment out of the mobile it
+   names. The same shape `containers` has beside `contents`, and for the same
+   reason: the window and what is in it arrive apart, and one can change without
+   the other. It also means taking a hat off reaches an open paperdoll with no
+   packet of its own.
+
+   Two things the wire does not say, each a line in `view.rs`: closing the
+   window is a click, so `paperdoll_closed` is `container_closed`'s twin — and
+   it drops nothing else, because the equipment belongs to the body; and a `0x1D`
+   for the mobile closes it, which is `Mobile.Destroy` in the reference and the
+   only thing that ever would.
+2. **A paperdoll's art is gump art, keyed by the item's `anim_id`, and this is
+   a third index space.** The body is a gump — `0x000C` male, `0x000D` female,
+   `0x03DB` drawn as `0x000C` in hue `0x03EA` — and each worn layer's picture is
+   `StaticTile::anim_id + 50000` for a male body and `+ 60000` for a female one,
+   falling back to the male gump when the female one is missing
+   (ClassicUO's `IsAnimExistsInGump`; `PaperDollInteractable.GetAnimID` is the
+   whole function). `Equipconv.def`'s fourth column — parsed and dropped today,
+   `_gump` in `equipconv.rs` — overrides the `anim_id` before the offset for
+   bodies that need it. **`worn_graphic` cannot be reused**: it answers the same
+   question into `anim.mul`'s body-animation space, and `+ 50000` into
+   `gumpart` is a different picture of the same shirt. Two resolvers, one table
+   each, and the `anim_id == 0` guard is the only line they share — with
+   opposite meaning, since a backpack draws here and never on a walking body.
+3. **The draw order is not the layer numbering.** ClassicUO builds the order per
+   body (`PaperdollOrder.Build`) — arms and torso swap for a female or gargoyle
+   body — draws the backpack last and outside that pass, and skips hair and
+   beard on the dead. Every one of those is a question about which *layer* a
+   piece was worn on, and
+   [`EquipmentLayer`](../crates/client/render/src/mobiles.rs) carried a graphic
+   and a hue and not the layer. It carries `Layer` now, through `crowd::worn`
+   from the wire's own byte — one field, and the ordering table has something to
+   be written against. It paid for itself immediately: **a ghost is bald**,
+   which is the backlog entry below, and `worn_graphic` is the one place that
+   decides it, for the atlas and the quad alike.
+
+   The table itself is still unwritten, and the ordering is still "as the shard
+   listed them" on a walking body. That is tolerable there — layers on a sprite
+   rarely overlap wrongly — and it is not on a paperdoll, which is one flat
+   picture where every layer overlaps every other.
+4. **Female is the body graphic, not a flag on the wire.** Nothing in `0x78` or
+   `0x88` says it; `mobile.IsFemale` is a fact about `0x0191`/`0x025E` and their
+   kin. So the offset in decision 2 is chosen from the body the client is
+   already drawing, and a mobile whose body is unknown is drawn male the way the
+   reference does rather than not at all.
+5. **The window is the container's, not egui's.** Position, drag, z-order,
+   right-click close and picking against the picture are already the client's
+   (`crates/client/render/container.rs`, `client/app`), in gump pixels, and a
+   paperdoll is that machinery's second caller — which is the point of having
+   written it there. What a paperdoll adds is *buttons* over its own art, which
+   a container has none of: that is the `GumpAtlas::opaque_at` hit test the gump
+   backlog already names, and it should land here rather than growing a second
+   window kind.
+
+Done when: double-clicking a mobile — or ourselves — opens a window that draws
+its body and its equipment in the reference's order and hues, with the backpack
+last; the window drags, raises and closes like a container's; and a test says
+that a female body's order differs from a male one where the reference says it
+does, and that a layer with `anim_id == 0` draws nothing.
+
 ## M5 — interaction
 
 Single and double click (`0x09`, `0x06`), drag and drop (`0x07`, `0x08`),
@@ -1138,7 +1214,8 @@ Then three behaviours, in the order they are worth having:
   shard already answers a mobile's use with a paperdoll (`0x88`). **The client
   cannot draw a paperdoll yet**, so this lands as a log line until the gump
   layer grows one — worth saying out loud, because "nothing happened" is what a
-  broken click looks like too.
+  broken click looks like too. What growing one costs is written down in "The
+  paperdoll — planned, not built" in M4.
 - **Single click → `0x09`.** The shard has this end already —
   `Command::SingleClick` is dispatched and answered — so the whole cost on this
   side is the packet and the click. The answer is the name over the head, in
@@ -2816,17 +2893,20 @@ the way and not done:
   under the wearer and followed them around. `worn_graphic` is the one place
   that answers "what does this layer draw with", for the atlas and for the quad
   alike, and it answers `None` here.
-- **The shard's ghost is dressed correctly, and the layer this end cannot tell
-  apart is the hair.** Checked rather than assumed, against the save: a relogged
+- ~~**The shard's ghost is dressed correctly, and the layer this end cannot tell
+  apart is the hair.**~~ Fixed: `EquipmentLayer` carries the wire's `Layer`, and
+  `worn_graphic` answers `None` for hair and a beard on a ghost body — one place,
+  so the atlas and the quad cannot disagree about it. What was found:
+  checked rather than assumed, against the save, a relogged
   ghost wears exactly three things — a death shroud (`0x204E`), its backpack
   (which is where the zero `AnimID` came from; a backpack stays on the dead in
   UO too) and its hair. The reference draws the first two and skips the last,
   `IsDead && (layer == Layer.Hair || layer == Layer.Beard)`, so a ghost is
-  bald under its hood. This end cannot make that decision at all:
-  [`EquipmentLayer`](../crates/client/render/src/mobiles.rs) carries a graphic
-  and a hue and *not* the layer it was worn on, so "hair" is not a question the
-  renderer can ask. Carrying `Layer` through `crowd::worn` is the fix, and it is
-  the same field a real paperdoll ordering will need.
+  bald under its hood. This end could not make that decision at all:
+  [`EquipmentLayer`](../crates/client/render/src/mobiles.rs) carried a graphic
+  and a hue and *not* the layer it was worn on, so "hair" was not a question the
+  renderer could ask — and it is the same field a real paperdoll ordering needs,
+  which is why the fix landed with the paperdoll's wire half.
 - **The silent drop cost a third hunt, so it should stop being silent.** Twice
   above this is named as a hazard and once below as an accident; this time it
   was the whole defect, and from outside it is indistinguishable from the

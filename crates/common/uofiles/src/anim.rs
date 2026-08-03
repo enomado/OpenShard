@@ -223,6 +223,17 @@ impl BodyKind {
 /// reader rather than a `match` at a call site: a missing index block is `None`
 /// from [`Anim::frames`] and an absent mobile on screen, with nothing logged and
 /// nothing failing. It was found by a player dying and disappearing.
+/// Whether a body is a dead player's.
+///
+/// The same two ids [`animation_body`] remaps, asked as the question the drawing
+/// has: a ghost is not a different animation, it is the living body drawn
+/// differently — translucent, and with neither hair nor beard on it. Here rather
+/// than at the renderer that asks, because it is a fact about the client's body
+/// ids and the pair must not be written down twice.
+pub const fn is_ghost(body: u16) -> bool {
+    matches!(body, 0x0192 | 0x0193)
+}
+
 pub const fn animation_body(body: u16) -> u16 {
     match body {
         // The ghosts, drawn from the living body of the same sex.
