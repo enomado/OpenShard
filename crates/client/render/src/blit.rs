@@ -108,6 +108,16 @@ pub struct Blit {
     /// opposite of the two planes above: they are the camera's rectangle and
     /// this is a list whose length is what the camera happens to be looking at.
     surfaces: wgpu::Texture,
+    /// The hole in each of those surfaces, one texel a surface and in the same
+    /// order — see
+    /// [`Occlusion::aperture_bytes`](crate::occlusion::Occlusion::aperture_bytes).
+    ///
+    /// Grown with [`Blit::surfaces`] and never on its own, because the two are
+    /// indexed by one number. **Written only when something in the frame has a
+    /// hole**: the surface's own `HOLED` bit is what makes the shader read this
+    /// at all, so a frame with no window in it neither lays these bytes out nor
+    /// sends them, which is every frame of a real map until step 16 lands.
+    apertures: wgpu::Texture,
 }
 
 impl Blit {
@@ -210,6 +220,21 @@ impl Blit {
                     },
                     count: None,
                 },
+                // And the hole in each of those surfaces, indexed by the same
+                // number. A plane beside the list rather than four more channels
+                // of it: `Occlusion::aperture_bytes` argues why, and the short
+                // form is that the list is what the walk reads in a loop and a
+                // hole is what almost nothing has.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -286,6 +311,7 @@ impl Blit {
             // One row, which is a list of no surfaces: the grid above says every
             // tile stands nothing, so nothing indexes into it.
             surfaces: grid_texture(device, "surfaces", crate::occlusion::SURFACE_ROW, 1),
+            apertures: grid_texture(device, "apertures", crate::occlusion::SURFACE_ROW, 1),
         }
     }
 
@@ -362,6 +388,14 @@ impl Blit {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(
                         &self.surfaces.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self
+                            .apertures
+                            .create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
             ],
@@ -603,27 +637,44 @@ impl Blit {
         let row = crate::occlusion::SURFACE_ROW;
         let rows = (bytes.len() / (row as usize * 4)) as u32;
         if self.surfaces.height() != rows {
+            // The two planes are indexed by one number, so they are grown
+            // together and never apart — a hole texel at an index the surface
+            // texture holds and this one does not would read as no hole at all,
+            // which is the one direction this cannot be allowed to be wrong in
+            // silently.
             self.surfaces = grid_texture(device, "surfaces", row, rows);
+            self.apertures = grid_texture(device, "apertures", row, rows);
         }
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.surfaces,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(row * 4),
-                rows_per_image: Some(rows),
-            },
-            wgpu::Extent3d {
-                width: row,
-                height: rows,
-                depth_or_array_layers: 1,
-            },
-        );
+        let list = |texture: &wgpu::Texture, bytes: &[u8]| {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row * 4),
+                    rows_per_image: Some(rows),
+                },
+                wgpu::Extent3d {
+                    width: row,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
+            );
+        };
+        list(&self.surfaces, &bytes);
+        // And the holes, only where there are any. What makes skipping this safe
+        // rather than a stale read is the `HOLED` bit: it is written into the
+        // surface plane above, on this frame, and the shader reads a hole only
+        // where it is set — so a frame with no window in it leaves whatever these
+        // texels held and nothing looks at them.
+        if lighting.occlusion.any_aperture() {
+            list(&self.apertures, &lighting.occlusion.aperture_bytes());
+        }
     }
 }
 

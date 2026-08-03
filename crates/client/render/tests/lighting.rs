@@ -1176,7 +1176,7 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
         0,
         openshard_protocol::wire::Graphic(0),
         &wall,
-        None,
+        occlusion::Shape::UNREAD,
     );
     grid.add(
         WALL.0,
@@ -1184,7 +1184,7 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
         30,
         openshard_protocol::wire::Graphic(0),
         &wall,
-        None,
+        occlusion::Shape::UNREAD,
     );
     let lighting = Lighting {
         ambient: Ambient {
@@ -1236,5 +1236,221 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
         "the wall itself stopped being a wall — {:.3} of the ray went through the \
          solid part of it",
         solid.reaches[0].through,
+    );
+}
+
+/// One grid, one panel, one hole: the fixture the two tests below aim rays at.
+///
+/// Built by hand rather than out of a scene, for the reason the gap test above
+/// is: what these are about is one surface with a stated hole in it, which a
+/// `Builder` says in a line and a `Map` makes fiddly. The panel stands on the
+/// **south** side of `HOLED_WALL`, so it lies in the plane `y = HOLED_WALL.1 + 1`
+/// and what runs along it is `x` — which is the coordinate a hole's `near` and
+/// `far` are measured in. See `occlusion::Aperture`.
+fn wall_with_hole(hole: occlusion::Aperture) -> occlusion::Occlusion {
+    use openshard_client_render::camera::TileBounds;
+    use openshard_client_render::facing::{Face, Facing};
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    let mut grid = occlusion::Builder::new(TileBounds {
+        min_x: 95,
+        max_x: 115,
+        min_y: 95,
+        max_y: 115,
+    });
+    grid.add(
+        HOLED_WALL.0,
+        HOLED_WALL.1,
+        0,
+        openshard_protocol::wire::Graphic(0),
+        &StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        },
+        occlusion::Shape {
+            facing: Some(Facing::One(Face::South)),
+            aperture: Some(hole),
+        },
+    );
+    grid.finish()
+}
+
+/// The tile the panel above stands on.
+const HOLED_WALL: (u16, u16) = (105, 105);
+
+/// How much of a ray from `from` to a flame at `to` survives that grid.
+///
+/// The flame is put **far** behind the wall and the lit point close in front of
+/// it on purpose: the penumbra a crossing gets is `FLAME_SPREAD * t / (1 - t)`
+/// with `t` measured from the lit end, so a crossing near the lit end is the
+/// sharpest edge this walk draws. A hole half a tile wide judged through a
+/// penumbra two thirds of a tile wide would be a test of the softening rather
+/// than of the hole.
+fn ray(grid: &occlusion::Occlusion, from: (f32, f32, f32), to: (f32, f32, f32)) -> f32 {
+    use openshard_client_render::light::{Ambient, Light};
+
+    let lighting = Lighting {
+        ambient: Ambient {
+            sky: [0.0, 0.0, 0.0],
+            ground: [0.0, 0.0, 0.0],
+        },
+        lights: vec![Light {
+            at: Vec2::new(to.0, to.1),
+            z: to.2,
+            radius: 12.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        }],
+        occlusion: grid.clone(),
+        sun: None,
+        view: debug::View::Lit,
+    };
+    light::sample(Spot::at(Vec2::new(from.0, from.1), from.2), &lighting).reaches[0].through
+}
+
+/// A ray that goes through the hole in a wall passes; one that goes through the
+/// wall beside it does not.
+///
+/// **Step 21.3**, and the axis it is about is the one that is new: *where along
+/// the surface's own run* the ray crosses. Everything before this asked a
+/// crossing only how high it was, so a window could dim a whole tile and nothing
+/// finer — which is a dimmer tile and not a beam.
+///
+/// The two rays differ in nothing but that. Same wall, same graphic, same
+/// opacity, same height, same flame: one crosses the panel at the middle of its
+/// run and the other near its end, and the hole is stated to cover the middle
+/// half. A test that moved the wall instead would be measuring two walls.
+#[test]
+fn a_ray_through_a_hole_in_a_wall_passes_and_one_beside_it_does_not() {
+    // The middle half of the run, open at every height, so that the only thing
+    // deciding either ray is `v`. The height half is the test below.
+    let grid = wall_with_hole(occlusion::Aperture::new(0.25, 0.75, -128, 127));
+    // Five tiles north of the wall: far enough that the crossing is a twentieth
+    // of the way along the ray, which is the sharpest penumbra the walk draws.
+    let flame = (105.5, 100.5, 0.0);
+
+    let middle = ray(&grid, (105.5, 106.2, 0.0), flame);
+    let beside = ray(&grid, (105.95, 106.2, 0.0), flame);
+
+    assert!(
+        middle > 0.95,
+        "the hole is not a hole — only {middle:.3} of a ray aimed straight through \
+         its middle survived",
+    );
+    assert!(
+        beside < 0.05,
+        "the wall beside the hole stopped being a wall — {beside:.3} of the ray went \
+         through it, so the hole is the whole tile and not a rectangle in it",
+    );
+}
+
+/// And the same hole in the other direction: a ray over the top of it is stopped
+/// by the wall above.
+///
+/// The `z` half of the rectangle, and it needs its own test because the scene
+/// that measures the fan on the ground cannot ask it — a floor pixel and a flame
+/// are both near `z = 0`, so every ray in that picture crosses at one height. A
+/// hole whose `z` span was ignored would pass both of these and look right in
+/// every picture this file has.
+#[test]
+fn a_ray_over_a_hole_in_a_wall_is_stopped_by_the_wall_above_it() {
+    // Open across the whole run, so that `v` cannot be what decides either ray,
+    // and the bottom half of a twenty-tall wall.
+    let grid = wall_with_hole(occlusion::Aperture::new(0.0, 1.0, 0, 10));
+
+    // Level rays, so the height a ray crosses at is the height it is asked at.
+    let through_it = ray(&grid, (105.5, 106.2, 5.0), (105.5, 100.5, 5.0));
+    let over_it = ray(&grid, (105.5, 106.2, 15.0), (105.5, 100.5, 15.0));
+
+    assert!(
+        through_it > 0.95,
+        "the hole is shut at the height it is open at — {through_it:.3} survived",
+    );
+    assert!(
+        over_it < 0.05,
+        "the wall above the hole stopped being a wall — {over_it:.3} of a ray five \
+         `z` over the top of the hole went through it",
+    );
+}
+
+/// A hole in one tile of a run of wall throws a fan of light onto the ground
+/// behind it, and the tiles either side of it stay dark.
+///
+/// The picture step 21.3 exists to produce, on a scene rather than on a
+/// hand-built grid: `scene::wall_with_a_hole_in_it` is `torch_before_a_wall`
+/// with the middle tile's graphic swapped for one that carries a hole, so the
+/// wall either side is the same graphic at the same height with the same
+/// opacity. A fan that appeared without the hole would be some other defect and
+/// a fan that failed to appear cannot be blamed on the wall.
+#[test]
+fn a_hole_in_a_wall_throws_a_fan_of_light_onto_the_ground_behind_it() {
+    let scene = scene::wall_with_a_hole_in_it();
+    let lighting = scene.lighting(STILL);
+    let (cx, cy) = CENTRE;
+
+    // Behind the holed tile, and behind the solid wall two tiles along it. Same
+    // distance from the flame in `y`, so what differs is the hole and nothing.
+    // Against each tile's *own* ambient rather than against a constant: the sky
+    // field gives a tile beside a wall a different share of the night than one
+    // in the open, so a bare difference of brightnesses would be measuring that
+    // as much as the hole.
+    let behind_hole = at(&lighting, (cx, cy + 1), 0.0) - ambient(&lighting, (cx, cy + 1));
+    let behind_wall = at(&lighting, (cx + 2, cy + 1), 0.0);
+    let dark = ambient(&lighting, (cx + 2, cy + 1));
+
+    assert!(
+        behind_hole > 0.1,
+        "no fan came through the hole: {behind_hole:.3} of flame over the ambient \
+         behind it, against {:.3} behind the wall two tiles along{}",
+        behind_wall - dark,
+        picture(&scene, &lighting),
+    );
+    assert!(
+        (behind_wall - dark).abs() < 0.01,
+        "the wall beside the hole leaks: {behind_wall:.3} against an ambient of \
+         {dark:.3}, so the hole was cut in the whole run{}",
+        picture(&scene, &lighting),
+    );
+    // And it is a *fan*: it is still there two tiles further out, where a hole
+    // that only lit the tile against the wall would have closed.
+    // And it is a **fan**: wider further from the wall than against it. Measured
+    // as the width at half the sweep's own peak rather than at a fixed number,
+    // because a hole this size is seen through a penumbra of about its own width
+    // — the flame is a body, and `FLAME_SPREAD * t / (1 - t)` is two thirds of a
+    // tile by the time the ray has crossed — so there is no plateau to find an
+    // edge of. Half the peak is where the shape is, and the shape is the claim.
+    let width = |y: f32| {
+        let sweep: Vec<(f32, f32)> = (-200..=200)
+            .map(|step| f32::from(cx) + 0.5 + step as f32 / 100.0)
+            .map(|x| {
+                let through = light::sample(Spot::at(Vec2::new(x, y), 0.0), &lighting)
+                    .reaches
+                    .iter()
+                    .find(|reach| reach.within)
+                    .map_or(0.0, |reach| reach.through);
+                (x, through)
+            })
+            .collect();
+        let peak = sweep.iter().map(|(_, t)| *t).fold(0.0, f32::max);
+        let lit: Vec<f32> = sweep
+            .iter()
+            .filter(|(_, through)| *through > peak * 0.5)
+            .map(|(x, _)| *x)
+            .collect();
+        match (lit.first(), lit.last()) {
+            (Some(west), Some(east)) => east - west,
+            _ => 0.0,
+        }
+    };
+    // A tile and a half behind the wall, and three and a half — the second is as
+    // far out as a six-tile pool reaches at all, which is what bounds the pair.
+    let (near, far) = (width(f32::from(cy) + 1.5), width(f32::from(cy) + 3.5));
+    assert!(
+        far > near + 0.2,
+        "the fan does not widen: {near:.2} tiles across half a tile behind \
+         the wall and {far:.2} two and a half behind it{}",
+        picture(&scene, &lighting),
     );
 }

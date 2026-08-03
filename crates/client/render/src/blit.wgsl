@@ -40,15 +40,22 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // of `docs/lighting.md`'s decision 30 — a count of zero is open ground, and
 // nothing else says a tile stands nothing. See `crate::occlusion`.
 @group(0) @binding(4) var occluders: texture_2d<u32>;
-// What each of those tiles *is*, over the same rectangle: (sky, aperture, body,
+// What each of those tiles *is*, over the same rectangle: (sky, unused, unused,
 // unused). Only the sky channel is written today. See `crate::occlusion`, and
 // `docs/lighting_world.md` for why this is a second plane rather than four more
 // channels of the cell above.
 @group(0) @binding(5) var field: texture_2d<u32>;
 // And the surfaces themselves, one texel each, folded into rows `SURFACE_ROW`
-// wide: (z_bottom + 128, z_top + 128, opacity, PRESENT | edges). A texture and
-// not a storage buffer because the ceiling is WebGL2 — decision 30.5.
+// wide: (z_bottom + 128, z_top + 128, opacity, PRESENT | HOLED | edges). A
+// texture and not a storage buffer because the ceiling is WebGL2 — decision 30.5.
 @group(0) @binding(6) var surfaces: texture_2d<u32>;
+// The hole in each of those surfaces, indexed by the same number:
+// (near, far, z_bottom + 128, z_top + 128) — `occlusion::Aperture`. A plane
+// beside the list rather than four more channels of it, because the list is what
+// the walk reads cell after cell in a loop and a hole is what almost nothing
+// has: the `HOLED` bit is what makes this read at all, so an ordinary wall pays
+// one bit test and no fetch.
+@group(0) @binding(7) var apertures: texture_2d<u32>;
 
 // One flame. Three `vec4`s rather than nine fields, because a uniform array's
 // stride is rounded up to 16 bytes either way and this is what the CPU writes:
@@ -251,6 +258,14 @@ const EDGE_EAST: u32 = 2u;
 const EDGE_SOUTH: u32 = 4u;
 const EDGE_WEST: u32 = 8u;
 const EDGE_MASK: u32 = 15u;
+// And the bit that says this surface has a hole in it, so that its texel in the
+// aperture plane means something. `occlusion::HOLED`.
+const HOLED: u32 = 64u;
+// How many parts of a tile one step of a hole's run coordinate is worth.
+// `occlusion::RUN_STEPS`, and the two are one number: both sides read the same
+// byte and divide it by this, so the two implementations agree exactly rather
+// than to a tolerance.
+const RUN_STEPS: f32 = 255.0;
 
 // How much of a panel a ray pierces at height `z` runs into: 1 well inside the
 // span it occupies, 0 well outside, and a gradient `tall` `z` units wide across
@@ -275,6 +290,65 @@ fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
     return clamp(inside / band + 0.5, 0.0, 1.0);
 }
 
+// A soft interval: 1 well inside `low..=high`, 0 well outside, and a gradient
+// `band` wide across each edge.
+//
+// `pierces` with its one asymmetry taken out, and that is why it is a second
+// function rather than a call of the first. A wall's *bottom* edge is the ground
+// it stands on and the ray a person looks at runs along it, so that band hangs
+// below rather than straddling. A **hole's** edges are in the middle of a
+// surface and no ray runs along them by construction, so a hole softens the same
+// amount both ways or it is a hole that has been moved half a penumbra down.
+//
+// `light::inside`.
+fn inside(x: f32, low: f32, high: f32, band: f32) -> f32 {
+    let width = max(band, 1.0e-3);
+    return clamp(min(x - low, high - x) / width + 0.5, 0.0, 1.0);
+}
+
+// Where along a panel's own run a point of it lies, 0 to 1 across the tile.
+//
+// A panel on a north or south side lies in a plane of constant `y`, so what runs
+// along it is `x`; an east or west one is the other way round. That is the whole
+// of a surface's own coordinate system, and it is why only a *named* panel may
+// have a hole: a lid and a body have no run to measure one along. `light::run_v`.
+fn run_v(edges: u32, px: f32, py: f32) -> f32 {
+    let along = select(py, px, (edges & (EDGE_NORTH | EDGE_SOUTH)) != 0u);
+    return along - floor(along);
+}
+
+// How much of a surface is **missing** where a ray goes through it: 1 well inside
+// the hole, 0 well outside, with the same penumbra its top edge gets.
+//
+// The two spans meet with `min` and not with a product, so the corner of a hole
+// is softened once: a point halfway into the hole across *and* halfway up is on
+// one corner's diagonal, and two halves multiplied would make it a quarter of a
+// hole. `light::hole`.
+fn hole(texel: vec4<u32>, v: f32, z: f32, wide: f32, tall: f32) -> f32 {
+    let across = inside(v, f32(texel.x) / RUN_STEPS, f32(texel.y) / RUN_STEPS, wide);
+    let up = inside(z, f32(texel.z) - 128.0, f32(texel.w) - 128.0, tall);
+    return min(across, up);
+}
+
+// How much of a surface stands in the way at the point a ray goes through its
+// plane: the span it occupies, less the hole in it.
+//
+// The whole of `docs/lighting.md`'s step 21.3, and the reason it is this small is
+// decision 30.7 — a panel was already *pierced at a point* rather than travelled
+// through, so the point was already being computed and a window is what that
+// point is asked about. `index` is the surface's own place in the list, which is
+// where its hole is; `cross` is where the ray goes through the plane, in all
+// three, because the height alone cannot say whether the ray went through the
+// window or through the wall beside it. `light::pierced`.
+fn pierced(stands: vec4<u32>, index: u32, cross: vec3<f32>, wide: f32, tall: f32) -> f32 {
+    let solid = pierces(cross.z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
+    if (stands.w & HOLED) == 0u {
+        return solid;
+    }
+    let v = run_v(stands.w & EDGE_MASK, cross.x, cross.y);
+    return solid * (1.0 - hole(aperture_at(index), v, cross.z, wide, tall));
+}
+
 // How near two boundaries have to be, along the ray, for the ray to be crossing
 // a **corner** rather than a side.
 //
@@ -295,7 +369,7 @@ const CORNER_TIE: f32 = 1.0e-4;
 // The **largest** of the cell's surfaces and not their product, for the reason
 // `walk` takes the largest: two panels on one tile are the two faces of one
 // corner, and a ray that crosses both has gone through one thing once.
-fn panel_stop(cell: vec2<i32>, crossed: u32, z: f32, tall: f32) -> f32 {
+fn panel_stop(cell: vec2<i32>, crossed: u32, cross: vec3<f32>, wide: f32, tall: f32) -> f32 {
     let span = surfaces_at(cell.x, cell.y);
     var stopped = 0.0;
     for (var i = 0u; i < span.y; i = i + 1u) {
@@ -304,7 +378,7 @@ fn panel_stop(cell: vec2<i32>, crossed: u32, z: f32, tall: f32) -> f32 {
         if sides == 0u || (sides & crossed) == 0u {
             continue;
         }
-        let stops = f32(stands.z) / 255.0 * pierces(z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
+        let stops = f32(stands.z) / 255.0 * pierced(stands, span.x + i, cross, wide, tall);
         stopped = max(stopped, stops);
     }
     return stopped;
@@ -375,10 +449,18 @@ fn surfaces_at(x: i32, y: i32) -> vec2<u32> {
     return vec2<u32>(span.x | (span.y << 8u) | (span.z << 16u), span.w);
 }
 
-// One surface of the list: (z_bottom + 128, z_top + 128, opacity, PRESENT | edges).
+// One surface of the list: (z_bottom + 128, z_top + 128, opacity, PRESENT | HOLED | edges).
 fn surface_at(index: u32) -> vec4<u32> {
     let at = vec2<i32>(i32(index % SURFACE_ROW), i32(index / SURFACE_ROW));
     return textureLoad(surfaces, at, 0);
+}
+
+// And its hole: (near, far, z_bottom + 128, z_top + 128). The same index and the
+// same folding, which is what makes the two planes one list — read only where
+// the surface's `HOLED` bit says there is one.
+fn aperture_at(index: u32) -> vec4<u32> {
+    let at = vec2<i32>(i32(index % SURFACE_ROW), i32(index / SURFACE_ROW));
+    return textureLoad(apertures, at, 0);
 }
 
 // One tile's surfaces as one box: the union of the spans, the largest opacity
@@ -687,10 +769,10 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
                     // stands in — see `own_run`, and the seam it was drawing.
                     let stops = sides & ~own_run(own, cell, first);
                     if (stops & entry) != 0u {
-                        by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
+                        by_surface = max(by_surface, opacity * pierced(stands, span.x + i, lit + delta * entered, soft, tall));
                     }
                     if (stops & exit) != 0u {
-                        by_surface = max(by_surface, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
+                        by_surface = max(by_surface, opacity * pierced(stands, span.x + i, lit + delta * leaves, soft, tall));
                     }
                 }
                 stopped = max(stopped, by_surface);
@@ -724,22 +806,23 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, sprea
             // its own tile must not be shadowed by the tile it stands on.
             let by_x = vec2<i32>(cell.x + toward.x, cell.y);
             let by_y = vec2<i32>(cell.x, cell.y + toward.y);
-            let z = lit.z + delta.z * next;
-            let tall = clamp(
+            let cross = lit + delta * next;
+            let wide = clamp(
                 spread * next / max(1.0 - next, 1.0e-3),
                 SOFT_CROSSING_MIN,
                 SOFT_CROSSING_MAX,
-            ) * Z_PER_TILE;
+            );
+            let tall = wide * Z_PER_TILE;
             var corner = 0.0;
             if !(by_x.x == first.x && by_x.y == first.y)
                 && !(skip_last && by_x.x == last.x && by_x.y == last.y) {
                 let crossed = (enter_x | opposite(enter_y)) & ~own_run(own, by_x, first);
-                corner = max(corner, panel_stop(by_x, crossed, z, tall));
+                corner = max(corner, panel_stop(by_x, crossed, cross, wide, tall));
             }
             if !(by_y.x == first.x && by_y.y == first.y)
                 && !(skip_last && by_y.x == last.x && by_y.y == last.y) {
                 let crossed = (enter_y | opposite(enter_x)) & ~own_run(own, by_y, first);
-                corner = max(corner, panel_stop(by_y, crossed, z, tall));
+                corner = max(corner, panel_stop(by_y, crossed, cross, wide, tall));
             }
             through = through * (1.0 - corner);
             if through <= 0.004 {

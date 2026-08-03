@@ -87,6 +87,33 @@ pub const DOOR_SHUT: Graphic = Graphic(0x0008);
 /// door is. `docs/lighting.md`, decision 11.
 pub const DOOR_OPEN: Graphic = Graphic(0x0009);
 
+/// The same wall with a hole cut through it, for the scene a shaft of light is
+/// measured in.
+///
+/// A **second graphic** and not a second flag, for the reason [`WALL_EAST`] is
+/// one: a hole is a property of a *picture*, step 16 measures it off a window's
+/// own silhouette, and an atlas holds one answer per graphic. So a run of wall
+/// with one window in it is two graphics in the client's files exactly as it is
+/// here — which is also what makes the scene's assertion possible, because the
+/// tiles either side of the hole are the same wall with no hole in it.
+pub const WALL_HOLED: Graphic = Graphic(0x000D);
+
+/// The hole in [`WALL_HOLED`]: the middle half of the tile, all the way up.
+///
+/// **A slot and not a window**, deliberately. A real window is a rectangle in
+/// both directions and step 16 is what measures one; this scene is about the
+/// axis that is *new* — where along the run the ray goes through — so the `z`
+/// span is opened wide enough that every ray along the ground passes it and the
+/// only thing deciding is `v`. The height half of the rule is pinned by
+/// `light`'s own unit tests, where a ray can be aimed at a stated `z` instead of
+/// being whatever a floor pixel and a flame happen to make.
+pub const WALL_HOLE: crate::occlusion::Aperture = crate::occlusion::Aperture {
+    near: 64,
+    far: 191,
+    bottom: -128,
+    top: 127,
+};
+
 /// A torch. Flagged `LIGHT_SOURCE`, which is the only reason anything burns —
 /// see [`crate::light`].
 pub const TORCH: Graphic = Graphic(0x0A12);
@@ -250,6 +277,11 @@ fn tiledata() -> TileData {
     };
     set(WALL, TileFlags::NO_SHOOT, WALL_HEIGHT);
     set(WALL_EAST, TileFlags::NO_SHOOT, WALL_HEIGHT);
+    // The same flags as the wall it is a piece of: what makes it different is the
+    // hole, and a hole is geometry rather than a flag. Nothing in `tiledata.mul`
+    // has ever said where a hole is — the same fact decision 3 states about which
+    // edge a wall stands on.
+    set(WALL_HOLED, TileFlags::NO_SHOOT, WALL_HEIGHT);
     set(CORNER, TileFlags::NO_SHOOT, WALL_HEIGHT);
     set(PANE, TileFlags::WINDOW, WALL_HEIGHT);
     set(DOOR_SHUT, TileFlags::NO_SHOOT, WALL_HEIGHT);
@@ -611,6 +643,40 @@ pub fn wall_with_a_torch_beside_it() -> Scene {
     scene.with((cx + 3, cy), TORCH)
 }
 
+/// A straight wall with a **hole cut through its middle tile**, and a torch
+/// behind it.
+///
+/// [`torch_before_a_wall`] with one thing changed, which is the discipline every
+/// scene here is built to: the same nine-tile south-faced run, the same torch two
+/// tiles north of it, and the middle tile is [`WALL_HOLED`] instead of [`WALL`].
+/// So what the picture shows on the ground south of the wall is a **fan** —
+/// narrow at the wall, widening with distance, with nothing either side of it —
+/// and every pixel of it is light that went through the hole.
+///
+/// The point of the arrangement is that the answer is a *difference between
+/// tiles of one run*: the wall either side of the hole is the same graphic at the
+/// same height with the same opacity, so a fan that appeared without the hole
+/// would be some other defect and a fan that failed to appear cannot be blamed on
+/// the wall being wrong.
+pub fn wall_with_a_hole_in_it() -> Scene {
+    let (cx, cy) = CENTRE;
+    let mut scene = empty("a wall with a hole through its middle tile");
+    for x in cx - 4..=cx + 4 {
+        scene = scene.with((x, cy), if x == cx { WALL_HOLED } else { WALL });
+    }
+    let mut art = south_faced_wall();
+    art.pack_more([(
+        WALL_HOLED,
+        crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),
+    )])
+    .expect("two silhouettes fit");
+    // The seam step 16 will write into: the picture is a plain wall's, and the
+    // hole is stated rather than measured. See `StaticAtlas::state_aperture`.
+    art.state_aperture(WALL_HOLED, WALL_HOLE);
+    scene.art = Some(art);
+    scene.with((cx, cy - 2), TORCH)
+}
+
 /// A room with a pane of glass where its door would be.
 ///
 /// Today the pane stops light exactly as the wall does, because `WINDOW` is what
@@ -806,6 +872,7 @@ pub fn all() -> Vec<Scene> {
     vec![
         torch_on_open_ground(),
         torch_before_a_wall(),
+        wall_with_a_hole_in_it(),
         wall_run_lit_from_along_it(),
         house_corner(),
         house_corner_named_by_its_art(),

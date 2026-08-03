@@ -34,7 +34,7 @@ use openshard_client_render::light::{Light, Lighting, Surface};
 const TORCH_TILES: f32 = 3.0;
 use openshard_client_render::camera::TileBounds;
 use openshard_client_render::mobiles::{self, Mobile};
-use openshard_client_render::occlusion::{Builder, Occlusion};
+use openshard_client_render::occlusion::{Builder, Occlusion, Shape};
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place::Place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
@@ -1127,7 +1127,7 @@ fn a_wall_stops_the_light_behind_it() {
         // No face: the whole-tile occluder this test has always been about. A
         // named edge would let the ray past on the sides it does not cross,
         // which is a different test — see `occlusion`'s own.
-        None,
+        Shape::UNREAD,
     );
     let walled = read(&mut blit, occlusion.finish());
     let (wall, behind, far) = (at(&walled, 101), at(&walled, 102), at(&walled, 103));
@@ -3711,6 +3711,29 @@ fn the_shader_and_light_sample_agree_at_the_corner_of_a_house() {
         return;
     };
     let scene = openshard_client_render::scene::house_corner();
+    assert_parity(&device, &queue, &scene.lighting(0.0));
+}
+
+/// And the same for a frame with a **hole** in one of its panels.
+///
+/// Step 21.3's own branch, and it needs its own fixture for the reason every
+/// other one here does: no other parity scene has an aperture, so a shader that
+/// read the hole plane at the wrong index — or never read it at all — would
+/// agree with `sample` on all of them. It is also the first thing in this pass
+/// that makes the two implementations read a *second* texture per surface, and
+/// the index they read it at is a number each of them computes for itself.
+///
+/// `wall_with_a_hole_in_it` is a straight run of named panels with one holed
+/// tile in the middle of it, so the frame holds pixels behind the hole, pixels
+/// behind the solid wall either side of it and pixels in the fan between the
+/// two — which is where the quantisation of `near` and `far` into bytes would
+/// show if the two sides divided by different numbers.
+#[test]
+fn the_shader_and_light_sample_agree_about_a_hole_in_a_wall() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::wall_with_a_hole_in_it();
     assert_parity(&device, &queue, &scene.lighting(0.0));
 }
 

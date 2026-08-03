@@ -9,7 +9,29 @@ copied.
 
 ## Where the next session starts
 
-**Step 21.2 has landed: the union is gone.** A tile's occluders are surfaces
+**Step 21.3 has landed: a surface can have a hole in it.** A panel carries a
+rectangle in its own coordinates — a span along the run and a span of `z` — and
+the crossing test asks whether the ray went through it. A wall with a hole in
+one tile throws a **fan** onto the ground behind it: narrow at the wall, wider
+further out, with the tiles either side of it at the ambient exactly. That is
+the picture step 16 was always for, arriving before step 16, because the
+mechanism and the measurement are independent and this half needs no art.
+
+Nothing in a real frame has moved and that is deliberate: no graphic in any
+install has an aperture yet, so `Occlusion::any_aperture` is false, the hole
+plane is not laid out or uploaded, and the `HOLED` bit is never set — which is
+what makes the walk's extra fetch cost nothing until there is something to
+fetch. **Decision 30.8** is that storage choice and the argument for it.
+
+**Start at step 20b, then step 16** — the two that turn "a hole a scene states"
+into "a hole the art has". 20b is decision 31: the silhouette work leaves the
+frame for a tool and a table, which is what lets 16's measurement be as expensive
+as it needs to be. 16 is the measurement. `StaticAtlas::state_aperture` is the
+seam they arrive through, and it is one method with one caller today.
+
+Everything below this line is the session before it.
+
+**Step 21.2 landed before it: the union is gone.** A tile's occluders are surfaces
 standing beside each other rather than one merged span — a wall from `z 0` to
 `z 10` and another from `z 30` to `z 40` no longer close the thirty `z` of air
 between them, and a lid over a wall tile keeps its own span, its own opacity and
@@ -24,14 +46,6 @@ tiles — a shop with a stack of floors, walls and a roof on one square. Nothing
 was dropped: the only cap is the format's own byte and the worst tile in a city
 is an eighth of it. That is the number the truncation question wanted and it
 answers it by not arising.
-
-**Start at step 21.3**: the aperture in the walk. A surface gets a rectangular
-hole and the crossing test asks whether the ray goes through it — and **no art is
-needed**, because the scenes here are built: `scene::room_with_window` can be
-handed a hole directly and the fan on the ground measured. The mechanism and the
-measurement (steps 20b and 16) are independent and neither waits for the other.
-Decision 30 is the argument and its seven micro-decisions are settled; decision 31
-is why the measuring leaves the frame.
 
 The three sessions below are what that rests on, and the short version is that
 the lighting stopped answering with a *tile* anywhere it was asked about a
@@ -1149,6 +1163,33 @@ looks up. That is what the last three sessions bought and it is why this is a
 change of representation rather than a rewrite: the rules do not get relitigated,
 and the parity test keeps holding both implementations to them.
 
+**30.8 A hole is a plane beside the list, not four more channels of it.**
+*(decided in step 21.3, and the format is what it decides)*
+
+A [`Surface`] texel is four `Rgba8Uint` channels and all four are spoken for —
+`(z_bottom, z_top, opacity, PRESENT | edges)`. A rectangle needs four more, so
+the question is where they live, and there were three answers:
+
+- **Interleave**: two texels a surface, the hole in the second. No new binding
+  and no new upload, and it doubles the footprint of *the one texture the walk
+  reads in a loop* in order to carry zeros — because a hole is what almost
+  nothing has.
+- **A third kind of list element**, a texel the count includes and the walk skips.
+  Costs nothing when there are no holes, and it makes a cell's `count` mean
+  texels rather than surfaces, so `histogram`, the truncation cap and decision
+  30.6's distribution all quietly start counting a different thing.
+- **A parallel plane** over the same indices, read only where a bit on the
+  surface says there is something to read. One more binding, one more upload,
+  and the hot loop is untouched.
+
+The third, and the deciding argument is the one this pass makes everywhere else:
+**a miss must be cheap.** `HOLED` is a spare bit of a byte that already had
+three; the plane is written only when `Occlusion::any_aperture` is true, so a
+frame of a map with no measured window neither lays it out nor sends it; and a
+surface with no hole costs one bit test in the shader. The two planes are grown
+together and never apart, because they are one list indexed by one number.
+
+
 **31. The art is measured once, off the clock, and the engine reads a table.**
 
 `facing::facing_of` runs while the atlas packs a sprite — on the frame a graphic
@@ -1569,12 +1610,71 @@ everywhere else, arriving as a refusal to *require*.
          backlog's "a cell's fetch count went from one to `1 + count`" arriving
          with a count that is now 1.77 rather than 1.04. It is still 3% of a 60Hz
          budget, and step 21.5's bake is where the CPU half is bought back.
-      3. **The aperture in the walk, tested on a built scene.** A surface gets a
-         rectangular hole and the crossing test asks whether it passes through it.
-         **No art is needed for this**: the scenes here are built, so
-         `scene::room_with_window` can be handed a hole directly and the fan on
-         the ground measured. The mechanism and the measurement are independent
-         and neither waits for the other.
+      3. ✅ **The aperture in the walk, tested on a built scene.** A surface got a
+         rectangular hole — `occlusion::Aperture`, a span along the run and a span
+         of `z` in the surface's own coordinates — and the crossing test asks
+         whether the ray went through it. No art was needed, exactly as planned:
+         `StaticAtlas::state_aperture` is the seam step 16 will fill from a
+         silhouette, and a scene states one directly.
+
+         **The change is small because decision 30.7 said it would be.** A panel
+         was already *pierced at a point* rather than travelled through, so the
+         point was already being computed; what step 21.3 adds is that the point
+         has two coordinates instead of one and is asked about a rectangle.
+         `light::pierced` and `blit.wgsl`'s are the whole of it, and everything
+         above them — `own_run`, the corner case, the body's second answer, the
+         sun — reaches them unchanged.
+
+         Four things were decided along the way, and each is a refusal rather than
+         a mechanism:
+
+         - **Only a named panel may have a hole.** A lid is horizontal and a body
+           is "it stands up and the art would not say which way", so neither has a
+           plane for a rectangle to be stated in. `Builder::add` drops one offered
+           to either — decision 3's refusal arriving one level down.
+         - **A corner carries it on both of its panels.** They are the two faces of
+           one picture, so a hole measured off that picture is the same window seen
+           from either side, and nothing in a silhouette says which half it was in.
+         - **The run coordinate is a byte**, `occlusion::RUN_STEPS`, a
+           two-hundred-and-fifty-fifth of a tile — finer than the seven bits the
+           place attachment carries a *pixel's* fraction in. Quantised once, in
+           `Aperture::new`, so that both walks read the same byte and divide it by
+           the same number: the parity test is exact rather than to a tolerance.
+         - **A hole's edges soften symmetrically**, which is why `inside` is a
+           second function beside `pierces` rather than a call of it. `pierces`
+           hangs its band below the bottom edge because a wall is based on the
+           ground and the ray a person looks at runs along that base; a hole's
+           edges are in the middle of a surface and no ray runs along them, so a
+           band centred there would move the hole half a penumbra downwards.
+
+         Held by five tests and each was run against the mutation that should
+         break it. Two aim a ray by hand — `a_ray_through_a_hole_in_a_wall_passes_and_one_beside_it_does_not`
+         for the run and `a_ray_over_a_hole_in_a_wall_is_stopped_by_the_wall_above_it`
+         for the height, which is the axis no picture of a floor can ask about,
+         because a floor pixel and a flame are both near `z = 0` and every ray in
+         that picture crosses at one height. One is the scene:
+         `scene::wall_with_a_hole_in_it` is `torch_before_a_wall` with the middle
+         tile's graphic swapped for one that carries a hole, so the wall either
+         side is the same graphic at the same height and a fan that appeared
+         without the hole would be some other defect. It asserts the fan is there,
+         that the tiles either side are at the ambient exactly, and — measured as
+         the width at half the sweep's own peak, because a hole this size is seen
+         through a penumbra of about its own width — that it is **wider three and
+         a half tiles out than one and a half**. Two are the format:
+         `only_a_named_panel_carries_a_hole` and
+         `a_hole_is_uploaded_at_its_own_surface_s_index`, the second because a
+         shader reading the hole plane at the wrong index would draw something
+         everywhere and be wrong only where a window is. And the GPU parity test
+         has a sixth fixture, `the_shader_and_light_sample_agree_about_a_hole_in_a_wall`,
+         which goes red when the shader is made to ignore the hole.
+
+         **The cost is nothing measurable, and the reason is decision 30.8.** No
+         graphic in any install has an aperture until step 16 lands, so
+         `any_aperture` is false, the plane is neither laid out nor uploaded, and
+         the `HOLED` bit is never set — what a real frame pays is one bit test per
+         pierce. No like-for-like number was taken, because there is nothing yet
+         to measure: the frame that will want measuring is the first one with
+         windows in it, and that is step 21.4's.
       4. **The tool, the table and the measured aperture** — steps 20b and 16.
          Until this lands no window in Britain has a hole and every one of them
          behaves exactly as it does today, which is a feature: the mechanism is
@@ -2309,3 +2409,38 @@ Found while writing this plan:
   closed by decision 26. It wanted the wall's facing and it got it — by way of
   step 15 measuring one and decision 26 using it to place the flame rather than to
   excuse it.
+
+Found while cutting a hole in a wall:
+
+- **A surface holds one hole, and decision 30.2 said "up to `K`".** A wall with
+  two windows in it is two rectangles in one plane, and `Aperture` is a field
+  rather than a list. One covers every window graphic the client ships as far as
+  anybody has looked, and the cheap way out if it does not is a second surface on
+  the same side with the same span — the walk takes the largest of a cell's
+  surfaces, so two panels with two holes are not the union of the holes. That is
+  the shape of the wrongness, and it wants a measurement (step 16) before it
+  wants a fix.
+- **A hole is a fact about a graphic and not about a thing.** Two windows of the
+  same graphic in one wall have the same hole, which is right; a wall a siege
+  engine knocked a gap in has nowhere to say so. The same boundary decision 11
+  drew for doors — a flag is about a picture, a state is about a thing — and the
+  same answer would apply: a per-item override, keyed the way `GroundItem` is.
+- **The sky field does not know about holes.** `Builder::shade` multiplies a
+  tile's sky by what each static leaves, and a static with a window in it leaves
+  exactly what a solid one does — so a room under a glazed roof lantern is as
+  dark as one under slate. It is the crude half of decision 14 meeting the fine
+  half of step 21.3 and losing; the shape of the fix is that `shade` scales the
+  opacity by the share of the tile the hole covers, which is arithmetic the
+  aperture already carries.
+- **Nothing draws the hole.** `Occlusion::at`'s merged view has no aperture in
+  it, so the wireframe overlay and `plan::Picture::mark` both stroke a holed
+  panel as a solid one — and a fan of light with no hole drawn on it is exactly
+  the picture step 19 argued against: "a pool that is the wrong shape and a pool
+  that is the right shape behind a wall nobody drew are the same picture until
+  the wall is drawn on it". The instrument should gap the panel's stroke where
+  the hole is.
+- **The `field` plane's second channel is free again.** Its doc predicted
+  "the sky today, an aperture and a body's opacity" — and an aperture turned out
+  to be a fact about a *surface* rather than about a tile, so it went beside the
+  surface list instead (decision 30.8). What that plane is for is unchanged and
+  it has one more channel to spend than it thought.

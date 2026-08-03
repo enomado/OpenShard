@@ -739,6 +739,21 @@ pub struct Sprite {
 /// which is exactly why they are separate atlases rather than one with a prefix.
 pub struct StaticAtlas {
     sprites: BTreeMap<Graphic, Packed>,
+    /// The hole in each graphic that has one — see
+    /// [`Aperture`](crate::occlusion::Aperture).
+    ///
+    /// Beside the sprites rather than on [`Sprite`], which is the opposite of
+    /// where [`Sprite::facing`] lives, and the difference is who asks. A facing
+    /// is read by whoever *places the quad* — `place::Stance`, per instance, on
+    /// the hot path — so it rides on the thing that is already in hand. A hole is
+    /// read once per graphic by [`crate::occlusion::collect`] and by nothing that
+    /// draws, so a map keyed by graphic costs the drawing path nothing and keeps
+    /// four bytes off every sprite of every atlas, most of which are letters.
+    ///
+    /// Empty today for a real install: step 16 is the measurement that fills it
+    /// from the art, and until then the only entries are the ones a built scene
+    /// states with [`StaticAtlas::state_aperture`].
+    apertures: BTreeMap<Graphic, crate::occlusion::Aperture>,
     /// Every graphic ever offered, whether or not the client ships art for it.
     ///
     /// The one that most needed writing down: "does the atlas hold everything
@@ -781,6 +796,7 @@ impl StaticAtlas {
         let side = ATLAS_SIDE as usize;
         Self {
             sprites: BTreeMap::new(),
+            apertures: BTreeMap::new(),
             asked: BTreeSet::new(),
             shelf: Shelf::default(),
             pixels: vec![0u8; side * side * 4],
@@ -938,6 +954,28 @@ impl StaticAtlas {
     /// Where a graphic sits and how big it is, or `None` if it is not packed.
     pub fn sprite(&self, graphic: Graphic) -> Option<Sprite> {
         self.sprites.get(&graphic).map(|packed| packed.sprite)
+    }
+
+    /// The hole in a graphic's surface, or `None` for a solid — which is every
+    /// graphic in a real install today. See
+    /// [`Aperture`](crate::occlusion::Aperture).
+    pub fn aperture(&self, graphic: Graphic) -> Option<crate::occlusion::Aperture> {
+        self.apertures.get(&graphic).copied()
+    }
+
+    /// Say what hole a graphic has, without measuring one.
+    ///
+    /// **The seam step 16 will write into**, and what a built scene uses in the
+    /// meantime: `docs/lighting.md`'s step 21.3 is the *mechanism* — a hole in
+    /// the walk, tested on a scene that states one — and step 16 is the
+    /// measurement that reads it off a real window's silhouette. The two are
+    /// deliberately independent, and this method is the line between them.
+    ///
+    /// It does not need the graphic to be packed. A scene that states a hole in a
+    /// wall it also draws will pack it; one that only wants the occluder need
+    /// not, and refusing here would make the order of two unrelated calls matter.
+    pub fn state_aperture(&mut self, graphic: Graphic, aperture: crate::occlusion::Aperture) {
+        self.apertures.insert(graphic, aperture);
     }
 
     /// Whether the pixel at `(x, y)` *within* a graphic's own picture is drawn

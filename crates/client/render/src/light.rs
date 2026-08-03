@@ -863,6 +863,82 @@ fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
     ((z - low + band * 0.5).min(high - z) / band + 0.5).clamp(0.0, 1.0)
 }
 
+/// A soft interval: `1.0` well inside `low..=high`, `0.0` well outside, and a
+/// gradient `band` wide across each edge.
+///
+/// [`pierces`] with its one asymmetry taken out, and the asymmetry is why this
+/// is a second function rather than a call of the first. A wall's *bottom* edge
+/// is the ground it stands on and the ray a person looks at runs along it, so
+/// that band hangs below rather than straddling. **A hole's edges are in the
+/// middle of a surface** and no ray runs along them by construction, so a hole
+/// softens the same amount in both directions or it is a hole that has been
+/// moved half a penumbra downwards.
+///
+/// `blit.wgsl`'s `inside`, and the two are one formula.
+fn inside(x: f32, low: f32, high: f32, band: f32) -> f32 {
+    let band = band.max(1e-3);
+    ((x - low).min(high - x) / band + 0.5).clamp(0.0, 1.0)
+}
+
+/// Where along a panel's own run a point of it lies, `0.0` to `1.0` across the
+/// tile.
+///
+/// A panel on a north or south side lies in a plane of constant `y`, so what
+/// runs along it is `x`; an east or west one is the other way round. That is the
+/// whole of the surface's own coordinate system, and it is why an
+/// [`Aperture`](crate::occlusion::Aperture) belongs only to a *named* panel: a
+/// lid and a body have no run for this to be measured along.
+///
+/// `blit.wgsl`'s `run_v`.
+fn run_v(edges: u8, px: f32, py: f32) -> f32 {
+    let along = match edges & (crate::occlusion::EDGE_NORTH | crate::occlusion::EDGE_SOUTH) != 0 {
+        true => px,
+        false => py,
+    };
+    along - along.floor()
+}
+
+/// How much of a surface is **missing** where a ray goes through it: `1.0` well
+/// inside the hole, `0.0` well outside it, and the same penumbra across its
+/// edges that the top of a wall gets.
+///
+/// The two spans are combined with `min` and not with a product, so that the
+/// corner of a hole is softened once rather than twice: a point that is halfway
+/// into the hole across *and* halfway up is on the diagonal of one corner, and
+/// two halves multiplied would make it a quarter of a hole.
+///
+/// `blit.wgsl`'s `hole`.
+fn hole(aperture: Option<crate::occlusion::Aperture>, v: f32, z: f32, wide: f32, tall: f32) -> f32 {
+    let Some(hole) = aperture else {
+        return 0.0;
+    };
+    let across = inside(
+        v,
+        f32::from(hole.near) / crate::occlusion::RUN_STEPS,
+        f32::from(hole.far) / crate::occlusion::RUN_STEPS,
+        wide,
+    );
+    across.min(inside(z, hole.bottom as f32, hole.top as f32, tall))
+}
+
+/// How much of a surface stands in the way at the point a ray goes through its
+/// plane: the span it occupies, less the hole in it.
+///
+/// The whole of step 21.3 in one line, and the reason it is one line is decision
+/// 30.7: a panel was already *pierced at a point* rather than travelled through,
+/// so the point was already being computed and a window is what that point is
+/// asked about. `(px, py, z)` is where the ray crosses; `wide` is the penumbra
+/// in tiles along the run and `tall` the same number in `z`.
+///
+/// `blit.wgsl`'s `pierced`.
+fn pierced(surface: &crate::occlusion::Surface, px: f32, py: f32, z: f32, wide: f32, tall: f32) -> f32 {
+    let solid = pierces(z, surface.bottom as f32, surface.top as f32, tall);
+    match surface.aperture {
+        None => solid,
+        Some(_) => solid * (1.0 - hole(surface.aperture, run_v(surface.edges, px, py), z, wide, tall)),
+    }
+}
+
 /// How near two boundaries have to be, along the ray, for the ray to be crossing
 /// a **corner** rather than a side. `blit.wgsl`'s `CORNER_TIE`, and the two are
 /// one number — this is a comparison the two implementations have to answer the
@@ -904,13 +980,11 @@ fn own_run(own: u8, cell: (i32, i32), first: (i32, i32)) -> u8 {
 /// The **largest** of the cell's surfaces and not their product, for the reason
 /// [`walk_cells`] takes the largest: two panels of one corner are two faces of
 /// one wall, and a ray that crosses both has gone through one thing once.
-fn panel_stop(stands: &[crate::occlusion::Surface], crossed: u8, z: f32, tall: f32) -> f32 {
+fn panel_stop(stands: &[crate::occlusion::Surface], crossed: u8, at: [f32; 3], wide: f32, tall: f32) -> f32 {
     stands
         .iter()
         .filter(|stands| stands.edges != 0 && stands.edges & crossed != 0)
-        .map(|stands| {
-            f32::from(stands.opacity) / 255.0 * pierces(z, stands.bottom as f32, stands.top as f32, tall)
-        })
+        .map(|stands| f32::from(stands.opacity) / 255.0 * pierced(stands, at[0], at[1], at[2], wide, tall))
         .fold(0.0, f32::max)
 }
 
@@ -1581,8 +1655,18 @@ fn walk_cells(
                         let mut stopped: f32 = 0.0;
                         for (side, at) in [(entry, entered), (exit, leaves)] {
                             if stops & side != 0 {
-                                stopped =
-                                    stopped.max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
+                                // Where the ray goes through the plane, in all
+                                // three, because a **hole** is a rectangle in it
+                                // and the height alone cannot say whether the ray
+                                // went through the window or through the wall
+                                // beside it. See [`pierced`].
+                                let cross = [
+                                    spot.at.x + delta[0] * at,
+                                    spot.at.y + delta[1] * at,
+                                    spot.z + delta[2] * at,
+                                ];
+                                stopped = stopped
+                                    .max(opacity * pierced(stands, cross[0], cross[1], cross[2], soft, tall));
                             }
                         }
                         stopped
@@ -1616,9 +1700,13 @@ fn walk_cells(
             // then the walk steps diagonally past them.
             let by_x = (cell.0 + toward.0, cell.1);
             let by_y = (cell.0, cell.1 + toward.1);
-            let z = spot.z + delta[2] * next;
-            let tall = (spread * next / (1.0 - next).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX)
-                * Z_PER_TILE;
+            let cross = [
+                spot.at.x + delta[0] * next,
+                spot.at.y + delta[1] * next,
+                spot.z + delta[2] * next,
+            ];
+            let wide = (spread * next / (1.0 - next).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
+            let tall = wide * Z_PER_TILE;
             let mut corner: f32 = 0.0;
             let mut blamed = None;
             for (at, crossed) in [
@@ -1629,7 +1717,7 @@ fn walk_cells(
                     continue;
                 }
                 let crossed = crossed & !own_run(own, at, first);
-                let stops = panel_stop(occlusion.surfaces_at(at.0, at.1), crossed, z, tall);
+                let stops = panel_stop(occlusion.surfaces_at(at.0, at.1), crossed, cross, wide, tall);
                 if stops > corner {
                     corner = stops;
                     blamed = Some(at);

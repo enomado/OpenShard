@@ -144,6 +144,16 @@ pub const EDGE_ANY: u8 = EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST;
 /// and `blit.wgsl` takes the two apart with the same constants.
 pub const PRESENT: u8 = 0x80;
 
+/// The bit that says this surface has a hole in it, and therefore that its texel
+/// in the aperture plane means something.
+///
+/// What it buys is that a surface *without* one costs nothing: the walk reads
+/// the aperture plane only where this bit is set, so the ordinary wall — which
+/// is every wall in the world until step 16 measures a window — pays one bit
+/// test and no second fetch. The same shape as every other miss in this pass.
+/// See [`Occlusion::aperture_bytes`] and [`Aperture`].
+pub const HOLED: u8 = 0x40;
+
 /// The side of the neighbouring tile that touches this one's `side`.
 ///
 /// One line, and it is the whole of how a walk carries an edge across a
@@ -185,6 +195,41 @@ pub fn edges_of(facing: Option<crate::facing::Facing>) -> u8 {
             Face::West => EDGE_WEST,
         })
         .fold(0, |mask, side| mask | side)
+}
+
+/// What the art said about one graphic's geometry: which edge it stands on, and
+/// the hole in it.
+///
+/// One argument rather than two beside each other, because the two are one
+/// answer about one picture and they arrive together: [`crate::facing`] measures
+/// the face today and step 16 measures the aperture off the same silhouette, and
+/// decision 31.2 makes both of them one row of one table. A caller that has
+/// neither passes [`Shape::UNREAD`], which is every built scene and every
+/// graphic no atlas held.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Shape {
+    /// Which sides of its tile the picture stands on, or `None` for "the art
+    /// would not say" — see [`edges_of`].
+    pub facing: Option<Facing>,
+    /// The hole in it, or `None` for a solid. See [`Aperture`].
+    pub aperture: Option<Aperture>,
+}
+
+impl Shape {
+    /// Nothing was measured: the whole-tile occluder, with no hole in it.
+    pub const UNREAD: Self = Self {
+        facing: None,
+        aperture: None,
+    };
+
+    /// A graphic whose face the art named and whose hole it did not — which is
+    /// every wall in the world until step 16 lands.
+    pub fn faced(facing: Facing) -> Self {
+        Self {
+            facing: Some(facing),
+            aperture: None,
+        }
+    }
 }
 
 /// How much of a ray crossing a pane of glass is stopped.
@@ -250,6 +295,68 @@ fn calc_height(tile: &StaticTile) -> i32 {
     }
 }
 
+/// How many parts of a tile one step of the run coordinate is worth.
+///
+/// A hole's span along its surface is a byte, so a two-hundred-and-fifty-fifth
+/// of a tile — 0.17 pixels of world at the projection's 44, which is finer than
+/// the seven bits the place attachment carries a *pixel's* own fraction in. The
+/// quantisation is deliberate and not a shortcut: it is what makes the two
+/// implementations of the walk agree exactly rather than to a tolerance, because
+/// both read the same byte and divide it by the same number.
+pub const RUN_STEPS: f32 = 255.0;
+
+/// A rectangular hole in a surface, in that surface's own coordinates.
+///
+/// `docs/lighting.md`'s decision 30.2 and step 21.3: a window is a hole *in* a
+/// wall, so a real one is a rectangle in the plane of a panel and not a dimmer
+/// tile. What a ray crossing the panel inside this rectangle meets is nothing.
+///
+/// Two coordinates, and they are the surface's rather than the world's:
+///
+/// - `near` and `far` run **along** the panel, from the low corner of the axis
+///   it runs along to the high one — `x` for a north or south face, `y` for an
+///   east or west one — in [`RUN_STEPS`]ths of a tile. A hole from a quarter to
+///   three quarters of the way along is `(64, 191)`.
+/// - `bottom` and `top` are `z`, in the map's own units and absolute, exactly as
+///   [`Surface`]'s are. Not relative to the surface's own base, because every
+///   other height in this pass is absolute and one relative number in the middle
+///   of them is a conversion somebody will get the sign of wrong.
+///
+/// **Only a named panel may have one**, and that is a refusal rather than an
+/// omission: a lid is horizontal and a body is "it stands up and the art would
+/// not say which way", so neither has a plane for a rectangle to be stated in.
+/// [`Builder::add`] drops an aperture offered for either.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Aperture {
+    /// Where the hole starts along the run, in [`RUN_STEPS`]ths of a tile.
+    pub near: u8,
+    /// And where it ends. A `far` at or below `near` is a hole of no width,
+    /// which stops nothing from being stopped — the same degenerate case a `z`
+    /// span of zero already is.
+    pub far: u8,
+    /// The lowest `z` the hole reaches.
+    pub bottom: i32,
+    /// And the highest.
+    pub top: i32,
+}
+
+impl Aperture {
+    /// A hole stated as fractions of the tile's run, quantised once here.
+    ///
+    /// The one place a fraction becomes a byte, so that nothing downstream has
+    /// two numbers for one edge: a caller says `0.25`, the grid stores `64`, and
+    /// both walks read `64 / 255`.
+    pub fn new(near: f32, far: f32, bottom: i32, top: i32) -> Self {
+        let step = |v: f32| (v.clamp(0.0, 1.0) * RUN_STEPS).round() as u8;
+        Self {
+            near: step(near),
+            far: step(far),
+            bottom,
+            top,
+        }
+    }
+}
+
 /// One surface something stands on a tile: a plane, the heights it occupies,
 /// and how much of a ray crossing it survives.
 ///
@@ -281,6 +388,15 @@ pub struct Surface {
     /// or [`EDGE_ANY`] for a body. Never two named sides — a corner is two
     /// panels, which is what the list is for.
     pub edges: u8,
+    /// The hole in it, where the art named one — see [`Aperture`], and step 21.3
+    /// of `docs/lighting.md`.
+    ///
+    /// [`Option`] in the sense the style asks for: a surface with no hole is a
+    /// solid wall, which is a fact and not a missing measurement. A surface the
+    /// detector has not been *offered* is the same `None`, and that is the safe
+    /// direction — a wall with no window in it is what every wall in the world
+    /// is today.
+    pub aperture: Option<Aperture>,
 }
 
 /// One tile's worth of occlusion: how much it stops, and between which heights.
@@ -599,15 +715,63 @@ impl Occlusion {
         let mut bytes = Vec::with_capacity(rows * row * 4);
         for surface in &self.surfaces {
             let channel = |z: i32| (z.clamp(-128, 127) + 128) as u8;
+            let holed = match surface.aperture {
+                Some(_) => HOLED,
+                None => 0,
+            };
             bytes.extend_from_slice(&[
                 channel(surface.bottom),
                 channel(surface.top),
                 surface.opacity,
-                PRESENT | surface.edges,
+                PRESENT | holed | surface.edges,
             ]);
         }
         bytes.resize(rows * row * 4, 0);
         bytes
+    }
+
+    /// The **holes** as the texture the shader reads: `Rgba8Uint`, one texel a
+    /// surface, in [`Occlusion::surface_bytes`]'s own order and folded the same
+    /// way.
+    ///
+    /// `(near, far, bottom + 128, top + 128)` — [`Aperture`], with the `z` offset
+    /// and the clamp [`Occlusion::surface_bytes`] uses for the same reason.
+    ///
+    /// A parallel plane and **not** four more channels of the surface, nor a
+    /// second texel interleaved into the list, and the reason is the shape of the
+    /// walk: the surface list is what a ray reads cell after cell in a loop, and
+    /// a hole is what almost nothing has. Interleaving would halve the list's
+    /// texture cache to carry zeros; a plane indexed by the same number is read
+    /// only where [`HOLED`] says there is something to read, which is the way
+    /// every other miss in this pass is paid for.
+    ///
+    /// A surface with no hole is four zeros, which is a hole of no width at
+    /// `z = -128`: degenerate, and never looked at, because the bit above gates
+    /// it.
+    pub fn aperture_bytes(&self) -> Vec<u8> {
+        let row = SURFACE_ROW as usize;
+        let rows = self.surfaces.len().div_ceil(row).max(1);
+        let mut bytes = Vec::with_capacity(rows * row * 4);
+        for surface in &self.surfaces {
+            let channel = |z: i32| (z.clamp(-128, 127) + 128) as u8;
+            match surface.aperture {
+                Some(hole) => {
+                    bytes.extend_from_slice(&[hole.near, hole.far, channel(hole.bottom), channel(hole.top)])
+                }
+                None => bytes.extend_from_slice(&[0, 0, 0, 0]),
+            }
+        }
+        bytes.resize(rows * row * 4, 0);
+        bytes
+    }
+
+    /// Whether any surface in the frame has a hole in it at all.
+    ///
+    /// What the upload asks before it writes [`Occlusion::aperture_bytes`]: until
+    /// step 16 measures a window off the art, no frame of a real map has one, and
+    /// a plane of zeros does not need laying out and sending every frame.
+    pub fn any_aperture(&self) -> bool {
+        self.surfaces.iter().any(|surface| surface.aperture.is_some())
     }
 }
 
@@ -697,15 +861,7 @@ impl Builder {
     /// A tile outside the rectangle is dropped rather than clamped: it is a
     /// caller walking wider than it asked the grid for, and folding it onto the
     /// edge would put a wall where the map has none.
-    pub fn add(
-        &mut self,
-        x: u16,
-        y: u16,
-        z: i8,
-        graphic: Graphic,
-        tile: &StaticTile,
-        facing: Option<Facing>,
-    ) {
+    pub fn add(&mut self, x: u16, y: u16, z: i8, graphic: Graphic, tile: &StaticTile, shape: Shape) {
         let opacity = opacity(graphic, tile);
         if opacity == CLEAR {
             return;
@@ -727,11 +883,19 @@ impl Builder {
         // quarters less light than it does today.
         let edges = match tile.flags.is_background() {
             true => 0,
-            false => edges_of(facing),
+            false => edges_of(shape.facing),
         };
         match edges {
             // A lid, or a body: one surface, and the mask is the whole of what
             // says which of the walk's two rules it takes.
+            //
+            // **And no hole**, whatever was offered. A hole is a rectangle in the
+            // plane of a panel, and neither of these two has a plane: a lid is
+            // horizontal, and a body is the fallback for a picture whose facing
+            // the art would not name — so there is no run for a `near` and a `far`
+            // to be measured along. Dropping it is the same refusal decision 3
+            // makes about the edge itself; the alternative is a window in a
+            // direction nobody measured.
             0 | EDGE_ANY => self.push(
                 index,
                 Surface {
@@ -739,6 +903,7 @@ impl Builder {
                     top,
                     opacity,
                     edges,
+                    aperture: None,
                 },
             ),
             named => {
@@ -751,6 +916,15 @@ impl Builder {
                                 top,
                                 opacity,
                                 edges: side,
+                                // A corner's two panels are two faces of one
+                                // picture, and a hole measured off that picture
+                                // is a hole in both of them: the same window seen
+                                // from the two sides of the tile it is cut into.
+                                // There is nothing in a silhouette that would say
+                                // which half a hole belonged to, so the honest
+                                // answer is the one that does not invent a
+                                // difference.
+                                aperture: shape.aperture,
                             },
                         );
                     }
@@ -934,10 +1108,15 @@ pub fn collect(
     // the rim: the grid is grown by the widest pool's reach and the atlas by what
     // is drawn, and those are not the same rectangle. Both fall back the safe
     // way. See `Occlusion::add` and `crate::facing`.
-    let facing = |graphic: Graphic| {
-        atlas
+    //
+    // The hole comes off the same lookup and for the same reasons: a graphic the
+    // atlas does not hold has none, which is a solid wall, which is what every
+    // wall in the world is until step 16 measures one.
+    let shape = |graphic: Graphic| Shape {
+        facing: atlas
             .and_then(|atlas| atlas.sprite(graphic))
-            .and_then(|s| s.facing)
+            .and_then(|s| s.facing),
+        aperture: atlas.and_then(|atlas| atlas.aperture(graphic)),
     };
 
     crate::statics::for_each_static_in(map, bounds, |item| {
@@ -957,7 +1136,7 @@ pub fn collect(
                 item.z,
                 Graphic(item.tile),
                 tile,
-                facing(Graphic(item.tile)),
+                shape(Graphic(item.tile)),
             );
         }
     });
@@ -979,7 +1158,7 @@ pub fn collect(
                 item.at.z,
                 item.graphic,
                 tile,
-                facing(item.graphic),
+                shape(item.graphic),
             );
         }
     }
@@ -1029,8 +1208,8 @@ mod tests {
 
         // And the grid keeps no cell for it, which is what the shadow walk reads.
         let mut occlusion = Builder::new(bounds());
-        occlusion.add(100, 100, 0, shut, &leaf, None);
-        occlusion.add(101, 100, 0, open, &leaf, None);
+        occlusion.add(100, 100, 0, shut, &leaf, Shape::UNREAD);
+        occlusion.add(101, 100, 0, open, &leaf, Shape::UNREAD);
         let occlusion = occlusion.finish();
         assert!(occlusion.at(100, 100).is_some(), "the shut leaf left the grid");
         assert_eq!(
@@ -1086,7 +1265,14 @@ mod tests {
     #[test]
     fn a_wall_carries_the_span_it_stands_in() {
         let mut occlusion = Builder::new(bounds());
-        occlusion.add(102, 103, 5, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(
+            102,
+            103,
+            5,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape::UNREAD,
+        );
         let occlusion = occlusion.finish();
         assert_eq!(
             occlusion.at(102, 103),
@@ -1138,7 +1324,7 @@ mod tests {
             0,
             NOT_A_DOOR,
             &tile(TileFlags::NO_SHOOT, 20),
-            Some(corner),
+            Shape::faced(corner),
         );
         let occlusion = occlusion.finish();
         assert_eq!(
@@ -1157,12 +1343,14 @@ mod tests {
                     top: 20,
                     opacity: OPAQUE,
                     edges: EDGE_EAST,
+                    aperture: None,
                 },
                 Surface {
                     bottom: 0,
                     top: 20,
                     opacity: OPAQUE,
                     edges: EDGE_SOUTH,
+                    aperture: None,
                 },
             ],
         );
@@ -1185,12 +1373,19 @@ mod tests {
             10,
             NOT_A_DOOR,
             &tile(TileFlags::NO_SHOOT | TileFlags::FLOOR, 0),
-            None,
+            Shape::UNREAD,
         );
         // A graphic nothing measured: a body, and one surface on all four sides
         // rather than four quads. The walk travels *through* it, which is a rule
         // about a solid and not about four planes.
-        occlusion.add(101, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(
+            101,
+            100,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape::UNREAD,
+        );
         let occlusion = occlusion.finish();
 
         assert_eq!(
@@ -1200,6 +1395,7 @@ mod tests {
                 top: 10,
                 opacity: OPAQUE,
                 edges: 0,
+                aperture: None,
             }],
         );
         assert_eq!(
@@ -1209,11 +1405,172 @@ mod tests {
                 top: 20,
                 opacity: OPAQUE,
                 edges: EDGE_ANY,
+                aperture: None,
             }],
         );
         assert_eq!(occlusion.surfaces_at(102, 100), &[], "open ground stands nothing");
         assert_eq!(occlusion.surfaces_at(0, 0), &[], "and neither does off the grid");
         assert_eq!(occlusion.surface_count(), 2, "and nothing else got into the list");
+    }
+
+    /// A hole belongs to a **named panel** and to nothing else, and what is
+    /// offered to a lid or a body is dropped.
+    ///
+    /// Step 21.3's own refusal, and it is the same one decision 3 makes about the
+    /// edge itself. A hole is a rectangle in a plane, stated in the run of the
+    /// side the surface stands on — so a lid, which is horizontal, and a body,
+    /// which is "it stands up and the art would not say which way", have no
+    /// coordinate for a `near` and a `far` to mean anything in. Storing one
+    /// anyway would put a window in a direction nobody measured.
+    ///
+    /// And a **corner** carries it on both of its panels: the two are the two
+    /// faces of one picture, a hole measured off that picture is the same window
+    /// seen from either side of the tile, and nothing in a silhouette says which
+    /// half it belonged to.
+    #[test]
+    fn only_a_named_panel_carries_a_hole() {
+        use crate::facing::{Face, Facing};
+
+        let hole = Aperture::new(0.25, 0.75, 0, 10);
+        let wall = tile(TileFlags::NO_SHOOT, 20);
+        let mut occlusion = Builder::new(bounds());
+        // A named panel keeps it.
+        occlusion.add(
+            100,
+            100,
+            0,
+            NOT_A_DOOR,
+            &wall,
+            Shape {
+                facing: Some(Facing::One(Face::South)),
+                aperture: Some(hole),
+            },
+        );
+        // A graphic the art would not name is a body, and drops it.
+        occlusion.add(
+            101,
+            100,
+            0,
+            NOT_A_DOOR,
+            &wall,
+            Shape {
+                facing: None,
+                aperture: Some(hole),
+            },
+        );
+        // And a floor is a lid, whatever its silhouette read as.
+        occlusion.add(
+            102,
+            100,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT | TileFlags::FLOOR, 0),
+            Shape {
+                facing: Some(Facing::One(Face::South)),
+                aperture: Some(hole),
+            },
+        );
+        // A corner is two panels and the hole is on both.
+        occlusion.add(
+            103,
+            100,
+            0,
+            NOT_A_DOOR,
+            &wall,
+            Shape {
+                facing: Some(Facing::Corner {
+                    right: Face::East,
+                    left: Face::South,
+                }),
+                aperture: Some(hole),
+            },
+        );
+        let occlusion = occlusion.finish();
+
+        assert_eq!(occlusion.surfaces_at(100, 100)[0].aperture, Some(hole));
+        assert_eq!(
+            occlusion.surfaces_at(101, 100)[0].aperture,
+            None,
+            "a body kept a hole in a plane it does not have",
+        );
+        assert_eq!(
+            occlusion.surfaces_at(102, 100)[0].aperture,
+            None,
+            "a lid kept a hole in a plane it does not have",
+        );
+        let corner = occlusion.surfaces_at(103, 100);
+        assert_eq!(corner.len(), 2);
+        assert!(
+            corner.iter().all(|surface| surface.aperture == Some(hole)),
+            "a corner's two faces are one picture and the hole is in both of them",
+        );
+    }
+
+    /// The two planes are one list: a hole is at the same index its surface is,
+    /// and the `HOLED` bit is what says to look.
+    ///
+    /// The format, pinned, because it is the one thing here no picture can catch:
+    /// a shader reading the hole plane at the wrong index would draw *something*
+    /// everywhere and be wrong only where a window is. The bit matters as much as
+    /// the bytes — a surface with no hole writes four zeros, which is a hole of no
+    /// width at `z = -128`, and only the bit distinguishes that from a real one.
+    #[test]
+    fn a_hole_is_uploaded_at_its_own_surface_s_index() {
+        use crate::facing::{Face, Facing};
+
+        let wall = tile(TileFlags::NO_SHOOT, 20);
+        let mut occlusion = Builder::new(bounds());
+        // A solid panel first, so that the holed one is not at index zero and an
+        // upload that ignored the index would be caught.
+        occlusion.add(
+            100,
+            100,
+            0,
+            NOT_A_DOOR,
+            &wall,
+            Shape::faced(Facing::One(Face::South)),
+        );
+        occlusion.add(
+            101,
+            100,
+            5,
+            NOT_A_DOOR,
+            &wall,
+            Shape {
+                facing: Some(Facing::One(Face::East)),
+                aperture: Some(Aperture::new(0.25, 0.75, 6, 14)),
+            },
+        );
+        let occlusion = occlusion.finish();
+
+        assert!(occlusion.any_aperture());
+        let surfaces = occlusion.surface_bytes();
+        let holes = occlusion.aperture_bytes();
+        assert_eq!(
+            surfaces[3] & HOLED,
+            0,
+            "the solid panel claims a hole, so the shader will read one",
+        );
+        assert_eq!(&holes[0..4], &[0, 0, 0, 0], "and it has no bytes to read");
+        assert_eq!(surfaces[7] & HOLED, HOLED, "the holed panel does not claim one");
+        assert_eq!(
+            &holes[4..8],
+            &[64, 191, 6 + 128, 14 + 128],
+            "the hole is not where its surface is",
+        );
+
+        // And a grid with no hole in it says so, which is what keeps the plane
+        // off the queue on every frame of a map that has none.
+        let mut solid = Builder::new(bounds());
+        solid.add(
+            100,
+            100,
+            0,
+            NOT_A_DOOR,
+            &wall,
+            Shape::faced(Facing::One(Face::South)),
+        );
+        assert!(!solid.finish().any_aperture());
     }
 
     /// Stairs count as half their height, the way every other reader of this
@@ -1228,7 +1585,7 @@ mod tests {
             0,
             NOT_A_DOOR,
             &tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20),
-            None,
+            Shape::UNREAD,
         );
         assert_eq!(occlusion.finish().at(100, 100).unwrap().top, 10);
     }
@@ -1249,8 +1606,22 @@ mod tests {
     #[test]
     fn two_occluders_on_one_tile_stop_closing_the_gap_between_them() {
         let mut occlusion = Builder::new(bounds());
-        occlusion.add(105, 105, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
-        occlusion.add(105, 105, 40, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(
+            105,
+            105,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape::UNREAD,
+        );
+        occlusion.add(
+            105,
+            105,
+            40,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape::UNREAD,
+        );
         let occlusion = occlusion.finish();
         assert_eq!(
             occlusion.surfaces_at(105, 105),
@@ -1261,12 +1632,14 @@ mod tests {
                     opacity: OPAQUE,
                     // Neither was given a face, so both are the whole tile.
                     edges: EDGE_ANY,
+                    aperture: None,
                 },
                 Surface {
                     bottom: 40,
                     top: 60,
                     opacity: OPAQUE,
                     edges: EDGE_ANY,
+                    aperture: None,
                 },
             ],
             "the two walls merged into one, and the air between them with it",
@@ -1309,7 +1682,7 @@ mod tests {
             0,
             NOT_A_DOOR,
             &tile(TileFlags::NO_SHOOT | TileFlags::WALL, 20),
-            Some(Facing::One(Face::South)),
+            Shape::faced(Facing::One(Face::South)),
         );
         // And a glazed roof lying across the same tile at the top of it.
         occlusion.add(
@@ -1318,7 +1691,7 @@ mod tests {
             20,
             NOT_A_DOOR,
             &tile(TileFlags::WINDOW | TileFlags::FLOOR, 0),
-            None,
+            Shape::UNREAD,
         );
         let occlusion = occlusion.finish();
 
@@ -1330,12 +1703,14 @@ mod tests {
                     top: 20,
                     opacity: OPAQUE,
                     edges: EDGE_SOUTH,
+                    aperture: None,
                 },
                 Surface {
                     bottom: 20,
                     top: 20,
                     opacity: PANE,
                     edges: 0,
+                    aperture: None,
                 },
             ],
         );
@@ -1364,8 +1739,8 @@ mod tests {
     fn the_same_surface_twice_is_stored_once() {
         let mut occlusion = Builder::new(bounds());
         let wall = tile(TileFlags::NO_SHOOT, 20);
-        occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, None);
-        occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, None);
+        occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, Shape::UNREAD);
+        occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, Shape::UNREAD);
         let occlusion = occlusion.finish();
         assert_eq!(occlusion.surface_count(), 1);
         assert_eq!(occlusion.dropped(), 0, "a duplicate is not a truncation");
@@ -1384,7 +1759,14 @@ mod tests {
         // Distinct spans, so nothing is folded away as a duplicate.
         for step in 0..(MAX_SURFACES_PER_TILE + 3) {
             let z = (step as i32 - 128).clamp(-128, 127) as i8;
-            occlusion.add(107, 107, z, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 1), None);
+            occlusion.add(
+                107,
+                107,
+                z,
+                NOT_A_DOOR,
+                &tile(TileFlags::NO_SHOOT, 1),
+                Shape::UNREAD,
+            );
         }
         let occlusion = occlusion.finish();
         assert_eq!(occlusion.surfaces_at(107, 107).len(), MAX_SURFACES_PER_TILE);
@@ -1398,14 +1780,21 @@ mod tests {
         use crate::facing::{Face, Facing};
 
         let mut occlusion = Builder::new(bounds());
-        occlusion.add(100, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(
+            100,
+            100,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape::UNREAD,
+        );
         occlusion.add(
             101,
             100,
             0,
             NOT_A_DOOR,
             &tile(TileFlags::NO_SHOOT, 20),
-            Some(Facing::Corner {
+            Shape::faced(Facing::Corner {
                 right: Face::East,
                 left: Face::South,
             }),
@@ -1423,7 +1812,14 @@ mod tests {
     #[test]
     fn a_tile_outside_the_bounds_is_dropped_and_not_clamped() {
         let mut occlusion = Builder::new(bounds());
-        occlusion.add(99, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(
+            99,
+            100,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape::UNREAD,
+        );
         let occlusion = occlusion.finish();
         assert_eq!(occlusion.at(99, 100), None);
         assert_eq!(occlusion.at(100, 100), None, "and did not land on the edge");
@@ -1446,8 +1842,22 @@ mod tests {
             min_y: 0,
             max_y: 1,
         });
-        occlusion.add(1, 0, -10, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
-        occlusion.add(0, 1, 120, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 60), None);
+        occlusion.add(
+            1,
+            0,
+            -10,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape::UNREAD,
+        );
+        occlusion.add(
+            0,
+            1,
+            120,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 60),
+            Shape::UNREAD,
+        );
         let occlusion = occlusion.finish();
 
         let bytes = occlusion.bytes();
@@ -1498,7 +1908,7 @@ mod tests {
             20,
             NOT_A_DOOR,
             &tile(TileFlags::NO_SHOOT | TileFlags::FLOOR, 0),
-            None,
+            Shape::UNREAD,
         );
         assert_eq!(
             lid.finish().surface_bytes()[3],
@@ -1519,8 +1929,22 @@ mod tests {
             min_y: 200,
             max_y: 201,
         });
-        occlusion.add(102, 200, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
-        occlusion.add(100, 201, 5, NOT_A_DOOR, &tile(TileFlags::WINDOW, 10), None);
+        occlusion.add(
+            102,
+            200,
+            0,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape::UNREAD,
+        );
+        occlusion.add(
+            100,
+            201,
+            5,
+            NOT_A_DOOR,
+            &tile(TileFlags::WINDOW, 10),
+            Shape::UNREAD,
+        );
         let occlusion = occlusion.finish();
         let boxes: Vec<_> = occlusion.boxes().collect();
         assert_eq!(
