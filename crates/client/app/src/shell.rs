@@ -1942,48 +1942,41 @@ fn surfaces_of(
     })
 }
 
-/// The occlusion grid, drawn as the boxes it is.
+/// The occlusion grid, drawn as the **solid** it is.
 ///
 /// `docs/lighting.md`, step 14, and it is an instrument rather than a picture:
-/// what a shadow ray walks through is a box per tile — a span of `z` and an
-/// opacity — and until this nothing drew them, so "why is there a shadow where
-/// nothing stands" could only be answered by reading the map by hand. The first
-/// thing it is expected to show is that **a door's shadow is a tile wide**,
-/// because the occluder is the whole tile and not the leaf.
+/// what a shadow ray walks through is a list of surfaces — a plane on one edge, a
+/// lid, a whole-tile body — and until this nothing drew them, so "why is there a
+/// shadow where nothing stands" could only be answered by reading the map by
+/// hand.
 ///
-/// What stands up, and not every cell — see [`stands`], and the count beside the
-/// checkbox for what that leaves out.
+/// **Filled faces, in depth order, shaded by which way each looks.** The first
+/// version of this was twelve strokes a box and no fill, on the argument that a
+/// filled box hides the art it is a claim about — and what it produced was a
+/// thicket: a wireframe carries no occlusion, so every box in a street was drawn
+/// through every box in front of it and the eye could not tell which edge
+/// belonged to which surface. A diagnostic about *geometry* has to read as
+/// geometry. So the faces are filled, sorted back to front and lit by a fixed
+/// direction, and what is given up — seeing the art under it — is what turning
+/// the checkbox off is for.
 ///
-/// Twelve strokes a box and no fill: the boxes stand in front of each other by
-/// the dozen, and a filled one hides both the art it is a claim about and the
-/// boxes behind it. What is being checked is where the edges are.
+/// The depth order is the projection's own: a tile further from the eye has a
+/// smaller `x + y`, and within one tile a lower surface is drawn first. That is
+/// the painter's algorithm on a grid where it happens to be exact, because
+/// nothing in this world is bigger than the tile it stands on.
 ///
-/// The colour is the opacity, because that is the other half of a cell and the
-/// half a wireframe would otherwise drop: a pane and a wall stop the same ray by
-/// different amounts, and a picture that drew them alike would make
+/// The **shade** is what makes an edge legible where two faces meet at one line:
+/// a lid looks up and is the brightest, an east face is next, a south face is
+/// darker, and the two a camera cannot see are darker still — a fixed light from
+/// above and to the east, which is what every isometric picture does and what the
+/// eye reads without being told. The **hue** stays the opacity, because that is
+/// the other half of a surface: a pane and a wall stop the same ray by different
+/// amounts, and a picture that drew them alike would make
 /// [`PANE`](openshard_client_render::occlusion::PANE) invisible in the very view
-/// meant to check it. Opaque and saturated, for the reason stated at the stroke.
-/// Which two corners of a tile's diamond a panel on `named` stands between.
+/// meant to check it.
 ///
-/// `Camera::tile_facet` hands the corners back as `(x, y)`, `(x+1, y)`,
-/// `(x+1, y+1)`, `(x, y+1)`, and a face is named for the world direction its
-/// edge faces out of the tile — `crate::facing::Face`. So this is a table
-/// between two orders, which is exactly the kind of thing that is written down
-/// once, looks obvious, and is off by one corner in the picture; the test beside
-/// it derives the same pairs from `Face::place_at`, which is what the *shader*
-/// places a face pixel with, so the wireframe and the pixels cannot disagree
-/// about which edge a wall is on.
-fn panel_edge(named: u8) -> [usize; 2] {
-    use openshard_client_render::occlusion::{EDGE_EAST, EDGE_NORTH, EDGE_SOUTH};
-
-    match named {
-        EDGE_NORTH => [0, 1],
-        EDGE_EAST => [1, 2],
-        EDGE_SOUTH => [3, 2],
-        _ => [0, 3],
-    }
-}
-
+/// What stands up, and not every surface — see [`stands`], and the count beside
+/// the checkbox for what that leaves out.
 fn draw_occluders(
     painter: &egui::Painter,
     camera: &Camera,
@@ -1994,7 +1987,15 @@ fn draw_occluders(
     use openshard_client_render::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, OPAQUE, PANE};
 
     let clip = painter.clip_rect();
-    for (x, y, surface) in surfaces_of(occluders).filter(|(_, _, s)| stands(s.top, floor)) {
+    // Back to front. Collected rather than drawn as they come, because a solid
+    // needs an order and `surfaces_of` walks the grid in rows: a row of wall
+    // drawn left to right paints its near end behind its far one.
+    let mut standing: Vec<(i32, i32, &openshard_client_render::occlusion::Surface)> = surfaces_of(occluders)
+        .filter(|(_, _, s)| stands(s.top, floor))
+        .collect();
+    standing.sort_by_key(|(x, y, surface)| (x + y, surface.bottom, surface.top));
+
+    for (x, y, surface) in standing {
         // The grid is grown past the map's own corner by the widest pool's
         // reach — see `light::lit_tiles` — so a tile of it can be off the map
         // entirely. Skipped rather than clamped, for `Occlusion::add`'s reason:
@@ -2028,66 +2029,118 @@ fn draw_occluders(
             continue;
         }
         // A wall is red, a pane is cyan, and anything a shard invented between
-        // them lands between them.
-        //
-        // **Opaque, and saturated.** The first version of this was a pale blue
-        // at a third alpha, on the theory that a diagnostic should be quiet — and
-        // it read as dirt: the strokes are one pixel over lit art of every hue,
-        // so a translucent line takes its colour from whatever is under it and
-        // twelve of them crossing say nothing at all. The terrain wash can be
-        // faint because it is a *fill* read against the art; a wireframe is read
-        // against itself, and it has to win every pixel it claims.
-        let stroke = egui::Stroke::new(1.0, {
-            let t = f32::from(surface.opacity.saturating_sub(PANE)) / f32::from(OPAQUE - PANE);
-            let lerp = |pane: f32, wall: f32| (pane + (wall - pane) * t.clamp(0.0, 1.0)) as u8;
-            egui::Color32::from_rgb(lerp(0.0, 255.0), lerp(200.0, 45.0), lerp(255.0, 45.0))
-        });
-        // And here is what the merged box could not say: **each of the walk's
-        // three kinds is drawn as the shape it is**, so the picture and the rule
-        // are the same statement.
-        //
-        // The diamond's corners come in `Camera::tile_facet`'s order — `(x, y)`,
-        // `(x+1, y)`, `(x+1, y+1)`, `(x, y+1)` — so an edge of the tile is a pair
-        // of indices, and which pair is which side is `crate::facing::Face`'s own
-        // naming: north is the `y0` edge, east the `x1`, south the `y1`, west the
-        // `x0`.
+        // them lands between them. Saturated, for the reason the strokes were:
+        // this is read against itself and against lit art of every hue.
+        let t = f32::from(surface.opacity.saturating_sub(PANE)) / f32::from(OPAQUE - PANE);
+        let hue = |pane: f32, wall: f32| pane + (wall - pane) * t.clamp(0.0, 1.0);
+        let (red, green, blue) = (hue(0.0, 255.0), hue(200.0, 45.0), hue(255.0, 45.0));
+        // A face's own shade, and the seam between two of them drawn a step
+        // darker so that a corner where a lid meets a wall is a line and not a
+        // colour change the eye has to find.
+        let face = |points: Vec<egui::Pos2>, shade: f32| {
+            let tone = |c: f32| (c * shade) as u8;
+            let fill = egui::Color32::from_rgba_unmultiplied(tone(red), tone(green), tone(blue), 235);
+            let edge = egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(tone(red * 0.45), tone(green * 0.45), tone(blue * 0.45)),
+            );
+            painter.add(egui::Shape::convex_polygon(points, fill, edge));
+        };
+        // The quad standing on one edge of the tile, from the surface's bottom to
+        // its top: `[a, b]` are the two corners of that edge.
+        let wall_of = |ends: [usize; 2]| vec![low[ends[0]], low[ends[1]], high[ends[1]], high[ends[0]]];
         match surface.edges {
             // A **lid** — a floor, a rug, a roof. One horizontal quad at the `z`
-            // it lies at, and no sides at all: a ray is stopped by crossing it,
-            // not by travelling through it, so drawing a box would draw a solid
-            // where the model has a plane. This is the shape whose absence over a
-            // wall tile is the gap worth looking for.
-            0 => {
-                painter.add(egui::Shape::closed_line(high, stroke));
-            }
-            // A **body** — a tree, a post, a corner whose art names no edge. A
-            // solid the ray travels through, and the box is honest for it.
+            // it lies at: a ray is stopped by crossing it, not by travelling
+            // through it, so a box would draw a solid where the model has a
+            // plane. Brightest, because it is the face that looks at the light.
+            0 => face(high.clone(), 1.0),
+            // A **body** — a tree, a post, a graphic whose art names no edge. A
+            // solid the ray travels through, so it is a box; and only the three
+            // faces a camera can see are drawn, which is what makes it read as a
+            // box rather than as a tangle. `Face::outward` names the two: an
+            // isometric camera sees `+x` and `+y`.
             EDGE_ANY => {
-                painter.add(egui::Shape::closed_line(low.clone(), stroke));
-                painter.add(egui::Shape::closed_line(high.clone(), stroke));
-                for (bottom, top) in low.into_iter().zip(high) {
-                    painter.line_segment([bottom, top], stroke);
-                }
+                face(wall_of(panel_edge(EDGE_SOUTH)), SOUTH_SHADE);
+                face(wall_of(panel_edge(EDGE_EAST)), EAST_SHADE);
+                face(high.clone(), 1.0);
             }
             // A **panel** — a wall standing on one named edge of its tile. One
             // vertical quad on that edge and nothing across the tile: a ray is
             // stopped where it pierces this plane and nowhere else, and a box
             // drawn round the whole tile is the picture decision 3 was written
-            // against.
-            named => {
-                let ends = panel_edge(named);
-                painter.add(egui::Shape::closed_line(
-                    vec![low[ends[0]], low[ends[1]], high[ends[1]], high[ends[0]]],
-                    stroke,
-                ));
-            }
+            // against. The two faces a camera cannot see are drawn darker still
+            // rather than dropped — a wall the eye cannot find is a wall this
+            // view failed to report.
+            named => face(
+                wall_of(panel_edge(named)),
+                match named {
+                    EDGE_EAST => EAST_SHADE,
+                    EDGE_SOUTH => SOUTH_SHADE,
+                    EDGE_NORTH => 0.42,
+                    _ => 0.58,
+                },
+            ),
         }
+    }
+}
+
+/// How much of its colour a face keeps, by which way it looks: the fixed light
+/// this view is lit by, from above and to the east.
+///
+/// Not a simulation of anything and not the world's own sun — a diagnostic that
+/// changed brightness with the time of day would be unreadable at dusk. What it
+/// is for is that two faces meeting at one line are two tones, so an edge is
+/// visible without a stroke having to say where it is.
+const EAST_SHADE: f32 = 0.78;
+/// The other face a camera can see, a step darker.
+const SOUTH_SHADE: f32 = 0.56;
+
+/// Which two corners of a tile's diamond a panel on `named` stands between.
+///
+/// `Camera::tile_facet` hands the corners back as `(x, y)`, `(x+1, y)`,
+/// `(x+1, y+1)`, `(x, y+1)`, and a face is named for the world direction its
+/// edge faces out of the tile — `crate::facing::Face`. So this is a table
+/// between two orders, which is exactly the kind of thing that is written down
+/// once, looks obvious, and is off by one corner in the picture; the test beside
+/// it derives the same pairs from `Face::place_at`, which is what the *shader*
+/// places a face pixel with, so the wireframe and the pixels cannot disagree
+/// about which edge a wall is on.
+fn panel_edge(named: u8) -> [usize; 2] {
+    use openshard_client_render::occlusion::{EDGE_EAST, EDGE_NORTH, EDGE_SOUTH};
+
+    match named {
+        EDGE_NORTH => [0, 1],
+        EDGE_EAST => [1, 2],
+        EDGE_SOUTH => [3, 2],
+        _ => [0, 3],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Far is a smaller `x + y`, which is the order the solid is painted in.
+    ///
+    /// The one thing a painter's algorithm can get exactly backwards, and
+    /// backwards it would look like a street drawn inside out — near walls behind
+    /// far ones — which is a picture a person might well believe, because a
+    /// wireframe looked like that too and nobody could tell. So the direction is
+    /// taken from the projection rather than from the diagram in somebody's head:
+    /// the tile one step along both axes lands *lower* on the screen, so it is
+    /// nearer the eye and is painted later.
+    #[test]
+    fn a_tile_further_along_both_axes_is_nearer_the_eye() {
+        let camera = Camera::new(openshard_protocol::world::Point::new(100, 100, 0), 800, 600);
+        let middle = |point| {
+            let corners = camera.tile_diamond(point);
+            corners.iter().map(|corner| corner.y).sum::<f32>() / corners.len() as f32
+        };
+        let near = middle(openshard_protocol::world::Point::new(101, 101, 0));
+        let far = middle(openshard_protocol::world::Point::new(100, 100, 0));
+        assert!(near > far, "the nearer tile is at {near}, the further at {far}");
+    }
 
     /// The wireframe stands a panel on the same edge the shader draws its pixels
     /// on.
