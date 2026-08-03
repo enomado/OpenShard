@@ -885,7 +885,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     if ui
         .checkbox(
             &mut boxes,
-            "occluders — what stops light above your feet: wall red, pane cyan",
+            "occluders — surfaces that stop light above your feet: wall red, pane cyan",
         )
         .changed()
     {
@@ -898,13 +898,16 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         // the same reason the terrain overlay has counts. See [`stands`]
         // for what the second number is made of.
         Some(occluders) => {
-            let total = occluders.boxes().count();
-            let drawn = occluders
-                .boxes()
-                .filter(|(_, _, cell)| stands(cell, hud.position.z))
-                .count();
+            let mut total = 0usize;
+            let mut drawn = 0usize;
+            for (_, _, surface) in surfaces_of(occluders) {
+                total += 1;
+                if stands(surface.top, hud.position.z) {
+                    drawn += 1;
+                }
+            }
             ui.label(format!(
-                "{drawn} boxes above your feet, {} below and not drawn",
+                "{drawn} surfaces above your feet, {} below and not drawn",
                 total - drawn
             ));
         }
@@ -1909,8 +1912,34 @@ fn draw_terrain(
 /// What it hides, the panel counts — a view that silently drops most of a grid
 /// reads as a grid with nothing in it, which is the one failure an instrument
 /// may not have.
-fn stands(cell: &openshard_client_render::occlusion::Cell, floor: i8) -> bool {
-    cell.top > i32::from(floor)
+fn stands(top: i32, floor: i8) -> bool {
+    top > i32::from(floor)
+}
+
+/// Every surface in the grid, with the tile it stands on.
+///
+/// **A surface and not a tile**, which is the whole of what this view is for
+/// since `docs/lighting.md`'s step 21.2. `Occlusion::at` — what `boxes()` hands
+/// out and what this drew until now — is the *merged* view: the union of the
+/// spans, the largest opacity, and the union of the sides. Drawn, that is the
+/// picture of a world that no longer exists. A floor and the wall on its tile
+/// came out as one box from the floor's `z` to the wall's top, two walls with a
+/// storey of air between them came out as one box through the air, and which
+/// edge a panel stands on — the whole of decision 3 — was not in the picture at
+/// all. Every gap this view is opened to look for is a gap between two of those
+/// things, and the merge is exactly what closes them on screen.
+fn surfaces_of(
+    occluders: &openshard_client_render::occlusion::Occlusion,
+) -> impl Iterator<Item = (i32, i32, &openshard_client_render::occlusion::Surface)> + '_ {
+    let bounds = occluders.bounds();
+    (bounds.min_y..=bounds.max_y).flat_map(move |y| {
+        (bounds.min_x..=bounds.max_x).flat_map(move |x| {
+            occluders
+                .surfaces_at(x, y)
+                .iter()
+                .map(move |surface| (x, y, surface))
+        })
+    })
 }
 
 /// The occlusion grid, drawn as the boxes it is.
@@ -1934,6 +1963,27 @@ fn stands(cell: &openshard_client_render::occlusion::Cell, floor: i8) -> bool {
 /// different amounts, and a picture that drew them alike would make
 /// [`PANE`](openshard_client_render::occlusion::PANE) invisible in the very view
 /// meant to check it. Opaque and saturated, for the reason stated at the stroke.
+/// Which two corners of a tile's diamond a panel on `named` stands between.
+///
+/// `Camera::tile_facet` hands the corners back as `(x, y)`, `(x+1, y)`,
+/// `(x+1, y+1)`, `(x, y+1)`, and a face is named for the world direction its
+/// edge faces out of the tile — `crate::facing::Face`. So this is a table
+/// between two orders, which is exactly the kind of thing that is written down
+/// once, looks obvious, and is off by one corner in the picture; the test beside
+/// it derives the same pairs from `Face::place_at`, which is what the *shader*
+/// places a face pixel with, so the wireframe and the pixels cannot disagree
+/// about which edge a wall is on.
+fn panel_edge(named: u8) -> [usize; 2] {
+    use openshard_client_render::occlusion::{EDGE_EAST, EDGE_NORTH, EDGE_SOUTH};
+
+    match named {
+        EDGE_NORTH => [0, 1],
+        EDGE_EAST => [1, 2],
+        EDGE_SOUTH => [3, 2],
+        _ => [0, 3],
+    }
+}
+
 fn draw_occluders(
     painter: &egui::Painter,
     camera: &Camera,
@@ -1941,10 +1991,10 @@ fn draw_occluders(
     floor: i8,
     viewport_origin: egui::Pos2,
 ) {
-    use openshard_client_render::occlusion::{OPAQUE, PANE};
+    use openshard_client_render::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, OPAQUE, PANE};
 
     let clip = painter.clip_rect();
-    for (x, y, cell) in occluders.boxes().filter(|(_, _, cell)| stands(cell, floor)) {
+    for (x, y, surface) in surfaces_of(occluders).filter(|(_, _, s)| stands(s.top, floor)) {
         // The grid is grown past the map's own corner by the widest pool's
         // reach — see `light::lit_tiles` — so a tile of it can be off the map
         // entirely. Skipped rather than clamped, for `Occlusion::add`'s reason:
@@ -1955,7 +2005,7 @@ fn draw_occluders(
         // The same clamp `Occlusion::bytes` makes on the way to the shader: a
         // static's top is `z + height` and does not have to fit an `i8`, and a
         // wall reaching past the top of the world may as well stop there. The
-        // box is then drawn where the shader thinks it is, which is the point.
+        // surface is then drawn where the shader thinks it is, which is the point.
         let height = |z: i32| z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
         let at = |z: i8| {
             tile_corners(
@@ -1965,13 +2015,13 @@ fn draw_occluders(
                 viewport_origin,
             )
         };
-        let floor = at(height(cell.bottom));
-        let lid = at(height(cell.top));
+        let low = at(height(surface.bottom));
+        let high = at(height(surface.top));
         // Off screen before anything is allocated. The clip rect would keep it
         // from being painted anyway, but a town at the widest zoom is thousands
-        // of boxes and most of them are outside the viewport — this is the
-        // difference between building twelve shapes for each of them and none.
-        let bounds = floor.iter().chain(&lid).fold(egui::Rect::NOTHING, |rect, point| {
+        // of surfaces and most of them are outside the viewport — this is the
+        // difference between building shapes for each of them and none.
+        let bounds = low.iter().chain(&high).fold(egui::Rect::NOTHING, |rect, point| {
             rect.union(egui::Rect::from_pos(*point))
         });
         if !clip.intersects(bounds) {
@@ -1988,14 +2038,49 @@ fn draw_occluders(
         // faint because it is a *fill* read against the art; a wireframe is read
         // against itself, and it has to win every pixel it claims.
         let stroke = egui::Stroke::new(1.0, {
-            let t = f32::from(cell.opacity.saturating_sub(PANE)) / f32::from(OPAQUE - PANE);
+            let t = f32::from(surface.opacity.saturating_sub(PANE)) / f32::from(OPAQUE - PANE);
             let lerp = |pane: f32, wall: f32| (pane + (wall - pane) * t.clamp(0.0, 1.0)) as u8;
             egui::Color32::from_rgb(lerp(0.0, 255.0), lerp(200.0, 45.0), lerp(255.0, 45.0))
         });
-        painter.add(egui::Shape::closed_line(floor.clone(), stroke));
-        painter.add(egui::Shape::closed_line(lid.clone(), stroke));
-        for (bottom, top) in floor.into_iter().zip(lid) {
-            painter.line_segment([bottom, top], stroke);
+        // And here is what the merged box could not say: **each of the walk's
+        // three kinds is drawn as the shape it is**, so the picture and the rule
+        // are the same statement.
+        //
+        // The diamond's corners come in `Camera::tile_facet`'s order — `(x, y)`,
+        // `(x+1, y)`, `(x+1, y+1)`, `(x, y+1)` — so an edge of the tile is a pair
+        // of indices, and which pair is which side is `crate::facing::Face`'s own
+        // naming: north is the `y0` edge, east the `x1`, south the `y1`, west the
+        // `x0`.
+        match surface.edges {
+            // A **lid** — a floor, a rug, a roof. One horizontal quad at the `z`
+            // it lies at, and no sides at all: a ray is stopped by crossing it,
+            // not by travelling through it, so drawing a box would draw a solid
+            // where the model has a plane. This is the shape whose absence over a
+            // wall tile is the gap worth looking for.
+            0 => {
+                painter.add(egui::Shape::closed_line(high, stroke));
+            }
+            // A **body** — a tree, a post, a corner whose art names no edge. A
+            // solid the ray travels through, and the box is honest for it.
+            EDGE_ANY => {
+                painter.add(egui::Shape::closed_line(low.clone(), stroke));
+                painter.add(egui::Shape::closed_line(high.clone(), stroke));
+                for (bottom, top) in low.into_iter().zip(high) {
+                    painter.line_segment([bottom, top], stroke);
+                }
+            }
+            // A **panel** — a wall standing on one named edge of its tile. One
+            // vertical quad on that edge and nothing across the tile: a ray is
+            // stopped where it pierces this plane and nowhere else, and a box
+            // drawn round the whole tile is the picture decision 3 was written
+            // against.
+            named => {
+                let ends = panel_edge(named);
+                painter.add(egui::Shape::closed_line(
+                    vec![low[ends[0]], low[ends[1]], high[ends[1]], high[ends[0]]],
+                    stroke,
+                ));
+            }
         }
     }
 }
@@ -2003,6 +2088,47 @@ fn draw_occluders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wireframe stands a panel on the same edge the shader draws its pixels
+    /// on.
+    ///
+    /// Two orders meet in [`panel_edge`] — the diamond's corners and
+    /// `facing::Face`'s naming — and a table between two orders is the kind of
+    /// thing that reads as obvious and is off by one corner on screen. So the
+    /// pairs are derived here from `Face::place_at`, which is the Rust copy of
+    /// what `statics.wgsl` places a face pixel with: the two ends of a face's run
+    /// are its fractions at `0` and `1`, each fraction is a corner of the tile,
+    /// and the corner's place in the diamond is `tile_facet`'s order. A view that
+    /// drew a wall on the wrong side of its tile would be worse than no view —
+    /// it is opened to answer exactly that question.
+    #[test]
+    fn the_wireframe_puts_a_panel_on_the_edge_its_pixels_are_drawn_on() {
+        use openshard_client_render::facing::Face;
+        use openshard_client_render::occlusion::{EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, EDGE_WEST};
+
+        // `Camera::tile_facet`'s own order, as the corner offsets it means.
+        const DIAMOND: [(f32, f32); 4] = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let corner = |at: (f32, f32)| {
+            DIAMOND
+                .iter()
+                .position(|it| *it == at)
+                .expect("a face's end is a corner of its tile")
+        };
+
+        for (face, named) in [
+            (Face::North, EDGE_NORTH),
+            (Face::East, EDGE_EAST),
+            (Face::South, EDGE_SOUTH),
+            (Face::West, EDGE_WEST),
+        ] {
+            let want = [corner(face.place_at(0.0)), corner(face.place_at(1.0))];
+            let drawn = panel_edge(named);
+            // Either way round the edge is the same edge: what must not happen is
+            // a different pair.
+            let same = drawn == want || drawn == [want[1], want[0]];
+            assert!(same, "{face:?} is drawn between {drawn:?}, its run is {want:?}");
+        }
+    }
 
     /// A rig printed by the panel is a line that compiles.
     ///
