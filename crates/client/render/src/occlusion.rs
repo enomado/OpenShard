@@ -1,17 +1,18 @@
 //! What stands between a flame and the ground it would light.
 //!
-//! A list of the surfaces this frame's flames can reach, and a grid over the
-//! same tiles as its index: a cell is `(offset, count)` into the list, and a
-//! surface says how much of a ray crossing it survives and between which
-//! heights. [`crate::light`] hands both to the blit, which walks the cells
+//! A list of the solids this frame's flames can reach, a list of the references
+//! to them, and a grid over the same tiles as the index of those: a cell is
+//! `(offset, count)` into the references, a reference names a solid, and a solid
+//! is a box saying how much of a ray crossing it survives and between which
+//! heights. [`crate::light`] hands all of it to the blit, which walks the cells
 //! between a fragment and each flame — see `docs/lighting.md`, decisions 3
-//! through 6, and decision 30 for why the cell is a list rather than one merged
-//! span.
+//! through 6, decision 30 for why the cell is a list rather than one merged
+//! span, and decision 38 for why what a cell holds is a *name*.
 //!
 //! Nothing appends to an [`Occlusion`]. It is built by a [`Builder`], which is
 //! where a tile's occluders are merged, and packed by [`Builder::finish`] — a
-//! tile's surfaces have to be contiguous for an `(offset, count)` to name them,
-//! and they cannot be while anything can still be added.
+//! tile's references have to be contiguous for an `(offset, count)` to name
+//! them, and they cannot be while anything can still be added.
 //!
 //! # Why a tile and not a wall's edge
 //!
@@ -83,19 +84,20 @@
 //!
 //! # One plane per answer, beside the cell and not inside it
 //!
-//! A [`Surface`] is four channels and all four are spoken for, so the sky needed
-//! room. It gets a **third texture over the grid's rectangle** rather than a
-//! wider surface — see [`Occlusion::field_bytes`], whose four channels are the
+//! A [`Solid`] is four channels and all four are spoken for, so the sky needed
+//! room. It gets a **texture over the grid's rectangle** rather than a
+//! wider solid — see [`Occlusion::field_bytes`], whose four channels are the
 //! places the answers that are not about *stopping a ray* go: the sky today, an
 //! aperture and a body's opacity when `docs/lighting.md`'s step 16 and
 //! `docs/lighting_world.md`'s step 8 land. One decision for all three, which is
 //! what the plans asked for, and the split is along the line that matters: a
-//! surface is what a ray walks through, and this is what a *tile* is, read once
+//! solid is what a ray walks through, and this is what a *tile* is, read once
 //! per fragment and never in a loop.
 //!
-//! So a frame uploads three: the index over the camera's rectangle, this field
-//! over the same rectangle, and the surface list, whose length is what the
-//! camera happens to be looking at rather than how big it is.
+//! So a frame uploads four: the index over the camera's rectangle, this field
+//! over the same rectangle, and then the two lists — the references and the
+//! solids — whose lengths are what the camera happens to be looking at rather
+//! than how big it is.
 
 pub mod bake;
 
@@ -453,30 +455,46 @@ impl Aperture {
     }
 }
 
-/// One surface something stands on a tile: a plane, the heights it occupies,
-/// and how much of a ray crossing it survives.
+/// One solid the world holds: the box it occupies, and how much of a ray
+/// crossing it survives.
 ///
-/// The element of the list a cell indexes — `docs/lighting.md`'s decision 30 —
-/// and **the walk's two rules are its two kinds**: [`Surface::edges`] naming one
-/// side is a *panel*, a ray is stopped where it crosses it; zero is a *lid* and
-/// all four a *body*, and a ray is stopped by how far it ran inside the span.
+/// The thing a cell *references* — `docs/lighting.md`'s decision 38, step 23.1 —
+/// and **the walk's two rules are still its two kinds**: [`Solid::edges`] naming
+/// one side is a *panel*, a ray is stopped where it crosses it; zero is a *lid*
+/// and all four a *body*, and a ray is stopped by how far it ran inside the span.
 ///
-/// It carries the same four fields [`Cell`] does and that is not an accident:
-/// a cell is what the surfaces of one tile *fold* to, and the fold is now only a
-/// view — step 21.2 took the merge out of the builder, so a lid and a wall on
-/// one tile are two surfaces with two spans and two rules rather than one span
-/// that is neither.
+/// # The box is the record, and the kind is carried beside it
+///
+/// [`Solid::space`] is where it stands, in the world's own coordinates, and it is
+/// the only geometry: what a view draws and what the walk is tested against come
+/// from one record, which is the whole of what step 23.1 buys. What it is *not*
+/// yet is a slab — the box of a panel and of a lid is the plane the walk crosses,
+/// flat on the axis it has no thickness on, and that is deliberate. A nominal
+/// thickness stored here would be a number the walk does not read sitting in the
+/// field a reader would take for geometry; the thickness a *drawing* wants is the
+/// view's, and [`crate::solid::drawn`] is where it lives.
+///
+/// [`Solid::edges`] is the kind, carried rather than derived, and that was step
+/// 23.1's one deliberate choice. Deriving it from the box — flat in `z` is a lid,
+/// flat in `x` or `y` is a panel — reads well and is wrong on a case the map is
+/// full of: a static whose `tiledata` height is zero is a **body** with a
+/// degenerate span, and it is flat in `z` exactly as a floor is. It would become
+/// a lid, silently, and a lid is travelled through by a different rule. The kind
+/// goes when step 23.5 replaces the rules that ask it, not before.
 ///
 /// The span is in `z` units — the map's own, not pixels — and it is inclusive of
-/// `bottom` and `top`. A wall based at `z = 0` and 20 tall stops a ray passing
-/// through `0..=20` and no other, which is what keeps a cellar's wall out of the
-/// street and an upper storey's out of the ground floor.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Surface {
-    /// The lowest `z` this surface stops anything at.
-    pub bottom: i32,
-    /// The highest.
-    pub top: i32,
+/// [`Solid::bottom`] and [`Solid::top`]. A wall based at `z = 0` and 20 tall
+/// stops a ray passing through `0..=20` and no other, which is what keeps a
+/// cellar's wall out of the street and an upper storey's out of the ground floor.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Solid {
+    /// Where it stands, in world coordinates: `min` the low corner on all three
+    /// axes and `max` the high one.
+    ///
+    /// Flat on the axis the thing has no extent on — a panel's box is its plane,
+    /// a lid's is the height it lies at, a body's is its whole tile. See the type
+    /// doc for why nothing nominal is stored here.
+    pub space: crate::solid::Solid,
     /// How much of a ray crossing it is stopped.
     pub opacity: u8,
     /// Which side of the tile it stands on: one of [`EDGE_NORTH`],
@@ -485,7 +503,8 @@ pub struct Surface {
     /// panels, which is what the list is for.
     pub edges: u8,
     /// The hole in it, where the art named one — see [`Aperture`], and step 21.3
-    /// of `docs/lighting.md`.
+    /// of `docs/lighting.md`. Indexed by the solid's own place in
+    /// [`Occlusion::solid`], which is what the aperture plane is folded to.
     ///
     /// [`Option`] in the sense the style asks for: a surface with no hole is a
     /// solid wall, which is a fact and not a missing measurement. A surface the
@@ -504,9 +523,26 @@ pub struct Surface {
     pub roof: bool,
 }
 
-impl Surface {
+impl Solid {
+    /// The lowest `z` this solid stops anything at.
+    ///
+    /// Off the box, because the box is the record. Integral by construction in
+    /// step 23.1 — every span here is a static's `z` and its `tiledata` height,
+    /// both whole numbers — so the rounding is a formality and is spelled anyway:
+    /// step 23.5 authors treads at fractions of a tile, and the two readers that
+    /// want a whole `z` (the cutaway, and the upload's byte) will have to say
+    /// what they do with one then rather than inherit a truncation.
+    pub fn bottom(&self) -> i32 {
+        self.space.min.z.round() as i32
+    }
+
+    /// And the highest. See [`Solid::bottom`].
+    pub fn top(&self) -> i32 {
+        self.space.max.z.round() as i32
+    }
+
     /// Whether the frame this grid is being packed for draws the static this
-    /// surface came from — [`Cutaway::shows_at`], asked about what a surface
+    /// solid came from — [`Cutaway::shows_at`], asked about what a solid
     /// kept of it.
     ///
     /// The other half of [`cutaway::shows`] — the draw ceiling — is not asked
@@ -514,11 +550,11 @@ impl Surface {
     /// is settled where the surface is built, and what is left for a frame to
     /// decide is exactly the cutaway. See [`Builder::finish`].
     fn drawn(&self, cutaway: &Cutaway) -> bool {
-        cutaway.shows_at(self.bottom, self.roof)
+        cutaway.shows_at(self.bottom(), self.roof)
     }
 
     /// Whether a view of the grid drawn for somebody standing at `floor` should
-    /// show this surface.
+    /// show this solid.
     ///
     /// The first frame of the wireframe overlay was a dock, and it was **2,011
     /// boxes**: a deck plank stops an arrow — a floor is what you cannot shoot
@@ -539,104 +575,67 @@ impl Surface {
     /// `docs/lighting.md` about a floor that is cut and a hole in a floor
     /// looking identical.
     pub fn stands(&self, floor: i8) -> bool {
-        self.top > i32::from(floor)
+        self.space.max.z > f64::from(floor)
     }
 
-    /// The box this surface would be, on the tile it was found on.
+    /// The box one occluder standing on tile `(x, y)` is, for a span of `z` and a
+    /// kind.
     ///
-    /// **A drawing, not a measurement**, and the distinction is the whole of why
-    /// this returns a value instead of the surface simply *being* one. What the
-    /// walk stores today is a plane and a span; what a person needs to *look* at
-    /// is a solid, because a plane seen edge-on from a fixed camera is a line and
-    /// a wall the eye cannot find is a wall this view failed to report. So the
-    /// two nominal numbers below give a plane the thickness it is drawn with, and
-    /// they change no answer any ray gets — see `docs/lighting.md` step 23.0.
+    /// **The one place a kind becomes geometry**, and it is here rather than at
+    /// each of [`Builder::add`]'s four call sites because the four would be four
+    /// chances to put a panel on the wrong edge — which decision 39.8's test
+    /// caught once already, in the view, where it read as a defect in the map.
     ///
-    /// Step 23.1 is where a solid becomes what the world *owns*, and it must
-    /// re-decide these two numbers rather than inherit them: at that point they
-    /// are geometry a ray is tested against, and the test that a nominal
-    /// thickness has to pass is that no scene moves.
-    ///
-    /// The `z` span is `bottom..top` and not `bottom..top + 1`, matching what the
-    /// wireframe has always drawn, so the two views cannot disagree about how
-    /// tall a wall is while they stand beside each other.
-    pub fn solid(&self, x: i32, y: i32) -> crate::solid::Solid {
+    /// A panel and a lid come out *flat*: their box is the plane the walk crosses.
+    /// The type doc argues why nothing nominal is stored, and
+    /// [`crate::solid::drawn`] is where a thickness to look at comes from.
+    fn box_of(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> crate::solid::Solid {
         use crate::camera::WorldSpot;
 
         let (x, y) = (f64::from(x), f64::from(y));
-        // The same clamp [`Occlusion::bytes`] makes on the way to the shader: a
-        // static's top is `z + height` and does not have to fit an `i8`, and a
-        // wall reaching past the top of the world may as well stop there. Made
-        // here so that the box is drawn where the *shader* believes it is rather
-        // than where the map says — which is the whole point of a view of the
-        // grid, and it is why this clamp is not the caller's to remember.
-        let height = |z: i32| f64::from(z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)));
-        let (mut low, mut high) = (
+        let (mut min, mut max) = (
             WorldSpot {
                 x,
                 y,
-                z: height(self.bottom),
+                z: f64::from(bottom),
             },
             WorldSpot {
                 x: x + 1.0,
                 y: y + 1.0,
-                z: height(self.top),
+                z: f64::from(top),
             },
         );
-        match self.edges {
-            // A lid — a floor, a roof, a plank. The whole tile across, and a
-            // slab hanging under the height it lies at: it *is* a plane, and
-            // drawing it as one leaves a floor and the tile below it telling the
-            // same story. The thickness is downwards because the surface a ray
-            // is stopped by is the top one.
-            0 => low.z = high.z - DRAWN_LID_THICKNESS,
-            // A body. Already a box, and the only kind that was one before this.
-            EDGE_ANY => {}
-            // A panel: a slab on the named edge, lying *inside* its tile with its
-            // outer face on the plane the walk tests. Inside rather than
-            // straddling, so that two walls on the shared edge of neighbouring
-            // tiles do not draw one solid inside another and make a joint look
-            // like a doubled wall — which is a real defect and would then be
-            // invisible against a drawing artefact.
-            EDGE_NORTH => high.y = y + DRAWN_PANEL_THICKNESS,
-            EDGE_SOUTH => low.y = y + 1.0 - DRAWN_PANEL_THICKNESS,
-            EDGE_WEST => high.x = x + DRAWN_PANEL_THICKNESS,
-            _ => low.x = x + 1.0 - DRAWN_PANEL_THICKNESS,
+        match edges {
+            // A lid — a floor, a roof, a plank. The whole tile across, at the
+            // height it lies at: the walk crosses its top and nothing else, so
+            // that is the whole of the box. `bottom` and `top` are both kept
+            // because a static with a height is a lid whose span really is deep
+            // — a plank is not, a sloped roof section is.
+            0 | EDGE_ANY => {}
+            // A panel: the plane of the named edge, spanning the tile's whole run
+            // and the surface's whole `z`. `min == max` on one axis, which is
+            // exactly what the walk tests and what `Face::place_at` draws a face
+            // pixel on.
+            EDGE_NORTH => max.y = y,
+            EDGE_SOUTH => min.y = y + 1.0,
+            EDGE_WEST => max.x = x,
+            EDGE_EAST => min.x = x + 1.0,
+            // A corner is two panels and [`Builder::add`] pushes them one at a
+            // time, so more than one named side never reaches here. Whatever it
+            // is, it stands up and it is not measured: the whole tile, which is
+            // what a body is and what every fallback in this module falls back
+            // to.
+            _ => {}
         }
-        crate::solid::Solid { min: low, max: high }
+        crate::solid::Solid { min, max }
     }
 }
-
-/// How thick a panel is **drawn**, in tiles.
-///
-/// A fifth of a tile: about nine screen pixels across the diamond at 1:1, which
-/// is enough that the top face reads as a top face and little enough that a
-/// street of houses still looks like a street. Chosen to be *seen* — the art
-/// cannot measure a wall's depth (decision 3) and nothing has authored one yet
-/// (step 23.3), so any number here would be invented and this one says so.
-///
-/// **`DRAWN_` is the whole of the name and it is a fence.** No ray is tested
-/// against this: the walk crosses a panel's *plane*, and the only reader is
-/// [`Surface::solid`], which is a picture. Step 23.1 gives a solid a thickness a
-/// ray is genuinely stopped by, and that number is a different one arrived at by
-/// a different argument — a scene that does not move. Two constants called
-/// `PANEL_THICKNESS`, one drawn and one tested, is how a rule and its
-/// replacement drift apart, so this one says which it is before the other
-/// exists.
-pub const DRAWN_PANEL_THICKNESS: f64 = 0.2;
-
-/// And how thick a lid is drawn, in `z` units.
-///
-/// Two, which is 8 pixels of visible side band at 1:1 — the same argument as
-/// [`DRAWN_PANEL_THICKNESS`], including the fence in its name, on the axis the
-/// projection squashes by five and a half.
-pub const DRAWN_LID_THICKNESS: f64 = 2.0;
 
 /// One tile's worth of occlusion: how much it stops, and between which heights.
 ///
 /// **The merged view**, and no longer what is stored: the union of everything on
-/// the tile, folded out of [`Occlusion::surfaces_at`] for the readers whose
-/// question is about a *tile* rather than about a surface — the wireframe
+/// the tile, folded out of [`Occlusion::solids_at`] for the readers whose
+/// question is about a *tile* rather than about a solid — the wireframe
 /// overlay, the plan view, the mounted flame's own cell. The walk does not ask
 /// it any more.
 ///
@@ -662,57 +661,93 @@ pub struct Cell {
 /// A tile with nothing at all over it: the whole of the sky.
 pub const SKY_OPEN: u8 = 255;
 
-/// Where one tile's surfaces are: the index `docs/lighting.md`'s decision 30.3
-/// keeps the tile grid as.
+/// Where one tile's references are: the index `docs/lighting.md`'s decision 30.3
+/// keeps the tile grid as, pointing at [`Occlusion::ids`] since step 23.1.
 ///
 /// A count of zero is open ground, and the offset is then meaningless — a caller
-/// reads [`Occlusion::surfaces_at`], which hands back an empty slice for it.
+/// reads [`Occlusion::ids_at`], which hands back an empty slice for it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 struct Span {
-    /// Where this tile's run begins in [`Occlusion::surfaces`]. Twenty-four bits
+    /// Where this tile's run begins in [`Occlusion::ids`]. Twenty-four bits
     /// of it survive the upload — see [`Occlusion::bytes`].
     offset: u32,
-    /// How many surfaces stand on the tile. One byte, for the same reason.
+    /// How many solids the tile references. One byte, for the same reason.
     count: u8,
 }
 
-/// How wide the surface list is as a texture, in texels.
+/// Which solid of a frame's list, and **not** which reference of a cell.
 ///
-/// The list is one dimensional and a texture is not, so it is folded into rows
-/// of this — `blit.wgsl`'s `SURFACE_ROW`, and the two are one number. A thousand
-/// and twenty-four rather than the 2048 WebGL2 guarantees, because the guarantee
-/// is the floor and a row that is exactly it leaves no room for the folding to
-/// be wrong in only one direction.
-pub const SURFACE_ROW: u32 = 1024;
+/// The two were one number until step 23.1 and are now two, which is the whole
+/// of decision 38's ownership: a cell holds a run of these, and several cells may
+/// hold the same one. A newtype because they are about to be told apart in every
+/// loop that reads the grid — the index a cell counts through is a place in
+/// [`Occlusion::ids`], and what it finds there is a place in the solids.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct SolidId(u32);
 
-/// The occluders of one frame: a list of surfaces, and the tile grid as its
-/// index.
+impl SolidId {
+    /// The id of the `n`th solid of a list.
+    pub fn new(at: u32) -> Self {
+        Self(at)
+    }
+
+    /// Where it points, for the two readers that leave the domain: the upload's
+    /// three bytes, and a slice index.
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// How wide the lists are as textures, in texels.
 ///
-/// Decision 30 — a cell is `(offset, count)` into [`Occlusion::surfaces_at`],
-/// and the walk iterates a tile's two or three rather than reading one merged
-/// span. Empty cells are the ordinary case, most of a street being open sky, and
-/// both [`Occlusion::at`] and [`Occlusion::surfaces_at`] answer for a tile
-/// outside the rectangle without the caller having to know where the edge is.
+/// A list is one dimensional and a texture is not, so all three of them — the
+/// ids, the solids, the holes — are folded into rows of this. `blit.wgsl`'s
+/// `LIST_ROW`, and the two are one number. A thousand and twenty-four rather
+/// than the 2048 WebGL2 guarantees, because the guarantee is the floor and a row
+/// that is exactly it leaves no room for the folding to be wrong in only one
+/// direction.
+pub const LIST_ROW: u32 = 1024;
+
+/// The occluders of one frame: the solids, the references to them, and the tile
+/// grid as the index of those.
+///
+/// Decision 30 — a cell is `(offset, count)`, and the walk iterates a tile's two
+/// or three rather than reading one merged span. **Step 23.1 put a level between
+/// them**: the run a cell names is a run of [`SolidId`], and the solid is looked
+/// up once more. That indirection is the property being bought and not a cost
+/// paid for nothing — a solid is a shape the world holds, so a stair reaching
+/// over four tiles is one record referenced four times rather than four records
+/// that have to agree, and every seam this pass has fought was made by cutting
+/// geometry on a tile boundary. Nothing spans a cell yet; decision 38.2's spill
+/// is the first thing that will.
+///
+/// Empty cells are the ordinary case, most of a street being open sky, and
+/// [`Occlusion::at`], [`Occlusion::ids_at`] and [`Occlusion::solids_at`] all
+/// answer for a tile outside the rectangle without the caller having to know
+/// where the edge is.
 ///
 /// Built by a [`Builder`] and immutable afterwards: the merge is the builder's
 /// business, and what comes out of it is a list nothing appends to. That is what
-/// lets a tile's surfaces be contiguous, which is what an `(offset, count)` is.
+/// lets a tile's references be contiguous, which is what an `(offset, count)` is.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Occlusion {
     bounds: TileBounds,
     /// Row-major over `bounds`, `x` fastest: the order [`Occlusion::bytes`]
     /// uploads and the shader indexes.
     index: Vec<Span>,
-    /// Every surface in the frame, the ones of a tile contiguous. The order is
-    /// the index's, which is what [`Occlusion::surface_bytes`] uploads.
-    surfaces: Vec<Surface>,
+    /// Every reference in the frame, the ones of a tile contiguous. The order is
+    /// the index's, which is what [`Occlusion::id_bytes`] uploads.
+    ids: Vec<SolidId>,
+    /// Every solid in the frame, in the order [`Occlusion::solid_bytes`] uploads
+    /// and [`SolidId`] names.
+    solids: Vec<Solid>,
     /// How much of the sky each tile can see, in the same order as the index —
     /// see this module's header and [`Occlusion::sky_at`].
     ///
     /// A byte and not an `Option`: every tile has an answer, and the answer for
     /// a tile with nothing over it is [`SKY_OPEN`] rather than "absent".
     sky: Vec<u8>,
-    /// How many surfaces did not fit — see [`Occlusion::dropped`].
+    /// How many solids did not fit — see [`Occlusion::dropped`].
     dropped: usize,
 }
 
@@ -730,7 +765,8 @@ impl Occlusion {
             max_y: -1,
         },
         index: Vec::new(),
-        surfaces: Vec::new(),
+        ids: Vec::new(),
+        solids: Vec::new(),
         sky: Vec::new(),
         dropped: 0,
     };
@@ -751,46 +787,69 @@ impl Occlusion {
         self.index.is_empty()
     }
 
-    /// The surfaces standing on one tile, in no order the walk depends on — and
-    /// an empty slice for open ground and for anything outside the rectangle.
+    /// The solids one tile references, in no order the walk depends on — and an
+    /// empty slice for open ground and for anything outside the rectangle.
     ///
-    /// What the walk reads. A tile carries one lid, or one body, or a panel per
-    /// side its art named; a caller combines them itself, and the combination is
-    /// a rule rather than a fold — see `light::walk_cells`, which takes the
-    /// largest and not the product, because two panels of one wall are one wall.
-    pub fn surfaces_at(&self, x: i32, y: i32) -> &[Surface] {
+    /// The **references**, which is what a cell holds since step 23.1 and what
+    /// the shader's own loop counts through. A caller that wants the solids and
+    /// not their names reads [`Occlusion::solids_at`]; a caller that wants a
+    /// solid's *place* in the list — because the hole beside it is indexed by
+    /// that place — needs this one.
+    pub fn ids_at(&self, x: i32, y: i32) -> &[SolidId] {
         let Some(index) = self.index(x, y) else {
             return &[];
         };
         let span = self.index[index];
         let from = span.offset as usize;
-        &self.surfaces[from..from + usize::from(span.count)]
+        &self.ids[from..from + usize::from(span.count)]
+    }
+
+    /// One solid of the frame's list, by the name a cell holds.
+    ///
+    /// # Panics
+    ///
+    /// On an id from another frame's grid. Every [`SolidId`] this crate makes
+    /// comes out of [`Occlusion::ids_at`] on the same grid — the walk carries one
+    /// from a cell to here and nowhere else — so a stale id is a caller mixing
+    /// two frames rather than a value a reader has to defend against.
+    pub fn solid(&self, id: SolidId) -> &Solid {
+        &self.solids[id.raw() as usize]
+    }
+
+    /// The solids standing on one tile, followed through their references.
+    ///
+    /// What the walk reads. A tile carries one lid, or one body, or a panel per
+    /// side its art named; a caller combines them itself, and the combination is
+    /// a rule rather than a fold — see `light::walk_cells`, which takes the
+    /// largest and not the product, because two panels of one wall are one wall.
+    pub fn solids_at(&self, x: i32, y: i32) -> impl Iterator<Item = &Solid> + '_ {
+        self.ids_at(x, y).iter().map(|id| self.solid(*id))
     }
 
     /// What stands on one tile as one box, or `None` for open ground and for
     /// anything outside the rectangle.
     ///
-    /// The **merged view** of [`Occlusion::surfaces_at`] and derived from it on
+    /// The **merged view** of [`Occlusion::solids_at`] and derived from it on
     /// every call: the union of the spans, the largest opacity and the union of
     /// the sides. For the readers whose question is genuinely about a tile — the
     /// wireframe, the plan view, which way a mounted flame steps out of its own
     /// cell — and not for the walk, which stopped asking it when the list
     /// arrived.
     pub fn at(&self, x: i32, y: i32) -> Option<Cell> {
-        let surfaces = self.surfaces_at(x, y);
-        let (first, rest) = surfaces.split_first()?;
-        Some(rest.iter().fold(
+        let mut solids = self.solids_at(x, y);
+        let first = solids.next()?;
+        Some(solids.fold(
             Cell {
-                bottom: first.bottom,
-                top: first.top,
+                bottom: first.bottom(),
+                top: first.top(),
                 opacity: first.opacity,
                 edges: first.edges,
             },
-            |cell, surface| Cell {
-                bottom: cell.bottom.min(surface.bottom),
-                top: cell.top.max(surface.top),
-                opacity: cell.opacity.max(surface.opacity),
-                edges: cell.edges | surface.edges,
+            |cell, solid| Cell {
+                bottom: cell.bottom.min(solid.bottom()),
+                top: cell.top.max(solid.top()),
+                opacity: cell.opacity.max(solid.opacity),
+                edges: cell.edges | solid.edges,
             },
         ))
     }
@@ -850,18 +909,29 @@ impl Occlusion {
     /// leaving the grid upwards and what it has to beat is the tallest thing
     /// anywhere ahead of it.
     pub fn tallest(&self) -> Option<i32> {
-        self.surfaces.iter().map(|surface| surface.top).max()
+        self.solids.iter().map(Solid::top).max()
     }
 
-    /// How many surfaces stand in the frame at all — what
-    /// [`Occlusion::surface_bytes`] uploads, and the number decision 30.6 will
-    /// have a distribution of.
-    pub fn surface_count(&self) -> usize {
-        self.surfaces.len()
+    /// How many solids stand in the frame at all — what
+    /// [`Occlusion::solid_bytes`] uploads.
+    pub fn solid_count(&self) -> usize {
+        self.solids.len()
     }
 
-    /// How many surfaces the frame measured and could not store, because their
-    /// tile was already holding [`MAX_SURFACES_PER_TILE`].
+    /// How many *references* to them the cells hold — what
+    /// [`Occlusion::id_bytes`] uploads, and the number decision 30.6 has a
+    /// distribution of.
+    ///
+    /// Equal to [`Occlusion::solid_count`] until something spans a cell, and the
+    /// pair is worth printing side by side from that day on: the two being equal
+    /// is what says *nothing is shared yet*, which is a fact about the map's
+    /// geometry rather than about this format.
+    pub fn reference_count(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// How many solids the frame measured and could not store, because their
+    /// tile was already holding [`MAX_SOLIDS_PER_CELL`].
     ///
     /// Decision 30.6: a grid that quietly truncates reads as "covered everything"
     /// when it did not, so what is dropped is counted and whoever measures the
@@ -871,13 +941,13 @@ impl Occlusion {
         self.dropped
     }
 
-    /// How many tiles hold how many surfaces: `histogram()[n]` is the number of
-    /// tiles holding exactly `n`, open ground included at `n = 0`.
+    /// How many tiles reference how many solids: `histogram()[n]` is the number
+    /// of tiles referencing exactly `n`, open ground included at `n = 0`.
     ///
     /// The distribution decision 30.6 asks for rather than the total
-    /// [`Occlusion::surface_count`] is — the question is what a *cell* holds, and
-    /// a mean over a city answers it with the wrong shape: 10,000 tiles of one
-    /// surface and one tile of forty is the case a truncation has to be chosen
+    /// [`Occlusion::reference_count`] is — the question is what a *cell* holds,
+    /// and a mean over a city answers it with the wrong shape: 10,000 tiles of
+    /// one solid and one tile of forty is the case a truncation has to be chosen
     /// against, and a total cannot tell it from 10,000 tiles of one and a bit.
     pub fn histogram(&self) -> Vec<usize> {
         let mut counts = Vec::new();
@@ -906,15 +976,20 @@ impl Occlusion {
     ///
     /// `(offset & 255, offset >> 8, offset >> 16, count)` — decision 30.3's
     /// `(offset, count)`, with the offset spread over three channels because one
-    /// byte holds 255 surfaces and a city block holds thousands. Twenty-four bits
-    /// is sixteen million, which is four hundred surfaces on every tile of the
-    /// widest frame this renderer draws.
+    /// byte holds 255 references and a city block holds thousands. Twenty-four
+    /// bits is sixteen million, which is four hundred references on every tile of
+    /// the widest frame this renderer draws.
+    ///
+    /// **What it points at is [`Occlusion::id_bytes`]** since step 23.1, and the
+    /// texel is unchanged by that: an offset into one flat list is an offset into
+    /// another, and the level the shader gained is a second fetch rather than a
+    /// wider index.
     ///
     /// A count of zero is open ground, and it is the whole of the presence test:
     /// the offset of an empty tile is whatever the run before it ended at, and
     /// the shader never reads it. What used to be the `PRESENT` bit of a cell is
     /// now this — and `PRESENT` moved with the span it belongs to, into
-    /// [`Occlusion::surface_bytes`].
+    /// [`Occlusion::solid_bytes`].
     pub fn bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.index.len() * 4);
         for span in &self.index {
@@ -928,35 +1003,75 @@ impl Occlusion {
         bytes
     }
 
-    /// The **list** as the texture the shader reads: `Rgba8Uint`, one texel a
-    /// surface, folded into rows [`SURFACE_ROW`] wide and padded to a whole row.
+    /// The **references** as the texture the shader reads: `Rgba8Uint`, one texel
+    /// a reference, folded into rows [`LIST_ROW`] wide and padded to a whole row.
+    ///
+    /// `(id & 255, id >> 8, id >> 16, 0)` — a [`SolidId`] spread over three
+    /// channels exactly as an offset is in [`Occlusion::bytes`], and for the same
+    /// reason. The fourth channel is free and stays zero: what a reference *is*
+    /// today is a name and nothing else, and a channel filled with something
+    /// plausible now would be a field the walk has to be taught to ignore. The
+    /// first thing that will want it is decision 38.2's spill, where a reference
+    /// from a neighbouring block is worth telling apart from one of a cell's own.
+    ///
+    /// A cell with no solids on it writes no texel here at all: its count is zero
+    /// and its offset is never read.
+    pub fn id_bytes(&self) -> Vec<u8> {
+        let row = LIST_ROW as usize;
+        let rows = self.ids.len().div_ceil(row).max(1);
+        let mut bytes = Vec::with_capacity(rows * row * 4);
+        for id in &self.ids {
+            let at = id.raw();
+            bytes.extend_from_slice(&[
+                (at & 0xFF) as u8,
+                ((at >> 8) & 0xFF) as u8,
+                ((at >> 16) & 0xFF) as u8,
+                0,
+            ]);
+        }
+        bytes.resize(rows * row * 4, 0);
+        bytes
+    }
+
+    /// The **solids** as the texture the shader reads: `Rgba8Uint`, one texel a
+    /// solid, folded into rows [`LIST_ROW`] wide and padded to a whole row.
     ///
     /// `(bottom + 128, top + 128, opacity, PRESENT | edges)` — which is what a
-    /// cell's texel was before the list existed, moved down a level unchanged.
+    /// cell's texel was before the list existed, moved down two levels unchanged.
     /// The `z` offset is what makes an `i8` fit an unsigned channel, and both
     /// ends are clamped into it: a map's `z` is an `i8`, but `z + height` is not
     /// — a 255-tall static based at 100 has a top no channel holds, and a wall
     /// that reaches past the top of the world may as well stop there.
     ///
+    /// **The box's `x` and `y` are not uploaded, and that is a statement rather
+    /// than an omission.** What the walk tests is a plane named by the cell it is
+    /// stepping through and the solid's `edges` — a panel on the north side of
+    /// this cell is the line `y = cell.y`, derived where it is used — so the two
+    /// horizontal axes have no reader in the shader. Sending them would put four
+    /// channels of geometry beside a walk that ignores them, which is exactly how
+    /// a format grows a field nobody dares change. Step 23.5 is where a ray is
+    /// tested against the box itself and where these channels arrive with a
+    /// reader; until then the box lives on the CPU, where the views read it.
+    ///
     /// [`PRESENT`] is still written, and it is still not padding: a lid's mask is
     /// legitimately zero, so a texel of all zeros has to be distinguishable from
-    /// a horizontal surface at `z = -128`. What says a *tile* is empty is the
+    /// a horizontal solid at `z = -128`. What says a *tile* is empty is the
     /// index's count.
-    pub fn surface_bytes(&self) -> Vec<u8> {
-        let row = SURFACE_ROW as usize;
-        let rows = self.surfaces.len().div_ceil(row).max(1);
+    pub fn solid_bytes(&self) -> Vec<u8> {
+        let row = LIST_ROW as usize;
+        let rows = self.solids.len().div_ceil(row).max(1);
         let mut bytes = Vec::with_capacity(rows * row * 4);
-        for surface in &self.surfaces {
+        for solid in &self.solids {
             let channel = |z: i32| (z.clamp(-128, 127) + 128) as u8;
-            let holed = match surface.aperture {
+            let holed = match solid.aperture {
                 Some(_) => HOLED,
                 None => 0,
             };
             bytes.extend_from_slice(&[
-                channel(surface.bottom),
-                channel(surface.top),
-                surface.opacity,
-                PRESENT | holed | surface.edges,
+                channel(solid.bottom()),
+                channel(solid.top()),
+                solid.opacity,
+                PRESENT | holed | solid.edges,
             ]);
         }
         bytes.resize(rows * row * 4, 0);
@@ -964,30 +1079,29 @@ impl Occlusion {
     }
 
     /// The **holes** as the texture the shader reads: `Rgba8Uint`, one texel a
-    /// surface, in [`Occlusion::surface_bytes`]'s own order and folded the same
-    /// way.
+    /// solid, in [`Occlusion::solid_bytes`]'s own order and folded the same way.
     ///
     /// `(near, far, bottom + 128, top + 128)` — [`Aperture`], with the `z` offset
-    /// and the clamp [`Occlusion::surface_bytes`] uses for the same reason.
+    /// and the clamp [`Occlusion::solid_bytes`] uses for the same reason.
     ///
-    /// A parallel plane and **not** four more channels of the surface, nor a
+    /// A parallel plane and **not** four more channels of the solid, nor a
     /// second texel interleaved into the list, and the reason is the shape of the
-    /// walk: the surface list is what a ray reads cell after cell in a loop, and
+    /// walk: the solid list is what a ray reads cell after cell in a loop, and
     /// a hole is what almost nothing has. Interleaving would halve the list's
     /// texture cache to carry zeros; a plane indexed by the same number is read
     /// only where [`HOLED`] says there is something to read, which is the way
     /// every other miss in this pass is paid for.
     ///
-    /// A surface with no hole is four zeros, which is a hole of no width at
+    /// A solid with no hole is four zeros, which is a hole of no width at
     /// `z = -128`: degenerate, and never looked at, because the bit above gates
     /// it.
     pub fn aperture_bytes(&self) -> Vec<u8> {
-        let row = SURFACE_ROW as usize;
-        let rows = self.surfaces.len().div_ceil(row).max(1);
+        let row = LIST_ROW as usize;
+        let rows = self.solids.len().div_ceil(row).max(1);
         let mut bytes = Vec::with_capacity(rows * row * 4);
-        for surface in &self.surfaces {
+        for solid in &self.solids {
             let channel = |z: i32| (z.clamp(-128, 127) + 128) as u8;
-            match surface.aperture {
+            match solid.aperture {
                 Some(hole) => {
                     bytes.extend_from_slice(&[hole.near, hole.far, channel(hole.bottom), channel(hole.top)])
                 }
@@ -998,21 +1112,21 @@ impl Occlusion {
         bytes
     }
 
-    /// Whether any surface in the frame has a hole in it at all.
+    /// Whether any solid in the frame has a hole in it at all.
     ///
     /// What the upload asks before it writes [`Occlusion::aperture_bytes`]: until
     /// step 16 measures a window off the art, no frame of a real map has one, and
     /// a plane of zeros does not need laying out and sending every frame.
     pub fn any_aperture(&self) -> bool {
-        self.surfaces.iter().any(|surface| surface.aperture.is_some())
+        self.solids.iter().any(|solid| solid.aperture.is_some())
     }
 }
 
-/// The end of a tile's list of surfaces, in [`Builder::heads`] and in
+/// The end of a tile's list of solids, in [`Builder::heads`] and in
 /// [`Builder::arena`]'s links.
-const NO_SURFACE: u32 = u32::MAX;
+const NO_SOLID: u32 = u32::MAX;
 
-/// How many surfaces one tile may hold: the format's own ceiling and not a
+/// How many solids one tile may reference: the format's own ceiling and not a
 /// number anybody chose.
 ///
 /// A cell's count is one byte — [`Occlusion::bytes`] — so 255 is what an
@@ -1020,17 +1134,17 @@ const NO_SURFACE: u32 = u32::MAX;
 /// from a distribution measured over a city rather than from a guess. Until that
 /// measurement says otherwise this is the only cap there is, and what it drops is
 /// counted rather than silently thrown away: [`Occlusion::dropped`].
-pub const MAX_SURFACES_PER_TILE: usize = 255;
+pub const MAX_SOLIDS_PER_CELL: usize = 255;
 
-/// Builds one frame's [`Occlusion`]: a surface at a time, packed at the end.
+/// Builds one frame's [`Occlusion`]: a solid at a time, packed at the end.
 ///
 /// The grid is written tile by tile — a static at a time, in whatever order the
 /// map walk finds them — and what comes out is a packed list nothing appends to.
 /// The two are separate types because the two are separate shapes: a tile's
-/// surfaces have to be contiguous for an `(offset, count)` to name them, and
+/// references have to be contiguous for an `(offset, count)` to name them, and
 /// they cannot be while anything can still be added.
 ///
-/// A tile's surfaces live in [`Builder::arena`] as a linked list rather than in a
+/// A tile's solids live in [`Builder::arena`] as a linked list rather than in a
 /// `Vec` of their own, and that is a cost decision rather than a taste one: a
 /// widest-zoom grid is 35,000 tiles of which 10,000 stand, so a `Vec` a tile
 /// would be 35,000 allocations a frame on the side of this pass that is already
@@ -1038,16 +1152,21 @@ pub const MAX_SURFACES_PER_TILE: usize = 255;
 #[derive(Clone, PartialEq, Debug)]
 pub struct Builder {
     bounds: TileBounds,
-    /// The first surface of each tile, row-major over `bounds`, or
-    /// [`NO_SURFACE`] for open ground.
+    /// The first solid of each tile, row-major over `bounds`, or
+    /// [`NO_SOLID`] for open ground.
     heads: Vec<u32>,
-    /// Every surface added this frame, each with the index of the next one on
+    /// Every solid added this frame, each with the index of the next one on
     /// its own tile.
-    arena: Vec<(Surface, u32)>,
+    ///
+    /// A solid a *tile* holds, still, and that is the honest state of step 23.1:
+    /// the ownership has moved into [`Occlusion`], where a cell references what
+    /// the frame owns, and the builder above it has not been asked to hold a
+    /// solid two tiles reference. Decision 38.2's spill is the step that asks.
+    arena: Vec<(Solid, u32)>,
     /// How much of the sky each tile can see, in the same order as `heads`.
     sky: Vec<u8>,
-    /// How many surfaces were refused because their tile was already full — see
-    /// [`MAX_SURFACES_PER_TILE`] and [`Occlusion::dropped`].
+    /// How many solids were refused because their tile was already full — see
+    /// [`MAX_SOLIDS_PER_CELL`] and [`Occlusion::dropped`].
     dropped: usize,
 }
 
@@ -1058,7 +1177,7 @@ impl Builder {
         let tiles = (bounds.width() * bounds.height()) as usize;
         Self {
             bounds,
-            heads: vec![NO_SURFACE; tiles],
+            heads: vec![NO_SOLID; tiles],
             arena: Vec::new(),
             sky: vec![SKY_OPEN; tiles],
             dropped: 0,
@@ -1099,7 +1218,8 @@ impl Builder {
         if opacity == CLEAR {
             return;
         }
-        let Some(index) = self.index(i32::from(x), i32::from(y)) else {
+        let place = (i32::from(x), i32::from(y));
+        let Some(index) = self.index(place.0, place.1) else {
             return;
         };
         let bottom = i32::from(z);
@@ -1127,17 +1247,22 @@ impl Builder {
         if let (true, Some(prism)) = (tile.flags.is_climbable(), shape.prism) {
             self.push(
                 index,
-                Surface {
-                    bottom,
-                    top: bottom + i32::from(prism.top()),
+                Solid {
+                    space: Solid::box_of(
+                        place.0,
+                        place.1,
+                        bottom,
+                        bottom + i32::from(prism.top()),
+                        EDGE_ANY,
+                    ),
                     opacity,
                     // A **body**: a solid a ray travels through, rather than a
                     // plane it is stopped by crossing. That is already the right
                     // rule for a stair — light climbs a staircase, it does not
-                    // stop dead at one edge of it — and it is as far as one
-                    // surface can say. The *treads* are the next step: a tread is
-                    // a body over part of the tile, and nothing in this format
-                    // says "part of".
+                    // stop dead at one edge of it — and it is as far as one box
+                    // can say. The *treads* are the next step: a tread is a body
+                    // over part of the tile, and one box over the whole of it
+                    // cannot say "part of" however it is stored.
                     edges: EDGE_ANY,
                     aperture: None,
                     roof: tile.flags.is_roof(),
@@ -1172,9 +1297,8 @@ impl Builder {
             // direction nobody measured.
             0 | EDGE_ANY => self.push(
                 index,
-                Surface {
-                    bottom,
-                    top,
+                Solid {
+                    space: Solid::box_of(place.0, place.1, bottom, top, edges),
                     opacity,
                     edges,
                     aperture: None,
@@ -1186,9 +1310,8 @@ impl Builder {
                     if named & side != 0 {
                         self.push(
                             index,
-                            Surface {
-                                bottom,
-                                top,
+                            Solid {
+                                space: Solid::box_of(place.0, place.1, bottom, top, side),
                                 opacity,
                                 edges: side,
                                 // A corner's two panels are two faces of one
@@ -1214,23 +1337,23 @@ impl Builder {
         }
     }
 
-    /// Put one surface on a tile, unless the tile already has it or is full.
-    fn push(&mut self, index: usize, surface: Surface) {
+    /// Put one solid on a tile, unless the tile already has it or is full.
+    fn push(&mut self, index: usize, solid: Solid) {
         let mut count = 0;
         let mut at = self.heads[index];
-        while at != NO_SURFACE {
+        while at != NO_SOLID {
             let (had, next) = self.arena[at as usize];
-            if had == surface {
+            if had == solid {
                 return;
             }
             count += 1;
             at = next;
         }
-        if count >= MAX_SURFACES_PER_TILE {
+        if count >= MAX_SOLIDS_PER_CELL {
             self.dropped += 1;
             return;
         }
-        self.arena.push((surface, self.heads[index]));
+        self.arena.push((solid, self.heads[index]));
         self.heads[index] = self.arena.len() as u32 - 1;
     }
 
@@ -1313,10 +1436,21 @@ impl Builder {
     /// contiguous and in the order the tiles are in — which is what makes the
     /// grid's texture and the list's two views of one thing.
     ///
-    /// A tile's own surfaces come out in the order they were added. The walk does
+    /// A tile's own solids come out in the order they were added. The walk does
     /// not depend on it — it takes the largest of them — but a stable order is
     /// what lets a test name a slice and a frame dump be compared with the one
     /// before it.
+    ///
+    /// # One reference per solid, and it is not a placeholder
+    ///
+    /// The ids this writes run `0, 1, 2, …` and the solid list is in the cells'
+    /// own order, because nothing the builder holds is referenced twice: a solid
+    /// is still one tile's. So the plane a cell points through is, today, the
+    /// identity — and building it anyway is the same argument step 23.2 makes for
+    /// the spill, which is that a missing reference is a hole in a shadow that
+    /// looks exactly like a detector failing. The level exists, both walks read
+    /// it, and the first thing to share a solid changes one function rather than
+    /// a format, a shader, two walks and three views.
     ///
     /// # This is where the [`Cutaway`] is applied, and that is decision 33
     ///
@@ -1328,35 +1462,37 @@ impl Builder {
     /// build serve two frames — which is what decision 30.4's cache is, once its
     /// storey band is gone.
     ///
-    /// The test is [`cutaway::shows`]'s own, reconstructed from what a surface
-    /// carries: [`Surface::bottom`] is the `z` the static stood at, and
-    /// [`Surface::roof`] is the flag. Nothing else in the walk asks either.
+    /// The test is [`cutaway::shows`]'s own, reconstructed from what a solid
+    /// carries: [`Solid::bottom`] is the `z` the static stood at, and
+    /// [`Solid::roof`] is the flag. Nothing else in the walk asks either.
     pub fn finish(self, cutaway: &Cutaway) -> Occlusion {
         let mut index = Vec::with_capacity(self.heads.len());
-        let mut surfaces = Vec::with_capacity(self.arena.len());
+        let mut solids = Vec::with_capacity(self.arena.len());
         for head in &self.heads {
-            let offset = surfaces.len() as u32;
+            let offset = solids.len() as u32;
             // The list is built by pushing at the front, so walking it hands back
             // the newest first; reversing what one tile contributed is what puts
-            // the surfaces in the order the map walk found them.
+            // the solids in the order the map walk found them.
             let mut at = *head;
-            while at != NO_SURFACE {
-                let (surface, next) = self.arena[at as usize];
-                if surface.drawn(cutaway) {
-                    surfaces.push(surface);
+            while at != NO_SOLID {
+                let (solid, next) = self.arena[at as usize];
+                if solid.drawn(cutaway) {
+                    solids.push(solid);
                 }
                 at = next;
             }
-            surfaces[offset as usize..].reverse();
+            solids[offset as usize..].reverse();
             index.push(Span {
                 offset,
-                count: (surfaces.len() as u32 - offset) as u8,
+                count: (solids.len() as u32 - offset) as u8,
             });
         }
+        let ids = (0..solids.len() as u32).map(SolidId::new).collect();
         Occlusion {
             bounds: self.bounds,
             index,
-            surfaces,
+            ids,
+            solids,
             sky: self.sky,
             dropped: self.dropped,
         }
@@ -1529,6 +1665,23 @@ mod tests {
         }
     }
 
+    /// One opaque solid as a test states one: the tile it stands on, the span it
+    /// occupies, and its kind.
+    ///
+    /// The box comes from [`Solid::box_of`] rather than from six corners written
+    /// out here, and that is the point: a test that spelled the corners itself
+    /// would be a second opinion about where a panel's plane is, and the first
+    /// one is the thing under test. What a scene is *about* is the four numbers.
+    fn stands_at(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> Solid {
+        Solid {
+            space: Solid::box_of(x, y, bottom, top, edges),
+            opacity: OPAQUE,
+            edges,
+            aperture: None,
+            roof: false,
+        }
+    }
+
     /// An open door leaves the grid, and the graphic is the only thing that says
     /// so.
     ///
@@ -1673,28 +1826,14 @@ mod tests {
             EDGE_EAST | EDGE_SOUTH,
             "the cell did not take the corner's two sides",
         );
-        // And in the list it is **two surfaces**, which is the shape decision 30
-        // gives a corner: one quad a side, each with the tile's own span. The
+        // And in the list it is **two solids**, which is the shape decision 30
+        // gives a corner: one plane a side, each with the tile's own span. The
         // merged view above is a fold over exactly these.
         assert_eq!(
-            occlusion.surfaces_at(102, 103),
-            &[
-                Surface {
-                    bottom: 0,
-                    top: 20,
-                    opacity: OPAQUE,
-                    edges: EDGE_EAST,
-                    aperture: None,
-                    roof: false,
-                },
-                Surface {
-                    bottom: 0,
-                    top: 20,
-                    opacity: OPAQUE,
-                    edges: EDGE_SOUTH,
-                    aperture: None,
-                    roof: false,
-                },
+            occlusion.solids_at(102, 103).copied().collect::<Vec<_>>(),
+            [
+                stands_at(102, 103, 0, 20, EDGE_EAST),
+                stands_at(102, 103, 0, 20, EDGE_SOUTH),
             ],
         );
     }
@@ -1732,30 +1871,21 @@ mod tests {
         let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         assert_eq!(
-            occlusion.surfaces_at(100, 100),
-            &[Surface {
-                bottom: 10,
-                top: 10,
-                opacity: OPAQUE,
-                edges: 0,
-                aperture: None,
-                roof: false,
-            }],
+            occlusion.solids_at(100, 100).copied().collect::<Vec<_>>(),
+            [stands_at(100, 100, 10, 10, 0)],
         );
         assert_eq!(
-            occlusion.surfaces_at(101, 100),
-            &[Surface {
-                bottom: 0,
-                top: 20,
-                opacity: OPAQUE,
-                edges: EDGE_ANY,
-                aperture: None,
-                roof: false,
-            }],
+            occlusion.solids_at(101, 100).copied().collect::<Vec<_>>(),
+            [stands_at(101, 100, 0, 20, EDGE_ANY)],
         );
-        assert_eq!(occlusion.surfaces_at(102, 100), &[], "open ground stands nothing");
-        assert_eq!(occlusion.surfaces_at(0, 0), &[], "and neither does off the grid");
-        assert_eq!(occlusion.surface_count(), 2, "and nothing else got into the list");
+        assert_eq!(occlusion.ids_at(102, 100), &[], "open ground stands nothing");
+        assert_eq!(occlusion.ids_at(0, 0), &[], "and neither does off the grid");
+        assert_eq!(occlusion.solid_count(), 2, "and nothing else got into the list");
+        assert_eq!(
+            occlusion.reference_count(),
+            2,
+            "and each of them is referenced by the one cell it stands on",
+        );
     }
 
     /// A hole belongs to a **named panel** and to nothing else, and what is
@@ -1845,21 +1975,27 @@ mod tests {
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
 
-        assert_eq!(occlusion.surfaces_at(100, 100)[0].aperture, Some(placed));
+        let aperture_at = |x, y| {
+            occlusion
+                .solids_at(x, y)
+                .map(|solid| solid.aperture)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(aperture_at(100, 100)[0], Some(placed));
         assert_eq!(
-            occlusion.surfaces_at(101, 100)[0].aperture,
+            aperture_at(101, 100)[0],
             None,
             "a body kept a hole in a plane it does not have",
         );
         assert_eq!(
-            occlusion.surfaces_at(102, 100)[0].aperture,
+            aperture_at(102, 100)[0],
             None,
             "a lid kept a hole in a plane it does not have",
         );
-        let corner = occlusion.surfaces_at(103, 100);
+        let corner = aperture_at(103, 100);
         assert_eq!(corner.len(), 2);
         assert!(
-            corner.iter().all(|surface| surface.aperture == Some(placed)),
+            corner.iter().all(|hole| *hole == Some(placed)),
             "a corner's two faces are one picture and the hole is in both of them",
         );
     }
@@ -1913,7 +2049,7 @@ mod tests {
         let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         assert!(occlusion.any_aperture());
-        let surfaces = occlusion.surface_bytes();
+        let surfaces = occlusion.solid_bytes();
         let holes = occlusion.aperture_bytes();
         assert_eq!(
             surfaces[3] & HOLED,
@@ -1981,8 +2117,7 @@ mod tests {
             let mut occlusion = Builder::new(bounds());
             occlusion.add(100, 100, 0, NOT_A_DOOR, &stair, shape);
             let finished = occlusion.finish(&Cutaway::OPEN);
-            let surfaces: Vec<Surface> = finished.surfaces_at(100, 100).to_vec();
-            surfaces
+            finished.solids_at(100, 100).copied().collect::<Vec<_>>()
         };
 
         // What the art actually says about `0x0736`: three treads climbing west,
@@ -1991,7 +2126,7 @@ mod tests {
         let solid = read_as(Shape::solid(prism));
         assert_eq!(solid.len(), 1, "one surface and not two panels");
         assert_eq!(solid[0].edges, EDGE_ANY, "a body a ray travels through");
-        assert_eq!(solid[0].top, 5, "five z of stair, off the picture");
+        assert_eq!(solid[0].top(), 5, "five z of stair, off the picture");
 
         // And with no prism measured it is what it always was: the wall
         // detector's corner, two panels, half the stated height. Nothing gets
@@ -2001,7 +2136,7 @@ mod tests {
             left: Face::South,
         }));
         assert_eq!(corner.len(), 2, "a corner is still two panels");
-        assert_eq!(corner[0].top, 10, "and still half of what tiledata states");
+        assert_eq!(corner[0].top(), 10, "and still half of what tiledata states");
     }
 
     /// Two occluders on one tile are **two surfaces**, and the gap between them
@@ -2038,25 +2173,11 @@ mod tests {
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert_eq!(
-            occlusion.surfaces_at(105, 105),
-            &[
-                Surface {
-                    bottom: 0,
-                    top: 20,
-                    opacity: OPAQUE,
-                    // Neither was given a face, so both are the whole tile.
-                    edges: EDGE_ANY,
-                    aperture: None,
-                    roof: false,
-                },
-                Surface {
-                    bottom: 40,
-                    top: 60,
-                    opacity: OPAQUE,
-                    edges: EDGE_ANY,
-                    aperture: None,
-                    roof: false,
-                },
+            occlusion.solids_at(105, 105).copied().collect::<Vec<_>>(),
+            [
+                // Neither was given a face, so both are the whole tile.
+                stands_at(105, 105, 0, 20, EDGE_ANY),
+                stands_at(105, 105, 40, 60, EDGE_ANY),
             ],
             "the two walls merged into one, and the air between them with it",
         );
@@ -2112,23 +2233,12 @@ mod tests {
         let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         assert_eq!(
-            occlusion.surfaces_at(104, 104),
-            &[
-                Surface {
-                    bottom: 0,
-                    top: 20,
-                    opacity: OPAQUE,
-                    edges: EDGE_SOUTH,
-                    aperture: None,
-                    roof: false,
-                },
-                Surface {
-                    bottom: 20,
-                    top: 20,
+            occlusion.solids_at(104, 104).copied().collect::<Vec<_>>(),
+            [
+                stands_at(104, 104, 0, 20, EDGE_SOUTH),
+                Solid {
                     opacity: PANE,
-                    edges: 0,
-                    aperture: None,
-                    roof: false,
+                    ..stands_at(104, 104, 20, 20, 0)
                 },
             ],
         );
@@ -2146,46 +2256,43 @@ mod tests {
         );
     }
 
-    /// **A panel is drawn on the plane a pixel of that face lies on**, and the
-    /// plane is derived from [`crate::facing::Face::place_at`] rather than
-    /// restated here.
+    /// **A panel *is* the plane a pixel of that face lies on**, and the plane is
+    /// derived from [`crate::facing::Face::place_at`] rather than restated here.
     ///
-    /// The instrument's own honesty, and the failure it is aimed at is quiet:
-    /// [`Surface::solid`] is what both views draw, nothing tied its box to the
-    /// geometry the walk crosses, and a panel drawn on the wrong edge of its tile
-    /// would look like a wall standing a tile out of place — which reads as a
-    /// defect in the *map* rather than in the picture of it. An instrument that
-    /// can be wrong in a way indistinguishable from what it is measuring is worse
-    /// than no instrument.
+    /// The instrument's own honesty, and the failure it is aimed at is quiet: this
+    /// box is what both views draw *and*, since step 23.1, what the world owns, so
+    /// a panel on the wrong edge of its tile would look like a wall standing a tile
+    /// out of place — which reads as a defect in the *map* rather than in the
+    /// picture of it. An instrument that can be wrong in a way indistinguishable
+    /// from what it is measuring is worse than no instrument.
     ///
     /// `place_at` is the right other end of the claim because it is what
     /// `statics.wgsl` places a face fragment with: the point it hands back is
     /// where that pixel *is*, and the axis that does not move along the run is
     /// the plane the whole face lies in. That is the plane `light::walk_cells`
-    /// pierces when the ray crosses this edge, so a box with a face on it is a
-    /// box the shader agrees with.
+    /// pierces when the ray crosses this edge, so a box lying in it is a box the
+    /// shader agrees with.
     ///
-    /// What it does not claim is a thickness: [`DRAWN_PANEL_THICKNESS`] is a
-    /// drawing number and this test reads it rather than checking it. What is
-    /// checked is the *direction* — the slab lies inside its own tile, away from
-    /// [`crate::facing::Face::outward`] — because a slab drawn straddling the
-    /// edge would put two neighbouring walls one inside the other and make an
-    /// honest joint look like a doubled wall.
+    /// Two claims, and step 23.1 is what separated them. The **record** is flat:
+    /// its box is the plane and nothing more, because a thickness no ray is tested
+    /// against may not sit in the field a reader takes for geometry. The
+    /// **drawing** has [`crate::solid::DRAWN_PANEL_THICKNESS`], and what is checked
+    /// of it is the *direction* — the slab lies inside its own tile, away from
+    /// [`crate::facing::Face::outward`] — because a slab drawn straddling the edge
+    /// would put two neighbouring walls one inside the other and make an honest
+    /// joint look like a doubled wall.
     #[test]
-    fn a_panel_is_drawn_on_the_plane_its_face_pixels_lie_on() {
+    fn a_panel_lies_in_the_plane_its_face_pixels_lie_on() {
         use crate::facing::{Face, Facing};
+        use crate::solid::DRAWN_PANEL_THICKNESS;
 
         let (x, y) = (1500, 1600);
         for face in [Face::North, Face::East, Face::South, Face::West] {
-            let surface = Surface {
-                bottom: 0,
-                top: 20,
-                opacity: OPAQUE,
+            let stands = Solid {
                 edges: edges_of(Some(Facing::One(face))),
-                aperture: None,
-                roof: false,
+                ..stands_at(x, y, 0, 20, edges_of(Some(Facing::One(face))))
             };
-            let solid = surface.solid(x, y);
+            let solid = stands.space;
             // Where the two ends of this face's run are, in the tile's own unit
             // square. The axis they agree on is the one the face is flat in.
             let (near, far) = (face.place_at(0.0), face.place_at(1.0));
@@ -2195,6 +2302,35 @@ mod tests {
                 false => (1, f64::from(y) + f64::from(near.1)),
             };
             let (min, max) = ([solid.min.x, solid.min.y][axis], [solid.max.x, solid.max.y][axis]);
+            assert!(
+                (min - plane).abs() < 1e-9 && (max - plane).abs() < 1e-9,
+                "{face:?}: the record should be the plane at {plane}, it is {min}..{max}",
+            );
+            // And across the run it is the whole tile, because a run of wall is
+            // one surface: a panel short of its own edge would leave a hairline
+            // at every join, which is the class decision 38 exists to kill.
+            let along = 1 - axis;
+            let (from, to) = (
+                [solid.min.x, solid.min.y][along],
+                [solid.max.x, solid.max.y][along],
+            );
+            let corner = f64::from([x, y][along]);
+            assert!(
+                (from - corner).abs() < 1e-9 && (to - corner - 1.0).abs() < 1e-9,
+                "{face:?}: the run should span the whole tile, it spans {from}..{to}",
+            );
+            assert!(
+                (solid.min.z - f64::from(stands.bottom())).abs() < 1e-9
+                    && (solid.max.z - f64::from(stands.top())).abs() < 1e-9,
+                "{face:?}: the span held is not the span the walk tests",
+            );
+
+            // And the drawing, which is the same plane given a thickness inwards.
+            let picture = crate::solid::drawn(&stands);
+            let (min, max) = (
+                [picture.min.x, picture.min.y][axis],
+                [picture.max.x, picture.max.y][axis],
+            );
             // Which of the box's two faces on this axis is the outer one is the
             // face's own outward direction, and the same number says the slab
             // lies inside the tile rather than straddling the plane.
@@ -2217,56 +2353,37 @@ mod tests {
                  {} from {outer} to {inner}",
                 inner - outer,
             );
-            // And across the run it is the whole tile, because a run of wall is
-            // one surface: a panel short of its own edge would leave a hairline
-            // at every join, which is the class decision 38 exists to kill.
-            let along = 1 - axis;
-            let (from, to) = (
-                [solid.min.x, solid.min.y][along],
-                [solid.max.x, solid.max.y][along],
-            );
-            let corner = f64::from([x, y][along]);
-            assert!(
-                (from - corner).abs() < 1e-9 && (to - corner - 1.0).abs() < 1e-9,
-                "{face:?}: the run should span the whole tile, it spans {from}..{to}",
-            );
-            assert!(
-                (solid.min.z - f64::from(surface.bottom)).abs() < 1e-9
-                    && (solid.max.z - f64::from(surface.top)).abs() < 1e-9,
-                "{face:?}: the span drawn is not the span the walk tests",
-            );
         }
     }
 
-    /// And the other two kinds: a lid's top face is the plane a ray crosses it
-    /// at, and a body is exactly its tile.
+    /// And the other two kinds: a lid is the plane a ray crosses it at and is
+    /// drawn hanging under it, and a body is exactly its tile in both.
     ///
     /// The companion to the test above, and the same argument. A lid is *stopped
     /// at* by [`crate::light`]'s `crosses`, which asks whether the ray got to the
     /// other side of the span — so what a person has to be able to see is the
     /// top, and a slab drawn hanging *above* its own plane would put a floor at
     /// the height of the storey over it. A body is travelled through and its
-    /// extent is the tile, which is the one kind that was already a box.
+    /// extent is the tile, which is the one kind that is a box in both.
     #[test]
-    fn a_lid_hangs_under_its_plane_and_a_body_is_its_tile() {
+    fn a_lid_is_drawn_hanging_under_its_plane_and_a_body_is_its_tile() {
+        use crate::solid::{DRAWN_LID_THICKNESS, drawn};
+
         let (x, y) = (1500, 1600);
-        let of = |edges: u8| {
-            Surface {
-                bottom: 0,
-                top: 20,
-                opacity: OPAQUE,
-                edges,
-                aperture: None,
-                roof: false,
-            }
-            .solid(x, y)
-        };
-        let lid = of(0);
+        // A floor as the map has one: a lid whose span is the height it lies at,
+        // which is what `calc_height` gives a `FLOOR` static of no height.
+        let flat = stands_at(x, y, 20, 20, 0);
+        assert!(
+            (flat.space.min.z - 20.0).abs() < 1e-9 && (flat.space.max.z - 20.0).abs() < 1e-9,
+            "a lid the world owns is the plane it lies in, it is {:?}",
+            flat.space,
+        );
+        let lid = drawn(&flat);
         assert!(
             (lid.max.z - 20.0).abs() < 1e-9 && (lid.min.z - (20.0 - DRAWN_LID_THICKNESS)).abs() < 1e-9,
-            "a lid's top is its plane and it hangs under it, it is {lid:?}",
+            "a lid's top is its plane and it is drawn hanging under it, it is {lid:?}",
         );
-        let body = of(EDGE_ANY);
+        let body = drawn(&stands_at(x, y, 0, 20, EDGE_ANY));
         assert!(
             (body.min.x - f64::from(x)).abs() < 1e-9
                 && (body.max.x - f64::from(x) - 1.0).abs() < 1e-9
@@ -2298,7 +2415,7 @@ mod tests {
         occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, Shape::UNREAD);
         occlusion.add(106, 106, 0, NOT_A_DOOR, &wall, Shape::UNREAD);
         let occlusion = occlusion.finish(&Cutaway::OPEN);
-        assert_eq!(occlusion.surface_count(), 1);
+        assert_eq!(occlusion.solid_count(), 1);
         assert_eq!(occlusion.dropped(), 0, "a duplicate is not a truncation");
     }
 
@@ -2313,7 +2430,7 @@ mod tests {
     fn a_tile_past_the_ceiling_drops_and_says_how_many() {
         let mut occlusion = Builder::new(bounds());
         // Distinct spans, so nothing is folded away as a duplicate.
-        for step in 0..(MAX_SURFACES_PER_TILE + 3) {
+        for step in 0..(MAX_SOLIDS_PER_CELL + 3) {
             let z = (step as i32 - 128).clamp(-128, 127) as i8;
             occlusion.add(
                 107,
@@ -2325,7 +2442,7 @@ mod tests {
             );
         }
         let occlusion = occlusion.finish(&Cutaway::OPEN);
-        assert_eq!(occlusion.surfaces_at(107, 107).len(), MAX_SURFACES_PER_TILE);
+        assert_eq!(occlusion.ids_at(107, 107).len(), MAX_SOLIDS_PER_CELL);
         assert_eq!(occlusion.dropped(), 3);
     }
 
@@ -2435,11 +2552,11 @@ mod tests {
         // `PRESENT` and the edge mask rather than a bare yes: neither of these
         // was given a face, so both are the whole tile.
         let whole = PRESENT | EDGE_ANY;
-        let surfaces = occlusion.surface_bytes();
+        let surfaces = occlusion.solid_bytes();
         assert_eq!(
             surfaces.len(),
-            SURFACE_ROW as usize * 4,
-            "one row, padded — the fold into a texture is `SURFACE_ROW` wide",
+            LIST_ROW as usize * 4,
+            "one row, padded — the fold into a texture is `LIST_ROW` wide",
         );
         assert_eq!(&surfaces[0..4], &[118, 138, OPAQUE, whole]);
         assert_eq!(
@@ -2467,7 +2584,7 @@ mod tests {
             Shape::UNREAD,
         );
         assert_eq!(
-            lid.finish(&Cutaway::OPEN).surface_bytes()[3],
+            lid.finish(&Cutaway::OPEN).solid_bytes()[3],
             PRESENT,
             "a floor is present with no side of its own"
         );
@@ -3019,7 +3136,7 @@ mod tests {
             std::hint::black_box(grid.sky_at(bounds.min_x, bounds.min_y));
         }));
         let packed = fastest(Box::new(|| {
-            std::hint::black_box(built.clone().finish(&Cutaway::OPEN).surface_count());
+            std::hint::black_box(built.clone().finish(&Cutaway::OPEN).solid_count());
         }));
         let cloned = fastest(Box::new(|| {
             std::hint::black_box(built.clone().sky_at(bounds.min_x, bounds.min_y));
@@ -3048,7 +3165,7 @@ mod tests {
                 let start = std::time::Instant::now();
                 std::hint::black_box(
                     bake::collect(&mut bake, &map, &[], at, &tiledata, &Cutaway::OPEN, Some(&atlas))
-                        .surface_count(),
+                        .solid_count(),
                 );
                 best = best.min(start.elapsed());
             }
@@ -3066,9 +3183,9 @@ mod tests {
         // would make every reading below a measurement of an empty rectangle.
         assert!(statics > 10_000, "only {statics} statics in a widest-zoom frame");
         assert!(
-            grid.surface_count() > 10_000,
+            grid.solid_count() > 10_000,
             "only {} surfaces",
-            grid.surface_count()
+            grid.solid_count()
         );
 
         println!(
@@ -3085,7 +3202,7 @@ mod tests {
             bounds.width(),
             bounds.height(),
             bounds.width() * bounds.height(),
-            grid.surface_count(),
+            grid.solid_count(),
             grid.boxes().count(),
             ms(empty),
             ms(empty),

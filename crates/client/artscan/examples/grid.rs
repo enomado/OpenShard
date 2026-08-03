@@ -39,14 +39,14 @@ fn main() {
     let mut spans: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
     for tx in bounds.min_x..=bounds.max_x {
         for ty in bounds.min_y..=bounds.max_y {
-            for surface in grid.surfaces_at(tx, ty) {
-                match surface.edges {
+            for solid in grid.solids_at(tx, ty) {
+                match solid.edges {
                     0 => lids += 1,
                     EDGE_ANY => bodies += 1,
                     _ => panels += 1,
                 }
-                *opacities.entry(surface.opacity).or_default() += 1;
-                *spans.entry(surface.top - surface.bottom).or_default() += 1;
+                *opacities.entry(solid.opacity).or_default() += 1;
+                *spans.entry(solid.top() - solid.bottom()).or_default() += 1;
             }
         }
     }

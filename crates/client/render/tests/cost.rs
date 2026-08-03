@@ -409,7 +409,10 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         // nobody reads is an allocation a release build may delete.
         let start = Instant::now();
         std::hint::black_box(
-            built.occlusion.bytes().len() + grid.field_bytes().len() + grid.surface_bytes().len(),
+            built.occlusion.bytes().len()
+                + grid.field_bytes().len()
+                + grid.id_bytes().len()
+                + grid.solid_bytes().len(),
         );
         cpu_bytes = cpu_bytes.min(start.elapsed());
     }
@@ -594,22 +597,33 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         VIEWPORT.1
     );
     eprintln!(
-        "{} flames, {cells} standing cells in a {}x{} grid holding {} surfaces, \
-         {} of them lit this frame",
+        "{} flames, {cells} standing cells in a {}x{} grid holding {} solids under {} \
+         references, {} of them lit this frame",
         night.lights.len(),
         grid.width(),
         grid.height(),
-        night.occlusion.surface_count(),
+        night.occlusion.solid_count(),
+        night.occlusion.reference_count(),
         changed,
     );
-    // Decision 30.6: how many surfaces a cell may hold is a **distribution
+    // The two counts side by side, because step 23.1's ownership is exactly the
+    // difference between them: a solid is what the world holds and a reference is
+    // a cell naming one. They are equal until something spans a cell — decision
+    // 38.2's spill is the first thing that will — and the *equality* is the fact
+    // worth printing, not a redundancy in the line above.
+    assert!(
+        night.occlusion.reference_count() >= night.occlusion.solid_count(),
+        "fewer references than solids: a solid nothing points at is a wall no ray can find",
+    );
+
+    // Decision 30.6: how many solids a cell may reference is a **distribution
     // measured over a city** and not a number anybody picks, and whatever is
     // dropped is said out loud rather than silently capped. A total cannot tell
-    // ten thousand tiles of one surface from ten thousand of one and a tile of
+    // ten thousand tiles of one solid from ten thousand of one and a tile of
     // forty, and it is the second that names a bound.
     let histogram = night.occlusion.histogram();
     let standing: usize = histogram[1..].iter().sum();
-    eprintln!("surfaces a standing cell holds, of {standing} standing cells:");
+    eprintln!("solids a standing cell references, of {standing} standing cells:");
     for (count, tiles) in histogram.iter().enumerate().skip(1) {
         if *tiles > 0 {
             eprintln!(
@@ -619,7 +633,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         }
     }
     eprintln!(
-        "  and {} surfaces dropped because their tile was full\n",
+        "  and {} solids dropped because their tile was full\n",
         night.occlusion.dropped(),
     );
 

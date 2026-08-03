@@ -9,6 +9,37 @@ copied.
 
 ## Where the next session starts
 
+**23.1 has landed and 23.2 is next: the spill, and the ring's measured radius.**
+The ownership moved and no picture did — which is the property the step existed
+to buy, and it is worth saying what "no picture" is held by: `tests/lighting.rs`'s
+31 scenes, `tests/frame.rs`'s 37 including the parity pass that walks both
+implementations over one scene, and the whole-grid equality the bake rests on.
+
+Two things it decided that the step as written had left open, and both are
+argued where the code is:
+
+- **A solid's box is what the walk crosses, not a slab.** A panel's box is its
+  plane. Storing a nominal thickness would put geometry no ray is tested against
+  in the field a reader takes for geometry, and the walk in this step is
+  unchanged by design. The thickness a person needs in order to see a plane
+  edge-on moved into the view — `solid::drawn`, and the `DRAWN_` fence with it.
+- **The kind is carried, not derived.** A static of `tiledata` height zero is a
+  body with a degenerate span and is flat in `z` exactly as a floor is, so
+  "flat in `z` is a lid" would silently re-kind it. `Solid::edges` goes in 23.5,
+  with the rules that ask it.
+
+**Nothing is shared yet, and the id plane is the identity** — deliberately, and
+it is why 23.2 is next rather than 23.3: the level exists and both walks read it,
+so the first thing to reference one solid from two cells changes one function
+instead of a format, a shader, two walks and three views. That first thing is the
+spill.
+
+The numbers are under step 23.1, including a bound rather than a reading for what
+the extra fetch costs, and the reason it is only a bound (the bench's own control
+case is noisier than the difference) is in the backlog as work.
+
+Everything below is the session before it.
+
 **The instrument was made honest, and 23.1 is next with nothing in front of it.**
 Three of the four items under "Found while drawing the solid" are closed, and
 they were the three 23.1 will be judged by:
@@ -2837,13 +2868,13 @@ height can be kept anywhere and the two views cannot drift apart.
          of it, because the geometry is on the CPU by choice (39.6). If this ever
          has to be cheap, the fix is named by that sentence rather than hunted
          for: keep the buffer between frames and rebuild it when the camera moves.
-      1. **The ownership, with the geometry held still.** `occlusion::Surface`
+      1. **[x] The ownership, with the geometry held still.** `occlusion::Surface`
          becomes `Solid` — a box in world coordinates plus the fields it already
          has (`opacity`, the hole flag) — and a cell holds `(offset, count)` into
          an index plane of solid ids rather than into the solids themselves.
-         Every solid built in this step is exactly the box its surface was: a
+         ~~Every solid built in this step is exactly the box its surface was: a
          panel is a slab of nominal thickness on its edge, a lid is a slab of
-         nominal height, a body is its tile. The nominal numbers are chosen so
+         nominal height, a body is its tile.~~ The nominal numbers are chosen so
          that **no test moves** — where a plane test and a slab test can differ,
          the slab is the one that must reproduce the plane's answer, and where it
          cannot, the scene that catches it is the finding.
@@ -2854,6 +2885,120 @@ height can be kept anywhere and the two views cannot drift apart.
          solids-per-cell printed beside 30.6's old one. And a bench reading:
          one indirection in the hot loop is the thing most likely to cost
          something, and it is measured rather than argued.
+
+         **What landed, and the two things it decided.**
+
+         **The slab is not stored, and that is the struck-out sentence above.**
+         The step as written wanted a panel to become a slab of nominal thickness
+         straight away. It cannot, without the record telling a lie the whole
+         plan is built to avoid: what a ray is tested against in this step is
+         still a *plane* — the walk's rules are unchanged, which is the entire
+         DoD — so a thickness in the box would be geometry sitting in the field a
+         reader takes for geometry with nothing testing it. So a solid's box is
+         what the walk crosses: a panel's is its plane, flat on one horizontal
+         axis; a lid's is the height it lies at; a body's is its tile, which is
+         the one kind that was already a box. The thickness a person needs in
+         order to *see* a plane edge-on is the view's, and it moved there with
+         its fence intact — `solid::DRAWN_PANEL_THICKNESS`,
+         `solid::DRAWN_LID_THICKNESS` and `solid::drawn`, whose only caller is a
+         picture. Decision 38 withdrew "a wall must stay a plane because a box of
+         zero thickness is a numerical coin toss" on the grounds that *with
+         authoring* a thickness is a number a person states; nothing has authored
+         one yet (that is step 23.3), so zero is the honest entry and 23.5 is
+         where a stated one arrives with a ray to test it.
+
+         **The kind is carried, not derived** — the backlog entry that named this
+         as the step's real work. Deriving it from the box reads well and is
+         wrong on a case the map is full of: a static whose `tiledata` height is
+         zero is a **body** with a degenerate span, flat in `z` exactly as a floor
+         is, so "flat in `z` is a lid" would silently re-kind it and a lid is
+         travelled through by a different rule. `Solid::edges` stays, with the
+         argument in its doc, and goes in 23.5 when the rules that ask it go.
+
+         Built:
+         - `occlusion::Solid` — the box (`solid::Solid`) plus `opacity`, `edges`,
+           the hole and `roof`; `bottom()`/`top()` come off the box, and
+           `Solid::box_of` is the one place a kind becomes geometry, so the four
+           call sites in `Builder::add` cannot put a panel on the wrong edge one
+           at a time;
+         - `occlusion::SolidId`, `Occlusion::ids`, `ids_at`, `solid`, `solids_at`
+           — the level between a cell and a solid. Today's ids are the identity,
+           because nothing is shared yet, and building it anyway is 23.2's own
+           argument: a missing reference is a hole in a shadow that looks exactly
+           like a detector failing;
+         - the upload is four planes now — `bytes` (the index, unchanged to the
+           texel), `id_bytes` (new), `solid_bytes` (was `surface_bytes`,
+           unchanged to the texel) and `aperture_bytes`. **The box's `x` and `y`
+           are deliberately not uploaded**: the walk derives a panel's plane from
+           the cell it is stepping through and `edges`, so the two horizontal axes
+           have no reader in the shader, and four channels of geometry beside a
+           walk that ignores them is how a format grows a field nobody dares
+           change. They arrive in 23.5 with a reader;
+         - `blit.wgsl`: `solids_at`, `id_at`, `solid_at`, binding 8, and the one
+           extra `textureLoad` per solid per cell. `SURFACE_ROW` became `LIST_ROW`
+           because three lists are folded by it now;
+         - `light::walk_cells` and `panel_stop` read through the same level, so
+           the two implementations still mirror each other line for line;
+         - the views — `solid::standing`, `shell::draw_occluders`, the plan view
+           and `artscan`'s `grid` example — read the owned solid, and
+           `Surface::solid` is gone.
+
+         **Green:** `cargo test --workspace`, `clippy --all-targets` and `fmt`
+         silent; `tests/lighting.rs`'s 31 scenes and `tests/frame.rs`'s 37 —
+         parity included, which is the one that walks both implementations over
+         the same scene — unchanged.
+
+         **The distribution, re-measured**, which the backlog asked for and which
+         supersedes 30.6's: over Britain at the widest zoom, **10,212 standing
+         cells hold 17,201 solids under 17,201 references**, nothing dropped, and
+         the tail is short —
+
+         ```
+           solids a cell references     cells      share
+                              1          6102      59.8%
+                              2          2625      25.7%
+                              3           773       7.6%
+                              4           390       3.8%
+                              5           164       1.6%
+                              6            80       0.8%
+                           7–11           158       1.5%
+         ```
+
+         The two totals being **equal** is the fact worth having, not a
+         redundancy: it says nothing is shared yet, which is a statement about
+         the map's geometry under today's builder rather than about this format,
+         and it is the number 38.2's spill will move first. `tests/cost.rs`
+         prints both and asserts that references never fall below solids — a
+         solid nothing points at is a wall no ray can find.
+
+         30.6's old figure was 18,071, and **the difference is not this step's**:
+         `Builder::push` dedups on the same predicate over the same records (a
+         cell's solids share a tile, so equal boxes are equal spans and kinds),
+         so nothing here can change what is built. The old number was taken at
+         step 21.2, before a climbable static stopped being two panels and became
+         one body. It should not be quoted again either way.
+
+         **The cost of the indirection: below what this bench can resolve**, and
+         the instrument says so itself. Four runs each way at the widest zoom,
+         with and without the id fetch — the ids are the identity today, so
+         `solid_at(id_at(i))` against `solid_at(i)` is exactly the pass as it was
+         before this step:
+
+         ```
+           night, ms a frame     0.639  0.793  0.805  0.830   with the fetch
+                                 0.435  0.670  0.702  0.725   without it
+           dark, the control     0.385 … 0.621                  neither walks a ray
+         ```
+
+         The medians differ by about 0.1ms in the direction one would expect, and
+         the sets overlap. What settles it is the control: `dark` has no flames,
+         so it walks no ray and reads no solid at all, and its own spread over the
+         same eight runs is 0.24ms — **wider than the difference being looked
+         for**. So the honest reading is a bound rather than a measurement: the
+         fetch costs under about a fifth of the pass, on an adapter where the
+         whole night pass is 0.8ms against a 16.7ms frame. A number small enough
+         to need a better instrument is a number that does not decide anything
+         here, and the backlog carries what a better one would take.
       2. **The spill, and the ring's measured radius.** Decision 38.2: a `Baked`
          block gains a spill list, the frame pastes the ring's spill, and the
          ring's width comes from the widest reach in the table rather than from a
@@ -3031,21 +3176,39 @@ Carried from `client.md`'s firelight backlog and still true:
 - The ambient is a key (F10), not a clock.
 - A light is placed by its tile, not by its sprite.
 
-Found while making the instrument honest:
+Found while migrating the ownership (step 23.1):
 
-- **The walk's rules are keyed on `Surface::edges`, and a box does not have one —
-  which is the real shape of step 23.1's work.** Every rule in `walk_cells` and
-  in `blit.wgsl`'s `walk` branches on the mask: a lid is `crosses`, a body is
-  travelled through *and* pierced on the two sides it is crossed by, a panel is
-  pierced where the ray goes through the named plane. So are the exemptions —
-  `own_run`, `shadowed_by_own_tile`, the vertical-ray shortcut that reads only
-  lids. Under decision 38 the record is six numbers and the kind is a
-  *consequence* of them, so 23.1 has to choose, once and deliberately: derive the
-  kind from the box (a thin box on an edge is a panel, a flat one is a lid), or
-  carry a kind field beside the box and delete it in 23.5. The DoD says the
-  picture may not move, and reproducing `pierced`'s three-dimensional crossing
-  test from a slab test is where that will be won or lost. It is written here
-  because it is the one thing a reading of 23.1's four lines does not show.
+- **The cost of one fetch in the hot loop is under this bench's noise, and the
+  bench says so with its own control.** `tests/cost.rs`'s `dark` case walks no
+  ray at all, so it cannot be moved by anything in the walk, and its spread over
+  eight runs is 0.24ms — wider than the difference between the pass with the id
+  fetch and without it. That is fine for the answer 23.1 needed (a bound), and it
+  is not fine for the next question of this shape, which 23.5 will certainly ask.
+  What a better instrument wants is not more runs: it is the same frame timed
+  with a GPU timestamp query around the blit alone rather than a wall clock round
+  a submit, and a case whose *only* difference is the thing under test.
+- **`solid::standing` lists a solid once per cell that references it.** Harmless
+  today, because nothing is referenced twice; the day 38.2's spill lands, a solid
+  overhanging four cells is drawn four times, translucent, and reads as four
+  weights of colour on one box. The fix is a dedup on the id, and the reason it is
+  not written yet is that a view of a *shared* solid also wants to say which cells
+  found it, which is a question about what the instrument is for.
+- **A lid with a span of its own is drawn two `z` deep, not as deep as it is.**
+  `solid::drawn` replaces a lid's bottom rather than lowering it to reach, which
+  is what step 23.0 drew and is kept to the pixel because 23.1's whole claim is
+  that no picture moved. A `FLOOR` static with a height — a sloped roof section is
+  one — therefore looks thinner in the view than the span the walk stops light
+  over. Worth a picture before it is changed, and it belongs with 23.5's readings
+  rather than on its own.
+- ~~**The walk's rules are keyed on `Surface::edges`, and a box does not have one
+  — which is the real shape of step 23.1's work.**~~ Decided in 23.1: the kind is
+  **carried**. The case that settled it is not the abstract one — a static whose
+  `tiledata` height is zero is a body with a degenerate span, flat in `z` exactly
+  as a floor is, so deriving would re-kind it into a lid and a lid is travelled
+  through by a different rule. Written out at `occlusion::Solid`, and it goes in
+  23.5 with the rules that ask it.
+
+Found while making the instrument honest:
 - **Nothing renders a picture of either view and asserts anything about it.** The
   new tests hold the geometry a view is built from — the plane a panel is drawn
   on, and that the two cuts are a subset and its superset — and `tests/cost.rs`
@@ -3120,11 +3283,12 @@ Found while drawing the solid (step 23.0):
   touching before step 23.5, but both should be *removed* there rather than
   carried alongside the thing that replaces them — two ways to answer the same
   question is how a rule and its replacement drift apart.
-- **30.6's distribution does not survive the migration and must be re-measured.**
-  10,212 cells holding 18,071 surfaces is a fact about tile-shaped storage. Under
-  38 a stair is one solid rather than five and a wall is one per instance, so
-  both the count and the per-cell cap mean something else. Step 23.1's DoD asks
-  for the new number; the old one must not be quoted after it.
+- ~~**30.6's distribution does not survive the migration and must be
+  re-measured.**~~ Re-measured under step 23.1: **10,212 cells hold 17,201 solids
+  under 17,201 references**, nothing dropped, 59.8% of standing cells holding one.
+  The old 18,071 is not comparable and is not to be quoted; the table and what
+  moved it are with the step. The *per-cell cap* is still the format's own 255 and
+  still nowhere near reached — the worst cell in Britain references eleven.
 - **`Shape::of`'s prism is still lost through the table.** Carried up from the
   staircase entry below because step 23.3 is now where it is fixed: a client with
   a table reads a stair as a corner where a client without one measures a solid,
@@ -3161,11 +3325,12 @@ Found while baking it (step 21.5):
 Found while building it:
 
 - **The per-tile cap and `dropped` now count the map, not the frame.** Decision
-  33 puts every surface into the builder, so `MAX_SURFACES_PER_TILE` is reached
-  by surfaces a frame was about to cut away — a tile could in principle drop a
-  *drawn* surface because undrawn ones filled it, and `Occlusion::dropped` counts
+  33 puts every solid into the builder, so `MAX_SOLIDS_PER_CELL` (named
+  `MAX_SURFACES_PER_TILE` when this was written) is reached by solids a frame was
+  about to cut away — a tile could in principle drop a
+  *drawn* one because undrawn ones filled it, and `Occlusion::dropped` counts
   what the map has rather than what the picture lost. Nothing is at risk today:
-  the worst tile in Britain is 21 of 255 (decision 30.6's distribution), and the
+  the worst tile in Britain is 11 of 255 (step 23.1's distribution), and the
   distribution was measured under `Cutaway::OPEN`, which is the same set the
   builder now holds. It becomes a real question only if the cap is ever lowered
   to fit a format, and the honest fix then is to cut before the cap rather than

@@ -922,9 +922,9 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         Some(occluders) => {
             let mut total = 0usize;
             let mut drawn = 0usize;
-            for (_, _, surface) in surfaces_of(occluders) {
+            for (_, _, solid) in solids_of(occluders) {
                 total += 1;
-                if hud.solid_cut.shows(surface) {
+                if hud.solid_cut.shows(solid) {
                     drawn += 1;
                 }
             }
@@ -1986,17 +1986,13 @@ fn draw_terrain(
 /// edge a panel stands on — the whole of decision 3 — was not in the picture at
 /// all. Every gap this view is opened to look for is a gap between two of those
 /// things, and the merge is exactly what closes them on screen.
-fn surfaces_of(
+fn solids_of(
     occluders: &openshard_client_render::occlusion::Occlusion,
-) -> impl Iterator<Item = (i32, i32, &openshard_client_render::occlusion::Surface)> + '_ {
+) -> impl Iterator<Item = (i32, i32, &openshard_client_render::occlusion::Solid)> + '_ {
     let bounds = occluders.bounds();
     (bounds.min_y..=bounds.max_y).flat_map(move |y| {
-        (bounds.min_x..=bounds.max_x).flat_map(move |x| {
-            occluders
-                .surfaces_at(x, y)
-                .iter()
-                .map(move |surface| (x, y, surface))
-        })
+        (bounds.min_x..=bounds.max_x)
+            .flat_map(move |x| occluders.solids_at(x, y).map(move |solid| (x, y, solid)))
     })
 }
 
@@ -2053,11 +2049,11 @@ fn draw_occluders(
     // Back to front. Collected rather than drawn as they come, because a solid
     // needs an order and `surfaces_of` walks the grid in rows: a row of wall
     // drawn left to right paints its near end behind its far one.
-    let mut standing: Vec<(i32, i32, &openshard_client_render::occlusion::Surface)> =
-        surfaces_of(occluders).filter(|(_, _, s)| cut.shows(s)).collect();
-    standing.sort_by_key(|(x, y, surface)| (x + y, surface.bottom, surface.top));
+    let mut standing: Vec<(i32, i32, &openshard_client_render::occlusion::Solid)> =
+        solids_of(occluders).filter(|(_, _, s)| cut.shows(s)).collect();
+    standing.sort_by_key(|(x, y, solid)| (x + y, solid.bottom(), solid.top()));
 
-    for (x, y, surface) in standing {
+    for (x, y, solid) in standing {
         // The grid is grown past the map's own corner by the widest pool's
         // reach — see `light::lit_tiles` — so a tile of it can be off the map
         // entirely. Skipped rather than clamped, for `Occlusion::add`'s reason:
@@ -2078,11 +2074,11 @@ fn draw_occluders(
                 viewport_origin,
             )
         };
-        let low = at(height(surface.bottom));
-        let high = at(height(surface.top));
+        let low = at(height(solid.bottom()));
+        let high = at(height(solid.top()));
         // Off screen before anything is allocated. The clip rect would keep it
         // from being painted anyway, but a town at the widest zoom is thousands
-        // of surfaces and most of them are outside the viewport — this is the
+        // of solids and most of them are outside the viewport — this is the
         // difference between building shapes for each of them and none.
         let bounds = low.iter().chain(&high).fold(egui::Rect::NOTHING, |rect, point| {
             rect.union(egui::Rect::from_pos(*point))
@@ -2090,7 +2086,7 @@ fn draw_occluders(
         if !clip.intersects(bounds) {
             continue;
         }
-        let [red, green, blue] = openshard_client_render::solid::kind_colour(surface);
+        let [red, green, blue] = openshard_client_render::solid::kind_colour(solid);
         // A face's own shade, and a **near-black edge** under it. Two faces of
         // one box meet at a line and the two tones alone leave finding it to the
         // eye; the stroke is also what makes a tile of floor a tile rather than
@@ -2103,10 +2099,10 @@ fn draw_occluders(
             let edge = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(10, 8, 16, 220));
             painter.add(egui::Shape::convex_polygon(points, fill, edge));
         };
-        // The quad standing on one edge of the tile, from the surface's bottom to
+        // The quad standing on one edge of the tile, from the solid's bottom to
         // its top: `[a, b]` are the two corners of that edge.
         let wall_of = |ends: [usize; 2]| vec![low[ends[0]], low[ends[1]], high[ends[1]], high[ends[0]]];
-        match surface.edges {
+        match solid.edges {
             // A **lid** — a floor, a rug, a roof. One horizontal quad at the `z`
             // it lies at: a ray is stopped by crossing it, not by travelling
             // through it, so a box would draw a solid where the model has a

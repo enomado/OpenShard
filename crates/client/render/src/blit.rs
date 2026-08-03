@@ -95,9 +95,17 @@ pub struct Blit {
     /// cell is what a ray walks through cell after cell in a loop, and this is
     /// read once per fragment. `docs/lighting_world.md` decides it once, there.
     field: wgpu::Texture,
-    /// The surfaces the two above index into — one texel a surface, folded into
-    /// rows [`crate::occlusion::SURFACE_ROW`] wide. See
-    /// [`Occlusion::surface_bytes`](crate::occlusion::Occlusion::surface_bytes).
+    /// What the cells above name — one texel a reference, folded into rows
+    /// [`crate::occlusion::LIST_ROW`] wide. See
+    /// [`Occlusion::id_bytes`](crate::occlusion::Occlusion::id_bytes).
+    ///
+    /// The level step 23.1 put between a cell and a solid, and the whole of what
+    /// it costs the shader is this one extra `textureLoad`. What it buys is that
+    /// a solid is a shape the world holds rather than a tile's property, so the
+    /// same box can be referenced by every cell it stands over.
+    ids: wgpu::Texture,
+    /// The solids those references name — one texel a solid, folded the same way.
+    /// See [`Occlusion::solid_bytes`](crate::occlusion::Occlusion::solid_bytes).
     ///
     /// Not a storage buffer, and that is decision 30.5 rather than a preference:
     /// the ceiling here is WebGL2, which has neither compute nor storage
@@ -107,14 +115,14 @@ pub struct Blit {
     /// Its *width* is fixed and its height grows with the frame, which is the
     /// opposite of the two planes above: they are the camera's rectangle and
     /// this is a list whose length is what the camera happens to be looking at.
-    surfaces: wgpu::Texture,
-    /// The hole in each of those surfaces, one texel a surface and in the same
+    solids: wgpu::Texture,
+    /// The hole in each of those solids, one texel a solid and in the same
     /// order — see
     /// [`Occlusion::aperture_bytes`](crate::occlusion::Occlusion::aperture_bytes).
     ///
-    /// Grown with [`Blit::surfaces`] and never on its own, because the two are
+    /// Grown with [`Blit::solids`] and never on its own, because the two are
     /// indexed by one number. **Written only when something in the frame has a
-    /// hole**: the surface's own `HOLED` bit is what makes the shader read this
+    /// hole**: the solid's own `HOLED` bit is what makes the shader read this
     /// at all, so a frame with no window in it neither lays these bytes out nor
     /// sends them, which is every frame of a real map until step 16 lands.
     apertures: wgpu::Texture,
@@ -207,9 +215,9 @@ impl Blit {
                     },
                     count: None,
                 },
-                // And the surfaces the grid indexes into — the list of decision
-                // 30, and the only one of the three that is not a picture of the
-                // camera's rectangle.
+                // And the solids the grid indexes into — the list of decision
+                // 30, and one of the three that are not pictures of the camera's
+                // rectangle.
                 wgpu::BindGroupLayoutEntry {
                     binding: 6,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -220,13 +228,25 @@ impl Blit {
                     },
                     count: None,
                 },
-                // And the hole in each of those surfaces, indexed by the same
+                // And the hole in each of those solids, indexed by the same
                 // number. A plane beside the list rather than four more channels
                 // of it: `Occlusion::aperture_bytes` argues why, and the short
                 // form is that the list is what the walk reads in a loop and a
                 // hole is what almost nothing has.
                 wgpu::BindGroupLayoutEntry {
                     binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // And the references between the two: what a cell counts through
+                // is a run of these, and each one names a solid. Step 23.1.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
@@ -308,10 +328,11 @@ impl Blit {
             // texture of no size is not a thing wgpu will make.
             occluders: grid_texture(device, "occluders", 1, 1),
             field: grid_texture(device, "field", 1, 1),
-            // One row, which is a list of no surfaces: the grid above says every
+            // One row, which is a list of no solids: the grid above says every
             // tile stands nothing, so nothing indexes into it.
-            surfaces: grid_texture(device, "surfaces", crate::occlusion::SURFACE_ROW, 1),
-            apertures: grid_texture(device, "apertures", crate::occlusion::SURFACE_ROW, 1),
+            ids: grid_texture(device, "solid ids", crate::occlusion::LIST_ROW, 1),
+            solids: grid_texture(device, "solids", crate::occlusion::LIST_ROW, 1),
+            apertures: grid_texture(device, "apertures", crate::occlusion::LIST_ROW, 1),
         }
     }
 
@@ -387,7 +408,7 @@ impl Blit {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(
-                        &self.surfaces.create_view(&wgpu::TextureViewDescriptor::default()),
+                        &self.solids.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
                 wgpu::BindGroupEntry {
@@ -396,6 +417,12 @@ impl Blit {
                         &self
                             .apertures
                             .create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.ids.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
             ],
@@ -628,22 +655,31 @@ impl Blit {
         write(&self.occluders, &occluders);
         write(&self.field, &lighting.occlusion.field_bytes());
 
-        // And the list the grid indexes into. Its height is the frame's own
-        // surface count and not the camera's rectangle, so it is grown on its own
+        // And the lists the grid indexes into. Their heights are the frame's own
+        // counts and not the camera's rectangle, so they are grown on their own
         // terms: a camera that has not moved keeps the same rows, and walking into
-        // a city grows them. `surface_bytes` pads to a whole row, which is what
-        // makes the upload's `bytes_per_row` exact.
-        let bytes = lighting.occlusion.surface_bytes();
-        let row = crate::occlusion::SURFACE_ROW;
+        // a city grows them. Both `id_bytes` and `solid_bytes` pad to a whole row,
+        // which is what makes the upload's `bytes_per_row` exact.
+        let row = crate::occlusion::LIST_ROW;
+        let bytes = lighting.occlusion.solid_bytes();
         let rows = (bytes.len() / (row as usize * 4)) as u32;
-        if self.surfaces.height() != rows {
+        if self.solids.height() != rows {
             // The two planes are indexed by one number, so they are grown
-            // together and never apart — a hole texel at an index the surface
+            // together and never apart — a hole texel at an index the solid
             // texture holds and this one does not would read as no hole at all,
             // which is the one direction this cannot be allowed to be wrong in
             // silently.
-            self.surfaces = grid_texture(device, "surfaces", row, rows);
+            self.solids = grid_texture(device, "solids", row, rows);
             self.apertures = grid_texture(device, "apertures", row, rows);
+        }
+        // The references are their own height: equal to the solids' until
+        // something is shared, and *not* assumed equal, because the day the two
+        // differ is the day a shared solid arrives and a list grown to the wrong
+        // one would drop the last cell's references off the end.
+        let references = lighting.occlusion.id_bytes();
+        let id_rows = (references.len() / (row as usize * 4)) as u32;
+        if self.ids.height() != id_rows {
+            self.ids = grid_texture(device, "solid ids", row, id_rows);
         }
         let list = |texture: &wgpu::Texture, bytes: &[u8]| {
             queue.write_texture(
@@ -657,16 +693,17 @@ impl Blit {
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(row * 4),
-                    rows_per_image: Some(rows),
+                    rows_per_image: Some((bytes.len() / (row as usize * 4)) as u32),
                 },
                 wgpu::Extent3d {
                     width: row,
-                    height: rows,
+                    height: (bytes.len() / (row as usize * 4)) as u32,
                     depth_or_array_layers: 1,
                 },
             );
         };
-        list(&self.surfaces, &bytes);
+        list(&self.ids, &references);
+        list(&self.solids, &bytes);
         // And the holes, only where there are any. What makes skipping this safe
         // rather than a stale read is the `HOLED` bit: it is written into the
         // surface plane above, on this frame, and the shader reads a hole only

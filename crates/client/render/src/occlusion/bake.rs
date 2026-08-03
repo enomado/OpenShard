@@ -10,7 +10,7 @@
 //!
 //! The map's own unit is the 8×8 block: the statics of one are a contiguous slice
 //! ([`Map::statics_in_block`]) and a static never stands outside the block it is
-//! stored in, so a block's surfaces and its sky are entirely its own. Decision
+//! stored in, so a block's solids and its sky are entirely its own. Decision
 //! 30.4 as written also wanted a *storey band* in the key, because the cutaway
 //! used to be applied at the map walk and a builder was therefore one frame's;
 //! decision 33 took that away, so the key is the block and nothing else.
@@ -19,7 +19,7 @@
 //!
 //! Baked: every static of the block, through the same
 //! [`place`](super::place) the uncached walk uses — the sky it takes and the
-//! surfaces it is, refused only above the draw ceiling, which is a fact about the
+//! solids it is, refused only above the draw ceiling, which is a fact about the
 //! static.
 //!
 //! Not baked, and each for a stated reason:
@@ -35,7 +35,7 @@
 //!
 //! # The stale answer this could give, and what stops it
 //!
-//! A surface is derived from the art through [`StaticAtlas`], and **an atlas
+//! A solid is derived from the art through [`StaticAtlas`], and **an atlas
 //! grows**: a graphic the camera has not reached is not in it yet, so a block
 //! baked before that graphic was packed holds the whole-tile fallback where the
 //! atlas can now name a face. Nothing about the baked block would ever say so. So
@@ -54,7 +54,7 @@ use openshard_protocol::wire::Graphic;
 use openshard_uofiles::map::{BLOCK_SIZE, Map};
 use openshard_uofiles::tiledata::TileData;
 
-use super::{Builder, NO_SURFACE, Occlusion, SKY_OPEN, Surface};
+use super::{Builder, NO_SOLID, Occlusion, SKY_OPEN, Solid};
 use crate::atlas::StaticAtlas;
 use crate::camera::TileBounds;
 use crate::cutaway::Cutaway;
@@ -72,7 +72,7 @@ const CELLS: usize = (SIDE * SIDE) as usize;
 /// A widest-zoom frame is about 550 blocks, so this is several frames' worth of
 /// walking in every direction: a player crossing a city keeps the block behind
 /// them long enough to turn round, and a `/teleport` across the facet does not
-/// grow the cache without bound. What one costs is its surfaces — a city block
+/// grow the cache without bound. What one costs is its solids — a city block
 /// runs to a few dozen — so the whole cache is a few megabytes at this size.
 const KEEP_BLOCKS: usize = 4096;
 
@@ -84,15 +84,15 @@ const KEEP_BLOCKS: usize = 4096;
 /// bytes serve a frame at any offset.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Baked {
-    /// Every surface the block stands, as `(cell, surface)` with the cell being
+    /// Every solid the block stands, as `(cell, solid)` with the cell being
     /// `y * SIDE + x` inside the block — in the order the map walk found them,
-    /// which is the order a tile's surfaces have to come out in.
-    surfaces: Vec<(u8, Surface)>,
+    /// which is the order a tile's solids have to come out in.
+    solids: Vec<(u8, Solid)>,
     /// How much of the sky each of the block's tiles can see, **before the
     /// blur**, which is the frame's.
     sky: [u8; CELLS],
     /// What the block's own build refused for want of room on a tile — see
-    /// [`super::MAX_SURFACES_PER_TILE`].
+    /// [`super::MAX_SOLIDS_PER_CELL`].
     dropped: usize,
 }
 
@@ -127,23 +127,23 @@ impl Baked {
         // The same read-out `Builder::finish` makes and for the same reason: the
         // list is built by pushing at the front, so walking it hands back the
         // newest first, and reversing what one tile contributed is what puts the
-        // surfaces back in the order the map walk found them.
-        let mut surfaces = Vec::with_capacity(grid.arena.len());
+        // solids back in the order the map walk found them.
+        let mut solids = Vec::with_capacity(grid.arena.len());
         for cell in 0..CELLS {
-            let first = surfaces.len();
+            let first = solids.len();
             let mut at = grid.heads[cell];
-            while at != NO_SURFACE {
-                let (surface, next) = grid.arena[at as usize];
-                surfaces.push((cell as u8, surface));
+            while at != NO_SOLID {
+                let (solid, next) = grid.arena[at as usize];
+                solids.push((cell as u8, solid));
                 at = next;
             }
-            surfaces[first..].reverse();
+            solids[first..].reverse();
         }
 
         let mut sky = [SKY_OPEN; CELLS];
         sky.copy_from_slice(&grid.sky);
         Self {
-            surfaces,
+            solids,
             sky,
             dropped: grid.dropped,
         }
@@ -162,7 +162,7 @@ fn tile_of(origin: (i32, i32), cell: usize) -> (i32, i32) {
 }
 
 impl Builder {
-    /// Lay one baked block's surfaces and sky into this frame's grid.
+    /// Lay one baked block's solids and sky into this frame's grid.
     ///
     /// A tile outside the frame's rectangle is dropped, exactly as
     /// [`Builder::add`] drops one: a block on the rim of a frame is mostly inside
@@ -181,16 +181,16 @@ impl Builder {
                 self.sky[index] = *sky;
             }
         }
-        for (cell, surface) in &baked.surfaces {
+        for (cell, solid) in &baked.solids {
             let (x, y) = tile_of(origin, usize::from(*cell));
             if let Some(index) = self.index(x, y) {
-                self.push(index, *surface);
+                self.push(index, *solid);
             }
         }
         // Counted whole rather than per tile. A block that overflowed a tile did
         // so whether or not that tile is inside this frame's rectangle, and the
         // number is a diagnostic about the map — the worst tile in Britain holds
-        // twenty-one surfaces against a cap of two hundred and fifty-five.
+        // twenty-one solids against a cap of two hundred and fifty-five.
         self.dropped += baked.dropped;
     }
 }
@@ -457,7 +457,7 @@ mod tests {
 
     /// **The one this module rests on.** A grid assembled out of baked blocks is
     /// the grid the walk builds — not similar to it, equal to it: the same
-    /// surfaces in the same order at the same offsets, the same sky, the same
+    /// solids in the same order at the same offsets, the same sky, the same
     /// count of what was dropped.
     ///
     /// Ordinary `==` on the packed [`Occlusion`], because everything a frame
@@ -488,7 +488,7 @@ mod tests {
             let baked = collect(&mut bake, &map, &items, bounds(), &tiledata, &cutaway, None);
             assert_eq!(walked, baked, "cutaway {cutaway:?}");
             assert!(
-                walked.surface_count() > 0,
+                walked.solid_count() > 0,
                 "a grid with nothing in it proves nothing"
             );
         }

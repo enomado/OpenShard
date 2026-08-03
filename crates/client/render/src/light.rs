@@ -1021,8 +1021,8 @@ fn stand_clear(from: [f32; 3], to: [f32; 3], surface: Surface) -> ([f32; 3], [f3
 /// the room's own wall went dark at the one height its cap is drawn at.
 ///
 /// `blit.wgsl`'s `on_surface`.
-fn on_surface(z: f32, stands: &crate::occlusion::Surface) -> bool {
-    z >= stands.bottom as f32 - ON_TOP && z <= stands.top as f32 + ON_TOP
+fn on_surface(z: f32, stands: &crate::occlusion::Solid) -> bool {
+    z >= stands.bottom() as f32 - ON_TOP && z <= stands.top() as f32 + ON_TOP
 }
 
 /// A soft interval: `1.0` well inside `low..=high`, `0.0` well outside, and a
@@ -1093,11 +1093,11 @@ fn hole(aperture: Option<crate::occlusion::Aperture>, v: f32, z: f32, wide: f32,
 /// in tiles along the run and `tall` the same number in `z`.
 ///
 /// `blit.wgsl`'s `pierced`.
-fn pierced(surface: &crate::occlusion::Surface, px: f32, py: f32, z: f32, wide: f32, tall: f32) -> f32 {
-    let solid = pierces(z, surface.bottom as f32, surface.top as f32, tall);
-    match surface.aperture {
-        None => solid,
-        Some(_) => solid * (1.0 - hole(surface.aperture, run_v(surface.edges, px, py), z, wide, tall)),
+fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32, tall: f32) -> f32 {
+    let across = pierces(z, stands.bottom() as f32, stands.top() as f32, tall);
+    match stands.aperture {
+        None => across,
+        Some(_) => across * (1.0 - hole(stands.aperture, run_v(stands.edges, px, py), z, wide, tall)),
     }
 }
 
@@ -1142,9 +1142,14 @@ fn own_run(own: u8, cell: (i32, i32), first: (i32, i32)) -> u8 {
 /// The **largest** of the cell's surfaces and not their product, for the reason
 /// [`walk_cells`] takes the largest: two panels of one corner are two faces of
 /// one wall, and a ray that crosses both has gone through one thing once.
-fn panel_stop(stands: &[crate::occlusion::Surface], crossed: u8, at: [f32; 3], wide: f32, tall: f32) -> f32 {
+fn panel_stop<'a>(
+    stands: impl Iterator<Item = &'a crate::occlusion::Solid>,
+    crossed: u8,
+    at: [f32; 3],
+    wide: f32,
+    tall: f32,
+) -> f32 {
     stands
-        .iter()
         .filter(|stands| stands.edges != 0 && stands.edges & crossed != 0)
         .map(|stands| f32::from(stands.opacity) / 255.0 * pierced(stands, at[0], at[1], at[2], wide, tall))
         .fold(0.0, f32::max)
@@ -1656,16 +1661,15 @@ fn walk_cells(
         // stands beside a vertical ray rather than across it, and a body is a
         // solid one of the ends is standing in.
         let stopped = occlusion
-            .surfaces_at(first.0, first.1)
-            .iter()
+            .solids_at(first.0, first.1)
             .filter(|stands| stands.edges == 0)
             .map(|stands| {
                 f32::from(stands.opacity) / 255.0
                     * crosses(
                         from[2],
                         to[2],
-                        stands.bottom as f32,
-                        stands.top as f32,
+                        stands.bottom() as f32,
+                        stands.top() as f32,
                         to[2],
                         spread,
                     )
@@ -1736,7 +1740,7 @@ fn walk_cells(
                 (false, false) => crate::occlusion::EDGE_NORTH,
             },
         };
-        let stands = occlusion.surfaces_at(cell.0, cell.1);
+        let stands = occlusion.ids_at(cell.0, cell.1);
         let own_cell = cell == first;
         // The union of the sides the tile's surfaces stand on. A *tile's* answer
         // and deliberately so: what a pixel is exempted from below is the tile it
@@ -1747,7 +1751,9 @@ fn walk_cells(
         // surfaces to answer a question about a pixel that is not on it.
         let sides = match own_cell {
             false => 0,
-            true => stands.iter().fold(0, |mask, surface| mask | surface.edges),
+            true => stands
+                .iter()
+                .fold(0, |mask, id| mask | occlusion.solid(*id).edges),
         };
         // **A surface does not shadow itself**, which is what "neither end of the
         // ray is shadowed by the tile it is on" was always reaching for. The
@@ -1795,7 +1801,7 @@ fn walk_cells(
             // largest is also what keeps the air between two walls open where
             // the merged span used to close it.
             let mut stopped: f32 = 0.0;
-            for stands in stands {
+            for stands in stands.iter().map(|id| occlusion.solid(*id)) {
                 // On either end's own cell only a lid is asked — see `lids_only`
                 // above — and on the lit end's, only the panels the surface
                 // admits beside it: a pixel standing inside a solid is not
@@ -1825,7 +1831,7 @@ fn walk_cells(
                 if stands.edges != 0 && ((lit_end && stands.edges & lit_by_own_tile == 0) || flame_end) {
                     continue;
                 }
-                let (low, high) = (stands.bottom as f32, stands.top as f32);
+                let (low, high) = (stands.bottom() as f32, stands.top() as f32);
                 let opacity = f32::from(stands.opacity) / 255.0;
                 let by_surface = match stands.edges {
                     // A **lid** — a floor, a rug, a plank — is a *plane*, and what
@@ -1954,7 +1960,7 @@ fn walk_cells(
                     continue;
                 }
                 let crossed = crossed & !own_run(own, at, first);
-                let stops = panel_stop(occlusion.surfaces_at(at.0, at.1), crossed, cross, wide, tall);
+                let stops = panel_stop(occlusion.solids_at(at.0, at.1), crossed, cross, wide, tall);
                 if stops > corner {
                     corner = stops;
                     blamed = Some(at);

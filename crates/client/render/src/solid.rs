@@ -175,7 +175,91 @@ impl Solid {
     }
 }
 
-/// What colour a surface is drawn in — **the hue is the kind**.
+/// How thick a panel is **drawn**, in tiles.
+///
+/// A fifth of a tile: about nine screen pixels across the diamond at 1:1, which
+/// is enough that the top face reads as a top face and little enough that a
+/// street of houses still looks like a street. Chosen to be *seen* — the art
+/// cannot measure a wall's depth (decision 3) and nothing has authored one yet
+/// (step 23.3), so any number here would be invented and this one says so.
+///
+/// **`DRAWN_` is the whole of the name and it is a fence**, and step 23.1 kept
+/// the fence while moving the constant. What the world owns is a box, and a
+/// panel's box is its *plane* — flat, because that is what the walk crosses and
+/// the record may not claim geometry no ray is tested against. A plane seen
+/// edge-on from a fixed camera is a line, though, and a wall the eye cannot find
+/// is a wall the instrument failed to report, so the view gives it a thickness
+/// on the way to the screen. That is the one reader, [`drawn`], and it is in the
+/// view rather than in the grid.
+///
+/// Step 23.5 is where a solid gets a thickness a ray is genuinely stopped by,
+/// and that number is a different one arrived at by a different argument — a
+/// scene that does not move. Two constants called `PANEL_THICKNESS`, one drawn
+/// and one tested, is how a rule and its replacement drift apart.
+pub const DRAWN_PANEL_THICKNESS: f64 = 0.2;
+
+/// And how thick a lid is drawn, in `z` units.
+///
+/// Two, which is 8 pixels of visible side band at 1:1 — the same argument as
+/// [`DRAWN_PANEL_THICKNESS`], including the fence in its name, on the axis the
+/// projection squashes by five and a half.
+pub const DRAWN_LID_THICKNESS: f64 = 2.0;
+
+/// The box a view draws for one solid: its own, with whatever it is flat on
+/// given a thickness to be seen by.
+///
+/// **A drawing, not a measurement.** The grid's box is the geometry the walk is
+/// tested against, and a panel's is a plane; this is that plane fattened by
+/// [`DRAWN_PANEL_THICKNESS`] so a person can find it, and a lid's height
+/// fattened downwards by [`DRAWN_LID_THICKNESS`] so a floor and the tile under it
+/// stop telling the same story. A body is already a box and passes through
+/// untouched, which is what it did before this function existed.
+///
+/// A panel is fattened *inwards*, into its own tile, rather than straddling its
+/// edge: two walls on the shared edge of neighbouring tiles would otherwise draw
+/// one solid inside another and make a joint look like a doubled wall — a real
+/// defect, and then invisible against a drawing artefact.
+///
+/// The `z` is clamped into an `i8` the way the upload clamps it
+/// ([`Occlusion::solid_bytes`](crate::occlusion::Occlusion::solid_bytes)), so
+/// that the box is drawn where the **shader** believes it is rather than where
+/// the map says. That is the whole point of a view of the grid, and it is why
+/// the clamp is not the caller's to remember.
+pub fn drawn(solid: &crate::occlusion::Solid) -> Solid {
+    use crate::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, EDGE_WEST};
+
+    let space = solid.space;
+    let height = |z: f64| z.clamp(f64::from(i8::MIN), f64::from(i8::MAX));
+    let (mut min, mut max) = (space.min, space.max);
+    min.z = height(min.z);
+    max.z = height(max.z);
+    match solid.edges {
+        // A lid — a floor, a roof, a plank. A slab hanging under the height it
+        // lies at: the surface a ray is stopped by is the top one, so the
+        // thickness goes downwards.
+        //
+        // The bottom is *replaced* and not lowered to reach, which is what step
+        // 23.0 drew and is kept here to the pixel. It means a lid with a span of
+        // its own — a static with a `FLOOR` bit and a height — is drawn two `z`
+        // deep rather than as deep as it stops light over, and that is a real
+        // thing to look at rather than a rounding: `docs/lighting.md`'s backlog
+        // carries it, because changing it is a picture moving and step 23.1's
+        // whole claim is that no picture moved.
+        0 => min.z = max.z - DRAWN_LID_THICKNESS,
+        // A body. Already a box, and the only kind that was one before this.
+        EDGE_ANY => {}
+        EDGE_NORTH => max.y += DRAWN_PANEL_THICKNESS,
+        EDGE_SOUTH => min.y -= DRAWN_PANEL_THICKNESS,
+        EDGE_WEST => max.x += DRAWN_PANEL_THICKNESS,
+        EDGE_EAST => min.x -= DRAWN_PANEL_THICKNESS,
+        // More than one named side never reaches here — a corner is two panels
+        // — and whatever it is, it is drawn as it stands.
+        _ => {}
+    }
+    Solid { min, max }
+}
+
+/// What colour a solid is drawn in — **the hue is the kind**.
 ///
 /// It was the opacity first, and that is the mistake worth keeping written
 /// down: opacity is nearly a constant in a real town (5,459 `OPAQUE` against 74
@@ -187,10 +271,10 @@ impl Solid {
 /// Here rather than in either view because both read it: the solids pass and the
 /// wireframe are looked at against each other — a red plane standing inside an
 /// amber box is a defect, and it is invisible if the two chose their own reds.
-pub fn kind_colour(surface: &crate::occlusion::Surface) -> [f32; 3] {
+pub fn kind_colour(solid: &crate::occlusion::Solid) -> [f32; 3] {
     use crate::occlusion::{EDGE_ANY, OPAQUE};
 
-    match (surface.opacity < OPAQUE, surface.edges) {
+    match (solid.opacity < OPAQUE, solid.edges) {
         // A pane, whatever shape it is: the one thing here that is about how
         // much light gets through rather than about where a plane is.
         (true, _) => [60.0, 200.0, 255.0],
@@ -214,7 +298,7 @@ pub fn kind_colour(surface: &crate::occlusion::Surface) -> [f32; 3] {
 /// A view of the grid drew what stands above the player's feet, and that is
 /// right for a picture of what shadows *you*: a pier is one thin slab on every
 /// plank, and a frame of it was 2,011 boxes with the walls somewhere inside them
-/// (see [`Surface::stands`](crate::occlusion::Surface::stands)). It is wrong for
+/// (see [`Solid::stands`](crate::occlusion::Solid::stands)). It is wrong for
 /// a view whose subject is geometry. Standing in a room at `z = 0`, the room's
 /// own floor and every lid under it are simply not drawn — and **a hole in a
 /// floor and a floor below the cut are the same picture**, which is an
@@ -245,15 +329,15 @@ pub enum Cut {
 }
 
 impl Cut {
-    /// Whether a view under this cut draws `surface`.
+    /// Whether a view under this cut draws `solid`.
     ///
     /// The one place the rule lives: two views read it, and a wireframe and a
     /// solids pass disagreeing about what is on screen would make the pair
     /// useless for exactly the comparison they exist for.
-    pub fn shows(self, surface: &crate::occlusion::Surface) -> bool {
+    pub fn shows(self, solid: &crate::occlusion::Solid) -> bool {
         match self {
             Self::Nothing => true,
-            Self::BelowFeet(floor) => surface.stands(floor),
+            Self::BelowFeet(floor) => solid.stands(floor),
         }
     }
 }
@@ -269,21 +353,17 @@ impl Cut {
 /// exactly why that answer was taken first.
 pub fn standing(occlusion: &crate::occlusion::Occlusion, cut: Cut) -> Vec<(Solid, [f32; 3])> {
     let bounds = occlusion.bounds();
-    let mut found: Vec<(i32, i32, &crate::occlusion::Surface)> = (bounds.min_y..=bounds.max_y)
+    let mut found: Vec<(i32, i32, &crate::occlusion::Solid)> = (bounds.min_y..=bounds.max_y)
         .flat_map(|y| {
-            (bounds.min_x..=bounds.max_x).flat_map(move |x| {
-                occlusion
-                    .surfaces_at(x, y)
-                    .iter()
-                    .map(move |surface| (x, y, surface))
-            })
+            (bounds.min_x..=bounds.max_x)
+                .flat_map(move |x| occlusion.solids_at(x, y).map(move |solid| (x, y, solid)))
         })
-        .filter(|(_, _, surface)| cut.shows(surface))
+        .filter(|(_, _, solid)| cut.shows(solid))
         .collect();
-    found.sort_by_key(|(x, y, surface)| (x + y, surface.bottom, surface.top));
+    found.sort_by_key(|(x, y, solid)| (x + y, solid.bottom(), solid.top()));
     found
         .into_iter()
-        .map(|(x, y, surface)| (surface.solid(x, y), kind_colour(surface)))
+        .map(|(_, _, solid)| (drawn(solid), kind_colour(solid)))
         .collect()
 }
 

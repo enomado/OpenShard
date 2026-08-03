@@ -35,27 +35,38 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // sampled — an integer texture has no filtering, and a place averaged with its
 // neighbour would name a third tile nothing was drawn on.
 @group(0) @binding(3) var place_of: texture_2d<u32>;
-// Where each tile's surfaces are, one texel a tile over the rectangle in
+// Where each tile's references are, one texel a tile over the rectangle in
 // `lighting.grid`: (offset & 255, offset >> 8, offset >> 16, count). The index
 // of `docs/lighting.md`'s decision 30 — a count of zero is open ground, and
-// nothing else says a tile stands nothing. See `crate::occlusion`.
+// nothing else says a tile stands nothing. What the offset points at is the id
+// list at binding 8, which is step 23.1. See `crate::occlusion`.
 @group(0) @binding(4) var occluders: texture_2d<u32>;
 // What each of those tiles *is*, over the same rectangle: (sky, unused, unused,
 // unused). Only the sky channel is written today. See `crate::occlusion`, and
 // `docs/lighting_world.md` for why this is a second plane rather than four more
 // channels of the cell above.
 @group(0) @binding(5) var field: texture_2d<u32>;
-// And the surfaces themselves, one texel each, folded into rows `SURFACE_ROW`
+// And the solids themselves, one texel each, folded into rows `LIST_ROW`
 // wide: (z_bottom + 128, z_top + 128, opacity, PRESENT | HOLED | edges). A
 // texture and not a storage buffer because the ceiling is WebGL2 — decision 30.5.
-@group(0) @binding(6) var surfaces: texture_2d<u32>;
-// The hole in each of those surfaces, indexed by the same number:
+//
+// The box's `x` and `y` are deliberately not here: what this walk tests is a
+// plane named by the cell it is stepping through and the solid's `edges`, so the
+// two horizontal axes have no reader in this file. `Occlusion::solid_bytes` has
+// the argument, and step 23.5 is where they arrive with one.
+@group(0) @binding(6) var solids: texture_2d<u32>;
+// The hole in each of those solids, indexed by the same number:
 // (near, far, z_bottom + 128, z_top + 128) — `occlusion::Aperture`. A plane
 // beside the list rather than four more channels of it, because the list is what
 // the walk reads cell after cell in a loop and a hole is what almost nothing
 // has: the `HOLED` bit is what makes this read at all, so an ordinary wall pays
 // one bit test and no fetch.
 @group(0) @binding(7) var apertures: texture_2d<u32>;
+// And the references between the cells and the solids, one texel each and folded
+// the same way: (id & 255, id >> 8, id >> 16, unused). A cell counts through a
+// run of these and each one names a solid — decision 38's ownership, which is
+// what lets one box be referenced by every cell it stands over.
+@group(0) @binding(8) var solid_ids: texture_2d<u32>;
 
 // One flame. Three `vec4`s rather than nine fields, because a uniform array's
 // stride is rounded up to 16 bytes either way and this is what the CPU writes:
@@ -404,17 +415,17 @@ fn hole(texel: vec4<u32>, v: f32, z: f32, wide: f32, tall: f32) -> f32 {
 // The whole of `docs/lighting.md`'s step 21.3, and the reason it is this small is
 // decision 30.7 — a panel was already *pierced at a point* rather than travelled
 // through, so the point was already being computed and a window is what that
-// point is asked about. `index` is the surface's own place in the list, which is
+// point is asked about. `id` is the solid's own place in the list, which is
 // where its hole is; `cross` is where the ray goes through the plane, in all
 // three, because the height alone cannot say whether the ray went through the
 // window or through the wall beside it. `light::pierced`.
-fn pierced(stands: vec4<u32>, index: u32, cross: vec3<f32>, wide: f32, tall: f32) -> f32 {
-    let solid = pierces(cross.z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
+fn pierced(stands: vec4<u32>, id: u32, cross: vec3<f32>, wide: f32, tall: f32) -> f32 {
+    let across = pierces(cross.z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
     if (stands.w & HOLED) == 0u {
-        return solid;
+        return across;
     }
     let v = run_v(stands.w & EDGE_MASK, cross.x, cross.y);
-    return solid * (1.0 - hole(aperture_at(index), v, cross.z, wide, tall));
+    return across * (1.0 - hole(aperture_at(id), v, cross.z, wide, tall));
 }
 
 // How near two boundaries have to be, along the ray, for the ray to be crossing
@@ -438,15 +449,16 @@ const CORNER_TIE: f32 = 1.0e-4;
 // `walk` takes the largest: two panels on one tile are the two faces of one
 // corner, and a ray that crosses both has gone through one thing once.
 fn panel_stop(cell: vec2<i32>, crossed: u32, cross: vec3<f32>, wide: f32, tall: f32) -> f32 {
-    let span = surfaces_at(cell.x, cell.y);
+    let span = solids_at(cell.x, cell.y);
     var stopped = 0.0;
     for (var i = 0u; i < span.y; i = i + 1u) {
-        let stands = surface_at(span.x + i);
+        let id = id_at(span.x + i);
+        let stands = solid_at(id);
         let sides = stands.w & EDGE_MASK;
         if sides == 0u || (sides & crossed) == 0u {
             continue;
         }
-        let stops = f32(stands.z) / 255.0 * pierced(stands, span.x + i, cross, wide, tall);
+        let stops = f32(stands.z) / 255.0 * pierced(stands, id, cross, wide, tall);
         stopped = max(stopped, stops);
     }
     return stopped;
@@ -498,17 +510,17 @@ fn own_run(own: u32, cell: vec2<i32>, first: vec2<i32>) -> u32 {
     return own & line;
 }
 
-// How wide the surface list is as a texture, in texels. `occlusion::SURFACE_ROW`,
-// and the two are one number — the list is one dimensional and a texture is not.
-const SURFACE_ROW: u32 = 1024u;
+// How wide the lists are as textures, in texels. `occlusion::LIST_ROW`, and the
+// two are one number — a list is one dimensional and a texture is not.
+const LIST_ROW: u32 = 1024u;
 
-// Where one tile's surfaces are: `(offset, count)`, and `(0, 0)` for open ground
-// and for anything outside the grid.
+// Where one tile's references are: `(offset, count)`, and `(0, 0)` for open
+// ground and for anything outside the grid.
 //
 // The three-channel offset is `crate::occlusion::Occlusion::bytes`: one byte
-// holds 255 surfaces and a city block holds thousands, so it is spread over the
-// three channels the count does not need.
-fn surfaces_at(x: i32, y: i32) -> vec2<u32> {
+// holds 255 references and a city block holds thousands, so it is spread over
+// the three channels the count does not need.
+fn solids_at(x: i32, y: i32) -> vec2<u32> {
     let cell = vec2<i32>(x - lighting.grid.x, y - lighting.grid.y);
     if cell.x < 0 || cell.y < 0 || cell.x >= lighting.grid.z || cell.y >= lighting.grid.w {
         return vec2<u32>(0u, 0u);
@@ -517,17 +529,29 @@ fn surfaces_at(x: i32, y: i32) -> vec2<u32> {
     return vec2<u32>(span.x | (span.y << 8u) | (span.z << 16u), span.w);
 }
 
-// One surface of the list: (z_bottom + 128, z_top + 128, opacity, PRESENT | HOLED | edges).
-fn surface_at(index: u32) -> vec4<u32> {
-    let at = vec2<i32>(i32(index % SURFACE_ROW), i32(index / SURFACE_ROW));
-    return textureLoad(surfaces, at, 0);
+// Which solid a cell's `n`th reference names — `occlusion::SolidId`, spread over
+// three channels exactly as the index's offset is.
+//
+// The one fetch step 23.1 added to the hot loop, and it is a fetch rather than
+// arithmetic because a reference is a fact about the world's geometry: the run a
+// cell holds is contiguous, what it points at need not be.
+fn id_at(reference: u32) -> u32 {
+    let at = vec2<i32>(i32(reference % LIST_ROW), i32(reference / LIST_ROW));
+    let id = textureLoad(solid_ids, at, 0);
+    return id.x | (id.y << 8u) | (id.z << 16u);
 }
 
-// And its hole: (near, far, z_bottom + 128, z_top + 128). The same index and the
+// One solid of the list: (z_bottom + 128, z_top + 128, opacity, PRESENT | HOLED | edges).
+fn solid_at(id: u32) -> vec4<u32> {
+    let at = vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW));
+    return textureLoad(solids, at, 0);
+}
+
+// And its hole: (near, far, z_bottom + 128, z_top + 128). The same id and the
 // same folding, which is what makes the two planes one list — read only where
-// the surface's `HOLED` bit says there is one.
-fn aperture_at(index: u32) -> vec4<u32> {
-    let at = vec2<i32>(i32(index % SURFACE_ROW), i32(index / SURFACE_ROW));
+// the solid's `HOLED` bit says there is one.
+fn aperture_at(id: u32) -> vec4<u32> {
+    let at = vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW));
     return textureLoad(apertures, at, 0);
 }
 
@@ -538,18 +562,18 @@ fn aperture_at(index: u32) -> vec4<u32> {
 // grid rather than a step of the walk. The walk stopped asking it when the list
 // arrived, so nothing in the hot loop pays for this.
 fn merged_at(x: i32, y: i32) -> vec4<u32> {
-    let span = surfaces_at(x, y);
+    let span = solids_at(x, y);
     if span.y == 0u {
         return vec4<u32>(0u);
     }
-    var merged = surface_at(span.x);
+    var merged = solid_at(id_at(span.x));
     for (var i = 1u; i < span.y; i = i + 1u) {
-        let surface = surface_at(span.x + i);
+        let stands = solid_at(id_at(span.x + i));
         merged = vec4<u32>(
-            min(merged.x, surface.x),
-            max(merged.y, surface.y),
-            max(merged.z, surface.z),
-            merged.w | surface.w,
+            min(merged.x, stands.x),
+            max(merged.y, stands.y),
+            max(merged.z, stands.z),
+            merged.w | stands.w,
         );
     }
     return merged;
@@ -655,10 +679,10 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
         // counterexample. Only lids, for the reason both ends exempt everything
         // else: a panel stands beside a vertical ray rather than across it, and a
         // body is a solid one of the ends is standing in. `light::walk_cells`.
-        let straight = surfaces_at(first.x, first.y);
+        let straight = solids_at(first.x, first.y);
         var stopped = 0.0;
         for (var i = 0u; i < straight.y; i = i + 1u) {
-            let stands = surface_at(straight.x + i);
+            let stands = solid_at(id_at(straight.x + i));
             if (stands.w & EDGE_MASK) != 0u {
                 continue;
             }
@@ -721,7 +745,7 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
                 exit = select(EDGE_NORTH, EDGE_SOUTH, toward.y > 0);
             }
         }
-        let span = surfaces_at(cell.x, cell.y);
+        let span = solids_at(cell.x, cell.y);
         let own_cell = cell.x == first.x && cell.y == first.y;
         // The union of the sides the tile's surfaces stand on. A *tile's* answer
         // and deliberately so: what a pixel is exempted from below is the tile it
@@ -733,7 +757,7 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
         var sides = 0u;
         if own_cell {
             for (var i = 0u; i < span.y; i = i + 1u) {
-                sides = sides | (surface_at(span.x + i).w & EDGE_MASK);
+                sides = sides | (solid_at(id_at(span.x + i)).w & EDGE_MASK);
             }
         }
         // **A surface does not shadow itself**, which is what "neither end of the
@@ -790,7 +814,8 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
             // close it.
             var stopped = 0.0;
             for (var i = 0u; i < span.y; i = i + 1u) {
-                let stands = surface_at(span.x + i);
+                let id = id_at(span.x + i);
+                let stands = solid_at(id);
                 let sides = stands.w & EDGE_MASK;
                 // On either end's own cell only a lid is asked, and on the lit
                 // end's, only the panels the pixel admits beside it: a pixel
@@ -911,10 +936,10 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
                     // drawing.
                     let stops = sides & ~same_run;
                     if (stops & entry) != 0u {
-                        by_surface = max(by_surface, opacity * pierced(stands, span.x + i, lit + delta * entered, soft, tall));
+                        by_surface = max(by_surface, opacity * pierced(stands, id, lit + delta * entered, soft, tall));
                     }
                     if (stops & exit) != 0u {
-                        by_surface = max(by_surface, opacity * pierced(stands, span.x + i, lit + delta * leaves, soft, tall));
+                        by_surface = max(by_surface, opacity * pierced(stands, id, lit + delta * leaves, soft, tall));
                     }
                 }
                 stopped = max(stopped, by_surface);
