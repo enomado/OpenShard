@@ -1323,7 +1323,33 @@ fn walk_cells(
                             },
                         };
                         let crossed = (leaves - entered) * ground * share;
-                        opacity * (crossed / soft).clamp(0.0, 1.0)
+                        let travelled = opacity * (crossed / soft).clamp(0.0, 1.0);
+                        // And a thing that **stands up** is a surface on every
+                        // side of its tile as well as a solid inside it, so the
+                        // sides it is crossed by are pierced too — see
+                        // `blit.wgsl`'s `walk`, and decision 24. The larger of the
+                        // two answers: the length is what keeps a slab five `z`
+                        // deep opaque to a ray that goes over neither of its
+                        // sides, and the pierce is what closes the sliver a ray
+                        // clipping a corner used to walk through.
+                        //
+                        // A lid names no side and this is skipped for it, which is
+                        // what `panel_stop` says with `edges != 0`.
+                        match stands.edges == EDGE_ANY {
+                            false => travelled,
+                            true => {
+                                let tall = soft * Z_PER_TILE;
+                                let stops = EDGE_ANY & !own_run(own, cell, first);
+                                let mut stopped = travelled;
+                                for (side, at) in [(entry, entered), (exit, leaves)] {
+                                    if stops & side != 0 {
+                                        stopped = stopped
+                                            .max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
+                                    }
+                                }
+                                stopped
+                            }
+                        }
                     }
                     // A **panel** — a surface on one side of the tile. What it does
                     // to a ray is decided where the ray *pierces* it, at a point

@@ -40,6 +40,30 @@ use crate::light::{self, Lighting, Sun};
 /// tall, which is a storey.
 pub const WALL: Graphic = Graphic(0x0006);
 
+/// The same wall standing on its tiles' **east** edge, for the scene that needs
+/// a house to turn a corner.
+///
+/// A second graphic and not a second flag, because a face is a property of a
+/// *picture*: [`crate::facing`] measures it off the art, an atlas holds one
+/// answer per graphic, and a run going the other way is therefore a different
+/// graphic in the client's files exactly as it is here. Britain's own corner is
+/// built that way — `0x0037` along the south of its row, `0x0035` up the east of
+/// its column.
+pub const WALL_EAST: Graphic = Graphic(0x000B);
+
+/// And the piece where the two runs meet, whose art names no edge at all.
+///
+/// **The whole point of it is that it is faceless.** A corner is two faces in one
+/// picture, and `facing::face_of` refuses rather than guesses — so the occlusion
+/// grid falls back to [`crate::occlusion::EDGE_ANY`], the whole-tile answer, and
+/// the sprite falls back to [`crate::place::Stance::Upright`]. Measured on the
+/// install: Britain's corner at `(1441, 1692)` is graphic `0x0033`, and the atlas
+/// answers `None` for it. This scene reproduces that by leaving the graphic out
+/// of its own atlas, which is the same `None` by the same path — see
+/// `occlusion::collect`, where the face of a graphic the atlas does not hold and
+/// the face of a picture the detector refused are one expression.
+pub const CORNER: Graphic = Graphic(0x000C);
+
 /// A pane of glass. `WINDOW` is what the reference's line of sight tests
 /// alongside `NO_SHOOT` — see [`crate::occlusion`] — so today this stops light
 /// exactly as a wall does, and the scene that uses it is the one that will say
@@ -220,6 +244,8 @@ fn tiledata() -> TileData {
         );
     };
     set(WALL, TileFlags::NO_SHOOT, WALL_HEIGHT);
+    set(WALL_EAST, TileFlags::NO_SHOOT, WALL_HEIGHT);
+    set(CORNER, TileFlags::NO_SHOOT, WALL_HEIGHT);
     set(PANE, TileFlags::WINDOW, WALL_HEIGHT);
     set(DOOR_SHUT, TileFlags::NO_SHOOT, WALL_HEIGHT);
     // The open leaf: `BLOCK` because you cannot walk through the leaf itself,
@@ -358,6 +384,82 @@ fn south_faced_wall() -> StaticAtlas {
         crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),
     )])
     .expect("one silhouette fits")
+}
+
+/// The art for a house that turns a corner: a south-faced run, an east-faced run
+/// and **nothing at all for the corner between them**.
+///
+/// The absence is the fixture. [`CORNER`] says why it is an absence rather than a
+/// picture the detector refuses: the two arrive at the same `None` through the
+/// same expression in `occlusion::collect`, and a synthetic silhouette that a
+/// detector was *meant* to refuse would be a fixture anchored to the thing the
+/// detector might one day read — see the corner entry in `docs/lighting.md`'s
+/// backlog, which is what would then have to change.
+fn corner_of_a_house() -> StaticAtlas {
+    StaticAtlas::pack([
+        (
+            WALL,
+            crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),
+        ),
+        (
+            WALL_EAST,
+            crate::facing::silhouette(crate::facing::Face::East, WALL_HEIGHT.into()),
+        ),
+    ])
+    .expect("two silhouettes fit")
+}
+
+/// How long each of [`house_corner`]'s two runs is, in tiles past the corner.
+///
+/// Three, which is the shortest that makes the point: a ray leaking through the
+/// corner has to arrive from *behind* the run rather than round the end of it,
+/// and a one-tile run is reached round in the picture as well as through.
+pub const CORNER_RUN: u16 = 3;
+
+/// **The corner of a house, with a lamp in the street outside it.** Britain at
+/// `(1441, 1692)`, built.
+///
+/// Two runs of wall meeting at a right angle — one along the south of its row,
+/// one up the east of its column — with the piece where they meet a graphic whose
+/// art names no edge, and a flame on the tile diagonally outside the corner. That
+/// arrangement is not a curiosity: it is how every building in the client's own
+/// map is put together, and it is where two of the three answers this pass has
+/// for an occluder meet.
+///
+/// # What it is for
+///
+/// A ray from inside the house to the lamp used to arrive at **85% strength**,
+/// and the path is worth being able to recognise again. It enters the last wall
+/// tile of the south run through that tile's *north* side and leaves it
+/// *eastwards* — so it never crosses the panel that tile stands on, which is
+/// correct and is what lets light run along a street. It then clips the corner
+/// tile over a hair's length; that tile is faceless, so it is a **body** and what
+/// it stops is scaled by how far the ray ran inside it, which for a sliver is
+/// nothing. Two cells, both holding wall, and the ray passes both — decision 18's
+/// spoke, arriving where a run of wall has to turn.
+///
+/// The flame is placed south of the corner and the leak is read to its
+/// north-west, so the ray runs the diagonal: it is the 45° direction the report
+/// came in as, and it is the direction that maximises the sliver.
+///
+/// `docs/lighting.md`, decision 24.
+pub fn house_corner() -> Scene {
+    let (cx, cy) = CENTRE;
+    let mut scene = empty("the corner of a house with a lamp outside it");
+    // The south run, west of the corner: panels on the `y1` line, so the house is
+    // north of them.
+    for x in cx - CORNER_RUN..cx {
+        scene = scene.with((x, cy), WALL);
+    }
+    // The east run, north of the corner: panels on the `x1` line, so the house is
+    // west of them.
+    for y in cy - CORNER_RUN..cy {
+        scene = scene.with((cx, y), WALL_EAST);
+    }
+    scene = scene.with(CENTRE, CORNER);
+    scene.art = Some(corner_of_a_house());
+    // Outside, in the street, on the tile diagonally off the corner.
+    scene.with((cx, cy + 1), TORCH)
 }
 
 /// A shut room with a torch in the middle of it.
@@ -625,6 +727,7 @@ pub fn all() -> Vec<Scene> {
         torch_on_open_ground(),
         torch_before_a_wall(),
         wall_run_lit_from_along_it(),
+        house_corner(),
         room(),
         room_with_shut_door(),
         room_with_open_door(),

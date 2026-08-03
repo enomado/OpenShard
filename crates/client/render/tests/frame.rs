@@ -3571,6 +3571,24 @@ fn the_shader_and_light_sample_agree_about_which_side_a_wall_is_on() {
     assert_parity(&device, &queue, &scene.lighting(0.0));
 }
 
+/// And the same for a frame where a run of panels meets a faceless whole tile.
+///
+/// The mix is the fixture. Decision 24 gave a whole-tile occluder a second
+/// answer — the sides it is crossed by, pierced, taken against the length it is
+/// travelled through — and every other parity scene holds one kind of cell or the
+/// other: `room` is all whole tiles, `wall_with_a_torch_beside_it` is all panels.
+/// A house corner is both, touching, which is where the two walks have the most
+/// arithmetic to disagree over and is the arrangement the defect was reported
+/// from.
+#[test]
+fn the_shader_and_light_sample_agree_at_the_corner_of_a_house() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::house_corner();
+    assert_parity(&device, &queue, &scene.lighting(0.0));
+}
+
 /// And the same for a frame with a sun in it.
 ///
 /// A separate scene rather than a second flame, because the sun enters the walk

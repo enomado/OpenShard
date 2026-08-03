@@ -91,30 +91,48 @@ fn a_shut_room_keeps_its_light_inside() {
     }
 }
 
-/// The edge of a shadow is a gradient, not a step at a tile boundary.
+/// The edge of a shadow lands where the geometry puts it, not on a tile
+/// boundary.
 ///
-/// A fully opaque wall is what makes this an oracle rather than an impression:
-/// while a cell was all-or-nothing, the only two answers a ray could come back
-/// with were `1.0` and `0.0`, whatever the fraction of the tile a fragment was
-/// at — so a sweep across the edge of the spill from an open door stepped from
-/// lit to black between two neighbouring samples, and every shadow in the frame
-/// had a tile's straight side. What the walk spends now is the *length* of its
-/// crossing, so a ray clipping the doorpost's corner keeps most of its light and
-/// the sweep passes through the values in between.
+/// **The claim that outlived its measurement.** While a cell was all-or-nothing
+/// the only two answers a ray could come back with were `1.0` and `0.0`,
+/// whatever the fraction of a tile a fragment was at, so every shadow in the
+/// frame had a tile's straight side and stepped between two neighbouring
+/// samples. This was written as "a sweep across the spill passes through the
+/// values in between", and until decision 24 that is what it read: a doorpost was
+/// a whole-tile occluder, what it stopped was scaled by the length of the
+/// crossing, and a ray clipping its corner kept most of its light.
 ///
-/// Across the spill and not along it, at a tenth of a tile: the sweep is over
+/// That softening was the leak. It is the same arithmetic that let a ray through
+/// the corner of a house and into the room behind it — see
+/// [`a_lamp_outside_a_house_corner_does_not_light_the_room_behind_it`] — and what
+/// closed the leak took the sideways gradient with it, for the reason decision 18
+/// gives: a cell-local softening is measured from the *cell's* boundary and not
+/// from the surface's silhouette, so it is wrong in both directions wherever a
+/// wall carries on into the next tile.
+///
+/// What is left is the claim underneath, and it is the one that was worth having:
+/// **the fan out of a doorway is wider than the doorway**, by the fraction of a
+/// tile similar triangles say and not by a whole tile or by none. A staircase on
+/// tile boundaries puts the two edges exactly on the doorway tile's own sides;
+/// the geometry puts them a little outside, and how far outside is decided by
+/// where the flame stands. The surviving penumbra is vertical, and
+/// [`a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched`] is where it
+/// is measured.
+///
+/// Across the spill and not along it, at a hundredth of a tile: the sweep is over
 /// what a wall did to the ray, so it reads `Reach::through` — the shadow term
 /// alone — rather than the brightness, which falls off with distance and would
-/// show a gradient even if every ray were binary.
+/// show an edge even if every ray were binary.
 #[test]
-fn the_edge_of_a_shadow_passes_through_the_values_in_between() {
+fn the_edge_of_a_shadow_lands_where_the_geometry_puts_it() {
     let scene = scene::room_with_open_door();
     let lighting = scene.lighting(STILL);
     let picture = picture(&scene, &lighting);
 
-    // A line across the fan of light on the ground two tiles south of the
-    // doorway, from well inside the spill to well inside the shadow of the
-    // wall beside it.
+    // A line across the fan of light on the ground a tile and a half south of the
+    // doorway, from well inside the shadow of one doorpost to well inside the
+    // other's.
     let y = f32::from(DOORWAY.1) + 1.5;
     let sweep: Vec<(f32, f32)> = (-100..=100)
         .map(|step| f32::from(DOORWAY.0) + 0.5 + step as f32 / 100.0)
@@ -128,15 +146,100 @@ fn the_edge_of_a_shadow_passes_through_the_values_in_between() {
             (x, through)
         })
         .collect();
+    let lit: Vec<f32> = sweep
+        .iter()
+        .filter(|(_, through)| *through > 0.5)
+        .map(|(x, _)| *x)
+        .collect();
+    let (west, east) = (
+        *lit.first().expect("some of the sweep is lit"),
+        *lit.last().expect("some of the sweep is lit"),
+    );
+
+    // The doorway's own tile spans `x` from `DOORWAY.0` to one past it. The fan a
+    // tile and a half beyond it is wider than that at both ends — which is what
+    // says the edge is not on a tile boundary — and by a fraction of a tile rather
+    // than by a whole one, which is what says it is not on the *next* boundary
+    // either. The bounds are wide because the number they hold is a consequence of
+    // where the torch stands and what a flame's lift is; the reading is 0.08 of a
+    // tile at each end and either end failing is the same defect.
+    let doorway = f32::from(DOORWAY.0);
+    assert!(
+        west < doorway && doorway - west < 0.5,
+        "the spill's west edge is at {west}, not a fraction of a tile past {doorway}\n\
+         {sweep:?}{picture}",
+    );
+    assert!(
+        east > doorway + 1.0 && east - (doorway + 1.0) < 0.5,
+        "the spill's east edge is at {east}, not a fraction of a tile past {}\n\
+         {sweep:?}{picture}",
+        doorway + 1.0,
+    );
+}
+
+/// A ray grazing the top of a wall is dimmed rather than switched.
+///
+/// **The penumbra that survives**, and the whole of it: a flame is a body rather
+/// than a point, so the edge of what a wall casts is soft over a band of the
+/// similar-triangles width decision 14 derived — `spread * t / (1 - t)`, in `z`
+/// units. Decision 18 kept it vertical and dropped it sideways, and decision 24
+/// dropped the last of the sideways one when it stopped scaling a whole-tile
+/// occluder by the length of the crossing. Nothing measured this until then; what
+/// did was a sideways sweep, and it was measuring the term that went.
+///
+/// Up the wall and not across it, at a quarter of a `z` unit: the spot climbs
+/// from below the wall's top to well above it, so the ray to the torch on the far
+/// side crosses the wall's plane at a height that walks up through the top edge
+/// of the span. Three claims, and they fail separately — the low end is dark, the
+/// high end is clear, and it is monotone in between rather than a step with noise
+/// either side of it.
+#[test]
+fn a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched() {
+    let scene = scene::torch_before_a_wall();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+
+    // On the far side of the wall from the torch, a tile and a half out, climbing
+    // past the top of it.
+    let at = Vec2::new(f32::from(CENTRE.0) + 0.5, f32::from(CENTRE.1) + 1.5);
+    let sweep: Vec<(f32, f32)> = (0..=120)
+        .map(|step| step as f32 / 4.0)
+        .map(|z| {
+            let through = light::sample(Spot::at(at, z), &lighting)
+                .reaches
+                .iter()
+                .find(|reach| reach.within)
+                .map_or(0.0, |reach| reach.through);
+            (z, through)
+        })
+        .collect();
+
+    let low = sweep.first().expect("the sweep has a bottom").1;
+    let high = sweep.last().expect("the sweep has a top").1;
+    assert!(low < 1e-6, "the wall passes light at its base: {low}{picture}");
+    assert!(high > 0.99, "the wall shadows the sky over it: {high}{picture}");
+
     let partial = sweep
         .iter()
         .filter(|(_, through)| *through > 0.02 && *through < 0.98)
         .count();
-
     assert!(
         partial >= 4,
-        "the spill's edge steps straight from lit to black: {partial} samples in between\n{sweep:?}{picture}",
+        "the wall's top edge switches rather than dims: {partial} samples in between\n\
+         {sweep:?}{picture}",
     );
+    // And it climbs. A band that went dark again above the wall would give the
+    // same count and would be a different, worse answer.
+    for pair in sweep.windows(2) {
+        let [(z, below), (_, above)] = pair else {
+            continue;
+        };
+        assert!(
+            *above >= below - 1e-6,
+            "the shadow deepens on the way up the wall, at z {z}: {below} then {above}\n\
+             {sweep:?}{picture}",
+        );
+    }
 }
 
 /// And the report says *which* wall stopped it.
@@ -488,6 +591,64 @@ fn a_ray_does_not_slip_between_two_walls_that_touch_at_a_corner() {
         lit > ambient(&lighting, open) + 0.1,
         "the torch lights nothing at all: {lit}{}",
         picture(&scene, &lighting),
+    );
+}
+
+/// A lamp outside the corner of a house does not light the room behind it.
+///
+/// **Britain at `(1441, 1692)`, built** — see [`scene::house_corner`], which
+/// carries the path a leaking ray takes. Reported from the client as a bright
+/// seam at 45° out of a house corner, and the mechanism is decision 18's spoke
+/// arriving where a run of wall has to turn: the last tile of the run is entered
+/// through its north side and left eastwards, so its own panel is never crossed;
+/// the corner tile is faceless and therefore a *body*, and a body was the one
+/// branch still scaled by the length of the crossing, which for a sliver is
+/// nothing.
+///
+/// The spot is on the diagonal from the flame, a third of a tile north of the
+/// wall's line, which is where the sliver is longest and the leak was 85%. Two
+/// tiles back from the corner and not one: a spot beside the corner would be lit
+/// by the exemption of the flame's own tile rather than by the defect.
+#[test]
+fn a_lamp_outside_a_house_corner_does_not_light_the_room_behind_it() {
+    let scene = scene::house_corner();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+
+    // Inside the house, on the diagonal running back from the flame through the
+    // corner: `(1439.5, 1691.17)` of Britain, in this scene's coordinates.
+    let inside = Spot::at(
+        Vec2::new(f32::from(CENTRE.0) - 1.5, f32::from(CENTRE.1) - 0.83),
+        0.0,
+    );
+    let leaked = light::sample(inside, &lighting)
+        .reaches
+        .iter()
+        .find(|reach| reach.within)
+        .map_or(0.0, |reach| reach.through);
+    assert!(
+        leaked < 1e-6,
+        "light slips through the house corner into the room: {leaked} of the flame\
+         {picture}",
+    );
+
+    // And the flame is real and reaches: the street on the wall's own side is lit
+    // the whole way along the run. Without this the assertion above would hold for
+    // a scene whose torch was never collected — and it is the assertion that would
+    // catch a fix that closed the leak by walling the corner off in every
+    // direction, which is the failure the conservative direction invites.
+    let street = Spot::at(
+        Vec2::new(f32::from(CENTRE.0) - 1.5, f32::from(CENTRE.1) + 1.5),
+        0.0,
+    );
+    let outside = light::sample(street, &lighting)
+        .reaches
+        .iter()
+        .find(|reach| reach.within)
+        .map_or(0.0, |reach| reach.through);
+    assert!(
+        outside > 0.99,
+        "the lamp does not light the street it stands in: {outside}{picture}",
     );
 }
 

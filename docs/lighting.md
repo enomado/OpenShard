@@ -9,6 +9,31 @@ copied.
 
 ## Where the next session starts
 
+**Read decision 24 and the backlog's "found at a house corner in Britain"
+first**, and then decision 18, which decision 24 finishes. Four things were
+reported from one picture of a lamp against a house corner; one is fixed and the
+other three are one missing fact — a corner is two faces, `facing` refuses to
+name either, and everything that falls back from that refusal falls back twice:
+to a whole-tile occluder in the grid and to `Stance::Upright` in the attachment.
+
+The method that session used is worth copying, because the leak was a *stripe*
+thinner than a tile and nothing that samples one point per tile could have seen
+it:
+
+- **The instrument came before the reproduction.**
+  `crates/client/render/tests/onsite.rs` takes a coordinate and prints what
+  stands there, what the atlas read off each picture, what the grid ended up
+  with, and a sweep of rays at a third of a tile. It is the thing that turns a
+  report into the handful of facts a built scene has to reproduce, and it is
+  where to start with the next one.
+- **The built scene was then checked against the number.** `scene::house_corner`
+  is Britain at `(1441, 1692)` with the graphics replaced by three synthetic
+  ones, and it leaked **0.845** of the flame where the map leaked 0.847. A
+  reproduction that agrees to three digits is a reproduction; one that merely
+  looks similar is a second scene.
+
+Everything below this line is the session before it.
+
 **Read decision 18 and step 19 first.** The pass was reported from the client as
 having gone badly wrong — a lamp with no falloff, thin spokes fanning out of
 every wall, light coming through the seams between tiles — and three of those
@@ -507,8 +532,12 @@ Three consequences, all of them measured rather than reasoned:
   of a wall" failure this file already carries, arriving from the other side: a
   45° ray that enters a roof's cell at 19 and leaves it at 22 pierces neither
   side inside the span while passing straight through the middle of it. It lit
-  the floor of a sealed house. Lids and whole tiles keep decision 14's length;
-  only a cell whose art named one, two or three sides is pierced.
+  the floor of a sealed house. ~~Lids and whole tiles keep decision 14's length;
+  only a cell whose art named one, two or three sides is pierced.~~ **Half
+  superseded by decision 24**: a whole tile now keeps the length *and* is pierced
+  on the sides it is crossed by, the larger answer winning, because "it stands
+  up" is what a house corner falls back to and the sliver was leaking. A lid is
+  unchanged and keeps the length alone.
 - **The penumbra that survives is vertical.** A ray grazing the top of a wall is
   dimmed rather than switched, over a band of the same similar-triangles width
   decision 14 derived. Sideways there is no longer a gradient for a named panel:
@@ -667,6 +696,78 @@ face as it always did.
 The elevation view is what this was found in and it is worth keeping the order:
 the artefact is invisible in a plan, because a plan's pixels are on the *ground*
 and this is a defect of pixels on a *wall*.
+
+**24. A thing that stands up is a surface on every side of its tile, and not
+only a solid inside it.**
+
+Decision 18 split a cell in two: a *panel* is pierced where the ray goes through
+it, a *body* is travelled through and what it stops is scaled by the length of
+the crossing. It put `EDGE_ANY` — "it stands up and the art would not say which
+way" — with the bodies, and gave the reason: a roof slab five `z` deep is pierced
+by neither of its sides at 45° while the ray passes straight through the middle
+of it, and pierce-testing it lit the floor of a sealed house.
+
+That reason is sound and it covers only half of `EDGE_ANY`. The other half is
+**every corner of every building in the world**, and it brought the spoke back.
+
+The picture came in as a lamp in a Britain street throwing a bright seam at 45°
+out of a house corner, and the coordinates were `(1441, 1692)`. What is actually
+there — `crates/client/render/tests/onsite.rs` prints it, and this is what that
+file is for:
+
+| tile | graphic | what the art says | in the grid |
+|---|---|---|---|
+| `(1440, 1692)` | `0x0037` | a south face | a panel on `S`, `z 0..=25` |
+| `(1441, 1691)` | `0x0035` | an east face | a panel on `E`, `z 0..=25` |
+| `(1441, 1692)` | `0x0033` | **nothing — a corner** | `EDGE_ANY`, `z 0..=25` |
+
+A ray from inside the house to the lamp arrived at **85% strength**, and the path
+is two cells long:
+
+- It enters the last tile of the south run through that tile's **north** side and
+  leaves it **eastwards**. It never crosses the panel that tile stands on — which
+  is correct, and is decision 17's whole point: it is what lets a lamp light the
+  street it hangs over.
+- It then clips the corner tile. That tile is faceless, so it is a body, so what
+  it stops is `length / soft` — and the sliver is 0.107 of a tile against a
+  softening width of 0.7. It stops 15%.
+
+Two cells, both holding wall, and the ray passes both. That is decision 18's own
+sentence, word for word, arriving in the one branch decision 18 did not change.
+
+So a cell whose mask is `EDGE_ANY` is asked **both** questions and the larger
+answer wins: the length it was travelled through, and the sides it was crossed
+by, pierced at the height the ray is at there. The length has to stay, because it
+is what answers the roof slab; the pierce is what closes the sliver. A **lid** —
+mask zero, a floor, a rug, a road — is not asked, and that is not an oversight: a
+horizontal surface has no vertical side for a ray to pierce, and it is the one
+case where the `z` span really is the whole of what the cell is.
+
+`max` and not a sum, and the direction matters: nothing that was dark before
+becomes lit. The change can only darken, which is the direction this file has
+taken at every one of these forks — a missing pool is easier to see than a room
+leaking into a street.
+
+**What it costs is the last of the sideways penumbra**, and one test had to be
+re-aimed to say so. `the_edge_of_a_shadow_passes_through_the_values_in_between`
+swept across the fan out of an open doorway and read a gradient; a built scene
+has no art, so every occluder in it was `EDGE_ANY`, and the gradient it was
+reading was the length rule — the same softening that let the ray through the
+house corner. It is now
+`the_edge_of_a_shadow_lands_where_the_geometry_puts_it`, which asserts what was
+worth having underneath it: the fan is wider than the doorway by a *fraction* of
+a tile, so the edge is neither a tile boundary nor nothing. Decision 18 already
+argued why a sideways gradient cannot be right here — it is measured from the
+**cell's** boundary and not from the **surface's** silhouette, so wherever a wall
+carries on into the next tile it is wrong in both directions at once.
+
+The penumbra that survives is vertical, it was never measured, and it is now:
+`a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched`.
+
+**Two of the three defects in that report are not this one**, and both are the
+same missing fact — that a corner is two faces and the art will not name them.
+They are in the backlog under "found at a house corner in Britain", with what
+each needs.
 
 ## Steps
 
@@ -1435,6 +1536,55 @@ Found while asking what an open door does:
   a fact about a *thing*. A shutter, a portcullis and a drawbridge are the same
   shape and none of them is handled; what they all want is the client knowing an
   item's state, which is a seam this half of the workspace does not have.
+
+Found at a house corner in Britain:
+
+Four things were reported from one picture — a lamp in the street at
+`(1441, 1693)`, against the corner of the house whose corner tile is
+`(1441, 1692)`. One of them is closed by decision 24; the other three are here,
+and **three of the four are the same missing fact**: `facing::face_of` refuses a
+corner graphic, so `0x0033` is `EDGE_ANY` in the grid and `Stance::Upright` in
+the attachment, and every consequence below follows from one of those two.
+
+- ~~**A ray at 45° goes through a house corner into the room behind it.**~~
+  Closed by decision 24. What is worth keeping of it is the shape of the report:
+  the leak is a *stripe*, thinner than a tile and running the diagonal, so a
+  per-tile diagram walks straight over it. `tests/onsite.rs` samples at a third
+  of a tile for that reason, and that is what made it visible on the map rather
+  than only in a built scene.
+- **A corner's two faces are lit as one.** `Stance::Upright` has no outward
+  normal, so `blit.wgsl`'s `faces` is skipped entirely and both of the faces the
+  art draws are as bright as each other — including the one turned away from the
+  flame, which the corner itself occludes. Decision 22 fixed exactly this for a
+  wall and cannot reach a corner, because there is nothing in the attachment to
+  fix it with. What it needs is the **corner in the stance**, and the stance is
+  three bits with six values in it: four corners make ten, so this is a wider
+  field before it is anything else — which is the format step 16 is already
+  asking for. The rule for which half of the sprite a pixel is on is already in
+  the shader, as `across`.
+- **A corner's pixels all claim the middle of their tile.** The same
+  `Stance::Upright`, and the other half of what step 15 gave a wall: a faced wall
+  spreads its pixels along the edge it stands on and reads as one continuous
+  surface with its neighbours, and a corner between two such runs is a flat
+  44-pixel band with a step at each of its two seams. It is the artefact step 15
+  removed from 76% of Britain's walls, still standing in the 24% — and a corner
+  is the place it is most visible, because it always has a faced run on both
+  sides of it to be compared against.
+- **The floor under a wall tile is lit from outside the house.** Neither end of a
+  ray is shadowed by the tile it is on (decisions 3 and 17), and the reason is
+  about a *wall's* pixels: its two faces are one tile and there is no telling
+  which of them a pixel is on. A **ground** pixel on that same tile is not
+  ambiguous at all — it is the floor, it is inside, and the ray from it to a lamp
+  in the street crosses the panel its own tile stands on. So the corner tile's
+  own square of floor comes out fully lit against a dark room, which is the
+  small seam on the ground the report ends with. The fix has a shape and it is
+  cheap: the attachment already carries the stance, `light::Spot` already carries
+  a face, so the exemption can be asked of the *pixel* rather than of the tile —
+  exempt a face and an upright, test a flat. What makes it worth measuring rather
+  than assuming is that a real floor is often a static in the grid itself, and a
+  floor that shadowed the thing standing on it would be a worse artefact than the
+  one being removed. The pier entry above is the same question from the other
+  side.
 
 Found while writing this plan:
 

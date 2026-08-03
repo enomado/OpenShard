@@ -494,6 +494,9 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
                 // middle of it. That is the "stepped over the top of a wall"
                 // failure `docs/lighting.md`'s backlog names, arriving from the
                 // other direction — and it lit the floor of a sealed house.
+                //
+                // Which is why the length stays and the pierce below is taken
+                // *beside* it rather than instead of it. See decision 24.
                 let entering = lit.z + delta.z * entered;
                 let leaving = lit.z + delta.z * leaves;
                 let bottom = min(entering, leaving);
@@ -508,6 +511,36 @@ fn walk(start: vec3<f32>, finish: vec3<f32>, skip_last: bool, spread: f32) -> f3
                 }
                 let crossed = (leaves - entered) * ground * share;
                 stopped = opacity * clamp(crossed / soft, 0.0, 1.0);
+                // And a thing that **stands up** is a surface on every side of
+                // its tile as well as a solid inside it, so the sides the ray is
+                // crossed by are pierced too, and the larger of the two answers
+                // is taken. Decision 24, and it is decision 18's own sentence
+                // arriving at the answer everything falls back to.
+                //
+                // The length has to stay: it is what keeps a slab five `z` deep
+                // opaque to a ray that pierces neither of its sides while going
+                // straight through the middle, which is the roof case above. What
+                // the pierce adds is the sliver — a ray clipping the corner of a
+                // whole-tile occluder leaves it sideways over almost no length, so
+                // `crossed / soft` rounded to nothing and the ray went through a
+                // house corner into the room behind it. That is exactly the spoke
+                // decision 18 named, surviving where a run of wall has to turn:
+                // `facing` refuses a corner graphic, a refused graphic is all four
+                // sides, and all four sides was the one branch still scaled by a
+                // length.
+                //
+                // A lid names no side, so `sides == 0u` skips this entirely: a
+                // floor has no vertical surface for a ray to pierce.
+                if sides == EDGE_MASK {
+                    let tall = soft * Z_PER_TILE;
+                    let stops = EDGE_MASK & ~own_run(own, cell, first);
+                    if (stops & entry) != 0u {
+                        stopped = max(stopped, opacity * pierces(lit.z + delta.z * entered, low, high, tall));
+                    }
+                    if (stops & exit) != 0u {
+                        stopped = max(stopped, opacity * pierces(lit.z + delta.z * leaves, low, high, tall));
+                    }
+                }
             } else {
                 // A **panel** — a wall standing on one side of its tile. It is a
                 // *surface*, and what a surface does to a ray is decided where the
