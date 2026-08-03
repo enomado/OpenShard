@@ -1557,11 +1557,18 @@ the attachment, and every consequence below follows from one of those two.
   art draws are as bright as each other — including the one turned away from the
   flame, which the corner itself occludes. Decision 22 fixed exactly this for a
   wall and cannot reach a corner, because there is nothing in the attachment to
-  fix it with. What it needs is the **corner in the stance**, and the stance is
-  three bits with six values in it: four corners make ten, so this is a wider
-  field before it is anything else — which is the format step 16 is already
-  asking for. The rule for which half of the sprite a pixel is on is already in
-  the shader, as `across`.
+  fix it with. What it needs is the **corner in the stance** — and the bits are
+  not the obstacle, which is worth stating because it looks as though they are.
+  Ten values need four bits where six needed three, and the stance rides at bit
+  16 of the instance's second word and at bit 8 of the attachment's third
+  channel: both have eight or more spare above it, so widening the mask is three
+  constants in `place.rs`, `statics.wgsl` and `blit.wgsl` and no format change at
+  all. What the work actually is: `facing::face_of` answering a corner instead of
+  refusing one — it has already measured both halves by the time it gives up —
+  `Face::place_at` mapping a fraction per half, and `outward` choosing between
+  the two by which half of the sprite a pixel is on, which the shader has as
+  `across`. `occlusion::edges_of` then returns two bits and the pierce path
+  handles a two-edge mask already.
 - **A corner's pixels all claim the middle of their tile.** The same
   `Stance::Upright`, and the other half of what step 15 gave a wall: a faced wall
   spreads its pixels along the edge it stands on and reads as one continuous
