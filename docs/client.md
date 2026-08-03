@@ -1039,15 +1039,18 @@ Still open, in rough order:
 - **The gump pass has no blending**, so a `{ checkertrans }` is skipped and a
   container's own art is drawn opaque. Fine for a bag; not for a paperdoll.
 
-### The paperdoll — the wire and the memory, not yet the window
+### The paperdoll — drawn
 
 A `0x88` is the shard's answer to double-clicking a body, and it *was* the one
 packet this engine sends that its own client could not read: `OpenPaperdoll`
 encoded and was a `ServerPacket` variant, with no `DecodePacket` behind it, so a
-client was handed `Ok(None)` and read on. It decodes now, and `WorldView` holds
-what is open. What is left is the drawing — decisions 2, 3 and 5 below.
+client was handed `Ok(None)` and read on. It decodes, `WorldView` holds what is
+open, and the window draws: a body picture with its equipment over it, in the
+reference's order, in a window that drags, raises and closes like a bag's.
 
-The five decisions, the first and fourth of them taken:
+All five decisions are taken. What is *not* built is listed under decision 3 and
+in the backlog below — chiefly `IsCovered`, which needs a graphic the client
+does not carry yet.
 
 1. **A `0x88` is not a listing, and `WorldView::paperdolls` is built on that.**
    It carries a serial, a 60-byte name and a flag byte (`PaperdollFlags`:
@@ -1072,9 +1075,16 @@ The five decisions, the first and fourth of them taken:
    `StaticTile::anim_id + 50000` for a male body and `+ 60000` for a female one,
    falling back to the male gump when the female one is missing
    (ClassicUO's `IsAnimExistsInGump`; `PaperDollInteractable.GetAnimID` is the
-   whole function). `Equipconv.def`'s fourth column — parsed and dropped today,
-   `_gump` in `equipconv.rs` — overrides the `anim_id` before the offset for
-   bodies that need it. **`worn_graphic` cannot be reused**: it answers the same
+   whole function). `Equipconv.def`'s fourth column is read now
+   (`EquipConvEntry::gump`) and overrides the `anim_id` before the offset for
+   bodies that need it — a *different* override from the third column, which is
+   the animation's; a row may send the two apart, and the client-file test found
+   one that does. The column's two shorthands (`0` is the item's own `AnimID`,
+   `-1`/`0xFFFF` the animation override) are resolved by the reader, where
+   `ProcessEquipConvDef` resolves them, so nothing downstream has to guess.
+   `Gumps::has` answers "does the client ship this picture" without decoding one,
+   which is what the female fallback asks twice per layer.
+   **`worn_graphic` cannot be reused**: it answers the same
    question into `anim.mul`'s body-animation space, and `+ 50000` into
    `gumpart` is a different picture of the same shirt. Two resolvers, one table
    each, and the `anim_id == 0` guard is the only line they share — with
@@ -1091,29 +1101,54 @@ The five decisions, the first and fourth of them taken:
    which is the backlog entry below, and `worn_graphic` is the one place that
    decides it, for the atlas and the quad alike.
 
-   The table itself is still unwritten, and the ordering is still "as the shard
-   listed them" on a walking body. That is tolerable there — layers on a sprite
-   rarely overlap wrongly — and it is not on a paperdoll, which is one flat
-   picture where every layer overlaps every other.
+   The table is written: `paperdoll::order`, the whole of `PaperdollOrder.Build`
+   — three base tables chosen by the arms and torso *graphics* (not by the body:
+   an arms match locks the arms-late table and the torso is never asked), then
+   the per-graphic exceptions, which are a list of garments whose art was drawn
+   expecting a different neighbour. The layer names it is written against live on
+   `wire::Layer` now, because a table of hex bytes cannot be checked against the
+   reference it came from.
+
+   The ordering on a *walking body* is still "as the shard listed them". That is
+   tolerable there — layers on a sprite rarely overlap wrongly — and the same
+   table would serve it (`PaperdollOrder.BuildInWorld` is `Build` plus one cloak
+   rule keyed on facing); it is a backlog entry, not a second table.
+
+   Not built: `MobileView.IsCovered`, which *hides* a layer an outer garment
+   fully occludes — shoes under plate legs, arms under a closed robe. Every arm
+   of it keys on the item's **wire graphic**, and that is the one graphic
+   `EquipmentLayer` does not carry: it holds the `AnimID` `crowd::worn` resolved
+   out of tiledata. Its absence draws a garment poking out from under a robe,
+   which is visible and is not a hole.
 4. **Female is the body graphic, not a flag on the wire.** Nothing in `0x78` or
    `0x88` says it; `mobile.IsFemale` is a fact about `0x0191`/`0x025E` and their
    kin. So the offset in decision 2 is chosen from the body the client is
    already drawing, and a mobile whose body is unknown is drawn male the way the
    reference does rather than not at all.
 5. **The window is the container's, not egui's.** Position, drag, z-order,
-   right-click close and picking against the picture are already the client's
+   right-click close and picking against the picture were already the client's
    (`crates/client/render/container.rs`, `client/app`), in gump pixels, and a
    paperdoll is that machinery's second caller — which is the point of having
-   written it there. What a paperdoll adds is *buttons* over its own art, which
-   a container has none of: that is the `GumpAtlas::opaque_at` hit test the gump
-   backlog already names, and it should land here rather than growing a second
-   window kind.
+   written it there. It became one by having the *subject* of a window say what
+   kind it is: `App::own_windows` is one list of `WindowSubject::Container` and
+   `WindowSubject::Paperdoll`, so a bag dragged over a paperdoll stays over it,
+   and the two kinds differ in exactly three `match`es — which art is the
+   background, what is drawn on it, and what closing one means to the
+   `WorldView`. A window's size is its background picture's, whichever kind it
+   is, which is why `container::size` lost its caller and `paperdoll` never grew
+   one.
 
-Done when: double-clicking a mobile — or ourselves — opens a window that draws
-its body and its equipment in the reference's order and hues, with the backpack
-last; the window drags, raises and closes like a container's; and a test says
-that a female body's order differs from a male one where the reference says it
-does, and that a layer with `anim_id == 0` draws nothing.
+   What a paperdoll adds is *buttons* over its own art, which a container has
+   none of: that is the `GumpAtlas::opaque_at` hit test the gump backlog already
+   names, and it is still to come — see the backlog below.
+
+Done: double-clicking a mobile — or ourselves — opens a window that draws its
+body and its equipment in the reference's order and hues, with the backpack
+last; the window drags, raises and closes like a container's; a unit test says a
+female body's order differs from a male one where the reference says it does;
+and the client-file tests say a layer with `anim_id == 0` draws nothing, that
+every gump a dressed body asks for is one the client ships, and that the female
+fallback is exercised rather than merely available.
 
 ## M5 — interaction
 
@@ -1210,12 +1245,14 @@ Then three behaviours, in the order they are worth having:
   `outline.md` ring the items already get, and the name is what the view
   already knows, hung off `mobiles::head_anchor` rather than a fixed offset,
   because a rat and a dragon hold their heads at wildly different heights.
-- **Double click → `0x06`.** `interact::use_object` already writes it and the
-  shard already answers a mobile's use with a paperdoll (`0x88`). **The client
-  cannot draw a paperdoll yet**, so this lands as a log line until the gump
-  layer grows one — worth saying out loud, because "nothing happened" is what a
-  broken click looks like too. What growing one costs is written down in "The
-  paperdoll — planned, not built" in M4.
+- **Double click → `0x06`** — built. `interact::use_object` writes it, the shard
+  answers a mobile's use with a paperdoll (`0x88`), and the window that opens is
+  M4's. Nothing on the way out says "paperdoll": it is the same packet an item
+  gets, and which of the two it means is the shard's answer
+  (`DoubleClick::interpret`). The serial comes from the pick — `App` keeps the
+  `(Who, Mobile)` pairs rather than dropping the identity on the way into
+  `mobiles::pick`, and a body with no serial (the offline viewer's placeholder)
+  asks nothing.
 - **Single click → `0x09`.** The shard has this end already —
   `Command::SingleClick` is dispatched and answered — so the whole cost on this
   side is the packet and the click. The answer is the name over the head, in
@@ -3198,3 +3235,43 @@ that the ring reaches it. What was found on the way and left undone:
   says what a turn costs, the other where a turn is all that is asked for; both
   are set from `lib.rs` and neither has a config file. When the client config
   lands they belong in the same struct as `Leeway`.
+
+## Backlog, found while drawing the paperdoll
+
+- **`MobileView.IsCovered` needs the item's wire graphic**, and nothing carries
+  it this far. `crowd::worn` resolves each worn item to its `AnimID` out of
+  tiledata and throws the wire graphic away; every arm of `IsCovered` keys on
+  that graphic (`0x3DC0` sticking out below robe `0x3CAC`, tunic `0x1541`,
+  pants `0xAEB1`) and only some arms on the `AnimID`. So the fix is one more
+  field on `EquipmentLayer` and then the port — not a smaller table. Until then
+  a garment that should be hidden under a closed robe is drawn poking out.
+- **The in-world order is still the wire's**, and the same table would serve it:
+  `PaperdollOrder.BuildInWorld` is `Build` plus `ApplyDirectionCloak`, one rule
+  that puts the cloak on top when a body faces away and behind when it faces the
+  viewer. `mobiles::push_quads` pushes layers in wire order today. Cheap now
+  that `paperdoll::order` exists and `EquipmentLayer` carries its layer.
+- **A paperdoll is picked by its body picture alone.** `App::window_background`
+  hit-tests the one sprite the window is sized by, so a hat or a weapon whose
+  art reaches outside the body's silhouette is a click that falls through to the
+  world. A container has the same rule and does not suffer from it, because a
+  bag's icons are inside its bag. The fix is to test the window's whole picture
+  list, which is the same walk `pick` will need for lifting an item off a doll.
+- **No buttons, no tooltips, no lifting.** The `0x88`'s `PaperdollFlags` says
+  whether this client may lift off this doll, and nothing reads it yet; the
+  reference's own paperdoll has Help, Options, Log Out, War Mode, Status and
+  Quest buttons over the picture. All of them want `GumpAtlas::opaque_at` over a
+  list of pictures rather than one, which is the entry above.
+- **A window has no memory.** Both kinds cascade from a fixed corner and are
+  forgotten when they close; the reference client remembers a per-container and
+  per-paperdoll position across sessions. `desk.rs` already persists the
+  window's own frame and is where this belongs.
+- **`is_partial_hue` is not modelled.** The reference draws the body and most
+  equipment with `IsPartialHue`, which retints only the art's grey pixels;
+  `gump::Picture` has one hue and applies it whole. Nothing looks wrong on the
+  bodies this shard sends because they arrive with `Hue::NONE`, and the first
+  dyed robe will show it.
+- **A paperdoll of a mobile the client has never seen draws nothing.** The
+  window is in the list, the `0x88` named the mobile, and `WorldView::mobiles`
+  has no entry — which happens when a shard opens a paperdoll for a body it has
+  not revealed. The frame skips it silently; it should probably ask, or the
+  window should close itself.
