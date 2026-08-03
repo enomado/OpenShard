@@ -9,6 +9,22 @@ copied.
 
 ## Where the next session starts
 
+**Step 21.5's blocker is gone: the grid is what a ray may cross, and the frame is
+cut out of it at the end.** `Builder::finish` applies the `Cutaway` as it packs,
+so what a `Builder` holds is a fact about the map and one walk serves two frames
+(`one_walk_of_the_map_serves_two_cutaways`). **Decision 33** is the argument;
+**30.4's storey band is gone with it** and the bake's key is the block. Nothing
+in the picture moved — every test that pins the cutaway is green and each goes
+red with the new filter forced true.
+
+**Start at step 21.5, the bake itself**, and it is now a plain per-block cache
+with no key to argue about: `add` is 0.72ms of the 1.15ms and is the subject, the
+sky field bakes per block beside it, and the blur and the pack stay per-frame.
+Read the step's own handoff for what to measure and for the companion it needs —
+a cache that is never hit reads exactly like one that works.
+
+Everything below this line is the session before it.
+
 **Step 16 has landed: a window is a hole the art was measured for.**
 `facing::aperture_of` reads the rectangle a window graphic leaves out of its own
 silhouette — **58 pictures of 39,189, 56 of them the client's own `WINDOW`
@@ -1191,11 +1207,16 @@ whose every surface is tile-aligned **is** the acceleration structure — a BVH
 would put its build on the CPU, which is the side that is already thirteen times
 the GPU.
 
-**30.4 Baked per block and per storey band.** The cutaway removes the storeys the
-player is not on, so a bake keyed by block alone would be invalidated by walking
-through a door; keyed by band, the cutaway *selects* rather than rebuilds. What
-the server changes — a door's graphic, a ground item — stays in the per-frame
-path, which is small and already exists.
+**30.4 Baked per block, and ~~per storey band~~ by block alone.** *(the band is
+gone — decision 33 is why, and it landed before the bake did)*
+
+The band was here because the cutaway removed the storeys the player is not on
+*at the map walk*, which made a built grid one frame's: a cache keyed by block
+alone would have been invalidated by walking through a door, and keyed by band
+the cutaway could *select* rather than rebuild. Decision 33 moved the cut to the
+end, so what a block holds is the same for every frame and the key is the block.
+What the server changes — a door's graphic, a ground item — stays in the
+per-frame path, which is small and already exists.
 
 **30.5 No storage buffers.** The ceiling is WebGL2 (`crates/client/render/src/lib.rs`):
 no compute, no storage buffers. So the list is a **texture** read with
@@ -1357,6 +1378,47 @@ them fixed:
   climb the column of its own wall tile, which is the one tile a house's floor
   never covers. This is decision 28 said with the `z` it never had, and it
   narrows `own_run` by the same argument.
+
+**33. What a ray may cross and what the frame draws are two sets, and the cut
+between them is at the end.**
+
+Decision 4 said nothing occludes that was not drawn, and it is still true of the
+picture. What was wrong was *where* it was decided: `collect` asked
+`cutaway::shows` at the map walk, so what came out of a `Builder` was one frame's
+grid — and a per-block cache of one frame's grid is not a cache. That is the
+whole of what 30.4's storey band was working around, and the band would have had
+to be re-argued the moment a ray was allowed to cross a storey the frame did not
+draw.
+
+So the walk builds **what a ray may cross** — every surface standing on the map
+inside the rectangle — and `Builder::finish` applies the frame's `Cutaway` as it
+packs. Everything above that line is a fact about the map and can be built once
+and kept; everything below it is a fact about the tile the player is standing on
+and costs one predicate per surface, on a copy that was already happening.
+
+Three things this decides rather than assumes:
+
+- **The cut needs two facts and a surface now carries both.** `Surface::bottom`
+  is the `z` the static stood at, and `Surface::roof` is the flag a roof is
+  cut by at any height. Nothing in the walk's rules asks either — `roof` exists
+  for this and says so.
+- **The rule has one spelling.** `Cutaway::shows_at` is `shows_static` with the
+  tiledata row already read, and `shows_static` calls it. A second copy of "at or
+  above `max_z` it goes, and a roof goes once the player is under one" in the
+  occlusion module would be a second policy, not a second caller.
+- **The draw ceiling does not move.** The other half of `cutaway::shows` — a
+  static past `DRAW_CEILING`, or one the client marks internal — is a fact about
+  the static and not about the player, so it stays at the map walk as
+  `cutaway::drawn_in_any_frame`. A mountain top a hundred and fifty `z` up is
+  drawn in no frame from any tile, and no cache wants it.
+
+What this does **not** decide is whether a ray *should* cross a storey the frame
+took away. It stays exactly as it was: the frame's grid is the drawn set, the sky
+field is not (`lighting_world.md`'s decision 3), and the two are as far apart as
+they have always been. What changed is that the question is now asked in one
+place, on one line, over a list that already exists — so the day light is made to
+reach the storey above a torch, that is a change to which set `finish` keeps and
+nothing else.
 
 ## Steps
 
@@ -1930,22 +1992,18 @@ them fixed:
 
          **The handoff, in the order the next session should take it.**
 
-         *First, and it is a blocker rather than a caveat:* **30.4's band is the
-         cutaway's, and the cutaway is being changed.** The key that
-         micro-decision hangs the whole cache on is "the storeys the player is
-         on" — `collect` puts a static in the grid only where `cutaway::shows`
-         says the frame draws it, so a bake keyed by band lets the cutaway
-         *select* a band rather than rebuild one. That holds exactly as long as
-         the occluder set is "what the frame draws". It is being made to stop
-         being that: light from a torch on the ground floor is to reach the
-         storey above it, which means rays cross storeys and the surfaces
-         between them — the floor of the upper storey, decision 32's lid — have
-         to be in the grid whether or not the frame drew them. So **do not write
-         the band key until that lands**, and when it does, re-argue 30.4 rather
-         than porting it: the question it answers is no longer the one it was
-         written for. What can be read off the answer is which of the two sets a
-         cell belongs to — what a ray may cross, and what is drawn — and the
-         cache is keyed by the first.
+         *~~First, and it is a blocker rather than a caveat: 30.4's band is the
+         cutaway's, and the cutaway is being changed.~~* **Cleared, and the band
+         with it — decision 33.** The blocker was that `collect` put a static in
+         the grid only where `cutaway::shows` said the frame drew it, so a
+         builder was already one frame's and the cache had to be keyed by
+         something the cutaway could select from. The cut now happens in
+         `Builder::finish`, over the packed list: a `Builder` holds what a ray
+         may cross, which is a fact about the map, and a frame is filtered out of
+         it. **So the key is the block, and there is no band to write.** The
+         question of whether a ray *should* cross a storey the frame took away is
+         untouched by that and stays open — when it is answered it is a change to
+         which set `finish` keeps, and it invalidates nothing that was baked.
 
          *What is not in question, and can be built against today:*
 
@@ -1955,6 +2013,14 @@ them fixed:
            the map. What cannot be baked per block is the blur: it is a 3×3 over
            the frame's rectangle, so a block would need a one-tile apron or the
            blur stays where it is. It is 0.145ms and staying is defensible.
+         - **`add` now runs for every static, and the measured 1.15ms is
+           unchanged.** Decision 33 moved the cutaway out of the map walk, so a
+           frame indoors builds the surfaces it is about to cut away and drops
+           them at the pack. The breakdown above is off `Cutaway::OPEN`, where
+           nothing was ever cut, so it stands as it is — what is not measured is
+           a frame *inside* a house, where the builder now does the work of an
+           open one. That is the cost the bake pays it back for, and it is worth
+           printing the two side by side when the cache lands.
          - **`add` is the 0.72ms and therefore the subject.** Per static it is
            `opacity` (which asks `doors` before it asks a flag), `shape` (two
            atlas lookups), and `push` (a linear scan of the tile's list, to drop
