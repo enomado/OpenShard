@@ -570,6 +570,44 @@ were split from, so the flat picture is not a lesser version of the field: it is
 the frame this pass had before the field existed, which is what a difference is
 measured against.
 
+**21. The screen-space glow is a *second layer*, not a thing that was replaced.**
+
+This pass began as a circle in the pixels of the drawn image — the flame's tile
+projected to a screen point, compared against the fragment's screen position —
+and "Where it stands" above is written as though moving into the world had
+*replaced* it. That framing is wrong, and it is worth correcting where it stands
+rather than at the bottom: the two are different things and a lit frame wants
+both.
+
+- **The world layer** — everything decisions 1 to 20 are about — answers *which
+  surfaces are lit*. It is a multiplier on the art, it knows about walls and
+  heights and storeys, and it is what makes a torch inside a house not light the
+  street. It cannot draw the flame itself: nothing in this renderer draws air,
+  and a fire's own brightness is not a property of the ground under it.
+- **The screen layer** is the *glare*: a soft radial falloff centred on the
+  flame's own sprite, added over the finished picture. It is what the reference
+  client draws (`light.mul` sprites blended over the scene) and it is the thing a
+  person actually recognises as "a lamp" — the halo around the source, which is
+  in the eye and in the air rather than on any surface. It was working, and it
+  was the circle the complaint above remembers.
+
+The two failures they have are opposite, which is the whole argument for keeping
+both. A screen circle alone lights through walls and folds a cellar into the
+street — the two reasons this pass moved into the world. A world multiplier alone
+has no source in it: the brightest thing in the frame is a patch of floor, and
+the flame is a sprite the same brightness as it was in daylight.
+
+Composed, and in this order: the world layer multiplies the art, and the glow is
+added on top of the result. Multiplying by the glow would tint whatever happens
+to be drawn there and a black pixel would stay black, which is exactly what a
+halo must not do — a lamp glares over the dark doorway behind it.
+
+What the glow needs that the world layer already has: the flame's *screen*
+position, which is the sprite's, not the tile's — `light.rs` places a light by its
+tile and the backlog has carried that since the beginning; here it is the whole
+point, because a halo half a tile from the burning sprite reads as a mistake
+rather than as light.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -892,6 +930,38 @@ measured against.
       cargo test -p openshard-client-render --test pictures -- --nocapture
       magick target/lighting/one-torch-on-open-ground.flames.ppm /tmp/look.png
       ```
+
+- [ ] **20. The glow, as its own layer.** Decision 21: the screen-space halo
+      around a flame's own sprite, added over the lit frame rather than
+      multiplied into it.
+
+      It is a second term in `blit.wgsl` and not a second pass — the lights are
+      already in the uniform, and what it needs beside each one is where that
+      flame landed **on the screen**, which the CPU knows when it collects them
+      and the shader cannot recover from a tile. So: one more `vec4` per light,
+      the flame's viewport position and the halo's radius in pixels, and an
+      `added` term after the multiply at the end of `fs_main`.
+
+      Three things to decide when it is picked up, and none of them is decided
+      here:
+
+      - **Whether the halo is occluded at all.** Cheapest is not: glare is in the
+        air and a wall between the eye and a lamp still glares round it. But a
+        lamp in a sealed cellar would then glow through the floor above it, which
+        is the failure the world layer exists to prevent — so the honest first cut
+        is probably to gate the halo on the *world* term at the flame's own tile,
+        which the pass has already computed.
+      - **Its falloff, which is not the world layer's.** A halo is a glare and
+        falls off much faster than a pool of light; reusing `(1 - d)²` would draw
+        a second pool over the first and double every complaint about flatness.
+      - **Where the sprite is.** The flame's screen position is the sprite's, and
+        `light::place` gives a tile. The backlog's "a light is placed by its tile,
+        not by its sprite" is a nuisance for the world layer and a blocker for
+        this one.
+
+      Off by a key while it is being tuned, like the sun and the sky field, and
+      for the same reason: a picture with one thing changed in it is the only
+      picture anything can be judged from.
 
 ## Backlog
 

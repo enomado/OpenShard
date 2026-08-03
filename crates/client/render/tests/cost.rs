@@ -343,7 +343,12 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             &camera,
             &tiledata,
             &Cutaway::OPEN,
-            light::NIGHT,
+            // Flat, as the app is by default: the sky field is a second thing
+            // changing every tile of the picture, and the frame this test dumps
+            // is read as a picture of the *flames*. See `docs/lighting.md`,
+            // decision 20. It costs the pass nothing either way — the grid is
+            // built and uploaded whichever ambient reads it.
+            light::NIGHT.flattened(),
             time,
             Some(&static_atlas),
         )
