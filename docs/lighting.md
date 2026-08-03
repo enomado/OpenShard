@@ -3010,3 +3010,39 @@ Found while making a floor stop light (decision 32):
   have, and the same invention would darken the street under an overhang. Worth
   putting to a person with the picture in front of them rather than settling
   here.
+
+Found on a staircase in Britain:
+
+- **A stair is read as a corner of two walls, and there is no stance for a
+  slope.** Reported from `(1496, 1641)` and `(1493, 1639)`: a flight of stairs
+  is drawn with hard triangles of shadow across it, as if the lit surface had
+  been turned inside out. `tests/onsite.rs` at either tile names it in one line —
+  the stair graphics `0x071E` (`1822`, height 10) and `0x0736` (`1846`, height 5)
+  read `facing Some(Corner { right: East, left: South })`, `stance
+  CornerEastSouth`, `opacity 255`, `climbable true`. So:
+  - **The shading.** `blit.wgsl`'s `outward` gives the right half of every step
+    the normal `(1, 0, 0)` and the left half `(0, 1, 0)` — two *vertical* walls
+    meeting on the sprite's centre column. A stair's surface is neither: it
+    climbs at roughly 45°, and its normal has a `z` in it. Every step is
+    therefore lit as a pair of half-tiles turned away from whatever the sun and
+    the flames are, and the seam between the halves is what the picture shows as
+    a triangle. Nothing in [`Stance`](../crates/client/render/src/place.rs) can
+    say "a slope": the enum is flat, upright, four faces and four corners.
+  - **The occlusion.** The same verdict puts opaque panels on the tile's East and
+    South edges for the stair's whole height, so a staircase shadows like a run
+    of wall — including onto its own steps.
+  - **The detector cannot see it from the silhouette alone.** A stair's base *is*
+    a clean 45° run on both halves, which is exactly what `facing_of` asks for,
+    and it stands 40 pixels tall, well over `MIN_STANDING`. What tells it apart
+    is not the picture but the client's own bit: `TileFlags::CLIMBABLE`
+    (`Bridge`, `0x0400`) is set on both graphics and on nothing that is a wall —
+    the same order-of-policy argument `Stance::of` already makes for
+    `is_background`, one flag over.
+  What it needs, in the order it would be built: a `scene::staircase` with one
+  flight and nothing else (the plan view is what says whether the shading follows
+  the climb, the way `one-torch-on-open-ground` says whether a pool is a circle),
+  then `Stance::Slope` — which needs a direction, and the direction is the one
+  fact the art *does* have to be measured for, since `CLIMBABLE` says a thing
+  climbs and not which way — and the occlusion side, where a climbable tile
+  should stop being a wall. Sphere already halves a climbable tile's height,
+  which is a hint that the reference treats this shape as a special case too.

@@ -129,13 +129,14 @@ fn what_the_lighting_knows_about_a_place() {
                 let facing = atlas.sprite(graphic).and_then(|sprite| sprite.facing);
                 println!(
                     "({x}, {y}) z {:>4}  {graphic:?}  h {:>3}  facing {:?}  stance {:?}  \
-                     opacity {:>3}  burns {}",
+                     opacity {:>3}  burns {}  climbable {}",
                     item.z,
                     tile.height,
                     facing,
                     Stance::of(tile, facing),
                     occlusion::opacity(graphic, tile),
                     light::burns(graphic, tile),
+                    tile.flags.is_climbable(),
                 );
             }
         }
