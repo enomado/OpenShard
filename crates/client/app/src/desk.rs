@@ -165,7 +165,7 @@ pub struct Desk {
     /// Which page of the dev window is in front.
     pub tab: Tab,
     /// Whether the dev window is shown at all. Closed, it is reopened from the
-    /// status strip's toggle.
+    /// status strip's toggle or with F1.
     pub open: bool,
     /// Where the dev window was left. `None` before it has ever been drawn.
     pub panel: Option<Panel>,

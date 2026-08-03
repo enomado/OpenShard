@@ -669,7 +669,11 @@ fn layout(
             // you close once and then relaunch the client to get back — which is
             // exactly the state this whole file is here to stop being normal.
             ui.separator();
-            if ui.selectable_label(desk.open, "dev").clicked() {
+            if ui
+                .selectable_label(desk.open, "dev")
+                .on_hover_text("F1")
+                .clicked()
+            {
                 desk.open = !desk.open;
             }
             // The HUD's scale, shown because it is remembered: a client that

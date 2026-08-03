@@ -1460,6 +1460,20 @@ impl ApplicationHandler<link::Update> for App {
                     return;
                 }
                 let changed = match code {
+                    // The dev window, the same switch the status strip's `dev`
+                    // toggle is. Two ways in rather than one because the state is
+                    // remembered: a window closed once stays closed across
+                    // launches, and the strip that reopens it is itself a thing
+                    // you have to know is there. A key is what you reach for
+                    // without knowing anything.
+                    //
+                    // F1 and not a letter: letters go to the character. There is
+                    // no chat line yet that would swallow one, and when there is,
+                    // a key that walked the body would be the bug.
+                    KeyCode::F1 => {
+                        self.desk.open = !self.desk.open;
+                        true
+                    }
                     KeyCode::Home => {
                         self.relock();
                         true
