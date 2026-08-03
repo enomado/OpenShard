@@ -30,6 +30,7 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::map::{LandCell, Map};
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
+use crate::atlas::StaticAtlas;
 use crate::camera::Camera;
 use crate::cutaway::Cutaway;
 use crate::items::GroundItem;
@@ -118,6 +119,19 @@ pub struct Scene {
     /// other flame in the frame is at, which is [`Scene::lighting`]'s argument
     /// and not this field's. See [`light::carried`] and [`Lighting::hold`].
     pub carried: Option<(Point, Direction)>,
+    /// The pictures, where the scene is about which *edge* a wall stands on.
+    ///
+    /// `None` for almost every scene, and that is not a gap: these scenes have no
+    /// art at all — a `Map` of flat ground, a `TileData` where a few graphics
+    /// have flags, and a list of items — and without pictures every occluder is
+    /// the whole tile decision 3 made it. Which is the answer those scenes were
+    /// written against and still assert.
+    ///
+    /// A scene that *is* about facing packs one synthetic silhouette per graphic
+    /// with [`facing::silhouette`](crate::facing::silhouette) and hands it here.
+    /// See [`lamp_against_a_wall`], which is the case a whole-tile occluder gets
+    /// wrong: a light mounted on a house, shining along the street it hangs over.
+    pub art: Option<StaticAtlas>,
 }
 
 impl Scene {
@@ -141,6 +155,7 @@ impl Scene {
                 None => light::NIGHT,
             },
             time,
+            self.art.as_ref(),
         );
         lighting.sun = self.sun;
         if let Some((at, facing)) = self.carried {
@@ -231,6 +246,7 @@ pub fn empty(name: &'static str) -> Scene {
         cutaway: Cutaway::OPEN,
         sun: None,
         carried: None,
+        art: None,
     }
 }
 
@@ -294,6 +310,50 @@ pub fn room_with_open_door() -> Scene {
         scene = scene.with(tile, if tile == DOORWAY { DOOR_OPEN } else { WALL });
     }
     scene.with(CENTRE, TORCH)
+}
+
+/// A straight run of wall with a torch at one end of it, and the art to say
+/// which side of its tiles the wall stands on.
+///
+/// **The scene decision 3 could not have.** An occluder used to be the whole
+/// tile, so light could not travel *alongside* a wall — a lamp mounted on a
+/// house was shadowed by the next tile of its own wall, and the street it hung
+/// over stayed dark in a band nothing visible was casting. Step 15 measures which
+/// edge a wall stands on, and this is the pair of rays that says the grid now
+/// uses it:
+///
+/// - **Along** the wall — the torch and the lit spot both on the wall's own row,
+///   so the ray enters each tile through one side and leaves through the other
+///   without ever crossing the face. Nothing should stop it.
+/// - **Across** it — the torch north of the row and the spot south of it, so the
+///   ray goes through the face. Everything should stop it.
+///
+/// One scene and not two, because the two rays differ in nothing but direction:
+/// a mistake that let the second through would be invisible in a scene that only
+/// asked the first.
+///
+/// The wall is on its tiles' **south** side, which is where the client draws
+/// nearly all of them — see `facing`'s own sweep. The art is a synthetic
+/// silhouette rather than a real graphic, for the reason every scene here is
+/// built rather than loaded: a hand-drawn parallelogram is the projection and
+/// nothing else, so a failure prints a room rather than a coordinate.
+pub fn wall_with_a_torch_beside_it() -> Scene {
+    let (cx, cy) = CENTRE;
+    let mut scene = empty("a straight wall with a torch at one end");
+    for x in cx - 3..=cx + 3 {
+        scene = scene.with((x, cy), WALL);
+    }
+    scene.art = Some(
+        StaticAtlas::pack([(
+            WALL,
+            crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),
+        )])
+        .expect("one silhouette fits"),
+    );
+    // On the wall's own row, at its east end: the sconce a house carries. Its own
+    // tile is exempt from shadowing it, as every flame's is, so what this scene
+    // is about is the *other six* tiles of the same wall.
+    scene.with((cx + 3, cy), TORCH)
 }
 
 /// A room with a pane of glass where its door would be.

@@ -9,7 +9,8 @@ copied.
 
 ## Where the next session starts
 
-Steps 1–15 and 18 are done; **16 and 17 are not**. Step 15 has just landed and
+Steps 1–15 and 18 are done; **16 and 17 are not** — the *steps*; decision 17 is
+a decision and landed. Step 15 has just landed and
 it is half of the measurement step 16 needs: a wall's face is now read out of its
 own art, and the window's hole is the same silhouette measured again — a span of
 `v` along the face and a span of `z` — so whoever picks 16 up starts from
@@ -93,7 +94,11 @@ a `u16` holds a coordinate on the largest facet a client ships (7,168) exactly.
 `Rgba16Uint` is colour-renderable in WebGL2, which is the ceiling this crate
 draws under.
 
-**3. An occluder is a whole tile, not a wall's edge.**
+**3. An occluder is a whole tile, not a wall's edge.** ~~Superseded by decision
+17~~ — what follows is still why it was right at the time, and its last paragraph
+is exactly what changed.
+
+**3 (as written).** An occluder is a whole tile, not a wall's edge.
 `client.md` proposed projecting each wall static to the segment its base covers.
 The map cannot say which segment that is: **nothing in `tiledata.mul` records
 which edge of its tile a wall stands on** — that is only in the shape of the
@@ -382,6 +387,47 @@ world. `statics.wgsl`'s `INSIDE`. The geometry is still the boundary and
 tile the wall belongs to, and the two are different questions. The same clamp
 covers a floor's outermost pixel, which had the same latent bug from step 12 and
 never showed it, because a floor's tile is not an occluder.
+
+**17. An occluder is a panel on a named edge, now that the art will name one.**
+Decision 3 made an occluder the whole tile and gave the reason: nothing in
+`tiledata.mul` says which edge a wall stands on, and reading it off the
+silhouette "is a subsystem", where a wrong guess opens a corner of a room to the
+street. **Step 15 built that subsystem**, and it refuses rather than guesses — so
+the reason has expired and the cost has not.
+
+What the whole tile costs is light that travels *alongside* a wall. A lamp
+mounted on a house is shadowed by the next tile of its own wall, so the street it
+hangs over comes out with a band of darkness that nothing visible is casting.
+That is how this was found: a player pointed at Britain 1439,1692 and
+`light::sample` answered `stopped at (1440, 1692)` — a tile that does hold a
+wall, and whose wall the ray never goes through.
+
+So a cell carries **which sides of its tile are occupied**, four bits, and a ray
+is stopped only where it *crosses* one of them. Three things make that cheap:
+
+- The walk already knows. `boundary.x < boundary.y` is which boundary is being
+  crossed and `toward` is the direction, so the side a ray leaves by is two
+  comparisons, and the side it enters the next cell by is the opposite of it.
+- The cell already has room. `Rgba8Uint` is `(z_bottom, z_top, opacity, present)`
+  and `present` was a byte holding a bare yes; it is `PRESENT | mask` now.
+- The face is already measured: `Sprite::face`, once, when the picture is packed.
+
+Three answers and not two, and the third is the one to be careful about. A mask
+of **all four** is "it stands up and the art would not say" — a corner, a post, a
+tree — which is the whole-tile occluder decision 3 started with, so an unread
+graphic behaves exactly as it did. A mask of **zero** is a *lid*: something
+horizontal, whose occlusion is entirely its `z` span and which no vertical side
+describes. The client's own `FLOOR` bit decides that and not the detector,
+because a floor whose silhouette happened to read as a wall would otherwise stop
+three quarters less light than it does today.
+
+**And it deletes the door problem rather than solving it.** Decision 11 needed a
+table of which graphics are open leaves, because an open door has the flags of a
+shut one. It does not need one now: where the detector reads both, an open leaf
+is on the *perpendicular* edge of its tile — 28 pairs out of 28, never once the
+same axis — so a shut door blocks the doorway and an open one blocks the side of
+the tile it swung against, out of the geometry, with nothing knowing what a door
+is. Which is what decision 11 always claimed to be doing.
 
 ## Steps
 
@@ -912,6 +958,38 @@ Found while measuring a wall's facing out of its art:
   brightness profile across a *drawn* wall measures the timbers and the windows,
   not the lighting. `View::Light` throws the art away. Anything about the shape
   of a pool should be judged there.
+
+Found while asking why a lamp on a house does not light the street:
+
+- **Thin dark spokes fan out of a lamp where a wall run ends.** Visible in the
+  `View::Light` dump beside the fix, and new: with the whole tile gone, rays that
+  graze the end of a wall are stopped at some angles and not at neighbouring
+  ones, which reads as a starburst rather than as an edge. Smaller than the band
+  it replaces and worth a look at the live client, where it can be judged
+  moving.
+- **A ray through the corner between two panels passes between them.** The
+  diagonal gap the backlog already carries, arriving with more room to happen in:
+  two walls meeting at a tile corner used to be two solid tiles and are now two
+  panels that touch at a point. A supercover walk closes both at about twice the
+  samples.
+- **A cell merges a lid and a panel into one mask and one span.** `Occlusion::add`
+  unions everything on a tile, so a floor over a wall tile contributes its `z` to
+  the span while the wall contributes the sides — and the floor's own lid-ness is
+  lost. Conservative in the direction that darkens for the span and in the
+  direction that leaks for the sides, which is not one direction. Two slots a
+  cell would fix it and want the wider format step 16 is already asking for.
+- **`crate::doors` is now deletable.** Decision 17 answers an open door out of the
+  geometry, so the ported table earns nothing the edge mask does not. It is left
+  in for one reason: 40 of the 104 open leaves are graphics `facing` refuses —
+  the wide ones that stick past their own tile — and for those the table is still
+  the only thing that knows. When that number is measured against the picture
+  rather than against the art table, the answer is probably to delete it.
+- **The atlas is now an input to the occlusion grid.** `light::collect` and
+  `occlusion::collect` take `Option<&StaticAtlas>`, because a facing is a property
+  of a picture and only the atlas has pictures. `None` is every occluder as a
+  whole tile, which is what a built scene gets and what the tests that predate
+  this still assert on. It is also the eighth argument of `light::collect`, which
+  is one over what clippy likes and is allowed with a note.
 
 Found while asking what an open door does:
 

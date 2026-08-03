@@ -1124,6 +1124,10 @@ fn a_wall_stops_the_light_behind_it() {
             height: 20,
             ..StaticTile::default()
         },
+        // No face: the whole-tile occluder this test has always been about. A
+        // named edge would let the ray past on the sides it does not cross,
+        // which is a different test — see `occlusion`'s own.
+        None,
     );
     let walled = read(&mut blit, occlusion);
     let (wall, behind, far) = (at(&walled, 101), at(&walled, 102), at(&walled, 103));
@@ -3512,6 +3516,28 @@ fn the_shader_lights_a_frame_as_light_sample_does() {
         return;
     };
     let scene = openshard_client_render::scene::room();
+    assert_parity(&device, &queue, &scene.lighting(0.0));
+}
+
+/// And the same for a frame whose occluders are **panels on named edges**.
+///
+/// The other parity scenes have no art, so nothing in them names an edge and
+/// every occluder is the whole tile decision 3 started with — which means the
+/// branch `docs/lighting.md`'s decision 17 added to both walks is never taken in
+/// any of them. Two implementations of one formula with an untested branch each
+/// is exactly the drift decision 9 exists to prevent, and the failure mode is
+/// specific: the debugger and the renderer disagree only where a wall is, which
+/// is where anybody looking at this pass is looking.
+///
+/// `wall_with_a_torch_beside_it` is the scene that carries art, so it is the one
+/// that exercises the edge test, the `opposite` carried across a boundary and the
+/// lid case all at once.
+#[test]
+fn the_shader_and_light_sample_agree_about_which_side_a_wall_is_on() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::wall_with_a_torch_beside_it();
     assert_parity(&device, &queue, &scene.lighting(0.0));
 }
 

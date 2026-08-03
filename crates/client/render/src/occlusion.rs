@@ -76,6 +76,8 @@
 //! read once per fragment and never in a loop.
 
 use openshard_protocol::wire::Graphic;
+
+use crate::facing::Face;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
@@ -97,6 +99,68 @@ pub const CLEAR: u8 = 0;
 /// this module's header for why it is not `BLOCK`.
 pub fn stops_light(tile: &StaticTile) -> bool {
     tile.flags.has(TileFlags::WINDOW | TileFlags::NO_SHOOT)
+}
+
+/// The four sides of a tile, as bits of a cell's fourth channel — and the
+/// difference between an occluder that is a *tile* and one that is a *panel*.
+///
+/// `docs/lighting.md`'s decision 3 made an occluder a whole tile, because
+/// `tiledata.mul` does not say which edge a wall stands on and guessing it from
+/// the art was "a subsystem". Step 15 built that subsystem, so this is decision 3
+/// revised: where [`crate::facing`] names an edge, the occluder is the panel on
+/// that edge and a ray is stopped only where it **crosses** it. A ray running
+/// alongside a wall passes, which is what a lamp mounted on a house needs in
+/// order to light the street it hangs over.
+///
+/// A mask of zero is a **lid**: something horizontal, a floor or a roof, whose
+/// occlusion is entirely its `z` span and which no vertical edge describes.
+/// [`EDGE_ANY`] is "it stands up and nobody knows which way", which is exactly
+/// the old whole-tile answer and therefore the safe fallback.
+pub const EDGE_NORTH: u8 = 1;
+/// The `x1` side. See [`EDGE_NORTH`].
+pub const EDGE_EAST: u8 = 2;
+/// The `y1` side. See [`EDGE_NORTH`].
+pub const EDGE_SOUTH: u8 = 4;
+/// The `x0` side. See [`EDGE_NORTH`].
+pub const EDGE_WEST: u8 = 8;
+/// All four: a thing that stands up whose facing the art would not name.
+pub const EDGE_ANY: u8 = EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST;
+/// The bit that says a cell holds anything at all.
+///
+/// Separate from the mask because a lid's mask is legitimately zero, and the
+/// shader tests presence before it tests edges. `bytes` writes `PRESENT | mask`
+/// and `blit.wgsl` takes the two apart with the same constants.
+pub const PRESENT: u8 = 0x80;
+
+/// The side of the neighbouring tile that touches this one's `side`.
+///
+/// One line, and it is the whole of how a walk carries an edge across a
+/// boundary: the line a ray crosses is one cell's east and the next one's west.
+/// `blit.wgsl` has the same function and the parity test is what says so.
+pub fn opposite(side: u8) -> u8 {
+    match side {
+        EDGE_NORTH => EDGE_SOUTH,
+        EDGE_SOUTH => EDGE_NORTH,
+        EDGE_EAST => EDGE_WEST,
+        EDGE_WEST => EDGE_EAST,
+        _ => 0,
+    }
+}
+
+/// Which sides of its tile a static occupies, from what the art said about it.
+///
+/// `None` — a corner, a post, a tree, a graphic no atlas was offered — is
+/// [`EDGE_ANY`]: the whole-tile answer, unchanged from before faces existed.
+/// A [`Stance::Flat`](crate::place::Stance) static is not asked at all; see
+/// [`Occlusion::add`].
+pub fn edges_of(face: Option<crate::facing::Face>) -> u8 {
+    match face {
+        Some(crate::facing::Face::North) => EDGE_NORTH,
+        Some(crate::facing::Face::East) => EDGE_EAST,
+        Some(crate::facing::Face::South) => EDGE_SOUTH,
+        Some(crate::facing::Face::West) => EDGE_WEST,
+        None => EDGE_ANY,
+    }
 }
 
 /// How much of a ray crossing a pane of glass is stopped.
@@ -176,6 +240,13 @@ pub struct Cell {
     pub top: i32,
     /// How much of a ray crossing the span is stopped.
     pub opacity: u8,
+    /// Which sides of the tile the things standing here occupy — the union over
+    /// all of them. A ray is stopped only where it crosses one of these.
+    ///
+    /// Zero is a **lid** and not "nothing": something horizontal, whose whole
+    /// occlusion is the `z` span above. [`EDGE_ANY`] is the old whole-tile
+    /// answer and what an unreadable static gets. See [`EDGE_NORTH`].
+    pub edges: u8,
 }
 
 /// A tile with nothing at all over it: the whole of the sky.
@@ -256,7 +327,7 @@ impl Occlusion {
     /// A tile outside [`Occlusion::bounds`] is dropped rather than clamped: it
     /// is a caller walking wider than it asked the grid for, and folding it onto
     /// the edge would put a wall where the map has none.
-    pub fn add(&mut self, x: u16, y: u16, z: i8, graphic: Graphic, tile: &StaticTile) {
+    pub fn add(&mut self, x: u16, y: u16, z: i8, graphic: Graphic, tile: &StaticTile, face: Option<Face>) {
         let opacity = opacity(graphic, tile);
         if opacity == CLEAR {
             return;
@@ -269,13 +340,31 @@ impl Occlusion {
             bottom,
             top: bottom + calc_height(tile),
             opacity,
+            // A floor or a rug is a **lid**: its occlusion is the `z` it lies at
+            // and no vertical side of the tile describes it, so it names no
+            // edge. Everything that stands up names the edge the art gave it, or
+            // all four where the art would not say — see `edges_of`.
+            //
+            // The client's own `FLOOR` bit decides which, exactly as it does for
+            // `place::Stance`, and asking it here rather than trusting the face
+            // to be `None` is deliberate: a floor whose silhouette happened to
+            // read as a wall would otherwise be given one edge out of four and
+            // stop three quarters less light than it does today.
+            edges: match tile.flags.is_background() {
+                true => 0,
+                false => edges_of(face),
+            },
         };
         self.cells[index] = Some(match self.cells[index] {
             None => span,
+            // The union in every field, which is the conservative direction the
+            // span already took: two walls on one tile close the gap between
+            // them, and a wall beside a lid stops what either of them would.
             Some(had) => Cell {
                 bottom: had.bottom.min(span.bottom),
                 top: had.top.max(span.top),
                 opacity: had.opacity.max(span.opacity),
+                edges: had.edges | span.edges,
             },
         });
     }
@@ -438,7 +527,16 @@ impl Occlusion {
                 None => bytes.extend_from_slice(&[0, 0, 0, 0]),
                 Some(cell) => {
                     let channel = |z: i32| (z.clamp(-128, 127) + 128) as u8;
-                    bytes.extend_from_slice(&[channel(cell.bottom), channel(cell.top), cell.opacity, 255]);
+                    // The fourth channel is `PRESENT` and the edge mask, not a
+                    // bare "yes": a lid's mask is legitimately zero, so presence
+                    // needs a bit of its own. `blit.wgsl` takes the two apart
+                    // with the same constants.
+                    bytes.extend_from_slice(&[
+                        channel(cell.bottom),
+                        channel(cell.top),
+                        cell.opacity,
+                        PRESENT | cell.edges,
+                    ]);
                 }
             }
         }
@@ -464,12 +562,21 @@ pub fn collect(
     bounds: TileBounds,
     tiledata: &TileData,
     cutaway: &Cutaway,
+    atlas: Option<&crate::atlas::StaticAtlas>,
 ) -> Occlusion {
     let mut occlusion = Occlusion::new(bounds);
     // The ground each tile's column is measured from. Off the map it is zero:
     // there is no floor there and nothing draws, and a static hanging over the
     // void still has to shade something rather than be skipped by an `unwrap`.
     let floor = |x: u16, y: u16| map.land(x, y).map_or(0, |cell| cell.z);
+    // Which edge each graphic's wall stands on, measured once when its picture
+    // was packed. `None` for the whole atlas is a caller that has no pictures —
+    // a built scene, a test — and every occluder is then the whole tile it always
+    // was. `None` for one graphic is the atlas not holding it, which happens at
+    // the rim: the grid is grown by the widest pool's reach and the atlas by what
+    // is drawn, and those are not the same rectangle. Both fall back the safe
+    // way. See `Occlusion::add` and `crate::facing`.
+    let face = |graphic: Graphic| atlas.and_then(|atlas| atlas.sprite(graphic)).and_then(|s| s.face);
 
     crate::statics::for_each_static_in(map, bounds, |item| {
         let tile = tiledata.static_tile(item.tile);
@@ -482,7 +589,14 @@ pub fn collect(
             tile,
         );
         if cutaway::shows(cutaway, item.z, tile) {
-            occlusion.add(item.x, item.y, item.z, Graphic(item.tile), tile);
+            occlusion.add(
+                item.x,
+                item.y,
+                item.z,
+                Graphic(item.tile),
+                tile,
+                face(Graphic(item.tile)),
+            );
         }
     });
 
@@ -497,7 +611,14 @@ pub fn collect(
             tile,
         );
         if cutaway::shows(cutaway, item.at.z, tile) {
-            occlusion.add(item.at.x, item.at.y, item.at.z, item.graphic, tile);
+            occlusion.add(
+                item.at.x,
+                item.at.y,
+                item.at.z,
+                item.graphic,
+                tile,
+                face(item.graphic),
+            );
         }
     }
 
@@ -546,8 +667,8 @@ mod tests {
 
         // And the grid keeps no cell for it, which is what the shadow walk reads.
         let mut occlusion = Occlusion::new(bounds());
-        occlusion.add(100, 100, 0, shut, &leaf);
-        occlusion.add(101, 100, 0, open, &leaf);
+        occlusion.add(100, 100, 0, shut, &leaf, None);
+        occlusion.add(101, 100, 0, open, &leaf, None);
         assert!(occlusion.at(100, 100).is_some(), "the shut leaf left the grid");
         assert_eq!(
             occlusion.at(101, 100),
@@ -602,13 +723,14 @@ mod tests {
     #[test]
     fn a_wall_carries_the_span_it_stands_in() {
         let mut occlusion = Occlusion::new(bounds());
-        occlusion.add(102, 103, 5, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(102, 103, 5, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
         assert_eq!(
             occlusion.at(102, 103),
             Some(Cell {
                 bottom: 5,
                 top: 25,
-                opacity: OPAQUE
+                opacity: OPAQUE,
+                edges: EDGE_ANY,
             })
         );
         assert_eq!(occlusion.at(103, 103), None, "its neighbour is open ground");
@@ -626,6 +748,7 @@ mod tests {
             0,
             NOT_A_DOOR,
             &tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20),
+            None,
         );
         assert_eq!(occlusion.at(100, 100).unwrap().top, 10);
     }
@@ -636,14 +759,16 @@ mod tests {
     #[test]
     fn two_occluders_on_one_tile_span_both() {
         let mut occlusion = Occlusion::new(bounds());
-        occlusion.add(105, 105, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
-        occlusion.add(105, 105, 40, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(105, 105, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(105, 105, 40, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
         assert_eq!(
             occlusion.at(105, 105),
             Some(Cell {
                 bottom: 0,
                 top: 60,
-                opacity: OPAQUE
+                opacity: OPAQUE,
+                // Neither was given a face, so both are the whole tile.
+                edges: EDGE_ANY,
             })
         );
     }
@@ -654,7 +779,7 @@ mod tests {
     #[test]
     fn a_tile_outside_the_bounds_is_dropped_and_not_clamped() {
         let mut occlusion = Occlusion::new(bounds());
-        occlusion.add(99, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
+        occlusion.add(99, 100, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
         assert_eq!(occlusion.at(99, 100), None);
         assert_eq!(occlusion.at(100, 100), None, "and did not land on the edge");
     }
@@ -669,16 +794,41 @@ mod tests {
             min_y: 0,
             max_y: 1,
         });
-        occlusion.add(1, 0, -10, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
-        occlusion.add(0, 1, 120, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 60));
+        occlusion.add(1, 0, -10, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(0, 1, 120, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 60), None);
         let bytes = occlusion.bytes();
         assert_eq!(bytes.len(), 4 * 4);
         assert_eq!(&bytes[0..4], &[0, 0, 0, 0], "(0,0) is open");
-        assert_eq!(&bytes[4..8], &[118, 138, OPAQUE, 255], "(1,0) is x-fastest");
+        // The fourth channel is `PRESENT` and the edge mask, not a bare yes:
+        // neither of these was given a face, so both are the whole tile.
+        let whole = PRESENT | EDGE_ANY;
+        assert_eq!(&bytes[4..8], &[118, 138, OPAQUE, whole], "(1,0) is x-fastest");
         assert_eq!(
             &bytes[8..12],
-            &[248, 255, OPAQUE, 255],
+            &[248, 255, OPAQUE, whole],
             "(0,1) reaches past the top of the world and stops there",
+        );
+        // A lid's mask is zero and it is still present, which is the one thing
+        // `PRESENT` exists for — a fourth channel of zero has to mean nothing
+        // stands here and nothing else.
+        let mut lid = Occlusion::new(TileBounds {
+            min_x: 0,
+            max_x: 0,
+            min_y: 0,
+            max_y: 0,
+        });
+        lid.add(
+            0,
+            0,
+            20,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT | TileFlags::FLOOR, 0),
+            None,
+        );
+        assert_eq!(
+            lid.bytes()[3],
+            PRESENT,
+            "a floor is present with no side of its own"
         );
     }
 
@@ -694,8 +844,8 @@ mod tests {
             min_y: 200,
             max_y: 201,
         });
-        occlusion.add(102, 200, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20));
-        occlusion.add(100, 201, 5, NOT_A_DOOR, &tile(TileFlags::WINDOW, 10));
+        occlusion.add(102, 200, 0, NOT_A_DOOR, &tile(TileFlags::NO_SHOOT, 20), None);
+        occlusion.add(100, 201, 5, NOT_A_DOOR, &tile(TileFlags::WINDOW, 10), None);
         let boxes: Vec<_> = occlusion.boxes().collect();
         assert_eq!(
             boxes,
@@ -706,7 +856,8 @@ mod tests {
                     Cell {
                         bottom: 0,
                         top: 20,
-                        opacity: OPAQUE
+                        opacity: OPAQUE,
+                        edges: EDGE_ANY,
                     }
                 ),
                 (
@@ -715,7 +866,8 @@ mod tests {
                     Cell {
                         bottom: 5,
                         top: 15,
-                        opacity: PANE
+                        opacity: PANE,
+                        edges: EDGE_ANY,
                     }
                 ),
             ],
@@ -831,7 +983,7 @@ mod tests {
             max_y: 7,
         };
 
-        let open = collect(&map, &items, bounds, &tiledata, &Cutaway::OPEN);
+        let open = collect(&map, &items, bounds, &tiledata, &Cutaway::OPEN, None);
         let cut = collect(
             &map,
             &items,
@@ -842,6 +994,7 @@ mod tests {
                 no_draw_roofs: true,
                 ..Cutaway::OPEN
             },
+            None,
         );
 
         assert!(open.at(4, 4).is_some(), "with nothing cut it occludes");
@@ -892,7 +1045,7 @@ mod tests {
             max_y: 7,
         };
 
-        let open = collect(&map, &items, bounds, &tiledata, &Cutaway::OPEN);
+        let open = collect(&map, &items, bounds, &tiledata, &Cutaway::OPEN, None);
         assert!(open.at(4, 4).is_some(), "with nothing cut away it occludes");
 
         let cut = collect(
@@ -904,6 +1057,7 @@ mod tests {
                 max_z: 20,
                 ..Cutaway::OPEN
             },
+            None,
         );
         assert_eq!(cut.at(4, 4), None);
     }
@@ -946,7 +1100,7 @@ mod tests {
             min_y: i32::from(from.1),
             max_y: i32::from(to.1),
         };
-        let grid = collect(&map, &[], bounds, &tiledata, &Cutaway::OPEN);
+        let grid = collect(&map, &[], bounds, &tiledata, &Cutaway::OPEN, None);
 
         let (mut indoors, mut outdoors) = (Vec::new(), Vec::new());
         let (mut roofs, mut roofs_in_the_grid) = (0, 0);

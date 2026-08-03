@@ -719,3 +719,74 @@ fn every_scene_prints_a_diagram_that_is_not_blank() {
         );
     }
 }
+
+/// Light travels *along* a wall and not through it.
+///
+/// The one an occluder that was a whole tile could not get right, and the reason
+/// `docs/lighting.md`'s decision 3 was revised once step 15 could measure which
+/// edge a wall stands on. A lamp mounted on a house used to be shadowed by the
+/// next tile of its own wall, so the street it hung over came out with a band of
+/// darkness that nothing visible was casting — which is how this was found.
+///
+/// Asserted on `Reach::through` rather than on brightness, because that is the
+/// number the change is about: how much of the flame the walk let past. A
+/// brightness would fold in the falloff and the ambient and would need a
+/// tolerance argued about instead of a fact.
+///
+/// Three rays, and the third is what makes the other two mean anything:
+///
+/// - *Along* the wall — the torch and the spot on the wall's own row, so the ray
+///   enters each tile through one side and leaves through the other without
+///   crossing the face. All of it arrives.
+/// - *Across* it — a spot south of the row, so the ray goes through a face.
+///   Most of it does not arrive; not all, because it clips the tile obliquely
+///   and decision 14's penumbra is doing its job.
+/// - *The same scene with no art at all*, where nothing names an edge and every
+///   occluder is the whole tile it was before. The along-ray is stopped. That is
+///   the old behaviour, and it is what says this test would fail on the code it
+///   was written against rather than passing for some other reason.
+#[test]
+fn light_runs_along_a_wall_and_stops_across_it() {
+    let scene = scene::wall_with_a_torch_beside_it();
+    let (cx, cy) = CENTRE;
+    let through = |scene: &Scene, tile: (u16, u16)| {
+        let lighting = scene.lighting(STILL);
+        let sample = light::sample(spot(tile, 0.0), &lighting);
+        let reach = sample.reaches[0];
+        assert!(reach.within, "{tile:?} is outside the torch's radius: {sample}");
+        reach.through
+    };
+
+    // Along: three tiles west of the torch, on the wall's own row, with four
+    // tiles of the same wall in between.
+    let along = through(&scene, (cx, cy));
+    assert!(
+        along > 0.99,
+        "{}: the wall shadows the light running along it — {along:.3} of it arrives",
+        scene.name,
+    );
+
+    // Across: south of the wall, and south of a tile that is *not* the torch's
+    // own — a flame's own tile never shadows it, so a spot directly below the
+    // sconce would be lit for a reason that has nothing to do with this test.
+    let across = through(&scene, (cx - 1, cy + 2));
+    assert!(
+        across < 0.5,
+        "{}: the wall let light through its own face — {across:.3} of it arrives",
+        scene.name,
+    );
+
+    // And the same scene with the art taken away. Nothing then says which edge
+    // the wall is on, every occluder is the whole tile, and the along-ray dies —
+    // which is the defect this whole change is about, reproduced on demand.
+    let blind = Scene {
+        art: None,
+        ..scene::wall_with_a_torch_beside_it()
+    };
+    let along_blind = through(&blind, (cx, cy));
+    assert!(
+        along_blind < 0.01,
+        "with no art an occluder is the whole tile and the along-ray must die — {along_blind:.3} \
+         of it arrived, so this test is not measuring the edge at all",
+    );
+}

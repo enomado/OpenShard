@@ -3064,6 +3064,9 @@ impl App {
                     light::lit_tiles(&camera),
                     &self.tiledata,
                     cutaway,
+                    // The same atlas the frame's own grid is built from, or the
+                    // wireframe would draw boxes the shader does not have.
+                    self.window.as_ref().map(|window| &window.atlases.statics),
                 )
             }),
             hover,
@@ -4111,6 +4114,12 @@ impl App {
                 &cutaway,
                 ambient,
                 self.flame_clock.as_secs_f32(),
+                // The pictures, which is where an occluder's *facing* comes from:
+                // a wall stops a ray only where the ray crosses the side the wall
+                // stands on, and only the art says which side that is. The same
+                // atlas the statics pass is about to draw from, so the grid and
+                // the picture cannot be about two different sets of sprites.
+                Some(&window.atlases.statics),
             ),
             None => Lighting::NONE,
         };

@@ -163,6 +163,20 @@ const FLAME_SPREAD: f32 = 1.0;
 const SOFT_CROSSING_MIN: f32 = 0.05;
 const SOFT_CROSSING_MAX: f32 = 0.7;
 
+// The four sides of a tile, in the low bits of a cell's fourth channel, and the
+// `PRESENT` bit above them. `crate::occlusion` writes them; the numbers are
+// pinned there and nothing but a person reading both files can check they agree.
+//
+// A mask of zero is a **lid** — a floor, a roof — whose occlusion is entirely its
+// `z` span and which no vertical side describes. All four is "it stands up and
+// the art would not say which way", which is the whole-tile occluder decision 3
+// started with and the answer everything falls back to.
+const EDGE_NORTH: u32 = 1u;
+const EDGE_EAST: u32 = 2u;
+const EDGE_SOUTH: u32 = 4u;
+const EDGE_WEST: u32 = 8u;
+const EDGE_MASK: u32 = 15u;
+
 // What stands on one tile, or all zeros for open ground and for anything
 // outside the grid.
 fn occluder_at(x: i32, y: i32) -> vec4<u32> {
@@ -187,6 +201,20 @@ fn sky_at(x: i32, y: i32) -> f32 {
     return f32(textureLoad(field, cell, 0).x) / 255.0;
 }
 
+// The side of the neighbouring tile that touches this one's `side`.
+//
+// One line, and it is the whole of how the walk carries an edge across a
+// boundary: the line a ray crosses is one cell's east and the next one's west.
+fn opposite(side: u32) -> u32 {
+    switch side {
+        case EDGE_NORTH: { return EDGE_SOUTH; }
+        case EDGE_SOUTH: { return EDGE_NORTH; }
+        case EDGE_EAST: { return EDGE_WEST; }
+        case EDGE_WEST: { return EDGE_EAST; }
+        default: { return 0u; }
+    }
+}
+
 // How much of a flame reaches a tile: 1 for nothing in the way, 0 for a wall.
 //
 // A grid traversal of the cells between the two — every cell the segment
@@ -198,6 +226,14 @@ fn sky_at(x: i32, y: i32) -> f32 {
 // Both end cells are left out: the flame's own tile must not shadow it (a sconce
 // stands *on* a wall), and the tile being lit must not shadow itself, which is
 // what keeps a wall's own face the brightest thing near a torch.
+//
+// **A cell in between stops the ray only where the ray crosses the side the
+// thing actually stands on.** That is decision 3 revised: an occluder used to be
+// a whole tile, because nothing said which edge a wall was built on, and a lamp
+// mounted on a house was therefore shadowed by the next tile of its own wall —
+// the light could not run *along* the street it hung over. The walk already
+// knows which boundary it crossed to enter a cell and which it will cross to
+// leave, so the test costs two bit operations and no extra sampling.
 //
 // The height is interpolated along the ray, so a cell only stops the light where
 // the ray actually passes through the span it occupies — and it is the *share*
@@ -235,14 +271,33 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
 
     var entered = 0.0;
     var through = 1.0;
+    // Which side of the current cell the ray came in through. Nothing for the
+    // first cell, where the ray begins inside — and that cell is exempt anyway.
+    var entry = 0u;
     for (var i = 0; i < MAX_RAY_STEPS; i = i + 1) {
         let next = min(boundary.x, boundary.y);
         let leaves = min(next, 1.0);
+        // And which side it will leave through: the boundary about to be
+        // crossed, named by the direction of travel. Nothing where the ray ends
+        // inside this cell, which is the flame's own and exempt.
+        let out_by_x = boundary.x < boundary.y;
+        var exit = 0u;
+        if next < 1.0 {
+            if out_by_x {
+                exit = select(EDGE_WEST, EDGE_EAST, toward.x > 0);
+            } else {
+                exit = select(EDGE_NORTH, EDGE_SOUTH, toward.y > 0);
+            }
+        }
+        let crossing = entry | exit;
         let exempt = (cell.x == first.x && cell.y == first.y)
             || (cell.x == last.x && cell.y == last.y);
         if !exempt {
             let stands = occluder_at(cell.x, cell.y);
-            if stands.w != 0u {
+            let sides = stands.w & EDGE_MASK;
+            // A lid (`sides == 0`) is tested by its `z` span alone; a panel also
+            // has to be on a side the ray goes through.
+            if stands.w != 0u && (sides == 0u || (sides & crossing) != 0u) {
                 let low = f32(stands.x) - 128.0;
                 let high = f32(stands.y) - 128.0;
                 // The ray's own height over this crossing, against the span the
@@ -281,12 +336,15 @@ fn reaches(lit: vec3<f32>, flame: vec3<f32>) -> f32 {
             break;
         }
         entered = next;
+        // The neighbour's own entry is this cell's exit seen from the other
+        // side: leaving east is entering west.
+        entry = opposite(exit);
         // Into the neighbour across whichever boundary is nearer. A tie is a
         // corner: either order visits both cells, and the one taken second is
         // crossed over a zero length and stops nothing — which is the diagonal
         // gap `docs/lighting.md` names, kept deliberately rather than closed by
         // an accident of which comparison ran first.
-        if boundary.x < boundary.y {
+        if out_by_x {
             cell.x = cell.x + toward.x;
             boundary.x = boundary.x + per_tile.x;
         } else {

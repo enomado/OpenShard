@@ -581,6 +581,18 @@ pub fn lit_tiles(camera: &Camera) -> crate::camera::TileBounds {
 /// reads it. It is an argument because this crate does not own a clock, and the
 /// caller passes the same sampled instant every other clock in the frame was
 /// advanced by.
+///
+/// `atlas` is where an occluder's *facing* comes from, and it is an `Option`
+/// because not every caller has pictures: a built scene has a map and an item
+/// list and no art at all. Without it every occluder is the whole tile it was
+/// before [`crate::facing`] existed, which is the safe answer and not a broken
+/// one — see [`occlusion::collect`](crate::occlusion::collect).
+// Eight, and every one of them is a different thing the frame knows: the world,
+// what the server has put in it, where the eye is, what the client's files say,
+// what the frame has cut away, what the sky is doing, when, and the pictures.
+// Grouping them into a struct would be one more type to keep in step with the
+// call sites for no fewer facts — and the call sites are three.
+#[allow(clippy::too_many_arguments)]
 pub fn collect(
     map: &Map,
     items: &[GroundItem],
@@ -589,6 +601,7 @@ pub fn collect(
     cutaway: &Cutaway,
     ambient: Ambient,
     time: f32,
+    atlas: Option<&crate::atlas::StaticAtlas>,
 ) -> Lighting {
     let bounds = lit_tiles(camera);
     let mut lights = Vec::new();
@@ -634,7 +647,7 @@ pub fn collect(
     Lighting {
         ambient,
         lights,
-        occlusion: crate::occlusion::collect(map, items, bounds, tiledata, cutaway),
+        occlusion: crate::occlusion::collect(map, items, bounds, tiledata, cutaway, atlas),
         // No sky here. What the sun is doing is not a property of the tiles this
         // walked — it is one direction for the whole world, and the caller that
         // knows the time of day sets it on the way to the blit.
@@ -1049,11 +1062,29 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
 
     let mut entered = 0.0;
     let mut through = 1.0;
+    // Which side of the current cell the ray came in through, and which it is
+    // about to leave by. `blit.wgsl`'s `reaches`, line for line — see there for
+    // why an occluder is a panel on one side rather than a whole tile.
+    let mut entry = 0u8;
     for _ in 0..MAX_RAY_STEPS {
         let next = boundary[0].min(boundary[1]);
         let leaves = next.min(1.0);
+        let out_by_x = boundary[0] < boundary[1];
+        let exit = match next < 1.0 {
+            false => 0,
+            true => match (out_by_x, out_by_x && toward.0 > 0 || !out_by_x && toward.1 > 0) {
+                (true, true) => crate::occlusion::EDGE_EAST,
+                (true, false) => crate::occlusion::EDGE_WEST,
+                (false, true) => crate::occlusion::EDGE_SOUTH,
+                (false, false) => crate::occlusion::EDGE_NORTH,
+            },
+        };
+        let crossing = entry | exit;
         if cell != first && cell != last {
-            if let Some(stands) = occlusion.at(cell.0, cell.1) {
+            if let Some(stands) = occlusion
+                .at(cell.0, cell.1)
+                .filter(|stands| stands.edges == 0 || stands.edges & crossing != 0)
+            {
                 // The ray's own height over this crossing, against the span the
                 // tile occupies: what counts is how much of the two overlap.
                 let from = spot.z + delta[2] * entered;
@@ -1086,12 +1117,15 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
             break;
         }
         entered = next;
+        // The neighbour's own entry is this cell's exit seen from the other
+        // side: leaving east is entering west.
+        entry = crate::occlusion::opposite(exit);
         // Into the neighbour across whichever boundary is nearer. A tie is a
         // corner: either order visits both cells, and the one taken second is
         // crossed over a zero length and stops nothing — which is the diagonal
         // gap this crate's backlog names, kept deliberately rather than closed
         // by an accident of which comparison ran first.
-        match boundary[0] < boundary[1] {
+        match out_by_x {
             true => {
                 cell.0 += toward.0;
                 boundary[0] += per_tile[0];
@@ -1230,6 +1264,7 @@ mod tests {
             &Cutaway::OPEN,
             NIGHT,
             0.0,
+            None,
         );
         assert_eq!(lighting.lights.len(), 1);
         let light = lighting.lights[0];
@@ -1261,6 +1296,7 @@ mod tests {
             &Cutaway::OPEN,
             NIGHT,
             0.0,
+            None,
         );
         assert!(lighting.lights.is_empty());
     }
@@ -1287,7 +1323,16 @@ mod tests {
         let mut zoom = camera.zoom();
         loop {
             camera.zoom_about(400, 300, zoom);
-            let lighting = collect(&bare(), &items, &camera, &tiledata, &Cutaway::OPEN, NIGHT, 0.0);
+            let lighting = collect(
+                &bare(),
+                &items,
+                &camera,
+                &tiledata,
+                &Cutaway::OPEN,
+                NIGHT,
+                0.0,
+                None,
+            );
             assert_eq!(lighting.lights[0].radius, TORCH.radius, "at {zoom}");
             assert_eq!(lighting.lights[0].at, Vec2::new(100.5, 100.5), "at {zoom}");
             let next = zoom.scale_up();
@@ -1398,7 +1443,16 @@ mod tests {
             graphic,
             hue: Hue::NONE,
         }];
-        let lighting = collect(&bare(), &items, &camera, &tiledata, &Cutaway::OPEN, NIGHT, 0.0);
+        let lighting = collect(
+            &bare(),
+            &items,
+            &camera,
+            &tiledata,
+            &Cutaway::OPEN,
+            NIGHT,
+            0.0,
+            None,
+        );
         assert_eq!(lighting.occlusion.bounds(), lit_tiles(&camera));
         assert!(
             lighting.occlusion.at(101, 100).is_some(),
@@ -1460,6 +1514,7 @@ mod tests {
             },
             NIGHT,
             0.0,
+            None,
         );
         assert!(lighting.lights.is_empty());
     }

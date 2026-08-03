@@ -336,8 +336,18 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     // The lighting, collected the way the app collects it — and timed, because
     // the walk of the map and the grid it builds are a per-frame cost of this
     // arrangement that the shader's cheapness does not pay for.
-    let collect =
-        |time: f32| light::collect(&map, &[], &camera, &tiledata, &Cutaway::OPEN, light::NIGHT, time);
+    let collect = |time: f32| {
+        light::collect(
+            &map,
+            &[],
+            &camera,
+            &tiledata,
+            &Cutaway::OPEN,
+            light::NIGHT,
+            time,
+            Some(&static_atlas),
+        )
+    };
     // Three readings and not one, because they have three different fixes: the
     // walk of the map is what a spatial index would answer, the grid is what
     // keeping the buffer between frames would answer, and the bytes are two
@@ -356,6 +366,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             light::lit_tiles(&camera),
             &tiledata,
             &Cutaway::OPEN,
+            Some(&static_atlas),
         );
         cpu_grid = cpu_grid.min(start.elapsed());
 
