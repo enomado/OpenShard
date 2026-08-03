@@ -1370,6 +1370,25 @@ them fixed:
   cells on the line are the exempt ones" was true when the exempt cells were
   exempt in full, and it is the shortcut a torch directly under a plank falls
   through. The walk now asks that one cell's lids before returning.
+- **Both ends of the ray stand where they are drawn, not inside what they are
+  drawn on** (`stand_clear`). A face pixel is walked from a hair in *front* of the
+  plane it is the face of, and every point of the world from a hair *above*
+  whatever it lies on. The first is geometry the attachment cannot carry:
+  `statics.wgsl` keeps a face pixel a hundred-and-twenty-seventh short of its own
+  plane, because a fraction of exactly one names the next tile and the
+  attachment's tile is what a click selects — right for the attachment, wrong for
+  the walk, because the floor whose edge meets that plane belongs to the tile in
+  front and the ray was crossing it in the wall's own column, which has no plank
+  over it. The second is what the strict crossing test costs: a point whose `z`
+  is exactly a floor's lies *in* the floor, so the ray runs along the plane
+  rather than through it. Strict the test must stay — inclusive, it lays half a
+  floor's shadow across every room lit from inside it — so the point moves onto
+  the boards instead, and so does the flame, because a candle stands on a floor
+  rather than in it. **Neither nudge closes the line alone**, which is why they
+  are one change: with only the height the ray still crosses the plane a column
+  too early, and with only the offset it starts in the plane and runs along it.
+  Only the walk moves; picking, the wireframe and the debug views still read the
+  wall's own tile.
 - **An exemption reaches only as high as the surface it is about**
   (`on_surface`). A tile of a two-storey house carries a wall per storey —
   `0..20` and `20..40`, two surfaces since step 21.2 — and a pixel at `z 25` lies
@@ -2936,22 +2955,13 @@ Found while making a floor stop light (decision 32):
   the surface it is about (`on_surface`). The whole row of
   `scene::storey_over_a_torch` is now the ambient to six decimal places, the
   torch's own tile included.
-- **The line at the floor is the strict crossing test, seen — and it is one `z`
-  unit wide.** Reported from a frame as a bright stroke along the floor of a
-  house, and `scene::storey_over_a_lit_room` is the client's own house built to
-  argue about it: an east-faced run with a wall per storey on one tile, the
-  storey's floor over the room beside it, and the torch in the room under that
-  floor. Measured at the face's own fraction — `INSIDE`, eight thousandths short
-  of the plane, which is where `statics.wgsl` puts a face pixel and not the
-  middle of the tile any test would otherwise read — the wall is lit up to and
-  **including** the floor's own `z` and is the ambient exactly one unit above it.
-  The same numbers come out at the middle of the tile, which is what says the
-  offset is not the cause: a pixel whose `z` *is* the plane lies in it, and a ray
-  from it to a flame below runs along it. Making the test inclusive instead would
-  lay half a floor's shadow across every room lit from inside it — the failure
-  the strictness exists for. Four screen pixels of wall at the floor line, lit
-  from the storey below; left as it is because light through the seam of a floor
-  is a real thing, and pinned in both directions so that closing it fails loudly.
+- ~~**The line at the floor is the strict crossing test, seen.**~~ Closed, and by
+  moving the *point* rather than loosening the test — see decision 32's fourth
+  paragraph and `light::stand_clear`. Reported from a frame as a bright stroke
+  along a house's floorboards; `scene::storey_over_a_lit_room` is the house it
+  was argued in, and on the real one at `1509,1637` the wall's face at the floor's
+  own `z` went from `through 1.00` to `0.09`, brightness `0.62` to `0.24` against
+  an ambient of `0.20`.
 - **What is left above a wall is the flame's assumed size, not a gap.** On the
   corner tile at `1509,1635` — a faceless graphic, so an `Upright` pixel and a
   whole-tile body — a sconce three tiles away inside the house reads `through

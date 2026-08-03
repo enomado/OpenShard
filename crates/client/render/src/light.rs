@@ -902,6 +902,59 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
     (beyond / (spread * Z_PER_TILE).max(1e-3) + 0.5).clamp(0.0, 1.0)
 }
 
+/// How far in front of its own plane a **face** pixel is walked from, in tiles.
+///
+/// `statics.wgsl` places one at `INSIDE` — a hundred-and-twenty-seventh short of
+/// the plane — because a fraction of exactly one names the *next* tile and the
+/// attachment's tile is what a click selects. That is right for the attachment
+/// and wrong for the walk: the pixel is drawn on the plane, the space it is lit
+/// from is in front of it, and the floor whose edge meets that plane belongs to
+/// the tile in front. Eight thousandths of a tile behind the boundary was enough
+/// for a ray to cross a storey's floor *before* reaching the cell that floor is
+/// in, which is the bright line a house wore along its floorboards.
+///
+/// Two steps of the seven-bit fraction, which is what it takes to get past the
+/// boundary from `INSIDE` and is a third of a pixel of world. Only the walk moves
+/// — the attachment still names the wall's own tile, so picking, the debug views
+/// and the wireframe are untouched.
+const STAND_OFF: f32 = 2.0 / 127.0;
+
+/// And how far **above** whatever it lies on every point of the world is walked
+/// from, in `z`.
+///
+/// The other half of the same sentence, and the half a lid needs: a plane is
+/// crossed rather than travelled through ([`crosses`]), and the test is strict,
+/// so a point whose `z` is exactly a floor's lies *in* that floor and a ray from
+/// it to a flame below runs along the plane rather than through it. A pixel is
+/// drawn on top of the boards, not in them; so is a candle standing on them,
+/// which is why this moves the flame's end too.
+///
+/// Well under one `z` unit — the attachment quantises `z` to whole ones — and
+/// well over the last bits of a float.
+const ON_TOP: f32 = 1.0 / 128.0;
+
+/// The two ends of a ray, moved off the surfaces they are drawn on: see
+/// [`STAND_OFF`] and [`ON_TOP`].
+///
+/// The flame's end gets the height and not the offset. A mounted flame is
+/// already outside the plane its tile names — decision 26's `mounted_at`, which
+/// moves it by a good deal more than this — and a flame has no face of its own to
+/// be in front of.
+fn stand_clear(from: [f32; 3], to: [f32; 3], surface: Surface) -> ([f32; 3], [f32; 3]) {
+    let [ahead, across] = match surface.face() {
+        Some(face) => face.outward(),
+        None => [0.0, 0.0],
+    };
+    (
+        [
+            from[0] + ahead * STAND_OFF,
+            from[1] + across * STAND_OFF,
+            from[2] + ON_TOP,
+        ],
+        [to[0], to[1], to[2] + ON_TOP],
+    )
+}
+
 /// Whether a lit point lies **on** a surface: its `z` is inside the span that
 /// surface occupies, its two edges included.
 ///
@@ -915,9 +968,15 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
 /// and its top is the cap somebody's floor pixel is lying on, and a pixel is a
 /// point of the surface it is drawn from at both.
 ///
+/// **And inclusive by [`ON_TOP`]**, which is the same nudge [`stand_clear`] gave
+/// the point and has to be given back here. A pixel of a wall's top cap is at
+/// exactly the wall's own `top`; moved a hair above it and asked without the
+/// tolerance, it stopped being a point of its own wall and the wall shadowed it —
+/// the room's own wall went dark at the one height its cap is drawn at.
+///
 /// `blit.wgsl`'s `on_surface`.
 fn on_surface(z: f32, stands: &crate::occlusion::Surface) -> bool {
-    z >= stands.bottom as f32 && z <= stands.top as f32
+    z >= stands.bottom as f32 - ON_TOP && z <= stands.top as f32 + ON_TOP
 }
 
 /// A soft interval: `1.0` well inside `low..=high`, `0.0` well outside, and a
@@ -1523,6 +1582,13 @@ fn walk_cells(
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<(i32, i32)>) {
+    // **Both ends of the ray stand where they are drawn, not inside it.** See
+    // [`STAND_OFF`] and [`ON_TOP`]: a face pixel is walked from a hair in front
+    // of the plane it is the face of, and every point of the world from a hair
+    // above whatever it is lying on. Without the pair, a wall pixel at exactly a
+    // floor's `z` was lit by the room below it — the bright line along the floor
+    // of a house, four screen pixels of it, and neither nudge closes it alone.
+    let (from, to) = stand_clear(from, to, surface);
     let spot = Spot {
         at: Vec2::new(from[0], from[1]),
         z: from[2],

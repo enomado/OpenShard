@@ -885,13 +885,14 @@ pub const LIT_ROOM_TORCH: (u16, u16) = (CENTRE.0 + 2, CENTRE.1);
 /// of it: a tile whose neighbour is open ground is lit around the end of the
 /// wall, and that would read as a leak through it.
 ///
-/// **What it is for is the seam.** Below the floor's plane the wall's face is the
-/// inside of the lit room and is lit; above it, it is the storey's wall and is
-/// not. The line between the two is one `z` unit — four screen pixels — and it
-/// is *lit*, because a face pixel stands eight thousandths of a tile inside its
-/// own cell and the floor's plane begins at the boundary. That is a real crack in
-/// the model rather than a rounding error, and this scene is where the argument
-/// about closing it is had.
+/// **What it is for is the line at the floor.** Below the floor's plane the
+/// wall's face is the inside of the lit room and is lit; at it and above it, it
+/// is the storey's wall and is not. It was not always: a face pixel stands eight
+/// thousandths of a tile inside its own cell and the floor's plane begins at the
+/// boundary, so a ray crossed that plane in the wall's own column — which has no
+/// plank over it — and four screen pixels of wall wore the room's light along the
+/// floorboards. `light::stand_clear` is what closed it, and this scene is what
+/// says so.
 pub fn storey_over_a_lit_room() -> Scene {
     let (cx, cy) = CENTRE;
     let mut scene = empty("a lit room with a second storey over it");

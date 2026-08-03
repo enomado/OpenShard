@@ -325,11 +325,23 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
     return clamp(beyond / max(spread * Z_PER_TILE, 1.0e-3) + 0.5, 0.0, 1.0);
 }
 
+// How far in front of its own plane a **face** pixel is walked from, in tiles,
+// and how far above whatever it lies on every point of the world is, in `z`.
+// `light::STAND_OFF` and `light::ON_TOP`, and the numbers are one pair: two steps
+// of the seven-bit fraction the attachment carries, and well under the one `z`
+// unit it quantises height to. Only the walk moves — the attachment still names
+// the wall's own tile, so picking and the debug views are untouched.
+const STAND_OFF: f32 = 2.0 / 127.0;
+const ON_TOP: f32 = 1.0 / 128.0;
+
 // Whether a lit point lies **on** a surface: its `z` is inside the span that
-// surface occupies, its two edges included. What the exemptions are asked, one
-// surface at a time — see `walk`, and `light::on_surface`.
+// surface occupies, its two edges included — and inclusive by `ON_TOP`, which is
+// the nudge `walk` gave the point and has to be given back here, or a pixel of a
+// wall's top cap stops being a point of its own wall and the wall shadows it.
+// What the exemptions are asked, one surface at a time — see `walk`, and
+// `light::on_surface`.
 fn on_surface(z: f32, stands: vec4<u32>) -> bool {
-    return z >= f32(stands.x) - 128.0 && z <= f32(stands.y) - 128.0;
+    return z >= f32(stands.x) - 128.0 - ON_TOP && z <= f32(stands.y) - 128.0 + ON_TOP;
 }
 
 // A soft interval: 1 well inside `low..=high`, 0 well outside, and a gradient
@@ -597,7 +609,24 @@ fn opposite(side: u32) -> u32 {
 // of the crossing that is inside that span which counts, so a ray grazing the
 // top of a wall is dimmed rather than switched. That is what keeps a cellar's
 // wall out of the street above it, without a step where the two meet.
-fn walk(start: vec3<f32>, finish: vec3<f32>, stance: u32, skip_last: bool, spread: f32) -> f32 {
+fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: bool, spread: f32) -> f32 {
+    // **Both ends stand where they are drawn, not inside what they are drawn on.**
+    // See `STAND_OFF` and `ON_TOP`, and `light::stand_clear`: a face pixel is
+    // walked from a hair in front of the plane it is the face of, and every point
+    // of the world from a hair above whatever it lies on. Without the pair a wall
+    // pixel at exactly a floor's `z` was lit by the room below it — the bright
+    // stroke a house wore along its floorboards — and neither closes it alone.
+    //
+    // The flame's end gets the height and not the offset: a mounted flame is
+    // already outside the plane its tile names (`light::mounted_at`), and a flame
+    // has no face of its own to be in front of.
+    let ahead = outward(stance);
+    let start = vec3<f32>(
+        raw_start.x + ahead.x * STAND_OFF,
+        raw_start.y + ahead.y * STAND_OFF,
+        raw_start.z + ON_TOP,
+    );
+    let finish = vec3<f32>(raw_finish.x, raw_finish.y, raw_finish.z + ON_TOP);
     let delta = finish - start;
     let ground = length(delta.xy);
     let lit = start;

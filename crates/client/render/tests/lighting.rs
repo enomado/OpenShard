@@ -666,32 +666,38 @@ fn a_hole_in_a_floor_lets_the_light_through() {
     }
 }
 
-/// A room lights its own wall and not the storey standing on it — and the line
-/// between the two is exactly one `z` unit wide.
+/// A room lights its own wall, and not the storey standing on it, and not the
+/// line where the two meet.
 ///
 /// [`scene::storey_over_a_lit_room`] is the client's own house, tile for tile:
 /// two walls on one tile with the art naming their edge, the storey's floor laid
 /// over the room beside them and stopping at the wall, and the torch in the room
-/// *under* that floor. Reported from a frame as a bright line along the floor,
-/// which is what the last assertion here is about.
+/// *under* that floor. Reported from a frame as a bright stroke along the
+/// floorboards — four screen pixels of wall at the floor line, lit from the
+/// storey below.
 ///
-/// **Read at the face's own fraction and not at the middle of the tile.**
-/// `statics.wgsl` puts a face pixel at [`scene::INSIDE`] — eight thousandths of
-/// a tile short of the plane it is the face of — and the middle of the tile is a
-/// point no frame draws. The pair of sweeps is what says the seam is not an
-/// artefact of that offset: both fractions give the same answer, so what draws
-/// the line is the crossing rule and not where in its cell the pixel stands.
+/// **Read at the face's own fraction.** `statics.wgsl` puts a face pixel at
+/// [`scene::INSIDE`], eight thousandths of a tile short of the plane it is the
+/// face of, and that is the only horizontal position a frame ever draws one at.
+/// The middle of the tile is swept beside it for the two claims that are about
+/// the *room* — its own wall is lit, the storey over it is not — and deliberately
+/// not for the line at the floor, which is where the two positions part: what
+/// closes the line is `light::stand_clear` walking a face pixel from a hair in
+/// **front** of its plane, so that the cell the ray starts in is the one the
+/// floor is in. From the middle of a tile that hair is half a tile short, the ray
+/// crosses the floor's plane inside the wall's own column — which has no plank
+/// over it, because a house's floor stops at its wall — and the line comes back.
+/// A model whose answer depends on where in its cell a pixel stands is worth
+/// saying out loud; what makes it sound is that the drawn position is the only
+/// one that exists.
 ///
-/// The line itself is **the strict crossing test, seen** — `light::crosses` and
-/// the paragraph of decision 32 that argues it. A pixel whose `z` is exactly the
-/// floor's lies *in* the plane, so a ray from it to a flame below runs along that
-/// plane and has gone through nothing. Made inclusive instead, the same rule
-/// would put half a floor's shadow across every room lit from inside it, which
-/// is the failure the strictness exists for. What it costs is this: one `z`
-/// unit — four screen pixels at the projection's `Z_STEP` — of wall at the floor
-/// line, lit from the storey below. It is written down as a measurement rather
-/// than fixed, because light coming up through the seam of a floor is a real
-/// thing and the client is where it is judged.
+/// The other half is [`light::ON_TOP`], and neither half closes it alone: a
+/// pixel whose `z` is exactly the floor's lies *in* the plane, and the crossing
+/// test is strict, so the ray runs along the plane rather than through it. Strict
+/// it must stay — inclusive, it would lay half a floor's shadow across every room
+/// lit from inside it — so the point is moved onto the boards instead of the test
+/// being loosened. A pixel is drawn on top of a floor, and so is the candle
+/// standing on it.
 #[test]
 fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
     let scene = scene::storey_over_a_lit_room();
@@ -708,11 +714,14 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
         // The ground floor's own wall, lit by the ground floor's own torch. The
         // control, and it is the half that would fail if the floor had started
         // stopping everything rather than what crosses it.
-        let inside = face(across, 10.0);
-        assert!(
-            inside > ambient + 0.2,
-            "the room does not light its own wall at {across}: {inside}{picture}",
-        );
+        for z in [10.0, f32::from(scene::WALL_HEIGHT) - 1.0] {
+            let inside = face(across, z);
+            assert!(
+                inside > ambient + 0.2,
+                "the room does not light its own wall at {across}, z {z}: \
+                 {inside}{picture}",
+            );
+        }
 
         // The storey's wall, at three heights up it: the ambient exactly. One
         // spot could pass on a ray that happened to miss the room.
@@ -724,18 +733,15 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
                  against the ambient's {ambient}{picture}",
             );
         }
-
-        // And the seam: the pixel whose `z` *is* the floor's plane is lit, one
-        // unit above it is not. Stated in both directions so that closing the
-        // seam one day fails here and is looked at, rather than passing quietly
-        // as "the storey got darker".
-        let seam = face(across, f32::from(scene::WALL_HEIGHT));
-        assert!(
-            seam > ambient + 0.2,
-            "the seam at the floor line is dark, so the rule stopped being the \
-             strict one: {seam}{picture}",
-        );
     }
+
+    // And the line at the floor itself, at the fraction a frame draws it at.
+    let seam = face(scene::INSIDE, f32::from(scene::WALL_HEIGHT));
+    assert!(
+        (seam - ambient).abs() < 1e-6,
+        "the line at the floor is lit: {seam} against the ambient's \
+         {ambient}{picture}",
+    );
 }
 
 /// A ray does **not** slip between two walls that touch only at their corners.
