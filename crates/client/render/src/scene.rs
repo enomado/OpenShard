@@ -847,6 +847,72 @@ fn floored(name: &'static str, hole: Option<(u16, u16)>) -> Scene {
     scene.with(STOREY_TORCH, TORCH)
 }
 
+/// The wall of [`storey_over_a_lit_room`], and where its face is.
+///
+/// **A face pixel does not lie in the middle of its tile.** `statics.wgsl` puts
+/// one at [`INSIDE`] of the way across — a hundred-and-twenty-sixth short of the
+/// plane it is the face of — because a fraction of exactly one lands in the
+/// *next* tile and the walk exempts the tile a pixel is on. So a test that reads
+/// the middle of the tile is reading a point no frame ever draws, and the two
+/// answers differ: the middle has half a tile of its own cell to cross and the
+/// real pixel has eight thousandths.
+pub const STOREY_WALL: (u16, u16) = (CENTRE.0, CENTRE.1);
+
+/// How far across its tile a face pixel is, which is `statics.wgsl`'s `INSIDE`
+/// and the same number: `(SUB_TILE - 1) / SUB_TILE` over the seven bits the place
+/// attachment carries a fraction in.
+pub const INSIDE: f32 = 126.0 / 127.0;
+
+/// Where that room's torch stands, and the tile of its floor that is read.
+pub const LIT_ROOM_TORCH: (u16, u16) = (CENTRE.0 + 2, CENTRE.1);
+
+/// A room with a torch in it and **a second storey over it**, built the way a
+/// real house is: an east-faced run of wall, the floor of the storey laid over
+/// the room beside it, and the wall of the storey standing on the wall below.
+///
+/// The scene the client's own house is, tile for tile — Britain's `1509..1510`
+/// by `1635..1638`, read with `artscan`'s `column` example:
+///
+/// - the wall column carries **two walls on one tile**, `0..20` and `20..40`,
+///   and its art names one edge, so each is a panel on the tile's east side;
+/// - the room column carries the storey's **floor** at `20`, a lid, and the
+///   floor stops at the wall — the wall's own tile has no plank over it, which
+///   is how a house is built and is the geometry the seam below comes from;
+/// - the torch is *in the room, under that floor*, which is what a ground-floor
+///   sconce is.
+///
+/// The run is seven tiles of the same wall so that no assertion is about an end
+/// of it: a tile whose neighbour is open ground is lit around the end of the
+/// wall, and that would read as a leak through it.
+///
+/// **What it is for is the seam.** Below the floor's plane the wall's face is the
+/// inside of the lit room and is lit; above it, it is the storey's wall and is
+/// not. The line between the two is one `z` unit — four screen pixels — and it
+/// is *lit*, because a face pixel stands eight thousandths of a tile inside its
+/// own cell and the floor's plane begins at the boundary. That is a real crack in
+/// the model rather than a rounding error, and this scene is where the argument
+/// about closing it is had.
+pub fn storey_over_a_lit_room() -> Scene {
+    let (cx, cy) = CENTRE;
+    let mut scene = empty("a lit room with a second storey over it");
+    for y in cy - ROOM_HALF..=cy + ROOM_HALF {
+        scene = scene
+            .with((cx, y), WALL_EAST)
+            .with_at((cx, y), WALL_HEIGHT as i8, WALL_EAST);
+        for x in cx + 1..=cx + ROOM_HALF {
+            scene = scene.with_at((x, y), WALL_HEIGHT as i8, FLOOR);
+        }
+    }
+    scene.art = Some(
+        StaticAtlas::pack([(
+            WALL_EAST,
+            crate::facing::silhouette(crate::facing::Face::East, WALL_HEIGHT.into()),
+        )])
+        .expect("one silhouette fits"),
+    );
+    scene.with(LIT_ROOM_TORCH, TORCH)
+}
+
 /// Two wall tiles touching at one corner, with a torch on the far diagonal.
 ///
 /// The gap the backlog names: the ray is Chebyshev-sampled one cell a step, so a
@@ -995,6 +1061,7 @@ pub fn all() -> Vec<Scene> {
         cellar_under_street(),
         storey_over_a_torch(),
         hole_in_a_floor(),
+        storey_over_a_lit_room(),
         diagonal_gap(),
         wall_in_the_sun(),
         sunlit_room_with_window(),

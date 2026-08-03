@@ -24,8 +24,9 @@ fn main() {
     let art = Art::open(&dir).expect("art");
 
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let x: u16 = args[0].parse().expect("x");
-    let y: u16 = args[1].parse().expect("y");
+    let px: f32 = args[0].parse().expect("x");
+    let py: f32 = args[1].parse().expect("y");
+    let (x, y) = (px as u16, py as u16);
 
     let camera = Camera::new(Point::new(x, y, 0), 1200, 900);
     // The pictures the client would have packed for this frame: every static the
@@ -56,12 +57,18 @@ fn main() {
         println!("  [{index}] at {:?} z {}", flame.at, flame.z);
     }
 
-    let at = Vec2::new(f32::from(x) + 0.5, f32::from(y) + 0.5);
-    for z in [20.0, 30.0, 38.0, 40.0, 42.0, 45.0, 50.0, 55.0] {
+    let at = Vec2::new(px, py);
+    println!("probing at ({px}, {py})");
+    let heights: Vec<f32> = match std::env::var("ZS") {
+        Ok(list) => list.split(',').map(|z| z.trim().parse().expect("z")).collect(),
+        Err(_) => vec![20.0, 30.0, 38.0, 40.0, 42.0, 45.0, 50.0, 55.0],
+    };
+    for z in heights {
         for (name, spot) in [
-            ("flat ", Spot::flat(at, z)),
-            ("south", Spot::face(at, z, Face::South)),
-            ("east ", Spot::face(at, z, Face::East)),
+            ("flat  ", Spot::flat(at, z)),
+            ("uprght", Spot::at(at, z)),
+            ("south ", Spot::face(at, z, Face::South)),
+            ("east  ", Spot::face(at, z, Face::East)),
         ] {
             let sample = light::sample(spot, &lighting);
             let reached: Vec<String> = sample

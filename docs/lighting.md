@@ -2860,7 +2860,36 @@ Found while making a floor stop light (decision 32):
   the surface it is about (`on_surface`). The whole row of
   `scene::storey_over_a_torch` is now the ambient to six decimal places, the
   torch's own tile included.
-- **A strip of wall just above the floor line is still lit from the room below.**
+- **The line at the floor is the strict crossing test, seen — and it is one `z`
+  unit wide.** Reported from a frame as a bright stroke along the floor of a
+  house, and `scene::storey_over_a_lit_room` is the client's own house built to
+  argue about it: an east-faced run with a wall per storey on one tile, the
+  storey's floor over the room beside it, and the torch in the room under that
+  floor. Measured at the face's own fraction — `INSIDE`, eight thousandths short
+  of the plane, which is where `statics.wgsl` puts a face pixel and not the
+  middle of the tile any test would otherwise read — the wall is lit up to and
+  **including** the floor's own `z` and is the ambient exactly one unit above it.
+  The same numbers come out at the middle of the tile, which is what says the
+  offset is not the cause: a pixel whose `z` *is* the plane lies in it, and a ray
+  from it to a flame below runs along it. Making the test inclusive instead would
+  lay half a floor's shadow across every room lit from inside it — the failure
+  the strictness exists for. Four screen pixels of wall at the floor line, lit
+  from the storey below; left as it is because light through the seam of a floor
+  is a real thing, and pinned in both directions so that closing it fails loudly.
+- **What is left above a wall is the flame's assumed size, not a gap.** On the
+  corner tile at `1509,1635` — a faceless graphic, so an `Upright` pixel and a
+  whole-tile body — a sconce three tiles away inside the house reads `through
+  0.00` at every height inside the wall and `0.34` at `z 42`, which is above the
+  wall's top of `40`. The ray clears the top edge by `1.25` `z` and the vertical
+  penumbra there is `soft * Z_PER_TILE` = `0.7 * 11` ≈ **7.7 `z` units** wide, so
+  two thirds of it survives. That is `FLAME_SPREAD` — a flame assumed to be a
+  tile across, and the constant says in its own doc that the number was invented.
+  On that same ray: `1.0` leaves `0.34`, `0.35` leaves `0.18`, `0.1` leaves
+  nothing. It is the softness knob and it wants a picture, not an argument.
+- ~~**A strip of wall just above the floor line is still lit from the room
+  below.**~~ Superseded by the two entries above: measured at the middle of a
+  tile, which is not where a face pixel is. The band it reported at `z 40..42`
+  is the seam at `z 40` and nothing at `41` and `42`.
   What is left, measured on a real house — the tile at `1490,1635` in Britain,
   a sconce at `z 36.5` on the tile southeast of it: the face reads `through 1.00`
   at `z 40` and `z 42`, and `0.18` from `z 45` up. The cause is geometry the map

@@ -1,8 +1,10 @@
 //! Scratch: the whole column at a tile — land, statics, their flags, and what
 //! the lighting pass makes of each one.
 
+use openshard_client_render::atlas::StaticAtlas;
 use openshard_client_render::occlusion;
 use openshard_protocol::wire::Graphic;
+use openshard_uofiles::art::Art;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 
@@ -10,6 +12,7 @@ fn main() {
     let dir = std::path::PathBuf::from(std::env::var_os("OPENSHARD_CLIENT").expect("client"));
     let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata");
     let map = Map::load_facet(&dir, 0).expect("felucca");
+    let art = Art::open(&dir).expect("art");
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let radius: u16 = std::env::var("RADIUS")
@@ -58,13 +61,20 @@ fn main() {
         );
         for item in map.statics_at(x, y) {
             let tile = tiledata.static_tile(item.tile);
+            let atlas = StaticAtlas::build(&art, [Graphic(item.tile)]).expect("atlas");
+            let facing = atlas.sprite(Graphic(item.tile)).and_then(|s| s.facing);
             println!(
-                "  static {:>5} (0x{:04X})  z {:>4}  h {:>3}  opacity {:>3}  {:?}",
+                "  static {:>5} (0x{:04X})  z {:>4}  h {:>3}  opacity {:>3}  facing {:?}  edges {:#06b}  {:?}",
                 item.tile,
                 item.tile,
                 item.z,
                 tile.height,
                 occlusion::opacity(Graphic(item.tile), tile),
+                facing,
+                match tile.flags.is_background() {
+                    true => 0,
+                    false => occlusion::edges_of(facing),
+                },
                 tile.flags,
             );
         }

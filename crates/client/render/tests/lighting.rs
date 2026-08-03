@@ -9,7 +9,9 @@
 //! No GPU and no client files: everything here runs everywhere, which is the
 //! point of a scene that is a `Map` with three items on it.
 
+use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug;
+use openshard_client_render::facing::Face;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Lighting, Spot};
 use openshard_client_render::occlusion;
@@ -664,6 +666,78 @@ fn a_hole_in_a_floor_lets_the_light_through() {
     }
 }
 
+/// A room lights its own wall and not the storey standing on it — and the line
+/// between the two is exactly one `z` unit wide.
+///
+/// [`scene::storey_over_a_lit_room`] is the client's own house, tile for tile:
+/// two walls on one tile with the art naming their edge, the storey's floor laid
+/// over the room beside them and stopping at the wall, and the torch in the room
+/// *under* that floor. Reported from a frame as a bright line along the floor,
+/// which is what the last assertion here is about.
+///
+/// **Read at the face's own fraction and not at the middle of the tile.**
+/// `statics.wgsl` puts a face pixel at [`scene::INSIDE`] — eight thousandths of
+/// a tile short of the plane it is the face of — and the middle of the tile is a
+/// point no frame draws. The pair of sweeps is what says the seam is not an
+/// artefact of that offset: both fractions give the same answer, so what draws
+/// the line is the crossing rule and not where in its cell the pixel stands.
+///
+/// The line itself is **the strict crossing test, seen** — `light::crosses` and
+/// the paragraph of decision 32 that argues it. A pixel whose `z` is exactly the
+/// floor's lies *in* the plane, so a ray from it to a flame below runs along that
+/// plane and has gone through nothing. Made inclusive instead, the same rule
+/// would put half a floor's shadow across every room lit from inside it, which
+/// is the failure the strictness exists for. What it costs is this: one `z`
+/// unit — four screen pixels at the projection's `Z_STEP` — of wall at the floor
+/// line, lit from the storey below. It is written down as a measurement rather
+/// than fixed, because light coming up through the seam of a floor is a real
+/// thing and the client is where it is judged.
+#[test]
+fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
+    let scene = scene::storey_over_a_lit_room();
+    let lighting = scene.lighting(STILL);
+    let picture = picture(&scene, &lighting);
+    let tile = scene::STOREY_WALL;
+    let ambient = ambient(&lighting, tile);
+    let face = |across: f32, z: f32| {
+        let at = Vec2::new(f32::from(tile.0) + across, f32::from(tile.1) + 0.5);
+        light::sample(Spot::face(at, z, Face::East), &lighting).brightness()
+    };
+
+    for across in [scene::INSIDE, 0.5] {
+        // The ground floor's own wall, lit by the ground floor's own torch. The
+        // control, and it is the half that would fail if the floor had started
+        // stopping everything rather than what crosses it.
+        let inside = face(across, 10.0);
+        assert!(
+            inside > ambient + 0.2,
+            "the room does not light its own wall at {across}: {inside}{picture}",
+        );
+
+        // The storey's wall, at three heights up it: the ambient exactly. One
+        // spot could pass on a ray that happened to miss the room.
+        for z in [f32::from(scene::WALL_HEIGHT) + 1.0, 25.0, 35.0] {
+            let storey = face(across, z);
+            assert!(
+                (storey - ambient).abs() < 1e-6,
+                "the torch lights the storey's wall at {across}, z {z}: {storey} \
+                 against the ambient's {ambient}{picture}",
+            );
+        }
+
+        // And the seam: the pixel whose `z` *is* the floor's plane is lit, one
+        // unit above it is not. Stated in both directions so that closing the
+        // seam one day fails here and is looked at, rather than passing quietly
+        // as "the storey got darker".
+        let seam = face(across, f32::from(scene::WALL_HEIGHT));
+        assert!(
+            seam > ambient + 0.2,
+            "the seam at the floor line is dark, so the rule stopped being the \
+             strict one: {seam}{picture}",
+        );
+    }
+}
+
 /// A ray does **not** slip between two walls that touch only at their corners.
 ///
 /// This test used to pin the opposite, and the leak it pinned was real: the walk
@@ -1301,7 +1375,7 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
             intensity: 1.0,
             beam: None,
         }],
-        occlusion: grid.finish(),
+        occlusion: grid.finish(&Cutaway::OPEN),
         sun: None,
         view: openshard_client_render::debug::View::Lit,
     };
@@ -1375,7 +1449,7 @@ fn wall_with_hole(hole: openshard_client_render::facing::Hole) -> occlusion::Occ
             hole: Some(hole),
         },
     );
-    grid.finish()
+    grid.finish(&Cutaway::OPEN)
 }
 
 /// The tile the panel above stands on.
