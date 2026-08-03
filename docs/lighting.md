@@ -28,9 +28,11 @@ world's occluders become a *baked* list of surfaces — quads with `z` spans and
 holes — indexed by the tile grid, derived from the art and overridable by hand.
 It is worth 2.0ms of a 3.3ms CPU budget on its own, it is what a real window with
 a real shaft needs, and its seven micro-decisions are settled in the plan so that
-nothing there has to be re-argued. **Step 16 comes first regardless**: an aperture
-has to be measured off the art before any storage can hold one, and that
-measurement is a pure function with a test against the client.
+nothing there has to be re-argued. **Two things come before it**, in this order: decision 31 moves the silhouette
+measurement out of the frame into a tool and a table — which is what lets the next
+measurement be as expensive as it needs to be — and step 16 is that measurement,
+the aperture, a pure function with a test against the client. No storage can hold
+a window before something has read one off the art.
 
 **Read decision 26 first, then 25.** They are one session and the second half is
 the one a player pointed at: a lamp post standing in the street lit the far side
@@ -1074,11 +1076,12 @@ What baking with real geometry buys on top of that, and what it does not:
 
 The micro-decisions, numbered so one can be argued with alone:
 
-**30.1 Derived first, authored as an override.** The geometry is measured from the
-client's own art, so a stock install gets windows with no assets at all; a shard
-that ships models overrides by graphic. The engine must not require content the
-world does not come with — and a hand-made mesh per building is thousands of
-assets, which is a Community Pack's business.
+**30.1 Derived first, authored as an override — and derived *offline*.** The
+geometry is measured from the client's own art, so a stock install gets windows
+with no assets at all; a shard that ships models overrides by graphic. The engine
+must not require content the world does not come with — and a hand-made mesh per
+building is thousands of assets, which is a Community Pack's business. **When**
+that measurement runs is decision 31, and the answer is not "in a frame".
 
 **30.2 A surface is a quad with holes.** A plane (one of the tile's four sides, or
 a horizontal lid), a `z` span, a span along the run, an opacity, and up to `K`
@@ -1116,6 +1119,54 @@ travelled through, a surface does not shadow itself, a face is one-sided, a lid
 looks up. That is what the last three sessions bought and it is why this is a
 change of representation rather than a rewrite: the rules do not get relitigated,
 and the parity test keeps holding both implementations to them.
+
+**31. The art is measured once, off the clock, and the engine reads a table.**
+
+`facing::facing_of` runs while the atlas packs a sprite — on the frame a graphic
+is first seen, on the player's machine. That was right when the measurement was
+one pass over 44×80 pixels and there was one of them. It stops being right twice
+over: a scroll that introduces four hundred graphics pays for four hundred of
+them at once (this file's backlog has carried it as *"a second walk of pixels the
+atlas has just copied"*), and every future measurement is a bigger one — an
+aperture is a hole to be found, a corner is two fits, a mesh would be a solve.
+
+So the measurement moves **out of the frame entirely**: a tool reads an install
+and writes a table, and the client loads it. The budget goes from a frame to a
+minute, and what that buys is not speed but *ambition* — a runtime pass has to be
+a scanline trick, and an offline one can do connected components, fit and
+cross-check, and print an outlier list for a person to look at.
+
+**31.1 A tool, not a pass.** The same shape `docs/roadmap.md` already settled for
+the Sphere scriptpack: a build tool, not an engine feature. It runs against an
+install and writes one table for every graphic it could read.
+
+**31.2 One table, and a hand-authored entry wins.** Decision 30.1's "derive first,
+author later" becomes one artifact rather than two code paths: an override is a
+row in the same table, and the tool leaves it alone. So a shard fixing one wall
+edits a file rather than patching a detector.
+
+**31.3 The generated table is not checked in.** It is derived from copyrighted
+art, and this repository ships no client files, ever. What is checked in is the
+**tool** and the **overrides**; the table is generated beside the install, into a
+cache, on the machine that has the files. A pack that ships its own art may of
+course check in the table for *its* art — that is its own content.
+
+**31.4 Staleness is detected, not assumed.** The table records what it was
+measured from, and a mismatch re-derives rather than trusting: art changes between
+client versions, and a table silently describing a different install would move
+every wall's face by a rule nobody could see. `docs/client_versions.md` is why
+this is not paranoia.
+
+**31.5 What moves is everything measured from a picture.** Today that is
+`facing::facing_of`; tomorrow it is step 16's aperture, and after that whatever a
+mesh needs. The runtime keeps a *reader*, and the detector's own tests keep
+running against the client exactly as `tests/facing.rs` does now — the sweep is
+already the tool, minus the file it writes.
+
+**31.6 The client still works with no table at all.** It derives what it needs the
+way it does today and says so in a log line. A missing cache is a slow first
+frame, not a shard that will not start — the same refusal-to-guess this pass takes
+everywhere else, arriving as a refusal to *require*.
 
 ## Steps
 
@@ -1378,6 +1429,13 @@ and the parity test keeps holding both implementations to them.
       a hole that reaches the silhouette's edge is not a hole, a graphic whose
       "hole" is the gap between two separate things is not a window, and a
       coverage count is what says the detector reads anything at all.
+- [ ] **20b. The measuring tool, and the table it writes.** Decision 31: the
+      silhouette work leaves the frame. `tests/facing.rs`'s sweep is most of it
+      already — it walks an install, reads every `WALL` graphic and prints the
+      shares — so what is missing is the file, the loader, the staleness key and
+      the override merge. Doing it *before* step 16 is what lets step 16's
+      measurement be as expensive as it needs to be, and it closes the backlog
+      entry about the atlas walking the same pixels twice.
 - [ ] **21. The baked surface list, and the aperture in the walk.** Decision 30:
       surfaces measured once per block rather than a grid rebuilt per frame, the
       tile grid demoted to an index of `(offset, count)`, and the walk testing
