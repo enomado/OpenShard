@@ -147,6 +147,16 @@ pub struct Hud {
     /// The item half of the same. Never `Some` at the same time as
     /// [`Hud::lit_mobile`]: one highlight a frame, and creatures win.
     pub lit_item: Option<usize>,
+    /// And the map's own furniture, which is the third and last link of that
+    /// chain: answered only where neither of the two above found anything, since
+    /// a wall loses to everything that has a serial.
+    ///
+    /// It is not drawn as a highlight today — what a *click* on it does is the
+    /// wash, and that is held rather than hovered — but it is what puts the tile
+    /// marker out: pointing at a wall and diamonding the ground behind it is one
+    /// question answered twice. Shown here because that absence otherwise has no
+    /// visible cause.
+    pub lit_static: Option<openshard_client_render::statics::PickedStatic>,
     /// Which of the two the cursor may light, for the picker that says so.
     pub highlight: HighlightTarget,
     /// And how an item says it, when it is the one lit.
@@ -931,7 +941,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     });
     ui.separator();
     ui.label(format!(
-        "under cursor — mobile {}, item {}",
+        "under cursor — mobile {}, item {}, static {}",
         match hud.lit_mobile {
             Some(index) => index.to_string(),
             None => "—".to_string(),
@@ -940,13 +950,27 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
             Some(index) => index.to_string(),
             None => "—".to_string(),
         },
+        // The graphic and the tile it stands on, and *that tile* is the point of
+        // printing it: it is the one a click will hold, and it is not the tile
+        // under the cursor — a wall's picture stands up the screen from the cell
+        // it is built on. The hover readout below names the other one, so the two
+        // rows together are the whole of why they differ.
+        match &hud.lit_static {
+            Some(picked) => format!(
+                "0x{:04X} at {}, {}, {}",
+                picked.graphic.0, picked.at.x, picked.at.y, picked.at.z
+            ),
+            None => "—".to_string(),
+        },
     ));
     // The held tile first and the live one under it. The hover readout changes
     // on every mouse move — a tile with six statics is several rows taller than
     // an empty one — and whatever is drawn below it is moved by that. Above, the
     // selection is the one thing on this tab that only changes when the player
     // clicks, so it stays under the cursor long enough to be read and copied.
-    ui.label("selected — glows cyan, click a tile to hold it here");
+    ui.label(
+        "selected — glows cyan; a click on a wall holds the wall's own tile, not the ground under the cursor",
+    );
     // What the same click is holding of the map itself, above the tile's own
     // rows: a click on a wall names both, and the wall is the thing that was
     // pointed at while the tile is where the ground under the cursor was.
@@ -963,7 +987,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     }
     tile_panel(ui, "selected", hud.selected.as_ref());
     ui.separator();
-    ui.label("hover — glows yellow, moves with the cursor");
+    ui.label("hover — the ground under the cursor; marked yellow only while nothing is standing on it");
     tile_panel(ui, "hover", hud.hover.as_ref());
 }
 

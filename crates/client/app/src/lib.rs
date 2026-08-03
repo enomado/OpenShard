@@ -637,6 +637,7 @@ pub fn run<D: Dial + Send + 'static>(
         window: None,
         pending: shell::Request::default(),
         selected_tile: None,
+        on_static: None,
         selected_static: None,
         // No click has landed, so the next one cannot be the second of a pair.
         last_click: None,
@@ -1268,6 +1269,18 @@ struct App {
     /// [`App::pick_tile`]. Separate from the live hover so a diagnosis does not
     /// slide off the tile the moment the mouse does.
     selected_tile: Option<(u16, u16)>,
+    /// What the last drawn frame found the cursor on, when it was the map's own
+    /// furniture and nothing nearer.
+    ///
+    /// A frame behind, and that is what makes it right rather than what it costs:
+    /// a click arrives *between* frames, so the picture it is a click on is the
+    /// one already drawn. Picking again at the click would ask a camera that has
+    /// moved since — see the `MouseInput` arm, where this is read.
+    ///
+    /// It is also the tile marker's reason for going out: a wall under the cursor
+    /// is what the click would take, so the diamond on the ground behind it must
+    /// not be drawn as well. See [`shell::Hud::hover_lit`].
+    on_static: Option<PickedStatic>,
     /// The static a left click last landed on — a wall, a door frame, a stair —
     /// kept until the next click, and washed along with the ground it stands on.
     /// See `openshard_client_render::select`.
@@ -1750,19 +1763,28 @@ impl ApplicationHandler<link::Update> for App {
                     // one the last frame was drawn with — the picture the player
                     // is clicking on.
                     let camera = *self.control.camera();
-                    self.selected_tile = self.pick_tile(camera).map(|tile| (tile.x, tile.y));
-                    // And what the click was *pointing at*, which is a different
-                    // question with a different answer: the tile above is the
-                    // ground under the cursor, and a wall's picture stands up the
-                    // screen from the tile it is built on, so a click on a wall
-                    // resolves to the tile behind it. Picked against the drawn
-                    // pixels instead — `statics::pick` — the way a double-click
-                    // already is.
+                    // What the last frame found under the cursor, when it was a
+                    // piece of the map. `None` on bare ground, which is how a
+                    // selection is put out: there is nothing to select where
+                    // nothing is standing.
+                    self.selected_static = self.on_static;
+                    // **The tile is the selected thing's own, and only the ground
+                    // under a bare click is unprojected.** Those are two different
+                    // arithmetics and they answer differently on purpose: a wall's
+                    // picture stands up the screen from the cell it is built on,
+                    // so the ground *under the cursor* is the cell behind the
+                    // wall — two tiles behind it, for a wall of ordinary height.
+                    // Selecting a wall and marking that other tile is the client
+                    // saying "this one" about two places at once, which is what
+                    // this arm used to do.
                     //
-                    // A click on bare ground answers `None` and clears what was
-                    // held, which is how a selection is put out: there is nothing
-                    // to select where nothing is standing.
-                    self.selected_static = self.pick_static(camera);
+                    // So the marker, the panel's readout and the wash all come off
+                    // one value now. Derived here rather than asserted anywhere:
+                    // there is no second source for them to drift from.
+                    self.selected_tile = match self.selected_static {
+                        Some(picked) => Some((picked.at.x, picked.at.y)),
+                        None => self.pick_tile(camera).map(|tile| (tile.x, tile.y)),
+                    };
                     // And the second click of a pair is a *use*: a door opens, a
                     // container opens, food is eaten. Which of those it is, is
                     // the shard's answer and not this end's — see
@@ -2211,35 +2233,6 @@ impl App {
             Some(link) => link.use_object(serial),
             None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),
         }
-    }
-
-    /// Which static of the map the cursor is over, or `None`.
-    ///
-    /// The map's own furniture — walls, floors, doors frames, trees — and not the
-    /// server's items: those are [`items::pick`] and they have serials. A static
-    /// has none, so what comes back is where it stands and what it is, which is
-    /// what the wash needs and all this end can honestly say about it.
-    ///
-    /// Answered against **this frame's atlas and this frame's cutaway**, the same
-    /// two the picture was drawn from, so a wall on a storey the client is not
-    /// showing cannot be selected through the hole where its roof was. Offline —
-    /// or before the first frame — there is no atlas and therefore nothing drawn
-    /// to have clicked on.
-    fn pick_static(&self, camera: Camera) -> Option<PickedStatic> {
-        if !self.world_owns_pointer() {
-            return None;
-        }
-        let window = self.window.as_ref()?;
-        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
-        statics::pick(
-            &self.map,
-            &camera,
-            &self.tiledata,
-            &self.tile_animations,
-            &window.atlases.statics,
-            &cutaway,
-            self.control.cursor(),
-        )
     }
 
     /// Real pixels per gump pixel, which is egui's own scale.
@@ -3195,6 +3188,7 @@ impl App {
         camera: Camera,
         lit_item: Option<usize>,
         lit_mobile: Option<usize>,
+        on_static: Option<PickedStatic>,
         cutaway: &Cutaway,
     ) -> shell::Hud {
         let hover = match self.world_owns_pointer() {
@@ -3258,12 +3252,22 @@ impl App {
             // `Items` nothing ever does, which is the mode's whole content; the
             // ground is still hovered and the panel still reads it.
             hover_lit: match self.highlight {
-                shell::HighlightTarget::Auto => lit_item.is_none() && lit_mobile.is_none(),
+                // The map's own furniture counts here as much as an item does,
+                // and it is the case this rule was missing: a wall under the
+                // cursor is what a click takes, so a diamond drawn on the ground
+                // *behind* it — which is where the cursor unprojects to, a wall
+                // being taller than the cell it stands on — is the client
+                // pointing at two tiles at once. That is the disagreement this
+                // arm exists to stop, and it had one more source than it knew.
+                shell::HighlightTarget::Auto => {
+                    lit_item.is_none() && lit_mobile.is_none() && on_static.is_none()
+                }
                 shell::HighlightTarget::Items => false,
                 shell::HighlightTarget::Tiles => true,
             },
             lit_mobile,
             lit_item,
+            lit_static: on_static,
             highlight: self.highlight,
             highlight_style: self.highlight_style,
             terrain: self
@@ -3883,13 +3887,23 @@ impl App {
         // be pointed at, and is pickable a frame later; the alternative was a
         // tile marker that decides whether to draw itself from the previous
         // frame's answer, which flickers along every item's edge.
-        let lighting_cursor = owns_pointer && self.highlight != shell::HighlightTarget::Tiles;
+        // **The picks are the frame's *facts*, and the mode decides only what is
+        // drawn from them.** They used to be skipped under
+        // `HighlightTarget::Tiles`, which folded two questions into one field:
+        // "what is the cursor on" and "what may light up". A click reads the
+        // first — see the `MouseInput` arm — so with the two folded together a
+        // player who had pinned the highlight to tiles could not select a wall at
+        // all, and the reason was invisible. The mode is applied to `lit_*`
+        // below instead, where it is about lighting and nothing else.
+        //
         // Creatures are asked first and they win: a mobile stands *on* the
         // clutter of its tile — it is sorted above whatever is lying there, and
         // it is what a player pointing at a shopkeeper standing on a rug means.
-        // One highlight a frame, so an item under a creature is dropped here
-        // rather than lit as well; see `HighlightTarget`.
-        let lit_mobile = match lighting_cursor {
+        // Then the server's items, then the map's own furniture. One chain, and
+        // every later question is asked only where the earlier ones found
+        // nothing — so "what is under the cursor" has exactly one answer and the
+        // ring, the wash, the tile marker and the click cannot disagree about it.
+        let on_mobile = match owns_pointer {
             true => self.window.as_ref().and_then(|window| {
                 mobiles::pick(
                     &self
@@ -3906,7 +3920,7 @@ impl App {
             }),
             false => None,
         };
-        let lit_item = match lighting_cursor && lit_mobile.is_none() {
+        let on_item = match owns_pointer && on_mobile.is_none() {
             true => self.window.as_ref().and_then(|window| {
                 items::pick(
                     &self.items,
@@ -3920,6 +3934,42 @@ impl App {
             }),
             false => None,
         };
+        // And the map's own furniture last, which is the one a wall is: it has no
+        // serial and cannot be used, so it loses to anything that can. Asked
+        // every frame rather than at the click, because it is what the *tile
+        // marker* has to know — a wall under the cursor takes the highlight, and
+        // the diamond drawn on the ground behind it was the client answering the
+        // same question twice with two different tiles.
+        //
+        // This is the one pick that walks the map: `statics::pick` covers the
+        // cells `statics::collect` is about to draw. It is a second walk of them
+        // per frame with the pointer over the world, and the placement it does
+        // per static is the collector's own — see the Frames tab if it ever
+        // shows.
+        let on_static = match owns_pointer && on_mobile.is_none() && on_item.is_none() {
+            true => self.window.as_ref().and_then(|window| {
+                statics::pick(
+                    &self.map,
+                    &camera,
+                    &self.tiledata,
+                    &self.tile_animations,
+                    &window.atlases.statics,
+                    &cutaway,
+                    cursor,
+                )
+            }),
+            false => None,
+        };
+        // Kept for the click, which happens between frames and therefore points
+        // at the picture the *last* frame drew. Reading it back here rather than
+        // picking again there is what makes the wash land on the wall the player
+        // was looking at: a second pick would use a camera that has moved since,
+        // and the two answers differ by however far the eye travelled in a frame.
+        self.on_static = on_static;
+        // What the mode allows to light up. `Tiles` lights neither, which is the
+        // whole of that setting; the facts above are unchanged by it.
+        let lit_mobile = on_mobile.filter(|_| self.highlight != shell::HighlightTarget::Tiles);
+        let lit_item = on_item.filter(|_| self.highlight != shell::HighlightTarget::Tiles);
 
         // # Step three: present. Nothing below this line writes the world.
         //
@@ -3936,7 +3986,7 @@ impl App {
         // in it is a function of them. The one sampling of time that the frame is
         // built from is `started`, at the top.
         let ui_started = Instant::now();
-        let hud = self.hud(camera, lit_item, lit_mobile, &cutaway);
+        let hud = self.hud(camera, lit_item, lit_mobile, on_static, &cutaway);
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {

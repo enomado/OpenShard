@@ -389,11 +389,16 @@ pub(crate) fn for_each_static_in(
     let Some((xs, ys)) = bounds.clamp_to(map.width(), map.height()) else {
         return;
     };
+    // A row at a time and not a tile at a time. The order is the same one — the
+    // map hands a row back in ascending `x`, which is what the tile walk did —
+    // and the saving is that a row of a block is one binary search rather than
+    // eight: **this walk was 0.98ms of the 2.30ms a widest-zoom frame spent
+    // building its occlusion grid**, and 35,000 of its 35,000 tile lookups were
+    // asked of a map that is mostly open ground. See `Map::statics_in_row`.
+    let (from_x, to_x) = (*xs.start(), *xs.end());
     for y in ys {
-        for x in xs.clone() {
-            for item in map.statics_at(x, y) {
-                each(item);
-            }
+        for item in map.statics_in_row(y, from_x, to_x) {
+            each(item);
         }
     }
 }
@@ -584,6 +589,70 @@ mod tests {
             ..Cutaway::OPEN
         };
         assert_eq!(ask(&indoors), None, "a wall this frame did not draw was picked");
+    }
+
+    /// The tile a wall stands on is **not** the tile the cursor unprojects to,
+    /// and the difference is tiles rather than pixels.
+    ///
+    /// This is the defect the client shipped for one commit: a click on a wall
+    /// washed the wall and put the held-tile marker on the ground *under the
+    /// cursor*, which for a picture standing up the screen out of its own cell is
+    /// two cells behind it. Both answers were right about their own question and
+    /// the client was showing them as one.
+    ///
+    /// Pinned here, in the crate that owns both arithmetics, because the app is
+    /// where they are chosen between and a comment there cannot fail. What it
+    /// says is only "these two disagree, by this much" — which is the whole
+    /// reason a selection has to name the *static's* tile and never the pick's.
+    #[test]
+    fn a_wall_s_tile_is_not_the_tile_under_the_cursor() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0006);
+        // 44 wide by 88 tall, which is an ordinary wall of the client's art:
+        // one tile across and two tiles of height up the screen.
+        let atlas = atlas(graphic, 44, 88);
+        let tiledata = TileData::empty();
+        let mut map = field();
+        let stands = Point::new(100, 100, 0);
+        map.place_static(StaticItem {
+            tile: graphic.0,
+            x: stands.x,
+            y: stands.y,
+            z: stands.z,
+            hue: 0,
+        });
+        let sprite = atlas.sprite(graphic).expect("packed");
+        let at = stand_on(&camera, stands, &sprite);
+        // Halfway up the wall's face, which is where a person clicking on a wall
+        // puts the cursor.
+        let cursor = cursor_over(&camera, at, 22.0, 30.0);
+
+        let picked = pick(
+            &map,
+            &camera,
+            &tiledata,
+            &StaticAnimations::default(),
+            &atlas,
+            &Cutaway::OPEN,
+            cursor,
+        )
+        .expect("the cursor is on the wall's own pixels");
+        assert_eq!(picked.at, stands, "the wall is on the tile it was placed on");
+
+        // And the other arithmetic: the ground the cursor points at, read at the
+        // ground's own height, which is what `App::pick_tile` resolves.
+        let (x, y) = crate::camera::unproject(camera.pick(cursor.0, cursor.1), 0);
+        assert_ne!(
+            (x, y),
+            (i32::from(stands.x), i32::from(stands.y)),
+            "the two arithmetics agreed: this test can no longer say what it is for",
+        );
+        // Down the screen is north-west in tile space, so the ground under a
+        // cursor halfway up a wall is *behind* the wall in both axes.
+        assert!(
+            x < i32::from(stands.x) && y < i32::from(stands.y),
+            "the ground under the cursor came out at {x}, {y}",
+        );
     }
 
     /// The quad the wash is drawn from is the quad the picture was drawn from.

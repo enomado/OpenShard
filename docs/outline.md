@@ -369,6 +369,25 @@ answer is context and the live one has to stay readable crossing it.
   lookups per creature. It becomes wrong the day the two orders can differ —
   a filtered list, a sort — and the fix is to thread the first list through
   rather than to rebuild it.
+- **Done: the chain has three links, and the mode no longer hides one.**
+  `on_mobile` → `on_item` → `on_static` are asked once a frame, each only where
+  the one before found nothing, and `HighlightTarget` is applied *after* them to
+  what is lit rather than to whether the pick happens at all. Two things were
+  wrong before it: pointing at a house front left the tile marker on the ground
+  behind the wall (the marker's rule knew about items and creatures and not about
+  the map), and under `Tiles` no pick ran at all — so a player who had pinned the
+  highlight to tiles could not select a wall, with nothing on screen to say why.
+  The click now reads the *last drawn frame's* answer rather than picking again:
+  a click arrives between frames, so the picture it is a click on is the one
+  already on the screen, and a second pick would ask a camera that has moved.
+- **Done: the selection names one tile.** `App::selected_tile` is the selected
+  static's own tile when there is one, and only a click on bare ground
+  unprojects the cursor. The two arithmetics answer differently on purpose — a
+  wall's picture stands up the screen out of its cell, so the ground under the
+  cursor is two cells behind the wall — and showing both at once was the client
+  saying "this one" about two places.
+  `statics::tests::a_wall_s_tile_is_not_the_tile_under_the_cursor` pins the gap
+  in the crate that owns both.
 - **Half done: the static-shaped sibling of `items::pick` exists.**
   `statics::pick` walks the visible cells, tests the same opaque texel and
   answers a `PickedStatic` — where it stands and what it is, since the map's
@@ -377,9 +396,10 @@ answer is context and the live one has to stay readable crossing it.
   by the map's statics, the server's items, the silhouettes and the picks alike.
   What is *not* done is the hover: `HighlightTarget::Auto` still falls back to
   the tile marker when the item pick finds nothing, so pointing at a house front
-  still says "you would walk here". Wiring it is now three lines and one
-  question — whether a hovered wall should ring, wash, or neither — which is a
-  thing to look at rather than to argue.
+  still says "you would walk here" — **corrected above**: the marker now goes out
+  over a wall, and what is still open is only whether a hovered wall should say
+  something *positive* (a ring, a fainter wash) rather than merely silencing the
+  ground. That is a thing to look at rather than to argue.
 - **The selection is picked against the atlas as it stands at the click.** The
   same caveat `items::pick` carries: a wall whose art this frame has not packed
   yet cannot be clicked on, and is selectable a frame later. It is one frame at a
