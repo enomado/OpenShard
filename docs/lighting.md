@@ -3041,8 +3041,33 @@ Found on a staircase in Britain:
   What it needs, in the order it would be built: a `scene::staircase` with one
   flight and nothing else (the plan view is what says whether the shading follows
   the climb, the way `one-torch-on-open-ground` says whether a pool is a circle),
-  then `Stance::Slope` — which needs a direction, and the direction is the one
-  fact the art *does* have to be measured for, since `CLIMBABLE` says a thing
-  climbs and not which way — and the occlusion side, where a climbable tile
+  then a stance for the shape, and the occlusion side, where a climbable tile
   should stop being a wall. Sphere already halves a climbable tile's height,
   which is a hint that the reference treats this shape as a special case too.
+- **And the shape is a box, not a slope.** The first guess above was that a stair
+  is an inclined plane and that what the art would have to be measured for is
+  which way it climbs. Then the pictures were looked at — `tests/artshot.rs`
+  writes any graphic out scaled with the tile's diamond stroked over it, and
+  prints the lowest and highest drawn pixel of every column. `0x071E` is a **cube
+  ten `z` tall**: its base is the whole diamond (21 pixels down to 0 at the
+  centre column and back up, a 1:1 run, which is the diamond and not a wall's
+  single 45° edge), and its top contour is the same diamond raised 42 pixels.
+  `0x0736` is the same box with a **stepped lid** — three treads falling away to
+  the west, which the column profile shows as three flats in the top contour.
+  Against a real wall for contrast, `0x00C8`: base `21…2` across the left half
+  and *nothing at all* past column 32. So:
+  - The surface that dominates either sprite is the **lid**, and the lid is
+    horizontal. It is currently lit as a vertical wall, which is the whole of
+    what the report saw.
+  - `facing_of` says `Corner { East, South }` about a box for a reason that is
+    not a bug in it: a box's base *is* two 45° runs meeting at the south corner,
+    which is exactly the silhouette two walls meeting at a corner leave. The
+    detector answers about the two vertical faces it can see and there is no
+    third answer in `Facing` for the lid on top of them.
+  - **The geometry needs nothing measured.** A box is fixed by one number the
+    client already ships: `StaticTile::height`. Its lid is the tile's diamond
+    raised `4h` pixels, so the fragment shader can decide lid-or-face from
+    `across` and `down`, which it already has — `|across| + |down + 4h| <= 22` is
+    inside the lid, and the sign of `across` picks the face otherwise. The art is
+    only needed for the *stepped* lid, and that is `arttable`'s kind of job: a
+    per-column top contour is what `artshot` already prints.
