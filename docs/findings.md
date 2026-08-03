@@ -29,6 +29,14 @@ animation — see "3D character models" below. It is **GPL**, and this project i
 MIT/Apache-2.0: not a line of its code and not one of its assets may land here.
 Its observations may, rewritten.
 
+**Three engines that lit a two-dimensional world**, read for the lighting plan
+and none of them a UO reference: **OpenNox** (GPL-3, Go, a reimplementation of
+Westwood's Nox — `src/client/sight.go`), **DevilutionX** (Diablo 1's
+reconstructed source — `lighting.cpp`), and **Godot** (MIT — `Light2D`,
+`LightOccluder2D`). What they are worth is in "How three other engines lit a flat
+world" below. Licences differ and none of them is compatible with this tree; they
+are read, and what lands here is an observation in English.
+
 Do **not** read any of them for architecture. Copying their structure is the one thing
 this project exists to avoid — and where they agree about *engine* design, that
 is often the strongest available argument for doing it differently. Both stop the
@@ -61,6 +69,60 @@ trap: a server-side movement hole is invisible from the only end normally tested
 and surfaces as NPCs strolling through walls. (`NO_SHOOT` was mis-valued at `0x20`
 in the same file, which is `UFLAG1_DAMAGE`; there is no `UFLAG1_NOSHOOT` at all.
 Pin a flag's value in a test next to the constant.)
+
+## How three other engines lit a flat world
+
+Read while planning the lighting rewrite ([`lighting.md`](lighting.md)), because
+a day somebody else already spent is the cheapest day there is. Two findings came
+out of it and the first is the one that changes what we build.
+
+**An occluder is a shape declared per object type, not a shape derived from the
+picture.** All three do this and none of them measures anything:
+
+- **Nox** has exactly four constructors — `newFromWall(gx, gy, typ)` for a wall
+  on the grid, and `newFromDrawableBox`, `newFromDrawableCircle`,
+  `newFromDrawableDoor` for everything else. A box or a circle, per object.
+- **Godot** authors an `OccluderPolygon2D` per sprite. Its editor can generate one
+  from the sprite's alpha, which is the same silhouette pass
+  `facing::facing_of` is — and it produces a polygon that a person then edits.
+- **Diablo** does not have occluder shapes at all: light is a level per tile,
+  flooded over the grid with radius tables.
+
+So the hand-authored table of [`lighting.md`](lighting.md)'s decision 31.2 is not
+a workaround for missing tooling. It is what everyone who has done this converged
+on, and the part that is genuinely unusual here is the opposite one: **we derive
+a solid from art we did not draw**, because the art is the client's and there is
+no model behind it. Where Baldur's Gate shipped a light map and a height map
+beside its background, those were *exports* from the 3D scene its artists built.
+
+**And nobody marches a ray per fragment per light.** Two different answers, both
+"compute the shadow once, look it up after":
+
+- **Nox** builds shadow geometry on the CPU: each occluder becomes an angular
+  interval (`SightObject.Ang40`/`Ang44` in a fixed-point circle of
+  `sightAngSz = 75000`), a sorted active list sweeps them by angle with `DistSq32`
+  deciding who is in front, and the result is extruded away from the eye, clipped
+  to the view lines, and **filled black** — the entry point is called
+  `Nox_xxx_drawBlack_496150`. Soft edges are ten passes of the same line offset a
+  pixel with alpha falling 208, 188, 168…
+- **Godot** renders a per-light shadow map — distance to the nearest occluder by
+  angle — so a fragment costs one lookup plus a PCF tap or thirteen.
+
+Neither is a plan for this engine and one of them is not even the same problem:
+**Nox's is visibility from a single eye, not light from a lamp.** There are no
+sources in it, no height (`image.Point` and `Rectf` throughout — `z` does not
+appear in the file), and its cost is linear in occluders because it never touches
+a pixel per light. Godot's `Light2D` has a `height`, but it feeds the normal map
+only: the occluder is a polygon in the canvas plane and cannot say that light
+passed *over* a low wall. `range_z_min`/`range_z_max` are `z_index` draw layers,
+which is the manual-storeys trick — and the reason it is not enough here is that
+UO puts a real `z` in every packet.
+
+What both point at is written down and not acted on: this engine walks the grid
+**per fragment per light**, which `lighting.md`'s step 6 measured as nearly all of
+the pass's GPU time, and two independent predecessors say the standard cure is to
+compute a light's shadow once. It is not a plan until something is measured that
+says it must be.
 
 ## The client, as observed
 
