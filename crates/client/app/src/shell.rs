@@ -885,7 +885,8 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     if ui
         .checkbox(
             &mut boxes,
-            "occluders — surfaces that stop light above your feet: wall red, pane cyan",
+            "occluders — surfaces that stop light above your feet: \
+             floor amber, wall red, whole-tile violet, pane cyan",
         )
         .changed()
     {
@@ -1969,11 +1970,15 @@ fn surfaces_of(
 /// a lid looks up and is the brightest, an east face is next, a south face is
 /// darker, and the two a camera cannot see are darker still — a fixed light from
 /// above and to the east, which is what every isometric picture does and what the
-/// eye reads without being told. The **hue** stays the opacity, because that is
-/// the other half of a surface: a pane and a wall stop the same ray by different
-/// amounts, and a picture that drew them alike would make
-/// [`PANE`](openshard_client_render::occlusion::PANE) invisible in the very view
-/// meant to check it.
+/// eye reads without being told.
+///
+/// The **hue is the kind**: a lid amber, a panel red, a whole-tile body violet,
+/// and a pane cyan whatever shape it is. It was the opacity first, and that is
+/// the mistake worth keeping written down — opacity is nearly a constant in a
+/// real town (5,459 `OPAQUE` against 74 panes over the block this was built on),
+/// so the picture came out one flat red and the geometry, which is the entire
+/// question, had no colour left to be told in. A pane is rare enough to be the
+/// exception rather than the axis.
 ///
 /// What stands up, and not every surface — see [`stands`], and the count beside
 /// the checkbox for what that leaves out.
@@ -1984,7 +1989,7 @@ fn draw_occluders(
     floor: i8,
     viewport_origin: egui::Pos2,
 ) {
-    use openshard_client_render::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, OPAQUE, PANE};
+    use openshard_client_render::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, OPAQUE};
 
     let clip = painter.clip_rect();
     // Back to front. Collected rather than drawn as they come, because a solid
@@ -2028,22 +2033,41 @@ fn draw_occluders(
         if !clip.intersects(bounds) {
             continue;
         }
-        // A wall is red, a pane is cyan, and anything a shard invented between
-        // them lands between them. Saturated, for the reason the strokes were:
-        // this is read against itself and against lit art of every hue.
-        let t = f32::from(surface.opacity.saturating_sub(PANE)) / f32::from(OPAQUE - PANE);
-        let hue = |pane: f32, wall: f32| pane + (wall - pane) * t.clamp(0.0, 1.0);
-        let (red, green, blue) = (hue(0.0, 255.0), hue(200.0, 45.0), hue(255.0, 45.0));
-        // A face's own shade, and the seam between two of them drawn a step
-        // darker so that a corner where a lid meets a wall is a line and not a
-        // colour change the eye has to find.
+        // **The hue is the kind, and it is no longer the opacity.** Opacity was
+        // the first answer and it is nearly a constant: over the block of Britain
+        // this view was built on, 5,459 of 5,533 surfaces are `OPAQUE` and 74 are
+        // panes, so colouring by it painted the whole picture one red and left
+        // the geometry — which is the entire question — with no colour to be told
+        // in. A pane is rare enough to be the exception it is, so it keeps the
+        // cyan; everything else is coloured by which of the walk's three kinds it
+        // is.
+        let (red, green, blue) = match (surface.opacity < OPAQUE, surface.edges) {
+            // A pane, whatever shape it is: the one thing here that is about how
+            // much light gets through rather than about where a plane is.
+            (true, _) => (60.0, 200.0, 255.0),
+            // A lid — a floor, a roof, a plank. Warm, because it is the face that
+            // looks at the light, and because its *absence* over a tile is what a
+            // person opening this view is usually hunting.
+            (false, 0) => (255.0, 190.0, 70.0),
+            // A body: a graphic whose art named no edge, so the whole tile stops
+            // light. Violet, and deliberately the odd colour out — it is a
+            // fallback rather than a measurement, and a street with one of these
+            // standing among panels is worth seeing from across the room.
+            (false, EDGE_ANY) => (190.0, 90.0, 255.0),
+            // A panel: a wall on one named edge. The red the whole view used to
+            // be, now meaning one thing.
+            (false, _) => (255.0, 70.0, 60.0),
+        };
+        // A face's own shade, and a **near-black edge** under it. Two faces of
+        // one box meet at a line and the two tones alone leave finding it to the
+        // eye; the stroke is also what makes a tile of floor a tile rather than
+        // part of a field of floor. The fill is let down to two thirds so that
+        // the art keeps saying where the picture's own edges are — a solid
+        // overlay is a second world, and the question is always about this one.
         let face = |points: Vec<egui::Pos2>, shade: f32| {
             let tone = |c: f32| (c * shade) as u8;
-            let fill = egui::Color32::from_rgba_unmultiplied(tone(red), tone(green), tone(blue), 235);
-            let edge = egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgb(tone(red * 0.45), tone(green * 0.45), tone(blue * 0.45)),
-            );
+            let fill = egui::Color32::from_rgba_unmultiplied(tone(red), tone(green), tone(blue), 170);
+            let edge = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(10, 8, 16, 220));
             painter.add(egui::Shape::convex_polygon(points, fill, edge));
         };
         // The quad standing on one edge of the tile, from the surface's bottom to
