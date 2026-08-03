@@ -1761,6 +1761,18 @@ the entries it closes are struck through with what the fix turned out to be.
 
 Found while giving a corner its two faces:
 
+- **A lid has no normal, so it takes the whole pool from any side.** Reported from
+  the client as two walls "adding up" at a corner — a bright diamond wedged
+  between a lit face and a dark one. Nothing adds: a fragment is lit once. The
+  diamond is the wall's **top cap**, a `Flat` static, and `Stance::Flat` carries no
+  outward direction — so `blit.wgsl`'s facing test is skipped for it and a lamp
+  standing beside the wall lights its top as fully as one standing over it.
+  Measured at the reported corner: `lid at z 25: through 1.000, facing 1.000`
+  against the east face's `facing 0.000` beside it. The fix is the same shape as
+  decision 22's, one axis further: a horizontal surface is a surface with a `+z`
+  normal, and the flame has to be **above its plane**. The stance already tells a
+  lid from a face, and the dot product already has a `z` in it.
+
 - **A pillar in the open loses two of its four sides.** A solid filling its whole
   tile reads as a corner, which is right about the *picture* and half right about
   the *tile*: a building's corner has its north and west sides inside the house

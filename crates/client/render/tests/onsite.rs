@@ -247,8 +247,25 @@ fn what_the_lighting_knows_about_a_place() {
     // what the walk let past and `cone` is how much of the flame the surface is
     // turned towards: a face behind the flame's plane reads a `through` of 1 and a
     // `cone` of 0, and only the two apart tell that from a shadow.
-    println!("\n=== and its four faces, halfway up ===");
+    println!("\n=== and its four faces, halfway up — and its lid ===");
     let inside = 1.0 - 1.0 / 127.0;
+    // The **lid** first: the top of whatever stands here, sampled the way a flat
+    // static's pixel is written — with no face at all, because a horizontal
+    // surface has no vertical side and the attachment carries no normal for one.
+    // Which is the question a bright diamond at a wall's corner asks: a wall's top
+    // cap is a `Flat` sprite, so nothing tests which way it looks and every flame
+    // in reach lights the whole of it.
+    if let Some(cell) = grid.at(i32::from(at_x), i32::from(at_y)) {
+        let at = Vec2::new(f32::from(at_x) + 0.5, f32::from(at_y) + 0.5);
+        let sample = light::sample(Spot::at(at, cell.top as f32), &lighting);
+        match sample.reaches.iter().find(|reach| reach.within) {
+            None => println!("lid at z {}: no flame reaches it", cell.top),
+            Some(reach) => println!(
+                "lid at z {}: through {:.3}  facing {:.3}  from the flame {:.1} tiles away",
+                cell.top, reach.through, reach.cone, reach.distance,
+            ),
+        }
+    }
     for (face, at, z) in [
         (
             Face::North,
