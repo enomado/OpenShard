@@ -37,13 +37,23 @@ for several sessions:
   writes by hand. The measured and the authored differ in provenance, and
   provenance is a column of the table rather than a second shape in the shader.
 
-**Start at step 23.1.** It is the migration, and its whole property is that the
-picture may not move: the frame's arena stops owning surfaces and starts owning
-solids that cells point at, with the geometry exactly as it is today and every
-scene green. Steps 23.2 onwards are where anything is allowed to look different.
-**Step 22 is folded into it** — a body's footprint is a solid narrower than its
-tile, and building it first would mean writing a flag into the aperture plane in
-order to delete it two steps later.
+**Start at step 23.0 — the solid, drawn.** Decision 39 is the finding that put it
+first: the renderer is not a sprite blitter that would have to acquire a third
+dimension, it is a three-dimensional scene whose primitives are billboards.
+World space, a per-pixel world position, an orthographic projection written as
+integer arithmetic, and a hardware depth buffer are all already there, so a box
+drawn in world coordinates lands in its pixels with nothing fitted, and the pass
+that draws it is an instanced quad pass of the same shape as `statics` — three
+faces, always the same three, no mesh pipeline anywhere. It comes before the
+migration because 23.1's whole DoD is *"the picture did not move"* and the
+instrument that would judge that is currently a wireframe.
+
+Then **23.1**, the migration: the frame's arena stops owning surfaces and starts
+owning solids that cells point at, with the geometry exactly as it is today and
+every scene green. Steps 23.2 onwards are where anything is allowed to look
+different. **Step 22 is folded into it** — a body's footprint is a solid narrower
+than its tile, and building it first would mean writing a flag into the aperture
+plane in order to delete it two steps later.
 
 The WebGL2 ceiling was questioned and **kept**, with a finding: it costs this
 feature nothing, because the bake is on the CPU and a storage buffer would only
@@ -1811,6 +1821,83 @@ surface could have been. A step that changes both where geometry lives and what
 it is, is a step where a difference cannot be attributed, and this file has said
 that twice already for smaller changes.
 
+**39. The scene is already three-dimensional. What is missing is a primitive.**
+
+This was written down because the wrong mental model cost an hour of argument in
+the session that produced it: asked whether a wall could be drawn as a solid, the
+answer given was "that is a mesh pass, a depth buffer that agrees with a
+painter's sort, multi-session work" — and every clause of it was false. The
+renderer is not a sprite blitter that would have to *acquire* a third dimension.
+It is a three-dimensional scene whose primitives happen to be billboards.
+
+What is already there, item by item, because each one is a thing that would
+otherwise be built:
+
+- **World space is the space the lighting reasons in.** Decision 1 moved it
+  there and the whole file since is about the consequences. A fragment is lit by
+  the tile and height of the thing drawn at it.
+- **A per-pixel world position** is written by all three world passes (step 2).
+  That is a G-buffer position plane; it was never called one.
+- **[`Camera::project`](../crates/client/render/src/camera.rs) is a
+  view-projection matrix** written as integer arithmetic. There is no
+  trigonometry in the file, because there is no rotation: an orthographic camera
+  at one fixed angle.
+- **The depth buffer is hardware**, written and tested by both passes, and
+  `crates/client/render/src/depth.rs` is the ordering ported from ClassicUO.
+  Draw order between passes was deliberately made not to matter.
+
+**39.1 The projection is exact, and the world is anisotropic.** A tile is 44
+pixels wide and 22 high on the screen, and one `z` is
+[`Z_STEP`](../crates/client/render/src/camera.rs) = 4. So a unit of height is
+about 0.18 of a unit of ground, and geometry placed in world coordinates lands
+in the same pixels the sprite for that tile lands in — **to the pixel, with
+nothing fitted**, because the sprite is placed by the same map.
+
+The trap is on the way in: a solid written with equal axes, a "real cube", comes
+out five and a half times the wrong height. The non-uniform scale is part of the
+projection and is carried, not corrected.
+
+**39.2 The depth is the client's ordering, not the distance to a camera — and
+that is the one place a solid does not simply fit.** `depth::Order` is
+`(x + y, priority_z)`, discrete and **per instance**; `statics.wgsl` says in as
+many words that deriving it in the shader would be a second chance to disagree
+with `depth::Order`. For a sprite that is right. For a **box spanning several
+tiles** it is not: one instance depth, several tile depths underneath it.
+
+Two honest answers, and the first is enough for a long time:
+
+- **Translucent, over the frame, writing no depth.** For looking at geometry this
+  is not a compromise but the thing wanted: the wall's sprite is visible *inside*
+  the box that claims to contain it, and the top face is what makes its thickness
+  legible.
+- **Per-fragment depth through the same `Order`.** The fragment knows its own
+  world point, so the key is computed from the point rather than from a new
+  formula — the rule this file uses everywhere: cite the function it came from.
+  This is what a solid occluded by the sprites in front of it needs.
+
+**39.3 Three faces, always the same three.** With no rotation, an axis-aligned
+box shows exactly `+x`, `+y` and the top; its outline is a hexagon. So a solids
+pass is not a mesh pipeline — no index buffers, no back-face culling, no asset:
+it is an instanced quad pass of the same shape as `statics`, six numbers and a
+colour per instance, the corners emitted in the vertex shader. Three constant
+normals shade it for free, which is what makes the top face read as thickness.
+And instancing through vertex buffers is how statics already draw, so decision
+30.5's floor is untouched.
+
+**39.4 Drawing a slope is nearly free, and it is not decision 35.** Under an
+affine projection an inclined face is still a parallelogram, and a stair's prism
+is a few of them — one more parameter in the same shader. Decision 35 priced
+something else entirely: a *sloped surface in the ray walk*, which is a bilinear
+patch and reopens the three seam rules. The two must not be confused, and the
+good news in the distinction is the order it allows: a shape can be **looked at**
+long before the walk can integrate it, which is the right way round.
+
+**39.5 The billboards stay billboards, and that is the design.** The art is drawn
+for this projection and for no other, and the depth must stay the client's
+ordering or the picture stops matching the client the engine exists to serve. So
+this is not a renderer on its way to being general — it is a three-dimensional
+scene with a fixed camera, sprite primitives, and now a solid one beside them.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -2508,10 +2595,44 @@ that twice already for smaller changes.
       it says nothing about depth (`fx + fy`), which no single picture can
       measure; a footprint is one band, not a polygon; and it is per *graphic*,
       so the same picture is the same band on every tile it stands on.
-- [ ] **23. A solid the world owns.** Decision 38, in five changes. The first is
-      the whole risk and the last three are the whole point; 23.1 is deliberately
-      invisible, and that is the property being bought.
+- [ ] **23. A solid the world owns.** Decision 38, in six changes. 23.0 comes
+      first and is not bookkeeping: it is the oracle the rest is judged with.
+      23.1 is deliberately invisible, and that is the property being bought.
 
+      0. **The solid, drawn — in the world, not against a sprite.** Decision 39:
+         a pass that draws a box as a box, in the frame, where it stands.
+         Translucent and over the world, so the static's own sprite is visible
+         *inside* the solid that claims to contain it and the top face makes its
+         thickness legible.
+
+         **This comes before the migration and not after it, for the reason this
+         file gave itself at decision 24: the instrument comes before the
+         reproduction.** 23.1's whole DoD is "the picture did not move", and what
+         we have to judge that with today is twelve strokes per cell through the
+         egui painter (`shell::draw_occluders`) — a wireframe that cannot show a
+         face, a normal, or a solid standing inside another. A migration judged
+         by an instrument that cannot see the thing being migrated is a migration
+         whose defects arrive later, attributed to something else.
+
+         It is also the answer to a question no measurement against a sprite can
+         reach. `tests/prism.rs` scores a shape against the picture it was drawn
+         from, which is the right check for *is this the shape the artist drew*;
+         it says nothing about **how the shapes work together** — a wall meeting a
+         wall, a stair meeting a landing, an arch over a street. That is a fact
+         about a place and it can only be looked at in one.
+
+         Built against **today's** surfaces (`Occlusion::boxes` already yields
+         what stands), so it needs nothing from 23.1 and survives it unchanged:
+         after the migration the same six numbers arrive from a solid. The
+         translucent-over-the-frame choice is decision 39.2's first answer, and
+         per-fragment depth is left until there is a reason.
+
+         **DoD:** the toggle beside the wireframe rather than replacing it — a
+         wireframe shows what a solid hides; the staircase at `(1493, 1639)` and
+         the house corner at `(1441, 1692)` looked at and *reported on*, which is
+         a person's step and not a test's; and a cost reading with the view on at
+         the widest zoom, because a translucent overlay over a town is overdraw
+         and the number decides whether it stays a debug view or gets a bound.
       1. **The ownership, with the geometry held still.** `occlusion::Surface`
          becomes `Solid` — a box in world coordinates plus the fields it already
          has (`opacity`, the hole flag) — and a cell holds `(offset, count)` into
@@ -2707,6 +2828,27 @@ Carried from `client.md`'s firelight backlog and still true:
 - A light is placed by its tile, not by its sprite.
 
 Found while re-cutting the plan around decision 38 (nothing was built):
+
+- **A wall's thickness may be measurable after all, and the number is already in
+  the tree.** `facing::OVERHANG`'s own doc says it: *a wall is a solid with a
+  thickness, and the picture shows that thickness* — the far side of the face is
+  a sliver past the tile's centre column, **3.5 pixels on `0x0100`, 2.5 on
+  `0x0007`** — and the conversion is written beside it, `22t` pixels for `t`
+  tiles. That is 0.16 of a tile, derived rather than invented, and it means
+  decision 3's "the art cannot say how deep a wall is" is too strong: it cannot
+  say from the *outline alone*, but this sliver is the depth, projected.
+  The confounder is named in the same comment and is real: on a wall low enough
+  to look down on, the sliver also contains the **top** surface (8.5 pixels on
+  Britain's garden wall), so the measurement is two things added together
+  wherever the top is visible. The way to settle it is the instrument, not an
+  argument — score a box of thickness `t` against the sprite and take the best
+  `t`, exactly as `facing::best_prism` already takes the best prism.
+- **`Camera::project` is a matrix, and writing it as one would change no pixel.**
+  It is an orthographic view-projection with a fixed rotation, spelled as integer
+  arithmetic. `docs/camera.md` is the plan that wants this seam — "one pipeline
+  every camera is a parameter set of" — and decision 39 is the same fact arriving
+  from the other side. Nothing here needs it; it is written down because the two
+  plans should not discover it separately.
 
 - **The renderer's own doc line about WebGL2 reads as a principle and is a dated
   assumption.** `crates/client/render/src/lib.rs:17` says the ceiling is WebGL2
