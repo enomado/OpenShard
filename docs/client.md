@@ -995,25 +995,49 @@ heard three `Undecoded` ids and drew nothing. Two of the three pieces are now in
   contents with it; and a `0x25` for an item already listed is a stack that grew,
   not a second item.
 
-**What is left is the window**, and it stops at the same place `{ tilepic }`
-does: the icons inside a container come from the *world's* art and the gump pass
-binds one atlas, which holds `gumpart`. Neither of the two ways round is a new
-kind of pass —
+**The window draws.** It stopped at the same place `{ tilepic }` did — the
+icons inside a container come from the *world's* art and the gump pass bound one
+atlas, which held `gumpart` — and the fix was the key rather than a second pass:
+`GumpArt::Gump` versus `GumpArt::Item`. Not cosmetic. Gump ids and art ids are
+separate 16-bit index spaces and they overlap, `0x003C` being a chest's gump
+*and* an item's graphic, so a shared `Graphic` key answers one with the other and
+draws the wrong picture with no error anywhere to notice it by. The packer under
+the wrapper stays keyed by a `Graphic` and what reaches it is a slot the atlas
+hands out, private to two fields. Growing it now needs both readers, so it takes
+an `ArtFiles` and not a `Gumps`.
 
-- a second `GumpAtlas` packed from static art with a second `GumpRenderer` over
-  it: no new types at all, `Picture`/`collect` already take an atlas, and the
-  cost is a duplicated hue ramp and pipeline;
-- or a key type on `GumpAtlas` — `Gump(Graphic)` versus `Item(Graphic)` — so one
-  atlas holds both. Gump ids and art ids are separate 16-bit namespaces and a
-  collision is certain (`0x003C` is a chest's gump *and* an item's graphic), so a
-  bare `Graphic` key cannot be made to work.
+`{ tilepic }` closed in the same move, which is what it was always going to be: a
+container is the question a layout had been asking since the gump reader was
+written.
 
-Whichever lands, it closes `{ tilepic }` in the same move — a container is the
-same question a layout has been asking since the gump reader was written.
+`crates/client/render/container.rs` is the layout, and it is deliberately *not* a
+layout at all — a `0xB0` is a program with pages and buttons; a container is one
+picture with statics laid on it at the coordinates the `0x3C` carried. Its size
+is its background's size, because there is no rectangle on the wire to
+nine-slice. Its order is the shard's, because icons in a bag overlap and
+re-sorting them would put a different one on top than the reference shows.
+Picking is against the picture and not the box, for `items::pick`'s reason.
 
-The background itself is a plain `gumppic` and not a `resizepic`: a `0x24` names
-one graphic and the art's own size *is* the window's, so nothing here needs
-egui's rectangle the way `.admin` does.
+**And the window is not an egui window**, unlike the dialogs beside it: a
+container has no widget in it — no button, no field, nothing that needs egui's
+hit test — so its position, its drag and its z-order are the client's, in gump
+pixels. Where it goes is the one thing a `0x24` never says, so the client
+cascades them and the player's drag wins after that. Left raises and holds;
+right closes, which is the reference's own gesture and does not fight the
+right-hold that steers, because a press over a window is not a press into the
+world.
+
+Still open, in rough order:
+
+- **Dragging an item out** — `0x07`/`0x08`/`0x09` and the drop back. Picking
+  inside a window is built (`container::pick`); nothing sends yet.
+- **A double-click inside a window.** `use_under_cursor` asks the world's
+  `items::pick` and knows nothing about windows, so a bag inside a bag cannot be
+  opened from the one that holds it.
+- **Window positions are not remembered**, per container or at all: the cascade
+  is recomputed from scratch every session.
+- **The gump pass has no blending**, so a `{ checkertrans }` is skipped and a
+  container's own art is drawn opaque. Fine for a bag; not for a paperdoll.
 
 ## M5 — interaction
 
