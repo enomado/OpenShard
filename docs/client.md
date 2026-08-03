@@ -1125,11 +1125,30 @@ does not carry yet.
    kin. So the offset in decision 2 is chosen from the body the client is
    already drawing, and a mobile whose body is unknown is drawn male the way the
    reference does rather than not at all.
-5. **The window is the container's, not egui's.** Position, drag, z-order,
-   right-click close and picking against the picture were already the client's
-   (`crates/client/render/container.rs`, `client/app`), in gump pixels, and a
-   paperdoll is that machinery's second caller — which is the point of having
-   written it there. It became one by having the *subject* of a window say what
+5. **The window is the container's, not egui's, and its background is the
+   frame.** Position, drag, z-order, right-click close and picking against the
+   picture were already the client's (`crates/client/render/container.rs`,
+   `client/app`), in gump pixels, and a paperdoll is that machinery's second
+   caller — which is the point of having written it there.
+
+   What that machinery asks each window for is the one picture it *is*, and for
+   a while a paperdoll answered with the body: there was no frame at all, and a
+   doll floated on the world. The frame is `0x07D0` for our own character and
+   `0x07D1` for anyone else's — `PaperDollGump.BuildGump`'s `0x07d0 +
+   (LocalSerial == World.Player ? 0 : 1)`, written out as two named pictures
+   because the arithmetic is how the file happens to be laid out and not a rule
+   — and the difference between them is room down the right-hand side for the
+   buttons a player gets over their own doll and nobody gets over a stranger's.
+   The doll sits at `(8, 19)` inside it (`new PaperDollInteractable(8, 19,
+   ...)`), one offset applied to the whole stack rather than per garment, since
+   every layer already shares one origin.
+
+   Making the frame the background is also what lets a window outlive not
+   knowing what is in it: `paperdoll::window` takes the wearer as an `Option`,
+   the frame is drawn either way, and a doll the client has not been told the
+   body of is a window that still picks up the pointer and still closes — the
+   backlog entry that used to say it drew nothing. `App::window_background` no
+   longer reads the mobile at all, only whose serial it is. It became one by having the *subject* of a window say what
    kind it is: `App::own_windows` is one list of `WindowSubject::Container` and
    `WindowSubject::Paperdoll`, so a bag dragged over a paperdoll stays over it,
    and the two kinds differ in exactly three `match`es — which art is the
@@ -1142,8 +1161,8 @@ does not carry yet.
    none of: that is the `GumpAtlas::opaque_at` hit test the gump backlog already
    names, and it is still to come — see the backlog below.
 
-Done: double-clicking a mobile — or ourselves — opens a window that draws its
-body and its equipment in the reference's order and hues, with the backpack
+Done: double-clicking a mobile — or ourselves — opens a framed window that draws
+its body and its equipment in the reference's order and hues, with the backpack
 last; the window drags, raises and closes like a container's; a unit test says a
 female body's order differs from a male one where the reference says it does;
 and the client-file tests say a layer with `anim_id == 0` draws nothing, that
@@ -3250,12 +3269,14 @@ that the ring reaches it. What was found on the way and left undone:
   that puts the cloak on top when a body faces away and behind when it faces the
   viewer. `mobiles::push_quads` pushes layers in wire order today. Cheap now
   that `paperdoll::order` exists and `EquipmentLayer` carries its layer.
-- **A paperdoll is picked by its body picture alone.** `App::window_background`
-  hit-tests the one sprite the window is sized by, so a hat or a weapon whose
-  art reaches outside the body's silhouette is a click that falls through to the
-  world. A container has the same rule and does not suffer from it, because a
-  bag's icons are inside its bag. The fix is to test the window's whole picture
-  list, which is the same walk `pick` will need for lifting an item off a doll.
+- **A paperdoll is picked by its frame alone.** `App::window_background`
+  hit-tests the one sprite the window is sized by, which is now the frame rather
+  than the body — so the doll is inside the picked area and the old symptom (a
+  click on a hat falling through to the world) is gone by construction, but
+  anything the art reaches *outside* the frame still is not picked, and the
+  frame's own transparent corners are still a hole. The fix is to test the
+  window's whole picture list, which is the same walk `pick` will need for
+  lifting an item off a doll.
 - **No buttons, no tooltips, no lifting.** The `0x88`'s `PaperdollFlags` says
   whether this client may lift off this doll, and nothing reads it yet; the
   reference's own paperdoll has Help, Options, Log Out, War Mode, Status and
@@ -3270,8 +3291,15 @@ that the ring reaches it. What was found on the way and left undone:
   `gump::Picture` has one hue and applies it whole. Nothing looks wrong on the
   bodies this shard sends because they arrive with `Hue::NONE`, and the first
   dyed robe will show it.
-- **A paperdoll of a mobile the client has never seen draws nothing.** The
-  window is in the list, the `0x88` named the mobile, and `WorldView::mobiles`
+- **A paperdoll of a mobile the client has never seen draws an empty frame.**
+  The window is in the list, the `0x88` named the mobile, and `WorldView::mobiles`
   has no entry — which happens when a shard opens a paperdoll for a body it has
-  not revealed. The frame skips it silently; it should probably ask, or the
-  window should close itself.
+  not revealed. The frame is drawn and the doll is not, so the window can be
+  moved and closed while it waits; what is still not decided is whether it
+  should *ask* for the body.
+- **The frame carries nothing a frame is for.** No name — the `0x88`'s 60-byte
+  name is in `WorldView::paperdolls` and nothing draws it, where the reference
+  puts a title label at `(39, 262)` — no buttons, no minimise (`0x07EE`, the
+  reference's collapsed frame), and no equipment slots down the side. The name
+  wants a font in the gump pass, which the journal will want too; the rest wants
+  the picture-list hit test above.

@@ -51,6 +51,47 @@ use openshard_uofiles::gumpart::Gumps;
 use crate::gump::{GumpArt, GumpPixel, Picture};
 use crate::mobiles::EquipmentLayer;
 
+/// Whose paperdoll a window is, which the frame is chosen by.
+///
+/// The wire never says it: a `0x88` carries a serial, and whether that serial is
+/// this client's own is a question only the client can answer. The reference
+/// asks it in exactly one place — `LocalSerial == World.Player` in
+/// `PaperDollGump.BuildGump` — and the answer decides which background picture
+/// is drawn, because one of the two has room down its right-hand side for the
+/// buttons a player gets over their own doll and nobody gets over a stranger's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Whose {
+    /// This client's own character.
+    Own,
+    /// Anybody else — an NPC, another player.
+    Another,
+}
+
+/// The frame around a paperdoll: `0x07D0` for our own, `0x07D1` for anyone
+/// else's.
+///
+/// `PaperDollGump.BuildGump`, whose expression is `0x07d0 + (LocalSerial ==
+/// World.Player ? 0 : 1)` — written out here as two named pictures, because the
+/// arithmetic is a coincidence of how the file is laid out and not a rule.
+///
+/// The frame is the *window*: its size is the window's size and its pixels are
+/// what a click is tested against, which is why the body no longer is — see
+/// [`BODY_AT`].
+pub fn frame(whose: Whose) -> Graphic {
+    match whose {
+        Whose::Own => Graphic(0x07D0),
+        Whose::Another => Graphic(0x07D1),
+    }
+}
+
+/// Where the body picture sits inside the frame.
+///
+/// `new PaperDollInteractable(8, 19, ...)` in `PaperDollGump.BuildGump`: the
+/// doll is a control placed on the background, and every layer over it shares
+/// the one origin, so this offset applies once to the whole stack and never
+/// per garment.
+pub const BODY_AT: GumpPixel = GumpPixel::new(8, 19);
+
 /// What a male body's worn items are offset by to reach their gump.
 ///
 /// `Constants.MALE_GUMP_OFFSET`. Deliberately a plain number and not a table:
@@ -455,15 +496,25 @@ pub fn gump_of(body: u16, anim_id: u16, female: bool, equip_conv: &EquipConv, gu
 // lost its caller to the same decision: a window's size is its background
 // picture's, whichever kind of window it is, so the client asks the atlas for
 // that one sprite once — see `App::window_background` — rather than through two
-// functions that would have to agree about which picture the background is.
+// functions that would have to agree about which picture the background is. For
+// a paperdoll that picture is the [`frame`], which is why the background no
+// longer depends on knowing whose body it is: a doll of a mobile the client has
+// not been shown still has a window, and the window still has a size.
 
-/// Lay a paperdoll out at `at`: the body, then every worn layer over it, then
-/// the backpack.
+/// Lay a paperdoll out at `at`: the frame, then the body inside it, then every
+/// worn layer over that, then the backpack.
 ///
-/// Every picture is drawn at the window's own origin — a paperdoll layer's art
-/// is a full-size picture with its own transparency, not a sprite with a
-/// position, which is why nothing here has a per-item coordinate the way
-/// [`crate::container::window`] does.
+/// `wearer` is `None` for a mobile this client has never been told the body of —
+/// which happens when a shard opens a paperdoll for someone it has not revealed.
+/// The frame is drawn anyway, deliberately: the window is open, and a window
+/// with no picture is one the pointer cannot find and the player cannot close.
+/// What is missing is the doll, and it appears on the frame the `0x77` arrives
+/// on.
+///
+/// Every picture inside the frame is drawn at one origin, [`BODY_AT`] past the
+/// window's — a paperdoll layer's art is a full-size picture with its own
+/// transparency, not a sprite with a position, which is why nothing here has a
+/// per-item coordinate the way [`crate::container::window`] does.
 ///
 /// A layer with no `AnimID` draws nothing: zero is the absence of a picture,
 /// which is what a ring or a talisman has. Hair and a beard on a ghost draw
@@ -473,13 +524,25 @@ pub fn gump_of(body: u16, anim_id: u16, female: bool, equip_conv: &EquipConv, gu
 ///
 /// The backpack is last and outside the order, exactly as the reference draws
 /// it: it hangs off the side of the picture and nothing is ever drawn over it.
-pub fn window(wearer: &Wearer<'_>, equip_conv: &EquipConv, gumps: &Gumps, at: GumpPixel) -> Vec<Picture> {
+pub fn window(
+    wearer: Option<&Wearer<'_>>,
+    whose: Whose,
+    equip_conv: &EquipConv,
+    gumps: &Gumps,
+    at: GumpPixel,
+) -> Vec<Picture> {
+    let mut pictures = vec![Picture::plain(GumpArt::Gump(frame(whose)), at)];
+    let Some(wearer) = wearer else {
+        return pictures;
+    };
+    let at = GumpPixel::new(at.x + BODY_AT.x, at.y + BODY_AT.y);
+
     let female = openshard_uofiles::anim::is_female(wearer.body);
     let ghost = openshard_uofiles::anim::is_ghost(wearer.body);
     let alt_torso = female || openshard_uofiles::anim::is_gargoyle(wearer.body);
 
     let (body, hue) = body_gump(wearer.body, wearer.hue);
-    let mut pictures = vec![Picture::plain(GumpArt::Gump(body), at).hued(hue)];
+    pictures.push(Picture::plain(GumpArt::Gump(body), at).hued(hue));
 
     let worn = |layer: Layer| -> Option<&EquipmentLayer> {
         wearer

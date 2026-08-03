@@ -2182,39 +2182,43 @@ impl App {
         }
     }
 
-    /// The picture a window is *made of*: a container's background gump, or the
-    /// body picture a paperdoll is drawn on.
+    /// The picture a window is *made of*: a container's background gump, or a
+    /// paperdoll's frame.
     ///
     /// The one thing the two kinds of window disagree about that everything
     /// else here is written in terms of — its size is the window's size, and
     /// its pixels are what a click is tested against. `None` while the atlas
-    /// has yet to hold it, or for a paperdoll of a mobile this client has never
-    /// been told the body of.
+    /// has yet to hold it.
+    ///
+    /// A paperdoll's frame does not depend on the body inside it, which is the
+    /// point of asking the frame rather than the doll: a window over a mobile
+    /// this client has never been told the body of still picks up the pointer
+    /// and still closes, and the body appears in it when the `0x77` arrives.
     fn window_background(&self, subject: WindowSubject) -> Option<gump_art::GumpArt> {
         let view = self.view.as_ref()?;
         match subject {
             WindowSubject::Container(serial) => Some(gump_art::GumpArt::Gump(*view.containers.get(&serial)?)),
-            WindowSubject::Paperdoll(serial) => {
-                let (picture, _) = paperdoll::body_gump(self.paperdoll_body(serial)?.0, Hue::NONE);
-                Some(gump_art::GumpArt::Gump(picture))
-            }
+            WindowSubject::Paperdoll(serial) => Some(gump_art::GumpArt::Gump(paperdoll::frame(
+                self.paperdoll_whose(serial),
+            ))),
         }
     }
 
-    /// The body and hue a paperdoll of this mobile draws, or `None` for a
-    /// mobile this client knows nothing about.
+    /// Whether a paperdoll is this client's own, which is the only thing the
+    /// frame is chosen by — `LocalSerial == World.Player` in the reference.
     ///
-    /// The player's own body is not in `WorldView::mobiles` — a shard never
-    /// sends a client a `0x77` about itself — so its own paperdoll is the one
-    /// that has to read [`Player`](openshard_client_net::view::Player), which
-    /// is also the only place its equipment is.
-    fn paperdoll_body(&self, serial: Serial) -> Option<(u16, Hue)> {
-        let view = self.view.as_ref()?;
-        if view.player.serial == serial {
-            return Some((view.player.body.0, view.player.hue));
+    /// Offline there is no player, and a window that cannot exist is answered
+    /// for as a stranger's rather than with an `Option` every caller would have
+    /// to unwrap into the same picture.
+    fn paperdoll_whose(&self, serial: Serial) -> paperdoll::Whose {
+        match self
+            .view
+            .as_ref()
+            .is_some_and(|view| view.player.serial == serial)
+        {
+            true => paperdoll::Whose::Own,
+            false => paperdoll::Whose::Another,
         }
-        let mobile = view.mobiles.get(&serial)?;
-        Some((mobile.body.0, mobile.hue))
     }
 
     /// Which window the cursor is over, topmost first, or `None`.
@@ -4419,16 +4423,12 @@ impl App {
                             // about which body it is, is a window that cannot
                             // be closed.
                             let own = view.player.serial == serial;
-                            let (body, hue) = match own {
-                                true => (view.player.body.0, view.player.hue),
-                                false => match view.mobiles.get(&serial) {
-                                    Some(mobile) => (mobile.body.0, mobile.hue),
-                                    // A paperdoll of a mobile this client has
-                                    // never been told the body of: nothing to
-                                    // draw, and the window is still in the list
-                                    // for the frame the `0x77` arrives on.
-                                    None => continue,
-                                },
+                            let body = match own {
+                                true => Some((view.player.body.0, view.player.hue)),
+                                // A paperdoll of a mobile this client has never
+                                // been told the body of: the frame is drawn and
+                                // the doll is not, until the `0x77` arrives.
+                                false => view.mobiles.get(&serial).map(|m| (m.body.0, m.hue)),
                             };
                             // The `0x88` carries no equipment — see
                             // `WorldView::paperdolls` — so it is read off the
@@ -4440,12 +4440,22 @@ impl App {
                                     None => Vec::new(),
                                 },
                             };
-                            let wearer = paperdoll::Wearer {
+                            let wearer = body.map(|(body, hue)| paperdoll::Wearer {
                                 body,
                                 hue,
                                 equipment: &equipment,
+                            });
+                            let whose = match own {
+                                true => paperdoll::Whose::Own,
+                                false => paperdoll::Whose::Another,
                             };
-                            windows.push(paperdoll::window(&wearer, &self.equip_conv, files, open.at));
+                            windows.push(paperdoll::window(
+                                wearer.as_ref(),
+                                whose,
+                                &self.equip_conv,
+                                files,
+                                open.at,
+                            ));
                         }
                     }
                 }

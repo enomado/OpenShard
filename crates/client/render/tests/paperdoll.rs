@@ -12,7 +12,7 @@
 
 use openshard_client_render::gump::{GumpArt, GumpPixel};
 use openshard_client_render::mobiles::EquipmentLayer;
-use openshard_client_render::paperdoll::{self, FEMALE_GUMP_OFFSET, MALE_GUMP_OFFSET, Wearer};
+use openshard_client_render::paperdoll::{self, FEMALE_GUMP_OFFSET, MALE_GUMP_OFFSET, Wearer, Whose};
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::gumpart::Gumps;
@@ -49,11 +49,13 @@ fn anim_id(tiledata: &TileData, graphic: u16) -> u16 {
     tiledata.static_tile(graphic).anim_id
 }
 
-/// The window is the body first, then what is worn, then the backpack — and
-/// every one of them is a gump the client ships.
+/// The window is the frame first, then the body, then what is worn, then the
+/// backpack — and every one of them is a gump the client ships.
 ///
-/// The backpack's position in the list is the claim worth the test: it is drawn
-/// *outside* the ordering, last, because nothing is ever drawn over it.
+/// Two claims worth the test. The frame is the *window*, so it is at the
+/// window's own origin and everything inside it is one `BODY_AT` further in —
+/// one offset for the whole stack, not one per garment. And the backpack is
+/// drawn *outside* the ordering, last, because nothing is ever drawn over it.
 #[test]
 #[ignore]
 fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
@@ -71,20 +73,29 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
         hue: Hue::NONE,
         equipment: &equipment,
     };
-    let pictures = paperdoll::window(&wearer, &equip_conv, &gumps, GumpPixel::new(100, 50));
+    let at = GumpPixel::new(100, 50);
+    let pictures = paperdoll::window(Some(&wearer), Whose::Own, &equip_conv, &gumps, at);
 
-    assert_eq!(pictures.len(), 4, "a body, two garments and a bag");
+    assert_eq!(pictures.len(), 5, "a frame, a body, two garments and a bag");
     assert_eq!(
         pictures[0].graphic,
-        GumpArt::Gump(Graphic(0x000C)),
-        "the male body is the first picture"
+        GumpArt::Gump(paperdoll::frame(Whose::Own)),
+        "the frame is the first picture, and it is our own doll's"
     );
-    for picture in &pictures {
+    assert_eq!(pictures[0].at, at, "the frame is the window");
+    assert_eq!(
+        pictures[1].graphic,
+        GumpArt::Gump(Graphic(0x000C)),
+        "the male body is drawn on it"
+    );
+    for picture in &pictures[1..] {
         assert_eq!(
             picture.at,
-            GumpPixel::new(100, 50),
-            "every layer is at the origin"
+            GumpPixel::new(at.x + paperdoll::BODY_AT.x, at.y + paperdoll::BODY_AT.y),
+            "every layer sits at the one origin inside the frame"
         );
+    }
+    for picture in &pictures {
         let GumpArt::Gump(graphic) = picture.graphic else {
             panic!("a paperdoll draws gump art and nothing else");
         };
@@ -96,7 +107,7 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
     }
     let backpack = paperdoll::gump_of(MALE, anim_id(&tiledata, 0x0E75), false, &equip_conv, &gumps);
     assert_eq!(
-        pictures[3].graphic,
+        pictures[4].graphic,
         GumpArt::Gump(backpack),
         "the backpack is drawn last, outside the order"
     );
@@ -117,8 +128,55 @@ fn a_layer_with_no_anim_id_draws_nothing() {
         hue: Hue::NONE,
         equipment: &equipment,
     };
-    let pictures = paperdoll::window(&wearer, &equip_conv, &gumps, GumpPixel::new(0, 0));
-    assert_eq!(pictures.len(), 1, "the body, and nothing for the ring");
+    let pictures = paperdoll::window(
+        Some(&wearer),
+        Whose::Another,
+        &equip_conv,
+        &gumps,
+        GumpPixel::new(0, 0),
+    );
+    assert_eq!(
+        pictures.len(),
+        2,
+        "the frame and the body, and nothing for the ring"
+    );
+}
+
+/// A paperdoll of a mobile this client has never been told the body of is a
+/// frame and nothing else — not an empty window.
+///
+/// The claim is about what a window *is*: the frame is what the pointer finds
+/// and what the right button closes, so a doll waiting on its `0x77` has to
+/// keep it. Drawing nothing at all would leave a window in the list that
+/// nothing on screen corresponds to.
+#[test]
+#[ignore]
+fn a_paperdoll_of_an_unknown_body_is_still_a_frame() {
+    let Some((gumps, equip_conv, _)) = client() else {
+        return;
+    };
+    let pictures = paperdoll::window(None, Whose::Another, &equip_conv, &gumps, GumpPixel::new(0, 0));
+    assert_eq!(pictures.len(), 1);
+    assert_eq!(
+        pictures[0].graphic,
+        GumpArt::Gump(paperdoll::frame(Whose::Another))
+    );
+}
+
+/// The two frames are two different pictures, and both are shipped: the one
+/// with room for the buttons a player gets over their own doll, and the plain
+/// one a stranger's is drawn in.
+#[test]
+#[ignore]
+fn both_frames_are_pictures_the_client_ships_and_they_differ() {
+    let Some((gumps, _, _)) = client() else {
+        return;
+    };
+    let own = paperdoll::frame(Whose::Own);
+    let another = paperdoll::frame(Whose::Another);
+    assert_ne!(own, another);
+    assert!(gumps.has(own).expect("the container reads"));
+    assert!(gumps.has(another).expect("the container reads"));
 }
 
 /// The two offsets, and the fallback between them.
