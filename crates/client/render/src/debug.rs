@@ -55,11 +55,9 @@ pub enum View {
     /// The lighting alone — ambient plus every flame — with the art thrown away.
     ///
     /// The pools' shapes, with nothing under them to hide a step or a seam.
-    /// Tone mapped rather than clamped — a flame's multiplier is past `1.0` for
-    /// the whole middle of its pool, and a clamp drew that middle as one flat
-    /// white disc. What is read off this view is an ordering, not a level: `1.0`
-    /// is drawn as a half and nothing ever reaches white. `blit.wgsl` has the
-    /// curve.
+    /// Everything below `blit.wgsl`'s `KNEE` is drawn as itself, and what is
+    /// above it — the middle of every pool, which a clamp used to draw as one
+    /// flat white disc — is bent towards white without ever reaching it.
     Light = 5,
     /// The shadow term alone: how much of the *nearest reaching* flame survived
     /// the walk. White is an open path, black is a wall, grey is a partial

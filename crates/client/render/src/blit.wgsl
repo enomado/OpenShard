@@ -453,6 +453,32 @@ fn sunlight(at: vec3<f32>) -> f32 {
     return through;
 }
 
+// Where the light view stops being the multiplier and starts being a curve.
+//
+// The view's problem is that the interesting range is not `0..=1`. A night
+// ambient is `0.36`, a torch adds `0.95` on top of it and a lit day is past
+// `1.1`, so a clamp — which is what this was — painted the middle of every pool
+// one flat white disc, and the middle is exactly the part of a flame's shape
+// nothing else shows: the lit frame multiplies the art by it, and the art is
+// dark, so the clipping never appears there.
+//
+// A tone map over the whole range is the other wrong answer, and it was tried:
+// pulling `0.36` down to `0.26` and `1.27` to `0.56` leaves a picture where the
+// lamp does not read as a lamp. So the curve is identity below `KNEE` and an
+// exponential approach to `1.0` above it — everything a person reads as a level
+// is untouched, and only what was being clipped is bent. Monotone and unbounded:
+// nothing reaches white, so a step or a seam anywhere above the knee is still a
+// step, and two flames overlapping still differ from one.
+const KNEE: f32 = 0.6;
+
+fn knee(value: f32) -> f32 {
+    if value <= KNEE {
+        return value;
+    }
+    let headroom = 1.0 - KNEE;
+    return KNEE + headroom * (1.0 - exp(-(value - KNEE) / headroom));
+}
+
 // One of the pass's own values, as a colour.
 //
 // Every argument here is something the lit path already computed — none of these
@@ -537,19 +563,9 @@ fn debug_color(
     }
     if view == VIEW_LIGHT {
         // The lighting with the art thrown away: the pools' own shapes, where a
-        // seam or a step has nothing to hide behind.
-        //
-        // Tone mapped and not clamped, which is the whole difference between this
-        // view working and not. A flame's multiplier passes `1.0` well before its
-        // pool ends — a torch is `0.95` on top of the ambient at its centre — so
-        // `min(lit, 1)` painted the core of every pool one flat white disc, and
-        // the core is exactly the part of the shape nothing else shows: the lit
-        // frame multiplies the art by it, and the art is dark, so the clipping
-        // never appears there. Reinhard, because it is monotone and unbounded: `0`
-        // stays `0`, every step and seam anywhere in the range is still a step
-        // here, and nothing ever reaches `1`. The number read off this view is
-        // therefore a rank and not a level, which is what a shape is read as.
-        return lit / (1.0 + lit);
+        // seam or a step has nothing to hide behind. `KNEE` is why it is not a
+        // clamp and not a tone map either.
+        return vec3<f32>(knee(lit.r), knee(lit.g), knee(lit.b));
     }
     if view == VIEW_SHADOW {
         // Blue for "no flame reaches here at all", which is a different fact
