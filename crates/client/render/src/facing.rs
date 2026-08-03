@@ -1218,32 +1218,92 @@ pub fn prism_of(image: &Image) -> Option<Prism> {
 /// it is 0.4, because a refusal with no number attached cannot be argued with.
 /// [`prism_of`] is this with [`PRISM_FITS`] applied.
 pub fn best_prism(image: &Image) -> (Prism, f32) {
+    let drawn = drawn_count(image);
     let mut best = (Prism::box_of(0), 0.0);
-    let mut consider = |candidate: Prism| {
-        let score = silhouettes_agree(image, &prism_silhouette(&candidate));
-        if score > best.1 {
-            best = (candidate, score);
+    for candidate in candidates() {
+        // **An exact bound, not a heuristic.** The score is
+        // `both / either`, and whatever the two silhouettes overlap, `both` is at
+        // most the smaller drawn count and `either` at least the larger — so
+        // `min / max` is a ceiling on what scoring this candidate could return.
+        // A candidate that cannot beat the best already found is skipped without
+        // its pixels being walked, and no candidate that could beat it is.
+        //
+        // It is most of the search: the drawn counts are dominated by height, so
+        // a picture ten rows tall dismisses every prism twice its size on one
+        // division. Nothing about the answer changes — `tests/prism.rs` scores
+        // the same stairs at the same numbers.
+        let (low, high) = (drawn.min(candidate.drawn), drawn.max(candidate.drawn));
+        let ceiling = match high {
+            0 => 0.0,
+            _ => low as f32 / high as f32,
+        };
+        if ceiling <= best.1 {
+            continue;
         }
-    };
-    for height in 0..=MAX_PRISM {
-        consider(Prism::box_of(height));
-    }
-    for up in [Face::North, Face::East, Face::South, Face::West] {
-        for treads in 2..=MAX_TREADS {
-            for top in 1..=u16::from(MAX_PRISM) {
-                // An even climb: the treads rise in equal steps to `top`, which
-                // is how every stair the client draws is built. An uneven profile
-                // is a search this does not make until a graphic wants one — and
-                // a graphic that wants one shows up as a *score*, not as a
-                // silent wrong answer.
-                let profile: Vec<u8> = (1..=treads).map(|i| (top * i / treads) as u8).collect();
-                // The profile is `treads` long and `treads` runs to `MAX_TREADS`,
-                // so this is a legal prism by construction.
-                consider(Prism::new(up, &profile).unwrap());
-            }
+        let score = silhouettes_agree(image, &candidate.silhouette);
+        if score > best.1 {
+            best = (candidate.prism, score);
         }
     }
     best
+}
+
+/// One prism [`best_prism`] scores a picture against, with its silhouette
+/// already drawn and counted.
+struct Candidate {
+    prism: Prism,
+    silhouette: Image,
+    /// How many pixels that silhouette draws inside the 44-wide tile — the
+    /// `either` term's floor and the `both` term's ceiling, see [`best_prism`].
+    drawn: u32,
+}
+
+/// Every prism the search considers, in the order it considers them.
+///
+/// **The candidate set does not depend on the picture.** It is `MAX_PRISM` boxes
+/// and one flight of stairs per (face, treads, top), and drawing one silhouette
+/// samples the tile 129×129 times — so drawing them per graphic is 261 of those
+/// per picture, against 39,189 pictures in a real install, to redraw the same 261
+/// shapes 39,189 times. That is the difference between a scan measured in seconds
+/// and one that does not finish, and it is what the atlas pays on the render
+/// thread when there is no table beside the install to read instead
+/// (`crate::occlusion::Shape::of`).
+///
+/// A `OnceLock` here is a memo and not state: the table is a pure function of the
+/// constants above it, every caller sees the same one, and nothing can write to
+/// it. The workspace's rule is about a *world* nothing owns.
+fn candidates() -> &'static [Candidate] {
+    static CANDIDATES: std::sync::OnceLock<Vec<Candidate>> = std::sync::OnceLock::new();
+    CANDIDATES.get_or_init(|| {
+        let mut candidates = Vec::new();
+        let mut push = |prism: Prism| {
+            let silhouette = prism_silhouette(&prism);
+            candidates.push(Candidate {
+                prism,
+                drawn: drawn_count(&silhouette),
+                silhouette,
+            });
+        };
+        for height in 0..=MAX_PRISM {
+            push(Prism::box_of(height));
+        }
+        for up in [Face::North, Face::East, Face::South, Face::West] {
+            for treads in 2..=MAX_TREADS {
+                for top in 1..=u16::from(MAX_PRISM) {
+                    // An even climb: the treads rise in equal steps to `top`,
+                    // which is how every stair the client draws is built. An
+                    // uneven profile is a search this does not make until a
+                    // graphic wants one — and a graphic that wants one shows up
+                    // as a *score*, not as a silent wrong answer.
+                    let profile: Vec<u8> = (1..=treads).map(|i| (top * i / treads) as u8).collect();
+                    // The profile is `treads` long and `treads` runs to
+                    // `MAX_TREADS`, so this is a legal prism by construction.
+                    push(Prism::new(up, &profile).unwrap());
+                }
+            }
+        }
+        candidates
+    })
 }
 
 /// How much two silhouettes agree: the drawn pixels they share over the drawn
@@ -1273,6 +1333,22 @@ fn silhouettes_agree(art: &Image, model: &Image) -> f32 {
         0 => 0.0,
         _ => both as f32 / either as f32,
     }
+}
+
+/// How many pixels a picture draws inside the 44-wide tile, counted the way
+/// [`silhouettes_agree`] counts them: bottom row aligned, centre column aligned,
+/// and whatever falls outside the tile's width not counted at all.
+///
+/// It is one of the two silhouettes' side of that comparison on its own, which is
+/// what makes it a bound on the comparison — see [`best_prism`].
+fn drawn_count(image: &Image) -> u32 {
+    let mut drawn = 0;
+    for column in 0..44u16 {
+        for row in 0..image.height() {
+            drawn += u32::from(drawn_at(image, column, row));
+        }
+    }
+    drawn
 }
 
 /// Whether a picture draws anything `row` rows up from its own bottom edge, in

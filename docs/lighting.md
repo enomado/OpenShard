@@ -4002,3 +4002,37 @@ Found on a staircase in Britain:
     wants a third verdict in the grammar and a `FORMAT` bump, and `artscan` is
     where the measurement belongs anyway: the fit is a few hundred silhouettes a
     picture, which is decision 31's whole argument.
+
+Found while chasing a client that took half a minute to open a window:
+
+- **The prism search redrew its candidates once per picture, and that cost was
+  paid on the render thread.** `best_prism` scored a graphic against 261
+  candidates and *drew* each one as it went — 129×129 samples a silhouette — so
+  every corner the face detector found paid a quarter of a million tile samples.
+  The candidate set does not depend on the picture, which is the whole of the
+  defect: `artscan` went from **more than ten minutes** (it never finished) to
+  **eleven seconds**, and the table-less client, which measures as the atlas
+  packs, went from **27 seconds of black screen before the first frame** to no
+  measurable stall. The candidates are drawn once (`facing::candidates`) and a
+  candidate whose drawn-pixel count cannot beat the best score already found is
+  never walked — an exact bound, `min / max` over the two counts, so the answers
+  are identical: `tests/prism.rs` still scores the same stairs at 0.977 and
+  0.975 and the same wall at 0.812.
+  Two things worth carrying. **The cost was invisible because it was in the
+  fallback**: decision 31.6 says a missing table is a log line and a slow first
+  frame, and "slow" silently became "the window does not appear" when step 22
+  added a search to `Shape::of`. A fallback nobody times is a fallback that can
+  cost anything. And **the same shape is waiting for the thickness search** the
+  entry above proposes — scoring a box of thickness `t` per picture is another
+  candidate set that does not depend on the picture, and it should be built the
+  same way rather than measured, found slow, and fixed again.
+- **A table makes the client read stairs as corners, and nothing says so.** The
+  entry above records that `ArtTable` carries no prism; what was not written down
+  is that this is now a *behavioural* difference a person can turn on by running
+  a tool. Run `artscan`, and the graphics the atlas would have measured a prism
+  for come back from the table with `prism: None` — the staircase quietly goes
+  back to occluding like a run of wall, and the log line says only how many
+  pictures were read. Until the grammar carries the third verdict, the honest
+  states are "no table" and "a table with prisms in it"; the one in between is a
+  trap, and `Shape::of`'s doc — *two routes to one answer is how a table and a
+  client come to disagree about a picture* — already named it in the abstract.

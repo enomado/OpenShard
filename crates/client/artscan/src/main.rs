@@ -5,13 +5,23 @@
 //! OPENSHARD_CLIENT=… cargo run -p openshard-client-artscan
 //! ```
 //!
-//! **Four seconds** on a 2D client of 39,189 pictures, in an ordinary `cargo run`
-//! — measured, and lower than this file first guessed, because the two crates
-//! that do the work are already at `opt-level = 1` in the dev profile (the root
-//! `Cargo.toml` says why). Worth knowing precisely, because the budget is the
-//! whole point of `docs/lighting.md`'s decision 31: what a measurement may cost
-//! here is a minute, and today's spends four seconds of it. The next measurement
-//! — step 16's aperture — has that whole minute to spend.
+//! **Eleven seconds** on a 2D client of 39,189 pictures, in an ordinary
+//! `cargo run` — measured, and lower than this file first guessed, because the
+//! two crates that do the work are already at `opt-level = 1` in the dev profile
+//! (the root `Cargo.toml` says why). Worth knowing precisely, because the budget
+//! is the whole point of `docs/lighting.md`'s decision 31: what a measurement may
+//! cost here is a minute, and today's spends eleven seconds of it.
+//!
+//! Four of those seconds were the faces and the windows; the prism search
+//! (`facing::best_prism`, step 22's climbable statics) is the other seven, over
+//! the 4,362 pictures the face detector calls corners. It was **more than ten
+//! minutes** when it landed, and this is the one place that number is visible:
+//! the search redrew the same 261 candidate silhouettes for every one of those
+//! pictures, and the atlas pays the same cost per graphic it packs when there is
+//! no table beside the install to read instead — which was a client that took
+//! half a minute to put a window up. The candidates are drawn once now and a
+//! candidate that cannot beat the best score found is not walked at all; see
+//! `facing::candidates`.
 //!
 //! What it prints is the coverage, because a detector with no coverage count is a
 //! green light for having checked nothing: how many pictures were looked at, how
