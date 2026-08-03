@@ -31,4 +31,4 @@
 # row — see `an_override_sheet_hands_its_rows_to_a_measured_table` in
 # `arttable.rs` — because a row invented to exercise it would be a wrong answer
 # shipped to every shard.
-table 2
+table 3

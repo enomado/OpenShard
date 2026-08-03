@@ -58,6 +58,14 @@ const MUST_READ_CORNERS: usize = 100;
 /// install with a window or two fewer.
 const MUST_READ_HOLES: usize = 30;
 
+// **The solids have no floor here yet, and that is on purpose rather than an
+// oversight.** A floor is a number somebody measured off an install — that is
+// what makes the three above worth anything — and nobody has run this sweep
+// against one since the table learned to carry a prism. It prints, and the floor
+// goes in the day the print has a number in it. What covers the feature until
+// then is the per-graphic comparison at the end of this test: it compares whole
+// `Shape`s, so a prism the file loses is a failure with the graphic's id on it.
+
 /// **The table says exactly what a live measurement says.**
 ///
 /// Every graphic the install ships, twice: once through [`artscan::measure`] and
@@ -83,6 +91,7 @@ fn a_written_table_says_what_a_live_measurement_says() {
     println!("read:              {}", table.decided());
     println!("corners:           {}", table.corners());
     println!("holes:             {}", table.holed());
+    println!("solids:            {}", table.prisms());
     assert!(
         table.examined() >= MUST_EXAMINE,
         "a sweep that looked at {} pictures did not look at an install",

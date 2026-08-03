@@ -3996,12 +3996,19 @@ Found on a staircase in Britain:
     is one. Until that lands, a flight of steps occludes as a single box the
     height of its top tread. *(and the box turned out not to live in the tile's
     own coordinates either — decision 38, step 23)*
-  - **`ArtTable` does not carry a prism.** A row is `facing` and `hole`, so a
-    solid measured by `Shape::of` on a machine with no table is lost on one that
-    has it — the client would quietly go back to reading stairs as corners. It
-    wants a third verdict in the grammar and a `FORMAT` bump, and `artscan` is
-    where the measurement belongs anyway: the fit is a few hundred silhouettes a
-    picture, which is decision 31's whole argument.
+  - ~~**`ArtTable` does not carry a prism.**~~ **Done.** A row is `facing`,
+    `hole` and now `prism U h…` — the face the climb ends at and one height per
+    tread — at `FORMAT` 3, so a format-2 table is refused rather than half-read
+    into a world where every staircase is a corner of two walls. It rides
+    *beside* the verdict rather than replacing it, because the corner is what the
+    wall detector really says about the picture and `Builder::add` is the one
+    that picks between them on `CLIMBABLE`. A `face` may not carry one, which is
+    the mirror of the hole's rule and comes from the same place: `Shape::of`
+    scores prisms only against a picture it read as a corner, so a row saying
+    otherwise would state what no detector will. `artscan` reports `solids:`
+    beside `corners:` and `windows:` — the number that says the seconds a scan
+    spends searching bought something, and the one a tightened gate would show up
+    in and nowhere else.
 
 Found while chasing a client that took half a minute to open a window:
 
@@ -4026,13 +4033,26 @@ Found while chasing a client that took half a minute to open a window:
   entry above proposes — scoring a box of thickness `t` per picture is another
   candidate set that does not depend on the picture, and it should be built the
   same way rather than measured, found slow, and fixed again.
-- **A table makes the client read stairs as corners, and nothing says so.** The
-  entry above records that `ArtTable` carries no prism; what was not written down
-  is that this is now a *behavioural* difference a person can turn on by running
-  a tool. Run `artscan`, and the graphics the atlas would have measured a prism
-  for come back from the table with `prism: None` — the staircase quietly goes
-  back to occluding like a run of wall, and the log line says only how many
-  pictures were read. Until the grammar carries the third verdict, the honest
-  states are "no table" and "a table with prisms in it"; the one in between is a
-  trap, and `Shape::of`'s doc — *two routes to one answer is how a table and a
-  client come to disagree about a picture* — already named it in the abstract.
+- ~~**A table makes the client read stairs as corners, and nothing says so.**~~
+  **Fixed by the same change, and it is the half of it that mattered.** The
+  entry recorded that `ArtTable` carried no prism; what was not written down is
+  that this was a *behavioural* difference a person could turn on by running a
+  tool — run `artscan`, and the graphics the atlas would have measured a prism
+  for came back from the table with `prism: None`, so the staircase quietly went
+  back to occluding like a run of wall while the log line said only how many
+  pictures were read. The two honest states named there were "no table" and "a
+  table with prisms in it"; the format bump is what removes the one in between,
+  since a table written before the third verdict is now refused by version
+  rather than read as a set of silent `None`s.
+  What is worth carrying out of it: **the measurement was being paid twice or
+  not at all, and never once.** A machine with no table paid the whole prism
+  search while packing the atlas — the 27 seconds of black screen the entry
+  above is about — and a machine with a table paid nothing and got the wrong
+  answer. That is the shape decision 31 exists to prevent, and it came back the
+  moment a *new* verdict was measured without a place in the file to put it. The
+  next detector to land wants its row in the grammar in the same commit, not the
+  one after.
+  Left open: `tests/install.rs` has floors for faces, corners and windows and
+  none for solids, because a floor is a number measured off a real install and
+  nobody has run the sweep since format 3. It prints `solids:`; the floor goes in
+  the day that print has a number in it.

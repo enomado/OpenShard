@@ -118,6 +118,11 @@ fn report(table: &ArtTable, kept: usize) {
     println!("read:              {decided}  ({:.1}%)", share * 100.0);
     println!("corners:           {}", table.corners());
     println!("windows:           {}", table.holed());
+    // The stairs, and the number that says the seconds this run spent searching
+    // for them bought something: the prism search is nearly the whole cost of a
+    // scan, so a gate that stopped admitting prisms would show up here and
+    // nowhere else in this report.
+    println!("solids:            {}", table.prisms());
     println!(
         "authored rows:     {} kept, {} in the table",
         kept,
