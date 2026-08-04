@@ -3466,6 +3466,57 @@ Found while building the treads (step 23.5, in progress and not yet committed):
   written — but the scene it draws is now one command instead of a hand edit,
   and the tread and the lamp it draws are exactly the ones this question is
   about, with nothing else in the picture to confound a reading.
+- **The open question, answered — `faces()`, not the occlusion walk.**
+  `examples/isolated_scene.rs` now has a profile mode
+  (`OPENSHARD_SCENE_PROFILE_FACE=north|east|south|west|flat|upright` plus
+  `_FROM`/`_TO`/`_STEPS`/`_LIGHT`): instead of drawing a frame it walks
+  `light::sample` along a segment and prints each [`light::Reach`]'s `through`
+  and `cone` — the same two numbers `docs/lighting.md`'s corner investigation
+  already leaned on, read straight off the production function rather than
+  re-derived. It also prints `Occlusion::solids_at` for `_AT`'s own tile, so a
+  segment does not have to be guessed at from a picture — this session's stair
+  (`1497,1626,10`, filtered to `0x0739`/`0x0738`) came out as one lid
+  (`z 10..15`, whatever sits under the flight) and three tread strips split
+  along `y` with heights `1, 3, 5` (`z 15..16`, `15..18`, `15..20`), the low
+  one nearest south — `up: North`, confirming the reading `tread_box_of`'s own
+  test already carries.
+
+  Sampling `Surface::Face(South)` and `Surface::Face(North)` on the two
+  riser planes between those strips came back `cone: 0.000` everywhere along
+  their full height. Not a bug: `place()` puts a flame at its tile's *centre*
+  (`+0.5`, easy to forget doing this by hand — the first attempt at this did),
+  and this lamp's centre (`1498.5, 1626.5`) sits almost exactly on this stair
+  tile's own east edge — a full tile east of the risers' `x` and inside the
+  middle tread's own `y` span, so both risers' normals (`[0, ±1]`) are close
+  to perpendicular to the lamp and `faces()` clamps to zero everywhere on
+  them. The risers cannot be the hard edge here; there is no ramp on them to
+  be hard, they are simply always dark, which is correct — a step's riser
+  facing away from the only light nearby *should* be unlit.
+
+  Sampling `Surface::Flat` instead — walked across the three tread **tops**
+  from the low, south one to the high, north one (`(1497.5, 1626.83, 16)` to
+  `(1497.5, 1626.17, 20)`, 20 steps) — is where the cutoff actually is:
+  `cone` falls from `0.273` to `0.000` in the first three samples, a climb of
+  about `0.6` `z` units, and stays at `0.000` for the remaining seventeen —
+  while `through` is still climbing smoothly past it, reaching `1.000` around
+  the fifth sample and staying there until the next tread's own occlusion
+  box interrupts it. So the two hypotheses this session set out to tell apart
+  are told apart: **the facing cutoff is the hard edge, not the occlusion
+  ramp** — `through` never stops being the smooth, roughly-a-third-of-a-tile
+  ramp the corner investigation already measured, but `faces()` gates the
+  lamp off within the first tenth of a tread's climb and holds it at zero for
+  the rest of the flight, which reads as one lit step and then a flat, matte
+  run of tread tops above it — the report's "hard line", now with a name and
+  a place in the code (`FACE_EDGE`, `light.rs`).
+
+  **Not settled, and the natural next step:** whether `FACE_EDGE` (`0.2`
+  tiles) should widen for a flat surface specifically, or whether a stair's
+  own treads want a different treatment entirely — a single `z` climb of
+  several tiles over the run of a flight is a much steeper `z`-over-run ratio
+  than any wall this term was tuned against, so the same width may simply be
+  wrong for this shape. Any change here wants `tests/frame.rs`'s parity test
+  (decision 9) re-run after it, since `blit.wgsl`'s `faces` is the same
+  formula and would need the same edit.
 
 Found while building the spill (step 23.2):
 

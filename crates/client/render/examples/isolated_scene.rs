@@ -46,6 +46,34 @@
 //! - `OPENSHARD_FRAME_VIEW=n` — index into `debug::View::ALL` (`0` `Lit`, `4`
 //!   `Occluders`, `5` `Light`, …). Default `Lit`.
 //!
+//! # Profiling a segment instead of drawing it
+//!
+//! Setting `OPENSHARD_SCENE_PROFILE_FACE` switches the tool from a picture to a
+//! printed table and skips every GPU pass after the scene's lighting is built —
+//! `OPENSHARD_FRAME_DUMP`/`_VIEW` are ignored in this mode. For a question a
+//! picture cannot answer on its own: whether a hard edge in the render is the
+//! occlusion walk (`Reach::through`) or the face's `faces()` cutoff folded into
+//! `Reach::cone` (see `light.rs`'s own doc on the two).
+//!
+//! - `OPENSHARD_SCENE_PROFILE_FACE=north|east|south|west` — which of the tile's
+//!   four vertical faces to sample, i.e. `Spot::face(...)`'s `Face`. Required to
+//!   enter profile mode.
+//! - `OPENSHARD_SCENE_PROFILE_FROM=x,y,z` / `_TO=x,y,z` — the segment to walk,
+//!   in real (fractional allowed) map coordinates.
+//! - `OPENSHARD_SCENE_PROFILE_STEPS=n` — how many samples along it, both ends
+//!   inclusive. Default `40`.
+//! - `OPENSHARD_SCENE_PROFILE_LIGHT=n` — print only [`light::Reach`]s for this
+//!   light index. Default: every light the scene collected.
+//!
+//! ```sh
+//! OPENSHARD_CLIENT=… \
+//!     OPENSHARD_SCENE_AT=1497,1626,10 OPENSHARD_SCENE_TILES=0x0739,0x0738 \
+//!     OPENSHARD_SCENE_GROUND=0 OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+//!     OPENSHARD_SCENE_PROFILE_FACE=south \
+//!     OPENSHARD_SCENE_PROFILE_FROM=1497.0,1627.0,10 OPENSHARD_SCENE_PROFILE_TO=1497.0,1627.0,16 \
+//!     cargo run --release -p openshard-client-render --example isolated_scene
+//! ```
+//!
 //! # Example: the one tile that made the corner in the user's screenshot
 //!
 //! ```sh
@@ -64,6 +92,7 @@ use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
 use openshard_client_render::camera::{Camera, Zoom};
 use openshard_client_render::cutaway::Cutaway;
+use openshard_client_render::geometry::Vec2;
 use openshard_client_render::ground;
 use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::renderer::{GroundRenderer, SpriteRenderer, Target};
@@ -136,6 +165,104 @@ fn parse_extra_item(spec: &str) -> GroundItem {
         ),
         graphic: Graphic(parse_tile_id(graphic)),
         hue: Hue(hue.trim().parse().unwrap_or_else(|_| panic!("hue: {hue:?}"))),
+    }
+}
+
+/// `x,y,z`, all three fractional — [`parse_point`]'s shape, but for a spot
+/// [`run_profile`] wants to place anywhere inside a tile rather than on one.
+fn parse_fpoint(spec: &str) -> (f32, f32, f32) {
+    let coords: Vec<&str> = spec.split(',').collect();
+    let [x, y, z] = coords[..] else {
+        panic!("wanted `x,y,z`, got {spec:?}");
+    };
+    (
+        x.trim().parse().unwrap_or_else(|_| panic!("x: {x:?}")),
+        y.trim().parse().unwrap_or_else(|_| panic!("y: {y:?}")),
+        z.trim().parse().unwrap_or_else(|_| panic!("z: {z:?}")),
+    )
+}
+
+/// `OPENSHARD_SCENE_PROFILE_FACE`'s value, which names a whole [`light::Surface`]
+/// and not just a [`Face`](openshard_client_render::facing::Face) — `flat` and
+/// `upright` are the other two the place attachment can carry, and the doc's
+/// open question is precisely which of the three a real tread's geometry gets
+/// judged as.
+fn parse_surface(spec: &str) -> light::Surface {
+    use openshard_client_render::facing::Face;
+    match spec.trim().to_ascii_lowercase().as_str() {
+        "north" => light::Surface::Face(Face::North),
+        "east" => light::Surface::Face(Face::East),
+        "south" => light::Surface::Face(Face::South),
+        "west" => light::Surface::Face(Face::West),
+        "flat" => light::Surface::Flat,
+        "upright" => light::Surface::Upright,
+        _ => panic!("OPENSHARD_SCENE_PROFILE_FACE wants north/east/south/west/flat/upright, got {spec:?}"),
+    }
+}
+
+/// [`shift`], but for the fractional coordinates [`run_profile`] samples at
+/// rather than the whole tiles the rest of this file moves onto the synthetic
+/// map.
+fn shift_f(anchor: (u16, u16), x: f32, y: f32) -> (f32, f32) {
+    (
+        x - f32::from(anchor.0) + SYN_ANCHOR.0 as f32,
+        y - f32::from(anchor.1) + SYN_ANCHOR.1 as f32,
+    )
+}
+
+/// The profile mode: walk [`Spot::face`](light::Spot::face) along a segment and
+/// print what [`light::sample`] says at each step, instead of drawing a frame.
+///
+/// `through` and `cone` are read straight off [`light::Reach`] rather than
+/// re-derived here, which is the whole point — they are the production
+/// function's own account of "was something in the way" and "was the surface
+/// turned towards the flame", already kept apart for exactly this question. For
+/// a scene with one point light (no [`crate::light::Beam`]), `cone` *is* the
+/// `faces()` term alone.
+fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
+    let surface = parse_surface(&env("OPENSHARD_SCENE_PROFILE_FACE"));
+    let (fx, fy, fz) = parse_fpoint(&env("OPENSHARD_SCENE_PROFILE_FROM"));
+    let (tx, ty, tz) = parse_fpoint(&env("OPENSHARD_SCENE_PROFILE_TO"));
+    let steps: u32 = env_opt("OPENSHARD_SCENE_PROFILE_STEPS")
+        .map(|s| {
+            s.parse()
+                .unwrap_or_else(|_| panic!("OPENSHARD_SCENE_PROFILE_STEPS: {s:?}"))
+        })
+        .unwrap_or(40);
+    let only_light: Option<usize> = env_opt("OPENSHARD_SCENE_PROFILE_LIGHT").map(|s| {
+        s.parse()
+            .unwrap_or_else(|_| panic!("OPENSHARD_SCENE_PROFILE_LIGHT: {s:?}"))
+    });
+
+    println!("profile: surface {surface:?}, {steps} steps from ({fx},{fy},{fz}) to ({tx},{ty},{tz})");
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let (x, y, z) = (fx + (tx - fx) * t, fy + (ty - fy) * t, fz + (tz - fz) * t);
+        let (sx, sy) = shift_f(anchor, x, y);
+        let spot = light::Spot {
+            at: Vec2::new(sx, sy),
+            z,
+            surface,
+        };
+        let sample = light::sample(spot, lighting);
+        print!(
+            "t={t:.3} ({x:.2}, {y:.2}, z {z:.1}) -> brightness {:.3}",
+            sample.brightness()
+        );
+        for reach in &sample.reaches {
+            if only_light.is_some_and(|want| want != reach.light) {
+                continue;
+            }
+            match (reach.within, reach.stopped_by) {
+                (false, _) => print!("  | light {}: outside radius", reach.light),
+                (true, Some((cx, cy))) => print!("  | light {}: stopped at ({cx}, {cy})", reach.light),
+                (true, None) => print!(
+                    "  | light {}: through {:.3} cone {:.3}",
+                    reach.light, reach.through, reach.cone
+                ),
+            }
+        }
+        println!();
     }
 }
 
@@ -374,6 +501,33 @@ fn main() {
         lighting.lights.len(),
         lighting.occlusion.boxes().count(),
     );
+    // Every solid `_AT`'s own tile holds, in real coordinates — the geometry a
+    // profile below is walking across, printed once so the segment it is given
+    // does not have to be guessed from the picture.
+    let (syn_x, syn_y) = shift(anchor, (at.x, at.y));
+    for solid in lighting.occlusion.solids_at(i32::from(syn_x), i32::from(syn_y)) {
+        eprintln!(
+            "  solid: x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.1}..{:.1}, edges {:#06b}, opacity {}",
+            solid.space.min.x,
+            solid.space.max.x,
+            solid.space.min.y,
+            solid.space.max.y,
+            solid.space.min.z,
+            solid.space.max.z,
+            solid.edges,
+            solid.opacity,
+        );
+    }
+
+    // A profile instead of a picture: `light::sample` walked along a segment
+    // rather than `Blit` rasterising a frame, for the question a picture cannot
+    // answer — whether a hard edge on screen is `Reach::through` (occlusion) or
+    // `Reach::cone` (which one of a face's `faces()` and its beam folds into,
+    // see `light.rs`) that is doing the cutting. No GPU work past this point.
+    if env_opt("OPENSHARD_SCENE_PROFILE_FACE").is_some() {
+        run_profile(anchor, &lighting);
+        return;
+    }
 
     let wanted_view = env_opt("OPENSHARD_FRAME_VIEW")
         .and_then(|v| v.parse::<usize>().ok())
