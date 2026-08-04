@@ -2101,6 +2101,51 @@ person picks is one of two questions and holds across frames, while the `z` in
 `BelowFeet` is a fact about the frame it is drawn in. One join, so no stale
 height can be kept anywhere and the two views cannot drift apart.
 
+**40. A surface's normal is a value it carries, not a tag naming which of three
+axes it must be — and it stays a box on the tile grid regardless.** Written down
+because the alternative was argued for at length in the same session that found
+the tread cutoff (`FACE_EDGE`, the backlog under "Found while building the
+treads"), and the argument deserves the answer on the record rather than a
+re-litigation the next time a curved roof or a mountain comes up.
+
+The case *for* a general triangle mesh — arbitrary vertices, a BVH, `Solid`
+becoming index buffers — was that this renderer already builds real geometry
+(decision 39's boxes have eight real corners) and will build more of it, so why
+cap the shape at three constant normals. The answer is that every shape this
+world actually has is already a **box in the tile's own coordinates** — decision
+36 settled that for lids, bodies, treads and footprints, and there is no
+graphic in a stock install whose art implies a wall or a roof that is not one.
+What decision 36 left as a fixed constant is the box's *normal*, taken from
+"which axis-aligned face did the ray land on" rather than computed from the
+box's own geometry — and that is the one thing a box does not have to be
+degenerate about. A **land tile already carries four corner heights**
+(`Map::land_corners`, `crates/common/uofiles/src/map.rs:670`) and
+[`crate::light::Spot::flat`]'s ground case flattens them to one
+(`average_corner_z`) for *position* and has never asked them for a *normal* at
+all — the slope a mountain's art draws is real data this pass already reads and
+already throws away before lighting sees it.
+
+So the box's shading normal generalises from a fixed three-way tag to a value
+computed from whatever vertices the box actually has — a tread's top tilted by
+its own rise and run, a land tile's plane fitted to its four corners — while
+the box stays exactly what decision 36 made it: **anchored to one tile's cell,
+found through the same grid, baked once per block rather than raycast against
+per frame.** That is the whole of what a triangle mesh was being asked to buy
+and the whole of what it would have cost twice over for it: a BVH replacing a
+grid that is free precisely because every box in it is tile-aligned, and a
+ray-plane test becoming a ray-mesh test that `blit.wgsl` and `light.rs` would
+each have to get identically right for decision 9's parity to hold, for
+content — arbitrary curvature — that the stock art never draws. Nothing here
+is drawn as a triangle soup anywhere the client's own files do not already
+imply one, and nothing not tile-aligned is ever asked to occlude.
+
+**Decision 35's ordering still holds and is the gate on the land half of this**:
+land is not in the occlusion grid at all yet, so a land tile's normal has
+nowhere to be read from until it is. The tread half has no such gate — a stair
+is a solid already, decision 36's table already lists it — which is why the
+stairs are where this is proven first (`docs/lighting.md`'s backlog, "Found
+while building the treads", and the handoff that starts the next session).
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -3509,14 +3554,27 @@ Found while building the treads (step 23.5, in progress and not yet committed):
   run of tread tops above it — the report's "hard line", now with a name and
   a place in the code (`FACE_EDGE`, `light.rs`).
 
-  **Not settled, and the natural next step:** whether `FACE_EDGE` (`0.2`
-  tiles) should widen for a flat surface specifically, or whether a stair's
-  own treads want a different treatment entirely — a single `z` climb of
-  several tiles over the run of a flight is a much steeper `z`-over-run ratio
-  than any wall this term was tuned against, so the same width may simply be
-  wrong for this shape. Any change here wants `tests/frame.rs`'s parity test
-  (decision 9) re-run after it, since `blit.wgsl`'s `faces` is the same
-  formula and would need the same edit.
+  **Settled by decision 40, not by widening `FACE_EDGE`.** Widening the
+  constant for `Surface::Flat` specifically was considered and dropped: it is a
+  tuning fix for one shape and would make an ordinary floor a full storey below
+  a lamp bleed light through the widened band it does not have today.
+  `faces()` itself was never the problem — `along = normal · toward` is
+  already a genuine physical distance in tiles from the surface's own plane to
+  the flame (`toward` arrives unnormalised, `light.rs`'s `offset`, built in
+  `sample`), so `FACE_EDGE` stays the one number it is, "how far off the plane
+  before you count as behind it," for *any* unit normal. What was narrow is
+  `Surface`: it could only *hold* three normals — none, straight up, or one of
+  the four cardinal horizontals — because every panel and lid built before this
+  step really did look one of those three ways. A tread top is the first that
+  does not: it is the top face of a box, honestly horizontal, but the shape it
+  is one step of is a ramp, and reads to a light standing beside the flight as
+  something other than a floor.
+
+  Decision 40 is the fix this argues for, generalised past this one stair:
+  `Surface` gains a normal computed from a shape's own geometry instead of a
+  fixed tag, the box stays a box on the tile grid (decision 36), and `faces()`
+  does not change at all. This is where it is proven first — see the handoff
+  that starts the next session on exactly this tread.
 
 Found while building the spill (step 23.2):
 
