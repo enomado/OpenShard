@@ -630,12 +630,85 @@ impl Solid {
         crate::solid::Solid { min, max }
     }
 
+    /// One tread of a climbable static's box: the strip of the tile the tread
+    /// covers along the climb, from the low side to `up`, at its own height.
+    ///
+    /// **Step 23.5's headline fix.** [`Builder::add`]'s climbable branch used to
+    /// call [`Solid::box_of`] once, over the whole tile, to the tallest tread's
+    /// height — the ziggurat step 23.0's own picture found: a flight of nine
+    /// steps read as nine whole-tile bodies stacked to the landing's height. A
+    /// tread's own footprint is a strip perpendicular to the climb, `1 / count`
+    /// of the run wide, at the fraction [`Prism::height_at`] would sample for a
+    /// point in it — so this and that function have to agree on which strip is
+    /// `index`, and both count from the low side (`run = 0`) to `up` (`run = 1`).
+    ///
+    /// The perpendicular axis is the one [`Solid::box_of`]'s panel case already
+    /// names for `up`'s own edge: `up` is `North` or `South` for a climb along
+    /// `y`, `East` or `West` for one along `x`, and the strip is flat on that
+    /// axis and full width on the other.
+    fn tread_box_of(
+        x: i32,
+        y: i32,
+        bottom: i32,
+        up: Face,
+        index: usize,
+        count: usize,
+        height: u8,
+    ) -> crate::solid::Solid {
+        use crate::camera::WorldSpot;
+
+        let (x, y) = (f64::from(x), f64::from(y));
+        let lo = index as f64 / count as f64;
+        let hi = (index + 1) as f64 / count as f64;
+        let (mut min, mut max) = (
+            WorldSpot {
+                x,
+                y,
+                z: f64::from(bottom),
+            },
+            WorldSpot {
+                x: x + 1.0,
+                y: y + 1.0,
+                z: f64::from(bottom) + f64::from(height),
+            },
+        );
+        // `up` names the high side, so the low tread (`index == 0`) sits at the
+        // opposite edge and the run climbs towards `up` as `index` grows — the
+        // mirror image of `Solid::box_of`'s panel, which flattens *onto* the
+        // named edge rather than climbing away from it.
+        match up {
+            Face::North => {
+                min.y = y + 1.0 - hi;
+                max.y = y + 1.0 - lo;
+            }
+            Face::South => {
+                min.y = y + lo;
+                max.y = y + hi;
+            }
+            Face::West => {
+                min.x = x + 1.0 - hi;
+                max.x = x + 1.0 - lo;
+            }
+            Face::East => {
+                min.x = x + lo;
+                max.x = x + hi;
+            }
+        }
+        crate::solid::Solid { min, max }
+    }
+
     /// Which tiles this solid's box touches, as inclusive ranges on each axis.
     ///
-    /// Off [`Solid::space`], not off a kind: a panel is flat on the axis it
-    /// has no extent on, and flooring that axis to itself is what recovers
-    /// the one tile it stands on rather than reading the boundary as
-    /// belonging to the neighbour on the other side of it.
+    /// Off [`Solid::space`], not off a kind alone: a panel is flat on the axis
+    /// it has no extent on, and flooring that axis recovers the one tile it
+    /// stands on — **except** [`Solid::box_of`]'s `EDGE_EAST` and `EDGE_SOUTH`
+    /// cases, whose plane sits at the *far* boundary of their own tile
+    /// (`x + 1`, `y + 1`, an integer) rather than the near one. Flooring that
+    /// integer lands on the neighbour, not the tile the solid was pushed for —
+    /// found on the real map (`tests/cost.rs`'s oracle), where a wall's own
+    /// east panel spilled into the tile to its east and was referenced twice.
+    /// `self.edges` is what tells the two apart; a lid or a body is never
+    /// degenerate on either axis, so it never reaches the branch that reads it.
     ///
     /// [`bake`]'s spill (decision 38.2) is the one caller, and it is why this
     /// exists rather than being folded into it: nothing [`Solid::box_of`]
@@ -644,14 +717,20 @@ impl Solid {
     /// 23.2, and not a case nobody hit. The day a box is wider, this is where
     /// the extra tiles come from, unchanged.
     pub(crate) fn footprint(&self) -> (std::ops::RangeInclusive<i32>, std::ops::RangeInclusive<i32>) {
-        fn axis(min: f64, max: f64) -> std::ops::RangeInclusive<i32> {
-            let lo = min.floor() as i32;
+        // `far` is whether this axis's degenerate plane sits at its tile's
+        // high boundary rather than its low one — see the doc above.
+        fn axis(min: f64, max: f64, far: bool) -> std::ops::RangeInclusive<i32> {
+            let lo = match max > min {
+                true => min.floor() as i32,
+                false if far => min.floor() as i32 - 1,
+                false => min.floor() as i32,
+            };
             let hi = if max > min { max.ceil() as i32 - 1 } else { lo };
             lo..=hi
         }
         (
-            axis(self.space.min.x, self.space.max.x),
-            axis(self.space.min.y, self.space.max.y),
+            axis(self.space.min.x, self.space.max.x, self.edges & EDGE_EAST != 0),
+            axis(self.space.min.y, self.space.max.y, self.edges & EDGE_SOUTH != 0),
         )
     }
 }
@@ -1270,29 +1349,33 @@ impl Builder {
         // it, `movement::scene::stair` stands a walker half way up it — so the
         // measurement is what this believes.
         if let (true, Some(prism)) = (tile.flags.is_climbable(), shape.prism) {
-            self.push(
-                index,
-                Solid {
-                    space: Solid::box_of(
-                        place.0,
-                        place.1,
-                        bottom,
-                        bottom + i32::from(prism.top()),
-                        EDGE_ANY,
-                    ),
-                    opacity,
-                    // A **body**: a solid a ray travels through, rather than a
-                    // plane it is stopped by crossing. That is already the right
-                    // rule for a stair — light climbs a staircase, it does not
-                    // stop dead at one edge of it — and it is as far as one box
-                    // can say. The *treads* are the next step: a tread is a body
-                    // over part of the tile, and one box over the whole of it
-                    // cannot say "part of" however it is stored.
-                    edges: EDGE_ANY,
-                    aperture: None,
-                    roof: tile.flags.is_roof(),
-                },
-            );
+            // Step 23.5: one body per tread, not one body for the whole flight.
+            // Each is still a body a ray travels through rather than a plane it
+            // is stopped by crossing — light climbs a staircase, it does not stop
+            // dead at one edge of it — but now it is stopped by *its own tread's*
+            // height over *its own tread's* strip, so the shape on screen is the
+            // stair rather than a ziggurat to the landing's height.
+            let treads = prism.treads();
+            for (tread, &height) in treads.iter().enumerate() {
+                self.push(
+                    index,
+                    Solid {
+                        space: Solid::tread_box_of(
+                            place.0,
+                            place.1,
+                            bottom,
+                            prism.up(),
+                            tread,
+                            treads.len(),
+                            height,
+                        ),
+                        opacity,
+                        edges: EDGE_ANY,
+                        aperture: None,
+                        roof: tile.flags.is_roof(),
+                    },
+                );
+            }
             return;
         }
         // A floor or a rug is a **lid**: its occlusion is the `z` it lies at and
@@ -2120,21 +2203,27 @@ mod tests {
         assert_eq!(occlusion.finish(&Cutaway::OPEN).at(100, 100).unwrap().top, 10);
     }
 
-    /// **A staircase is a solid, not a corner of a house.**
+    /// **A staircase is treads, not a corner of a house and not a ziggurat.**
     ///
     /// The defect this is the fix for, in the terms the grid sees it: a stair's
     /// base is two 45° runs meeting at the tile's south corner, `facing_of` reads
     /// that as `Corner { East, South }` — the same verdict it reaches about two
     /// walls meeting — and the grid stood two opaque panels on the tile's east and
     /// south edges. A flight of steps then shadowed the street like a run of wall.
+    /// Step 23.1 fixed that far enough to make one whole-tile body of it, which
+    /// step 23.0's own picture then found the next defect in: nine of those,
+    /// stacked to the landing's height, is a ziggurat rather than a stair. Step
+    /// 23.5 is this test's second half.
     ///
-    /// Two things are asserted and they are the two halves of the change. The
-    /// **shape**: one body a ray travels through, on no named edge. And the
-    /// **height**: five, off the picture, where the tile's own field says twenty —
-    /// which is what a climbable static's `height` means about half the time. See
+    /// Three things asserted, one per tread. The **shape**: one body per tread, a
+    /// ray travels through it, on no named edge. The **height**: each tread's own,
+    /// off the picture, where the tile's own field says twenty — which is what a
+    /// climbable static's `height` means about half the time. And the
+    /// **footprint**: each tread is its own strip of the tile, climbing west, so
+    /// the low tread is the strip nearest east and the high one nearest west. See
     /// `Builder::add`, and `docs/lighting.md`'s backlog.
     #[test]
-    fn a_stair_is_a_body_and_its_height_comes_off_the_art() {
+    fn a_stair_is_a_body_per_tread_and_each_ones_height_comes_off_the_art() {
         use crate::facing::{Face, Facing, Prism};
 
         let stair = tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20);
@@ -2146,12 +2235,27 @@ mod tests {
         };
 
         // What the art actually says about `0x0736`: three treads climbing west,
-        // five `z` in all — measured in `tests/prism.rs` against the real sprite.
+        // one to five `z` — measured in `tests/prism.rs` against the real sprite.
         let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
-        let solid = read_as(Shape::solid(prism));
-        assert_eq!(solid.len(), 1, "one surface and not two panels");
-        assert_eq!(solid[0].edges, EDGE_ANY, "a body a ray travels through");
-        assert_eq!(solid[0].top(), 5, "five z of stair, off the picture");
+        let mut solids = read_as(Shape::solid(prism));
+        assert_eq!(solids.len(), 3, "one body per tread, not one for the flight");
+        solids.sort_by_key(|solid| solid.top());
+        let heights: Vec<i32> = solids.iter().map(|solid| solid.top()).collect();
+        assert_eq!(
+            heights,
+            vec![1, 3, 5],
+            "each tread's own height, not the tallest for all three"
+        );
+        for solid in &solids {
+            assert_eq!(solid.edges, EDGE_ANY, "a body a ray travels through");
+        }
+        // West is a strip of `x`, one third of the tile wide each, and the low
+        // tread (height 1) is nearest east — the far side from the climb's `up`.
+        let by_height = |h: i32| solids.iter().find(|solid| solid.top() == h).unwrap();
+        assert!(
+            by_height(1).space.min.x > by_height(5).space.min.x,
+            "the lowest tread's strip is nearest east, the highest nearest west",
+        );
 
         // And with no prism measured it is what it always was: the wall
         // detector's corner, two panels, half the stated height. Nothing gets

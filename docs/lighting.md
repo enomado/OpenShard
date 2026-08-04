@@ -3309,6 +3309,164 @@ Found while re-cutting the plan around decision 38 (nothing was built):
   wherever the top is visible. The way to settle it is the instrument, not an
   argument — score a box of thickness `t` against the sprite and take the best
   `t`, exactly as `facing::best_prism` already takes the best prism.
+Found while building the treads (step 23.5, in progress and not yet committed):
+
+- **A footprint bug from 23.2 that only the real map catches.** `Solid::footprint`
+  floored an `EDGE_EAST`/`EDGE_SOUTH` panel's flat coordinate straight — correct
+  for `EDGE_NORTH`/`EDGE_WEST`, whose plane sits at the tile's own low edge, wrong
+  for the other two, whose plane sits at the *far* edge (`x + 1`, `y + 1`, an
+  integer that floors to the neighbour). `tests/cost.rs`'s oracle
+  (`cached == grid`) is the only thing in the tree that reads a wide-enough real
+  map to hit it — no synthetic scene stood a panel exactly on a block boundary.
+  Fixed by reading `self.edges` in `footprint`'s degenerate branch; see the
+  function's own doc in `occlusion.rs` for the two cases. Found while chasing what
+  turned out to be an unrelated question (below), which is worth remembering the
+  next time a synthetic-scene suite is all green and a real map has not been run
+  through the same oracle.
+- **Reproducing one real place headlessly, for the next session — done.** No GUI
+  is needed — `tests/cost.rs` already opens a headless `wgpu` adapter and can
+  dump any of `debug::View`'s pictures with
+  `OPENSHARD_FRAME_DUMP`/`OPENSHARD_FRAME_VIEW` (see the test's own doc). What was
+  missing was a way to point its camera anywhere but the hardcoded `BRITAIN`
+  constant — every look at the staircase run at `(1494..=1497, 1626..=1627)` the
+  session before this one took a hand edit of `BRITAIN`'s literal and `widest()`
+  → `Zoom::ONE` at every call site, run, then `git checkout -- tests/cost.rs` to
+  undo it. `OPENSHARD_FRAME_AT=x,y,z` now does that: `frame_point_and_zoom`
+  returns `BRITAIN` at `widest()` when unset, and the named point at `Zoom::ONE`
+  — close, since naming a place is for looking closely at it — when it is. The
+  one assertion that only holds at the widest rung (`camera.minifies()`) is
+  skipped when a place is named; the rest of the test's assertions (a lit frame,
+  a standing cell, a changed pixel) still run and still may panic if the named
+  place has nothing lit nearby, which is the honest outcome and not a bug in the
+  env var.
+
+  ```sh
+  OPENSHARD_CLIENT=… OPENSHARD_FRAME_AT=1495,1627,10 \
+      OPENSHARD_FRAME_DUMP=/tmp/lit.ppm OPENSHARD_FRAME_VIEW=0 \
+      cargo test --release -p openshard-client-render --test cost -- --ignored --nocapture
+  ```
+  `OPENSHARD_FRAME_VIEW` is the index into `debug::View::ALL` — `0` is `Lit`,
+  `4` is `Occluders`, `5` is `Light`.
+- **The flame the user means is usually not a map static.** `Solid::footprint`'s
+  own staircase (`1849`/`0x0739`) carries no `LIGHT_SOURCE` flag — it is only
+  steps. The wall sconces standing right next to it (`0x013A`/`0x013B`) do carry
+  the flag but never burn: `light::burns` also requires
+  `occlusion::opacity == CLEAR`, and a bracket mounted flush against a wall has
+  `NO_SHOOT`, so it reads as wall rather than flame — see `burns`'s own doc for
+  why that is the conservative direction and not a bug. What actually lights a
+  place like this is usually a **decoration the running shard placed**, which
+  lives in `openshard.db`'s `decorations` table (a static-like fixture the
+  Community Pack's scripts put down) or `items` (`loc_kind = 0`, something
+  dropped), never in the client's own `.mul`/`.uop` — so `map.statics_at` cannot
+  see it and neither can a raw-file-only reproduction. Pull it straight from the
+  live DB rather than guessing:
+  ```sh
+  sqlite3 openshard.db "select data from decorations" | python3 -c '
+  import sys, json
+  for line in sys.stdin:
+      d = json.loads(line)
+      if d["facet"] == 0 and abs(d["x"] - 1498) <= 2 and abs(d["y"] - 1626) <= 2:
+          print(d)'
+  ```
+  and feed the one result in as a [`crate::items::GroundItem`] — `at`, `graphic`,
+  `hue`, nothing else — passed as `extra_items` everywhere `tests/cost.rs` passes
+  `&[]` today (three call sites: `light::collect`, `occlusion::collect`,
+  `occlusion::bake::collect`). Keep the list to the one lamp the question is
+  about; the DB holds hundreds of decorations in the same block and every one
+  not in reach of the tile in question is noise in the picture and nothing
+  more — pulling the *whole* nearby set once (all 217 within 45 tiles, this
+  session) is worth doing exactly once, to confirm nothing closer was missed,
+  and then thrown away in favour of the one that mattered.
+- **Two debug views that looked like the right instrument and were not.**
+  `View::Height` draws the *drawn sprite's* own per-pixel world height (the
+  `place` attachment `statics.wgsl` writes) — a different mechanism entirely from
+  `occlusion::Solid`, so a stair's art reading as one smooth ramp there says
+  nothing about whether its occlusion is one box or three. `View::Occluders`
+  (`blit.wgsl`'s `merged_at`) reads the tile's *merged* span — the union of every
+  solid on it — which by construction cannot distinguish one whole-tile body from
+  three tread-strips whose union is the same envelope. Neither view answered "did
+  the tread split actually happen"; only `Occlusion::solids_at(x, y)`, read
+  directly in Rust, did — see the recipe above, minus the `OPENSHARD_FRAME_*`
+  vars, plus a loop over `grid.solids_at(tx, ty)`.
+- **What that direct read confirmed, and what is still open.** `tread_box_of`
+  does what it was built to: tile `(1495, 1627)`'s three solids are three `y`
+  strips (`10..=11`, `10..=13`, `10..=15` in `z`, each a third of the tile along
+  the climb), the low one nearest south and the high one nearest the `up: North`
+  the table measured. The user's own screenshot of `View::Light` over this run
+  shows a fine sawtooth along the whole flight where a coarser one stood before —
+  eight tiles × up to three treads is more edges than eight tiles × one box, and
+  that is the geometry working as intended rather than a defect. **What is not
+  settled**: whether that finer edge wants a blur radius wider than a third of a
+  tile so it reads as a staircase and not static, which is a rendering-quality
+  question for the next session and not a correctness one — `tests/cost.rs`'s
+  oracle is green on the real map with the footprint fix in, and the geometry
+  itself is confirmed by direct read rather than by eye.
+- **The user's actual complaint, tracked down — and a wrong first read of it
+  worth leaving in, since it names a trap.** Not the sun (tried first, and
+  wrong — see above), and not the distant flames already in the tree. The real
+  lamp is a decoration at exactly `(1498, 1626, 10)` — see the DB-lookup bullet
+  above — sitting almost on top of the *corner* of the nearest tread box.
+  **First attempt, and wrong:** a hand-rolled ray march (180 rays, stepped
+  `0.02` tile through `Occlusion::solids_at`, `opacity > 128` treated as a flat
+  wall) showed a razor-sharp red/green boundary right at that corner and
+  concluded the pass has no penumbra at all — a boolean test, one sample, done.
+  That conclusion is **wrong**, and the tell was in the tool: that ray march is
+  a diagnostic stand-in, not the pass. The real one is `light::walk_cells`
+  (`light.rs`), and it is deliberately *not* boolean — it spends the length of
+  the ray inside each occluding cell, softened by [`SOFT_CROSSING_MIN`/`_MAX`]
+  and the flame's own size (`FLAME_SPREAD`), exactly so a corner clip is dimmed
+  rather than switched. Sampling the real formula
+  (`light::sample(Spot::at(...), &lighting)`, `Surface::Upright` so the facing
+  term below does not confound it) across the same corner, a hundredth of a
+  tile at a time, gives a genuinely smooth ramp — `through` climbs `0.0 → 1.0`
+  over about a third of a tile, and `brightness` with it, `0.36` to `0.85`
+  continuously, no step anywhere in the trace. **The lesson: a hand-rolled
+  stand-in for a shadow test answers a question about the stand-in, not the
+  shader — sample the production function (`light::sample`) directly, the way
+  `docs/lighting.md` decision 9's parity test already insists on for the GPU
+  side, rather than re-deriving the walk by hand.**
+  What *does* still cut sharply, on the very same tile: [`Surface::Flat`]'s
+  `faces()` term, which multiplies in whether the surface looks toward the
+  flame at all. A tread's flat top looks straight up; a flame sitting well
+  below it (this lamp lifts `FLAME_LIFT` above its base, half a tile — a modest
+  climb) reads as behind the plane, and `faces()` clamps that off over
+  [`FACE_EDGE`] — `0.2` tiles, about `2.2` `z` units [`Z_PER_TILE`]-scaled — a
+  window far narrower than the several `z` units of climb between one tread and
+  the next. So a flat tread-top several steps above a low lamp goes dark not
+  because a box stood in the ray's way but because the surface itself is
+  turned away from the light, and that cutoff is steep enough across a single
+  tread's height to read as a hard line even though `faces()`, like `through`,
+  is a clamped ramp and not a step. **Not settled this session**: which of the
+  two — the occlusion ramp (confirmed soft, a third of a tile wide) or the
+  facing cutoff (confirmed steep, not yet measured against the actual riser
+  geometry the art draws) — is the one a person's eye is catching in the
+  screenshot. Answering that needs `Spot::face(...)` sampled along the tread's
+  actual visible riser, not `Spot::at(...)` on an assumed flat top; left for
+  the next session that has the same lamp handy. The sampling code was
+  disposable, in a temporary `tests/cost.rs` edit, thrown away with
+  `git checkout` same as the recipe above.
+- **A reusable tool for exactly this, so the next session's sampling code does
+  not have to be disposable either.** `examples/isolated_scene.rs` draws a
+  **synthetic** map (`Map::from_blocks`, which never carries statics) and puts
+  back only what is asked for, all through environment variables: the real
+  map's statics within a stated radius of a stated point (optionally filtered
+  to a list of tile IDs), the real ground under them or none at all, and any
+  hand-named extra item — a live-shard decoration such as this lamp, in the
+  shape the DB-lookup recipe above already produces. Turn every knob down and
+  what is left is one tile:
+  ```sh
+  OPENSHARD_CLIENT=… \
+      OPENSHARD_SCENE_AT=1497,1626,10 OPENSHARD_SCENE_TILES=0x0739,0x0738 \
+      OPENSHARD_SCENE_GROUND=0 OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+      OPENSHARD_FRAME_DUMP=/tmp/corner.ppm OPENSHARD_FRAME_VIEW=5 \
+      cargo run --release -p openshard-client-render --example isolated_scene
+  ```
+  See the file's own doc for every knob. It does not answer the open question
+  above by itself — `Spot::face(...)` sampled along the riser still has to be
+  written — but the scene it draws is now one command instead of a hand edit,
+  and the tread and the lamp it draws are exactly the ones this question is
+  about, with nothing else in the picture to confound a reading.
+
 Found while building the spill (step 23.2):
 
 - **`bake::collect_ring`'s widened range still bakes and caches an empty block

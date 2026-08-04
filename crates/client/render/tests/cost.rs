@@ -133,6 +133,36 @@ fn widest() -> Zoom {
     zoom
 }
 
+/// Where to point the camera, and how close: `BRITAIN` at [`widest`] unless
+/// `OPENSHARD_FRAME_AT=x,y,z` names a place, in which case that place at
+/// `Zoom::ONE` — close enough to tell one tile's edge from the next, which is
+/// the point of naming a place at all. Replaces the hand edit
+/// `docs/lighting.md`'s backlog used to describe: `BRITAIN`'s literal and
+/// `widest()` → `Zoom::ONE`, run, then `git checkout -- tests/cost.rs`.
+fn frame_point_and_zoom() -> (Point, Zoom) {
+    match std::env::var("OPENSHARD_FRAME_AT") {
+        Err(_) => (BRITAIN, widest()),
+        Ok(spec) => {
+            let coords: Vec<&str> = spec.split(',').collect();
+            let [x, y, z] = coords[..] else {
+                panic!("OPENSHARD_FRAME_AT wants `x,y,z`, got {spec:?}");
+            };
+            let point = Point::new(
+                x.trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("OPENSHARD_FRAME_AT x: {x:?}")),
+                y.trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("OPENSHARD_FRAME_AT y: {y:?}")),
+                z.trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("OPENSHARD_FRAME_AT z: {z:?}")),
+            );
+            (point, Zoom::ONE)
+        }
+    }
+}
+
 /// One case's reading.
 struct Reading {
     what: &'static str,
@@ -162,13 +192,14 @@ fn measure(
     place: &wgpu::TextureView,
     surface: &wgpu::TextureView,
     lighting: &Lighting,
+    zoom: Zoom,
 ) -> Reading {
     let mut blit = Blit::new(device, openshard_client_render::blit::WORLD_FORMAT);
     let frame = openshard_client_render::blit::Frame {
         target: surface,
         world,
         place,
-        zoom: widest(),
+        zoom,
         rect: ViewportRect {
             x: 0,
             y: 0,
@@ -268,10 +299,13 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     let art = Art::open(&dir).expect("artLegacyMUL.uop");
     let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
 
-    let mut camera = Camera::new(BRITAIN, VIEWPORT.0, VIEWPORT.1);
-    camera.zoom_about(0, 0, widest());
+    let (point, zoom) = frame_point_and_zoom();
+    let mut camera = Camera::new(point, VIEWPORT.0, VIEWPORT.1);
+    camera.zoom_about(0, 0, zoom);
     let (width, height) = camera.image_size();
-    assert!(camera.minifies(), "the widest rung of the ladder minifies");
+    if point == BRITAIN {
+        assert!(camera.minifies(), "the widest rung of the ladder minifies");
+    }
 
     // The world, drawn once, exactly as the app draws it.
     let wanted = ground::visible_graphics(&map, &camera);
@@ -455,6 +489,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 &place_view,
                 &surface_view,
                 lighting,
+                zoom,
             )
         })
         .collect();
@@ -472,7 +507,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 target: &surface_view,
                 world: &world_view,
                 place: &place_view,
-                zoom: widest(),
+                zoom,
                 rect: ViewportRect {
                     x: 0,
                     y: 0,
@@ -514,7 +549,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     // different picture with a different cost.
     let boxes = openshard_client_render::solid::standing(
         &night.occlusion,
-        openshard_client_render::solid::Cut::BelowFeet(BRITAIN.z),
+        openshard_client_render::solid::Cut::BelowFeet(point.z),
     );
     let mut solids_pass = SolidsRenderer::new(&device, format);
     let solids_frame = openshard_client_render::solids::Frame {
@@ -591,10 +626,8 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     }
 
     eprintln!(
-        "\nBritain at {}, {}x{} on screen, world image {width}x{height}",
-        widest(),
-        VIEWPORT.0,
-        VIEWPORT.1
+        "\n{point:?} at {zoom}, {}x{} on screen, world image {width}x{height}",
+        VIEWPORT.0, VIEWPORT.1
     );
     eprintln!(
         "{} flames, {cells} standing cells in a {}x{} grid holding {} solids under {} \
