@@ -3576,6 +3576,44 @@ Found while building the treads (step 23.5, in progress and not yet committed):
   does not change at all. This is where it is proven first — see the handoff
   that starts the next session on exactly this tread.
 
+  **Landed, CPU side — decision 40's steps 1 through 3.**
+  `light::Surface` gained a fourth case, `Sloped([f32; 3])`, a unit normal
+  carried as a value; `facing::Prism::tread_normal(index)` computes one tread's
+  normal from its own rise (the step from the previous tread's own height, or
+  from the static's base for `index == 0`) over its own run (`1 / treads().len()`).
+  `examples/isolated_scene.rs`'s profile mode grew a fourth surface,
+  `OPENSHARD_SCENE_PROFILE_FACE=tread` plus `_TREAD_UP`/`_TREAD_HEIGHTS`, so the
+  fix could be checked against the exact scene the previous session's report
+  came from rather than a fresh one.
+
+  **The sign was not obvious and the first guess was wrong.** The physically
+  tidy derivation — a hillside's own outward normal, leaning *back* over the
+  low ground it rose from, away from `Prism::up` — read every sample of the
+  reproduction's walk as `cone: 0.000`, worse than before this landed. Tilting
+  the other way — *towards* `up`, blending `Surface::Flat`'s `[0, 0, 1]`
+  towards `Surface::Face(up)`'s own horizontal normal as the slope steepens —
+  took `cone` from the reported `0.273 → 0.000` cliff in three samples to a
+  smooth `0.715 → 0.584 → 0.453 → 0.321 → 0.190 → 0.059 → 0.000` decay over six,
+  tracking `through` the way decision 40 asked for. The justification found
+  afterwards, not before: the lamp this scene's report is about, and every
+  stairwell fixture like it, sits mounted on the wall a flight climbs *towards*
+  — at a landing, or the top — not planted at its foot, so a tread reading
+  partly like the wall it climbs into is the ordinary case, not the exotic one.
+  Recorded in `facing::Prism::tread_normal`'s own doc, with the wrong sign's
+  measurement kept there too, since the derivation that looked right was not.
+
+  **Not done — decision 40's steps 4 and 5, and they are a real design
+  question, not a mechanical follow-on.** `Surface::Sloped` has no
+  `Stance`/place-attachment encoding: the tread's normal is real only on the
+  CPU side (`light::sample`, the profile tool) — `blit.wgsl`'s own normal
+  choice, and how an arbitrary computed normal reaches a fragment shader at
+  all given `place::Stance`'s four-bit budget, is unresolved and wants its own
+  session rather than a rushed bit-packing choice bolted onto this one.
+  `Surface::shadowed_by_own_tile` also does not ask a `Sloped` surface
+  anything (falls through to `0`, i.e. never self-shadowed) — decision 40 left
+  this as a one-off design question for whenever `Sloped` grows a second
+  caller, not a reason for the match's variants to keep multiplying.
+
 Found while building the spill (step 23.2):
 
 - **`bake::collect_ring`'s widened range still bakes and caches an empty block

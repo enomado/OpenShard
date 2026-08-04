@@ -55,11 +55,17 @@
 //! occlusion walk (`Reach::through`) or the face's `faces()` cutoff folded into
 //! `Reach::cone` (see `light.rs`'s own doc on the two).
 //!
-//! - `OPENSHARD_SCENE_PROFILE_FACE=north|east|south|west` — which of the tile's
-//!   four vertical faces to sample, i.e. `Spot::face(...)`'s `Face`. Required to
-//!   enter profile mode.
+//! - `OPENSHARD_SCENE_PROFILE_FACE=north|east|south|west|flat|upright|tread` —
+//!   which [`light::Surface`] to sample. The four faces are `Spot::face(...)`'s
+//!   `Face`; `tread` is `Surface::Sloped`, decision 40's tread normal, computed
+//!   from a `Prism` built off `OPENSHARD_SCENE_PROFILE_TREAD_UP` (which edge it
+//!   climbs towards) and `OPENSHARD_SCENE_PROFILE_TREAD_HEIGHTS` (comma-separated
+//!   tread heights, low to high) — the same two the real detector would read off
+//!   the art. Required to enter profile mode.
 //! - `OPENSHARD_SCENE_PROFILE_FROM=x,y,z` / `_TO=x,y,z` — the segment to walk,
-//!   in real (fractional allowed) map coordinates.
+//!   in real (fractional allowed) map coordinates. For `tread`, this segment's
+//!   own progress (`0` at `_FROM`, `1` at `_TO`) doubles as the run fraction
+//!   [`Prism::height_at`] samples, so it should span one tread's own climb.
 //! - `OPENSHARD_SCENE_PROFILE_STEPS=n` — how many samples along it, both ends
 //!   inclusive. Default `40`.
 //! - `OPENSHARD_SCENE_PROFILE_LIGHT=n` — print only [`light::Reach`]s for this
@@ -184,20 +190,52 @@ fn parse_fpoint(spec: &str) -> (f32, f32, f32) {
 
 /// `OPENSHARD_SCENE_PROFILE_FACE`'s value, which names a whole [`light::Surface`]
 /// and not just a [`Face`](openshard_client_render::facing::Face) — `flat` and
-/// `upright` are the other two the place attachment can carry, and the doc's
-/// open question is precisely which of the three a real tread's geometry gets
-/// judged as.
-fn parse_surface(spec: &str) -> light::Surface {
+/// `upright` are the other two the place attachment can carry.
+///
+/// `"tread"` is the fourth, [`light::Surface::Sloped`] (decision 40), and is not
+/// resolved here: its normal comes from a [`Prism`](openshard_client_render::facing::Prism)
+/// built off [`parse_tread_prism`] plus a tread index, which `run_profile` reads
+/// from its own env vars once it knows this is the case that wants them.
+fn parse_surface(spec: &str) -> Option<light::Surface> {
     use openshard_client_render::facing::Face;
     match spec.trim().to_ascii_lowercase().as_str() {
-        "north" => light::Surface::Face(Face::North),
-        "east" => light::Surface::Face(Face::East),
-        "south" => light::Surface::Face(Face::South),
-        "west" => light::Surface::Face(Face::West),
-        "flat" => light::Surface::Flat,
-        "upright" => light::Surface::Upright,
-        _ => panic!("OPENSHARD_SCENE_PROFILE_FACE wants north/east/south/west/flat/upright, got {spec:?}"),
+        "north" => Some(light::Surface::Face(Face::North)),
+        "east" => Some(light::Surface::Face(Face::East)),
+        "south" => Some(light::Surface::Face(Face::South)),
+        "west" => Some(light::Surface::Face(Face::West)),
+        "flat" => Some(light::Surface::Flat),
+        "upright" => Some(light::Surface::Upright),
+        "tread" => None,
+        _ => panic!(
+            "OPENSHARD_SCENE_PROFILE_FACE wants north/east/south/west/flat/upright/tread, got {spec:?}"
+        ),
     }
+}
+
+/// `OPENSHARD_SCENE_PROFILE_TREAD_UP` and `_HEIGHTS`, the two env vars that
+/// build the [`Prism`](openshard_client_render::facing::Prism) a `"tread"`
+/// profile's normal comes from — required only in that case, since every other
+/// [`light::Surface`] needs no geometry beyond its own tag.
+fn parse_tread_prism() -> openshard_client_render::facing::Prism {
+    use openshard_client_render::facing::{Face, Prism};
+    let up = match env("OPENSHARD_SCENE_PROFILE_TREAD_UP")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "north" => Face::North,
+        "east" => Face::East,
+        "south" => Face::South,
+        "west" => Face::West,
+        other => panic!("OPENSHARD_SCENE_PROFILE_TREAD_UP wants north/east/south/west, got {other:?}"),
+    };
+    let heights: Vec<u8> = env("OPENSHARD_SCENE_PROFILE_TREAD_HEIGHTS")
+        .split(',')
+        .map(|h| h.trim().parse().unwrap_or_else(|_| panic!("tread height: {h:?}")))
+        .collect();
+    Prism::new(up, &heights).unwrap_or_else(|| {
+        panic!("OPENSHARD_SCENE_PROFILE_TREAD_HEIGHTS: {heights:?} is empty or past MAX_TREADS")
+    })
 }
 
 /// [`shift`], but for the fractional coordinates [`run_profile`] samples at
@@ -220,7 +258,15 @@ fn shift_f(anchor: (u16, u16), x: f32, y: f32) -> (f32, f32) {
 /// a scene with one point light (no [`crate::light::Beam`]), `cone` *is* the
 /// `faces()` term alone.
 fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
-    let surface = parse_surface(&env("OPENSHARD_SCENE_PROFILE_FACE"));
+    let face_spec = env("OPENSHARD_SCENE_PROFILE_FACE");
+    let surface = parse_surface(&face_spec);
+    // `"tread"` has no fixed normal — it is read off a `Prism` built from the
+    // static's own art (`OPENSHARD_SCENE_PROFILE_TREAD_UP`/`_HEIGHTS`), and which
+    // tread `t` (this segment's own progress, 0 at `_FROM` and 1 at `_TO`) falls
+    // on is taken the same way `Prism::height_at` takes it — the segment this
+    // tool profiles a tread with is the run of one tread's own climb, so `t`
+    // *is* that tread's run fraction.
+    let tread = surface.is_none().then(parse_tread_prism);
     let (fx, fy, fz) = parse_fpoint(&env("OPENSHARD_SCENE_PROFILE_FROM"));
     let (tx, ty, tz) = parse_fpoint(&env("OPENSHARD_SCENE_PROFILE_TO"));
     let steps: u32 = env_opt("OPENSHARD_SCENE_PROFILE_STEPS")
@@ -234,11 +280,20 @@ fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
             .unwrap_or_else(|_| panic!("OPENSHARD_SCENE_PROFILE_LIGHT: {s:?}"))
     });
 
-    println!("profile: surface {surface:?}, {steps} steps from ({fx},{fy},{fz}) to ({tx},{ty},{tz})");
+    println!("profile: surface {face_spec}, {steps} steps from ({fx},{fy},{fz}) to ({tx},{ty},{tz})");
     for i in 0..=steps {
         let t = i as f32 / steps as f32;
         let (x, y, z) = (fx + (tx - fx) * t, fy + (ty - fy) * t, fz + (tz - fz) * t);
         let (sx, sy) = shift_f(anchor, x, y);
+        let surface = match (surface, &tread) {
+            (Some(surface), None) => surface,
+            (None, Some(prism)) => {
+                let treads = prism.treads();
+                let index = ((t.clamp(0.0, 1.0) * treads.len() as f32) as usize).min(treads.len() - 1);
+                light::Surface::Sloped(prism.tread_normal(index))
+            }
+            _ => unreachable!("parse_surface and parse_tread_prism agree on which case this is"),
+        };
         let spot = light::Spot {
             at: Vec2::new(sx, sy),
             z,

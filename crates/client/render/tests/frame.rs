@@ -3565,6 +3565,15 @@ fn parity_frame(
                     openshard_client_render::place::Kind::Static as u16,
                     openshard_client_render::place::Stance::face(face) as u16,
                 ),
+                // No `Stance` carries a computed normal yet — decision 40 lands
+                // `Surface::Sloped` CPU-side first (`light::sample`, the
+                // `isolated_scene` profile tool) and the place-attachment/`blit.wgsl`
+                // side is the step after. A parity fixture for it has nothing to
+                // compare against until then.
+                Surface::Sloped(_) => panic!(
+                    "no place-attachment encoding for Surface::Sloped yet — decision 40's \
+                     wgsl step is not done, see docs/lighting.md"
+                ),
             };
             let height = (i32::from(z) + 128) as u16 | stance << openshard_client_render::place::STANCE_SHIFT;
             texels.extend_from_slice(&[x, y, height, kind | sub_x << 2 | sub_y << 9]);

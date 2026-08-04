@@ -1084,6 +1084,62 @@ impl Prism {
         // Same invariant as `height_at`: never empty.
         self.treads().iter().copied().max().unwrap()
     }
+
+    /// The unit normal of tread `index`'s top, tilted by that tread's own rise
+    /// over run — `docs/lighting.md`, decision 40.
+    ///
+    /// **Towards [`Prism::up`]**, blending [`Surface::Flat`](crate::light::Surface)'s
+    /// `[0, 0, 1]` towards `Surface::Face(up)`'s own horizontal normal as the
+    /// slope steepens, rather than a hillside's outward normal (which leans the
+    /// other way). Chosen the way [`Prism::box_of`]'s own fallback was — by what
+    /// a stair's light actually is: a sconce mounted on the wall a flight
+    /// climbs *towards*, at the landing or the top, is the ordinary case
+    /// (`docs/lighting.md`'s own screenshot: a wall lamp above the flight, not a
+    /// torch planted at its foot) — so treating a tread's top as reading partly
+    /// like the wall it climbs into keeps `faces()` open to that light for
+    /// longer as a sample climbs, without widening [`crate::light::FACE_EDGE`]
+    /// itself. Verified against the report's own reproduction
+    /// (`examples/isolated_scene.rs`'s profile mode, decision 40's step 3): this
+    /// sign takes `cone` from a hard `0.273 → 0.000` cliff in the walk's first
+    /// three samples to a smooth six-sample decay tracking `through`; the
+    /// opposite sign was tried first and made every sample along the same walk
+    /// read `0.000`, worse than before this existed.
+    ///
+    /// A tread's own top polygon is flat (it is a box's lid), but a flight of
+    /// them reads to a light beside it as a ramp, not as a run of separate
+    /// floors — the report step 23.5 traced to `FACE_EDGE`. **Rise** is the
+    /// step from the previous tread's height to this one's (the first tread's
+    /// own height, for `index == 0`, since it rises that far from the static's
+    /// base); **run** is `1 / treads().len()`, the width [`Prism::height_at`]
+    /// already gives one tread along the climb. Both convert into the same
+    /// tile-and-`z`-in-tiles space [`crate::light::Surface::normal`] documents
+    /// before the slope is taken, via [`crate::light::Z_PER_TILE`] — `rise` is a
+    /// map `z`, `run` already a fraction of a tile. `k == 0` recovers
+    /// `[0, 0, 1]` — flat, as every tread was treated before this.
+    pub fn tread_normal(&self, index: usize) -> [f32; 3] {
+        let treads = self.treads();
+        // A single-tread prism is [`Prism::box_of`]'s degenerate case — the
+        // whole tile at one height, `up` picked arbitrarily because nothing
+        // reads it (its own doc). It is a lid, not a ramp with one riser as
+        // wide as the tile, so it is exempted rather than fed to the general
+        // formula below, which would otherwise read `up`'s arbitrary choice as
+        // a real slope.
+        if treads.len() == 1 {
+            return [0.0, 0.0, 1.0];
+        }
+        let rise = f32::from(treads[index])
+            - if index == 0 {
+                0.0
+            } else {
+                f32::from(treads[index - 1])
+            };
+        let run = 1.0 / treads.len() as f32;
+        let k = (rise / crate::light::Z_PER_TILE) / run;
+        let [cx, cy] = self.up.outward();
+        let normal = [cx * k, cy * k, 1.0];
+        let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        [normal[0] / len, normal[1] / len, normal[2] / len]
+    }
 }
 
 /// The silhouette of a [`Prism`], drawn the way the projection draws one.
@@ -2012,5 +2068,42 @@ mod tests {
         };
         assert_eq!(side(0), 2, "the west corner stands on the low tread");
         assert_eq!(side(43), 6, "the east corner stands on the high one");
+    }
+
+    /// A box — one tread, `k == 0` — normals straight up, exactly what every
+    /// tread was treated as before decision 40.
+    #[test]
+    fn a_boxs_one_tread_normals_straight_up() {
+        let boxed = Prism::box_of(5);
+        assert_eq!(boxed.tread_normal(0), [0.0, 0.0, 1.0]);
+    }
+
+    /// A real flight stays a unit vector and tilts away from [`Prism::up`],
+    /// back over the low end — the two properties `docs/lighting.md` decision
+    /// 40 asks of it: the `x`/`y` component points opposite [`Face::East`]'s
+    /// own outward (`+x`), i.e. towards `-x`, and climbing steeper (`3, 6, 9`
+    /// instead of `1, 2, 3`) tilts further from vertical, monotonically.
+    #[test]
+    fn a_treads_normal_tilts_towards_the_climb() {
+        let shallow = Prism::new(Face::East, &[1, 2, 3]).unwrap();
+        let steep = Prism::new(Face::East, &[3, 6, 9]).unwrap();
+        for prism in [&shallow, &steep] {
+            for index in 0..3 {
+                let n = prism.tread_normal(index);
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                assert!((len - 1.0).abs() < 1e-5, "{n:?} isn't unit length");
+                assert!(
+                    n[0] > 0.0,
+                    "{n:?} should tilt towards +x, Face::East's own outward"
+                );
+                assert_eq!(n[1], 0.0, "the climb is along x, so y tilts none");
+            }
+        }
+        let shallow_tilt = shallow.tread_normal(0)[0];
+        let steep_tilt = steep.tread_normal(0)[0];
+        assert!(
+            steep_tilt > shallow_tilt,
+            "steep {steep_tilt} should tilt further from vertical than shallow {shallow_tilt}"
+        );
     }
 }
