@@ -482,7 +482,10 @@ not according to where that thing landed in the image. This is what makes a
 wall's face lit as the wall's own tile is lit, and it is what lets a storey
 below stay dark while the street is not.
 
-**2. The world passes write a second attachment: `(x, y, z)` per pixel.**
+**2. The world passes write a second attachment: `(x, y, z)` per pixel.** *(the
+shape of this payload is what [`gbuffer.md`](gbuffer.md) revisits — everything
+below is still what is built and still true of the running client, not
+superseded, just no longer assumed final)*
 `Rgba16Uint`, as `(x, y, z + 128, kind)` — the tile the pixel belongs to, the
 height it was drawn at, and what kind of thing wrote it. Ground, statics and
 mobiles all know these numbers per instance already; none of them has to compute
@@ -583,6 +586,12 @@ of that unpacking, kept in step with this one by hand, and it would answer about
 *its* copy of the frame rather than about the frame on the screen. So the mode is
 one number in the lighting uniform and a `switch` at the end of `fs_main`, and
 what it shows is the very values the lit picture was made of.
+
+*(the parity test's synthetic attachment below is built in decision 2's current
+shape; [`gbuffer.md`](gbuffer.md) step 3 has to carry it forward rather than
+leave it testing a payload the real passes no longer write — decision 38.5's
+two-step discipline, geometry held still before it changes shape, is written
+for exactly this kind of migration)*
 
 **9. The reasons are computed on the CPU, and the shader is checked against
 them.** "Why is this tile lit" is a list — this flame, that far, inside its
@@ -1368,7 +1377,13 @@ What baking with real geometry buys on top of that, and what it does not:
   pixels do not lie where a box's faces do — the art has thickness, ornament and
   overhang, 44 pixels of picture on a 22-pixel edge. The place attachment stays
   the bridge from a drawn pixel to a world surface, and the stance stays its
-  normal. **Geometry replaces the occluder, not the source of normals.**
+  normal. **Geometry replaces the occluder, not the source of normals.** *(the
+  drawn sprite still stays the rasteriser's answer — [`gbuffer.md`](gbuffer.md)
+  does not touch that. What it reopens is the second half of this sentence: the
+  stance stops being the source of normals, and honest per-face geometry —
+  this same box — becomes it, which decision 38.3 already called "consulted by
+  the light and by the normal, and never by the rasteriser." Read together, not
+  in tension.)*
 - **It does not remove the measurement, which is the hard half.** A box has a
   window only if something read the hole off the art. Step 16 is that, it is the
   same machinery as `facing::facing_of`, and it comes first whatever the storage
@@ -1448,6 +1463,21 @@ through every decision and discovering later that it defended nothing. Keeping
 *both* backends is the worst of the three: WGSL has no preprocessor, so a second
 fetch path means a generated shader or `naga-oil`, which is a real cost paid for
 tidiness.
+
+**Answered.** Asked again while planning [`gbuffer.md`](gbuffer.md): the web
+is still a target, but the ceiling this crate is written to is **WebGPU, not
+WebGL2** — `crates/client/render/src/lib.rs`'s own module doc said so first
+and is the record of it. Compute shaders and storage buffers are back on the
+table for anything written from here on.
+
+**What this does not do: touch what decision 38 already built.**
+`Occlusion`'s texture-folded lookup (`LIST_ROW`, `solid_at`) is not being
+ripped out — it is real, tested, running code, and un-building it is its own
+piece of work with its own risk, not a free side effect of a floor changing on
+paper. It stays exactly as it is, as a still-valid technique, simply no longer
+the *mandatory* one for what gets written next. If it is ever worth
+simplifying to a plain storage buffer too, that is a deliberate, separate piece
+of work to pick up on its own — not implied by this entry.
 
 **30.6 The truncation is measured, not chosen.** How many surfaces a cell may hold
 comes from a distribution printed over Britain, and whatever is dropped is
@@ -3602,13 +3632,13 @@ Found while building the treads (step 23.5, in progress and not yet committed):
   Recorded in `facing::Prism::tread_normal`'s own doc, with the wrong sign's
   measurement kept there too, since the derivation that looked right was not.
 
-  **Not done — decision 40's steps 4 and 5, and they are a real design
-  question, not a mechanical follow-on.** `Surface::Sloped` has no
-  `Stance`/place-attachment encoding: the tread's normal is real only on the
-  CPU side (`light::sample`, the profile tool) — `blit.wgsl`'s own normal
-  choice, and how an arbitrary computed normal reaches a fragment shader at
-  all given `place::Stance`'s four-bit budget, is unresolved and wants its own
-  session rather than a rushed bit-packing choice bolted onto this one.
+  **Not done — decision 40's steps 4 and 5, moved to their own plan.**
+  `Surface::Sloped` has no `Stance`/place-attachment encoding: the tread's
+  normal is real only on the CPU side (`light::sample`, the profile tool).
+  Chasing where a computed normal could fit in `place::Stance`'s four spare
+  bits led to the question of whether the attachment's payload should be
+  shaped that way at all — that question, and decision 40's steps 4 and 5 as
+  its first concrete case, are now [`gbuffer.md`](gbuffer.md), not here.
   `Surface::shadowed_by_own_tile` also does not ask a `Sloped` surface
   anything (falls through to `0`, i.e. never self-shadowed) — decision 40 left
   this as a one-off design question for whenever `Sloped` grows a second
@@ -3679,7 +3709,9 @@ Found while drawing the solid (step 23.0):
   one-sided" is a consequence of where the artist put pixels. Neither is worth
   touching before step 23.5, but both should be *removed* there rather than
   carried alongside the thing that replaces them — two ways to answer the same
-  question is how a rule and its replacement drift apart.
+  question is how a rule and its replacement drift apart. **Picked up by
+  [`gbuffer.md`](gbuffer.md)**, for the render side, once decision 40 made the
+  cost of carrying both concrete rather than theoretical.
 - ~~**30.6's distribution does not survive the migration and must be
   re-measured.**~~ Re-measured under step 23.1: **10,212 cells hold 17,201 solids
   under 17,201 references**, nothing dropped, 59.8% of standing cells holding one.

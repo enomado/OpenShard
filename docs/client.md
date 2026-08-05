@@ -1319,6 +1319,19 @@ behind a wall picks nothing; and the pick and the draw cannot disagree, because
 a test asserts that what `pick` answers for a cursor inside a frame is the
 mobile `collect` drew there.
 
+### Backlog, found while discussing decision 40's G-buffer (`lighting.md`)
+
+- **Four near-identical CPU pickers want consolidating.** `statics::pick`,
+  `items::pick`, `mobiles::pick` and `gump::pick` each re-derive the same
+  placement math their own `collect`/`place` already computed, then test
+  `opaque_at` and break ties the same way (topmost `depth::Order`, later-drawn
+  wins). The rules are already written down once, correctly, above — what is
+  not shared is the code: four call sites re-implement "walk the list this
+  frame draws, replay its placement, hit-test the opaque texel, keep the
+  topmost." Worth a common walker parameterised over the list and its
+  placement function, once a fourth near-duplicate makes the pattern
+  undeniable. Not started; this is a shape observation, not a design.
+
 ## M6 — sound
 
 The shard has been speaking and the client has never heard a word of it.
