@@ -217,12 +217,30 @@ reason.
 
 ## Not settled
 
-- **Whether the existing depth texture (`Depth24Plus`, `renderer.rs:45`) already
-  carries a reconstructable value**, or only an ordering key
-  (`depth::Order`, used purely for the pass's own `LessEqual` test today).
-  If it does, decision 1 costs nothing new; if it does not, a linear world
-  depth has to be written somewhere it is not written now. Unverified — check
-  before assuming either answer.
+- ~~Whether the existing depth texture (`Depth24Plus`, `renderer.rs:45`)
+  already carries a reconstructable value, or only an ordering key.~~
+  **Answered (step 1): only an ordering key.** Every world pass writes
+  `order.to_depth(base)` (`statics.rs:269`, `ground.rs:194`, `mobiles.rs:434`)
+  and nothing reads the depth texture back — `blit.wgsl` has no reference to
+  it at all, only to `place`. The value itself is not `z`: `Order` folds two
+  numbers into one key, `(tile - base) * DEPTH_PER_TILE + priority_z`, and
+  `priority_z` is not a world height — it is `z` bent by object-type-specific
+  adjustments (ground averages its corners and subtracts 2, a static shifts
+  ±1 by two tiledata flags, a mobile adds 1) that only make sense once the
+  object's kind is already known. Two different world heights on the same
+  tile can fold to the same key — `depth::tests::
+  priority_z_can_collide_for_two_different_world_heights` pins a concrete
+  pair, a flat static at `z=5` and a wall at `z=4`, that produce the same
+  `priority_z` and hence the identical depth value — which a linear depth
+  worth reconstructing from could never do for two genuinely different
+  points. So: a linear world depth has to be written somewhere it is not
+  written now — decision 1 is not free. In exchange, decision 2 already pays
+  for the thing decision 1's algebra was reaching for: the id's storage-buffer
+  row can hold the instance's real `(x, y, z)` directly, read once per
+  fragment, with no per-pixel inverse-projection needed for a billboard at
+  all — the projection algebra only has work left to do for ground's
+  per-pixel slope (the fourth "Not settled" item) and decision 16's fraction,
+  not for recovering an object's own anchor.
 - **The id's width and the buffer's capacity**, i.e. how many faces one
   frame's storage buffer is sized to hold. Not measured against how many
   faces a real screen ever holds — a stair alone is seven ids, not one, now
@@ -250,6 +268,16 @@ reason.
   for nothing, for any flat/billboard face. Worth confirming in step 1 rather
   than assumed, and it does not extend to ground's bilinear case (the item
   above) for the reason already given there.
+
+  **Step 1 answered, and it complicates this item rather than closing it.**
+  The depth that exists today is not the reconstructable position this
+  paragraph assumes (see the first item above) — a linear depth still has to
+  be written, and once it is, it names an object's own anchor, which decision
+  2's `instances[id]` row already carries directly. Whether solving for the
+  fraction from a *new* linear depth is still worth doing, versus reading it
+  off the id's row the same way `(x, y, z)` would be, is a separate question
+  this step did not answer and step 2 or 3 should settle before building
+  either path.
 - **Ground's own reconstruction is not the billboard's.** A sloped land quad's
   height is bilinearly interpolated across its four corners — solvable in
   closed form from screen position and the tile's own corner heights, but not
@@ -271,8 +299,11 @@ has already paid for skipping it twice: "a step that changes both where
 geometry lives and what it is, is a step where a difference cannot be
 attributed."
 
-- [ ] 1. Confirm or replace what the depth channel carries — the first "Not
+- [x] 1. Confirm or replace what the depth channel carries — the first "Not
       settled" item above, because everything after it assumes an answer.
+      Confirmed: only an ordering key, never read back. See the answered
+      item above and `depth::tests::
+      priority_z_can_collide_for_two_different_world_heights`.
 - [ ] 2. Design the face-instance row's layout and the id's width/buffer
       capacity against a real frame's face count, not object count
       (decision 3, "Not settled").

@@ -225,6 +225,33 @@ mod tests {
         assert_eq!(static_priority_z(5, &tile(TileFlags::FLOOR, 20)), 5);
     }
 
+    /// `Order` — and the depth value it becomes — is a sort key, not a linear
+    /// world height: two statics at different `z` on the same tile can fold to
+    /// the same `priority_z`, and once they do, `to_depth` cannot tell them
+    /// apart either. Nothing downstream can walk this value back to a `z`, and
+    /// nothing today tries to — `blit.wgsl` never samples the depth texture,
+    /// only `place`. See `docs/gbuffer.md`'s first "Not settled" item, answered
+    /// against this.
+    #[test]
+    fn priority_z_can_collide_for_two_different_world_heights() {
+        // A flat, backgroundless static at z=5 and a wall (a nonzero height)
+        // one lower at z=4: the wall's own +1 lands it on the same key.
+        let flat = static_priority_z(5, &tile(0, 0));
+        let wall = static_priority_z(4, &tile(0, 20));
+        assert_eq!(flat, wall, "two different world heights folded to one key");
+
+        let same_tile = base_for(100, 100);
+        let order_flat = Order {
+            tile: same_tile,
+            priority_z: flat,
+        };
+        let order_wall = Order {
+            tile: same_tile,
+            priority_z: wall,
+        };
+        assert_eq!(order_flat.to_depth(same_tile), order_wall.to_depth(same_tile));
+    }
+
     /// Ground goes under the things standing on it, and it is the *subtraction*
     /// that puts it there rather than the pass order.
     #[test]
