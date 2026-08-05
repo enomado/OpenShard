@@ -682,6 +682,8 @@ pub fn run<D: Dial + Send + 'static>(
         show_terrain: false,
         show_occluders: false,
         show_solids: solids,
+        solids_only: false,
+        solids_opaque: false,
         solids_everything: false,
         solids_held: 0,
         solids_drawn: 0,
@@ -1427,6 +1429,18 @@ struct App {
     /// at once is a legitimate reading and is what the outline over a filled face
     /// is for.
     show_solids: bool,
+    /// Whether the world image is skipped while solids are drawn — boxes alone
+    /// over a blank frame, with no sprite between their faces to compare them
+    /// against. F5's own picture is deliberately the opposite of this
+    /// (decision 39.2, "the wall's sprite is visible inside the box that
+    /// claims to contain it"); this is for reading the box's own shape without
+    /// the art arguing with it.
+    solids_only: bool,
+    /// Whether the solids view's fills are a straight overwrite instead of
+    /// blended in — `solids::Style::opaque`, threaded through from
+    /// [`shell::Request::solids_opaque`]. Off by default, matching the
+    /// translucent fill the view always drew before this existed.
+    solids_opaque: bool,
     /// Whether either of those two views draws the **whole** grid rather than
     /// what stands above the player's feet — the second datum, and the enum it
     /// resolves to is [`solid::Cut`](openshard_client_render::solid::Cut).
@@ -1736,6 +1750,15 @@ impl ApplicationHandler<link::Update> for App {
                     // checkbox has moved the camera by the time it is back.
                     KeyCode::F5 => {
                         self.show_solids = !self.show_solids;
+                        true
+                    }
+                    // The world image, off underneath the solids — the opposite
+                    // reading from F5's own (decision 39.2 draws the sprite on
+                    // purpose, so the box can be checked against it): this is for
+                    // looking at the box itself, with nothing behind it arguing
+                    // about what shape it is.
+                    KeyCode::F3 => {
+                        self.solids_only = !self.solids_only;
                         true
                     }
                     // And how much of the grid either view draws — the second
@@ -3261,6 +3284,12 @@ impl App {
         if let Some(show) = request.show_solids {
             self.show_solids = show;
         }
+        if let Some(only) = request.solids_only {
+            self.solids_only = only;
+        }
+        if let Some(opaque) = request.solids_opaque {
+            self.solids_opaque = opaque;
+        }
         // The variant and not the `z` in it: what the person picked holds across
         // frames, and the height they were standing at when they picked it is
         // this frame's business — see [`App::solid_cut`].
@@ -3413,6 +3442,8 @@ impl App {
                 .then(|| self.terrain_overlay(camera, hover.as_ref())),
             show_occluders: self.show_occluders,
             show_solids: self.show_solids,
+            solids_only: self.solids_only,
+            solids_opaque: self.solids_opaque,
             solid_cut: self.solid_cut(),
             solids: (self.solids_held, self.solids_drawn),
             // The grid the lighting will build a few lines later in the same
@@ -4362,8 +4393,8 @@ impl App {
         );
         let statics::StaticGeometry {
             quads: static_quads,
-            mesh_vertices,
-            mesh_rows,
+            mut mesh_vertices,
+            mut mesh_rows,
         } = statics::collect(
             &self.map,
             &camera,
@@ -4405,19 +4436,29 @@ impl App {
             &cutaway,
             ringed,
         );
+        let statics::StaticGeometry {
+            quads: item_quads,
+            mesh_vertices: item_mesh_vertices,
+            mesh_rows: item_mesh_rows,
+        } = items::collect(
+            &self.items,
+            &camera,
+            &self.tiledata,
+            &self.tile_animations,
+            &window.atlases.statics,
+            &cutaway,
+            hued,
+        );
         let static_quads = {
             let mut quads = static_quads;
-            quads.extend(items::collect(
-                &self.items,
-                &camera,
-                &self.tiledata,
-                &self.tile_animations,
-                &window.atlases.statics,
-                &cutaway,
-                hued,
-            ));
+            quads.extend(item_quads);
             quads
         };
+        // A climbable item gets the same honest mesh a climbable map static
+        // does — `items::collect`'s own doc — so its faces join the map
+        // statics' here, one buffer and one `mesh_pass.render` call for both.
+        mesh_vertices.extend(item_mesh_vertices);
+        mesh_rows.extend(item_mesh_rows);
         // A corner static's two faces get their own id past this point — see
         // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
         let static_instances = split_corners(static_quads);
@@ -4687,23 +4728,47 @@ impl App {
         // and the place attachment — which is exactly what a person checking the
         // place channel wants to see, without having to make it night first.
         lighting.view = self.light_view;
-        window.blit.render(
-            &window.device,
-            &window.queue,
-            &mut encoder,
-            blit::Frame {
-                target: &view,
-                world: &world_view,
-                place: &place_view,
-                face_instances: window.statics.instances_buffer(),
-                mobile_instances: window.mobile_pass.instances_buffer(),
-                mesh_instances: window.mesh_pass.rows_buffer(),
-                ground_instances: window.renderer.instances_buffer(),
-                zoom: camera.zoom(),
-                rect: viewport,
-            },
-            &lighting,
-        );
+        // **Solids alone**, `App::solids_only`: the surface is cleared and the
+        // world image is not drawn onto it at all, so the boxes below stand
+        // over nothing that could be mistaken for their own shape. `lighting`
+        // is unaffected either way — it is what the solids pass reads its grid
+        // from, and it was already built above whichever branch runs here.
+        if self.solids_only && self.show_solids {
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("solids-only clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(openshard_client_render::renderer::CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                multiview_mask: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        } else {
+            window.blit.render(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                blit::Frame {
+                    target: &view,
+                    world: &world_view,
+                    place: &place_view,
+                    face_instances: window.statics.instances_buffer(),
+                    mobile_instances: window.mobile_pass.instances_buffer(),
+                    mesh_instances: window.mesh_pass.rows_buffer(),
+                    ground_instances: window.renderer.instances_buffer(),
+                    zoom: camera.zoom(),
+                    rect: viewport,
+                },
+                &lighting,
+            );
+        }
         // The occlusion grid as solids, when somebody asked for it — step 23.0.
         // First of what is drawn over the lit picture, so the highlights stay on
         // top of it: a diagnostic must not hide the thing the cursor is naming.
@@ -4726,6 +4791,10 @@ impl App {
                 },
                 &camera,
                 &standing,
+                solids::Style {
+                    opaque: self.solids_opaque,
+                    ..solids::Style::default()
+                },
             );
         }
         // The held selection's wash, first of the two things drawn over the lit

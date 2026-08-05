@@ -41,10 +41,46 @@
 //! - `OPENSHARD_SCENE_VIEWPORT=960x720` — must keep `width * 4` a multiple of
 //!   256 (`wgpu`'s row-copy alignment) or the readback panics; the default is
 //!   already aligned.
+//! - `OPENSHARD_SCENE_ZOOM=n` — `n` notches of [`Zoom::scale_up`] past
+//!   [`Zoom::ONE`], the live client's own wheel-in ladder (`2:1`, `3:1`,
+//!   `4:1`, nearest-sampled so a texel still lands on a whole number of real
+//!   pixels — see [`Zoom`]'s own doc for why that matters). Default `0`
+//!   (`Zoom::ONE`, one world pixel to one viewport pixel). A crop blown up
+//!   afterwards with an image tool is a *different* resample — bilinear or
+//!   nearest, neither the client's own rule — and can show banding neither
+//!   this tool nor the client actually draws; this is the honest way to look
+//!   closer.
 //! - `OPENSHARD_FRAME_DUMP=/tmp/x.ppm` — where to write the picture. Required;
 //!   this tool has nothing else to do with a frame once it is drawn.
 //! - `OPENSHARD_FRAME_VIEW=n` — index into `debug::View::ALL` (`0` `Lit`, `4`
-//!   `Occluders`, `5` `Light`, …). Default `Lit`.
+//!   `Occluders`, `5` `Light`, …). Default `Lit`. Ignored under `_SOLIDS`.
+//!
+//! # The occlusion grid alone, nothing drawn to cast a shadow of its own
+//!
+//! `OPENSHARD_SCENE_SOLIDS=white|lit` skips every sprite and every blade of
+//! ground and draws only [`solid::standing`]'s boxes on black — the same pass
+//! (`solids::SolidsRenderer`) the live client's own F5 overlay uses. Ground and
+//! sprites are still built and drawn to their own offscreen textures first —
+//! `_GROUND` and `_TILES` still apply to what is *collected into the grid* —
+//! they are simply never composited into the picture this mode reads back.
+//!
+//! - `white` — one flat colour, so the geometry reads on its own with nothing
+//!   about the flame in it.
+//! - `lit` — each visible face coloured by one real [`light::sample`] taken at
+//!   its own centre (the lid at `Surface::Flat`, the two sides at their own
+//!   `Surface::Face`) — the flame's own light on the grid's own boxes, with no
+//!   sprite's shading to tell it apart from.
+//!
+//! `OPENSHARD_SCENE_SOLIDS_EDGES=0` drops the black outline stroke, leaving the
+//! translucent fills alone — see `SolidsRenderer::render`'s own doc for why
+//! that is what shows a face wrongly surviving behind one that should have hidden
+//! it. Default `1`, matching the live F5 overlay.
+//!
+//! `OPENSHARD_SCENE_SOLIDS_OPAQUE=1` swaps translucent fills for a straight
+//! overwrite: a later, nearer face then genuinely hides an earlier, farther one
+//! (painter's algorithm, on `solid::standing`'s own back-to-front order) rather
+//! than tinting through it. Default `0`, matching the live F5 overlay — turn it
+//! on to tell "hidden behind something nearer" from "showing through it".
 //!
 //! # Profiling a segment instead of drawing it
 //!
@@ -95,7 +131,7 @@ use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::ground;
 use openshard_client_render::items::{self, GroundItem};
-use openshard_client_render::renderer::{GroundRenderer, SpriteRenderer, Target};
+use openshard_client_render::renderer::{GroundRenderer, MeshFaceRenderer, SpriteRenderer, Target};
 use openshard_client_render::{light, renderer};
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
@@ -265,6 +301,64 @@ fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
     }
 }
 
+/// One real [`light::sample`] per *corner* of every visible face of a drawn
+/// solid — `[Top, East, South]`, [`openshard_client_render::solid::Solid::faces`]'s
+/// own order, and within each a
+/// [`solids::FaceColours`](openshard_client_render::solids::FaceColours) in
+/// that same function's own four-corner ring order — as an RGB colour:
+/// [`light::Sample::multiplier`] directly, clamped into `0..=255` rather than
+/// reduced to [`light::Sample::brightness`]'s one number, so the flame's own
+/// colour survives onto the box.
+///
+/// Four samples a face rather than one at its centre, so `SolidsRenderer`'s
+/// ordinary per-vertex colour interpolation turns them into a gradient across
+/// the fill instead of a flat tint with a step at every face's edge — see
+/// `FaceColours`'s own doc for what this still is not: the real, non-linear
+/// falloff, only four real points of it linearly blended.
+fn face_light(
+    solid: &openshard_client_render::solid::Solid,
+    lighting: &light::Lighting,
+) -> [openshard_client_render::solids::FaceColours; 3] {
+    use openshard_client_render::facing::Face;
+    use openshard_client_render::solids::FaceColours;
+
+    let (lo, hi) = (solid.min, solid.max);
+    let colour = |x: f64, y: f64, z: f64, surface: light::Surface| {
+        let spot = light::Spot {
+            at: Vec2::new(x as f32, y as f32),
+            z: z as f32,
+            surface,
+        };
+        let multiplier = light::sample(spot, lighting).multiplier;
+        [
+            multiplier[0].clamp(0.0, 1.0) * 255.0,
+            multiplier[1].clamp(0.0, 1.0) * 255.0,
+            multiplier[2].clamp(0.0, 1.0) * 255.0,
+        ]
+    };
+    // The same four corners `Solid::faces` hands `SolidsRenderer`, in the same
+    // order, so corner `i`'s sample here is corner `i`'s vertex there.
+    let top: FaceColours = [
+        colour(lo.x, lo.y, hi.z, light::Surface::Flat),
+        colour(hi.x, lo.y, hi.z, light::Surface::Flat),
+        colour(hi.x, hi.y, hi.z, light::Surface::Flat),
+        colour(lo.x, hi.y, hi.z, light::Surface::Flat),
+    ];
+    let east: FaceColours = [
+        colour(hi.x, lo.y, hi.z, light::Surface::Face(Face::East)),
+        colour(hi.x, hi.y, hi.z, light::Surface::Face(Face::East)),
+        colour(hi.x, hi.y, lo.z, light::Surface::Face(Face::East)),
+        colour(hi.x, lo.y, lo.z, light::Surface::Face(Face::East)),
+    ];
+    let south: FaceColours = [
+        colour(lo.x, hi.y, hi.z, light::Surface::Face(Face::South)),
+        colour(hi.x, hi.y, hi.z, light::Surface::Face(Face::South)),
+        colour(hi.x, hi.y, lo.z, light::Surface::Face(Face::South)),
+        colour(lo.x, hi.y, lo.z, light::Surface::Face(Face::South)),
+    ];
+    [top, east, south]
+}
+
 fn shift(anchor: (u16, u16), real: (u16, u16)) -> (u16, u16) {
     (
         (real.0 as i32 - anchor.0 as i32 + SYN_ANCHOR.0 as i32) as u16,
@@ -277,6 +371,63 @@ fn unshift(anchor: (u16, u16), syn: (u16, u16)) -> (u16, u16) {
         (syn.0 as i32 - SYN_ANCHOR.0 as i32 + anchor.0 as i32) as u16,
         (syn.1 as i32 - SYN_ANCHOR.1 as i32 + anchor.1 as i32) as u16,
     )
+}
+
+/// Reads `surface` back to `P6` PPM bytes — the one step every mode of this
+/// tool ends in, whatever filled the texture before it was called.
+fn dump_frame(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    surface: &wgpu::Texture,
+    viewport: (u32, u32),
+) -> Vec<u8> {
+    let (w, h) = viewport;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback"),
+        size: u64::from(w) * u64::from(h) * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: surface,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("mapping a buffer this example just wrote");
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("waiting on our own submission");
+    let pixels = slice
+        .get_mapped_range()
+        .expect("the map completed above")
+        .to_vec();
+
+    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+    for pixel in pixels.chunks_exact(4) {
+        ppm.extend_from_slice(&pixel[..3]);
+    }
+    ppm
 }
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -394,7 +545,22 @@ fn main() {
     let viewport = viewport();
     let (look_sx, look_sy) = shift(anchor, (look.x, look.y));
     let mut camera = Camera::new(Point::new(look_sx, look_sy, look.z), viewport.0, viewport.1);
-    camera.zoom_about(0, 0, Zoom::ONE);
+    let zoom_notches: u32 = env_opt("OPENSHARD_SCENE_ZOOM")
+        .map(|s| {
+            s.parse()
+                .unwrap_or_else(|_| panic!("OPENSHARD_SCENE_ZOOM: {s:?}"))
+        })
+        .unwrap_or(0);
+    let mut zoom = Zoom::ONE;
+    for _ in 0..zoom_notches {
+        zoom = zoom.scale_up();
+    }
+    // About the viewport's own centre, not a corner: `zoom_about` holds
+    // whatever world point sits under the given screen point fixed, and the
+    // scene is built around `look`, which `Camera::new` already centred.
+    // Zooming about `(0, 0)` would hold the *corner* fixed instead and walk
+    // the framed static out from under the crop this tool's callers take.
+    camera.zoom_about((viewport.0 / 2) as i32, (viewport.1 / 2) as i32, zoom);
     let (width, height) = camera.image_size();
 
     let land_atlas = if want_ground {
@@ -422,7 +588,11 @@ fn main() {
     let animations = StaticAnimations::default();
     let needed = items::needed_graphics(&items, &animations);
     let static_atlas = StaticAtlas::build(&art, needed).expect("the scene's own items fit");
-    let item_quads = items::collect(
+    let openshard_client_render::statics::StaticGeometry {
+        quads: item_quads,
+        mesh_vertices,
+        mesh_rows,
+    } = items::collect(
         &items,
         &camera,
         &tiledata,
@@ -450,6 +620,7 @@ fn main() {
             &openshard_uofiles::hues::Hues::load(dir.join("hues.mul")).expect("hues.mul"),
         ),
     );
+    let mut mesh_pass = MeshFaceRenderer::new(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target {
         place: &place_view,
@@ -465,6 +636,13 @@ fn main() {
     // to hold.
     ground_pass.render(&device, &queue, &mut encoder, target, &ground_quads);
     items_pass.render(&device, &queue, &mut encoder, target, &item_quads, None);
+    // Right after, into the same pixels its own billboard just drew — the same
+    // order `lib.rs`'s real frame loop uses and for the same reason
+    // (`docs/gbuffer.md` step 4c): without this, a climbable, prism-fit item
+    // pulled from the real map never gets its honest per-face normal, and
+    // this tool would go on showing the flat corner-stance reading a live
+    // frame does not.
+    mesh_pass.render(&device, &queue, &mut encoder, target, &mesh_vertices, &mesh_rows);
     queue.submit([encoder.finish()]);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
@@ -528,6 +706,125 @@ fn main() {
         return;
     }
 
+    // The grid alone: every solid `lighting.occlusion` holds, on black, with no
+    // sprite and no ground under it to explain a shape away. The same list and
+    // the same pass the live client's F5 overlay draws (`solid::standing` into
+    // `solids::SolidsRenderer`) — only the colour changes, and nothing else is
+    // composited under it, since a ray does not care which kind of thing it hit.
+    //
+    // - `OPENSHARD_SCENE_SOLIDS=white` — one flat colour, so the geometry reads
+    //   on its own with nothing about the flame in it.
+    // - `OPENSHARD_SCENE_SOLIDS=lit` — `light::sample` run once per visible
+    //   face (`Solid::faces`'s `[Top, East, South]`, the lid at `Surface::Flat`
+    //   and the two sides at their own `Surface::Face`), the real multiplier
+    //   painted straight on rather than the kind-coloured, [`Side::shade`]d
+    //   picture `render` draws — see `solids::SolidsRenderer::render_lit`.
+    if let Some(mode) = env_opt("OPENSHARD_SCENE_SOLIDS") {
+        let standing = openshard_client_render::solid::standing(
+            &lighting.occlusion,
+            openshard_client_render::solid::Cut::Nothing,
+        );
+        let count = standing.len();
+
+        let mut solids_pass = openshard_client_render::solids::SolidsRenderer::new(&device, format);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        // `SolidsRenderer` only ever loads (see its own doc) — this clear is
+        // the black the boxes sit on, and the only reason a pass runs first.
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("solids-only clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &surface_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let rect = ViewportRect {
+            x: 0,
+            y: 0,
+            width: viewport.0,
+            height: viewport.1,
+        };
+        // On by default, like the live F5 overlay — off to see the fills alone,
+        // unmixed with a stroke's own colour. See `SolidsRenderer::render`'s own
+        // doc: with the strokes gone, a face that something nearer should have
+        // hidden and did not reads as a wrongly bright translucent patch rather
+        // than a line quietly sitting on top of it.
+        // On by default, like the live F5 overlay — off to see the fills alone,
+        // unmixed with a stroke's own colour. See `SolidsRenderer::render`'s own
+        // doc: with the strokes gone, a face that something nearer should have
+        // hidden and did not reads as a wrongly bright translucent patch rather
+        // than a line quietly sitting on top of it.
+        //
+        // `opaque` is off by default too, matching the live overlay's own
+        // translucency, and on for the question that overlay was never asked —
+        // whether a face is genuinely hidden or only tinted through.
+        let style = openshard_client_render::solids::Style {
+            edges: env_flag("OPENSHARD_SCENE_SOLIDS_EDGES", true),
+            opaque: env_flag("OPENSHARD_SCENE_SOLIDS_OPAQUE", false),
+        };
+        match mode.as_str() {
+            "white" => {
+                let coloured: Vec<_> = standing
+                    .into_iter()
+                    .map(|(solid, _)| (solid, [255.0; 3]))
+                    .collect();
+                solids_pass.render(
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    openshard_client_render::solids::Frame {
+                        target: &surface_view,
+                        size: viewport,
+                        rect,
+                    },
+                    &camera,
+                    &coloured,
+                    style,
+                );
+            }
+            "lit" => {
+                let coloured: Vec<_> = standing
+                    .into_iter()
+                    .map(|(solid, _)| (solid, face_light(&solid, &lighting)))
+                    .collect();
+                solids_pass.render_lit(
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    openshard_client_render::solids::Frame {
+                        target: &surface_view,
+                        size: viewport,
+                        rect,
+                    },
+                    &camera,
+                    &coloured,
+                    style,
+                );
+            }
+            other => panic!("OPENSHARD_SCENE_SOLIDS wants `white` or `lit`, got {other:?}"),
+        }
+        queue.submit([encoder.finish()]);
+
+        let ppm = dump_frame(&device, &queue, &surface, viewport);
+        let path = PathBuf::from(env("OPENSHARD_FRAME_DUMP"));
+        std::fs::write(&path, ppm).expect("writing the frame");
+        eprintln!(
+            "wrote {} ({count} solids, {mode}, edges {}, opaque {})",
+            path.display(),
+            style.edges,
+            style.opaque,
+        );
+        return;
+    }
+
     let wanted_view = env_opt("OPENSHARD_FRAME_VIEW")
         .and_then(|v| v.parse::<usize>().ok())
         .and_then(|v| openshard_client_render::debug::View::ALL.get(v).copied())
@@ -537,8 +834,6 @@ fn main() {
     let mut blit = Blit::new(&device, format);
     // No mobile pass in this scene: the dummy stands in for it.
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
-    // No mesh-face pass in this scene either.
-    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
         &device,
@@ -550,7 +845,7 @@ fn main() {
             place: &place_view,
             face_instances: items_pass.instances_buffer(),
             mobile_instances: &dummy_instances,
-            mesh_instances: &dummy_mesh_instances,
+            mesh_instances: mesh_pass.rows_buffer(),
             ground_instances: ground_pass.instances_buffer(),
             zoom: Zoom::ONE,
             rect: ViewportRect {
@@ -564,52 +859,7 @@ fn main() {
     );
     queue.submit([encoder.finish()]);
 
-    let (w, h) = viewport;
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback"),
-        size: u64::from(w) * u64::from(h) * 4,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &surface,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(w * 4),
-                rows_per_image: Some(h),
-            },
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        result.expect("mapping a buffer this example just wrote");
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("waiting on our own submission");
-    let pixels = slice
-        .get_mapped_range()
-        .expect("the map completed above")
-        .to_vec();
-
-    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
-    for pixel in pixels.chunks_exact(4) {
-        ppm.extend_from_slice(&pixel[..3]);
-    }
+    let ppm = dump_frame(&device, &queue, &surface, viewport);
     let path = PathBuf::from(env("OPENSHARD_FRAME_DUMP"));
     std::fs::write(&path, ppm).expect("writing the frame");
     eprintln!("wrote {} ({:?})", path.display(), wanted_view);

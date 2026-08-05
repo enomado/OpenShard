@@ -130,3 +130,53 @@ fn check(id: u16, best: &Prism, score: f32) {
         _ => {}
     }
 }
+
+/// **How much of the install's own `CLIMBABLE` art the model actually covers.**
+///
+/// A stair whose picture scores below [`PRISM_FITS`] never reaches
+/// `tread_top_box_of`/`tread_riser_box_of` at all — `Builder::add` falls back to
+/// reading it as a wall corner, `PANEL_THICKNESS`-inset panels and all, which is
+/// the exact geometry that reads as a seam short of the tile it stands on. The
+/// two graphics [`DEFAULT`] checks (`1822`, `1846`) are known to clear the bar;
+/// this is the number for *every* `CLIMBABLE` picture the install ships, so a gap
+/// in coverage shows up as a count instead of being inferred from one report.
+///
+/// Prints one line per miss — the graphic id and its score — so a real failure
+/// names the picture to go look at rather than only the tally.
+#[test]
+#[ignore = "reads a real install and prints for a person"]
+fn how_much_of_the_climbable_art_the_prism_model_covers() {
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let art = Art::open(&dir).expect("artLegacyMUL.uop");
+    let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
+
+    let mut climbable = 0;
+    let mut fits = 0;
+    let mut misses = Vec::new();
+    for id in 0..=u16::MAX {
+        let tile = tiledata.static_tile(id);
+        if !tile.flags.is_climbable() {
+            continue;
+        }
+        let Ok(Some(picture)) = art.static_art(Graphic(id)) else {
+            continue;
+        };
+        climbable += 1;
+        let (_, score) = best_prism(&picture);
+        if score > PRISM_FITS {
+            fits += 1;
+        } else {
+            misses.push((id, score));
+        }
+    }
+    println!("climbable pictures: {climbable}");
+    println!(
+        "fit the prism model: {fits}  ({:.1}%)",
+        100.0 * fits as f64 / climbable.max(1) as f64
+    );
+    for (id, score) in &misses {
+        println!("  miss: {id} (0x{id:04X})  agreement {score:.3}");
+    }
+}

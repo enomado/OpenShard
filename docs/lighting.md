@@ -9,6 +9,282 @@ copied.
 
 ## Where the next session starts
 
+**Confirmed live and fixed for real (previous entry, kept below): the corner-split
+seam is gone. What is left is two smaller, different residual artefacts on the
+same stair, both new findings from the session that confirmed the fix — start
+here, both are reproducible and neither has a patch yet.**
+
+Reproduce with the same scene this whole file uses, now honest because of the
+previous entry's fix — `View::Light` (`_FRAME_VIEW=5`) shows both far more
+clearly than the ordinary `Lit` picture, which is why this is the view to look
+at first:
+
+```sh
+OPENSHARD_CLIENT=… \
+    OPENSHARD_SCENE_AT=1497,1627,10 OPENSHARD_SCENE_RADIUS=1 OPENSHARD_SCENE_TILES=0x0739 \
+    OPENSHARD_SCENE_GROUND=0 OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+    OPENSHARD_SCENE_ZOOM=2 OPENSHARD_FRAME_VIEW=5 \
+    OPENSHARD_FRAME_DUMP=/tmp/light.ppm \
+    cargo run --release -p openshard-client-render --example isolated_scene
+```
+
+**1. A hairline seam at every tread/riser boundary, running the full length of
+the flight — once per tread, repeating down it.** Visible as a thin bright
+line exactly on the nosing edge, in both the internal boundary (between two
+treads) and the outer silhouette (the flight's own left edge). Hypothesis, not
+yet confirmed: `statics::push_mesh` gives **every face of one static's mesh
+the same `depth`** — the enclosing `SpriteQuad`'s own single value, reused
+rather than recomputed (`statics.rs`'s own doc on `push_mesh` explains why:
+"a second depth formula here is a second chance to disagree"). Two faces that
+share an edge (a tread's top and the riser below it) therefore share a depth
+too, so `MeshFaceRenderer`'s `LessEqual` test cannot decide a winner *between
+them* by geometry — only by triangle draw order, which is `Prism::mesh`'s
+`faces()` order and not obviously guaranteed to agree with itself pixel to
+pixel along a shared edge. If true, the fix is not a depth formula (the doc
+comment's whole argument against one still holds for two faces that are
+genuinely at different depths) but something narrower at exactly the shared
+edge — worth reading `Prism::mesh`'s face generation before assuming which.
+
+**2. Small triangular/rectangular patches of stale shading, where the fitted
+box does not reach the true art silhouette.** Both screenshots this session
+took showed one: a wedge of the old (pre-fix, corner-stance) colour survives
+inside an otherwise honestly-shaded tread. Consistent with the number already
+on record —
+`best_prism` scores this flight's graphic `0.975` against `PRISM_FITS`'s
+`0.9` gate, so ~2.5% of the art's opaque pixels are outside every face
+`push_mesh` draws, and `MeshFaceRenderer` only overwrites the pixels it
+actually rasterizes (`renderer.rs`'s own doc: "this pass owns no pixels of
+its own" for the empty case, and by the same logic, no pixels outside its
+triangles for the non-empty one) — so the sprite pass's own stance answer is
+what a pixel outside the mesh's footprint keeps. Two different fixes compete
+and neither is chosen yet: tighten `best_prism`'s candidate search so the box
+gets closer to 1.0 (quality work already flagged as open below, under "which
+of the 217 misses are stairs the model should fit better"), or give the
+mismatch itself a narrower, deliberate answer (extend the mesh's footprint by
+a fraction of a pixel, say) rather than relying on the fit ever reaching
+exactly 1.0.
+
+Screenshots from this session lived in a scratchpad and are gone; the repro
+command above regenerates them in under a second. A useful next step neither
+of these two has had yet: dump `Prism::mesh`'s own vertices for this graphic
+next to `StaticAtlas::opaque_at`'s silhouette and look at where they actually
+diverge, rather than guessing from the picture alone.
+
+Everything below is the session before it.
+
+**The "slope `Stance`" diagnosis below was wrong, and the tool that produced it
+was blind to a fix that already existed.** `statics::collect` (real map
+furniture) already builds an honest mesh — a flat top and vertical risers,
+[`facing::Prism::mesh`] — for any climbable static whose art clears
+`PRISM_FITS`, and `lib.rs` already runs that mesh pass right after the sprite
+draw, overwriting the place/depth buffer with the honest per-face normal for
+whatever it covers. `place.rs::Stance` needed no new variant: a staircase is
+faces at 90°, not a slope, and `Flat`/`FaceNorth`-family already name exactly
+that.
+
+The reproduction never exercised any of it. `isolated_scene`'s synthetic map
+carries no statics of its own (`Map::from_blocks` never does), so it re-plays
+every real map static it pulls as a `GroundItem`, through `items::collect` —
+and `items::collect` threw `Placed::prism` away and never called `push_mesh`
+or ran a mesh pass at all. Every picture this file's "Where the next session
+starts" entries showed of this stair was strictly worse than what the live
+client actually draws, because the one tool built to look closely was the one
+place the fix could never apply. `OPENSHARD_SCENE_ZOOM` (real zoom-ladder
+notches, GPU-nearest, `Zoom::scale_up`) also went in alongside — a crop blown
+up afterward with an image tool is a different resample and was adding its
+own noise on top.
+
+Fixed: `items::collect` now returns the same `statics::StaticGeometry` shape
+`statics::collect` does, building `push_mesh` (now `pub(crate)`) geometry for
+any item whose `Placed::prism` is `Some` — one bug fixed twice, since this is
+shared by both real callers. `lib.rs` merges the item-sourced mesh into the
+same buffer and draw call as the map statics' — which is a genuine fix for
+the live client too, not only the tool: a climbable *item* (a decoration, not
+map furniture) got no honest mesh before this, either. `isolated_scene` gained
+its own `MeshFaceRenderer` and wires its row buffer into the final blit
+instead of the dummy.
+
+Re-rendered on the same stair-plus-lamp scene this file has used throughout:
+the hard corner-split seam is gone from both the ordinary `Lit` picture and
+`View::Light`, replaced by a continuous per-tread gradient toward the lamp
+matching the `_SOLIDS=lit` ground truth below. A faint straight seam remains
+near the flight's top vertex in `View::Light` — plausibly the last sliver of
+the ~2.5% `best_prism`'s box does not cover (score `0.975` against
+`PRISM_FITS`'s `0.9`) — small, and not yet measured or explained.
+
+**Still open, and unrelated to the above: whether what the user sees live
+differs from even this fixed picture.** The live client and this reproduction
+now agree on this one stair; nobody has yet confirmed the *live* game shows
+the same seamless result on the location the user was actually looking at, or
+whether "other problems" they described live are a separate, still-unfound
+defect.
+
+Everything below is the session before it — including the "slope `Stance`"
+paragraph, kept rather than deleted because the reasoning that got it wrong
+(concluding from a tool that could not show the fix) is itself worth not
+repeating.
+
+**The user's corner artefact, reproduced in isolation and traced to a
+specific, already-known-but-unfixed defect: the stair's shading, not its
+occlusion.** A screenshot of a real flight next to a lamp showed the same
+X-crossed noise on `View::Height`, `View::Occluders`, `View::Light`,
+`View::Shadow` and `View::Reach` alike — different views, same shape of
+wrongness, which is the tell that they share one upstream input rather than
+five independent bugs.
+
+Reproduction, `examples/isolated_scene.rs` (already built for exactly this —
+see the backlog entry a few sessions back that added it), narrowed to the
+two stair tiles and the lamp and nothing else:
+
+```sh
+OPENSHARD_CLIENT=… \
+    OPENSHARD_SCENE_AT=1497,1627,10 OPENSHARD_SCENE_RADIUS=1 OPENSHARD_SCENE_TILES=0x0739 \
+    OPENSHARD_SCENE_GROUND=0 OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+    OPENSHARD_FRAME_DUMP=/tmp/x.ppm OPENSHARD_FRAME_VIEW=3 \
+    cargo run --release -p openshard-client-render --example isolated_scene
+```
+
+(`_TILES=0x0739` is the flight's own graphic, `1849`; the lamp is a
+decoration, not a map static, so it still has to come in as `_EXTRA` — see
+the DB-lookup recipe below. `_FRAME_VIEW` is an index into `debug::View::ALL`,
+not the enum's own discriminant: `3` `Height`, `4` `Occluders`, `5` `Light`,
+`7` `Shadow`, `8` `Reach` — the sixth, `0`, is the ordinary `Lit` picture,
+which shows nothing wrong to the eye.)
+
+`View::Height`'s ramp (a band every `Z_PER_TILE` = 11 units) wound four or
+five times across the flight's own shadowed face alone — a real swing of
+40+ `z` units painted across geometry `Occlusion::solids_at` confirms is only
+`10..15`, five units, on the same tile. So the picture, not the grid, is
+lying about the height, and everything downstream that reads a pixel's own
+world height (`Occluders`' red/blue test, `Light`/`Shadow`'s shadow term,
+`Reach`'s flame count) inherits the same noise.
+
+That number — a wrong `place` attachment, not a wrong grid — is exactly
+this file's own, already-written **"A stair is read as a corner of two
+walls, and there is no stance for a slope"** entry below (`Found on a
+staircase in Britain`). Its occlusion half was fixed: `Prism`/`tread_box_of`
+gave the grid real per-tread boxes, `tests/prism.rs` scores the flight at
+`0.975`, and `Occlusion::solids_at` above is exactly that fix's own output.
+Its **shading** half was not, and current code still shows it: `place.rs`'s
+`Stance` has no slope, only `Flat`/`Upright`/four faces/four corners, so
+`statics.wgsl` still resolves this stair's `STANCE_CORNER` art as two
+*vertical* walls (lines 257–280, the same `in.twin` corner-splitting the
+entry describes) and writes a per-pixel height built for a wall's flat plane
+onto a stepped one. `blit.wgsl`'s `outward(stance)` inherits the same wrong
+normal for the same reason. Confirmed by elimination, not just by reading
+the code: the grid's own boxes, drawn with nothing else in the picture
+(below), are clean.
+
+**A tool for looking at the grid with the sprite's shading bug entirely out
+of the picture, built while chasing this.** `examples/isolated_scene.rs`
+gained `OPENSHARD_SCENE_SOLIDS=white|lit` — skips every sprite and blade of
+ground and draws only `solid::standing`'s boxes (the same list and the same
+`solids::SolidsRenderer` the live client's F5 overlay uses) on black.
+`white` is one flat colour, for the shape alone; `lit` colours each face by
+`light::sample` — four real samples, one per corner in `Solid::faces`'s own
+order, blended across the fill by the ordinary vertex interpolation
+`solids.wgsl` already does (`solids::FaceColours`), so a gradient shows
+instead of a flat tint with a step at every face's edge. Two more knobs
+matter together: `OPENSHARD_SCENE_SOLIDS_EDGES=0` drops the outline stroke
+(otherwise it can hide a face wrongly showing through), and
+`OPENSHARD_SCENE_SOLIDS_OPAQUE=1` swaps the F5 overlay's translucent fill for
+a straight overwrite — `solids::Style { edges, opaque }`, `Style::default()`
+matching the live overlay exactly, `SolidsRenderer::render`/`render_lit` take
+one now instead of two trailing bools. No depth buffer: opaque occlusion is
+painter's-algorithm-correct only as far as `solid::standing`'s existing
+back-to-front sort is, which its own doc already flags as fragile once a
+solid spans more than one tile.
+
+```sh
+OPENSHARD_CLIENT=… \
+    OPENSHARD_SCENE_AT=1497,1627,10 OPENSHARD_SCENE_RADIUS=1 OPENSHARD_SCENE_TILES=0x0739 \
+    OPENSHARD_SCENE_GROUND=0 OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+    OPENSHARD_SCENE_SOLIDS=lit OPENSHARD_SCENE_SOLIDS_EDGES=0 OPENSHARD_SCENE_SOLIDS_OPAQUE=1 \
+    OPENSHARD_FRAME_DUMP=/tmp/solids.ppm \
+    cargo run --release -p openshard-client-render --example isolated_scene
+```
+
+That picture is clean — a smooth gradient down the flight toward the lamp,
+no crosshatch anywhere — which is the other half of the elimination above:
+whatever is wrong is downstream of the grid, in the sprite's own shading.
+
+**Left open, and where this was headed next:** the fix the old entry already
+scoped — "a `scene::staircase` with one flight and nothing else, then a
+stance for the shape" — minus the occlusion half, which is done. What is
+still missing is a slope `Stance`/`Surface`: `place.rs` needs a variant
+`statics.wgsl` can resolve a `CLIMBABLE`, prism-fit static to instead of
+`STANCE_CORNER`, a per-pixel height formula for it that agrees with the
+tread geometry `Prism` already measured (rather than a wall's flat-plane
+one), and `blit.wgsl`'s `outward()` taught the same normal. The isolated
+scene above — sprite view and `_SOLIDS=lit` view of the same two tiles,
+side by side — is the regression check once it lands: the two should agree,
+where today only the second is honest.
+
+Everything below is the session before it.
+
+**A real staircase render was looked at and named two defects; both are
+fixed, and a third thing the second one's own measurement turned up is left
+open.**
+
+**Fixed: a tread's own top was shadowed by the riser it stands on.**
+`Surface::shadowed_by_own_tile` (decision 28) reads every `Stance::Flat` pixel
+on a named-edge tile as the room floor its own doc example describes — "a
+floor pixel on a wall tile is inside the room, and the ray from it to a lamp
+in the street crosses the panel its own tile stands on." A tread's top is
+`Stance::Flat` too (gbuffer.md's honest per-face normal), and it sits at
+exactly its own riser's `top()`: nothing of the riser stands *above* that
+height, so nothing is between the tread and a lamp at that height the way a
+real floor's wall genuinely rises past it. `light::walk_cells`'s per-solid
+exemption test gains one more case — `caps_this`, a flat pixel at or above
+*this* solid's own top is standing on it, not behind it — scoped to the one
+solid at a time rather than to the tile's whole mask, so a genuine floor at a
+panel's *bottom* (the ordinary room case decision 28 was written for) is
+unaffected. `blit.wgsl`'s `walk` carries the same test. Reproduced first,
+before either file was touched:
+`light::tests::a_treads_top_is_not_shadowed_by_its_own_riser` builds the same
+three-tread `0x0736` fixture `occlusion.rs`'s own test uses, reads `through
+0.513` off the unfixed rule (the riser's own top is exactly the boundary
+`pierces()` returns `0.5` at) and `> 0.9` after. All 32 of `tests/lighting.rs`
+and all 37 of `tests/frame.rs` (the Rust/WGSL parity suite among them) stay
+green, so nothing already authored stood on the case this widens.
+
+**Fixed: the 37.7% of `CLIMBABLE` art the `Prism` model does not fit no
+longer takes the wall-corner reading at all.**
+`tests/prism.rs`'s `how_much_of_the_climbable_art_the_prism_model_covers`
+(`OPENSHARD_CLIENT=… cargo test -p openshard-client-render --test prism
+how_much -- --ignored --nocapture`) measured it first: **576 `CLIMBABLE`
+pictures the install ships, 359 (62.3%) clear `PRISM_FITS`**, and the other
+217 were falling through `Builder::add` into the same code every ordinary
+wall uses — `edges_of(shape.facing)`, which reads a stair's base exactly as
+the static's own doc comment says it reads a house corner, and
+`Solid::box_of`'s `PANEL_THICKNESS` inset then narrowed the panel a fifth of
+a tile short of the neighbour it should meet. **`Builder::add` now asks
+`tile.flags.is_climbable()` a second time, after the fitted-prism branch and
+before falling through to `edges_of`**, and answers with one whole-tile body
+(`EDGE_ANY`, `box_of`'s own un-inset case) rather than a facing-shaped panel
+— the same answer step 23.1 gave every climbable static before decision 34
+taught the grid to read a *fitted* one as its own treads, restored for the
+flights the fit still misses. `occlusion.rs`'s own
+`a_stair_is_two_faces_per_tread_and_each_ones_height_comes_off_the_art` held
+the old two-panel fallback by name; it now asserts the whole-tile body and
+its full-width span instead. All of `tests/lighting.rs`, `tests/frame.rs` and
+`cargo test --workspace` stay green.
+
+**Left open: which of the 217 misses are stairs the model should fit better,
+and which are a different shape `CLIMBABLE` also covers (a ramp, a ladder) —
+nobody has looked at the graphics one by one.** The scores split into two
+groups that read as two different causes: some are hundredths under the gate
+(`0.898`, `0.897`, `0.895` — plausibly more treads than `best_prism` searches,
+or a measurement quirk) and some are far off (`0.138`, `0.144` — plausibly not
+a box-of-treads shape at all). This no longer produces a seam either way —
+the fallback above is a correct, if coarse, whole-tile body regardless of
+which — so improving `PRISM_FITS` or `best_prism`'s candidate search is a
+quality question now (a fitted flight still looks better than a box: real
+tread silhouettes, no ziggurat), not a correctness one, and it still wants the
+graphics looked at before either number moves.
+
+Everything below is the session before it.
+
 **Step 23.5.5's wall-thickness half landed: a panel is a real, tested slab,
 not only a drawn one.** `occlusion::PANEL_THICKNESS` (`0.2`, the number the
 view used to invent alone) is now the geometry `Solid::box_of`'s four named

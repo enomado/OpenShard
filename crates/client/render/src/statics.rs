@@ -219,7 +219,12 @@ pub fn collect(
 /// recomputed: a second depth formula here is a second chance to disagree
 /// with the one that already decided this static's pixels
 /// (`docs/gbuffer.md` decision 4).
-fn push_mesh(
+///
+/// `pub(crate)` and not private because [`crate::items`] wants the same
+/// correction for a placement that came from the server's own list rather
+/// than the map's — [`Placed::prism`] is set by [`place`] either way, and a
+/// second copy of this loop would be a second place the two could disagree.
+pub(crate) fn push_mesh(
     vertices: &mut Vec<MeshFaceVertex>,
     rows: &mut Vec<MeshFaceRow>,
     camera: &Camera,

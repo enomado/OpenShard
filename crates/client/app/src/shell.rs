@@ -186,6 +186,22 @@ pub struct Hud {
     pub show_occluders: bool,
     /// And whether the same grid is being drawn as solids — step 23.0.
     pub show_solids: bool,
+    /// Whether the world image is skipped while solids are drawn: boxes alone
+    /// over a blank frame, with nothing of the sprite underneath to compare
+    /// them against. F5 draws the box *and* the art it claims to contain, on
+    /// purpose (decision 39.2) — this is for the opposite question, "is the
+    /// box itself the shape I think it is", which a sprite drawn between its
+    /// faces makes harder to read rather than easier.
+    pub solids_only: bool,
+    /// Whether the solids view's fills are a straight overwrite instead of
+    /// blended in — `solids::Style::opaque`, for the checkbox that says so.
+    ///
+    /// Off by default, matching the translucent fill F5 always drew before
+    /// this existed. On, a later, nearer face genuinely hides an earlier,
+    /// farther one instead of tinting through it — the same picture
+    /// `OPENSHARD_SCENE_SOLIDS_OPAQUE` gives `isolated_scene`, now reachable
+    /// without the env var and the debug build it requires.
+    pub solids_opaque: bool,
     /// How much of the grid either view draws — [`Cut`], the second datum.
     ///
     /// Resolved rather than chosen: [`Cut::BelowFeet`] carries the player's own
@@ -343,6 +359,12 @@ pub struct Request {
     /// Switch the solids view on or off, likewise. It reads the same grid, so
     /// either box being ticked is what pays for building it.
     pub show_solids: Option<bool>,
+    /// Switch the world image off underneath the solids, on the frame the box
+    /// was ticked — see [`Hud::solids_only`].
+    pub solids_only: Option<bool>,
+    /// Switch the solids view's fill between translucent and opaque, on the
+    /// frame the box was ticked — see [`Hud::solids_opaque`].
+    pub solids_opaque: Option<bool>,
     /// Which of [`Cut`]'s two answers either view should draw from now on, on
     /// the frame the person picked it. Both views, because they are read against
     /// each other and two grids cut differently cannot be compared.
@@ -951,6 +973,28 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         .changed()
     {
         request.show_solids = Some(solids);
+    }
+    let mut solids_only = hud.solids_only;
+    if ui
+        .checkbox(
+            &mut solids_only,
+            "…and nothing else (F3) — the world image skipped, boxes over a \
+             blank frame",
+        )
+        .changed()
+    {
+        request.solids_only = Some(solids_only);
+    }
+    let mut solids_opaque = hud.solids_opaque;
+    if ui
+        .checkbox(
+            &mut solids_opaque,
+            "…opaque — a straight overwrite instead of blended in, so a \
+             nearer face genuinely hides a farther one",
+        )
+        .changed()
+    {
+        request.solids_opaque = Some(solids_opaque);
     }
     // The pass's own count and not a second walk of the grid: what is on screen
     // is what the pass drew, and a number derived beside it would be a claim

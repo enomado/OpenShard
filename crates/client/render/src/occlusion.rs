@@ -1500,6 +1500,31 @@ impl Builder {
             }
             return;
         }
+        // **A climbable static the prism search could not fit is still a
+        // climbable static, not a wall.** Falling through to `edges_of` would
+        // read its silhouette exactly as the doc above says a stair's base
+        // reads — a corner of a house — and narrow it by `PANEL_THICKNESS` on
+        // two sides for nothing: the flight is already half-height
+        // (`calc_height`), so what a panel reading loses is not "this looks
+        // like solid stone", it is a seam short of the tile the neighbour
+        // occludes from. One whole-tile body, `EDGE_ANY`'s un-inset case of
+        // `box_of`, is the same answer step 23.1 gave every climbable static
+        // before decision 34 taught the grid to read a *fitted* one as its own
+        // treads — this is that answer for the 37.7% the fit still misses.
+        // `docs/lighting.md`'s backlog, "measured rather than argued".
+        if tile.flags.is_climbable() {
+            self.push(
+                index,
+                Solid {
+                    space: Solid::box_of(place.0, place.1, bottom, top, EDGE_ANY),
+                    opacity,
+                    edges: EDGE_ANY,
+                    aperture: None,
+                    roof: tile.flags.is_roof(),
+                },
+            );
+            return;
+        }
         // A floor or a rug is a **lid**: its occlusion is the `z` it lies at and
         // no vertical side of the tile describes it, so it names no edge.
         // Everything that stands up names the edge the art gave it, or all four
@@ -2426,15 +2451,26 @@ mod tests {
             "each riser spans the rise from the tread before it, or the ground for the first"
         );
 
-        // And with no prism measured it is what it always was: the wall
-        // detector's corner, two panels, half the stated height. Nothing gets
-        // worse where the art was not read.
+        // And with no prism measured, it is `CLIMBABLE` that decides rather
+        // than the facing the art happened to read as: one whole-tile body,
+        // not the wall detector's two `PANEL_THICKNESS`-inset panels a corner
+        // reading used to fall back to — that reading is exactly the "flight
+        // of stairs shadows a street like a run of wall" defect this static's
+        // own doc comment names, and it is what left the same seam on every
+        // stair the prism search does not fit. Half the stated height either
+        // way, because `calc_height` halves it before either branch sees it.
         let corner = read_as(Shape::faced(Facing::Corner {
             right: Face::East,
             left: Face::South,
         }));
-        assert_eq!(corner.len(), 2, "a corner is still two panels");
-        assert_eq!(corner[0].top(), 10, "and still half of what tiledata states");
+        assert_eq!(corner.len(), 1, "one whole-tile body, not two panels");
+        assert_eq!(corner[0].edges, EDGE_ANY, "a body, not a named-edge panel");
+        assert_eq!(corner[0].top(), 10, "still half of what tiledata states");
+        assert_eq!(
+            (corner[0].space.min.x, corner[0].space.max.x),
+            (100.0, 101.0),
+            "full width, not a panel narrowed by PANEL_THICKNESS"
+        );
     }
 
     /// [`Solid::footprint`]'s `-1` adjustment for a "far"-edged degenerate plane

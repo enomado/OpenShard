@@ -1859,7 +1859,19 @@ fn walk_cells(
                 };
                 let lit_end = own_cell && on_surface(spot.z, stands);
                 let flame_end = skip_last && cell == last && on_surface(to[2], stands);
-                if stands.edges != 0 && ((lit_end && stands.edges & lit_by_own_tile == 0) || flame_end) {
+                // **A flat surface at or above a panel's own top is its cap, not a
+                // floor the panel rises through.** `shadowed_by_own_tile` reads
+                // every flat pixel on a named-edge tile as the room floor decision
+                // 28 was written for, and a tread's own top proves that wrong: it
+                // sits at exactly its riser's `top()`, nothing of the riser stands
+                // *above* that height, and the pixel is standing on the panel the
+                // same way a face does — not behind it. A genuine floor with a wall
+                // rising past it stays caught, because its `z` is at the panel's
+                // `bottom()` and this is false there. `blit.wgsl`'s `walk`.
+                let caps_this = surface == Surface::Flat && lit_end && spot.z >= stands.top() as f32 - ON_TOP;
+                if stands.edges != 0
+                    && ((lit_end && stands.edges & lit_by_own_tile == 0) || flame_end || caps_this)
+                {
                     continue;
                 }
                 let (low, high) = (stands.bottom() as f32, stands.top() as f32);
@@ -2465,5 +2477,76 @@ mod tests {
             None,
         );
         assert!(lighting.lights.is_empty());
+    }
+
+    /// **A tread's own top must not be shadowed by the riser it caps.**
+    ///
+    /// `occlusion::Builder::add`'s climbable branch gives a tread's top the
+    /// `Stance::Flat` normal, which is the same one a room's floor gets, and
+    /// [`Surface::shadowed_by_own_tile`] was written for that floor: "a floor
+    /// pixel on a wall tile is inside the room, and the ray from it to a lamp in
+    /// the street crosses the panel its own tile stands on." A tread's top sits
+    /// at the exact height its own riser stops at — `top_z == riser.top()` — so
+    /// the same rule reads it as a floor the riser walls in, even though the
+    /// riser has nothing standing *above* that height to be between the pixel
+    /// and anything. Found looking at a real staircase render: every tread top
+    /// read dark towards its own riser regardless of where the torch stood.
+    #[test]
+    fn a_treads_top_is_not_shadowed_by_its_own_riser() {
+        use crate::facing::Prism;
+        use crate::occlusion::{Builder, Shape};
+
+        let stair = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        occlusion.add(100, 100, 0, Graphic(0x0736), &stair, Shape::solid(prism));
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        // The highest tread's own top, off the built grid rather than
+        // recomputed: `footprint`'s own fractions are not this test's subject.
+        let top = occlusion
+            .solids_at(100, 100)
+            .filter(|solid| solid.edges == 0)
+            .max_by_key(|solid| solid.top())
+            .expect("the climb built three tops");
+        let at = Vec2::new(
+            ((top.space.min.x + top.space.max.x) / 2.0) as f32,
+            ((top.space.min.y + top.space.max.y) / 2.0) as f32,
+        );
+        let spot = Spot::flat(at, top.top() as f32);
+
+        // East of the stair, level with the top tread — the foot of the flight,
+        // which is where a person actually stands a torch.
+        let light = Light {
+            at: Vec2::new(102.5, 100.5),
+            z: top.top() as f32,
+            radius: 6.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        };
+        let lighting = Lighting {
+            ambient: NIGHT,
+            lights: vec![light],
+            occlusion,
+            sun: None,
+            view: crate::debug::View::default(),
+        };
+
+        let sample = sample(spot, &lighting);
+        assert!(
+            sample.reaches[0].through > 0.9,
+            "a tread's own top should not be dimmed by the riser it caps: through {}",
+            sample.reaches[0].through,
+        );
     }
 }

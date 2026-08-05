@@ -946,11 +946,21 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
                 let same_run = select(0u, own_run(own, cell, first), on_surface(lit.z, stands));
                 let lit_end = own_cell && on_surface(lit.z, stands);
                 let flame_end = flame_cell && on_surface(finish.z, stands);
-                if sides != 0u && ((lit_end && (sides & admitted) == 0u) || flame_end) {
-                    continue;
-                }
                 let low = f32(stands.x) - 128.0;
                 let high = f32(stands.y) - 128.0;
+                // **A flat surface at or above a panel's own top is its cap, not a
+                // floor the panel rises through.** `own_shadows` reads every flat
+                // pixel on a named-edge tile as the room floor decision 28 was
+                // written for, and a tread's own top proves that wrong: it sits at
+                // exactly its riser's `high`, nothing of the riser stands *above*
+                // that height, and the pixel is standing on the panel the way a
+                // face does, not behind it. A genuine floor with a wall rising past
+                // it stays caught, because its `z` is at the panel's `low` and this
+                // is false there. `light::walk`.
+                let caps_this = stance == STANCE_FLAT && lit_end && lit.z >= high - ON_TOP;
+                if sides != 0u && ((lit_end && (sides & admitted) == 0u) || flame_end || caps_this) {
+                    continue;
+                }
                 let opacity = f32(stands.z) / 255.0;
                 var by_surface = 0.0;
                 if sides == 0u {

@@ -100,6 +100,15 @@ pub fn needed_graphics(items: &[GroundItem], animations: &StaticAnimations) -> B
 /// frame* and not about the thing: the caller's list is a projection of what the
 /// server said, and writing a highlight into it would put the cursor's position
 /// inside the record of the world.
+///
+/// Also the honest mesh for any item that is a climbable, prism-fit static —
+/// [`crate::statics::StaticGeometry`], the same shape [`crate::statics::collect`]
+/// returns and for the same reason. A stair the server placed rather than the
+/// map is exactly as stepped as one built into it, and `Placed::prism` does not
+/// know which list its own placement came from — only [`place`] does, and both
+/// callers read the same field. Before this, a climbable *item* fell through to
+/// the flat corner-stance reading forever, with no honest mesh pass ever built
+/// for it: this function threw `placed.prism` away.
 pub fn collect(
     items: &[GroundItem],
     camera: &Camera,
@@ -108,10 +117,12 @@ pub fn collect(
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
     highlight: Option<usize>,
-) -> Vec<SpriteQuad> {
+) -> crate::statics::StaticGeometry {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
+    let mut mesh_vertices = Vec::new();
+    let mut mesh_rows = Vec::new();
 
     for (index, item) in items.iter().enumerate() {
         let Some(placed) = place(item, camera, tiledata, animations, atlas, cutaway) else {
@@ -129,7 +140,18 @@ pub fn collect(
             true => u32::from(HIGHLIGHT_HUE.0),
             false => u32::from(item.hue.0),
         };
-        quads.push((order, quad_of(item.at, &placed, base, hue)));
+        let quad = quad_of(item.at, &placed, base, hue);
+        if let Some(prism) = &placed.prism {
+            crate::statics::push_mesh(
+                &mut mesh_vertices,
+                &mut mesh_rows,
+                camera,
+                item.at,
+                prism,
+                quad.depth,
+            );
+        }
+        quads.push((order, quad));
     }
 
     // Back to front, and a *stable* sort on the order alone: two items on one
@@ -138,7 +160,11 @@ pub fn collect(
     // per-tile list holds them in. The depth test is `LessEqual`, so the later
     // one wins the tie; see `renderer::depth_state`.
     quads.sort_by_key(|(order, _)| *order);
-    quads.into_iter().map(|(_, quad)| quad).collect()
+    crate::statics::StaticGeometry {
+        quads: quads.into_iter().map(|(_, quad)| quad).collect(),
+        mesh_vertices,
+        mesh_rows,
+    }
 }
 
 /// The quads to draw a silhouette from, for the item the cursor is over.
@@ -313,11 +339,14 @@ mod tests {
             &Cutaway::OPEN,
             None,
         );
-        assert_eq!(quads.len(), 1);
+        assert_eq!(quads.quads.len(), 1);
         let sprite = atlas.sprite(graphic).expect("packed");
         let at = stand_on(&camera, Point::new(100, 100, 0), &sprite);
-        assert_eq!((quads[0].rect.x, quads[0].rect.y), (at.x, at.y));
-        assert_eq!((quads[0].rect.width, quads[0].rect.height), (30.0, 50.0));
+        assert_eq!((quads.quads[0].rect.x, quads.quads[0].rect.y), (at.x, at.y));
+        assert_eq!(
+            (quads.quads[0].rect.width, quads.quads[0].rect.height),
+            (30.0, 50.0)
+        );
     }
 
     /// Height lifts an item off the floor the way it lifts everything else, and
@@ -352,8 +381,12 @@ mod tests {
             &Cutaway::OPEN,
             None,
         );
-        assert_eq!(table[0].rect.y, floor[0].rect.y - 40.0, "four pixels a unit");
-        assert!(table[0].depth < floor[0].depth, "smaller is nearer");
+        assert_eq!(
+            table.quads[0].rect.y,
+            floor.quads[0].rect.y - 40.0,
+            "four pixels a unit"
+        );
+        assert!(table.quads[0].depth < floor.quads[0].depth, "smaller is nearer");
     }
 
     /// An item whose graphic is not packed is dropped rather than drawn from
@@ -376,7 +409,7 @@ mod tests {
             &Cutaway::OPEN,
             None,
         );
-        assert!(quads.is_empty());
+        assert!(quads.quads.is_empty());
     }
 
     /// Two items on different tiles come back with the further one first, so a
@@ -403,8 +436,11 @@ mod tests {
             &Cutaway::OPEN,
             None,
         );
-        assert_eq!(quads.len(), 2);
-        assert!(quads[0].depth > quads[1].depth, "the far one is drawn first");
+        assert_eq!(quads.quads.len(), 2);
+        assert!(
+            quads.quads[0].depth > quads.quads[1].depth,
+            "the far one is drawn first"
+        );
     }
 
     /// The viewport pixel a point in the drawn image sits at — the inverse of
@@ -529,11 +565,15 @@ mod tests {
             &Cutaway::OPEN,
             Some(1),
         );
-        assert_eq!(quads.len(), 2);
+        assert_eq!(quads.quads.len(), 2);
         // The pass sorts back to front, so the nearer one — index 1, a tile
         // south-east — is the second quad.
-        assert_eq!(quads[1].hue, u32::from(HIGHLIGHT_HUE.0), "the pointed-at item");
-        assert_eq!(quads[0].hue, 0x03B2, "and nothing else changed colour");
+        assert_eq!(
+            quads.quads[1].hue,
+            u32::from(HIGHLIGHT_HUE.0),
+            "the pointed-at item"
+        );
+        assert_eq!(quads.quads[0].hue, 0x03B2, "and nothing else changed colour");
     }
 
     /// Nothing under the cursor is a legitimate answer and the common one: most

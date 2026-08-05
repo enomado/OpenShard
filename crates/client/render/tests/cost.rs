@@ -624,7 +624,15 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         let start = Instant::now();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         for _ in 0..passes {
-            drawn = solids_pass.render(&device, &queue, &mut encoder, solids_frame, &camera, &boxes);
+            drawn = solids_pass.render(
+                &device,
+                &queue,
+                &mut encoder,
+                solids_frame,
+                &camera,
+                &boxes,
+                openshard_client_render::solids::Style::default(),
+            );
         }
         queue.submit([encoder.finish()]);
         device
@@ -670,7 +678,15 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         // taken here rather than by pointing a camera at a window.
         if std::env::var_os("OPENSHARD_FRAME_SOLIDS").is_some() {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            solids_pass.render(&device, &queue, &mut encoder, solids_frame, &camera, &boxes);
+            solids_pass.render(
+                &device,
+                &queue,
+                &mut encoder,
+                solids_frame,
+                &camera,
+                &boxes,
+                openshard_client_render::solids::Style::default(),
+            );
             queue.submit([encoder.finish()]);
             frame = read_back(&device, &queue, &surface);
         }
