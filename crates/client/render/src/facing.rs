@@ -1600,7 +1600,12 @@ fn candidates() -> &'static [Candidate] {
 /// drawn pixels with no surface under them; a model bigger than the art puts
 /// surface where the artist drew air, and that one is worse — it is a shadow with
 /// nothing in the picture casting it.
-fn silhouettes_agree(art: &Image, model: &Image) -> f32 {
+///
+/// `pub` for [`best_prism`]'s own use and for `tests/author.rs`, step 23.4's
+/// instrument: scoring a hand-placed [`Blocks`] candidate against the art is the
+/// same comparison, and a second copy of the alignment rule would be a second
+/// place for it to drift from this one.
+pub fn silhouettes_agree(art: &Image, model: &Image) -> f32 {
     let rows = art.height().max(model.height());
     let (mut both, mut either) = (0u32, 0u32);
     for column in 0..44u16 {

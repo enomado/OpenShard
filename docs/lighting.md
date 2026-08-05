@@ -9,6 +9,36 @@ copied.
 
 ## Where the next session starts
 
+**23.4's instrument landed: `tests/author.rs`, joining `artshot.rs`'s picture
+and `prism.rs`'s score into the one loop authoring a row actually takes.** Point
+it at a graphic and a table (`OPENSHARD_TABLE`, the checked-in
+`overrides.table` by default — the only file a hand-placed `block` belongs in,
+since a `prism` is still mostly derived) and it prints what the row currently
+says, draws that candidate's silhouette (`facing::prism_silhouette` or
+`facing::blocks_silhouette`), scores it against the real sprite with
+`facing::silhouettes_agree` — made `pub` for exactly this, rather than let the
+instrument grow a second copy of the alignment rule `best_prism` already
+trusts — and writes a picture: the art's own colours where the two agree, and a
+flat colour for each direction of disagreement, cyan where the art draws and
+the row does not claim it, red the other way round, which `silhouettes_agree`'s
+own doc already calls the worse of the two.
+
+Checked against the landing, `0x071E`, by hand-typing `block 0 8 0 8 0 5` into
+a scratch table: **0.977**, the same number decision 41's own prism fit gets on
+the same picture, because a box is exactly what a one-tread prism already is.
+A deliberately undersized block, `0 4 0 4 0 5`, scores **0.378**, and the
+picture shows why rather than only stating it — the whole diamond outside the
+small box reads cyan, the art the candidate does not claim. With nothing
+authored for a graphic, the picture is `tests/artshot.rs`'s own, unchanged.
+
+**What the DoD still asks for is unmet, and it is the half a person has to
+do.** Nothing is authored through it yet — not the staircase's own two
+graphics, not a joint, not an arch — because deciding where a lintel's box
+sits is a judgement against a picture, and this session had no eyes to bring
+to it. That is genuinely next.
+
+Everything below is the session before it.
+
 **Decision 41 landed: a shape gains a second, independent kind of solid — a
 list of plain boxes, beside its `Prism` — and `arttable::FORMAT` is now 4.**
 `occlusion::Shape` carries `blocks: facing::Blocks`, `facing::Block`/`Blocks`
@@ -3297,10 +3327,32 @@ always-touches-the-ground assumption cannot.
          since nothing proposes an arch's boxes the way `best_prism` proposes a
          climb.
 
-         **DoD:** the staircase's two graphics authored through it, and a joint
-         and an arch — the two shapes a person reported as "something odd
-         happens" — authored and scored. The number to record is how long one
-         graphic takes a person, because that is what says whether the mode is
+         **Built: `tests/author.rs`.** A graphic and a table in
+         (`OPENSHARD_TABLE`, the checked-in `overrides.table` by default); it
+         reads whichever verdict the row carries, draws that candidate's
+         silhouette, and scores it against the real sprite with
+         `facing::silhouettes_agree` — made `pub` for exactly this, rather than
+         let the instrument grow its own copy of the alignment rule `best_prism`
+         already trusts. The picture it writes is the art's own colours where
+         the two agree and a flat colour for each direction of disagreement —
+         cyan where the art draws and the row does not claim it, red the other
+         way round, the worse of the two per `silhouettes_agree`'s own doc.
+         Checked against the landing, `0x071E`, by hand-typing `block 0 8 0 8 0
+         5` into a scratch table: **0.977**, the same number decision 41's own
+         table gets fitting a prism to the same picture, because a box is what a
+         one-tread prism already is. A deliberately undersized block (`0 4 0 4 0
+         5`) scores **0.378**, and the picture shows why — the whole diamond
+         outside the small box reads cyan. With nothing authored for a graphic,
+         this is `tests/artshot.rs`'s own picture, unchanged.
+
+         **DoD, and what is still unmet:** the staircase's two graphics
+         authored through it, and a joint and an arch — the two shapes a person
+         reported as "something odd happens" — authored and scored. **The
+         instrument exists; the authoring does not.** Nothing is written into
+         any table yet for any of the four, because placing a box against a
+         picture is a person's judgement, not a search this session could run
+         in their place. The number to record once somebody does is how long
+         one graphic takes them, because that is what says whether the mode is
          hundreds of graphics or three.
       5. **And now the picture changes.** Treads as their own boxes, a wall with a
          stated thickness, an arch as more than one solid. Each of these is its
