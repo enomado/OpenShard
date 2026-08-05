@@ -740,6 +740,25 @@ attributed."
   asks for a corner `Stance`, so both got a one-line `twin: 0` and nothing
   more — the sharper shared helper would need to know about `twin` too, once
   it exists.
+
+  **A fourth fixture joined this list at step 6: `tests/select.rs`'s
+  `scene`.** It hand-writes the same attachment for the same reason (a
+  screen of texels no real draw call assembles conveniently) and now builds
+  its own one-row `face_instances` buffer beside it, the smallest version of
+  the same shape `parity_frame` uses. Confirms the pattern rather than
+  changing it — worth folding into the same sharper shared helper if one is
+  ever built, not a fourth reason to build it now.
+- **`blit.wgsl`'s own top-of-file comment (line 34) still says the place
+  attachment is `(x, y, z + 128, kind)` for every pixel.** Stale since step
+  3: true for `Kind::Land`, and an id rather than a tile for `Kind::Static`/
+  `Kind::Mobile` — the file's own body says so correctly, twice (the
+  `KIND_MASK` block above `FaceInstance`, and the comment on `var tile`
+  where the lookup happens), so a reader who stops at line 34 gets the
+  pre-step-3 picture from the one comment most likely to be read first.
+  Found while tracing `blit.wgsl`'s resolution as the reference for step 6's
+  fix in `select.wgsl` — not fixed here, on the same one-thing-at-a-time
+  ground as this backlog's other entries, but worth a line the next session
+  in this file trips over it.
 - **A corner static's shared arithmetic (`crate::statics::place`, `Placed`)
   is used by both the map's own furniture and `crate::items` — found while
   scoping step 4a, not assumed.** An item can carry a corner `Stance` the
