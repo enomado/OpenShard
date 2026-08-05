@@ -733,10 +733,13 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
             target: &surface_view,
             world: &world_view,
             place: &place_view,
-            // Ground only: nothing here ever indexes either buffer.
+            // Ground only: nothing here ever indexes either static/mobile
+            // buffer, but the ground quads drawn above are real, so their id
+            // has to resolve through the real buffer and not a dummy.
             face_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
+            ground_instances: ground_pass.instances_buffer(),
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -907,10 +910,12 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
             target: &surface_view,
             world: &world_view,
             place: &place_view,
-            // Ground only: nothing here ever indexes either buffer.
+            // Ground only, and the ground quads drawn above are real, so
+            // their id has to resolve through the real buffer.
             face_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
+            ground_instances: ground_pass.instances_buffer(),
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -1099,10 +1104,12 @@ fn a_wall_stops_the_light_behind_it() {
                 target: &surface_view,
                 world: &world_view,
                 place: &place_view,
-                // Ground only: nothing here ever indexes either buffer.
+                // Ground only, and the ground quads drawn above are real, so
+                // their id has to resolve through the real buffer.
                 face_instances: &dummy_instances,
                 mobile_instances: &dummy_instances,
                 mesh_instances: &dummy_mesh_instances,
+                ground_instances: ground_pass.instances_buffer(),
                 zoom: Zoom::ONE,
                 rect: ViewportRect {
                     x: 0,
@@ -1253,9 +1260,12 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
     });
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
     let mut blit = Blit::new(&device, surface_format);
-    // No mobile pass in this test: the dummy stands in for it.
+    // No mobile pass in this test: the dummy stands in for it. No ground pass
+    // either — this test is about the sprite pass's own target format — so
+    // the dummy stands in for that too.
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
     let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
+    let dummy_ground_instances = openshard_client_render::blit::dummy_ground_instances(&device);
     blit.render(
         &device,
         &queue,
@@ -1269,6 +1279,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
             face_instances: sprites.instances_buffer(),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
+            ground_instances: &dummy_ground_instances,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -1651,14 +1662,19 @@ fn every_pixel_names_the_tile_it_came_from() {
         1,
         "two pixels up the wall is not half a unit of height: {higher:?} against {wall_pixel:?}",
     );
-    // A pixel of the ground beside it: the tile under the wall, at the height
+    // A pixel of the ground beside it: an id naming the one ground quad this
+    // frame drew — its own tile is `docs/gbuffer.md` step 7's
+    // `ground_instances[id]` row now, not a number this attachment carries
+    // directly, the same move step 3 made for the wall above — at the height
     // the corners gave it, and the land kind.
     let ground_pixel = places.at(64, 84);
+    let ground_id = u32::from(ground_pixel[0]) | (u32::from(ground_pixel[1]) << 16);
     assert_eq!(
-        [ground_pixel[0], ground_pixel[1], ground_pixel[2]],
-        [300, 400, 128],
+        ground[ground_id as usize].place,
+        Place::land(300, 400),
         "the ground beside the wall named something else",
     );
+    assert_eq!(ground_pixel[2], 128, "and another height");
     assert_eq!(ground_pixel[3] & 3, 1, "and another kind");
     // And the ground's fraction of its tile moves with the pixel, which is what
     // the lighting reads to make a pool a gradient rather than a set of flat
@@ -3167,6 +3183,10 @@ fn render_outlined(
             face_instances: sprites.instances_buffer(),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
+            // Empty, like the ground pass drawn above — a real buffer of no
+            // rows rather than a dummy, the same reason that pass was given
+            // `&[]` instead of being skipped.
+            ground_instances: ground_pass.instances_buffer(),
             zoom,
             rect,
         },
@@ -3610,13 +3630,14 @@ fn parity_frame(
     let place = openshard_client_render::place::texture(device, width, height);
     let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // `Kind::Static` pixels no longer carry their own `x`/`y` in the attachment
-    // — `docs/gbuffer.md` step 3 moved that to a row this fixture has to build
-    // itself now, the same way `statics.wgsl` would have. One row per distinct
-    // tile the sweep below actually uses, keyed by first sight: the sweep
-    // visits the same handful of tiles many times over (`PARITY_TILE` pixels
-    // apiece), and a row per *pixel* would be the id repeating the very
-    // repetition decision 2 exists to remove.
+    // Neither `Kind::Static` nor `Kind::Land` pixels carry their own `x`/`y`
+    // in the attachment any more — `docs/gbuffer.md` step 3 moved a static's
+    // to a row this fixture has to build itself, the same way `statics.wgsl`
+    // would have, and step 7 did the same for the ground. One row per
+    // distinct tile the sweep below actually uses, keyed by first sight: the
+    // sweep visits the same handful of tiles many times over (`PARITY_TILE`
+    // pixels apiece), and a row per *pixel* would be the id repeating the
+    // very repetition decision 2 exists to remove.
     let mut face_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
     let mut face_rows: Vec<u8> = Vec::new();
     let mut id_of = |x: u16, y: u16| -> u32 {
@@ -3648,13 +3669,41 @@ fn parity_frame(
         })
     };
 
+    // `Kind::Land` pixels need the same treatment since `docs/gbuffer.md`
+    // step 7 — one row per distinct tile, keyed by first sight, the ground
+    // half of `id_of` above.
+    let mut ground_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
+    let mut ground_rows: Vec<u8> = Vec::new();
+    let mut ground_id_of = |x: u16, y: u16| -> u32 {
+        *ground_ids.entry((x, y)).or_insert_with(|| {
+            let id = (ground_rows.len() as u64 / openshard_client_render::ground::GroundQuad::STRIDE) as u32;
+            openshard_client_render::ground::GroundQuad {
+                x: 0.0,
+                y: 0.0,
+                corners: [0.0; 4],
+                region: openshard_client_render::atlas::Region {
+                    u: 0.0,
+                    v: 0.0,
+                    du: 0.0,
+                    dv: 0.0,
+                },
+                texmap: None,
+                depth: 0.0,
+                place: openshard_client_render::place::Place::land(x, y),
+            }
+            .write(&mut ground_rows);
+            id
+        })
+    };
+
     let mut texels: Vec<u16> = Vec::with_capacity((width * height * 4) as usize);
     for py in 0..height {
         for px in 0..width {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
-            // `(x, y, z + 128 | stance, kind | sub)` for the ground, or
-            // `(id, z + 128 | stance, kind)` for a static's face: the packing
-            // `crate::place` documents and `blit.wgsl` takes apart. Land at
+            // `(id, z + 128 | stance, kind | sub)` either way now — an id
+            // into `ground_rows` for the ground, into `face_rows` for a
+            // static's face: the packing `crate::place` documents and
+            // `blit.wgsl` takes apart. Land at
             // `z = 0` — the ground of the room — unless the fixture is about a
             // wall's face, in which case every pixel is a static standing on
             // that face.
@@ -3689,7 +3738,8 @@ fn parity_frame(
                 let id = id_of(x, y);
                 ((id & 0xFFFF) as u16, (id >> 16) as u16)
             } else {
-                (x, y)
+                let id = ground_id_of(x, y);
+                ((id & 0xFFFF) as u16, (id >> 16) as u16)
             };
             texels.extend_from_slice(&[word0, word1, height, kind | sub_x << 2 | sub_y << 9]);
         }
@@ -3755,9 +3805,10 @@ fn parity_frame(
     let mut blit = Blit::new(device, openshard_client_render::blit::WORLD_FORMAT);
     let dummy_instances = openshard_client_render::blit::dummy_instances(device);
     let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(device);
+    let dummy_ground_instances = openshard_client_render::blit::dummy_ground_instances(device);
     // Only built above when the fixture used `Kind::Static` at all — a fixture
-    // that never leaves `Surface::Upright`'s `Kind::Land` has nothing for it
-    // to index and keeps using the dummy, same as ground always does.
+    // built entirely from `Surface::Flat`/`Surface::Face` has nothing for the
+    // dummy to stand in for.
     let face_instances = if face_rows.is_empty() {
         None
     } else {
@@ -3768,6 +3819,21 @@ fn parity_frame(
             mapped_at_creation: false,
         });
         queue.write_buffer(&buffer, 0, &face_rows);
+        Some(buffer)
+    };
+    // The mirror of `face_instances`: built only when the fixture used
+    // `Surface::Upright`'s `Kind::Land` — every fixture but the ones that
+    // never leave a wall's face.
+    let ground_instances = if ground_rows.is_empty() {
+        None
+    } else {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("parity ground instances"),
+            size: ground_rows.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, &ground_rows);
         Some(buffer)
     };
     blit.render(
@@ -3782,6 +3848,7 @@ fn parity_frame(
             // No mobile pixels in this fixture: the dummy stands in for it.
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
+            ground_instances: ground_instances.as_ref().unwrap_or(&dummy_ground_instances),
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,

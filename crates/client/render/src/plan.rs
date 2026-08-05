@@ -489,6 +489,39 @@ fn drawn(
         texel[0] = (id & 0xFFFF) as u16;
         texel[1] = (id >> 16) as u16;
     }
+    // `Kind::Land` pixels — [`draw`]'s, never [`elevation`]'s — need the same
+    // treatment since `docs/gbuffer.md` step 7: a land pixel's tile is an id
+    // into a row this function builds itself now too, the ground half of the
+    // static loop above.
+    let mut ground_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
+    let mut ground_rows: Vec<u8> = Vec::new();
+    for texel in texels.chunks_exact_mut(4) {
+        if texel[3] & 3 != crate::place::Kind::Land as u16 {
+            continue;
+        }
+        let (x, y) = (texel[0], texel[1]);
+        let id = *ground_ids.entry((x, y)).or_insert_with(|| {
+            let id = (ground_rows.len() as u64 / crate::ground::GroundQuad::STRIDE) as u32;
+            crate::ground::GroundQuad {
+                x: 0.0,
+                y: 0.0,
+                corners: [0.0; 4],
+                region: crate::atlas::Region {
+                    u: 0.0,
+                    v: 0.0,
+                    du: 0.0,
+                    dv: 0.0,
+                },
+                texmap: None,
+                depth: 0.0,
+                place: crate::place::Place::land(x, y),
+            }
+            .write(&mut ground_rows);
+            id
+        });
+        texel[0] = (id & 0xFFFF) as u16;
+        texel[1] = (id >> 16) as u16;
+    }
 
     let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
     queue.write_texture(
@@ -553,9 +586,12 @@ fn drawn(
     // No mobile pixels this function ever draws: the dummy always stands in
     // for `mobile_instances`. `face_instances` is the same dummy for `draw`,
     // which only ever writes `Kind::Land`, and the real buffer built above
-    // for `elevation`, which writes `Kind::Static`.
+    // for `elevation`, which writes `Kind::Static` — and `ground_instances` is
+    // the mirror of that: the real buffer for `draw`, the dummy for
+    // `elevation`.
     let dummy_instances = crate::blit::dummy_instances(device);
     let dummy_mesh_instances = crate::blit::dummy_mesh_instances(device);
+    let dummy_ground_instances = crate::blit::dummy_ground_instances(device);
     let face_instances = if face_rows.is_empty() {
         None
     } else {
@@ -566,6 +602,18 @@ fn drawn(
             mapped_at_creation: false,
         });
         queue.write_buffer(&buffer, 0, &face_rows);
+        Some(buffer)
+    };
+    let ground_instances = if ground_rows.is_empty() {
+        None
+    } else {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("plan ground instances"),
+            size: ground_rows.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, &ground_rows);
         Some(buffer)
     };
     blit.render(
@@ -579,6 +627,7 @@ fn drawn(
             face_instances: face_instances.as_ref().unwrap_or(&dummy_instances),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
+            ground_instances: ground_instances.as_ref().unwrap_or(&dummy_ground_instances),
             zoom: Zoom::ONE,
             rect: crate::blit::ViewportRect {
                 x: 0,

@@ -50,10 +50,10 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 /// — `crate::place` and `statics.wgsl`, whose fourth channel is the kind in the
 /// low two bits and the sub-tile fraction above it.
 ///
-/// `words` is the attachment's first two channels verbatim: a literal tile for
-/// [`Kind::Land`] (`ground.wgsl` never touched them) or an id into
-/// [`face_rows`] for [`Kind::Static`] (`docs/gbuffer.md` step 3) — the caller
-/// picks, this only packs.
+/// `words` is the attachment's first two channels verbatim: an id into
+/// [`ground_rows`] for [`Kind::Land`] (`docs/gbuffer.md` step 7) or into
+/// [`face_rows`] for [`Kind::Static`] (step 3) — the caller picks, this only
+/// packs.
 fn place_texel(words: (u16, u16), kind: Kind, stance: Stance) -> [u16; 4] {
     [
         words.0,
@@ -67,9 +67,14 @@ fn place_texel(words: (u16, u16), kind: Kind, stance: Stance) -> [u16; 4] {
     ]
 }
 
-/// A land texel: `words` is the tile itself.
-fn land_texel(tile: (u16, u16)) -> [u16; 4] {
-    place_texel(tile, Kind::Land, Stance::Flat)
+/// A land texel: `id` is an id into [`ground_rows`], not a tile — since
+/// `docs/gbuffer.md` step 7, the ground half of what step 6 did for a static.
+fn land_texel(id: u32) -> [u16; 4] {
+    place_texel(
+        ((id & 0xFFFF) as u16, (id >> 16) as u16),
+        Kind::Land,
+        Stance::Flat,
+    )
 }
 
 /// A static texel: `id` is an id into [`face_rows`], not a tile — the whole
@@ -113,6 +118,36 @@ fn face_rows() -> Vec<u8> {
 /// the buffer.
 const SELECTED_ID: u32 = 0;
 
+/// [`scene`]'s land rows: [`SELECTED`] and [`NEIGHBOUR`], one each — unlike
+/// the statics, the two land bands are two different tiles and need two
+/// different ids. `docs/gbuffer.md` step 7, the ground half of [`face_rows`].
+fn ground_rows() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for tile in [SELECTED, NEIGHBOUR] {
+        openshard_client_render::ground::GroundQuad {
+            x: 0.0,
+            y: 0.0,
+            corners: [0.0; 4],
+            region: openshard_client_render::atlas::Region {
+                u: 0.0,
+                v: 0.0,
+                du: 0.0,
+                dv: 0.0,
+            },
+            texmap: None,
+            depth: 0.0,
+            place: Place::land(tile.0, tile.1),
+        }
+        .write(&mut bytes);
+    }
+    bytes
+}
+
+/// The ids [`ground_rows`] gives [`SELECTED`] and [`NEIGHBOUR`] — first sight,
+/// in the order written above.
+const SELECTED_GROUND_ID: u32 = 0;
+const NEIGHBOUR_GROUND_ID: u32 = 1;
+
 /// Which band of rows each kind of pixel occupies. Bands rather than scattered
 /// texels so that a failure can be read as "this band is wrong" instead of as a
 /// coordinate.
@@ -130,10 +165,10 @@ fn scene() -> Vec<[u16; 4]> {
     let mut texels = Vec::with_capacity((SIZE * SIZE) as usize);
     for y in 0..SIZE {
         let texel = match y {
-            y if y < BANDS[0].1 => land_texel(SELECTED),
+            y if y < BANDS[0].1 => land_texel(SELECTED_GROUND_ID),
             y if y < BANDS[1].1 => static_texel(SELECTED_ID, Stance::Flat),
             y if y < BANDS[2].1 => static_texel(SELECTED_ID, Stance::Upright),
-            _ => land_texel(NEIGHBOUR),
+            _ => land_texel(NEIGHBOUR_GROUND_ID),
         };
         for _ in 0..SIZE {
             texels.push(texel);
@@ -268,6 +303,18 @@ fn wash(device: &wgpu::Device, queue: &wgpu::Queue, selection: Selection) -> Vec
     });
     queue.write_buffer(&face_instances, 0, &rows);
 
+    // `ground_rows`, on the GPU — what the two land bands' ids resolve
+    // through, the same way `window.renderer.instances_buffer()` is what a
+    // real frame binds.
+    let ground_rows = ground_rows();
+    let ground_instances = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("select test ground instances"),
+        size: ground_rows.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&ground_instances, 0, &ground_rows);
+
     Select::new(device, format).render(
         device,
         queue,
@@ -277,6 +324,7 @@ fn wash(device: &wgpu::Device, queue: &wgpu::Queue, selection: Selection) -> Vec
             mask: &mask.create_view(&wgpu::TextureViewDescriptor::default()),
             place: &place_texture.create_view(&wgpu::TextureViewDescriptor::default()),
             face_instances: &face_instances,
+            ground_instances: &ground_instances,
             size: (SIZE, SIZE),
             rect: ViewportRect {
                 x: 0,

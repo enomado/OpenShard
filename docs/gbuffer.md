@@ -412,12 +412,23 @@ reason.
   row removes is narrower than step 2 drafted, but it is still exactly the
   repetition named there: two numbers, written unchanged into every one of a
   sprite's pixels, now written once.
-- **Ground's own reconstruction is not the billboard's.** A sloped land quad's
-  height is bilinearly interpolated across its four corners — solvable in
-  closed form from screen position and the tile's own corner heights, but not
-  the free "read the screen row" trick a flat billboard gets. Still per-tile
-  data, not per-pixel, just not as trivial as decision 1's paragraph makes it
-  look for statics.
+- ~~Ground's own reconstruction is not the billboard's...~~ **Answered (step
+  7): moot — `ground.wgsl` was never reconstructing anything to begin with.**
+  Checked directly rather than assumed: the vertex shader already evaluates
+  the bilinear formula once, exactly, at each of the four real corners
+  (`mix(mix(...), mix(...), ...)`, exact because it is only ever evaluated
+  where a mix reduces to one of its own inputs), and the rasteriser's own
+  linear interpolation of that per-vertex height and per-vertex sub-tile
+  fraction across the two triangles is the "free" part — the same trick step
+  4c's mesh faces use, arrived at independently and earlier, because ground was
+  never a billboard's flat plane to begin with. Both were already
+  fragment-side and untouched by this step, for the same reason step 3 found
+  `z` and the fraction fragment-side for a standing face: **only the tile
+  itself was ever the instance-constant fact worth moving.** So step 7 turned
+  out to be a narrower question than this bullet posed — not "how does ground
+  reconstruct a height", but "does ground's tile get the same
+  `ground_instances[id]` move step 3 gave a static's" — and the answer is
+  yes, unconditionally, no closed-form height solve required anywhere.
 - ~~Whether `SpriteRenderer::render_mask` shrinks.~~ **Answered (step 6): no —
   checked directly rather than assumed, and the id does not close the identity
   gap after all.** The id that lands in a static's `place.x`/`place.y` is
@@ -698,8 +709,75 @@ attributed."
       Four gates green on `openshard-client-render` and
       `openshard-client-app`, and the full `cargo test --workspace` besides:
       no count moved except the fixture's own internal encoding.
-- [ ] 7. Ground's bilinear case (third "Not settled" item), once statics prove
-      the shape works at all.
+- [x] 7. Ground's bilinear case (third "Not settled" item), once statics prove
+      the shape works at all. Landed the same shape step 3 gave a static's
+      tile: `ground.wgsl` writes `@builtin(instance_index)` into the
+      attachment's first two channels instead of a literal `(x, y)`, and
+      `blit.wgsl`/`select.wgsl` resolve it through `ground_instances[id]` —
+      the ground pass's own `GroundQuad` buffer, `STORAGE` added to its
+      existing `VERTEX` usage, the same dual-purpose buffer decision 2
+      described and step 3 built for statics. `z` and the sub-tile fraction
+      are untouched — see the answered "Not settled" item above for why
+      neither was ever a fact this step had anything to move.
+
+      **The row's own WGSL struct could not just mirror `FaceInstance`'s
+      shape, and the reason is `GroundQuad`'s own byte layout, not a design
+      choice.** `FaceInstance` gets away with declaring `rect: vec4<f32>` as
+      its first field because `SpriteQuad::write` puts a `vec4`-sized value
+      first too — but `GroundQuad::write` puts a bare `(x, y)`, eight bytes,
+      first, and WGSL aligns a `vec4` field to sixteen bytes regardless of
+      what a struct's byte-level contract actually needs. Declaring the row
+      the same way `FaceInstance` does would have silently opened a gap after
+      `origin` that `GroundQuad::write`'s real bytes do not have, and every
+      field read after it — including `place`, the one this step actually
+      needs — would come out four bytes short of where the Rust side put it.
+      Caught before landing, by working out the alignment arithmetic rather
+      than trusting the shape to carry over: `GroundInstance` is declared as
+      sixteen scalars (`f32`/`u32`, each aligned to four bytes and never
+      more) instead of the four/five `vec4`s `GroundQuad`'s own doc groups
+      them into. `MeshFaceInstance` (step 4c) is the same discipline, arrived
+      at for the same reason — a struct with no field wider than a scalar
+      cannot open a gap its writer's bytes do not have — this step is the
+      first to need it *and* say why, since `MeshFaceInstance`'s two `u32`
+      fields never had a `vec4` sibling to collide with.
+
+      **No change to `GroundQuad::write`, `GroundQuad::STRIDE`, or any of
+      its existing byte offsets.** The scalar-struct fix above meant the
+      vertex-fetch side and the storage-read side could keep disagreeing
+      about how many attributes the buffer has without disagreeing about
+      where anything *is*: `ground.wgsl`'s pipeline now declares five vertex
+      attributes instead of six — the tile's two words stay in the buffer,
+      at the same offset, simply unfetched by the vertex stage — while
+      `blit.wgsl`/`select.wgsl` read those same two words back through the
+      dual-bound storage view. One buffer, one upload, two different
+      pipelines each reading only the part of it their own stage needs.
+
+      **A real bug caught by the compiler before it was a bug in the
+      picture: `every_pixel_names_the_tile_it_came_from`.** The one existing
+      test that read the raw attachment and asserted a ground pixel's first
+      two channels equalled its literal tile, `[300, 400]` — true before
+      this step, and simply wrong after it, since those channels are an id
+      now. Not a fixture that poked the attachment by hand (decision 9's own
+      warning) — a fixture that read a *real* draw's real output and had
+      old knowledge baked into the assertion. Fixed by decoding the id and
+      checking it against the `GroundQuad` that produced it
+      (`ground[id].place == Place::land(300, 400)`) instead of the attachment
+      directly, the same move `render_places`' corner test already made for
+      a static's id.
+
+      **Four more fixtures joined the "hand-writes the attachment" list this
+      backlog already tracks, on the ground side specifically:** `plan.rs`'s
+      `drawn` (shared by `draw` and `pictures.rs`'s `elevation`),
+      `tests/frame.rs`'s `parity_frame`, and `tests/select.rs`'s `scene` each
+      needed a `ground_ids`/`ground_rows` map built alongside the
+      pre-existing `face_ids`/`face_rows` one, the ground mirror of exactly
+      what step 3 made each of them build for a static. Every real-GPU test
+      in `tests/frame.rs`/`tests/cost.rs`/`examples/isolated_scene.rs` that
+      draws actual `GroundQuad`s through a real `GroundRenderer` needed
+      `ground_pass.instances_buffer()` threaded into its `blit::Frame` —
+      previously always a dummy, since nothing indexed it — and the one
+      compile error at a time the missing-field checker produced was the
+      whole of finding them: no site was missed silently.
 
 ## Backlog
 
@@ -748,17 +826,27 @@ attributed."
   the same shape `parity_frame` uses. Confirms the pattern rather than
   changing it — worth folding into the same sharper shared helper if one is
   ever built, not a fourth reason to build it now.
-- **`blit.wgsl`'s own top-of-file comment (line 34) still says the place
-  attachment is `(x, y, z + 128, kind)` for every pixel.** Stale since step
-  3: true for `Kind::Land`, and an id rather than a tile for `Kind::Static`/
-  `Kind::Mobile` — the file's own body says so correctly, twice (the
-  `KIND_MASK` block above `FaceInstance`, and the comment on `var tile`
-  where the lookup happens), so a reader who stops at line 34 gets the
-  pre-step-3 picture from the one comment most likely to be read first.
-  Found while tracing `blit.wgsl`'s resolution as the reference for step 6's
-  fix in `select.wgsl` — not fixed here, on the same one-thing-at-a-time
-  ground as this backlog's other entries, but worth a line the next session
-  in this file trips over it.
+
+  **Step 7 doubled every one of these four fixtures' own bookkeeping rather
+  than adding a fifth.** `Kind::Land` needed the identical id-row treatment
+  `Kind::Static` already had, so `parity_frame`, `plan.rs`'s `drawn` and
+  `tests/select.rs`'s `scene` each grew a second `ground_ids`/`ground_rows`
+  map beside the `face_ids`/`face_rows` one — same dedup-by-tile, same
+  first-sight numbering, `GroundQuad::write` in place of `SpriteQuad::write`.
+  A shared helper built now would take a list of `(Place, Stance)` pairs
+  *per kind* and hand back both rows and both buffers in one call instead of
+  four call sites each writing the same eight lines twice — worth doing
+  before a fifth kind ever needs the same shape, still not done now for the
+  reason it was not done at step 6: each fixture is still readable copying
+  the pattern rather than abstracting it, and decision 38.5's discipline is
+  against changing more than the one thing a step is actually about.
+- ~~`blit.wgsl`'s own top-of-file comment (line 34) still says the place
+  attachment is `(x, y, z + 128, kind)` for every pixel.~~ **Fixed at step
+  7**, on the same trip through this file that gave `Kind::Land` an id too —
+  it now says `(id, z + 128, kind and the fraction)` and names both steps
+  that put an id there instead of a tile. Left struck rather than deleted:
+  the backlog's own record of a comment that drifted twice before anyone
+  fixed it is worth keeping next to the fix.
 - **A corner static's shared arithmetic (`crate::statics::place`, `Placed`)
   is used by both the map's own furniture and `crate::items` — found while
   scoping step 4a, not assumed.** An item can carry a corner `Stance` the

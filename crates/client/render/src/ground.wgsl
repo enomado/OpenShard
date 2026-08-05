@@ -66,8 +66,11 @@ struct VertexOut {
     // Where to sample the texture atlas, and whether there is anything there.
     @location(2) texmap_uv: vec2<f32>,
     @location(3) has_texmap: f32,
-    // The tile these pixels are, flat across the instance — see `crate::place`.
-    @location(4) @interpolate(flat) place: vec2<u32>,
+    // This instance's own index — what the attachment now carries in place of
+    // the tile, and what `blit.wgsl`/`select.wgsl` look up in this pass's own
+    // instance buffer, bound a second time as storage. See `docs/gbuffer.md`
+    // decision 2 and step 7.
+    @location(4) @interpolate(flat) id: u32,
     // Where in that tile, as the diamond's own two axes in `0..1`. Interpolated,
     // and it is what makes a pool of light a gradient rather than a set of flat
     // tiles with steps between them: a tile is 44 pixels across and a fragment
@@ -115,8 +118,7 @@ fn vs_main(
     // statics included. Computed on the CPU — see `crate::depth` — because it
     // is one ordering shared by two passes and neither may derive its own.
     @location(5) depth: f32,
-    // Per instance: the tile, packed as `crate::place::Place::packed` writes it.
-    @location(6) place: vec2<u32>,
+    @builtin(instance_index) instance_index: u32,
 ) -> VertexOut {
     let half = viewport.tile * 0.5;
     let is_flat = f32(all(heights == vec4<f32>(heights.x)));
@@ -171,7 +173,7 @@ fn vs_main(
     // Corner to corner: the unit quad's own coordinates *are* the texture's.
     out.texmap_uv = texmap.xy + corner * texmap.zw;
     out.has_texmap = f32(texmap.z > 0.0);
-    out.place = place;
+    out.id = instance_index;
     out.place_z = height;
     // The diamond's own axes, inverted from the screen offset this vertex is at:
     // `slope_offset` above is `((a - b) * 22, (a + b - 1) * 22)` for a tile-local
@@ -186,13 +188,21 @@ fn vs_main(
     return out;
 }
 
-// Where in the world this fragment's pixel is: the instance's tile, the
+// Where in the world this fragment's pixel is: the instance's id, the
 // interpolated corner height, and "this is ground".
+//
+// **The tile itself no longer rides here** — `docs/gbuffer.md` step 7 moved it
+// to this pass's own instance buffer, read back by `blit.wgsl`/`select.wgsl`
+// as `ground_instances[id]`, the same move step 3 made for a static's tile.
+// The height and the sub-tile fraction stay exactly where they were: both are
+// this fragment's own, from the bilinear interpolation above, not a fact the
+// whole instance shares — carrying either from the row would flatten exactly
+// what they exist to vary.
 fn place_of(in: VertexOut) -> vec4<u32> {
     let z = u32(clamp(round(in.place_z), -128.0, 127.0) + 128.0);
     let local = clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0));
     let sub = u32(round(local.x * SUB_TILE)) << 2u | u32(round(local.y * SUB_TILE)) << 9u;
-    return vec4<u32>(in.place.x & 0xFFFFu, in.place.x >> 16u, z, KIND_LAND | sub);
+    return vec4<u32>(in.id & 0xFFFFu, in.id >> 16u, z, KIND_LAND | sub);
 }
 
 @fragment

@@ -31,9 +31,12 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 
 @group(0) @binding(0) var world: texture_2d<f32>;
 @group(0) @binding(1) var world_sampler: sampler;
-// Which tile each pixel of `world` came from: (x, y, z + 128, kind). Never
-// sampled — an integer texture has no filtering, and a place averaged with its
-// neighbour would name a third tile nothing was drawn on.
+// Which tile each pixel of `world` came from: (id, z + 128, kind and the
+// fraction) — an id into one of the three instance buffers below rather than
+// a literal tile, since `docs/gbuffer.md` steps 3 and 7 moved it there for
+// every kind. Never sampled — an integer texture has no filtering, and a
+// place averaged with its neighbour would name a third tile nothing was drawn
+// on.
 @group(0) @binding(3) var place_of: texture_2d<u32>;
 // Where each tile's references are, one texel a tile over the rectangle in
 // `lighting.grid`: (offset & 255, offset >> 8, offset >> 16, count). The index
@@ -187,6 +190,50 @@ struct MeshFaceInstance {
 };
 
 @group(0) @binding(11) var<storage, read> mesh_instances: array<MeshFaceInstance>;
+
+// The ground pass's own `GroundQuad`, laid out exactly as `ground.rs`'s
+// `GroundQuad::write` puts it on the GPU — this is that same buffer, bound a
+// second time as storage. `docs/gbuffer.md` step 7, the ground half of what
+// step 3 did for a static's tile.
+//
+// Scalars rather than the `vec4`s `GroundQuad`'s own doc groups them into,
+// unlike `FaceInstance` above: `GroundQuad::write`'s first field is a bare
+// `(x, y)`, only eight bytes wide, and a `vec4` declared right after it would
+// force WGSL to align that field to sixteen bytes — opening a gap the real
+// bytes do not have, and reading every field after it four bytes short of
+// where the Rust side actually put it. A scalar's alignment is never wider
+// than four bytes, so a struct built only from them can never drift from an
+// offset `GroundQuad::write` chose. Only `place0` is read; the rest is
+// declared so the struct's size matches `GroundQuad::STRIDE`, the same reason
+// `FaceInstance`'s unread fields are — a struct narrower than the real stride
+// reads every row past the first at the wrong offset. `place1` — the second
+// word `crate::place::Place::packed` writes, `z`/`kind`/`stance` — is never
+// read: the ground pass's `z` and fraction are this fragment's own, computed
+// by `ground.wgsl` and carried in the attachment already, not a fact the row
+// holds.
+struct GroundInstance {
+    origin_x: f32,
+    origin_y: f32,
+    corner_a: f32,
+    corner_b: f32,
+    corner_c: f32,
+    corner_d: f32,
+    region_u: f32,
+    region_v: f32,
+    region_du: f32,
+    region_dv: f32,
+    texmap_u: f32,
+    texmap_v: f32,
+    texmap_du: f32,
+    texmap_dv: f32,
+    depth: f32,
+    // `Place::packed`'s two words: `place0` is `x | y << 16`, and `place1` —
+    // never read here — is `(z + 128) | kind << 8 | stance << 16`.
+    place0: u32,
+    place1: u32,
+};
+
+@group(0) @binding(12) var<storage, read> ground_instances: array<GroundInstance>;
 
 // The third channel is `z + 128` in its low eight bits and the sprite's stance in
 // four of the eight above — `crate::place::STANCE_SHIFT`, and `statics.wgsl`
@@ -1325,10 +1372,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // panels instead of one continuous surface across the seam). It is packed
     // identically for every kind, in the same bits, and decoded once here.
     //
-    // The **tile itself** is not, for a static or a mobile: `docs/gbuffer.md`
-    // step 3 moved `x`/`y` to this pass's own instance buffer, the same one a
-    // fragment's own picture used to repeat them into every pixel of, and
-    // `place.x`/`place.y` carry an id into it instead.
+    // The **tile itself** is not: `docs/gbuffer.md` step 3 moved it to a
+    // per-kind instance buffer for a static or a mobile, and step 7 did the
+    // same for the ground — the fragment's own picture used to repeat it into
+    // every pixel it covers, and `place.x`/`place.y` carry an id into the
+    // right buffer instead.
     let kind = place.w & KIND_MASK;
     let sub = vec2<f32>(
         f32((place.w >> 2u) & SUB_TILE_MASK) / SUB_TILE,
@@ -1340,26 +1388,29 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // not in this word — see the branch below and
     // `crate::place::Stance::MeshFace`'s own doc.
     var stance = (place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK;
-    var tile = vec2<f32>(f32(place.x), f32(place.y));
-    if kind != KIND_LAND {
-        let id = place.x | (place.y << 16u);
-        if kind == KIND_STATIC && stance == STANCE_MESH_FACE {
-            // `docs/gbuffer.md` step 4c: a mesh face has no picture of its
-            // own, so its row lives in `mesh_instances`, not
-            // `face_instances` — and carries the *real* stance the
-            // attachment's sentinel stood in for.
-            let row = mesh_instances[id];
-            tile = vec2<f32>(f32(row.tile & 0xFFFFu), f32(row.tile >> 16u));
-            stance = row.stance;
+    let id = place.x | (place.y << 16u);
+    var tile = vec2<f32>(0.0);
+    if kind == KIND_LAND {
+        tile = vec2<f32>(
+            f32(ground_instances[id].place0 & 0xFFFFu),
+            f32(ground_instances[id].place0 >> 16u),
+        );
+    } else if kind == KIND_STATIC && stance == STANCE_MESH_FACE {
+        // `docs/gbuffer.md` step 4c: a mesh face has no picture of its
+        // own, so its row lives in `mesh_instances`, not
+        // `face_instances` — and carries the *real* stance the
+        // attachment's sentinel stood in for.
+        let row = mesh_instances[id];
+        tile = vec2<f32>(f32(row.tile & 0xFFFFu), f32(row.tile >> 16u));
+        stance = row.stance;
+    } else {
+        var row_place: vec2<u32>;
+        if kind == KIND_STATIC {
+            row_place = face_instances[id].place;
         } else {
-            var row_place: vec2<u32>;
-            if kind == KIND_STATIC {
-                row_place = face_instances[id].place;
-            } else {
-                row_place = mobile_instances[id].place;
-            }
-            tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
+            row_place = mobile_instances[id].place;
         }
+        tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
     }
     let at = vec3<f32>(tile.x + sub.x, tile.y + sub.y, f32(place.z & PLACE_Z_MASK) - 128.0);
     // And which way the surface drawn here looks, where it is a wall's face. Zero

@@ -20,11 +20,11 @@
 //      `render_mask` shrinks.
 //   2. **Is this pixel the ground that thing stands on?** That is the place
 //      attachment, which carries the tile of whatever was drawn at each pixel —
-//      so the answer is a comparison, and needs no second mask, but not always a
-//      *direct* one: land carries its tile in the attachment's own channels, but
-//      a static's pixel carries an id into `face_instances` there instead
-//      (`docs/gbuffer.md` step 3), so a static's tile is one more lookup away.
-//      See step 6.
+//      so the answer is a comparison, and needs no second mask, but never a
+//      *direct* one: every kind's pixel carries an id rather than a tile,
+//      into `face_instances` for a static (`docs/gbuffer.md` step 3, see step
+//      6) or `ground_instances` for the land (step 7), so the tile is one more
+//      lookup away either way.
 //
 // The floor is *land or a flat static* of that tile, not land alone. Indoors the
 // land is under a wooden floor and never drawn, so "the tile the wall stands on"
@@ -71,6 +71,35 @@ struct FaceInstance {
 };
 
 @group(0) @binding(3) var<storage, read> face_instances: array<FaceInstance>;
+
+// The ground pass's own instance buffer, bound a second time as storage —
+// `docs/gbuffer.md` step 7, the ground half of what step 3 did for a static's
+// tile above. Scalars rather than `FaceInstance`'s `vec4`s, for the reason
+// `blit.wgsl`'s own copy of this struct gives: `GroundQuad::write`'s first
+// field is only eight bytes wide, and a `vec4` right after it would force
+// WGSL to open a gap the real bytes do not have. Only `place0` is read; the
+// rest is declared so the struct's size matches `GroundQuad::STRIDE`.
+struct GroundInstance {
+    origin_x: f32,
+    origin_y: f32,
+    corner_a: f32,
+    corner_b: f32,
+    corner_c: f32,
+    corner_d: f32,
+    region_u: f32,
+    region_v: f32,
+    region_du: f32,
+    region_dv: f32,
+    texmap_u: f32,
+    texmap_v: f32,
+    texmap_du: f32,
+    texmap_dv: f32,
+    depth: f32,
+    place0: u32,
+    place1: u32,
+};
+
+@group(0) @binding(4) var<storage, read> ground_instances: array<GroundInstance>;
 
 struct Selection {
     // The mask's size in texels, which is the world image's; the rest is
@@ -126,14 +155,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let kind = place.w & KIND_MASK;
         let stance = (place.z >> STANCE_SHIFT) & STANCE_MASK;
         let ground = kind == KIND_LAND || (kind == KIND_STATIC && stance == STANCE_FLAT);
-        // The **tile** itself, not `place.x`/`place.y` directly: a static's
-        // pixel carries an id into `face_instances` there, not a tile — see
-        // `docs/gbuffer.md` step 3 and step 6. Land is untouched, and this
-        // branch is never taken for it, so `place.x`/`place.y` stay a literal
-        // tile in that case and nothing below is reached for it.
-        var tile = place.xy;
-        if kind == KIND_STATIC {
-            let id = place.x | (place.y << 16u);
+        // The **tile** itself, never `place.x`/`place.y` directly: every kind's
+        // pixel carries an id into its own instance buffer there, not a tile —
+        // see `docs/gbuffer.md` step 3 for a static, step 7 for the ground.
+        let id = place.x | (place.y << 16u);
+        var tile = vec2<u32>(0u);
+        if kind == KIND_LAND {
+            tile = vec2<u32>(ground_instances[id].place0 & 0xFFFFu, ground_instances[id].place0 >> 16u);
+        } else if kind == KIND_STATIC {
             let row = face_instances[id].place.x;
             tile = vec2<u32>(row & 0xFFFFu, row >> 16u);
         }

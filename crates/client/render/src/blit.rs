@@ -81,6 +81,13 @@ pub struct Frame<'a> {
     /// row is not `SpriteQuad`-shaped and lives in its own buffer.
     /// [`dummy_mesh_instances`] when a caller has none this frame.
     pub mesh_instances: &'a wgpu::Buffer,
+    /// The ground pass's own instance buffer, bound a second time as storage —
+    /// `docs/gbuffer.md` step 7, the ground half of what step 3 did for a
+    /// static's tile. A `Kind::Land` pixel's `place.x`/`place.y` is an id into
+    /// this, not a tile, the same move and the same reason.
+    /// [`dummy_ground_instances`] when a caller has none this frame — every
+    /// real frame does, since the ground pass always runs.
+    pub ground_instances: &'a wgpu::Buffer,
     /// Which way the scaling goes, and so which sampler is right.
     pub zoom: Zoom,
     /// The rectangle of `target` the world gets.
@@ -308,6 +315,19 @@ impl Blit {
                     },
                     count: None,
                 },
+                // The ground pass's own instance data, bound a second time as
+                // storage — `docs/gbuffer.md` step 7, `Kind::Land`'s share of
+                // decision 2. Read-only, the same reason 9, 10 and 11 are.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -414,6 +434,7 @@ impl Blit {
             face_instances,
             mobile_instances,
             mesh_instances,
+            ground_instances,
             zoom,
             rect,
         } = frame;
@@ -492,6 +513,10 @@ impl Blit {
                 wgpu::BindGroupEntry {
                     binding: 11,
                     resource: mesh_instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: ground_instances.as_entire_binding(),
                 },
             ],
         });
@@ -695,6 +720,19 @@ pub fn dummy_mesh_instances(device: &wgpu::Device) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("blit dummy mesh instances"),
         size: crate::mesh_face::MeshFaceRow::STRIDE,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    })
+}
+
+/// The same, for [`Frame::ground_instances`] — a fixture with no real ground
+/// pass still needs a valid resource in binding 12. Real frames never need
+/// this: the ground pass always runs and its own instance buffer is always
+/// the argument, empty or not.
+pub fn dummy_ground_instances(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("blit dummy ground instances"),
+        size: crate::ground::GroundQuad::STRIDE,
         usage: wgpu::BufferUsages::STORAGE,
         mapped_at_creation: false,
     })

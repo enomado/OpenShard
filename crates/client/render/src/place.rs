@@ -17,11 +17,22 @@
 //!
 //! # The format
 //!
-//! `Rgba16Uint`, as `(x, y, z + 128, kind and the fraction)`. Integers because
-//! these are tile indices and a `z`, and a `u16` holds a coordinate on the
-//! largest facet a client ships (7,168 across) exactly. `Rgba16Uint` is
-//! colour-renderable in WebGL2, which is the ceiling this crate draws under —
-//! see the crate docs.
+//! `Rgba16Uint`, as `(id, z + 128, kind and the fraction)` — the first channel
+//! is spare rather than a fifth field. Integers because these are an id and a
+//! `z`, and a `u16` holds either exactly: a coordinate on the largest facet a
+//! client ships (7,168 across), or `docs/gbuffer.md` decision 2's id, which
+//! nothing this client has ever drawn a frame of has come near filling.
+//! `Rgba16Uint` is colour-renderable in WebGL2, which is the ceiling this
+//! crate draws under — see the crate docs.
+//!
+//! **The tile itself does not ride here for any kind.** `docs/gbuffer.md`
+//! step 3 moved a static's and a mobile's `x`/`y` to their own pass's instance
+//! buffer, addressed by the id these two channels hold instead; step 7 did
+//! the same for the ground. What still lives in [`Place`] and
+//! [`Place::packed`] below is the *row*'s own shape — the two words a
+//! [`SpriteQuad`](crate::sprite::SpriteQuad) or a
+//! [`GroundQuad`](crate::ground::GroundQuad) carries on the GPU, which is
+//! where a tile is still a literal `x`/`y` rather than an id into anything.
 //!
 //! The fourth channel carries **the kind in its low two bits, then seven bits of
 //! tile-local `x` and seven of tile-local `y`** — where in its tile the pixel

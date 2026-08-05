@@ -551,6 +551,7 @@ fn main() {
             face_instances: items_pass.instances_buffer(),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
+            ground_instances: ground_pass.instances_buffer(),
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,

@@ -103,6 +103,12 @@ pub struct Frame<'a> {
     /// (`docs/gbuffer.md` step 3); the ground wash resolves it the same way
     /// `blit.wgsl` does, for the same reason. See step 6.
     pub face_instances: &'a wgpu::Buffer,
+    /// The ground pass's own instance buffer, bound a second time as storage —
+    /// the same buffer `blit::Frame::ground_instances` is. A `Kind::Land`
+    /// pixel's `place.x`/`place.y` is an id into this, not a tile
+    /// (`docs/gbuffer.md` step 7); the ground wash resolves it the same way
+    /// `blit.wgsl` does, for the same reason.
+    pub ground_instances: &'a wgpu::Buffer,
     /// The size of both in texels — they are one image's size, and the pass
     /// reads them at one coordinate. Carried beside the views for the reason
     /// [`outline::Frame`](crate::outline::Frame) carries one: a view does not
@@ -165,6 +171,20 @@ impl Select {
                 // like every other reader of it.
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // The ground pass's own instance data, bound a second time as
+                // storage — `blit.wgsl`'s binding 12, read here for the same
+                // reason: a land pixel's `place` is an id too, since
+                // `docs/gbuffer.md` step 7. Read-only, like binding 3 above.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -288,6 +308,10 @@ impl Select {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: frame.face_instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: frame.ground_instances.as_entire_binding(),
                 },
             ],
         });

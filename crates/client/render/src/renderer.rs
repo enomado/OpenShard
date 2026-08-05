@@ -345,6 +345,16 @@ impl GroundRenderer {
                     // One instance per tile. The layout is asserted in
                     // `GroundQuad::write`'s test, which is the only thing that
                     // links this to the shader's `@location`s.
+                    //
+                    // Five attributes and not six: `docs/gbuffer.md` step 7
+                    // replaced the tile — `GroundQuad::write`'s last two words —
+                    // with `@builtin(instance_index)`, so `ground.wgsl`'s vertex
+                    // stage no longer fetches them. The bytes are still in the
+                    // buffer, at the same offset they always were: this pipeline
+                    // simply stops declaring an attribute for them, and
+                    // `blit.wgsl`/`select.wgsl` read them back through the same
+                    // buffer bound a second time as storage — see
+                    // `GroundRenderer::instances_buffer`.
                     Some(wgpu::VertexBufferLayout {
                         array_stride: GroundQuad::STRIDE,
                         step_mode: wgpu::VertexStepMode::Instance,
@@ -373,13 +383,6 @@ impl GroundRenderer {
                                 format: wgpu::VertexFormat::Float32,
                                 offset: 56,
                                 shader_location: 5,
-                            },
-                            // The tile, as `crate::place::Place::packed` wrote
-                            // it: two words after the depth.
-                            wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Uint32x2,
-                                offset: 60,
-                                shader_location: 6,
                             },
                         ],
                     }),
@@ -459,6 +462,14 @@ impl GroundRenderer {
         if let Some(rows) = texmaps.take_dirty() {
             write_rows(queue, &self.texmap_texture, texmaps.pixels(), rows);
         }
+    }
+
+    /// This pass's own instance buffer, as `blit.wgsl`/`select.wgsl` need it:
+    /// bound a second time, as storage, so `ground_instances[id]` can read a
+    /// fragment's own tile back instead of carrying it on every pixel of its
+    /// own picture. See `docs/gbuffer.md` decision 2 and step 7.
+    pub fn instances_buffer(&self) -> &wgpu::Buffer {
+        &self.instances
     }
 
     /// Draw `quads` into `target`, clearing it first.
@@ -1509,9 +1520,8 @@ fn new_ring_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
 // `STORAGE` alongside `VERTEX`: this buffer is what `docs/gbuffer.md`'s
 // decision 2 means by "the same memory bound a second way" — `blit.wgsl`
 // indexes it by id instead of decoding a fact already spent on every fragment
-// of the quad it belongs to. Ground does not get this yet — its row shape is
-// step 7's, not step 3's — so only this helper, and not `new_instance_buffer`
-// below, gains the usage flag.
+// of the quad it belongs to. `new_instance_buffer` below gains the same flag,
+// for the ground pass — step 7.
 pub(crate) fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("static instances"),
@@ -1621,11 +1631,15 @@ pub(crate) fn write_rows(
     );
 }
 
+// `STORAGE` alongside `VERTEX`, the same reason `new_static_instance_buffer`
+// carries it: `docs/gbuffer.md` step 7 gives `blit.wgsl`/`select.wgsl`
+// `ground_instances[id]`, read off this same buffer bound a second time — see
+// `GroundRenderer::instances_buffer`.
 fn new_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("ground instances"),
         size: quads * GroundQuad::STRIDE,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }

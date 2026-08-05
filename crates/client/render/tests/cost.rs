@@ -193,6 +193,7 @@ fn measure(
     face_instances: &wgpu::Buffer,
     mobile_instances: &wgpu::Buffer,
     mesh_instances: &wgpu::Buffer,
+    ground_instances: &wgpu::Buffer,
     surface: &wgpu::TextureView,
     lighting: &Lighting,
     zoom: Zoom,
@@ -205,6 +206,7 @@ fn measure(
         face_instances,
         mobile_instances,
         mesh_instances,
+        ground_instances,
         zoom,
         rect: ViewportRect {
             x: 0,
@@ -537,6 +539,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 statics_pass.instances_buffer(),
                 &dummy_instances,
                 &dummy_mesh_instances,
+                ground_pass.instances_buffer(),
                 &surface_view,
                 lighting,
                 zoom,
@@ -560,6 +563,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 face_instances: statics_pass.instances_buffer(),
                 mobile_instances: &dummy_instances,
                 mesh_instances: &dummy_mesh_instances,
+                ground_instances: ground_pass.instances_buffer(),
                 zoom,
                 rect: ViewportRect {
                     x: 0,
