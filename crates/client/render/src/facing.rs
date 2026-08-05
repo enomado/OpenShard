@@ -1021,6 +1021,48 @@ pub struct Prism {
     count: u8,
 }
 
+/// How far [`Prism::mesh`] grows every riser past the tread it meets, in `z`.
+///
+/// A hairline, not a measurement: `docs/lighting.md`'s "Where the next session
+/// starts" found the enclosing sprite's own flat shading surviving in a
+/// hairline along the tread/riser edge — the projected pixels the rasteriser,
+/// for reasons that trace to neither triangle owning the coincident edge
+/// outright, assigns to neither triangle. A real overlap this small is below
+/// what any tread's own height (`Prism::heights` is at least one whole `z`,
+/// and the client draws nothing shorter) could show as a mis-shaped step, and
+/// it is smaller by two orders of magnitude than [`MAX_TREADS`]'s own
+/// worth-having tread — there is no profile this could visibly shorten or
+/// lengthen a riser by.
+const SEAM_OVERLAP: f64 = 0.15;
+
+/// How far [`Prism::mesh`] grows every face's own *width* — the tile-crossing
+/// edge [`Prism::footprint`] never moves with `lo`/`hi` — past the tile's own
+/// unit square.
+///
+/// Measuring the actual leak this reproduction shows (`docs/lighting.md`
+/// again) found the longest runs of it were not at a tread/riser tie at all:
+/// a whole riser's own side, its full height, one screen column wide — the
+/// *outer* silhouette [`SEAM_OVERLAP`] cannot reach, because that edge borders
+/// no other face to overlap with, only the fitted box's own edge against the
+/// art's true silhouette (`best_prism`'s score is never exactly `1.0` —
+/// `PRISM_FITS`'s own doc has the numbers). The same fraction-of-a-pixel this
+/// file already reasons in.
+const WIDTH_OVERLAP: f64 = 0.03;
+
+/// Grows a footprint's own tile-crossing edge by [`WIDTH_OVERLAP`] — the pair
+/// [`Prism::footprint`] holds at the tile's unit square regardless of `lo`/
+/// `hi`, which for [`Face::North`]/[`Face::South`] is `x` and for
+/// [`Face::East`]/[`Face::West`] is `y`. The `lo`/`hi` pair is left exactly as
+/// `footprint` returned it: that edge is the tread/riser tie [`SEAM_OVERLAP`]
+/// already handles, built from arithmetic both sides share, and widening it
+/// here would just move the tie rather than close it.
+fn widen_footprint(up: Face, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> (f64, f64, f64, f64) {
+    match up {
+        Face::North | Face::South => (min_x - WIDTH_OVERLAP, max_x + WIDTH_OVERLAP, min_y, max_y),
+        Face::East | Face::West => (min_x, max_x, min_y - WIDTH_OVERLAP, max_y + WIDTH_OVERLAP),
+    }
+}
+
 impl Prism {
     /// A prism from a profile, or `None` if the profile is empty or longer than
     /// [`MAX_TREADS`].
@@ -1145,6 +1187,21 @@ impl Prism {
     /// first), facing away from `up` — the side a climber sees approaching from
     /// below, the same direction `occlusion::Solid::tread_riser_box_of`'s own doc
     /// names.
+    ///
+    /// A tread's top and its own riser meet at an edge built from the exact same
+    /// `lo`/`hi` arithmetic on both sides, so the two quads' shared corners are
+    /// bit-identical in world space — and still `docs/lighting.md`'s "Where the
+    /// next session starts" found a hairline of the enclosing sprite's own flat
+    /// shading surviving along that edge, in the rendered frame, at the
+    /// projected pixels the rasteriser assigns to neither triangle. Growing
+    /// every riser by [`SEAM_OVERLAP`] on both z ends closes that hairline by
+    /// construction — a real overlap in world space rather than a coincident
+    /// edge relying on the rasteriser to agree with itself — without another
+    /// depth formula: every riser is still the honest plane between two
+    /// treads, just [`SEAM_OVERLAP`] taller than the treads it meets so the
+    /// last-submitted face (`push_mesh`'s draw order, and this method's own,
+    /// puts every riser after the top it borders) wins the seam outright
+    /// instead of leaving it to a sub-pixel tie.
     pub fn mesh(&self, x: i32, y: i32, base_z: i32) -> crate::mesh::Mesh {
         use crate::camera::WorldSpot;
         use crate::mesh::Face as MeshFace;
@@ -1159,6 +1216,7 @@ impl Prism {
             let hi = (index + 1) as f64 / count as f64;
 
             let (min_x, max_x, min_y, max_y) = Self::footprint(f64::from(x), f64::from(y), self.up, lo, hi);
+            let (min_x, max_x, min_y, max_y) = widen_footprint(self.up, min_x, max_x, min_y, max_y);
             let z = f64::from(top_z);
             let top = [
                 WorldSpot {
@@ -1187,26 +1245,29 @@ impl Prism {
             mesh.push(MeshFace::new(&top, [0.0, 0.0, 1.0]).unwrap());
 
             let (min_x, max_x, min_y, max_y) = Self::footprint(f64::from(x), f64::from(y), self.up, lo, lo);
+            let (min_x, max_x, min_y, max_y) = widen_footprint(self.up, min_x, max_x, min_y, max_y);
+            let riser_top = f64::from(top_z) + SEAM_OVERLAP;
+            let riser_low = f64::from(low_z) - SEAM_OVERLAP;
             let riser = [
                 WorldSpot {
                     x: min_x,
                     y: min_y,
-                    z: f64::from(top_z),
+                    z: riser_top,
                 },
                 WorldSpot {
                     x: max_x,
                     y: max_y,
-                    z: f64::from(top_z),
+                    z: riser_top,
                 },
                 WorldSpot {
                     x: max_x,
                     y: max_y,
-                    z: f64::from(low_z),
+                    z: riser_low,
                 },
                 WorldSpot {
                     x: min_x,
                     y: min_y,
-                    z: f64::from(low_z),
+                    z: riser_low,
                 },
             ];
             let [ox, oy] = self.up.outward();
@@ -2409,16 +2470,40 @@ mod tests {
             } else {
                 f64::from(heights[tread - 1])
             };
+            // Not exactly `low`/`height`: `SEAM_OVERLAP` grows every riser a
+            // hairline past the tread it meets, on purpose — see its own doc.
             let zs: Vec<f64> = riser.vertices().iter().map(|v| v.z).collect();
             assert!(
-                zs.contains(&low),
-                "riser {tread} should reach down to {low}: {zs:?}"
+                zs.contains(&(low - SEAM_OVERLAP)),
+                "riser {tread} should overlap down past {low}: {zs:?}"
             );
             assert!(
-                zs.contains(&f64::from(height)),
-                "riser {tread} should reach up to {height}: {zs:?}"
+                zs.contains(&(f64::from(height) + SEAM_OVERLAP)),
+                "riser {tread} should overlap up past {height}: {zs:?}"
             );
         }
+    }
+
+    /// [`WIDTH_OVERLAP`]'s own doc: every face [`Prism::mesh`] builds is grown
+    /// a hairline past the tile-crossing edge [`Prism::footprint`] holds at
+    /// the unit square regardless of `lo`/`hi`, so a picture whose true art
+    /// silhouette overruns the fitted box by less than a pixel still has
+    /// something drawn under it. West's climb axis is `x` (this test's own
+    /// fixture below pins that), so the grown edge is `y`.
+    #[test]
+    fn a_treads_top_is_grown_past_its_own_tile_edge() {
+        let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+        let mesh = prism.mesh(100, 100, 0);
+        let top = &mesh.faces()[0];
+        let ys: Vec<f64> = top.vertices().iter().map(|v| v.y).collect();
+        assert!(
+            ys.contains(&(100.0 - WIDTH_OVERLAP)),
+            "the near edge should overrun the tile by WIDTH_OVERLAP: {ys:?}"
+        );
+        assert!(
+            ys.contains(&(101.0 + WIDTH_OVERLAP)),
+            "the far edge should overrun the tile by WIDTH_OVERLAP: {ys:?}"
+        );
     }
 
     /// [`Prism::footprint`] pinned at the same fixture

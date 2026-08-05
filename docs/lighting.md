@@ -9,7 +9,77 @@ copied.
 
 ## Where the next session starts
 
-**Confirmed live and fixed for real (previous entry, kept below): the corner-split
+**The hairline from the entry below is fixed, and it was not the depth tie the
+entry suspected.** CPU-side, a tread's top and its own riser share corners
+built from the exact same `lo`/`hi` arithmetic (`facing.rs`'s `Prism::mesh`),
+so those corners are bit-identical in world space before anything projects
+them — there was never a tie for the rasteriser to lose its nerve over. What
+was actually missing turned out to answer to a direct measurement, not a
+picture: `View::Place`'s sub-tile-fraction channels, at the leak pixels, read
+`(1, 1)` — the one value `mesh_face.wgsl`'s own `INSIDE = 126.0/127.0` clamp
+can never produce, so those pixels were never touched by the mesh pass at
+all, only by the sprite billboard drawn under it. The leak had two shapes,
+found by dumping `View::Place` over the repro scene below and counting
+pixels reading `(1, 1)` in a scratch script rather than by looking at the
+picture: a handful of single pixels at tread/riser ties, and — the one
+actually visible as a continuous hairline — full-height, one-column runs
+along a riser's own *un-shared* side edge, the same 2.5%-of-the-art gap
+[`best_prism`'s imperfect fit](facing.rs) already named for the wedge finding
+below. Both are a fitted box not quite reaching the true art, not a tie.
+
+Fixed in `facing.rs`'s `Prism::mesh`: every riser now grows
+[`SEAM_OVERLAP`](../crates/client/render/src/facing.rs) (`0.15`, in `z`) past
+the tread it meets, and every face grows
+[`WIDTH_OVERLAP`](../crates/client/render/src/facing.rs) (`0.03`, in
+tile-fraction) past the tile-crossing edge `Prism::footprint` holds at the
+unit square regardless of `lo`/`hi` — two real overlaps in world space, not
+another depth formula, so `docs/gbuffer.md` decision 4's argument against a
+second depth formula is untouched. Measured on the repro scene below (count
+`View::Place` pixels reading `(1, 1)` in the stair's own screen region): 35
+leak pixels before, 9 after, and the two dominant 14-pixel runs — the ones a
+person actually sees as hairlines — are down to a single pixel each. The 9
+that are left are isolated single pixels sitting exactly on a corner, where a
+width-axis edge and a `z`-axis edge meet: each overlap closes its own axis,
+but a corner needs both at once, and neither constant reaches it alone.
+Worth trying next: growing the corner along *both* axes at once rather than
+raising either constant further — raising `WIDTH_OVERLAP` to `0.06` alone
+left the same 9 pixels exactly unchanged, so the corner is not a matter of
+degree.
+
+Reproduce with the same scene, `View::Place` (`OPENSHARD_FRAME_VIEW=1`) this
+time, not `View::Light` — the sub-tile channels are what actually named the
+bug, the picture only showed its shadow:
+
+```sh
+OPENSHARD_CLIENT=… \
+    OPENSHARD_SCENE_AT=1497,1627,10 OPENSHARD_SCENE_RADIUS=1 OPENSHARD_SCENE_TILES=0x0739 \
+    OPENSHARD_SCENE_GROUND=0 OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+    OPENSHARD_SCENE_ZOOM=2 OPENSHARD_FRAME_VIEW=1 \
+    OPENSHARD_FRAME_DUMP=/tmp/place.ppm \
+    cargo run --release -p openshard-client-render --example isolated_scene
+```
+
+then load the `.ppm`, take the stair's own screen rectangle, and count pixels
+whose red and green channels both read `250` or higher (`sub.x`/`sub.y` near
+`1.0` — the packed encoding rounds to `255` at the exact sentinel, so a small
+margin catches it without a false positive from an honestly-lit `0.97`-ish
+fraction near a real edge).
+
+**Still open, carried over from the entry below and not re-investigated this
+session: the wedge of stale shading where the fitted box does not reach the
+true art silhouette.** `WIDTH_OVERLAP` above almost certainly shrinks it —
+same mechanism, same fix — but nobody re-screenshotted `View::Light` after
+this fix to check by how much, and `best_prism`'s own score is untouched
+(`WIDTH_OVERLAP` is a render-time overlap on top of whichever box the search
+already picked, not a change to the search or the score it reports). If the
+wedge is fully gone, `PRISM_FITS`'s "which of the 217 misses are stairs the
+model should fit better" quality work drops in priority; if it is only
+smaller, the number is worth re-measuring against the `0.975` on record
+below.
+
+Everything below is the session before it.
+
+**Confirmed live and fixed for real (two entries below): the corner-split
 seam is gone. What is left is two smaller, different residual artefacts on the
 same stair, both new findings from the session that confirmed the fix — start
 here, both are reproducible and neither has a patch yet.**
