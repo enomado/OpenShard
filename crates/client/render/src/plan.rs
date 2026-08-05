@@ -477,6 +477,11 @@ fn drawn(
                 depth: 0.0,
                 hue: 0,
                 place: crate::place::Place::land(x, y),
+                // No `place_of` closure this function is given ever asks for
+                // a corner `Stance` today, so there is never a second half to
+                // point at — see `crate::sprite::split_corners` for the real
+                // pass's version of this row, which does set it.
+                twin: 0,
             }
             .write(&mut face_rows);
             id

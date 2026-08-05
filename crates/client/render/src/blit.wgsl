@@ -159,12 +159,19 @@ const KIND_MOBILE: u32 = 3u;
 // `place` is read here today; the rest exists so the struct's size matches
 // `SpriteQuad::STRIDE` and a future reader (decision 3's real per-face
 // normal, step 4) has the rest already in reach. `docs/gbuffer.md` step 3.
+// `twin` (step 4) is what `statics.wgsl` reads to give a corner's two faces
+// two different ids — it is never read here, `face_instances[id]` is already
+// addressed by whichever of the two ids a fragment's `place` carries, but it
+// still has to be declared: this struct's size is what WGSL uses to stride
+// through the buffer, and a struct narrower than `SpriteQuad::STRIDE` reads
+// every row past the first at the wrong offset.
 struct FaceInstance {
     rect: vec4<f32>,
     region: vec4<f32>,
     depth: f32,
     hue: u32,
     place: vec2<u32>,
+    twin: u32,
 };
 
 @group(0) @binding(9) var<storage, read> face_instances: array<FaceInstance>;

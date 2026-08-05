@@ -171,6 +171,22 @@ is what `statics.wgsl`'s screen-half resolution stands in for today — decision
 `left = FaceSouth + (offset & 1)`, `stance >= STANCE_CORNER` picking which
 pixels ask the question at all.
 
+**Step 4 found "for free" was two different claims, true for different
+reasons.** A wall needed nothing: `Stance::FaceNorth/East/South/West` was
+already the exact normal, so "one id, no change" above is the whole story for
+it. A corner was not free in the same way — its normal was already honest too
+(the paragraph above's own `across`-test resolves the correct `Stance` before
+the attachment write, so `blit.wgsl`'s lighting was never wrong for a
+corner), but both halves of its picture still shared **one id**, so nothing
+could address "the corner's north-ish half" apart from its south-ish one. The
+fix landed as identity, not geometry: `sprite::split_corners` gives a
+corner's drawn row a second, undrawn row past the frame's real instances,
+sharing the same tile, and `statics.wgsl`'s existing `across > 0.0` test
+picks which of the two ids a pixel's half writes to the attachment —
+`SpriteQuad::twin`, not a second rasterised triangle. No invisible geometry
+pass was needed for this case; see decision 4 below for why a tread is
+different.
+
 **This also reopens a settled claim, not just a bit-packing choice — say so
 plainly rather than let a reader trip over the contradiction.** Decision 30's
 fourth bullet and decision 38.3 both state, as a closed question, that
@@ -207,6 +223,16 @@ surface nothing shows. Concretely: the proxy pass draws from the same instance
 list and the same depth ordering the visible passes already use, decomposed to
 faces, so a fragment's winning id is always the one the picture agrees is on
 top.
+
+**Step 4a found this decision describes fewer cases than it reads as
+describing.** A wall needed no proxy at all (its normal was already exact).
+A corner needed a second id, not a second, parallel description of its
+geometry — the *existing* fragment already carries the depth and the pixels
+this decision worries about keeping consistent; `across > 0.0` is the same
+test either way, so there was no second draw to keep in step with the first.
+What this decision is actually the argument for is a tread's top and riser,
+which really are two surfaces at two different screen positions with no
+existing fragment test to reuse — see step 4b.
 
 **5. Geometry-agnostic on purpose.**
 
@@ -307,15 +333,21 @@ reason.
   ground at 32,768, static/item faces at 8,192, mobiles left at today's 4,096
   for lack of a map-density argument to move it, since population is a
   server number this measurement cannot speak to.
-- **Whether the face-instance table is its own texture or a field `occlusion`
-  already has reason to grow.** The intro's `occlusion::Solid` check found no
-  `normal_of_face` today, so decisions 36/38.3's "for free" has to be built
-  either way — the open question is *where*: as a face table this plan owns,
-  or as a method on `Solid` occlusion's own walk could also call once built,
-  with this plan's table holding only the id-to-`Solid`-and-face mapping.
-  The second keeps one shape of "a box's face" instead of two; not chosen yet
-  because it means reading `occlusion.rs`'s box representation closely enough
-  to know it fits a renderer's needs, not just a shadow walk's.
+- ~~Whether the face-instance table is its own texture or a field `occlusion`
+  already has reason to grow.~~ **Answered (step 4, corners): neither — there
+  is no table to share.** Checked directly rather than assumed: a wall's face
+  normal was never missing in the first place — `place::Stance::FaceNorth/
+  East/South/West` already *is* the honest, exact per-face normal, and
+  `blit.wgsl`'s existing `outward()` already reads it correctly. Traced why:
+  `Stance::of` and `occlusion::edges_of` both derive from one shared
+  measurement, `facing::facing_of`, taken once when the atlas packed the
+  sprite (`Sprite::facing`) — not two independent guesses that happened to
+  agree. So decisions 36/38.3's "for free" was true on arrival for a single
+  face, and there was never a `normal_of_face` to build on `Solid`, on this
+  plan's own table, or anywhere else, because the fact already existed
+  upstream of both. What *was* missing, and is a different question from the
+  one this bullet asked, is covered under decision 3 below: a corner's two
+  faces sharing one id.
 - **Decision 16's fraction is likely free, but say so only once checked.**
   `blit.wgsl` reads it to build `at`, the sub-tile world position the whole
   lighting distance calculation runs on (`sub.x`/`sub.y` folded into `at.x`/
@@ -366,16 +398,18 @@ reason.
   **The row itself, decided here rather than left implicit — and narrower
   than first drafted:** an anchor's `x: u16, y: u16` alone (not `z`, see
   above; `place.rs:219-237`'s third field stays attachment-side). `Stance`
-  does **not** move into the row either, for the same reason: a corner's
-  resolved direction is per-fragment (which half a pixel was drawn on), so it
-  has nowhere to live but the attachment, exactly as it does today — decision
-  3's eventual six-value normal is step 4's, once a corner is really two
-  rasterised faces and not one resolved per-fragment. `kind` does **not**
-  ride in the row either — it is what selects *which* of the three per-kind
-  buffers above the id indexes into in the first place, so a row stating it
-  again would be exactly the repetition this plan's intro opens by objecting
-  to ("it repeats per pixel what a whole sprite shares"). What the row
-  removes is narrower than step 2 drafted, but it is still exactly the
+  does **not** move into the row either: a corner's *resolved* direction
+  (which half a pixel was drawn on) is still per-fragment, computed exactly
+  as it is today, and still has nowhere to live but the attachment. What
+  step 4 (corners) added past this paragraph's original claim is a second
+  `u32` field, `twin` — not a normal and not a `Stance`, but which *row* the
+  other half's id points at, so the two halves stop sharing one id without
+  either needing to carry the other's `Stance` or geometry. `kind` does
+  **not** ride in the row either — it is what selects *which* of the three
+  per-kind buffers above the id indexes into in the first place, so a row
+  stating it again would be exactly the repetition this plan's intro opens by
+  objecting to ("it repeats per pixel what a whole sprite shares"). What the
+  row removes is narrower than step 2 drafted, but it is still exactly the
   repetition named there: two numbers, written unchanged into every one of a
   sprite's pixels, now written once.
 - **Ground's own reconstruction is not the billboard's.** A sloped land quad's
@@ -423,11 +457,40 @@ attributed."
       `@builtin(instance_index)`; `Stance`'s resolution stays attachment-side
       too, since a corner's is per-fragment. Ground is untouched, as planned.
       `outward()` itself did not change at all.
-- [ ] 4. Build the invisible geometry pass: decompose each occluder — a wall
-      to its one face, a tread box to its top and riser, a corner to its two —
-      and rasterise depth+id from the same instance list and ordering the
-      visible passes already use (decision 4). Settle "Not settled"'s
-      Solid-sharing question first; this step is where the answer is paid for.
+- [x] 4a. Walls and corners — the two cases that turned out not to need an
+      invisible geometry pass at all. Solid-sharing "Not settled" question
+      answered first, as planned: there is no table to share, because a
+      wall's normal was never missing (`Stance::FaceNorth/East/South/West`
+      already is it, both derived from one shared `facing::facing_of`
+      measurement, `occlusion::Solid` never consulted). A corner's normal was
+      likewise already honest per-fragment; what it lacked was identity — both
+      halves of one picture wrote one shared id. Fixed with no new pass, no
+      new pipeline, no new shader file: `sprite::split_corners` gives a
+      corner's drawn row a second, undrawn row sharing its tile
+      (`SpriteQuad::twin`), and `statics.wgsl`'s existing `across > 0.0` test
+      — the same one that already resolved the correct `Stance` — now also
+      picks which of the two ids a pixel's half writes to the attachment. See
+      decision 3's step-4 addendum above for why "for free" turned out to be
+      two different claims, true for different reasons, and the "Not
+      settled" items above for what was found and settled along the way.
+      Caught before landing, not after: growing `SpriteQuad` by one field
+      also grows `blit.wgsl`'s mirror of it, and WGSL's storage-buffer
+      alignment rounds that struct's size up to 64 bytes regardless of the
+      Rust side's raw 52 — two parity tests (`the_shader_and_light_sample_
+      agree_about_a_wall_that_faces_away` and its `_surface_that_looks_up`
+      sibling) failed on a channel mismatch at a tile past the first until
+      `SpriteQuad::STRIDE` padded to match.
+- [ ] 4b. Treads: the case an invisible geometry pass is actually for. A
+      tread's top and riser are two real surfaces at different screen
+      positions and different depths, not two halves of one billboard a
+      diagonal test can split — there is no existing per-fragment test to
+      reuse the way 4a's corner one was. `occlusion.rs` does not even
+      decompose a tread into top+riser yet (`occlusion.rs:1358-1378` still
+      pushes one whole-tile body), so this step starts by extending that
+      representation before anything renders from it. Decompose each
+      occluder — a tread box to its top and riser, a lid static to its own
+      top — and rasterise depth+id from the same instance list and ordering
+      the visible passes already use (decision 4).
 - [ ] 5. Check whether honest per-face lighting alone fixes decision 40's
       original hard-edge report, against the same reproduction that found it.
       If it does, retire `Prism::tread_normal` and `outward()`'s switch rather
@@ -474,4 +537,20 @@ attributed."
   real per-face geometry, at least) has one seam to update instead of three.
   Not done now — decision 38.5's discipline against changing more than one
   thing in a step, and these two fixtures are each still readable on their
-  own.
+  own. Still true after step 4a: neither fixture's `place_of` closure ever
+  asks for a corner `Stance`, so both got a one-line `twin: 0` and nothing
+  more — the sharper shared helper would need to know about `twin` too, once
+  it exists.
+- **A corner static's shared arithmetic (`crate::statics::place`, `Placed`)
+  is used by both the map's own furniture and `crate::items` — found while
+  scoping step 4a, not assumed.** An item can carry a corner `Stance` the
+  same way a map static can (both go through `statics::place`), and
+  `app/src/lib.rs` appends `items::collect`'s quads to the map's before
+  either is drawn — after `statics::collect`'s own sort, not before it. So
+  `split_corners` has to run on the *merged* list, at the call site in
+  `app/src/lib.rs`, not inside `statics::collect` itself — an id-per-face
+  scheme built only against map statics would have silently left a
+  corner-shaped item's two halves sharing one id, the exact bug this step
+  exists to fix, just for a narrower class of object. `sprite::split_corners`
+  is written generically over `Vec<SpriteQuad>` for this reason, not as a
+  method on `statics::collect`'s own return type.

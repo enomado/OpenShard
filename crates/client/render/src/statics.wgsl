@@ -69,6 +69,10 @@ struct VertexOut {
     // instance buffer, bound a second time as storage. See
     // `docs/gbuffer.md` decision 2 and step 3.
     @location(7) @interpolate(flat) id: u32,
+    // The row of this instance's other face, for a corner — `0` and unread
+    // for anything else. See `crate::sprite::SpriteQuad::twin` and
+    // `docs/gbuffer.md` step 4.
+    @location(8) @interpolate(flat) twin: u32,
 };
 
 // Virtual pixels one unit of height lifts a sprite up the screen —
@@ -165,6 +169,8 @@ fn vs_main(
     // Per instance: the tile and height, packed as
     // `crate::place::Place::packed` writes it.
     @location(6) place: vec2<u32>,
+    // Per instance: a corner's paired shadow row, or `0`.
+    @location(7) twin: u32,
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOut {
     let pixel = origin + corner * size;
@@ -196,6 +202,7 @@ fn vs_main(
     // odd-width sprite, exactly as it is there.
     out.middle_x = origin.x + size.x * 0.5;
     out.id = instance_index;
+    out.twin = twin;
     return out;
 }
 
@@ -255,6 +262,12 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // `blit.wgsl` knows how to light. Before this a corner was `Upright` — a flat
     // 44-pixel band between two continuous runs of wall, lit identically on the
     // side turned away from the flame. See `crate::facing::Facing::on_half`.
+    // A corner's two faces need two ids, not one shared between them — see
+    // `docs/gbuffer.md` decision 3 and step 4. The right half (`across > 0.0`)
+    // keeps this instance's own id; the left half takes `in.twin`, the row
+    // `crate::sprite::split_corners` appended for exactly this face. Every
+    // other stance never reaches the branch that changes it.
+    var id = in.id;
     var stance = (in.place.y >> STANCE_SHIFT) & STANCE_MASK;
     if stance >= STANCE_CORNER {
         let offset = stance - STANCE_CORNER;
@@ -262,6 +275,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
             stance = STANCE_FACE_NORTH + (offset >> 1u);
         } else {
             stance = STANCE_FACE_SOUTH + (offset & 1u);
+            id = in.twin;
         }
     }
     let down = in.pixel_y - (in.bottom_y - HALF_TILE_HEIGHT);
@@ -355,8 +369,8 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // exist to vary. Only the id replaces `x`/`y`; everything else here is
     // unchanged from before this pass had one.
     out.place = vec4<u32>(
-        in.id & 0xFFFFu,
-        in.id >> 16u,
+        id & 0xFFFFu,
+        id >> 16u,
         u32(clamp(round(z), -128.0, 127.0) + 128.0) | (stance << PLACE_STANCE_SHIFT),
         ((in.place.y >> 8u) & KIND_MASK)
             | (u32(round(sub.x * SUB_TILE)) << 2u)

@@ -268,6 +268,10 @@ pub(crate) fn quad_of(at: Point, placed: &Placed, base: i32, hue: u32) -> Sprite
         },
         depth: placed.order.to_depth(base),
         hue,
+        // Set for a corner static by `crate::sprite::split_corners`, once
+        // this row's final index among a frame's other corners is known —
+        // not here, where it is not.
+        twin: 0,
     }
 }
 

@@ -239,8 +239,8 @@ fn render_both(
         projection,
     };
     renderer.render(device, queue, &mut encoder, target_view, quads);
-    statics.render(device, queue, &mut encoder, target_view, static_quads);
-    people.render(device, queue, &mut encoder, target_view, mobiles.1);
+    statics.render(device, queue, &mut encoder, target_view, static_quads, None);
+    people.render(device, queue, &mut encoder, target_view, mobiles.1, None);
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &target,
@@ -1208,6 +1208,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         depth: 0.5,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
     let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
     let mut sprites = SpriteRenderer::new(
@@ -1224,6 +1225,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         &mut encoder,
         Target::whole(&world_view, &depth_view, &place_view, width, height),
         &quads,
+        None,
     );
 
     // The stand-in for the HDR surface, in the format the blit and the HUD —
@@ -1315,6 +1317,7 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
         depth: 0.5,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
     let land = LandAtlas::pack([]).expect("nothing always fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -1423,6 +1426,7 @@ fn a_full_hue_replaces_the_pixel_by_its_red_channel_regardless_of_its_own_colour
         depth: 0.5,
         hue,
         place: Place::NOWHERE,
+        twin: 0,
     };
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1522,7 +1526,7 @@ fn render_hued(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target::whole(&view, &depth_view, &place_view, width, height);
     ground.render(device, queue, &mut encoder, target_view, &[]);
-    statics.render(device, queue, &mut encoder, target_view, quads);
+    statics.render(device, queue, &mut encoder, target_view, quads, None);
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &target,
@@ -1614,6 +1618,7 @@ fn every_pixel_names_the_tile_it_came_from() {
         depth: 0.4,
         hue: 0,
         place: Place::of_static(Point::new(301, 400, 15)),
+        twin: 0,
     }];
 
     let places = render_places(&device, &queue, &land, &texmaps, &ground, &statics, &wall, 128);
@@ -1699,6 +1704,7 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         depth: 0.4,
         hue: 0,
         place,
+        twin: 0,
     };
     // The fraction of a tile a place holds, as the shaders pack it: seven bits
     // each, above the two the kind takes.
@@ -1847,6 +1853,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
             stance: openshard_client_render::place::Stance::FaceSouth,
             ..Place::of_static(at)
         },
+        twin: 0,
     };
     let places = render_places(
         &device,
@@ -1996,6 +2003,7 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
                 stance: Stance::of(&openshard_uofiles::tiledata::StaticTile::default(), sprite.facing),
                 ..Place::of_static(at)
             },
+            twin: 0,
         }],
         256,
     );
@@ -2034,6 +2042,18 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
     let (_, left_y) = sub(middle - 4, row);
     assert!(right_x > 120, "the east half left its own edge: {right_x}");
     assert!(left_y > 120, "the south half left its own edge: {left_y}");
+
+    // And the two halves are two different rows, not one instance's id read
+    // twice — `docs/gbuffer.md` step 4. This frame drew exactly one corner,
+    // so `split_corners` gives it id `0` and a shadow row at id `1`: the
+    // right half (its own instance) keeps `0`, the left half (the diagonal
+    // test's other side) takes the shadow's `1`.
+    let id = |x: u32, y: u32| {
+        let place = places.at(x, y);
+        u32::from(place[0]) | (u32::from(place[1]) << 16)
+    };
+    assert_eq!(id(middle + 4, row), 0, "the right half is not the drawn instance");
+    assert_eq!(id(middle - 4, row), 1, "the left half is not its shadow row");
 }
 
 /// Draw ground and one sprite and read back the *place* attachment rather than
@@ -2071,7 +2091,18 @@ fn render_places(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target::whole(&world_view, &depth_view, &place_view, size, size);
     ground_pass.render(device, queue, &mut encoder, target, quads);
-    sprite_pass.render(device, queue, &mut encoder, target, static_quads);
+    // A corner static's two faces get their own id here too, the same as the
+    // real pass — see `sprite::split_corners`'s own doc and
+    // `docs/gbuffer.md` step 4.
+    let instances = openshard_client_render::sprite::split_corners(static_quads.to_vec());
+    sprite_pass.render(
+        device,
+        queue,
+        &mut encoder,
+        target,
+        &instances.rows,
+        Some(instances.drawn),
+    );
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &place,
@@ -2179,6 +2210,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         depth: 0.6,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -2290,6 +2322,7 @@ fn at_one_depth_the_later_pass_wins() {
         depth: TIED,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -2670,6 +2703,7 @@ fn a_magnified_sprite_translates_texel_for_texel() {
         depth: 0.5,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
 
     let mut shifted = camera;
@@ -2977,6 +3011,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
         depth: 0.5,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
 
     let (frame_width, frame_height) = (128u32, 128u32);
@@ -3008,7 +3043,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target::whole(&view, &depth_view, &place_view, frame_width, frame_height);
     ground.render(&device, &queue, &mut encoder, target_view, &[]);
-    statics.render(&device, &queue, &mut encoder, target_view, &quads);
+    statics.render(&device, &queue, &mut encoder, target_view, &quads, None);
     queue.submit([encoder.finish()]);
     let frame = read_back(&device, &queue, &target);
 
@@ -3077,7 +3112,7 @@ fn render_outlined(
     let mut sprites = SpriteRenderer::new(device, queue, format, atlas.pixels(), &hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     ground_pass.render(device, queue, &mut encoder, target, &[]);
-    sprites.render(device, queue, &mut encoder, target, quads);
+    sprites.render(device, queue, &mut encoder, target, quads, None);
     // One quad, one ring — the item case, and what the tests below assert
     // about two sprites that touch.
     let rings: Vec<&[SpriteQuad]> = outlined.iter().map(std::slice::from_ref).collect();
@@ -3179,6 +3214,7 @@ fn a_ring_is_drawn_around_a_silhouette_and_not_over_it() {
         depth: 0.5,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
 
     let (width, height) = (128, 128);
@@ -3257,6 +3293,7 @@ fn two_touching_silhouettes_are_ringed_separately() {
             depth: 0.5,
             hue: 0,
             place: Place::NOWHERE,
+            twin: 0,
         })
         .collect();
 
@@ -3326,6 +3363,7 @@ fn a_glow_reaches_past_the_ring_and_fades_with_distance() {
         depth: 0.5,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
 
     let (width, height) = (128, 128);
@@ -3399,6 +3437,7 @@ fn a_minified_ring_keeps_every_side() {
         depth: 0.5,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     }];
 
     let (width, height) = (128, 128);
@@ -3484,6 +3523,7 @@ fn dump_a_glowing_sprite() {
         depth,
         hue: 0,
         place: Place::NOWHERE,
+        twin: 0,
     };
     let backdrop = quad(BACKDROP, 16.0, 16.0, 96.0, 0.9);
     let item = quad(ITEM, 54.0, 54.0, 20.0, 0.5);
@@ -3586,6 +3626,10 @@ fn parity_frame(
                 depth: 0.0,
                 hue: 0,
                 place: openshard_client_render::place::Place::land(x, y),
+                // This sweep never asks for a corner `Stance`, so there is
+                // never a second half to point at — see
+                // `crate::sprite::split_corners` for the real pass's row.
+                twin: 0,
             }
             .write(&mut face_rows);
             id

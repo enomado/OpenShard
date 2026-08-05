@@ -468,6 +468,7 @@ pub fn collect(pictures: &[Picture], atlas: &GumpAtlas) -> Vec<SpriteQuad> {
                     hue,
                     // A gump stands on no tile and is never lit.
                     place: crate::place::Place::NOWHERE,
+                    twin: 0,
                 });
                 x += art_width;
             }

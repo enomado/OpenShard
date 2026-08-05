@@ -143,7 +143,7 @@ use openshard_client_render::place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::select::{self, Select, Selection};
 use openshard_client_render::solids::{self, SolidsRenderer};
-use openshard_client_render::sprite::SpriteQuad;
+use openshard_client_render::sprite::{SpriteQuad, split_corners};
 use openshard_client_render::statics::PickedStatic;
 use openshard_client_render::text::{self, Label};
 use openshard_client_render::{ground, statics};
@@ -4404,6 +4404,9 @@ impl App {
             ));
             quads
         };
+        // A corner static's two faces get their own id past this point — see
+        // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
+        let static_instances = split_corners(static_quads);
         // The same two effects for a creature, off the same style switch and
         // the same one-pick-a-frame rule: `lit_mobile` and `lit_item` are never
         // both `Some` (see where they are asked), so exactly one of the four
@@ -4493,12 +4496,22 @@ impl App {
         window
             .renderer
             .render(&window.device, &window.queue, &mut encoder, target, &quads);
-        window
-            .statics
-            .render(&window.device, &window.queue, &mut encoder, target, &static_quads);
-        window
-            .mobile_pass
-            .render(&window.device, &window.queue, &mut encoder, target, &mobile_quads);
+        window.statics.render(
+            &window.device,
+            &window.queue,
+            &mut encoder,
+            target,
+            &static_instances.rows,
+            Some(static_instances.drawn),
+        );
+        window.mobile_pass.render(
+            &window.device,
+            &window.queue,
+            &mut encoder,
+            target,
+            &mobile_quads,
+            None,
+        );
         // The silhouettes, here and not later: the mask is depth-tested against
         // what the three world passes have drawn, so a barrel behind a wall is
         // kept out of it — and the text pass below writes depth at the near
@@ -4558,7 +4571,14 @@ impl App {
             Some(pass) => pass,
             None => &mut window.text_pass,
         };
-        text_renderer.render(&window.device, &window.queue, &mut encoder, target, &text_quads);
+        text_renderer.render(
+            &window.device,
+            &window.queue,
+            &mut encoder,
+            target,
+            &text_quads,
+            None,
+        );
         // And the world image onto the surface, into the rect the panels left
         // free. Magnified this is a copy — the image is already the viewport's
         // size and the magnification happened in the vertex transform — and

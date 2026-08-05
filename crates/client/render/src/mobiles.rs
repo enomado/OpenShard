@@ -434,6 +434,7 @@ fn push_quads(
             depth: order.to_depth(base),
             hue: u32::from(hue.unwrap_or(mobile.hue).0),
             place: crate::place::Place::of_mobile(mobile.at),
+            twin: 0,
         },
     ));
 
@@ -454,6 +455,7 @@ fn push_quads(
                 // The body's tile, not the sprite's: a hat is lit as the
                 // head under it is, and it has no tile of its own.
                 place: crate::place::Place::of_mobile(mobile.at),
+                twin: 0,
             },
         ));
     }

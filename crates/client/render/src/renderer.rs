@@ -808,6 +808,17 @@ impl SpriteRenderer {
                                 offset: 40,
                                 shader_location: 6,
                             },
+                            // A corner static's paired shadow row — see
+                            // `crate::sprite::SpriteQuad::twin` and
+                            // `docs/gbuffer.md` step 4. Only `statics.wgsl`
+                            // declares a vertex input at this location; the
+                            // mobile pass shares this same layout and simply
+                            // never reads it.
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 48,
+                                shader_location: 7,
+                            },
                         ],
                     }),
                 ],
@@ -1010,6 +1021,14 @@ impl SpriteRenderer {
     /// ground pass and both of the ground's results are what it is drawing
     /// against. A pass that cleared here would erase the world and then test
     /// against a depth buffer describing it.
+    ///
+    /// `drawn` caps how many of `quads` the draw call actually asks for —
+    /// `None` draws all of them, same as before this parameter existed. A
+    /// corner static's shadow row (`crate::sprite::split_corners`,
+    /// `docs/gbuffer.md` step 4) is uploaded here so `instances_buffer()`
+    /// can address it by id, but has no picture of its own to rasterise: it
+    /// rides at the tail of `quads`, past `drawn`, and the pass never draws
+    /// it.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -1017,6 +1036,7 @@ impl SpriteRenderer {
         encoder: &mut wgpu::CommandEncoder,
         target: Target<'_>,
         quads: &[SpriteQuad],
+        drawn: Option<u32>,
     ) {
         let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
         let projection = target.projection;
@@ -1091,7 +1111,7 @@ impl SpriteRenderer {
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
-        pass.draw(0..4, 0..quads.len() as u32);
+        pass.draw(0..4, 0..drawn.unwrap_or(quads.len() as u32));
     }
 
     /// Draw `groups` into an outline mask as shapes, **one id per group**.

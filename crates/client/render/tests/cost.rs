@@ -350,6 +350,16 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         static_quads.len() + corner_statics,
     );
 
+    // Step 4 (corners): `split_corners` is what actually gives each corner
+    // its second face, and its row count should match the measurement above
+    // exactly, not just in the print statement.
+    let static_instances = openshard_client_render::sprite::split_corners(static_quads);
+    assert_eq!(
+        static_instances.rows.len(),
+        static_instances.drawn as usize + corner_statics,
+        "one shadow row per corner and nothing else grew the buffer",
+    );
+
     let format = openshard_client_render::blit::WORLD_FORMAT;
     let world = openshard_client_render::blit::world_texture(&device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
@@ -371,7 +381,14 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         projection: camera.projection(),
     };
     ground_pass.render(&device, &queue, &mut encoder, target, &quads);
-    statics_pass.render(&device, &queue, &mut encoder, target, &static_quads);
+    statics_pass.render(
+        &device,
+        &queue,
+        &mut encoder,
+        target,
+        &static_instances.rows,
+        Some(static_instances.drawn),
+    );
     queue.submit([encoder.finish()]);
 
     // The surface the blit draws onto: the viewport, not the world image.

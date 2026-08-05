@@ -520,7 +520,7 @@ fn main() {
     // would leave the items pass drawing over whatever the textures happened
     // to hold.
     ground_pass.render(&device, &queue, &mut encoder, target, &ground_quads);
-    items_pass.render(&device, &queue, &mut encoder, target, &item_quads);
+    items_pass.render(&device, &queue, &mut encoder, target, &item_quads, None);
     queue.submit([encoder.finish()]);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
