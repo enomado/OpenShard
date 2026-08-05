@@ -782,6 +782,38 @@ fn a_ray_does_not_slip_between_two_walls_that_touch_at_a_corner() {
     );
 }
 
+/// A ray near the same corner but **off** the exact diagonal still does not
+/// slip through.
+///
+/// The test above samples dead centre, where the two boundaries land on the
+/// same instant to the bit. A quarter tile off that line the ordinary,
+/// non-corner step already catches it — it walks into one of the two wall
+/// cells directly rather than skipping past both — so this scene does not by
+/// itself tell `light::corner_tie`'s derived width apart from the old, bare
+/// `1e-4` it replaced (checked by hand: both pass it). It is kept anyway as
+/// the regression a person reads next to the exact-diagonal case, and
+/// `light::corner_tie_converts_back_into_exactly_one_panel_thickness_of_world_distance`
+/// is where the width itself is actually pinned.
+#[test]
+fn a_ray_near_a_corner_and_off_the_exact_diagonal_still_does_not_slip_through() {
+    let scene = scene::diagonal_gap();
+    let lighting = scene.lighting(STILL);
+    let off_diagonal = Spot::at(
+        Vec2::new(f32::from(CENTRE.0) + 0.25, f32::from(CENTRE.1) + 0.5),
+        0.0,
+    );
+    let leaked = light::sample(off_diagonal, &lighting)
+        .reaches
+        .iter()
+        .find(|reach| reach.within)
+        .map_or(0.0, |reach| reach.through);
+    assert!(
+        leaked < 1e-6,
+        "light slips through the corner off the exact diagonal: {leaked}{}",
+        picture(&scene, &lighting),
+    );
+}
+
 /// A lamp outside the corner of a house does not light the room behind it.
 ///
 /// **Britain at `(1441, 1692)`, built** — see [`scene::house_corner`], which

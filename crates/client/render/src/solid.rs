@@ -175,50 +175,31 @@ impl Solid {
     }
 }
 
-/// How thick a panel is **drawn**, in tiles.
+/// How thick a lid is drawn, in `z` units.
 ///
-/// A fifth of a tile: about nine screen pixels across the diamond at 1:1, which
-/// is enough that the top face reads as a top face and little enough that a
-/// street of houses still looks like a street. Chosen to be *seen* — the art
-/// cannot measure a wall's depth (decision 3) and nothing has authored one yet
-/// (step 23.3), so any number here would be invented and this one says so.
+/// Two, which is 8 pixels of visible side band at 1:1. Chosen to be *seen* —
+/// the art cannot measure a wall's depth (decision 3) and a lid stays flat
+/// where a panel no longer does (see
+/// [`occlusion::PANEL_THICKNESS`](crate::occlusion::PANEL_THICKNESS)), so this
+/// is still a drawing number rather than one a ray is tested against.
 ///
-/// **`DRAWN_` is the whole of the name and it is a fence**, and step 23.1 kept
-/// the fence while moving the constant. What the world owns is a box, and a
-/// panel's box is its *plane* — flat, because that is what the walk crosses and
-/// the record may not claim geometry no ray is tested against. A plane seen
-/// edge-on from a fixed camera is a line, though, and a wall the eye cannot find
-/// is a wall the instrument failed to report, so the view gives it a thickness
-/// on the way to the screen. That is the one reader, [`drawn`], and it is in the
-/// view rather than in the grid.
-///
-/// Step 23.5 is where a solid gets a thickness a ray is genuinely stopped by,
-/// and that number is a different one arrived at by a different argument — a
-/// scene that does not move. Two constants called `PANEL_THICKNESS`, one drawn
-/// and one tested, is how a rule and its replacement drift apart.
-pub const DRAWN_PANEL_THICKNESS: f64 = 0.2;
-
-/// And how thick a lid is drawn, in `z` units.
-///
-/// Two, which is 8 pixels of visible side band at 1:1 — the same argument as
-/// [`DRAWN_PANEL_THICKNESS`], including the fence in its name, on the axis the
-/// projection squashes by five and a half.
+/// **`DRAWN_` is the whole of the name and it is a fence.** A panel had one of
+/// these too, once — before step 23.5 gave `Solid::box_of` a real slab, the
+/// view was the only reader thick enough to find a wall the eye could not.
+/// Now the grid's own box already has the depth, [`drawn`] draws a panel
+/// exactly as it stands, and the fence only ever guarded the one kind that
+/// still needs it.
 pub const DRAWN_LID_THICKNESS: f64 = 2.0;
 
 /// The box a view draws for one solid: its own, with whatever it is flat on
 /// given a thickness to be seen by.
 ///
-/// **A drawing, not a measurement.** The grid's box is the geometry the walk is
-/// tested against, and a panel's is a plane; this is that plane fattened by
-/// [`DRAWN_PANEL_THICKNESS`] so a person can find it, and a lid's height
-/// fattened downwards by [`DRAWN_LID_THICKNESS`] so a floor and the tile under it
-/// stop telling the same story. A body is already a box and passes through
-/// untouched, which is what it did before this function existed.
-///
-/// A panel is fattened *inwards*, into its own tile, rather than straddling its
-/// edge: two walls on the shared edge of neighbouring tiles would otherwise draw
-/// one solid inside another and make a joint look like a doubled wall — a real
-/// defect, and then invisible against a drawing artefact.
+/// **A drawing, not a measurement — and since step 23.5, almost the identity.**
+/// The grid's box is the geometry the walk is tested against, and since
+/// `Solid::box_of` gave a panel a real slab, that box is already what a person
+/// needs to find it: only a lid's height is still fattened, downwards by
+/// [`DRAWN_LID_THICKNESS`], so a floor and the tile under it stop telling the
+/// same story. A body and a panel are already boxes and pass through untouched.
 ///
 /// The `z` is clamped into an `i8` the way the upload clamps it
 /// ([`Occlusion::solid_bytes`](crate::occlusion::Occlusion::solid_bytes)), so
@@ -226,14 +207,12 @@ pub const DRAWN_LID_THICKNESS: f64 = 2.0;
 /// the map says. That is the whole point of a view of the grid, and it is why
 /// the clamp is not the caller's to remember.
 pub fn drawn(solid: &crate::occlusion::Solid) -> Solid {
-    use crate::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, EDGE_WEST};
-
     let space = solid.space;
     let height = |z: f64| z.clamp(f64::from(i8::MIN), f64::from(i8::MAX));
     let (mut min, mut max) = (space.min, space.max);
     min.z = height(min.z);
     max.z = height(max.z);
-    match solid.edges {
+    if solid.edges == 0 {
         // A lid — a floor, a roof, a plank. A slab hanging under the height it
         // lies at: the surface a ray is stopped by is the top one, so the
         // thickness goes downwards.
@@ -245,16 +224,7 @@ pub fn drawn(solid: &crate::occlusion::Solid) -> Solid {
         // thing to look at rather than a rounding: `docs/lighting.md`'s backlog
         // carries it, because changing it is a picture moving and step 23.1's
         // whole claim is that no picture moved.
-        0 => min.z = max.z - DRAWN_LID_THICKNESS,
-        // A body. Already a box, and the only kind that was one before this.
-        EDGE_ANY => {}
-        EDGE_NORTH => max.y += DRAWN_PANEL_THICKNESS,
-        EDGE_SOUTH => min.y -= DRAWN_PANEL_THICKNESS,
-        EDGE_WEST => max.x += DRAWN_PANEL_THICKNESS,
-        EDGE_EAST => min.x -= DRAWN_PANEL_THICKNESS,
-        // More than one named side never reaches here — a corner is two panels
-        // — and whatever it is, it is drawn as it stands.
-        _ => {}
+        min.z = max.z - DRAWN_LID_THICKNESS;
     }
     Solid { min, max }
 }

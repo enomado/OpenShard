@@ -1102,11 +1102,36 @@ fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32
 }
 
 /// How near two boundaries have to be, along the ray, for the ray to be crossing
-/// a **corner** rather than a side. `blit.wgsl`'s `CORNER_TIE`, and the two are
-/// one number — this is a comparison the two implementations have to answer the
-/// same way, and what makes that safe is that the tolerance is a thousand times
-/// the last bits of a float and a thirtieth of a pixel of world.
-const CORNER_TIE: f32 = 1e-4;
+/// a **corner** rather than a side — [`crate::occlusion::PANEL_THICKNESS`]
+/// converted into the same `t` the DDA already steps in. `blit.wgsl`'s
+/// `corner_tie`, and the two must answer the same comparison identically.
+///
+/// **Step 23.5, and derived rather than invented.** Before a panel had real
+/// depth this was a bare float tolerance — "a thousand times the last bits of
+/// a float", with no claim to be the width of anything — because there was no
+/// geometry to size it from. Now two panels meeting at a corner physically
+/// overlap in a `PANEL_THICKNESS`-wide square around the point they share, and
+/// this is that overlap's width, in the walk's own units, not a number that
+/// happens to work.
+///
+/// **The derivation, exactly, not approximately.** At `t = next` — the instant
+/// the *nearer* axis reaches its grid line — the *farther* axis's coordinate
+/// is still `|delta[far]| * (boundary[far] - next)` short of its own line,
+/// because both coordinates are linear in `t` and each agrees with the grid
+/// exactly at its own `boundary`. So the ray's distance from the corner point,
+/// along the axis it has not yet crossed, is `|delta[far]| * |boundary[0] -
+/// boundary[1]|` — world units — and asking that to be at most
+/// `PANEL_THICKNESS` is exactly `|boundary[0] - boundary[1]| <=
+/// PANEL_THICKNESS * per_tile[far]`, since `per_tile[far]` is `t` per world
+/// unit on that axis. Which axis is `far` is `out_by_x`, already known at the
+/// one call site.
+fn corner_tie(per_tile: [f32; 2], out_by_x: bool) -> f32 {
+    crate::occlusion::PANEL_THICKNESS as f32
+        * match out_by_x {
+            true => per_tile[1],
+            false => per_tile[0],
+        }
+}
 
 /// How much one cell stops a ray that crosses the sides in `crossed` at height
 /// `z`, where the cell is a panel. Zero for open ground, for a lid, and for a
@@ -1942,7 +1967,7 @@ fn walk_cells(
             true => crate::occlusion::EDGE_NORTH,
             false => crate::occlusion::EDGE_SOUTH,
         };
-        if (boundary[0] - boundary[1]).abs() <= CORNER_TIE {
+        if (boundary[0] - boundary[1]).abs() <= corner_tie(per_tile, out_by_x) {
             // **A corner** — `blit.wgsl`'s `walk` argues it: four tiles meet at
             // the point the ray leaves by, and the two the walk does not step
             // into are as much in the way as the one it does. Both are asked, and
@@ -2119,6 +2144,33 @@ mod tests {
         // A flame *in* the plane of the lid is half cut by it: it is a body
         // about a tile across, and half of it is on either side.
         assert!((crosses(22.0, 18.0, 20.0, 20.0, 20.0, FLAME_SPREAD) - 0.5).abs() < 1e-6);
+    }
+
+    /// `corner_tie`'s own claim, checked against the arithmetic rather than
+    /// trusted from it: the width it returns converts back into exactly
+    /// [`crate::occlusion::PANEL_THICKNESS`] of world distance on the axis
+    /// `out_by_x` says has *not* been crossed yet.
+    #[test]
+    fn corner_tie_converts_back_into_exactly_one_panel_thickness_of_world_distance() {
+        // A ray moving twice as fast along `x` as along `y`, so the two axes'
+        // `per_tile` genuinely differ and a swapped index would be caught
+        // rather than cancel out.
+        let delta = [2.0_f32, 1.0];
+        let per_tile = [1.0 / delta[0].abs(), 1.0 / delta[1].abs()];
+
+        // `x` reached first: the axis not yet crossed is `y`, so the tie
+        // should be exactly `PANEL_THICKNESS` of world distance along `y`.
+        let along_y = delta[1].abs() * corner_tie(per_tile, true);
+        assert!(
+            (along_y - crate::occlusion::PANEL_THICKNESS as f32).abs() < 1e-6,
+            "out_by_x should size the tie off the y axis, it converts to {along_y}",
+        );
+        // And the other way round.
+        let along_x = delta[0].abs() * corner_tie(per_tile, false);
+        assert!(
+            (along_x - crate::occlusion::PANEL_THICKNESS as f32).abs() < 1e-6,
+            "out_by_y should size the tie off the x axis, it converts to {along_x}",
+        );
     }
 
     /// The identity is exactly that: the blit has a case where it must not touch

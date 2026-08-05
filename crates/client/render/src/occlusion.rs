@@ -151,6 +151,36 @@ pub const EDGE_SOUTH: u8 = 4;
 pub const EDGE_WEST: u8 = 8;
 /// All four: a thing that stands up whose facing the art would not name.
 pub const EDGE_ANY: u8 = EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST;
+/// How thick a panel is, in tiles: real geometry, inward from the plane its
+/// face pixels lie on — the depth [`light::walk_cells`](crate::light::walk_cells)
+/// is genuinely stopped by, not only a view's own fattening.
+///
+/// **Step 23.5, and it withdraws the split [`solid::drawn`](crate::solid::drawn)'s
+/// own doc complained about.** Before this, a panel's *record* was the bare
+/// plane — step 23.1's "a thickness no ray is tested against may not sit in
+/// the field a reader takes for geometry" — and only the *view* fattened it,
+/// under its own unrelated name, `solid::DRAWN_PANEL_THICKNESS`. Now one
+/// number is the geometry, `Solid::box_of` is the only place it is spent, and
+/// the view draws the box exactly as it stands: `solid::drawn` no longer
+/// touches a panel at all.
+///
+/// **What a ray is stopped by has not moved yet.** [`light::pierced`] still
+/// samples one point, because the outer face of the slab — the one
+/// [`Solid::box_of`] leaves at the tile's own edge — is exactly where the
+/// walk's cell-boundary crossing already looks; a panel fattened only
+/// *inward* never reaches past where the old flat plane stood. What the real
+/// depth buys is at the corner: two panels that meet there now genuinely
+/// overlap in a `PANEL_THICKNESS`-wide square instead of touching at a
+/// point, and `light::corner_tie` is sized off this number rather than off an
+/// arbitrary float tolerance — see it for the argument.
+///
+/// **0.2, kept from the number the view used to invent alone.** It was
+/// already chosen to be *seen* — about nine screen pixels at 1:1 — and
+/// nothing here argues for a different one: the art still cannot measure a
+/// wall's depth (decision 3), so any number is invented, and this is the one
+/// already spent, moved into the geometry it was always standing in for
+/// rather than duplicated beside it.
+pub const PANEL_THICKNESS: f64 = 0.2;
 /// The bit that says a cell holds anything at all.
 ///
 /// Separate from the mask because a lid's mask is legitimately zero, and the
@@ -622,9 +652,10 @@ impl Solid {
     /// chances to put a panel on the wrong edge — which decision 39.8's test
     /// caught once already, in the view, where it read as a defect in the map.
     ///
-    /// A panel and a lid come out *flat*: their box is the plane the walk crosses.
-    /// The type doc argues why nothing nominal is stored, and
-    /// [`crate::solid::drawn`] is where a thickness to look at comes from.
+    /// A lid comes out *flat*: its box is the plane the walk crosses. A panel is
+    /// a real slab, [`PANEL_THICKNESS`] deep, fattened inward from the plane its
+    /// face pixels lie on — see that constant for why the record carries a
+    /// number rather than staying flat, the way a lid still does.
     fn box_of(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> crate::solid::Solid {
         use crate::camera::WorldSpot;
 
@@ -648,14 +679,16 @@ impl Solid {
             // because a static with a height is a lid whose span really is deep
             // — a plank is not, a sloped roof section is.
             0 | EDGE_ANY => {}
-            // A panel: the plane of the named edge, spanning the tile's whole run
-            // and the surface's whole `z`. `min == max` on one axis, which is
-            // exactly what the walk tests and what `Face::place_at` draws a face
-            // pixel on.
-            EDGE_NORTH => max.y = y,
-            EDGE_SOUTH => min.y = y + 1.0,
-            EDGE_WEST => max.x = x,
-            EDGE_EAST => min.x = x + 1.0,
+            // A panel: a slab standing on the named edge, `PANEL_THICKNESS` deep
+            // into the tile it stands on and never past it — two walls on the
+            // shared edge of neighbouring tiles must not draw one inside the
+            // other, which is the same argument `solid::drawn` used to make
+            // alone. The outer face stays exactly on the plane `Face::place_at`
+            // draws a face pixel on; only the inner one moves.
+            EDGE_NORTH => max.y = y + PANEL_THICKNESS,
+            EDGE_SOUTH => min.y = y + 1.0 - PANEL_THICKNESS,
+            EDGE_WEST => max.x = x + PANEL_THICKNESS,
+            EDGE_EAST => min.x = x + 1.0 - PANEL_THICKNESS,
             // A corner is two panels and [`Builder::add`] pushes them one at a
             // time, so more than one named side never reaches here. Whatever it
             // is, it stands up and it is not measured: the whole tile, which is
@@ -2567,18 +2600,18 @@ mod tests {
     /// pierces when the ray crosses this edge, so a box lying in it is a box the
     /// shader agrees with.
     ///
-    /// Two claims, and step 23.1 is what separated them. The **record** is flat:
-    /// its box is the plane and nothing more, because a thickness no ray is tested
-    /// against may not sit in the field a reader takes for geometry. The
-    /// **drawing** has [`crate::solid::DRAWN_PANEL_THICKNESS`], and what is checked
-    /// of it is the *direction* — the slab lies inside its own tile, away from
-    /// [`crate::facing::Face::outward`] — because a slab drawn straddling the edge
-    /// would put two neighbouring walls one inside the other and make an honest
-    /// joint look like a doubled wall.
+    /// **Since step 23.5 the record itself carries the thickness**, so there is
+    /// one claim rather than two: the *outer* face of the box is the plane
+    /// [`crate::facing::Face::place_at`] draws a pixel on, and the inner one is
+    /// [`PANEL_THICKNESS`] further in, away from
+    /// [`crate::facing::Face::outward`] — never straddling the edge, because two
+    /// neighbouring walls drawing one inside the other would make an honest
+    /// joint look like a doubled wall. `solid::drawn` is checked here too, and
+    /// what it must show is that it no longer moves a panel at all: the record
+    /// already is the picture.
     #[test]
     fn a_panel_lies_in_the_plane_its_face_pixels_lie_on() {
         use crate::facing::{Face, Facing};
-        use crate::solid::DRAWN_PANEL_THICKNESS;
 
         let (x, y) = (1500, 1600);
         for face in [Face::North, Face::East, Face::South, Face::West] {
@@ -2596,9 +2629,27 @@ mod tests {
                 false => (1, f64::from(y) + f64::from(near.1)),
             };
             let (min, max) = ([solid.min.x, solid.min.y][axis], [solid.max.x, solid.max.y][axis]);
+            // Which of the box's two faces on this axis is the outer one is the
+            // face's own outward direction: the same fact `PANEL_THICKNESS`'s
+            // own doc argues, now checked on the record rather than the view.
+            let outward = f64::from(face.outward()[axis]);
             assert!(
-                (min - plane).abs() < 1e-9 && (max - plane).abs() < 1e-9,
-                "{face:?}: the record should be the plane at {plane}, it is {min}..{max}",
+                outward != 0.0,
+                "{face:?} does not face along the axis it is flat in"
+            );
+            let (outer, inner) = match outward > 0.0 {
+                true => (max, min),
+                false => (min, max),
+            };
+            assert!(
+                (outer - plane).abs() < 1e-9,
+                "{face:?}: the outer face should be the plane at {plane}, it is {outer}",
+            );
+            assert!(
+                ((inner - outer) * outward + PANEL_THICKNESS).abs() < 1e-9,
+                "{face:?}: the slab should lie {PANEL_THICKNESS} inside its tile, it lies \
+                 {} from {outer} to {inner}",
+                inner - outer,
             );
             // And across the run it is the whole tile, because a run of wall is
             // one surface: a panel short of its own edge would leave a hairline
@@ -2619,33 +2670,13 @@ mod tests {
                 "{face:?}: the span held is not the span the walk tests",
             );
 
-            // And the drawing, which is the same plane given a thickness inwards.
+            // And the drawing: since the record already is a slab, `drawn`
+            // leaves a panel's `x` and `y` exactly as they stand.
             let picture = crate::solid::drawn(&stands);
-            let (min, max) = (
-                [picture.min.x, picture.min.y][axis],
-                [picture.max.x, picture.max.y][axis],
-            );
-            // Which of the box's two faces on this axis is the outer one is the
-            // face's own outward direction, and the same number says the slab
-            // lies inside the tile rather than straddling the plane.
-            let outward = f64::from(face.outward()[axis]);
-            assert!(
-                outward != 0.0,
-                "{face:?} does not face along the axis it is flat in"
-            );
-            let (outer, inner) = match outward > 0.0 {
-                true => (max, min),
-                false => (min, max),
-            };
-            assert!(
-                (outer - plane).abs() < 1e-9,
-                "{face:?}: the outer face is at {outer} and its pixels are at {plane}",
-            );
-            assert!(
-                ((inner - outer) * outward + DRAWN_PANEL_THICKNESS).abs() < 1e-9,
-                "{face:?}: the slab should lie {DRAWN_PANEL_THICKNESS} inside its tile, it lies \
-                 {} from {outer} to {inner}",
-                inner - outer,
+            assert_eq!(
+                (picture.min.x, picture.min.y, picture.max.x, picture.max.y),
+                (solid.min.x, solid.min.y, solid.max.x, solid.max.y),
+                "{face:?}: a panel's box is already the picture, `drawn` moved it",
             );
         }
     }

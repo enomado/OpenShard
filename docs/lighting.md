@@ -9,6 +9,38 @@ copied.
 
 ## Where the next session starts
 
+**Step 23.5.5's wall-thickness half landed: a panel is a real, tested slab,
+not only a drawn one.** `occlusion::PANEL_THICKNESS` (`0.2`, the number the
+view used to invent alone) is now the geometry `Solid::box_of`'s four named
+edges fatten inward by, the record itself carries it, `solid::drawn` no
+longer touches a panel — the box already is the picture — and
+`solid::DRAWN_PANEL_THICKNESS` is gone with the split it existed to name.
+`light::corner_tie` (`blit.wgsl`'s twin) replaced its bare `1e-4` with an
+exact conversion of `PANEL_THICKNESS` into the walk's own `t`, argued and
+pinned by a pure unit test. **Read the new paragraph under step 23.5.5 and
+the matching backlog entry before trusting the corner half further**: no
+scene was found, this session, that the old tolerance fails and the new one
+catches — the derivation is correct and harmless, not a demonstrated fix.
+
+**`1509,1635` is not this step's remainder — it is decision 34's own body
+footprint, and it hit a real wall of its own.** What decision 34.1 measures
+is a band in the *screen column* (`fx - fy`, i.e. `u - v`), which is a
+**diagonal** stripe of the tile and cannot become an axis-aligned
+`occlusion::Solid` box the way a panel's or a tread's can —
+`facing::Prism::footprint` only manages it because a climb names a world
+axis to be flat on, and a body's silhouette names none. The backlog entry
+("A body's footprint... does not actually have a general shape to learn
+yet") has the full argument and the candidates nobody has picked between.
+This is genuinely open, not merely unauthored.
+
+**The arch is still exactly where it was: `Builder::add` does not read
+`Shape::blocks`, and nothing is authored into any table.** That plumbing —
+turning an authored `Blocks` list into real solids in the grid, the way
+38.2's spill landed ahead of its first user — is unrelated to either finding
+above and does not wait on them.
+
+Everything below is the session before it.
+
 **The instrument now has a second, non-trivial check: three blocks reproduce
 the three-tread stair `0x0736` almost as well as its own automatically-derived
 prism does.** `1822`'s single-tread case was checked against `block 0 8 0 8 0
@@ -3410,6 +3442,47 @@ always-touches-the-ground assumption cannot.
          square; and a corner where two walls meet with no light through the
          join, which is decision 18's spokes closed by geometry rather than by
          scaling a crossing's length.
+
+         **The wall-thickness half landed, and `1509,1635` turned out to be a
+         different DoD than this bullet's own name.** `occlusion::PANEL_THICKNESS`
+         is real geometry now: `Solid::box_of`'s four named-edge arms fatten
+         inward by it, the record itself (not a view-only copy) carries the
+         slab, `solid::drawn` no longer touches a panel at all — the box already
+         is the picture — and `DRAWN_PANEL_THICKNESS` is gone, closing the
+         backlog entry decision 38's own step 23.1 opened when it split the two
+         numbers apart. `1509,1635` (`0x00CC`) is **not** this: it is decision
+         34's own body footprint, folded into step 23 under "the grid, the walk
+         and the view all learn the general shape instead", and that shape is
+         still unbuilt — see the backlog entry below for why it turned out to be
+         its own open question rather than a small remainder of this one.
+
+         **The corner half is where the session's own honesty has to be
+         written down.** `light::corner_tie` (`blit.wgsl`'s twin) no longer
+         invents a float tolerance: it converts `PANEL_THICKNESS` into the same
+         `t` the walk already steps in, by an exact derivation (in the
+         function's own doc) rather than an approximation, and a pure unit test
+         checks the arithmetic independently of the implementation that uses
+         it. **What could not be built is a scene that tells the old `1e-4` and
+         the new, wider window apart.** `a_ray_near_a_corner_and_off_the_exact_diagonal_still_does_not_slip_through`
+         (`tests/lighting.rs`) passes under both — checked by hand, reverting
+         the derivation to a bare `1e-4` and re-running it — because a ray a
+         quarter tile off the exact diagonal already takes the *ordinary*,
+         non-corner DDA step into one of the two wall cells directly, and a
+         body (`EDGE_ANY`, decision 24) stops a ray inside its own cell without
+         any help from the corner branch at all. Decision 18's own bug
+         (`docs/lighting.md`, "the crossing is a hair long") was already a
+         precision fix at the exact corner rather than a width the map is full
+         of counterexamples for, so the honest reading is: **the derivation is
+         a defensible, data-sized replacement for an invented constant, kept
+         because it costs nothing and a wider tie is never wrong, not a
+         demonstrated fix for a leak anyone has shown still exists.** If a
+         future session ever needs the old tiny epsilon back for a performance
+         reason, that is a real question this paragraph flags rather than
+         hides.
+
+         **Still open:** the arch — `Builder::add` still does not read
+         `Shape::blocks`, and nothing is authored into any table for it — and
+         `1509,1635`'s footprint, now its own line in the backlog below.
 - [ ] **17. The shaft.** The screen-space pass of decision 12, over the mask step
       11 produces — and, once step 16 exists, over the beam from a window too.
       Nothing in this renderer draws air, so a visible shaft is a blur of the lit
@@ -3531,6 +3604,43 @@ Carried from `client.md`'s firelight backlog and still true:
 - Nothing a mobile carries burns — a player holding a torch makes no light.
 - The ambient is a key (F10), not a clock.
 - A light is placed by its tile, not by its sprite.
+
+Found while giving a panel real thickness (step 23.5.5):
+
+- **A body's footprint (decision 34, folded into step 23 as "the grid, the
+  walk and the view all learn the general shape instead") does not actually
+  have a general shape to learn yet, and the gap is geometric rather than
+  missing code.** What decision 34.1 measures is a band in `(fx - fy)` — the
+  screen column a silhouette's first and last drawn pixel falls on — and `fx`,
+  `fy` there are `u`, `v`, the tile-local world fractions the projection
+  actually uses (`docs/lighting.md`'s own "world `+x` moves the screen by
+  `(+22,+22)` and `+y` by `(-22,+22)`, so a sprite's column is `(fx - fy)` and
+  nothing else"). A band in `u - v` is a **diagonal** stripe of the tile, and
+  `occlusion::Solid` is, by `solid.rs`'s own module doc, never rotated —
+  "no rotation anywhere in this renderer... and it never will." `Prism::footprint`
+  looks like the precedent and is not one: a tread's strip is bounded along a
+  *named climb axis* (`up`), which is why its `lo..hi` fraction turns into an
+  honest axis-aligned `min_x..max_x`; a body has no `up`, only a column, and a
+  column does not pick a world axis on its own. So the literal DoD (`1509,1635`
+  reads as a narrow slab) cannot be met by extending `Solid::box_of` the way a
+  panel's thickness just was, and needs one of: an axis-aligned box that
+  conservatively *under*-covers the true diagonal band (loses some real
+  occlusion at the band's own corners), a second, non-axis-aligned primitive
+  the walk would have to gain a new kind of test for, or a different
+  measurement that picks a world axis some other way (the wall the body is
+  usually cast against, if `facing_of` reads one nearby, is the only candidate
+  looked at and not pursued). Whoever picks this up next should read
+  `facing::Prism::footprint` first for exactly why it does not generalise.
+- **`light::corner_tie`'s new, `PANEL_THICKNESS`-derived width has no scene
+  that tells it apart from the old, bare `1e-4` it replaced.** Written up in
+  step 23.5.5 itself rather than only here, because it changes what the step's
+  own DoD can honestly claim: the derivation is correct arithmetic (a pure unit
+  test pins it) and a defensible replacement for an invented constant, but
+  nobody has shown a ray that the old tolerance let through and the new one
+  stops. The candidate that would prove it — a ray whose two boundary
+  crossings differ by more than `1e-4` but less than the new width, and that
+  does not *also* get caught by the ordinary single-axis step into a
+  neighbouring wall cell — was not found in the time this session had.
 
 Found while migrating the ownership (step 23.1):
 

@@ -379,6 +379,12 @@ const HOLED: u32 = 64u;
 // than to a tolerance.
 const RUN_STEPS: f32 = 255.0;
 
+// How thick a panel's slab is, in tiles, inward from the plane its face
+// pixels lie on. `occlusion::PANEL_THICKNESS`, and the two are one number:
+// `corner_tie` below is sized off it and the two implementations of that
+// comparison have to agree exactly.
+const PANEL_THICKNESS: f32 = 0.2;
+
 // How much of a panel a ray pierces at height `z` runs into: 1 well inside the
 // span it occupies, 0 well outside, and a gradient `tall` `z` units wide across
 // its edges.
@@ -522,15 +528,25 @@ fn pierced(stands: vec4<u32>, id: u32, cross: vec3<f32>, wide: f32, tall: f32) -
 }
 
 // How near two boundaries have to be, along the ray, for the ray to be crossing
-// a **corner** rather than a side.
+// a **corner** rather than a side — `PANEL_THICKNESS` converted into the same
+// `t` the DDA already steps in. `light::corner_tie`, and the two must answer
+// the same comparison identically.
 //
-// A share of the whole segment, so a hundredth of a tile on a six-tile ray. What
-// it decides is whether the walk looks at one of the two cells that share the
-// corner or at both — see `walk`. It has to be well above the last bits of a
-// float and well below anything a person could see, and it is both: the two ends
-// of this comparison are the same arithmetic in two languages, and a
-// ten-thousandth of a ray is a thirtieth of a pixel.
-const CORNER_TIE: f32 = 1.0e-4;
+// Derived rather than invented: two panels meeting at a corner physically
+// overlap in a `PANEL_THICKNESS`-wide square around the point they share, and
+// this is that overlap's width in the walk's own units. At `t = next` — the
+// instant the *nearer* axis reaches its grid line — the *farther* axis's
+// coordinate is still `|delta[far]| * (boundary[far] - next)` short of its own
+// line, because both coordinates are linear in `t` and each agrees with the
+// grid exactly at its own `boundary`. So the ray's distance from the corner
+// point, along the axis it has not yet crossed, is `|delta[far]| *
+// |boundary.x - boundary.y|` — world units — and asking that to be at most
+// `PANEL_THICKNESS` is exactly `|boundary.x - boundary.y| <= PANEL_THICKNESS *
+// per_tile[far]`, since `per_tile[far]` is `t` per world unit on that axis.
+// Which axis is `far` is `out_by_x`, already known at the one call site.
+fn corner_tie(per_tile: vec2<f32>, out_by_x: bool) -> f32 {
+    return PANEL_THICKNESS * select(per_tile.x, per_tile.y, out_by_x);
+}
 
 // How much one cell stops a ray that crosses the sides in `crossed` at height
 // `z`, where the cell is a panel. Zero for open ground, for a lid and for a panel
@@ -1052,7 +1068,7 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
         // ray moving east leaves through an east side and enters a west one.
         let enter_x = select(EDGE_EAST, EDGE_WEST, toward.x > 0);
         let enter_y = select(EDGE_SOUTH, EDGE_NORTH, toward.y > 0);
-        if abs(boundary.x - boundary.y) <= CORNER_TIE {
+        if abs(boundary.x - boundary.y) <= corner_tie(per_tile, out_by_x) {
             // **A corner.** Four tiles meet at the point the ray is leaving by,
             // and the two the walk does not step into are as much in the way as
             // the one it does: a ray running the diagonal of a room's corner used
