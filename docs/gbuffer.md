@@ -133,6 +133,13 @@ Everything the four spare bits and the fixed `outward()` switch used to encode
 — which tile, which way it faces, what kind of thing this is — becomes a field
 of that one row, read once per fragment instead of decoded from a packed word.
 
+Three buffers, not one — ground's row and a face's row hold different data
+(ground has no normal to carry, a face has no corner heights), so `instances`
+is really `ground_instances`, `face_instances` and `mobile_instances`, and
+`Kind` (unchanged from today's two bits, `place.rs:58-74`) is what the id
+channel carries to pick which — see "Not settled"'s id-width item for the bit
+budget and the measured counts behind it.
+
 **3. An id names a face, not a game object — and the normal is honest per-face
 geometry, not a fitted formula.**
 
@@ -153,7 +160,7 @@ normals**, none of them blended.
 
 So the id this plan's decision 1 and 2 describe names a **face**, not a game
 object. A wall's sprite has one relevant face and collapses to exactly what it
-is today — one id, no change. A tread has up to three; a corner has exactly
+is today — one id, no change. A tread has up to two; a corner has exactly
 two. Each is rasterised separately, by the invisible geometry pass decision 4
 below adds, and each carries its own trivial, axis-aligned normal — `[0, 0, 1]`
 for a top, the climb's own outward direction for a riser — with no blending
@@ -241,14 +248,65 @@ reason.
   all — the projection algebra only has work left to do for ground's
   per-pixel slope (the fourth "Not settled" item) and decision 16's fraction,
   not for recovering an object's own anchor.
-- **The id's width and the buffer's capacity**, i.e. how many faces one
-  frame's storage buffer is sized to hold. Not measured against how many
-  faces a real screen ever holds — a stair alone is seven ids, not one, now
-  that decision 3 counts faces rather than objects — and decision 30.6's own
-  discipline (measured, not chosen) applies here the same way, even though a
-  storage buffer's own failure mode is a resize or a `#[cfg]`-away cap rather
-  than the texture-row padding waste decision 2's rejected draft would have
-  paid.
+- ~~The id's width and the buffer's capacity, i.e. how many faces one frame's
+  storage buffer is sized to hold. Not measured against how many faces a real
+  screen ever holds...~~ **Answered (step 2):** measured, at the same frame
+  `docs/lighting.md`'s 25,702/17,201-statics numbers were taken from —
+  Britain, widest zoom, `Cutaway::OPEN` (nothing hidden, the worst case) —
+  by extending `tests/cost.rs` to print the two `collect()` calls it already
+  builds but never counted (`cost.rs:319-347`):
+
+  ```
+  27889 ground quads, 6560 static quads (431 of them corners,
+  so 6991 faces once decision 3 splits each in two)
+  ```
+
+  Ground is not face-decomposed by decision 3 — a land quad is one face today
+  and stays one — so its count needs no correction. A static's does: 431 of
+  6,560 carry a corner `Stance` (`place::STANCE_CORNER`, `place.rs:160`) and
+  decision 3 splits each into two faces, so 6,560 objects become 6,991 faces.
+  Treads are not in this number — nothing decomposes a tread into top+riser
+  yet (`occlusion.rs:1358-1378` still pushes one body per tread, not two
+  faces; see decision 3's own body above for why that gap is the render
+  side's to close, in step 4) — but a flight of stairs is a small, bounded
+  class of statics next to 6,560 of them, and even a generous doubling of
+  every tread in view would not move this number by an order of magnitude.
+  Mobiles are not in it either, for a different reason: they are population,
+  not map data, so a snapshot of Britain's furniture cannot measure them —
+  but every mobile-or-worn-layer quad is already exactly one face by
+  construction (`Stance` never varies by corner or tread for `Kind::Mobile`),
+  so no multiplier applies there at all, only a raw count bounded by however
+  many characters a shard ever draws on one screen, which is server
+  population and an order of magnitude below the map's own furniture in any
+  arrangement this client has ever drawn.
+
+  So: **one shared 32-bit id channel**, not per-kind widths to track. Two
+  bits carry `Kind` — unchanged from today's values (`place.rs:58-74`,
+  `Nothing=0, Land=1, Static=2, Mobile=3`) — and select which of three
+  storage buffers (ground quads, static/item faces, mobile-and-layer quads)
+  the remaining 30 bits index into. Thirty bits is not a number chosen to
+  feel safe; it is chosen because a per-kind id, each counted separately,
+  needs nowhere near it — the widest real frame measured needs 27,889 for
+  one kind and 6,991 for another — and one width for all three kinds avoids
+  the "row-width bookkeeping... to keep in sync" decision 2 already refused
+  to pay for, extended from *one* buffer to three. If a future city or a
+  crowded event needs more of one kind than Britain ever showed this client,
+  the ceiling is 1,073,741,823 away, not a few thousand.
+
+  The **buffer's capacity** — the initial allocation, not a cap; decision 2's
+  storage buffers resize the same way today's vertex buffers already do
+  (`renderer.rs:491-495`, `1029-1031`) and never drop a frame's worth of
+  instances — is a different question, and this measurement answers it too.
+  Today's `INITIAL_QUADS = 4096` (`renderer.rs:37`) is not sized against
+  reality: a widest-zoom frame at Britain already asks for 6.8× that many
+  ground quads and 1.6× that many static quads, so **the very first frame
+  drawn at this location reallocates**, on every run, before a single pixel
+  is on screen. Worth carrying into step 3 rather than repeating: seed each
+  kind's storage buffer from the measured count with one power-of-two of
+  headroom, the same rounding `renderer.rs`'s own grow path already uses —
+  ground at 32,768, static/item faces at 8,192, mobiles left at today's 4,096
+  for lack of a map-density argument to move it, since population is a
+  server number this measurement cannot speak to.
 - **Whether the face-instance table is its own texture or a field `occlusion`
   already has reason to grow.** The intro's `occlusion::Solid` check found no
   `normal_of_face` today, so decisions 36/38.3's "for free" has to be built
@@ -278,6 +336,36 @@ reason.
   off the id's row the same way `(x, y, z)` would be, is a separate question
   this step did not answer and step 2 or 3 should settle before building
   either path.
+
+  **Step 2 settles the face-instance half: it needs no fraction at all.** A
+  fraction is sub-tile position — where inside its tile a fragment sits — and
+  that question only has content for a surface a fragment's position varies
+  across, which is what makes ground's bilinear quad different from
+  everything decision 3 gives an id to. A static's face and a mobile's
+  billboard occupy one anchor; every fragment of a wall's picture is the same
+  `(x, y, z)` decision 2's row already carries, exactly as decision 1's own
+  "Not settled" answer says ("no per-pixel inverse-projection needed for a
+  billboard at all"). So the face-instance row below carries no fraction
+  field, not because solving for one was tried and dropped, but because
+  nothing on a billboard face varies with it — the question was never this
+  row's to answer. It stays exactly what the item below already says it is:
+  ground's own, unresolved, and step 7's.
+
+  **The row itself, decided here rather than left implicit:** an anchor
+  (`x: u16, y: u16, z: i8`, unchanged from today's `Place`, `place.rs:219-237`)
+  and one **normal**, in place of today's ten-value `Stance`. Decision 3
+  already removes the four corner values — a corner is two rows now, not one
+  value naming two faces — so what is left to name is a top (`[0, 0, 1]`), one
+  of the four cardinal directions (a wall's face, or a riser's "climb's own
+  outward direction"), or *unknown* (`Stance::Upright`'s fallback, "a tree, a
+  body, a post... across it nothing varies"): six values, not ten, three bits
+  where `Stance` needed four. `kind` does **not** ride in this row — it is
+  what selects *which* of the three per-kind buffers above the id indexes
+  into in the first place, so a row stating it again would be exactly the
+  repetition this plan's intro opens by objecting to ("it repeats per pixel
+  what a whole sprite shares"). Nothing else `Place` carries today survives
+  into the row: `Kind` is answered by the attachment channel, not the row,
+  and the fraction is answered directly above.
 - **Ground's own reconstruction is not the billboard's.** A sloped land quad's
   height is bilinearly interpolated across its four corners — solvable in
   closed form from screen position and the tile's own corner heights, but not
@@ -304,9 +392,13 @@ attributed."
       Confirmed: only an ordering key, never read back. See the answered
       item above and `depth::tests::
       priority_z_can_collide_for_two_different_world_heights`.
-- [ ] 2. Design the face-instance row's layout and the id's width/buffer
+- [x] 2. Design the face-instance row's layout and the id's width/buffer
       capacity against a real frame's face count, not object count
-      (decision 3, "Not settled").
+      (decision 3, "Not settled"). Measured at Britain, widest zoom:
+      27,889 ground quads, 6,560 statics (6,991 faces once corners split).
+      One 32-bit id channel, `Kind` in two bits selecting one of three
+      per-kind storage buffers, 30 bits of id — see the answered item above
+      for the row's fields and the buffer-capacity numbers for step 3.
 - [ ] 3. Wire the storage buffer: dual-usage (`VERTEX` + `STORAGE`) buffer
       creation, the second bind group on `blit.wgsl`'s fragment stage,
       `instances[id]` (decision 2). No shape change yet — same faces
@@ -330,4 +422,14 @@ attributed."
 
 ## Backlog
 
-Nothing yet — this plan has not been built against.
+- **Decision 3 said a tread's face count two different ways.** "A tread is a
+  box with up to two faces a camera ever sees — its top, and the riser" and
+  the worked example built on it (3 treads × 2 faces + the lid = seven) said
+  two; a later sentence in the same decision said "a tread has up to three."
+  Found while sizing step 2's id against decision 3's own numbers — the two
+  could not both be used for the same measurement. Fixed to "up to two,"
+  matching the paragraph the worked example is built on; if a tread ever
+  turns out to expose a third face (an end tread's open side, unhidden by the
+  next one), that is step 4's discovery to make when it actually decomposes
+  one, not a number to carry forward from a sentence nothing else in the
+  decision agreed with.

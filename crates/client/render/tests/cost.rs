@@ -326,6 +326,25 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         &static_atlas,
         &Cutaway::OPEN,
     );
+    // `docs/gbuffer.md` step 2: the id width has to be sized against a real
+    // frame's *face* count, not the object count decision 3 replaces. Quads are
+    // objects — one per static, one per land cell — and every one of them is
+    // exactly one face except a corner, which decision 3 splits into two. So the
+    // face count this frame would produce is the quad count plus one more for
+    // every corner-stance quad; treads (top+riser, decision 3) are not counted
+    // here because nothing in the tree decomposes one yet (`gbuffer.md` step 4)
+    // — see the doc for how that gap is carried forward instead of guessed at.
+    let corner_statics = static_quads
+        .iter()
+        .filter(|quad| quad.place.stance as u8 >= openshard_client_render::place::STANCE_CORNER)
+        .count();
+    eprintln!(
+        "{} ground quads, {} static quads ({corner_statics} of them corners, so {} faces \
+         once decision 3 splits each in two) — `docs/gbuffer.md` step 2",
+        quads.len(),
+        static_quads.len(),
+        static_quads.len() + corner_statics,
+    );
 
     let format = openshard_client_render::blit::WORLD_FORMAT;
     let world = openshard_client_render::blit::world_texture(&device, width, height);
