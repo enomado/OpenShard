@@ -202,16 +202,16 @@ line at the rasteriser, and this plan stays on the same side of it. Worth
 tracing precisely rather than asserting, because the wording is close enough
 to invite a wrong skim.
 
-**Not settled, and worth checking before believing either answer:** decision
-40 existed because a single flat top read wrong next to a nearby light — a
-hard-edged cliff in `cone` across the first tenth of a tread's climb. Honest
-per-face lighting might fix that on its own, if a correctly-lit riser gives the
-eye the continuity the flat top's tilt was faking — or it might not, if the
-top's own hard cutoff is still there regardless of what lights beside it.
-Check with the same tool and the same reproduction that found the original bug
-(`examples/isolated_scene.rs`'s profile mode, the `1497,1626,10` stair) before
-assuming either way. If honest geometry fixes it alone, `Prism::tread_normal`
-is **deleted rather than ported** and step 5 below shrinks to nothing.
+**Settled by step 5, below — honest per-face lighting fixes decision 40 on its
+own.** Decision 40 existed because a single flat top read wrong next to a
+nearby light — a hard-edged cliff in `cone` across the first tenth of a
+tread's climb. That cliff turned out to be a property of the sampling that
+went looking for it, not of the real geometry: measured at each tread's own
+real, constant height instead of the fake continuous ramp decision 40's
+reproduction walked, the cliff is not there — a lit tread top reads a flat
+`cone`, and the treads above it are correctly, fully occluded, not
+facing-cut. `Prism::tread_normal` is deleted rather than ported; see step 5
+for the numbers.
 
 **4. The invisible geometry pass stays depth-consistent with the visible one.**
 
@@ -588,11 +588,49 @@ attributed."
       gates and the existing frame-parity suite are green, but that is
       coverage of everything this step *didn't* change, not of the new
       pass's own output; worth adding before step 5 leans on it.
-- [ ] 5. Check whether honest per-face lighting alone fixes decision 40's
-      original hard-edge report, against the same reproduction that found it.
-      If it does, retire `Prism::tread_normal` and `outward()`'s switch rather
-      than porting either; if it does not, land the formula's output as one
-      face's own row value instead.
+- [x] 5. Checked against the same reproduction that found decision 40 —
+      `examples/isolated_scene.rs`'s profile mode, the `1497,1626,10` stair,
+      `(1497.5, 1626.83, 16)` to `(1497.5, 1626.17, 20)` — and **honest
+      per-face lighting fixes it on its own; `Prism::tread_normal` is
+      retired rather than ported.**
+
+      **The hard cliff decision 40 found was never a property of the real
+      geometry — only of the sampling that went looking for it.** That
+      reproduction's segment linearly interpolates `z` from `16` to `20`
+      across the whole flight as if it were one continuous ramp, and samples
+      `Surface::Flat` (a single fixed tag) along it — a proxy for a shape
+      the three real treads never were. Re-run at each tread's own real,
+      constant height instead — `Surface::Flat` at `(1497.5, y, 16)` for `y`
+      inside the low tread's own real footprint (`1626.667..=1627.0`), and
+      likewise for the other two — `cone` is not a cliff at all: a flat
+      `0.273` across the whole of the lit low tread's top (every sample to
+      three decimals, nine points spanning its real width), and fully
+      occluded (`through`: "stopped at (100, 100)") on the two treads above
+      it, which cannot see the lamp past the flight's own geometry — a real,
+      correct occlusion cutoff, not a facing artifact, and exactly what a
+      real step next to a light it partly blocks its own view of should
+      look like.
+
+      **The blend was compensating for the fake ramp, and now costs
+      accuracy it does not buy back.** Sampled at the exact same point
+      (`1497.5, 1626.83, 16`, the low tread's own real coordinate),
+      `Surface::Sloped(tread_normal(0))` reads `cone: 0.715` against honest
+      `Surface::Flat`'s `0.273` — nearly three times as bright, because
+      `tread_normal(0)` was never close to `[0, 0, 1]`: even the first
+      tread's rise (from the lid's own base) tilts it hard towards `up` to
+      make the *fake ramp's* far end land smoothly at `0.000`. That tilt is
+      a real distortion once every tread gets its own true position and its
+      own true, unblended normal from `Prism::mesh` — nothing is left for
+      the blend to correct that measuring the real geometry does not
+      already correct for free.
+
+      **Retired, not ported:** `Prism::tread_normal` and its tests
+      (`facing.rs`), `light::Surface::Sloped` and `Spot::sloped` (`light.rs`),
+      and the `isolated_scene` profile tool's `tread` mode and its
+      `_TREAD_UP`/`_TREAD_HEIGHTS` env vars, which existed only to drive it.
+      `outward()`'s switch — the shader-side case that would have had to
+      grow to decode a `Sloped` normal had this gone the other way — was
+      never built at all, so there was nothing there to remove.
 - [ ] 6. `select.rs`'s ground wash reads the id instead of tile/stance; measure
       whether `render_mask` still has a reason to run for selection specifically
       once it does, separately from outline's own use of it.

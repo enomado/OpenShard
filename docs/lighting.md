@@ -3639,20 +3639,28 @@ Found while building the treads (step 23.5, in progress and not yet committed):
   stairwell fixture like it, sits mounted on the wall a flight climbs *towards*
   — at a landing, or the top — not planted at its foot, so a tread reading
   partly like the wall it climbs into is the ordinary case, not the exotic one.
-  Recorded in `facing::Prism::tread_normal`'s own doc, with the wrong sign's
-  measurement kept there too, since the derivation that looked right was not.
+  Was recorded in `facing::Prism::tread_normal`'s own doc, with the wrong
+  sign's measurement kept there too, since the derivation that looked right
+  was not — gone along with the function itself once `gbuffer.md` step 5
+  retired it; the measurement survives only here now.
 
-  **Not done — decision 40's steps 4 and 5, moved to their own plan.**
-  `Surface::Sloped` has no `Stance`/place-attachment encoding: the tread's
-  normal is real only on the CPU side (`light::sample`, the profile tool).
-  Chasing where a computed normal could fit in `place::Stance`'s four spare
-  bits led to the question of whether the attachment's payload should be
-  shaped that way at all — that question, and decision 40's steps 4 and 5 as
-  its first concrete case, are now [`gbuffer.md`](gbuffer.md), not here.
-  `Surface::shadowed_by_own_tile` also does not ask a `Sloped` surface
-  anything (falls through to `0`, i.e. never self-shadowed) — decision 40 left
-  this as a one-off design question for whenever `Sloped` grows a second
-  caller, not a reason for the match's variants to keep multiplying.
+  **Moved to their own plan, and closed there — not by porting `Sloped`, by
+  retiring it.** `Surface::Sloped` had no `Stance`/place-attachment encoding:
+  the tread's normal was real only on the CPU side (`light::sample`, the
+  profile tool). Chasing where a computed normal could fit in
+  `place::Stance`'s four spare bits led to the question of whether the
+  attachment's payload should be shaped that way at all — that question, and
+  decision 40's steps 4 and 5 as its first concrete case, became
+  [`gbuffer.md`](gbuffer.md)'s own plan. That plan's step 4c gave every
+  tread's top and riser real, honest per-face geometry and its own
+  unblended normal instead of one fixed tag standing in for the whole
+  flight; step 5 then re-measured this section's own reproduction against
+  that real geometry and found the hard cliff was a property of the fake
+  continuous-ramp sampling that went looking for it, not of the treads
+  themselves. `Surface::Sloped`, `Spot::sloped` and `Prism::tread_normal`
+  are deleted, not carried forward — see `gbuffer.md` step 5 for the
+  numbers. `Surface::shadowed_by_own_tile` never had to answer for a
+  `Sloped` surface as a result.
 
 Found while building the spill (step 23.2):
 

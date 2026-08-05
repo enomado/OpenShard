@@ -1209,30 +1209,22 @@ impl Spot {
             surface: Surface::Face(face),
         }
     }
-
-    /// A point of a surface whose normal is a value computed from its own
-    /// geometry rather than one of the three fixed tags — a tread's top,
-    /// tilted towards the climb by its own rise over run. `docs/lighting.md`,
-    /// decision 40. `normal` is taken as given, not renormalised: the caller
-    /// (`facing::Prism::tread_normal`) already returns a unit vector.
-    pub fn sloped(at: Vec2, z: f32, normal: [f32; 3]) -> Self {
-        Self {
-            at,
-            z,
-            surface: Surface::Sloped(normal),
-        }
-    }
 }
 
 /// What kind of surface a lit point is a point of — the whole of what the
 /// lighting asks about a pixel beyond where it is.
 ///
-/// [`crate::place::Stance`] is the same question at the other end of the wire and
-/// has ten values; a corner is resolved to one of its two faces per fragment
-/// before the attachment is written, so what arrives here is always one surface
-/// with one normal. [`Surface::Sloped`] has no `Stance` counterpart yet — decision
-/// 40 lands it on the CPU side first (`light::sample`, the `isolated_scene`
-/// profile tool), and `blit.wgsl`'s own normal choice is the step after.
+/// [`crate::place::Stance`] is the same question at the other end of the wire —
+/// a corner is resolved to one of its two faces per fragment before the
+/// attachment is written, and `docs/gbuffer.md` step 4c gave a mesh face
+/// (a tread's top or riser) its own honest tag from this same set besides, so
+/// what arrives here is always one of these four fixed normals, never a
+/// computed one. `docs/lighting.md` decision 40 tried carrying a fifth,
+/// computed case here (`Sloped`, a blended tread normal) before honest
+/// per-face geometry existed to make it unnecessary; `docs/gbuffer.md` step 5
+/// retired it once measuring against decision 40's own reproduction showed
+/// the blend was compensating for a fake continuous-ramp sampling of the
+/// flight, not for anything the real, decomposed geometry still needed.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Surface {
     /// Standing up with nothing known about which way it runs.
@@ -1242,16 +1234,6 @@ pub enum Surface {
     Flat,
     /// One of the tile's four vertical faces.
     Face(Face),
-    /// A surface whose normal is a value carried with it, computed from the
-    /// shape's own geometry — a tread's top tilted by its own rise and run —
-    /// rather than one of the three fixed tags above. Always a unit vector, in
-    /// the same space [`Surface::normal`] documents: `x`/`y` in tiles, `z` in
-    /// tiles as well (`Z_PER_TILE`'s doing).
-    ///
-    /// The box itself does not change shape — decision 36 still holds, this is
-    /// a box on the tile grid — only the normal used to light its top. See
-    /// `docs/lighting.md`, decision 40.
-    Sloped([f32; 3]),
 }
 
 impl Surface {
@@ -1274,7 +1256,6 @@ impl Surface {
                 let [x, y] = face.outward();
                 Some([x, y, 0.0])
             }
-            Self::Sloped(normal) => Some(normal),
         }
     }
 

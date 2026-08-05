@@ -3,7 +3,8 @@
 // (`Face::fan`). No colour target — the enclosing static's own billboard
 // sprite already drew the picture (`statics.wgsl`), and this pass exists
 // only to give that same static's pixels a more honest per-face normal in
-// `place` than one blended stance (`facing::Prism::tread_normal`) could.
+// `place` than one blended stance (a former `facing::Prism::tread_normal`,
+// retired by step 5 once this pass made it unnecessary) could.
 //
 // Depth is not derived here either, for the same reason `statics.wgsl` says
 // so of its own: it is the enclosing static's own `SpriteQuad::depth`,
