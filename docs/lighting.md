@@ -9,6 +9,57 @@ copied.
 
 ## Where the next session starts
 
+**A third, different defect, found while screenshot-checking the fix below on
+a live scene: a shadow-raymarch anomaly, not a mesh-coverage gap.** The entry
+below's fix closed the mesh-coverage leak (measured: gone from the textured
+`Lit` picture, still present as 9 unmeasurable-by-eye single pixels in
+`View::Place`'s raw channels). What is left on a live screenshot is a
+different shape entirely: on the flight's topmost tread — one flat mesh face,
+one normal, no adjacent geometry to tie or overlap with — `View::Shadow`
+(`OPENSHARD_FRAME_VIEW=7`, an index into `debug::View::ALL`, **not** the raw
+`View` discriminant `blit.wgsl` pins — `VIEW_SHADOW` there is `6`, `ALL[7]` is
+`Shadow`; this cost a wrong render while writing this entry) shows an
+isolated white dash sitting in the middle of an otherwise uniform grey face,
+plus a white line running across the black background where there is no
+geometry at all. White is `Reach::through == 1.0`, a fully open path; grey is
+a partial occluder. A single pixel reading "nothing in the way" inside a
+region every neighbour reads as partially blocked, on a perfectly flat
+surface with nothing to tie a seam against, is not a coverage question — it
+is the occlusion-grid walk (`light.rs`'s `sample`, `docs/lighting.md`
+decision 9's CPU/GPU parity twin of `blit.wgsl`'s fragment loop) picking a
+different answer for two neighbouring rays to the same flame.
+
+Reproduce the picture the same way as the entry below, but read
+`View::Shadow`:
+
+```sh
+OPENSHARD_CLIENT=… \
+    OPENSHARD_SCENE_AT=1497,1627,10 OPENSHARD_SCENE_RADIUS=1 OPENSHARD_SCENE_TILES=0x0739 \
+    OPENSHARD_SCENE_GROUND=0 OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+    OPENSHARD_SCENE_ZOOM=2 OPENSHARD_FRAME_VIEW=7 \
+    OPENSHARD_FRAME_DUMP=/tmp/shadow.ppm \
+    cargo run --release -p openshard-client-render --example isolated_scene
+```
+
+and look at the topmost tread (the flight's uphill end) — the dash sits a
+short way in from its outer corner, on the face itself, not on an edge.
+
+**The tool this needs already exists and nobody has pointed it at this yet.**
+`isolated_scene`'s own doc, "Profiling a segment instead of drawing it" — set
+`OPENSHARD_SCENE_PROFILE_FACE=flat` (the top tread's own normal) and walk
+`OPENSHARD_SCENE_PROFILE_FROM`/`_TO` in fine steps across the top tread's own
+footprint at its own `z` (`100.0..101.0, 100.0..100.333, z=15` in this
+scene's local coordinates — read back off the `solid:` lines `isolated_scene`
+already prints to stdout every run, which name the exact tread this is). It
+prints [`light::Reach`]'s `Display` — `through`, `stopped_by`'s cell, `cone`
+— per sample point along the walk: this is "draw the ray for this point"
+already, the request made while finding this. Bisect along the walk until
+`stopped_by`/`through` flips somewhere a neighbouring sample does not, and
+that pins the exact occluder-grid cell the two rays disagree about — the
+question `light.rs`'s own occlusion walk needs answered next, not a new tool.
+
+Everything below is the session before it.
+
 **The hairline from the entry below is fixed, and it was not the depth tie the
 entry suspected.** CPU-side, a tread's top and its own riser share corners
 built from the exact same `lo`/`hi` arithmetic (`facing.rs`'s `Prism::mesh`),
