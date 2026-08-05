@@ -1753,6 +1753,16 @@ stops nothing"). So the order is: land in the grid first, and slopes with it or
 not at all. Written down here so that the next person to want it finds the price
 rather than the idea.
 
+**Reopened (2026-08-05, mid `gbuffer.md` step 4b).** The rejection above stands
+as a record of the price, not as a closed question any more: inclined faces for
+roofs, land, and future custom geometry are wanted, for the flexibility they
+buy. What this reopens is the render side's normal format, not this decision's
+own reasoning about the occlusion grid's crossing test — see
+[`gbuffer.md`](gbuffer.md)'s "Not settled" list for where that question now
+lives (a general per-face normal, not the fixed axis-aligned set decision 3
+there assumed). This file keeps the argument above as the reason the price was
+worth writing down; it is no longer the reason the door stays shut.
+
 **36. An occluder is a box in the tile's own coordinates, ~~and a plane where the
 art cannot say how deep it is~~.** *(the first half stands and is the reason this
 decision exists; the second half is withdrawn — decision 38 is why, and it also

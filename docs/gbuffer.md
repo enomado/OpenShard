@@ -424,6 +424,21 @@ reason.
   outline's edge lives outside the sprite's own quad and needs a mask to draw
   against. Removing `select.rs`'s use of it does not mean the pass itself goes
   away; check `outline.md` before assuming it does.
+- **The per-face normal format for step 4c/5 cannot be the fixed
+  `Stance`-shaped set (`Flat`/`Face(N/E/S/W)`) decision 3 assumed for treads.**
+  Reopened mid-session-4b: `docs/lighting.md` decision 35's rejection of
+  sloped roofs ("a roof in this client is a slab five z deep... it would not
+  buy the thing it looks like it buys") is no longer settled — inclined faces
+  for roofs, land, and future custom geometry are wanted, for the flexibility.
+  A face's normal has to be a general vector from the start, not the six-value
+  enum decision 3's axis-aligned tread faces would have gotten away with. A
+  packed encoding (an 8-bit octahedral normal or similar was suggested) is the
+  likely shape — not committed to a bit layout here, the same discipline
+  decision 2's id-width item followed: measure against a real consumer before
+  picking a width, and there is no render-side face row to measure against
+  yet. Purely a step 4c/5 question — nothing about step 4b's occlusion-grid
+  work (`Solid.edges` selects a shadow-test formula, never a rendered normal)
+  changes for it.
 
 ## Steps
 
@@ -480,17 +495,47 @@ attributed."
       agree_about_a_wall_that_faces_away` and its `_surface_that_looks_up`
       sibling) failed on a channel mismatch at a tile past the first until
       `SpriteQuad::STRIDE` padded to match.
-- [ ] 4b. Treads: the case an invisible geometry pass is actually for. A
-      tread's top and riser are two real surfaces at different screen
-      positions and different depths, not two halves of one billboard a
-      diagonal test can split — there is no existing per-fragment test to
-      reuse the way 4a's corner one was. `occlusion.rs` does not even
-      decompose a tread into top+riser yet (`occlusion.rs:1358-1378` still
-      pushes one whole-tile body), so this step starts by extending that
-      representation before anything renders from it. Decompose each
-      occluder — a tread box to its top and riser, a lid static to its own
-      top — and rasterise depth+id from the same instance list and ordering
-      the visible passes already use (decision 4).
+- [x] 4b. Treads, the occlusion half: `occlusion.rs` now decomposes a tread
+      into its top and riser instead of one whole-tile body — the
+      representation the render pass (step 4c) will need to walk. `Builder::
+      add`'s climbable branch (occlusion.rs:1402-1451) pushes two `Solid`s per
+      tread instead of one: a thin lid at the tread's own height (`edges: 0`,
+      the same rule an ordinary floor's lid already uses) and a panel
+      spanning the rise from the tread before it, named `up`'s opposite edge
+      (`edges: opposite(edge_of(up))`, the same rule a named-edge wall panel
+      already uses). Nothing about *how* a lid or a panel stops a ray is new
+      — decision 3's "seven honest normals" is exactly this shape, minus the
+      render side. `Solid::tread_box_of` is retired; the climb-axis footprint
+      math it shared with nothing is now `Solid::strip_footprint`, used by
+      both `tread_top_box_of` (a strip) and `tread_riser_box_of` (a single
+      boundary, degenerate on the climb axis).
+
+      **Caught before landing, not after: `Solid::footprint()`'s `far`
+      adjustment assumed every degenerate "far" plane sits on the tile's true
+      integer boundary.** True for every panel `Solid::box_of` has ever built
+      — never true for a riser past the first tread, whose boundary
+      (`index / count`) is a proper fraction. Unpatched, `footprint()` would
+      have walked a mid-flight riser one tile into its neighbour, silently
+      wrong for `bake`'s spill (decision 38.2) the first time a stair sat
+      near a frame's own edge. Fixed by gating the `-1` on `min.fract() ==
+      0.0`, which is unconditionally true for every existing caller and
+      false only for the new fractional case — `occlusion.rs::tests::
+      a_mid_flight_risers_footprint_stays_on_its_own_tile` pins it.
+
+      **Deliberately stops here.** The render pass — pipeline, shader,
+      projecting these boxes' corners to screen quads, writing depth+id —
+      is step 4c, not this one; decision 38.5's own discipline against
+      changing where geometry lives and what it is in the same step.
+- [ ] 4c. Treads, the render half. Rasterise depth+id for each face step 4b's
+      occlusion grid now carries — a tread's top and riser, a lid static's own
+      top — from the same instance list and depth ordering the visible passes
+      already use (decision 4), the way 4a's corner id-split kept step in sync
+      with the picture it split. What step 4b hands it: six honest boxes per
+      3-tread stair (a lid per top, a panel per riser) instead of three
+      bodies, ready for something to walk and project — building that
+      something, and deciding how a face's *id* (not its occlusion box) gets
+      from a `Solid` to a storage row a shader can index, is this step's own
+      work, not inherited from 4b.
 - [ ] 5. Check whether honest per-face lighting alone fixes decision 40's
       original hard-edge report, against the same reproduction that found it.
       If it does, retire `Prism::tread_normal` and `outward()`'s switch rather

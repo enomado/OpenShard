@@ -183,6 +183,22 @@ pub fn opposite(side: u8) -> u8 {
     }
 }
 
+/// The one named edge a compass direction is, as a mask bit.
+///
+/// Pulled out of [`edges_of`] rather than inlined twice: a tread's riser
+/// (`Builder::add`'s climbable branch) names its own edge the same way a
+/// facing's does — `opposite` of the climb's `up` — and a second copy of this
+/// match would be exactly the kind of drift decision 9 warns about, one file
+/// over.
+fn edge_of(face: Face) -> u8 {
+    match face {
+        Face::North => EDGE_NORTH,
+        Face::East => EDGE_EAST,
+        Face::South => EDGE_SOUTH,
+        Face::West => EDGE_WEST,
+    }
+}
+
 /// Which sides of its tile a static occupies, from what the art said about it.
 ///
 /// `None` — a post, a tree, a graphic no atlas was offered — is [`EDGE_ANY`]:
@@ -200,15 +216,7 @@ pub fn edges_of(facing: Option<crate::facing::Facing>) -> u8 {
     let Some(facing) = facing else {
         return EDGE_ANY;
     };
-    facing
-        .faces()
-        .map(|face| match face {
-            Face::North => EDGE_NORTH,
-            Face::East => EDGE_EAST,
-            Face::South => EDGE_SOUTH,
-            Face::West => EDGE_WEST,
-        })
-        .fold(0, |mask, side| mask | side)
+    facing.faces().map(edge_of).fold(0, |mask, side| mask | side)
 }
 
 /// What the art said about one graphic's geometry: which edge it stands on, and
@@ -630,71 +638,117 @@ impl Solid {
         crate::solid::Solid { min, max }
     }
 
-    /// One tread of a climbable static's box: the strip of the tile the tread
-    /// covers along the climb, from the low side to `up`, at its own height.
+    /// The tile-relative footprint of one climb-axis strip, `lo..=hi` — both in
+    /// `0.0..=1.0`, the run fraction from the low side to `up` — shared by
+    /// [`Solid::tread_top_box_of`] (a strip, `lo < hi`) and
+    /// [`Solid::tread_riser_box_of`] (a single boundary, `lo == hi`, degenerate
+    /// on the climb axis rather than a span of it).
     ///
-    /// **Step 23.5's headline fix.** [`Builder::add`]'s climbable branch used to
-    /// call [`Solid::box_of`] once, over the whole tile, to the tallest tread's
-    /// height — the ziggurat step 23.0's own picture found: a flight of nine
-    /// steps read as nine whole-tile bodies stacked to the landing's height. A
-    /// tread's own footprint is a strip perpendicular to the climb, `1 / count`
-    /// of the run wide, at the fraction [`Prism::height_at`] would sample for a
-    /// point in it — so this and that function have to agree on which strip is
-    /// `index`, and both count from the low side (`run = 0`) to `up` (`run = 1`).
+    /// `up` is `North`/`South` for a climb along `y`, `East`/`West` for one
+    /// along `x` — the same axis [`Solid::box_of`]'s panel case already names
+    /// for `up`'s own edge — and the strip is flat on that axis, full width on
+    /// the other. `up` names the high side, so `run = 0` sits at the opposite
+    /// edge and climbs towards `up` as the fraction grows — the mirror image of
+    /// `box_of`'s panel, which flattens *onto* the named edge rather than
+    /// climbing away from it.
+    fn strip_footprint(x: f64, y: f64, up: Face, lo: f64, hi: f64) -> (f64, f64, f64, f64) {
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = (x, x + 1.0, y, y + 1.0);
+        match up {
+            Face::North => {
+                min_y = y + 1.0 - hi;
+                max_y = y + 1.0 - lo;
+            }
+            Face::South => {
+                min_y = y + lo;
+                max_y = y + hi;
+            }
+            Face::West => {
+                min_x = x + 1.0 - hi;
+                max_x = x + 1.0 - lo;
+            }
+            Face::East => {
+                min_x = x + lo;
+                max_x = x + hi;
+            }
+        }
+        (min_x, max_x, min_y, max_y)
+    }
+
+    /// A tread's **top**: the strip it covers along the climb, flattened to the
+    /// plane at its own height — a lid, not a body. This tread's rise is what
+    /// [`Solid::tread_riser_box_of`] now covers; folding both into one box the
+    /// way step 23.5 did is the whole-body shape step 4b of `docs/gbuffer.md`
+    /// replaces, so this box is thin on purpose, not a simplification of it.
     ///
-    /// The perpendicular axis is the one [`Solid::box_of`]'s panel case already
-    /// names for `up`'s own edge: `up` is `North` or `South` for a climb along
-    /// `y`, `East` or `West` for one along `x`, and the strip is flat on that
-    /// axis and full width on the other.
-    fn tread_box_of(
+    /// `index`/`count` name which strip the same way
+    /// [`Prism::height_at`](crate::facing::Prism::height_at) samples a point in
+    /// it — see [`Solid::strip_footprint`].
+    fn tread_top_box_of(
         x: i32,
         y: i32,
-        bottom: i32,
+        top_z: i32,
         up: Face,
         index: usize,
         count: usize,
-        height: u8,
     ) -> crate::solid::Solid {
         use crate::camera::WorldSpot;
 
         let (x, y) = (f64::from(x), f64::from(y));
         let lo = index as f64 / count as f64;
         let hi = (index + 1) as f64 / count as f64;
-        let (mut min, mut max) = (
-            WorldSpot {
-                x,
-                y,
-                z: f64::from(bottom),
+        let (min_x, max_x, min_y, max_y) = Self::strip_footprint(x, y, up, lo, hi);
+        let z = f64::from(top_z);
+        crate::solid::Solid {
+            min: WorldSpot {
+                x: min_x,
+                y: min_y,
+                z,
             },
-            WorldSpot {
-                x: x + 1.0,
-                y: y + 1.0,
-                z: f64::from(bottom) + f64::from(height),
+            max: WorldSpot {
+                x: max_x,
+                y: max_y,
+                z,
             },
-        );
-        // `up` names the high side, so the low tread (`index == 0`) sits at the
-        // opposite edge and the run climbs towards `up` as `index` grows — the
-        // mirror image of `Solid::box_of`'s panel, which flattens *onto* the
-        // named edge rather than climbing away from it.
-        match up {
-            Face::North => {
-                min.y = y + 1.0 - hi;
-                max.y = y + 1.0 - lo;
-            }
-            Face::South => {
-                min.y = y + lo;
-                max.y = y + hi;
-            }
-            Face::West => {
-                min.x = x + 1.0 - hi;
-                max.x = x + 1.0 - lo;
-            }
-            Face::East => {
-                min.x = x + lo;
-                max.x = x + hi;
-            }
         }
-        crate::solid::Solid { min, max }
+    }
+
+    /// The **riser** between one tread and the one before it — or the ground,
+    /// for the first — the plane at the boundary between their two strips,
+    /// facing away from `up`: the side a climber sees approaching from below.
+    /// Spans the rise from the previous tread's height (`low_z`) to this one's
+    /// (`high_z`); [`Builder::add`] passes the static's own base for the first
+    /// tread's `low_z`, since there is no tread before it to rise from.
+    ///
+    /// The boundary is `index / count` — the same fraction
+    /// [`Solid::tread_top_box_of`]'s `lo` is for tread `index` — passed to
+    /// [`Solid::strip_footprint`] as both `lo` and `hi`, degenerate on the climb
+    /// axis: a plane, not a strip.
+    fn tread_riser_box_of(
+        x: i32,
+        y: i32,
+        low_z: i32,
+        high_z: i32,
+        up: Face,
+        index: usize,
+        count: usize,
+    ) -> crate::solid::Solid {
+        use crate::camera::WorldSpot;
+
+        let (x, y) = (f64::from(x), f64::from(y));
+        let b = index as f64 / count as f64;
+        let (min_x, max_x, min_y, max_y) = Self::strip_footprint(x, y, up, b, b);
+        crate::solid::Solid {
+            min: WorldSpot {
+                x: min_x,
+                y: min_y,
+                z: f64::from(low_z),
+            },
+            max: WorldSpot {
+                x: max_x,
+                y: max_y,
+                z: f64::from(high_z),
+            },
+        }
     }
 
     /// Which tiles this solid's box touches, as inclusive ranges on each axis.
@@ -716,13 +770,25 @@ impl Solid {
     /// makes returns that one tile on both axes — the honest state of step
     /// 23.2, and not a case nobody hit. The day a box is wider, this is where
     /// the extra tiles come from, unchanged.
+    ///
+    /// **A riser's boundary is `far` without being at that integer edge** —
+    /// gbuffer.md step 4b's own finding, caught before it shipped rather than
+    /// after. [`Solid::tread_riser_box_of`] is degenerate the same way a
+    /// `box_of` panel is, and for a tread past the first its boundary
+    /// (`index / count`) is a proper fraction, not `x + 1`/`y + 1` — the `-1`
+    /// below is only correct where the plane really is the tile's own far
+    /// edge, which for a riser is true at `index == 0` and false everywhere
+    /// past it. Checking `min.fract() == 0.0` is free for every existing
+    /// caller (`box_of`'s planes are always built from whole tile
+    /// coordinates, so the fraction is always exactly zero there) and is what
+    /// stops a mid-flight riser reading as the tile beside it.
     pub(crate) fn footprint(&self) -> (std::ops::RangeInclusive<i32>, std::ops::RangeInclusive<i32>) {
         // `far` is whether this axis's degenerate plane sits at its tile's
         // high boundary rather than its low one — see the doc above.
         fn axis(min: f64, max: f64, far: bool) -> std::ops::RangeInclusive<i32> {
             let lo = match max > min {
                 true => min.floor() as i32,
-                false if far => min.floor() as i32 - 1,
+                false if far && min.fract() == 0.0 => min.floor() as i32 - 1,
                 false => min.floor() as i32,
             };
             let hi = if max > min { max.ceil() as i32 - 1 } else { lo };
@@ -1349,32 +1415,59 @@ impl Builder {
         // it, `movement::scene::stair` stands a walker half way up it — so the
         // measurement is what this believes.
         if let (true, Some(prism)) = (tile.flags.is_climbable(), shape.prism) {
-            // Step 23.5: one body per tread, not one body for the whole flight.
-            // Each is still a body a ray travels through rather than a plane it
-            // is stopped by crossing — light climbs a staircase, it does not stop
-            // dead at one edge of it — but now it is stopped by *its own tread's*
-            // height over *its own tread's* strip, so the shape on screen is the
-            // stair rather than a ziggurat to the landing's height.
+            // Step 23.5: one body per tread, not one body for the whole flight —
+            // stopped by *its own tread's* height over *its own tread's* strip,
+            // so the shape on screen is the stair rather than a ziggurat to the
+            // landing's height.
+            //
+            // gbuffer.md step 4b: that one body is now two faces, a lid and a
+            // panel, not a body a ray travels through. A tread's own top and
+            // riser are honest per-face geometry (decision 3) rather than one
+            // box standing in for both — the top's normal is `[0,0,1]`, exactly
+            // what a lid already is, and the riser's is `up`'s own outward
+            // direction, exactly what a named-edge panel already is. Nothing
+            // about *how* a lid or a panel stops a ray is new; only the shape
+            // fed to `box_of`'s two existing rules changes.
             let treads = prism.treads();
+            let mut risen = bottom;
             for (tread, &height) in treads.iter().enumerate() {
+                let top_z = bottom + i32::from(height);
                 self.push(
                     index,
                     Solid {
-                        space: Solid::tread_box_of(
+                        space: Solid::tread_top_box_of(
                             place.0,
                             place.1,
-                            bottom,
+                            top_z,
                             prism.up(),
                             tread,
                             treads.len(),
-                            height,
                         ),
                         opacity,
-                        edges: EDGE_ANY,
+                        edges: 0,
                         aperture: None,
                         roof: tile.flags.is_roof(),
                     },
                 );
+                self.push(
+                    index,
+                    Solid {
+                        space: Solid::tread_riser_box_of(
+                            place.0,
+                            place.1,
+                            risen,
+                            top_z,
+                            prism.up(),
+                            tread,
+                            treads.len(),
+                        ),
+                        opacity,
+                        edges: opposite(edge_of(prism.up())),
+                        aperture: None,
+                        roof: tile.flags.is_roof(),
+                    },
+                );
+                risen = top_z;
             }
             return;
         }
@@ -2215,15 +2308,28 @@ mod tests {
     /// stacked to the landing's height, is a ziggurat rather than a stair. Step
     /// 23.5 is this test's second half.
     ///
-    /// Three things asserted, one per tread. The **shape**: one body per tread, a
-    /// ray travels through it, on no named edge. The **height**: each tread's own,
-    /// off the picture, where the tile's own field says twenty — which is what a
-    /// climbable static's `height` means about half the time. And the
-    /// **footprint**: each tread is its own strip of the tile, climbing west, so
-    /// the low tread is the strip nearest east and the high one nearest west. See
+    /// **Step 23.5's second half is this test's history; gbuffer.md step 4b is
+    /// what changed since.** A tread used to be one body a ray travels through,
+    /// asserted here as `edges == EDGE_ANY`; it is now two faces, a lid for its
+    /// top and a panel for the riser below it — decision 3's "seven honest
+    /// normals" for this fixture's three-tread stair (six here; the seventh, a
+    /// lid static's own top, is a different graphic this test does not build).
+    ///
+    /// Four things asserted, one per tread. The **shape**: a thin lid at the
+    /// tread's own height (`top() == bottom()`), and a panel spanning the rise
+    /// from the tread before it. The **height**: each tread's own, off the
+    /// picture, where the tile's own field says twenty — which is what a
+    /// climbable static's `height` means about half the time. The **footprint**:
+    /// each top is its own strip of the tile, climbing west, so the low tread is
+    /// the strip nearest east and the high one nearest west — and each riser is
+    /// degenerate on that same axis, a plane and not a strip. And the **facing**:
+    /// a riser's named edge is `up`'s opposite, `EDGE_EAST` for a climb west,
+    /// which is also `Solid::footprint`'s `far` case — exercised here rather
+    /// than assumed, since a riser past the first tread sits at a fraction of
+    /// the tile, not its true edge (see `footprint`'s own doc). See
     /// `Builder::add`, and `docs/lighting.md`'s backlog.
     #[test]
-    fn a_stair_is_a_body_per_tread_and_each_ones_height_comes_off_the_art() {
+    fn a_stair_is_two_faces_per_tread_and_each_ones_height_comes_off_the_art() {
         use crate::facing::{Face, Facing, Prism};
 
         let stair = tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20);
@@ -2237,24 +2343,52 @@ mod tests {
         // What the art actually says about `0x0736`: three treads climbing west,
         // one to five `z` — measured in `tests/prism.rs` against the real sprite.
         let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
-        let mut solids = read_as(Shape::solid(prism));
-        assert_eq!(solids.len(), 3, "one body per tread, not one for the flight");
-        solids.sort_by_key(|solid| solid.top());
-        let heights: Vec<i32> = solids.iter().map(|solid| solid.top()).collect();
+        let solids = read_as(Shape::solid(prism));
+        assert_eq!(solids.len(), 6, "a top and a riser per tread, not one body");
+
+        let (mut tops, mut risers): (Vec<_>, Vec<_>) = solids.into_iter().partition(|solid| solid.edges == 0);
+        assert_eq!(tops.len(), 3, "one lid per tread");
+        assert_eq!(risers.len(), 3, "one panel per tread");
+        for riser in &risers {
+            assert_eq!(
+                riser.edges, EDGE_EAST,
+                "a riser faces away from `up` (West), which is East"
+            );
+        }
+
+        tops.sort_by_key(|solid| solid.top());
+        let heights: Vec<i32> = tops.iter().map(|solid| solid.top()).collect();
         assert_eq!(
             heights,
             vec![1, 3, 5],
             "each tread's own height, not the tallest for all three"
         );
-        for solid in &solids {
-            assert_eq!(solid.edges, EDGE_ANY, "a body a ray travels through");
+        for top in &tops {
+            assert_eq!(top.top(), top.bottom(), "a top is a plane, not a body");
         }
         // West is a strip of `x`, one third of the tile wide each, and the low
         // tread (height 1) is nearest east — the far side from the climb's `up`.
-        let by_height = |h: i32| solids.iter().find(|solid| solid.top() == h).unwrap();
+        let top_by_height = |h: i32| tops.iter().find(|solid| solid.top() == h).unwrap();
         assert!(
-            by_height(1).space.min.x > by_height(5).space.min.x,
+            top_by_height(1).space.min.x > top_by_height(5).space.min.x,
             "the lowest tread's strip is nearest east, the highest nearest west",
+        );
+
+        // A riser is a plane on the climb axis: `min.x == max.x`, not a strip.
+        // Sorted by height, its `bottom()`/`top()` is the rise from the tread
+        // before it — or from the static's own base, for the first.
+        risers.sort_by_key(|solid| solid.top());
+        for riser in &risers {
+            assert_eq!(
+                riser.space.min.x, riser.space.max.x,
+                "a riser is a plane, not a strip"
+            );
+        }
+        let rises: Vec<(i32, i32)> = risers.iter().map(|solid| (solid.bottom(), solid.top())).collect();
+        assert_eq!(
+            rises,
+            vec![(0, 1), (1, 3), (3, 5)],
+            "each riser spans the rise from the tread before it, or the ground for the first"
         );
 
         // And with no prism measured it is what it always was: the wall
@@ -2266,6 +2400,35 @@ mod tests {
         }));
         assert_eq!(corner.len(), 2, "a corner is still two panels");
         assert_eq!(corner[0].top(), 10, "and still half of what tiledata states");
+    }
+
+    /// [`Solid::footprint`]'s `-1` adjustment for a "far"-edged degenerate plane
+    /// is only correct where that plane sits exactly on the tile's true
+    /// boundary — every panel [`Solid::box_of`] builds does, but
+    /// [`Solid::tread_riser_box_of`] does not for any tread past the first: its
+    /// boundary is a fraction of the tile (`index / count`), and the old,
+    /// unconditional `-1` walked it into the neighbouring tile.
+    ///
+    /// Built directly off `tread_riser_box_of` rather than through `Builder::add`
+    /// so the assertion is about `footprint` alone, not the whole climbable
+    /// path the test above already covers.
+    #[test]
+    fn a_mid_flight_risers_footprint_stays_on_its_own_tile() {
+        use crate::facing::Face;
+
+        let space = Solid::tread_riser_box_of(100, 100, 1, 3, Face::West, 1, 3);
+        let riser = Solid {
+            space,
+            opacity: OPAQUE,
+            edges: opposite(edge_of(Face::West)),
+            aperture: None,
+            roof: false,
+        };
+        assert_eq!(
+            riser.footprint(),
+            (100..=100, 100..=100),
+            "a mid-flight riser's fractional boundary is not the tile's true edge"
+        );
     }
 
     /// Two occluders on one tile are **two surfaces**, and the gap between them
