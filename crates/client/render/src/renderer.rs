@@ -996,6 +996,14 @@ impl SpriteRenderer {
         write_rows(queue, &self.atlas_texture, pixels, rows);
     }
 
+    /// This pass's own instance buffer, as `blit.wgsl` needs it: bound a
+    /// second time, as storage, so `instances[id]` can read a fragment's own
+    /// `SpriteQuad` back instead of decoding it from the `place` attachment.
+    /// See `docs/gbuffer.md` decision 2 and step 3.
+    pub fn instances_buffer(&self) -> &wgpu::Buffer {
+        &self.instances
+    }
+
     /// Draw `quads` into `target`, keeping what is already there.
     ///
     /// Loads rather than clears, colour and depth alike: this runs after the
@@ -1217,11 +1225,17 @@ fn new_ring_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     })
 }
 
+// `STORAGE` alongside `VERTEX`: this buffer is what `docs/gbuffer.md`'s
+// decision 2 means by "the same memory bound a second way" — `blit.wgsl`
+// indexes it by id instead of decoding a fact already spent on every fragment
+// of the quad it belongs to. Ground does not get this yet — its row shape is
+// step 7's, not step 3's — so only this helper, and not `new_instance_buffer`
+// below, gains the usage flag.
 pub(crate) fn new_static_instance_buffer(device: &wgpu::Device, quads: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("static instances"),
         size: quads * SpriteQuad::STRIDE,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }

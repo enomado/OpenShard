@@ -190,6 +190,8 @@ fn measure(
     queue: &wgpu::Queue,
     world: &wgpu::TextureView,
     place: &wgpu::TextureView,
+    face_instances: &wgpu::Buffer,
+    mobile_instances: &wgpu::Buffer,
     surface: &wgpu::TextureView,
     lighting: &Lighting,
     zoom: Zoom,
@@ -199,6 +201,8 @@ fn measure(
         target: surface,
         world,
         place,
+        face_instances,
+        mobile_instances,
         zoom,
         rect: ViewportRect {
             x: 0,
@@ -386,6 +390,8 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         view_formats: &[],
     });
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+    // No mobile pass in this fixture: the dummy stands in for it.
+    let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
 
     // The lighting, collected the way the app collects it — and timed, because
     // the walk of the map and the grid it builds are a per-frame cost of this
@@ -506,6 +512,8 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 &queue,
                 &world_view,
                 &place_view,
+                statics_pass.instances_buffer(),
+                &dummy_instances,
                 &surface_view,
                 lighting,
                 zoom,
@@ -526,6 +534,8 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 target: &surface_view,
                 world: &world_view,
                 place: &place_view,
+                face_instances: statics_pass.instances_buffer(),
+                mobile_instances: &dummy_instances,
                 zoom,
                 rect: ViewportRect {
                     x: 0,

@@ -446,6 +446,45 @@ fn drawn(
             texels.extend_from_slice(&place_of(px, py));
         }
     }
+    // `Kind::Static` pixels — [`elevation`]'s, never [`draw`]'s — no longer
+    // carry their own tile in the attachment: `docs/gbuffer.md` step 3 moved
+    // it to a row this function has to build itself now, the same as a real
+    // static's world pass would have. One row per distinct tile the closure
+    // above actually used, keyed by first sight, and the tile each static
+    // pixel wrote is rewritten in place to the id that names it.
+    let mut face_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
+    let mut face_rows: Vec<u8> = Vec::new();
+    for texel in texels.chunks_exact_mut(4) {
+        if texel[3] & 3 != crate::place::Kind::Static as u16 {
+            continue;
+        }
+        let (x, y) = (texel[0], texel[1]);
+        let id = *face_ids.entry((x, y)).or_insert_with(|| {
+            let id = (face_rows.len() as u64 / crate::sprite::SpriteQuad::STRIDE) as u32;
+            crate::sprite::SpriteQuad {
+                rect: crate::geometry::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.0,
+                    height: 0.0,
+                },
+                region: crate::atlas::Region {
+                    u: 0.0,
+                    v: 0.0,
+                    du: 0.0,
+                    dv: 0.0,
+                },
+                depth: 0.0,
+                hue: 0,
+                place: crate::place::Place::land(x, y),
+            }
+            .write(&mut face_rows);
+            id
+        });
+        texel[0] = (id & 0xFFFF) as u16;
+        texel[1] = (id >> 16) as u16;
+    }
+
     let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
@@ -506,6 +545,23 @@ fn drawn(
     let mut lighting = lighting.clone();
     lighting.view = view;
     let mut blit = crate::blit::Blit::new(device, crate::blit::WORLD_FORMAT);
+    // No mobile pixels this function ever draws: the dummy always stands in
+    // for `mobile_instances`. `face_instances` is the same dummy for `draw`,
+    // which only ever writes `Kind::Land`, and the real buffer built above
+    // for `elevation`, which writes `Kind::Static`.
+    let dummy_instances = crate::blit::dummy_instances(device);
+    let face_instances = if face_rows.is_empty() {
+        None
+    } else {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("plan face instances"),
+            size: face_rows.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, &face_rows);
+        Some(buffer)
+    };
     blit.render(
         device,
         queue,
@@ -514,6 +570,8 @@ fn drawn(
             target: &surface_view,
             world: &world_view,
             place: &place_view,
+            face_instances: face_instances.as_ref().unwrap_or(&dummy_instances),
+            mobile_instances: &dummy_instances,
             zoom: Zoom::ONE,
             rect: crate::blit::ViewportRect {
                 x: 0,

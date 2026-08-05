@@ -242,12 +242,12 @@ reason.
   worth reconstructing from could never do for two genuinely different
   points. So: a linear world depth has to be written somewhere it is not
   written now — decision 1 is not free. In exchange, decision 2 already pays
-  for the thing decision 1's algebra was reaching for: the id's storage-buffer
-  row can hold the instance's real `(x, y, z)` directly, read once per
-  fragment, with no per-pixel inverse-projection needed for a billboard at
-  all — the projection algebra only has work left to do for ground's
-  per-pixel slope (the fourth "Not settled" item) and decision 16's fraction,
-  not for recovering an object's own anchor.
+  for part of what decision 1's algebra was reaching for: the id's
+  storage-buffer row can hold the instance's tile `(x, y)` directly, read
+  once per fragment. **Not `z` — step 3 found `z` is not instance-constant
+  for a standing face either, the same way decision 16's fraction below is
+  not; both are this fragment's own and both stay attachment-side.** See
+  step 3's write-up under decision 2 for the corrected row.
 - ~~The id's width and the buffer's capacity, i.e. how many faces one frame's
   storage buffer is sized to hold. Not measured against how many faces a real
   screen ever holds...~~ **Answered (step 2):** measured, at the same frame
@@ -337,35 +337,47 @@ reason.
   this step did not answer and step 2 or 3 should settle before building
   either path.
 
-  **Step 2 settles the face-instance half: it needs no fraction at all.** A
-  fraction is sub-tile position — where inside its tile a fragment sits — and
-  that question only has content for a surface a fragment's position varies
-  across, which is what makes ground's bilinear quad different from
-  everything decision 3 gives an id to. A static's face and a mobile's
-  billboard occupy one anchor; every fragment of a wall's picture is the same
-  `(x, y, z)` decision 2's row already carries, exactly as decision 1's own
-  "Not settled" answer says ("no per-pixel inverse-projection needed for a
-  billboard at all"). So the face-instance row below carries no fraction
-  field, not because solving for one was tried and dropped, but because
-  nothing on a billboard face varies with it — the question was never this
-  row's to answer. It stays exactly what the item below already says it is:
-  ground's own, unresolved, and step 7's.
+  **Step 2 settled the face-instance half as needing no fraction and no `z` at
+  all — step 3 found both wrong before either was built.** Traced against
+  `statics.wgsl` rather than assumed: a fragment's `z` is *not* the instance's
+  own height for a standing face — it is recomputed per fragment from screen
+  position (`z = base + ((sub.x + sub.y - 1) * HALF_TILE_HEIGHT - down) /
+  Z_STEP`), because that is what gives a wall a lighting gradient down its
+  face instead of one flat brightness. And the sub-tile fraction this
+  paragraph called ground's alone is computed for a static's face too, by the
+  same shader, for a reason stated in its own comment: "the next tile along
+  the run starts its fraction at 0 where this one ended at 1, so a row of wall
+  tiles is one continuous surface rather than a row of separately lit
+  sprites" — without it, `two_wall_tiles_in_a_row_name_one_continuous_surface`
+  is exactly what breaks. Both are genuinely per-fragment, not per-instance,
+  for every stance decision 3 gives an id to, flat or standing alike — a floor
+  static's picture spreads a fraction across its whole tile the same way
+  ground's does, not only a wall's.
+  **Only the *tile itself* — the integer `(x, y)` — turns out to be the
+  instance-constant fact decision 1's algebra was reaching for.** `z` and the
+  fraction stay exactly where they already were, computed the same way and
+  packed into the same bits of the attachment; only what used to occupy the
+  attachment's `x`/`y` channels is now an id, addressing the row below for
+  that one fact alone. See step 3's own write-up for why this was caught
+  before landing rather than after: two independent test failures (a
+  parity-shader/CPU-reference mismatch, and a raw-attachment assertion) both
+  pointed at the same wrong assumption from two different angles.
 
-  **The row itself, decided here rather than left implicit:** an anchor
-  (`x: u16, y: u16, z: i8`, unchanged from today's `Place`, `place.rs:219-237`)
-  and one **normal**, in place of today's ten-value `Stance`. Decision 3
-  already removes the four corner values — a corner is two rows now, not one
-  value naming two faces — so what is left to name is a top (`[0, 0, 1]`), one
-  of the four cardinal directions (a wall's face, or a riser's "climb's own
-  outward direction"), or *unknown* (`Stance::Upright`'s fallback, "a tree, a
-  body, a post... across it nothing varies"): six values, not ten, three bits
-  where `Stance` needed four. `kind` does **not** ride in this row — it is
-  what selects *which* of the three per-kind buffers above the id indexes
-  into in the first place, so a row stating it again would be exactly the
-  repetition this plan's intro opens by objecting to ("it repeats per pixel
-  what a whole sprite shares"). Nothing else `Place` carries today survives
-  into the row: `Kind` is answered by the attachment channel, not the row,
-  and the fraction is answered directly above.
+  **The row itself, decided here rather than left implicit — and narrower
+  than first drafted:** an anchor's `x: u16, y: u16` alone (not `z`, see
+  above; `place.rs:219-237`'s third field stays attachment-side). `Stance`
+  does **not** move into the row either, for the same reason: a corner's
+  resolved direction is per-fragment (which half a pixel was drawn on), so it
+  has nowhere to live but the attachment, exactly as it does today — decision
+  3's eventual six-value normal is step 4's, once a corner is really two
+  rasterised faces and not one resolved per-fragment. `kind` does **not**
+  ride in the row either — it is what selects *which* of the three per-kind
+  buffers above the id indexes into in the first place, so a row stating it
+  again would be exactly the repetition this plan's intro opens by objecting
+  to ("it repeats per pixel what a whole sprite shares"). What the row
+  removes is narrower than step 2 drafted, but it is still exactly the
+  repetition named there: two numbers, written unchanged into every one of a
+  sprite's pixels, now written once.
 - **Ground's own reconstruction is not the billboard's.** A sloped land quad's
   height is bilinearly interpolated across its four corners — solvable in
   closed form from screen position and the tile's own corner heights, but not
@@ -399,11 +411,18 @@ attributed."
       One 32-bit id channel, `Kind` in two bits selecting one of three
       per-kind storage buffers, 30 bits of id — see the answered item above
       for the row's fields and the buffer-capacity numbers for step 3.
-- [ ] 3. Wire the storage buffer: dual-usage (`VERTEX` + `STORAGE`) buffer
+- [x] 3. Wire the storage buffer: dual-usage (`VERTEX` + `STORAGE`) buffer
       creation, the second bind group on `blit.wgsl`'s fragment stage,
-      `instances[id]` (decision 2). No shape change yet — same faces
-      `outward()` names today, just addressed by id instead of decoded from
-      `Stance` bits.
+      `instances[id]` (decision 2). Landed narrower than step 2 drafted, for
+      the reason under decision 2 above: only a static's or a mobile's
+      **tile** (`x`, `y`) moves to the row — `z` and the sub-tile fraction
+      are genuinely per-fragment for a standing face, not per-instance, and
+      stay exactly where and how they were computed, in the attachment.
+      `SpriteRenderer`'s own instance buffer is the row (`STORAGE` added to
+      its existing `VERTEX` usage, no second upload), addressed by
+      `@builtin(instance_index)`; `Stance`'s resolution stays attachment-side
+      too, since a corner's is per-fragment. Ground is untouched, as planned.
+      `outward()` itself did not change at all.
 - [ ] 4. Build the invisible geometry pass: decompose each occluder — a wall
       to its one face, a tread box to its top and riser, a corner to its two —
       and rasterise depth+id from the same instance list and ordering the
@@ -433,3 +452,26 @@ attributed."
   next one), that is step 4's discovery to make when it actually decomposes
   one, not a number to carry forward from a sentence nothing else in the
   decision agreed with.
+- **Three test fixtures write the `place` attachment by hand, bypassing
+  `statics.wgsl` entirely, and step 3 had to teach each one the id scheme
+  separately.** `tests/frame.rs`'s `parity_frame` (the shader/`light::sample`
+  parity fixture) and `plan.rs`'s `drawn` (shared by `draw` and `elevation`,
+  so `pictures.rs`'s elevation tests too) both synthesize a `Kind::Static`
+  attachment texel-by-texel for coverage a real draw call can't easily give —
+  every sub-tile fraction, or a wall run several tiles long — and both now
+  build a small id-addressed row buffer alongside it by hand (deduped by
+  `(x, y)`, one row per distinct tile, `SpriteQuad::write`'s own layout
+  reused rather than re-derived). This is exactly the drift decision 9 warns
+  about for the *lighting* formula, one layer down: a fixture that pokes the
+  attachment's bits directly is a second, unchecked implementation of
+  whatever `statics.wgsl` does to fill them, and it went stale silently here
+  — `cargo test` caught it only because two unrelated assertions (a
+  shader/CPU-reference pixel mismatch, and a raw-channel equality) both
+  happened to depend on the part that broke. **Worth a sharper fixture
+  eventually**: a small helper that builds a `place` texture and its
+  `face_instances` row together from a list of `(Place, Stance)` pairs,
+  shared by both files, so the next repacking of this attachment (step 4's
+  real per-face geometry, at least) has one seam to update instead of three.
+  Not done now — decision 38.5's discipline against changing more than one
+  thing in a step, and these two fixtures are each still readable on their
+  own.

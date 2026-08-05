@@ -146,6 +146,29 @@ const SUB_TILE: f32 = 127.0;
 // `crate::place::Kind::Nothing`: no world pixel here. The Rust side pins the
 // number in a test; this is the only other place it appears.
 const KIND_NOTHING: u32 = 0u;
+// `crate::place::Kind`'s other three values — unlike `Nothing` these are
+// tested for below, since a static and a mobile decode `place.x`/`place.y`
+// as an id rather than a tile and the ground still decodes them directly.
+const KIND_LAND: u32 = 1u;
+const KIND_STATIC: u32 = 2u;
+const KIND_MOBILE: u32 = 3u;
+
+// The statics and mobiles passes' own `SpriteQuad`, laid out exactly as
+// `sprite.rs`'s `SpriteQuad::write` puts it on the GPU — this is that same
+// buffer, bound a second time as storage rather than uploaded twice. Only
+// `place` is read here today; the rest exists so the struct's size matches
+// `SpriteQuad::STRIDE` and a future reader (decision 3's real per-face
+// normal, step 4) has the rest already in reach. `docs/gbuffer.md` step 3.
+struct FaceInstance {
+    rect: vec4<f32>,
+    region: vec4<f32>,
+    depth: f32,
+    hue: u32,
+    place: vec2<u32>,
+};
+
+@group(0) @binding(9) var<storage, read> face_instances: array<FaceInstance>;
+@group(0) @binding(10) var<storage, read> mobile_instances: array<FaceInstance>;
 
 // The third channel is `z + 128` in its low eight bits and the sprite's stance in
 // four of the eight above — `crate::place::STANCE_SHIFT`, and `statics.wgsl`
@@ -1270,15 +1293,36 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         return color;
     }
 
-    // Where in the world this pixel is, tile *and* the fraction of it the world
-    // pass wrote. The fraction is what makes a pool a gradient: without it every
-    // pixel of a tile is the same distance from the flame, and a tile is 44
-    // pixels of ground that would all be one brightness with a step at its edge.
+    // Where in the world this pixel is: a tile, and the fraction of it this
+    // fragment sits at. The fraction is what makes a pool a gradient rather
+    // than a set of flat tiles with a step at every edge — true of the ground
+    // and equally true of a static's own face, which is why `statics.wgsl`
+    // computes one for a wall's run and a floor's spread alike (see its own
+    // comment: without it a row of wall tiles would light as separate flat
+    // panels instead of one continuous surface across the seam). It is packed
+    // identically for every kind, in the same bits, and decoded once here.
+    //
+    // The **tile itself** is not, for a static or a mobile: `docs/gbuffer.md`
+    // step 3 moved `x`/`y` to this pass's own instance buffer, the same one a
+    // fragment's own picture used to repeat them into every pixel of, and
+    // `place.x`/`place.y` carry an id into it instead.
+    let kind = place.w & KIND_MASK;
     let sub = vec2<f32>(
         f32((place.w >> 2u) & SUB_TILE_MASK) / SUB_TILE,
         f32((place.w >> 9u) & SUB_TILE_MASK) / SUB_TILE,
     );
-    let at = vec3<f32>(f32(place.x) + sub.x, f32(place.y) + sub.y, f32(place.z & PLACE_Z_MASK) - 128.0);
+    var tile = vec2<f32>(f32(place.x), f32(place.y));
+    if kind != KIND_LAND {
+        let id = place.x | (place.y << 16u);
+        var row_place: vec2<u32>;
+        if kind == KIND_STATIC {
+            row_place = face_instances[id].place;
+        } else {
+            row_place = mobile_instances[id].place;
+        }
+        tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
+    }
+    let at = vec3<f32>(tile.x + sub.x, tile.y + sub.y, f32(place.z & PLACE_Z_MASK) - 128.0);
     // And which way the surface drawn here looks, where it is a wall's face. Zero
     // for the ground, for a mobile and for anything standing up whose art would
     // not name an edge — none of those has a side to be lit from.

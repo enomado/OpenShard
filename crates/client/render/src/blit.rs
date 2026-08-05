@@ -64,6 +64,16 @@ pub struct Frame<'a> {
     /// What the lighting is computed against, and the reason this pass can tell
     /// a wall's lit face from the shadow behind it.
     pub place: &'a wgpu::TextureView,
+    /// The statics pass's own instance buffer, bound a second time as storage
+    /// so a static's fragment can read `instances[id]` back instead of
+    /// carrying its `(x, y, z)` on every pixel of its own picture — see
+    /// `docs/gbuffer.md` decision 2. [`dummy_instances`] when a caller has
+    /// none this frame.
+    pub face_instances: &'a wgpu::Buffer,
+    /// The same, for the mobiles pass — a separate buffer because mobiles are
+    /// a separate `SpriteRenderer` with its own instance list, not a second
+    /// user of the statics one.
+    pub mobile_instances: &'a wgpu::Buffer,
     /// Which way the scaling goes, and so which sampler is right.
     pub zoom: Zoom,
     /// The rectangle of `target` the world gets.
@@ -255,6 +265,30 @@ impl Blit {
                     },
                     count: None,
                 },
+                // The statics and mobiles passes' own instance data, each
+                // bound a second time as storage — decision 2's `instances[id]`.
+                // Read-only: this pass never writes a fragment's own instance
+                // back, only looks one up. `docs/gbuffer.md` step 3.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -358,6 +392,8 @@ impl Blit {
             target,
             world,
             place,
+            face_instances,
+            mobile_instances,
             zoom,
             rect,
         } = frame;
@@ -424,6 +460,14 @@ impl Blit {
                     resource: wgpu::BindingResource::TextureView(
                         &self.ids.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: face_instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: mobile_instances.as_entire_binding(),
                 },
             ],
         });
@@ -599,6 +643,25 @@ fn grid_texture(device: &wgpu::Device, label: &str, width: u32, height: u32) -> 
         format: wgpu::TextureFormat::Rgba8Uint,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
+    })
+}
+
+/// One zeroed row, standing in for [`Frame::face_instances`] or
+/// [`Frame::mobile_instances`] when a caller has no real one to bind —
+/// ground-only fixtures, and [`crate::plan`]'s synthetic picture, which by its
+/// own doc only ever writes `Kind::Land`. A bind group needs a valid resource
+/// in every slot regardless of which branch the shader takes.
+///
+/// A free function and not a field of [`Blit`]: [`Blit::render`] takes
+/// `&mut self`, and a `Frame` borrowing a buffer `self` owns cannot be built
+/// for a call that also borrows `self` mutably. The caller owns this instead,
+/// the same way it owns a real instance buffer when it has one.
+pub fn dummy_instances(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("blit dummy instances"),
+        size: crate::sprite::SpriteQuad::STRIDE,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
     })
 }
 

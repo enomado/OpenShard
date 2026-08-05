@@ -4649,6 +4649,8 @@ impl App {
                 target: &view,
                 world: &world_view,
                 place: &place_view,
+                face_instances: window.statics.instances_buffer(),
+                mobile_instances: window.mobile_pass.instances_buffer(),
                 zoom: camera.zoom(),
                 rect: viewport,
             },

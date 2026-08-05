@@ -64,6 +64,11 @@ struct VertexOut {
     // one edge of the diamond the wall stands on. See `crate::place::Stance`.
     @location(5) pixel_x: f32,
     @location(6) @interpolate(flat) middle_x: f32,
+    // This instance's own index — what the attachment now carries in place of
+    // `x`/`y`, and what `blit.wgsl` looks up in its own copy of this pass's
+    // instance buffer, bound a second time as storage. See
+    // `docs/gbuffer.md` decision 2 and step 3.
+    @location(7) @interpolate(flat) id: u32,
 };
 
 // Virtual pixels one unit of height lifts a sprite up the screen —
@@ -160,6 +165,7 @@ fn vs_main(
     // Per instance: the tile and height, packed as
     // `crate::place::Place::packed` writes it.
     @location(6) place: vec2<u32>,
+    @builtin(instance_index) instance_index: u32,
 ) -> VertexOut {
     let pixel = origin + corner * size;
     // Virtual pixels to real ones, the same single line the ground pass ends on.
@@ -189,6 +195,7 @@ fn vs_main(
     // `View.DrawStatic`'s `x -= (width >> 1) - 22`. Half a pixel out on an
     // odd-width sprite, exactly as it is there.
     out.middle_x = origin.x + size.x * 0.5;
+    out.id = instance_index;
     return out;
 }
 
@@ -334,9 +341,22 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // says **which way that surface looks** — which is the one thing the lighting
     // cannot recover, because a wall's two faces are one tile and one plane. See
     // `crate::place::Place` and `blit.wgsl`'s `outward`.
+    //
+    // The **tile**'s `x`/`y` no longer ride here — `docs/gbuffer.md` step 3
+    // moved them to this pass's own instance buffer, read back by `blit.wgsl`
+    // as `instances[id]`, since the whole tile is the same two numbers on
+    // every one of a sprite's pixels. `z` and `sub` still are not: unlike the
+    // tile itself, both are this fragment's own — `z` is the height along a
+    // standing face computed above, and `sub` is where in the tile this pixel
+    // sits, which is what keeps a row of wall tiles reading as one continuous
+    // surface across the seam between them (see the paragraph above) rather
+    // than each tile lighting as a flat block. Carrying either from the row —
+    // one value for the whole instance — would flatten exactly what they
+    // exist to vary. Only the id replaces `x`/`y`; everything else here is
+    // unchanged from before this pass had one.
     out.place = vec4<u32>(
-        in.place.x & 0xFFFFu,
-        in.place.x >> 16u,
+        in.id & 0xFFFFu,
+        in.id >> 16u,
         u32(clamp(round(z), -128.0, 127.0) + 128.0) | (stance << PLACE_STANCE_SHIFT),
         ((in.place.y >> 8u) & KIND_MASK)
             | (u32(round(sub.x * SUB_TILE)) << 2u)
