@@ -255,6 +255,19 @@ pub struct Shape {
     /// says, and [`Builder::add`] is where the client's own `CLIMBABLE` bit picks
     /// between them.
     pub prism: Option<crate::facing::Prism>,
+    /// A shape [`prism`](Self::prism) cannot describe, authored rather than
+    /// derived — an arch's posts and lintel, a gap nothing here states because
+    /// it is simply the absence of a block. `docs/lighting.md`'s decision 41 is
+    /// the argument for a second, independent kind of solid rather than a wider
+    /// `Prism`: a climb profile is monotonic along one axis by construction, and
+    /// an arch is not.
+    ///
+    /// **No detector writes one.** [`Shape::of`] never populates it — there is no
+    /// search over it the way [`crate::facing::best_prism`] searches prisms, only
+    /// a person placing boxes by eye against a silhouette — so it survives a
+    /// re-derivation exactly the way an authored `prism` does, because nothing
+    /// but a person's own `author` call ever sets it.
+    pub blocks: crate::facing::Blocks,
 }
 
 impl Shape {
@@ -263,6 +276,7 @@ impl Shape {
         facing: None,
         hole: None,
         prism: None,
+        blocks: crate::facing::Blocks::EMPTY,
     };
 
     /// A graphic whose face the art named and whose hole it did not — which is
@@ -272,6 +286,7 @@ impl Shape {
             facing: Some(facing),
             hole: None,
             prism: None,
+            blocks: crate::facing::Blocks::EMPTY,
         }
     }
 
@@ -281,6 +296,18 @@ impl Shape {
             facing: None,
             hole: None,
             prism: Some(prism),
+            blocks: crate::facing::Blocks::EMPTY,
+        }
+    }
+
+    /// A graphic a person authored as a list of blocks — an arch, a joint,
+    /// anything a single climb profile cannot describe. See [`Shape::blocks`].
+    pub fn pieced(blocks: crate::facing::Blocks) -> Self {
+        Self {
+            facing: None,
+            hole: None,
+            prism: None,
+            blocks,
         }
     }
 
@@ -317,6 +344,7 @@ impl Shape {
                 Some(Facing::Corner { .. }) => crate::facing::prism_of(image),
                 _ => None,
             },
+            blocks: crate::facing::Blocks::EMPTY,
         }
     }
 }
@@ -1779,6 +1807,7 @@ fn shape_of(atlas: Option<&crate::atlas::StaticAtlas>, graphic: Graphic) -> Shap
             .and_then(|sprite| sprite.facing),
         hole: atlas.and_then(|atlas| atlas.hole(graphic)),
         prism: atlas.and_then(|atlas| atlas.prism(graphic)),
+        blocks: crate::facing::Blocks::EMPTY,
     }
 }
 
@@ -2098,6 +2127,7 @@ mod tests {
                 facing: Some(Facing::One(Face::South)),
                 hole: Some(hole),
                 prism: None,
+                blocks: crate::facing::Blocks::EMPTY,
             },
         );
         // A graphic the art would not name is a body, and drops it.
@@ -2111,6 +2141,7 @@ mod tests {
                 facing: None,
                 hole: Some(hole),
                 prism: None,
+                blocks: crate::facing::Blocks::EMPTY,
             },
         );
         // And a floor is a lid, whatever its silhouette read as.
@@ -2124,6 +2155,7 @@ mod tests {
                 facing: Some(Facing::One(Face::South)),
                 hole: Some(hole),
                 prism: None,
+                blocks: crate::facing::Blocks::EMPTY,
             },
         );
         // A corner is two panels and the hole is on both.
@@ -2140,6 +2172,7 @@ mod tests {
                 }),
                 hole: Some(hole),
                 prism: None,
+                blocks: crate::facing::Blocks::EMPTY,
             },
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
@@ -2213,6 +2246,7 @@ mod tests {
                     top: 9,
                 }),
                 prism: None,
+                blocks: crate::facing::Blocks::EMPTY,
             },
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
@@ -3293,6 +3327,7 @@ mod tests {
             facing: atlas.sprite(graphic).and_then(|s| s.facing),
             hole: atlas.hole(graphic),
             prism: None,
+            blocks: crate::facing::Blocks::EMPTY,
         };
         let floor = |x: u16, y: u16| map.land(x, y).map_or(0, |cell| cell.z);
 

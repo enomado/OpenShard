@@ -9,7 +9,52 @@ copied.
 
 ## Where the next session starts
 
-**23.2 has landed and 23.3 is next: the table carries a solid.** The spill and
+**Decision 41 landed: a shape gains a second, independent kind of solid — a
+list of plain boxes, beside its `Prism` — and `arttable::FORMAT` is now 4.**
+`occlusion::Shape` carries `blocks: facing::Blocks`, `facing::Block`/`Blocks`
+hold it the way `Prism` holds its own treads (a fixed array and a count, so a
+`Shape` stays `Copy`), and `facing::blocks_silhouette` draws a candidate the
+way `prism_silhouette` does, generalised so a lintel can float over the gap
+between two posts. `arttable.rs` round-trips a `block x0 x1 y0 y1 z0 z1`
+clause, zero or more per row, any verdict. **Authored only — nothing derives
+one, so `Builder::add` does not consume it yet**, the same plumbing-before-its-
+user shape decision 38.2's spill landed in. That wiring is genuinely next, once
+something has actually been authored to feed it.
+
+**23.3 was already landed before this session and the checklist below had not
+caught up — the same finding this session repeats for decision 41's own step
+below.** `arttable::FORMAT` reached 3 for the `Prism`, and `Builder::add`
+already picks it over the corner reading on the client's own `CLIMBABLE` bit
+(`occlusion.rs:1385`) — held by `arttable`'s own round-trip test
+(`a_prism_survives_the_round_trip_beside_the_corner_it_was_read_from`) and by
+`occlusion`'s (`a_stair_is_two_faces_per_tread_and_each_ones_height_comes_off_the_art`),
+both green. The commit (`4ac78dc`, "the prism is measured once, and the table
+carries it") landed *before* 23.1's own commit — under the numbering this file
+used before decision 38 settled into six sub-steps — and nobody came back to
+mark the box or rewrite this paragraph once the numbering did.
+
+**Found on the same pass: 23.5's own first bullet is done too, as a side
+effect and not by anyone asking for it under this plan's name.** Treads as
+their own boxes is exactly what [`gbuffer.md`](gbuffer.md)'s steps 4b and 4c
+built — a different plan needed the same per-tread top-and-riser decomposition
+for an unrelated reason, a mesh face to rasterise, and `occlusion.rs` has
+carried it since. The staircase at `(1493, 1639)` already lights as horizontal
+treads rather than as two vertical half-walls; `gbuffer.md`'s decision 3 and
+step 5 have the measurement that found it.
+
+**What is genuinely open is 23.4 and the rest of 23.5.** `tests/artshot.rs`
+(the silhouette) and `tests/prism.rs` (the score) are still two separate
+binaries, nobody has joined them into the one-graphic-at-a-time loop 23.4
+describes, and `data/overrides.table` has no authored solid in it yet — not
+the staircase, not a joint, not an arch: decision 41 gives an arch a format to
+be authored *into*, not an authored row. A wall's own thickness is still zero
+everywhere (23.1 left it that way on purpose, waiting for a stated one); both
+that and the arch wait on the instrument, and the arch waits on `Builder::add`
+learning to read `blocks` besides.
+
+Everything below is the session before it.
+
+**23.2 has landed.** The spill and
 the ring exist, and the number decision 38.2 asked for — the widest reach in the
 table — is **zero today, honestly rather than by omission**: `ring_radius` reads
 the atlas it is handed and every `Shape` this build can produce still puts its
@@ -2186,6 +2231,47 @@ is a solid already, decision 36's table already lists it — which is why the
 stairs are where this is proven first (`docs/lighting.md`'s backlog, "Found
 while building the treads", and the handoff that starts the next session).
 
+**41. A shape a single climb profile cannot describe gets a second, independent
+kind of solid, authored rather than derived — not a wider `Prism`.** Step 23.4's
+own instrument needs something to author for an arch, and `Prism` cannot be it:
+`Prism::height_at(run)` is a function of one axis, monotonic by construction —
+that is exactly what makes it a *climb*, and exactly what makes it unable to
+state a post, a gap, and another post. Widening `Prism` to fit an arch would
+mean giving a staircase's own model a discontinuity it has never needed, in
+exchange for an escape hatch every future irregular shape would be tempted to
+squeeze through the same way.
+
+So: `facing::Block`, a plain axis-aligned box in a graphic's own tile-local
+coordinates — `x` and `y` in eighths of the tile, `z` in the same units
+`Prism::treads` already uses — and `facing::Blocks`, a fixed array and a count
+exactly the shape `Prism` holds its own treads in, so a `Shape` carrying some is
+still `Copy` and costs no allocation on the path from the table to the grid
+(the reason `Prism` is not a `Vec` in the first place, stated once for both).
+`occlusion::Shape` gains a fourth field, `blocks: Blocks`, beside `prism`
+rather than folded into it — a graphic may carry both, because a stair's own
+base can still misread as a corner independently of whether some *other*
+graphic needs an arch's shape.
+
+**Never derived, on purpose, and that is the whole of why it needs no gate.**
+`prism` needs `CLIMBABLE` and a score before it is believed, because
+`Shape::of` proposes one automatically and an automatic proposal can be wrong.
+Nothing proposes a block list automatically — there is no search over it the
+way `facing::best_prism` searches prisms, only a person placing boxes by eye
+against a silhouette in step 23.4's instrument — so there is no wrong reading
+to gate away from. `Builder::add` does not consume `blocks` yet; per decision
+38.5's own discipline, the plumbing lands before its first user, the same way
+decision 38.2's spill did.
+
+**The format bumps to four**, and `facing::DETECTOR` does not: nothing about
+`facing_of`, `aperture_of` or `prism_of`'s own gates changed, and a block is
+never derived, so no old table can describe a rule this session changed.
+`arttable.rs` has the grammar (`block x0 x1 y0 y1 z0 z1`, zero or more, any
+verdict) and the round trip; the silhouette a person judges a candidate
+against is `facing::blocks_silhouette`, drawn the way `prism_silhouette` is,
+generalised to let two blocks draw the same column at different heights — a
+lintel floating over the gap between two posts, which a climb profile's
+always-touches-the-ground assumption cannot.
+
 ## Steps
 
 - [x] **1. `render/src/occlusion.rs`.** The tile grid of decision 4/5, built
@@ -3171,21 +3257,28 @@ while building the treads", and the handoff that starts the next session).
          gained a dependency on `tracing` for the log line, which is inert
          without a subscriber and does not touch the crate's own claim of never
          doing I/O.
-      3. **The table carries a solid.** `arttable` gains a third verdict and a
-         `FORMAT` bump to 3, with `facing::DETECTOR` bumped for the reason the
+      3. **[x] The table carries a solid.** `arttable` gained a third verdict and
+         `FORMAT` bumped to 3, with `facing::DETECTOR` bumped for the reason the
          last bump had: a table written under the old rules describes yesterday's
          detector exactly and looks perfectly fresh. Derivation is the prism fit
-         that already exists (`tests/prism.rs` scores 0.977 and 0.975 on the
+         that already existed (`tests/prism.rs` scores 0.977 and 0.975 on the
          staircase, against 0.812 for a wall that is not a prism at all), gated
-         on `CLIMBABLE` first and the score second. `adopt_authored` carries a
-         hand-written solid over a re-derivation, which is already how it works.
+         on `CLIMBABLE` first and the score second — `Builder::add`,
+         `occlusion.rs:1385`. `adopt_authored` carries a hand-written solid over
+         a re-derivation, which was already how it worked.
 
-         **DoD:** a round trip through the file including a multi-box solid, a
-         stale table refused rather than half-read, and — the one that matters —
-         a graphic whose solid was measured on a machine with no table reads the
-         *same* solid on a machine with one. That is the defect the backlog
-         already names: a prism measured by `Shape::of` is lost through the table
-         today, and the client quietly goes back to reading a stair as a corner.
+         **Landed as `4ac78dc`, ahead of 23.1 and 23.2 by the clock** — this
+         plan's numbering had not yet settled into six sub-steps when it was
+         written, and the checkbox above went unmarked afterwards purely because
+         nobody came back to it, not because anything was missing. Every part of
+         the DoD is held: the round trip including a multi-box solid and a
+         hand-authored plain one (`a_prism_survives_the_round_trip_beside_the_corner_it_was_read_from`),
+         a stale table refused rather than half-read
+         (`a_table_from_another_format_is_refused`, formats 1 and 2 both named),
+         and the defect that mattered — a prism `Shape::of` measures is no longer
+         lost through the table, held on both sides:
+         `a_stair_is_two_faces_per_tread_and_each_ones_height_comes_off_the_art`
+         and `a_climbable_static_occludes_half_its_height` in `occlusion.rs`.
       4. **The instrument, which is what makes "by hand" a real mode.** Authoring
          six numbers per graphic is only tractable with a loop: draw the
          candidate solid's silhouette over the real sprite, score the
@@ -3195,6 +3288,14 @@ while building the treads", and the handoff that starts the next session).
          is missing is the two of them in one run that takes a graphic and a
          table and says: here is what you wrote, here is what the artist drew,
          here is the difference.
+
+         **A second candidate shape joined the first, decision 41, before this
+         step was taken**: `facing::blocks_silhouette` draws a `Blocks` list the
+         way `prism_silhouette` draws a `Prism`, so the instrument has both
+         forward directions to render a candidate with — the search is
+         automatic for a prism (`best_prism`) and by hand for a block list,
+         since nothing proposes an arch's boxes the way `best_prism` proposes a
+         climb.
 
          **DoD:** the staircase's two graphics authored through it, and a joint
          and an arch — the two shapes a person reported as "something odd
@@ -3207,11 +3308,23 @@ while building the treads", and the handoff that starts the next session).
          each may be reverted alone — which is the entire reason 23.1 through
          23.4 were built without moving a pixel.
 
-         **DoD:** the staircase at Britain's `(1493, 1639)` lit as horizontal
-         treads rather than as two vertical half-walls; `1509,1635` a narrow slab
-         among red panels rather than a full square; and a corner where two walls
-         meet with no light through the join, which is decision 18's spokes
-         closed by geometry rather than by scaling a crossing's length.
+         **The first bullet is already done, and not by this plan asking for
+         it.** [`gbuffer.md`](gbuffer.md)'s steps 4b and 4c needed the same
+         per-tread top-and-riser decomposition for a reason of their own — a
+         mesh face to rasterise — and built it into `occlusion.rs` before this
+         step got to it by name. The staircase at Britain's `(1493, 1639)`
+         already lights as horizontal treads rather than as two vertical
+         half-walls; `gbuffer.md`'s decision 3 and its step 5 have the
+         measurement. What is left of this step is the other two: a wall with a
+         stated thickness, and an arch as more than one solid — the latter has
+         a format to be authored into since decision 41, but nothing authored
+         yet and `Builder::add` does not read `Shape::blocks` yet either. Both
+         wait on 23.4's instrument; the arch waits on `Builder::add` besides.
+
+         **DoD:** `1509,1635` a narrow slab among red panels rather than a full
+         square; and a corner where two walls meet with no light through the
+         join, which is decision 18's spokes closed by geometry rather than by
+         scaling a crossing's length.
 - [ ] **17. The shaft.** The screen-space pass of decision 12, over the mask step
       11 produces — and, once step 16 exists, over the beam from a window too.
       Nothing in this renderer draws air, so a visible shaft is a blur of the lit

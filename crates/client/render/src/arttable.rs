@@ -22,7 +22,7 @@
 //! is that a shard fixing one wall edits a file rather than patching a detector:
 //!
 //! ```text
-//! table 3
+//! table 4
 //! detector 2
 //! art artLegacyMUL.uop 447160596
 //! examined 15234
@@ -31,6 +31,7 @@
 //! 0x0104 corner E S
 //! 0x0166 corner E S prism W 1 3 5
 //! 0x0171 none authored
+//! 0x0736 none block 0 2 0 8 0 20 block 6 8 0 8 0 20 block 0 8 0 8 15 20 authored
 //! ```
 //!
 //! A `hole` is the second verdict [`crate::facing`] reads off the same picture —
@@ -50,6 +51,14 @@
 //! hole's reason: [`Shape::of`](crate::occlusion::Shape::of) only ever scores
 //! prisms against a picture it read as a corner, and a row saying otherwise would
 //! state what no detector will.
+//!
+//! `block` is the fourth, and unlike the other three it is never derived: `x0
+//! x1 y0 y1 z0 z1`, a box in eighths of the tile on the ground and `z` above
+//! the static's own base, and a row may carry several — `docs/lighting.md`'s
+//! decision 41. An arch is a post, a post and a lintel; nothing a single climb
+//! profile can be fitted to, which is what `prism` is. It may accompany any
+//! verdict, including `none`, because nothing about it is a claim about which
+//! edge a plane stands on.
 //!
 //! **This is what a table is for.** The prism search is the whole cost of a scan —
 //! seconds against milliseconds for the faces — and a table that could not carry
@@ -85,7 +94,7 @@ use std::fmt;
 
 use openshard_protocol::wire::Graphic;
 
-use crate::facing::{Face, Facing, Hole, Prism};
+use crate::facing::{Block, Blocks, Face, Facing, Hole, Prism};
 use crate::occlusion::Shape;
 
 /// The version of this file format.
@@ -108,7 +117,14 @@ use crate::occlusion::Shape;
 /// one state `docs/lighting.md`'s backlog called a trap, because the client then
 /// occludes a flight of steps like a run of wall and the only sign is that
 /// somebody once ran a tool.
-pub const FORMAT: u32 = 3;
+///
+/// **Four** for the block list, `docs/lighting.md`'s decision 41: a shape a
+/// single climb profile cannot describe — an arch's posts and lintel — gets a
+/// second, independent kind of solid rather than a wider `Prism`. Authored
+/// only, the same trap as the prism's: a format-3 reader would silently drop
+/// every block a person had placed, and a table that had never carried one
+/// would look exactly like a table that could not.
+pub const FORMAT: u32 = 4;
 
 /// What a table was measured from, and by which rules.
 ///
@@ -356,8 +372,18 @@ impl ArtTable {
                     clause
                 }
             };
+            let mut blocks = String::new();
+            for block in row.shape.blocks.blocks() {
+                blocks.push_str(&format!(
+                    " block {} {} {} {} {} {}",
+                    block.x.0, block.x.1, block.y.0, block.y.1, block.z.0, block.z.1
+                ));
+            }
             let authored = if row.authored { " authored" } else { "" };
-            out.push_str(&format!("{:#06X} {verdict}{hole}{prism}{authored}\n", graphic.0));
+            out.push_str(&format!(
+                "{:#06X} {verdict}{hole}{prism}{blocks}{authored}\n",
+                graphic.0
+            ));
         }
         out
     }
@@ -468,8 +494,9 @@ fn number<T: std::str::FromStr>(
         .ok_or(TableError::Line { at, detail: what })
 }
 
-/// One row: `0x0104 corner E S`, with `hole N F B T`, `prism U h…` and
-/// `authored` optional on the end, in that order.
+/// One row: `0x0104 corner E S`, with `hole N F B T`, `prism U h…`, any number
+/// of `block x0 x1 y0 y1 z0 z1` and `authored` optional on the end, in that
+/// order.
 fn row(
     head: &str,
     words: &mut std::str::SplitWhitespace<'_>,
@@ -564,6 +591,26 @@ fn row(
         }
         _ => None,
     };
+    // The blocks, zero or more: a box a person placed by eye, `x0 x1 y0 y1 z0
+    // z1`. Never derived and never restricted to a verdict — see the module
+    // doc's own argument for why an arch's shape is not a claim about which
+    // edge a plane stands on.
+    let mut blocks = Vec::new();
+    while words.clone().next() == Some("block") {
+        words.next();
+        let mut span = || number::<u8>(words, at, "a block is `x0 x1 y0 y1 z0 z1`");
+        let (x0, x1, y0, y1, z0, z1) = (span()?, span()?, span()?, span()?, span()?, span()?);
+        blocks.push(Block::new((x0, x1), (y0, y1), (z0, z1)).ok_or(TableError::Line {
+            at,
+            detail: "a block's spans must be non-empty and its x/y at most 8",
+        })?);
+    }
+    // `Blocks::new` is the one that knows the cap, the same discipline as the
+    // prism's own: at most `facing::MAX_BLOCKS`.
+    let blocks = Blocks::new(&blocks).ok_or(TableError::Line {
+        at,
+        detail: "a row may carry at most facing::MAX_BLOCKS blocks",
+    })?;
     let authored = match words.clone().next() {
         Some("authored") => {
             words.next();
@@ -574,7 +621,12 @@ fn row(
     Ok((
         Graphic(graphic),
         Row {
-            shape: Shape { facing, hole, prism },
+            shape: Shape {
+                facing,
+                hole,
+                prism,
+                blocks,
+            },
             authored,
         },
     ))
@@ -651,6 +703,7 @@ mod tests {
                 facing: Some(Facing::One(Face::East)),
                 hole: Some(WINDOW),
                 prism: None,
+                blocks: Blocks::EMPTY,
             },
         );
         table.derive(
@@ -728,7 +781,7 @@ mod tests {
     /// format with a precedence rule to argue about.
     #[test]
     fn an_override_sheet_hands_its_rows_to_a_measured_table() {
-        let sheet = ArtTable::parse("table 3\n0x02D8 face W authored\n0x0100 face N\n")
+        let sheet = ArtTable::parse("table 4\n0x02D8 face W authored\n0x0100 face N\n")
             .expect("a sheet of overrides");
         assert!(sheet.stamp().is_none());
         assert!(!sheet.fresh(&stamp()), "a sheet describes no install");
@@ -770,13 +823,15 @@ mod tests {
         );
         assert_eq!(ArtTable::parse("0x0007 face S\n"), Err(TableError::NoFormat));
         assert_eq!(
-            ArtTable::parse("table 3\nart artLegacyMUL.uop 12\n"),
+            ArtTable::parse("table 4\nart artLegacyMUL.uop 12\n"),
             Err(TableError::HalfStamped)
         );
         // And the formats this one replaced, which is the case the bump is for: a
         // table of faces measured before holes existed reads every window as
-        // solid stone and says nothing about it, and one measured before prisms
-        // existed reads every staircase as a corner of two walls.
+        // solid stone and says nothing about it, one measured before prisms
+        // existed reads every staircase as a corner of two walls, and one
+        // measured before blocks existed silently drops every arch a person had
+        // authored by hand.
         assert_eq!(
             ArtTable::parse("table 1\n0x0007 face S\n"),
             Err(TableError::Format { found: 1 })
@@ -784,6 +839,10 @@ mod tests {
         assert_eq!(
             ArtTable::parse("table 2\n0x0104 corner E S\n"),
             Err(TableError::Format { found: 2 })
+        );
+        assert_eq!(
+            ArtTable::parse("table 3\n0x0166 corner E S prism W 1 3 5\n"),
+            Err(TableError::Format { found: 3 })
         );
     }
 
@@ -796,13 +855,13 @@ mod tests {
     #[test]
     fn an_unreadable_row_names_its_line() {
         for text in [
-            "table 3\n0x0007 face Q\n",
-            "table 3\n0x0007 corner S E\n",
-            "table 3\n0x0007 wall\n",
-            "table 3\nnotahex face S\n",
-            "table 3\n0x0007 face S and more\n",
-            "table 3\n0x0007 face S hole 93 185 10\n",
-            "table 3\n0x0007 face S hole 93 185 10 300\n",
+            "table 4\n0x0007 face Q\n",
+            "table 4\n0x0007 corner S E\n",
+            "table 4\n0x0007 wall\n",
+            "table 4\nnotahex face S\n",
+            "table 4\n0x0007 face S and more\n",
+            "table 4\n0x0007 face S hole 93 185 10\n",
+            "table 4\n0x0007 face S hole 93 185 10 300\n",
         ] {
             let error = ArtTable::parse(text).expect_err(text);
             assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
@@ -818,14 +877,14 @@ mod tests {
     #[test]
     fn only_a_face_may_carry_a_hole() {
         assert!(matches!(
-            ArtTable::parse("table 3\n0x0104 corner E S hole 93 185 10 15\n"),
+            ArtTable::parse("table 4\n0x0104 corner E S hole 93 185 10 15\n"),
             Err(TableError::Line { at: 2, .. })
         ));
         assert!(matches!(
-            ArtTable::parse("table 3\n0x0104 none hole 93 185 10 15\n"),
+            ArtTable::parse("table 4\n0x0104 none hole 93 185 10 15\n"),
             Err(TableError::Line { at: 2, .. })
         ));
-        let table = ArtTable::parse("table 3\n0x003C face E hole 93 185 10 15 authored\n").expect("a row");
+        let table = ArtTable::parse("table 4\n0x003C face E hole 93 185 10 15 authored\n").expect("a row");
         assert_eq!(table.shape(Graphic(0x003C)).hole, Some(WINDOW));
         assert_eq!(table.authored(), 1, "the marker after the hole is still read");
     }
@@ -850,6 +909,7 @@ mod tests {
                 }),
                 hole: None,
                 prism: Some(stair),
+                blocks: Blocks::EMPTY,
             },
         );
         // And a person's own: a solid with no facing at all, which is what
@@ -886,16 +946,16 @@ mod tests {
     #[test]
     fn a_prism_row_states_only_what_a_detector_would() {
         for text in [
-            "table 3\n0x0007 face S prism W 1 3 5\n",
-            "table 3\n0x0104 corner E S prism Q 1\n",
-            "table 3\n0x0104 corner E S prism W\n",
-            "table 3\n0x0104 corner E S prism W 1 2 3 4 5\n",
-            "table 3\n0x0104 corner E S prism W 300\n",
+            "table 4\n0x0007 face S prism W 1 3 5\n",
+            "table 4\n0x0104 corner E S prism Q 1\n",
+            "table 4\n0x0104 corner E S prism W\n",
+            "table 4\n0x0104 corner E S prism W 1 2 3 4 5\n",
+            "table 4\n0x0104 corner E S prism W 300\n",
         ] {
             let error = ArtTable::parse(text).expect_err(text);
             assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
         }
-        let table = ArtTable::parse("table 3\n0x0104 none prism W 1 3 5 authored\n").expect("a row");
+        let table = ArtTable::parse("table 4\n0x0104 none prism W 1 3 5 authored\n").expect("a row");
         assert_eq!(
             table.shape(Graphic(0x0104)).prism,
             Prism::new(Face::West, &[1, 3, 5]),
@@ -903,12 +963,75 @@ mod tests {
         assert_eq!(table.authored(), 1, "the marker after the treads is still read");
     }
 
+    /// **An arch survives the file beside its prism**, decision 41: a shape a
+    /// single climb profile cannot describe, in three boxes rather than one,
+    /// and a row may hold both a prism and a block list at once — nothing here
+    /// forces a choice between them.
+    #[test]
+    fn a_block_list_survives_the_round_trip_beside_a_prism() {
+        let post = |x: (u8, u8)| Block::new(x, (0, 8), (0, 20)).expect("a post, full depth");
+        let lintel = Block::new((0, 8), (0, 8), (15, 20)).expect("the beam over both posts");
+        let arch = Blocks::new(&[post((0, 2)), post((6, 8)), lintel]).expect("three of four");
+        let mut table = ArtTable::measured(stamp());
+        table.author(Graphic(0x0736), Shape::pieced(arch));
+        // And a graphic whose derived verdict is a plain wall, with a
+        // hand-authored block on top of it — nothing here refuses the pairing,
+        // per the module doc's own argument that a block is not a claim about
+        // which edge a plane stands on.
+        table.derive(Graphic(0x0007), faced(Face::South));
+        table.author(
+            Graphic(0x0007),
+            Shape {
+                blocks: Blocks::new(&[post((3, 5))]).expect("one block"),
+                ..faced(Face::South)
+            },
+        );
+
+        let read = ArtTable::parse(&table.to_text()).expect("its own text");
+        assert_eq!(read, table);
+        assert_eq!(read.shape(Graphic(0x0736)).blocks, arch);
+        assert_eq!(
+            read.shape(Graphic(0x0736)).facing,
+            None,
+            "the arch states no facing of its own",
+        );
+        assert_eq!(
+            read.shape(Graphic(0x0007)).facing,
+            Some(Facing::One(Face::South)),
+            "a face may carry a block: nothing about it is a claim on the plane's edge",
+        );
+        assert!(
+            read.shape(Graphic(0x0009)).blocks.is_empty(),
+            "a graphic nobody authored has no blocks",
+        );
+    }
+
+    /// A row may carry no more than [`crate::facing::MAX_BLOCKS`], and a block
+    /// with an empty or an out-of-range span is refused — the same discipline
+    /// [`Prism::new`] holds for its own treads, and a hand-edit is exactly the
+    /// place either bound would be tried.
+    #[test]
+    fn a_block_states_a_non_empty_span_and_a_row_states_at_most_max_blocks() {
+        for text in [
+            "table 4\n0x0007 none block 4 4 0 8 0 20\n",
+            "table 4\n0x0007 none block 0 4 4 4 0 20\n",
+            "table 4\n0x0007 none block 0 4 0 8 5 5\n",
+            "table 4\n0x0007 none block 0 9 0 8 0 20\n",
+            "table 4\n0x0007 none block 0 8 0 9 0 20\n",
+            "table 4\n0x0007 none block 0 1 0 1 0 1 block 1 2 0 1 0 1 \
+             block 2 3 0 1 0 1 block 3 4 0 1 0 1 block 4 5 0 1 0 1\n",
+        ] {
+            let error = ArtTable::parse(text).expect_err(text);
+            assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
+        }
+    }
+
     /// Comments and blank lines are a person's, and the parser keeps its hands
     /// off them.
     #[test]
     fn comments_and_blank_lines_are_skipped() {
         let table =
-            ArtTable::parse("# what this is\ntable 3\n\n0x0007 face S  # the south face of a marble wall\n")
+            ArtTable::parse("# what this is\ntable 4\n\n0x0007 face S  # the south face of a marble wall\n")
                 .expect("a commented sheet");
         assert_eq!(table.facing(Graphic(0x0007)), Some(Facing::One(Face::South)));
     }

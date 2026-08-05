@@ -1380,6 +1380,155 @@ pub fn best_prism(image: &Image) -> (Prism, f32) {
     best
 }
 
+/// The most blocks a [`crate::occlusion::Shape`] may be authored with —
+/// mirroring [`MAX_TREADS`]'s own discipline: a cap on the *model*, not a limit
+/// anything has been seen to want. Three names every block an arch needs — two
+/// posts and a lintel — with one spare.
+pub const MAX_BLOCKS: u16 = 4;
+
+/// One axis-aligned box in a graphic's own tile-local coordinates: a post, a
+/// lintel, one leaf of a shape [`Prism`]'s single climb profile cannot
+/// describe. An arch is a post, a post and a lintel — the gap between the two
+/// posts states nothing, because a gap is simply the absence of a third block.
+///
+/// `x` and `y` are eighths of the tile, `0..=8` — coarser than a hole's 255ths
+/// (step 21.3 of `docs/lighting.md`) or the 128-sample sweep
+/// [`blocks_silhouette`] draws with, because a person places these by eye
+/// against a silhouette rather than measuring a pixel edge, and a block a
+/// person cannot state in eighths is not one a text file should pretend to
+/// carry precisely. `z` is the same axis [`Prism::treads`] already measures
+/// in: `z` above the static's own base.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Block {
+    /// `(min, max)`, both `0..=8`, `min < max`.
+    pub x: (u8, u8),
+    /// `(min, max)`, both `0..=8`, `min < max`.
+    pub y: (u8, u8),
+    /// `(min, max)`, `min < max`, in `z`.
+    pub z: (u8, u8),
+}
+
+impl Block {
+    /// `None` for an empty or an out-of-range span — the invariant a
+    /// hand-written row could otherwise break, the same refusal [`Prism::new`]
+    /// makes for its own treads.
+    pub fn new(x: (u8, u8), y: (u8, u8), z: (u8, u8)) -> Option<Self> {
+        if x.0 >= x.1 || y.0 >= y.1 || z.0 >= z.1 || x.1 > 8 || y.1 > 8 {
+            return None;
+        }
+        Some(Self { x, y, z })
+    }
+
+    /// The footprint as fractions of the tile, `0.0..=1.0` on each axis.
+    fn footprint(self) -> (f32, f32, f32, f32) {
+        (
+            f32::from(self.x.0) / 8.0,
+            f32::from(self.x.1) / 8.0,
+            f32::from(self.y.0) / 8.0,
+            f32::from(self.y.1) / 8.0,
+        )
+    }
+}
+
+/// A shape's blocks, held the way [`Prism`] holds its treads: a fixed array and
+/// a count, so a [`crate::occlusion::Shape`] carrying some is still `Copy` and
+/// costs no allocation on the path from the table to the grid.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Blocks {
+    list: [Block; MAX_BLOCKS as usize],
+    count: u8,
+}
+
+impl Blocks {
+    /// No blocks — every graphic's state before a person authors one.
+    pub const EMPTY: Self = Self {
+        list: [Block {
+            x: (0, 0),
+            y: (0, 0),
+            z: (0, 0),
+        }; MAX_BLOCKS as usize],
+        count: 0,
+    };
+
+    /// A list of blocks, or `None` if there are more than [`MAX_BLOCKS`]. Empty
+    /// is legal and is [`Blocks::EMPTY`].
+    pub fn new(blocks: &[Block]) -> Option<Self> {
+        if blocks.len() > MAX_BLOCKS as usize {
+            return None;
+        }
+        let mut list = Self::EMPTY.list;
+        list[..blocks.len()].copy_from_slice(blocks);
+        Some(Self {
+            list,
+            count: blocks.len() as u8,
+        })
+    }
+
+    /// The blocks, in the order they were authored.
+    pub fn blocks(&self) -> &[Block] {
+        &self.list[..usize::from(self.count)]
+    }
+
+    /// Whether nothing has been authored.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
+impl Default for Blocks {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+/// The silhouette of a [`Blocks`] list, drawn the way [`prism_silhouette`]
+/// draws one solid: a sweep over the tile, each block painting the vertical
+/// run its own height fills within its own footprint.
+///
+/// Unlike a [`Prism`], a block need not touch the ground: two blocks may draw
+/// the same column at different heights, a lintel floating over the gap
+/// between two posts, and each is swept on its own rather than assuming
+/// material fills everything below its top the way a climb profile does.
+pub fn blocks_silhouette(blocks: &Blocks) -> Image {
+    use openshard_uofiles::color::Color16;
+
+    let width = 44u16;
+    let top = blocks.blocks().iter().map(|block| block.z.1).max().unwrap_or(0);
+    let rows = 45 + u16::from(top) * Z_STEP as u16;
+    let mut pixels = vec![Color16::TRANSPARENT; usize::from(width) * usize::from(rows)];
+    let bottom = f32::from(rows) - 1.0;
+
+    const SAMPLES: i32 = 128;
+    for i in 0..=SAMPLES {
+        for j in 0..=SAMPLES {
+            let (u, v) = (i as f32 / SAMPLES as f32, j as f32 / SAMPLES as f32);
+            let across = (u - v) * HALF_TILE_WIDTH;
+            let column = (across + f32::from(width) / 2.0).floor();
+            if column < 0.0 || column >= f32::from(width) {
+                continue;
+            }
+            let down = (u + v - 1.0) * HALF_TILE_WIDTH;
+            let foot = bottom + down - HALF_TILE_WIDTH;
+            for block in blocks.blocks() {
+                let (min_x, max_x, min_y, max_y) = block.footprint();
+                if u < min_x || u > max_x || v < min_y || v > max_y {
+                    continue;
+                }
+                let head = foot - f32::from(block.z.1) * Z_STEP;
+                let base = foot - f32::from(block.z.0) * Z_STEP;
+                for row in head.max(0.0).round() as u16..=base.max(0.0).round() as u16 {
+                    if row >= rows {
+                        continue;
+                    }
+                    pixels[usize::from(row) * usize::from(width) + column as usize] =
+                        Color16(0b0_11111_00000_00000);
+                }
+            }
+        }
+    }
+    Image::new(width, rows, pixels)
+}
+
 /// One prism [`best_prism`] scores a picture against, with its silhouette
 /// already drawn and counted.
 struct Candidate {
@@ -2092,6 +2241,77 @@ mod tests {
                 i32::from(height) * Z_STEP as i32,
                 "the side of the box at column {column}",
             );
+        }
+    }
+
+    /// A single block spanning the whole tile at `z: (0, height)` is exactly the
+    /// box [`Prism::box_of`] draws — the two are the same shape stated two ways,
+    /// and [`blocks_silhouette`] must agree with [`prism_silhouette`] on it
+    /// pixel for pixel, not merely to a tolerance.
+    #[test]
+    fn one_full_tile_block_is_the_box_a_prism_draws() {
+        let height = 12u8;
+        let block = Block::new((0, 8), (0, 8), (0, height)).expect("the whole tile");
+        let blocks = Blocks::new(&[block]).expect("one block");
+        assert_eq!(
+            blocks_silhouette(&blocks),
+            prism_silhouette(&Prism::box_of(height))
+        );
+    }
+
+    /// A block covering a quarter of the tile draws strictly less than the box
+    /// that covers all of it, and never draws where that box does not — its
+    /// footprint is a subset, so its silhouette is one too.
+    #[test]
+    fn a_partial_footprint_draws_a_subset_of_the_full_boxs_silhouette() {
+        let height = 12u8;
+        let corner = Block::new((0, 4), (0, 4), (0, height)).expect("one quarter of the tile");
+        let blocks = Blocks::new(&[corner]).expect("one block");
+        let drawn = blocks_silhouette(&blocks);
+        let full = prism_silhouette(&Prism::box_of(height));
+        for column in 0..44u16 {
+            for row in 0..full.height() {
+                if drawn_at(&drawn, column, row) {
+                    assert!(
+                        drawn_at(&full, column, row),
+                        "column {column}, row {row}: outside the full box",
+                    );
+                }
+            }
+        }
+        assert!(
+            drawn_count(&drawn) < drawn_count(&full),
+            "a quarter footprint draws less than the whole tile",
+        );
+        assert!(drawn_count(&drawn) > 0, "and it draws something");
+    }
+
+    /// Two blocks with a gap between their footprints, and a third bridging
+    /// both above it — a lintel over a gap between two posts, the shape decision
+    /// 41 exists for. The silhouette is the union of all three, drawn
+    /// independently: nowhere does one block's presence hide another's.
+    #[test]
+    fn a_lintel_floats_over_the_gap_between_two_posts() {
+        let post = |x: (u8, u8)| Block::new(x, (0, 8), (0, 20)).expect("a post");
+        let lintel = Block::new((0, 8), (0, 8), (15, 20)).expect("the beam");
+        let arch = Blocks::new(&[post((0, 2)), post((6, 8)), lintel]).expect("three blocks");
+        let drawn = blocks_silhouette(&arch);
+        assert!(drawn_count(&drawn) > 0, "an arch draws something");
+        // Each post alone, and each post plus the lintel, both drawn as their own
+        // silhouette — the union property, checked rather than assumed: every
+        // pixel either alone draws is drawn in the arch, and nothing else is.
+        let posts_alone = Blocks::new(&[post((0, 2)), post((6, 8))]).expect("two blocks");
+        let drawn_posts = blocks_silhouette(&posts_alone);
+        let drawn_lintel = blocks_silhouette(&Blocks::new(&[lintel]).expect("one block"));
+        for column in 0..44u16 {
+            for row in 0..drawn
+                .height()
+                .max(drawn_posts.height())
+                .max(drawn_lintel.height())
+            {
+                let union = drawn_at(&drawn_posts, column, row) || drawn_at(&drawn_lintel, column, row);
+                assert_eq!(drawn_at(&drawn, column, row), union, "column {column}, row {row}",);
+            }
         }
     }
 

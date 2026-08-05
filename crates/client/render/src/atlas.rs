@@ -2214,6 +2214,7 @@ mod tests {
                 facing: Some(Facing::One(Face::East)),
                 hole: Some(WINDOW),
                 prism: None,
+                blocks: crate::facing::Blocks::EMPTY,
             },
         );
 

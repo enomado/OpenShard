@@ -17,6 +17,11 @@
 #                                — a face with a window cut through it: the run
 #                                  along the face in 255ths of a tile, then the
 #                                  `z` of the hole above the wall's own base
+#     0x0166 corner E S prism W 1 3 5 authored
+#                                — a corner the wall detector would read as two
+#                                  walls, overridden with the solid it actually
+#                                  is: the face the climb ends at, then one
+#                                  height per tread
 #
 # `face` and `corner` are the two verdicts `facing::facing_of` can reach, and
 # `none` is the one only a person can write down: a *derived* refusal is the
@@ -24,6 +29,9 @@
 # detector reads wrongly is made to stop being read. `hole` is the second
 # verdict, `facing::aperture_of`'s, and only a `face` may carry one — a corner is
 # two surfaces in one picture and nothing says which of them a hole is in.
+# `prism` is the third, a solid's own shape, and only a `corner` or a `none` may
+# carry one — the mirror rule, since `Shape::of` only ever scores a prism
+# against a picture the wall detector read as a corner in the first place.
 #
 # **Empty of rows today, and that is the honest state.** Every graphic the client
 # ships is read by the rules in `facing.rs` or refused by them, and nobody has yet
@@ -31,4 +39,4 @@
 # row — see `an_override_sheet_hands_its_rows_to_a_measured_table` in
 # `arttable.rs` — because a row invented to exercise it would be a wrong answer
 # shipped to every shard.
-table 3
+table 4
