@@ -9,6 +9,39 @@ copied.
 
 ## Where the next session starts
 
+**The instrument now has a second, non-trivial check: three blocks reproduce
+the three-tread stair `0x0736` almost as well as its own automatically-derived
+prism does.** `1822`'s single-tread case was checked against `block 0 8 0 8 0
+5` last session and landed at 0.977, the same number `best_prism` gets — a box
+is a one-tread prism, so that check could not tell a bug in
+`blocks_silhouette` from a bug in `prism_silhouette` sharing one. `1846` can:
+its best fit is three treads climbing west, heights 1/3/5 (`best_prism`,
+0.975), and hand-placing the matching three boxes — `x 5..8 z 0..1`, `x 3..5 z
+0..3`, `x 0..3 z 0..5`, each the full `y` — through `tests/author.rs` scores
+**0.966** against the real art, a picture whose disagreement is one thin cyan
+sliver where the prism's rounded riser beats a box's flat one.
+`blocks_silhouette` and `prism_silhouette` agree almost to the pixel on a
+shape neither shares any code with the other to draw. Done as a scratch table
+(`OPENSHARD_TABLE`), not written into `data/overrides.table` — a stair is
+already served correctly by the automatic prism fit, so an authored block row
+for it would be exactly the invented-row-nobody-needs the sheet's own header
+warns against.
+
+**A joint and an arch are still unauthored, and staying that way until they
+can be named rather than guessed.** The DoD's "the two shapes a person
+reported as 'something odd happens'" points at a real observation this file
+does not record a graphic id for — `(1441, 1692)`'s corner (`0x0033`) is the
+*facing* detector's own worked example, decision 17/18's pierce case, already
+fixed by a rule that has nothing to do with `blocks`, and no arch graphic is
+named anywhere in this plan or in the client's `tiledata` names that clearly
+reads as the classic-era case being pointed at. Inventing a candidate and
+authoring it into the checked-in sheet is exactly what the sheet's own
+comment refuses: "a row invented to exercise it would be a wrong answer
+shipped to every shard." Whoever has the report names the graphic; this
+session did not.
+
+Everything below is the session before it.
+
 **23.4's instrument landed: `tests/author.rs`, joining `artshot.rs`'s picture
 and `prism.rs`'s score into the one loop authoring a row actually takes.** Point
 it at a graphic and a table (`OPENSHARD_TABLE`, the checked-in
