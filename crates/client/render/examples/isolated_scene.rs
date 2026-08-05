@@ -593,6 +593,8 @@ fn main() {
     let mut blit = Blit::new(&device, format);
     // No mobile pass in this scene: the dummy stands in for it.
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
+    // No mesh-face pass in this scene either.
+    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
         &device,
@@ -604,6 +606,7 @@ fn main() {
             place: &place_view,
             face_instances: items_pass.instances_buffer(),
             mobile_instances: &dummy_instances,
+            mesh_instances: &dummy_mesh_instances,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,

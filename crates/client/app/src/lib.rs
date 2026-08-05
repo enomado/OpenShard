@@ -140,7 +140,7 @@ use openshard_client_render::occlusion;
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::paperdoll;
 use openshard_client_render::place;
-use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
+use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, SpriteRenderer, Target};
 use openshard_client_render::select::{self, Select, Selection};
 use openshard_client_render::solids::{self, SolidsRenderer};
 use openshard_client_render::sprite::{SpriteQuad, split_corners};
@@ -927,6 +927,11 @@ struct Screen {
     /// another atlas bound: a sprite is a sprite, and the two differ only in
     /// where the quad goes.
     mobile_pass: SpriteRenderer,
+    /// `docs/gbuffer.md` step 4c's mesh-face pass — depth and place only, for
+    /// a climbable static's honest per-face geometry. No atlas dependency, so
+    /// unlike `statics`/`mobile_pass` it is never rebuilt when the atlases
+    /// are.
+    mesh_pass: MeshFaceRenderer,
     /// Everything currently packed, grown as the camera walks into ground it
     /// has not seen. Beside the passes rather than inside them because the CPU
     /// side of an atlas is what builds a quad and the texture is what draws it.
@@ -3727,6 +3732,10 @@ impl App {
             atlases.mobiles.pixels(),
             &self.hue_ramp,
         );
+        // No atlas and no format: this pass writes only place and the shared
+        // depth buffer, so it does not need rebuilding here on every atlas
+        // repack the way `statics`/`mobile_pass` do.
+        let mesh_pass = MeshFaceRenderer::new(&device);
         // Built once, unlike `statics` and `mobile_pass`: `font_atlas` is never
         // rebuilt, so neither is what draws it.
         let text_pass = SpriteRenderer::new(
@@ -3824,6 +3833,7 @@ impl App {
             depth,
             place,
             mobile_pass,
+            mesh_pass,
             atlases,
             text_pass,
             ttf_atlas,
@@ -4350,7 +4360,11 @@ impl App {
             &window.atlases.texmaps,
             &cutaway,
         );
-        let static_quads = statics::collect(
+        let statics::StaticGeometry {
+            quads: static_quads,
+            mesh_vertices,
+            mesh_rows,
+        } = statics::collect(
             &self.map,
             &camera,
             &self.tiledata,
@@ -4503,6 +4517,18 @@ impl App {
             target,
             &static_instances.rows,
             Some(static_instances.drawn),
+        );
+        // Right after statics, into the same static's own pixels its
+        // billboard sprite just drew — `docs/gbuffer.md` step 4c. Depth and
+        // place only, never colour: this only gives a climbable static's
+        // pixels a more honest per-face normal than one blended stance could.
+        window.mesh_pass.render(
+            &window.device,
+            &window.queue,
+            &mut encoder,
+            target,
+            &mesh_vertices,
+            &mesh_rows,
         );
         window.mobile_pass.render(
             &window.device,
@@ -4671,6 +4697,7 @@ impl App {
                 place: &place_view,
                 face_instances: window.statics.instances_buffer(),
                 mobile_instances: window.mobile_pass.instances_buffer(),
+                mesh_instances: window.mesh_pass.rows_buffer(),
                 zoom: camera.zoom(),
                 rect: viewport,
             },

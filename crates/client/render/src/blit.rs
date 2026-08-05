@@ -74,6 +74,13 @@ pub struct Frame<'a> {
     /// a separate `SpriteRenderer` with its own instance list, not a second
     /// user of the statics one.
     pub mobile_instances: &'a wgpu::Buffer,
+    /// `docs/gbuffer.md` step 4c's mesh-face pass's own row buffer, bound a
+    /// second time as storage. A fragment's `Stance::MeshFace` sentinel
+    /// (`place.z`'s stance bits) tells this pass to read `mesh_instances[id]`
+    /// instead of `face_instances[id]` — a mesh face has no picture, so its
+    /// row is not `SpriteQuad`-shaped and lives in its own buffer.
+    /// [`dummy_mesh_instances`] when a caller has none this frame.
+    pub mesh_instances: &'a wgpu::Buffer,
     /// Which way the scaling goes, and so which sampler is right.
     pub zoom: Zoom,
     /// The rectangle of `target` the world gets.
@@ -289,6 +296,18 @@ impl Blit {
                     },
                     count: None,
                 },
+                // The mesh-face pass's own row buffer — `docs/gbuffer.md`
+                // step 4c. Read-only, the same reason 9 and 10 are.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -394,6 +413,7 @@ impl Blit {
             place,
             face_instances,
             mobile_instances,
+            mesh_instances,
             zoom,
             rect,
         } = frame;
@@ -468,6 +488,10 @@ impl Blit {
                 wgpu::BindGroupEntry {
                     binding: 10,
                     resource: mobile_instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: mesh_instances.as_entire_binding(),
                 },
             ],
         });
@@ -660,6 +684,17 @@ pub fn dummy_instances(device: &wgpu::Device) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("blit dummy instances"),
         size: crate::sprite::SpriteQuad::STRIDE,
+        usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    })
+}
+
+/// The same, for [`Frame::mesh_instances`] — a caller with no mesh faces to
+/// draw this frame still needs a valid resource in binding 11.
+pub fn dummy_mesh_instances(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("blit dummy mesh instances"),
+        size: crate::mesh_face::MeshFaceRow::STRIDE,
         usage: wgpu::BufferUsages::STORAGE,
         mapped_at_creation: false,
     })

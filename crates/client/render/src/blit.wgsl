@@ -177,6 +177,17 @@ struct FaceInstance {
 @group(0) @binding(9) var<storage, read> face_instances: array<FaceInstance>;
 @group(0) @binding(10) var<storage, read> mobile_instances: array<FaceInstance>;
 
+// `docs/gbuffer.md` step 4c's mesh-face pass's own row: the tile a face's
+// static stands on, and which way that face really faces — a mesh face has
+// no picture, so it shares no field with `FaceInstance` and lives in its own
+// buffer instead. `crate::mesh_face::MeshFaceRow`, laid out identically.
+struct MeshFaceInstance {
+    tile: u32,
+    stance: u32,
+};
+
+@group(0) @binding(11) var<storage, read> mesh_instances: array<MeshFaceInstance>;
+
 // The third channel is `z + 128` in its low eight bits and the sprite's stance in
 // four of the eight above — `crate::place::STANCE_SHIFT`, and `statics.wgsl`
 // writes it. The four faces are the only values this pass reads: a flat or
@@ -187,6 +198,11 @@ struct FaceInstance {
 const PLACE_STANCE_SHIFT: u32 = 8u;
 const PLACE_STANCE_MASK: u32 = 15u;
 const PLACE_Z_MASK: u32 = 255u;
+// `crate::place::Stance::MeshFace` — not a real stance, a routing sentinel
+// the mesh-face pass writes instead of one of the five below. Read before
+// `outward` ever sees it: the branch above replaces it with the row's own
+// real stance first.
+const STANCE_MESH_FACE: u32 = 10u;
 const STANCE_FLAT: u32 = 1u;
 const STANCE_FACE_NORTH: u32 = 2u;
 const STANCE_FACE_EAST: u32 = 3u;
@@ -1318,22 +1334,37 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         f32((place.w >> 2u) & SUB_TILE_MASK) / SUB_TILE,
         f32((place.w >> 9u) & SUB_TILE_MASK) / SUB_TILE,
     );
+    // Read before the id lookup below, not after: a mesh face's sentinel
+    // (`STANCE_MESH_FACE`) decides *which* buffer the id addresses, and the
+    // real stance a mesh face's normal names lives in that buffer's own row,
+    // not in this word — see the branch below and
+    // `crate::place::Stance::MeshFace`'s own doc.
+    var stance = (place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK;
     var tile = vec2<f32>(f32(place.x), f32(place.y));
     if kind != KIND_LAND {
         let id = place.x | (place.y << 16u);
-        var row_place: vec2<u32>;
-        if kind == KIND_STATIC {
-            row_place = face_instances[id].place;
+        if kind == KIND_STATIC && stance == STANCE_MESH_FACE {
+            // `docs/gbuffer.md` step 4c: a mesh face has no picture of its
+            // own, so its row lives in `mesh_instances`, not
+            // `face_instances` — and carries the *real* stance the
+            // attachment's sentinel stood in for.
+            let row = mesh_instances[id];
+            tile = vec2<f32>(f32(row.tile & 0xFFFFu), f32(row.tile >> 16u));
+            stance = row.stance;
         } else {
-            row_place = mobile_instances[id].place;
+            var row_place: vec2<u32>;
+            if kind == KIND_STATIC {
+                row_place = face_instances[id].place;
+            } else {
+                row_place = mobile_instances[id].place;
+            }
+            tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
         }
-        tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
     }
     let at = vec3<f32>(tile.x + sub.x, tile.y + sub.y, f32(place.z & PLACE_Z_MASK) - 128.0);
     // And which way the surface drawn here looks, where it is a wall's face. Zero
     // for the ground, for a mobile and for anything standing up whose art would
     // not name an edge — none of those has a side to be lit from.
-    let stance = (place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK;
     let normal = outward(stance);
 
     // The ambient this *tile* has: the sky's share of it scaled by how much of

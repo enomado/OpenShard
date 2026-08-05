@@ -192,6 +192,7 @@ fn measure(
     place: &wgpu::TextureView,
     face_instances: &wgpu::Buffer,
     mobile_instances: &wgpu::Buffer,
+    mesh_instances: &wgpu::Buffer,
     surface: &wgpu::TextureView,
     lighting: &Lighting,
     zoom: Zoom,
@@ -203,6 +204,7 @@ fn measure(
         place,
         face_instances,
         mobile_instances,
+        mesh_instances,
         zoom,
         rect: ViewportRect {
             x: 0,
@@ -329,7 +331,8 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         &animations,
         &static_atlas,
         &Cutaway::OPEN,
-    );
+    )
+    .quads;
     // `docs/gbuffer.md` step 2: the id width has to be sized against a real
     // frame's *face* count, not the object count decision 3 replaces. Quads are
     // objects — one per static, one per land cell — and every one of them is
@@ -409,6 +412,8 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
     // No mobile pass in this fixture: the dummy stands in for it.
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
+    // No mesh-face pass either: this fixture measures the blit pass alone.
+    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
 
     // The lighting, collected the way the app collects it — and timed, because
     // the walk of the map and the grid it builds are a per-frame cost of this
@@ -531,6 +536,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 &place_view,
                 statics_pass.instances_buffer(),
                 &dummy_instances,
+                &dummy_mesh_instances,
                 &surface_view,
                 lighting,
                 zoom,
@@ -553,6 +559,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 place: &place_view,
                 face_instances: statics_pass.instances_buffer(),
                 mobile_instances: &dummy_instances,
+                mesh_instances: &dummy_mesh_instances,
                 zoom,
                 rect: ViewportRect {
                     x: 0,

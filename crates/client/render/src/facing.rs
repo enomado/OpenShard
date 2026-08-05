@@ -1140,6 +1140,135 @@ impl Prism {
         let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
         [normal[0] / len, normal[1] / len, normal[2] / len]
     }
+
+    /// The tile-relative footprint of one climb-axis strip, `lo..=hi` — both in
+    /// `0.0..=1.0`, the run fraction from the low side to [`Prism::up`]. Shared by
+    /// [`Prism::mesh`] (a strip, `lo < hi`, for a tread's top) and a riser's
+    /// boundary plane (`lo == hi`, degenerate on the climb axis rather than a span
+    /// of it) — and by [`crate::occlusion::Solid`]'s own tread boxes, which is the
+    /// whole reason this lives here rather than beside either caller: `gbuffer.md`
+    /// step 4c found occlusion and render asking the same question of a tread —
+    /// where its strip sits — and answering it twice was two chances for the two
+    /// to disagree. Moved verbatim from `occlusion::Solid::strip_footprint`,
+    /// which this replaces; the occlusion tests that exercised it are the
+    /// regression.
+    ///
+    /// `up` is `North`/`South` for a climb along `y`, `East`/`West` for one along
+    /// `x`, and the strip is flat on that axis, full width on the other. `up`
+    /// names the high side, so `run = 0` sits at the opposite edge and climbs
+    /// towards `up` as the fraction grows.
+    pub(crate) fn footprint(x: f64, y: f64, up: Face, lo: f64, hi: f64) -> (f64, f64, f64, f64) {
+        let (mut min_x, mut max_x, mut min_y, mut max_y) = (x, x + 1.0, y, y + 1.0);
+        match up {
+            Face::North => {
+                min_y = y + 1.0 - hi;
+                max_y = y + 1.0 - lo;
+            }
+            Face::South => {
+                min_y = y + lo;
+                max_y = y + hi;
+            }
+            Face::West => {
+                min_x = x + 1.0 - hi;
+                max_x = x + 1.0 - lo;
+            }
+            Face::East => {
+                min_x = x + lo;
+                max_x = x + hi;
+            }
+        }
+        (min_x, max_x, min_y, max_y)
+    }
+
+    /// This prism's honest geometry, standing on tile `(x, y)` with its own base
+    /// at `base_z` — the render-side twin of [`Builder::add`](crate::occlusion::Builder::add)'s
+    /// climbable branch, and built from the same two facts that branch reads:
+    /// [`Prism::treads`] and [`Prism::up`].
+    ///
+    /// Two [`crate::mesh::Face`]s per tread, in climb order — a top and a riser,
+    /// `docs/gbuffer.md` decision 3's "seven honest normals" minus the lid
+    /// static's own top, which is an ordinary flat sprite and needs no mesh at
+    /// all. The top is a lid, flat at the tread's own height, normal `[0, 0, 1]`
+    /// — the same case [`Prism::tread_normal`]'s `k == 0` recovers, because a
+    /// tread's own top polygon really is flat; the *ramp* a flight of them reads
+    /// as is what honest per-face geometry replaces the blend with; see
+    /// `docs/gbuffer.md`'s "Not settled" for whether step 5 still needs
+    /// [`Prism::tread_normal`] once this exists. The riser is the plane between
+    /// this tread and the one before it (or the static's own base, for the
+    /// first), facing away from `up` — the side a climber sees approaching from
+    /// below, the same direction `occlusion::Solid::tread_riser_box_of`'s own doc
+    /// names.
+    pub fn mesh(&self, x: i32, y: i32, base_z: i32) -> crate::mesh::Mesh {
+        use crate::camera::WorldSpot;
+        use crate::mesh::Face as MeshFace;
+
+        let treads = self.treads();
+        let count = treads.len();
+        let mut mesh = crate::mesh::Mesh::EMPTY;
+        let mut low_z = base_z;
+        for (index, &height) in treads.iter().enumerate() {
+            let top_z = base_z + i32::from(height);
+            let lo = index as f64 / count as f64;
+            let hi = (index + 1) as f64 / count as f64;
+
+            let (min_x, max_x, min_y, max_y) = Self::footprint(f64::from(x), f64::from(y), self.up, lo, hi);
+            let z = f64::from(top_z);
+            let top = [
+                WorldSpot {
+                    x: min_x,
+                    y: min_y,
+                    z,
+                },
+                WorldSpot {
+                    x: max_x,
+                    y: min_y,
+                    z,
+                },
+                WorldSpot {
+                    x: max_x,
+                    y: max_y,
+                    z,
+                },
+                WorldSpot {
+                    x: min_x,
+                    y: max_y,
+                    z,
+                },
+            ];
+            // `MAX_FACE_VERTICES` is 4 and this is a 4-corner ring, so `new`
+            // never refuses it.
+            mesh.push(MeshFace::new(&top, [0.0, 0.0, 1.0]).unwrap());
+
+            let (min_x, max_x, min_y, max_y) = Self::footprint(f64::from(x), f64::from(y), self.up, lo, lo);
+            let riser = [
+                WorldSpot {
+                    x: min_x,
+                    y: min_y,
+                    z: f64::from(top_z),
+                },
+                WorldSpot {
+                    x: max_x,
+                    y: max_y,
+                    z: f64::from(top_z),
+                },
+                WorldSpot {
+                    x: max_x,
+                    y: max_y,
+                    z: f64::from(low_z),
+                },
+                WorldSpot {
+                    x: min_x,
+                    y: min_y,
+                    z: f64::from(low_z),
+                },
+            ];
+            let [ox, oy] = self.up.outward();
+            mesh.push(MeshFace::new(&riser, [-ox, -oy, 0.0]).unwrap());
+
+            low_z = top_z;
+        }
+        mesh
+    }
 }
 
 /// The silhouette of a [`Prism`], drawn the way the projection draws one.
@@ -2104,6 +2233,71 @@ mod tests {
         assert!(
             steep_tilt > shallow_tilt,
             "steep {steep_tilt} should tilt further from vertical than shallow {shallow_tilt}"
+        );
+    }
+
+    /// The render-side twin of `occlusion.rs`'s
+    /// `a_stair_is_two_faces_per_tread_and_each_ones_height_comes_off_the_art`,
+    /// same fixture: `0x0736`'s three treads, one to five `z`, climbing west.
+    /// `Prism::mesh` and `Builder::add`'s climbable branch read the same two
+    /// facts (`treads`, `up`), so the two tests pin the same shape from the
+    /// two sides `docs/gbuffer.md` step 4c joins.
+    #[test]
+    fn a_stairs_mesh_is_two_honest_faces_per_tread() {
+        let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+        let mesh = prism.mesh(100, 100, 0);
+        let faces = mesh.faces();
+        assert_eq!(faces.len(), 6, "a top and a riser per tread, not one body");
+
+        // `Prism::mesh` pushes a top then its riser, per tread, in climb order.
+        let heights = [1i32, 3, 5];
+        for (tread, &height) in heights.iter().enumerate() {
+            let top = &faces[tread * 2];
+            assert_eq!(
+                top.normal,
+                [0.0, 0.0, 1.0],
+                "a top is flat, not blended towards the climb"
+            );
+            assert!(
+                top.vertices().iter().all(|v| v.z == f64::from(height)),
+                "tread {tread}'s own height, not the flight's tallest"
+            );
+
+            let riser = &faces[tread * 2 + 1];
+            assert_eq!(
+                riser.normal,
+                [1.0, 0.0, 0.0],
+                "a riser faces away from `up` (West), which is East's own outward"
+            );
+            let low = if tread == 0 {
+                0.0
+            } else {
+                f64::from(heights[tread - 1])
+            };
+            let zs: Vec<f64> = riser.vertices().iter().map(|v| v.z).collect();
+            assert!(
+                zs.contains(&low),
+                "riser {tread} should reach down to {low}: {zs:?}"
+            );
+            assert!(
+                zs.contains(&f64::from(height)),
+                "riser {tread} should reach up to {height}: {zs:?}"
+            );
+        }
+    }
+
+    /// [`Prism::footprint`] pinned at the same fixture
+    /// `occlusion.rs`'s `a_mid_flight_risers_footprint_stays_on_its_own_tile`
+    /// uses — that test cannot reach this function directly (private to its
+    /// module), but both now call it, so a regression here shows there too.
+    #[test]
+    fn a_mid_flight_treads_footprint_is_a_fraction_not_a_tile_edge() {
+        let (min_x, max_x, min_y, max_y) = Prism::footprint(100.0, 100.0, Face::West, 1.0 / 3.0, 1.0 / 3.0);
+        assert_eq!((min_x, max_x), (100.0 + 2.0 / 3.0, 100.0 + 2.0 / 3.0));
+        assert_eq!(
+            (min_y, max_y),
+            (100.0, 101.0),
+            "West's climb axis is x, so y stays the whole tile"
         );
     }
 }

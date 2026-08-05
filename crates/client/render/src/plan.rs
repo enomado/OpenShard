@@ -555,6 +555,7 @@ fn drawn(
     // which only ever writes `Kind::Land`, and the real buffer built above
     // for `elevation`, which writes `Kind::Static`.
     let dummy_instances = crate::blit::dummy_instances(device);
+    let dummy_mesh_instances = crate::blit::dummy_mesh_instances(device);
     let face_instances = if face_rows.is_empty() {
         None
     } else {
@@ -577,6 +578,7 @@ fn drawn(
             place: &place_view,
             face_instances: face_instances.as_ref().unwrap_or(&dummy_instances),
             mobile_instances: &dummy_instances,
+            mesh_instances: &dummy_mesh_instances,
             zoom: Zoom::ONE,
             rect: crate::blit::ViewportRect {
                 x: 0,

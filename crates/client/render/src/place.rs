@@ -105,7 +105,7 @@ pub enum Kind {
 ///   direction no wall ever runs, and it looks like it.
 ///
 /// It rides in **four bits** of the instance's second word, which is what the
-/// ten values need and what [`Place::packed`] reserves — and it reaches the
+/// eleven values need and what [`Place::packed`] reserves — and it reaches the
 /// attachment too, in the eight bits a `z + 128` leaves spare in the third
 /// channel's `u16`. See [`STANCE_SHIFT`]. Four where six values needed three,
 /// and neither word had to grow: both have eight or more bits spare above it.
@@ -152,6 +152,19 @@ pub enum Stance {
     CornerEastSouth = 8,
     /// The east face on the right half, the west face on the left.
     CornerEastWest = 9,
+    /// Not a real stance: a routing sentinel `docs/gbuffer.md` step 4c's mesh
+    /// pass writes instead of one of the five above.
+    ///
+    /// `blit.wgsl` reads `face_instances[id]` for every other `Kind::Static`
+    /// pixel; seeing this one in the attachment's stance bits tells it to read
+    /// `mesh_instances[id]` instead — a different, smaller row (tile and the
+    /// face's *real* stance, one of [`Stance::Flat`]/the four
+    /// [`Stance::FaceNorth`]-family values), because a mesh face has no
+    /// picture of its own to share `face_instances`' shape with. Never
+    /// returned by [`Stance::of`], never written into a
+    /// [`SpriteQuad`](crate::sprite::SpriteQuad) — see
+    /// [`Stance::of_normal`], which produces the row's real stance instead.
+    MeshFace = 10,
 }
 
 /// The first of the four corner stances. `statics.wgsl` has the same number, and
@@ -207,6 +220,34 @@ impl Stance {
             crate::facing::Face::South => Self::FaceSouth,
             crate::facing::Face::West => Self::FaceWest,
         }
+    }
+
+    /// Which real stance an honest [`crate::mesh::Face`] normal names, or
+    /// `None` for a vector nothing here produces.
+    ///
+    /// [`crate::facing::Prism::mesh`] builds every one of its faces' normals
+    /// from exactly two shapes — `[0, 0, 1]` for a top, or
+    /// [`crate::facing::Face::outward`] folded into three dimensions for a
+    /// riser — so this is a closed set today, not a general vector decoder:
+    /// `docs/gbuffer.md`'s "Not settled" section leaves the general case
+    /// (a packed arbitrary normal) open for whenever a producer that is not
+    /// axis-aligned exists to measure a bit layout against. This is that
+    /// question's answer for the five that do exist, reusing
+    /// `blit.wgsl`'s existing `outward(stance)` rather than inventing a
+    /// second encoding no consumer needs yet.
+    pub fn of_normal(normal: [f32; 3]) -> Option<Self> {
+        use crate::facing::Face;
+
+        if normal == [0.0, 0.0, 1.0] {
+            return Some(Self::Flat);
+        }
+        [Face::North, Face::East, Face::South, Face::West]
+            .into_iter()
+            .find(|face| {
+                let [ox, oy] = face.outward();
+                normal == [ox, oy, 0.0]
+            })
+            .map(Self::face)
     }
 }
 
@@ -482,6 +523,34 @@ mod tests {
             ),
             Stance::Upright,
             "a pairing no half can produce falls back to the whole tile",
+        );
+    }
+
+    /// The five normals [`crate::facing::Prism::mesh`] can produce all round-trip
+    /// back to the real stance that names them, and nothing else does.
+    ///
+    /// Pinned because the two sides of this mapping — the literals `Prism::mesh`
+    /// builds its faces' normals from, and this function's own match — live in
+    /// different files with nothing but a comment tying them together; a literal
+    /// changed in either one should fail a test rather than silently start
+    /// returning `Upright` for a mesh face it used to answer honestly.
+    #[test]
+    fn of_normal_recovers_every_stance_prism_mesh_can_produce() {
+        use crate::facing::Face;
+
+        assert_eq!(Stance::of_normal([0.0, 0.0, 1.0]), Some(Stance::Flat));
+        for face in [Face::North, Face::East, Face::South, Face::West] {
+            let [ox, oy] = face.outward();
+            assert_eq!(
+                Stance::of_normal([ox, oy, 0.0]),
+                Some(Stance::face(face)),
+                "{face:?}'s own outward normal"
+            );
+        }
+        assert_eq!(
+            Stance::of_normal([1.0, 1.0, 0.0]),
+            None,
+            "not a unit vector any face or the flat top produces"
         );
     }
 

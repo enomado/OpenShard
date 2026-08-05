@@ -10,6 +10,7 @@ use crate::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use crate::camera::{Projection, TILE_HEIGHT, TILE_WIDTH, Z_STEP};
 use crate::ground::GroundQuad;
 use crate::hue::HueRamp;
+use crate::mesh_face::{MeshFaceRow, MeshFaceVertex};
 use crate::sprite::SpriteQuad;
 
 /// What an untouched pixel is left as.
@@ -151,13 +152,13 @@ pub fn depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 /// and one format — see [`crate::place`]. No blending, like the picture beside
 /// it: a place is an identity, and averaging two of them names a third tile that
 /// nothing was drawn on.
-const PLACE_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
+pub(crate) const PLACE_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
     format: crate::place::FORMAT,
     blend: None,
     write_mask: wgpu::ColorWrites::ALL,
 };
 
-fn depth_state() -> wgpu::DepthStencilState {
+pub(crate) fn depth_state() -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: DEPTH_FORMAT,
         depth_write_enabled: Some(true),
@@ -1228,6 +1229,266 @@ impl SpriteRenderer {
         pass.set_vertex_buffer(2, self.mask_rings.slice(..));
         pass.draw(0..4, 0..instances as u32);
     }
+}
+
+/// Draws `docs/gbuffer.md` step 4c's mesh-geometry pass: depth and place
+/// only, for a [`crate::mesh::Mesh`]'s faces — never colour, because the
+/// enclosing static's own billboard sprite already drew the picture, and
+/// this pass exists only to give that same static's pixels a more honest
+/// per-face normal than one blended stance could.
+///
+/// No atlas, no sampler, no texture at all — unlike [`SpriteRenderer`], it
+/// has nothing to upload at construction and nothing an atlas repack would
+/// ever invalidate, so it is built once, at window setup, and never rebuilt.
+#[derive(Debug)]
+pub struct MeshFaceRenderer {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    uniforms: wgpu::Buffer,
+    vertices: wgpu::Buffer,
+    capacity: u64,
+    rows: wgpu::Buffer,
+    rows_capacity: u64,
+}
+
+impl MeshFaceRenderer {
+    /// Build the pipeline. Takes no atlas and no colour format: this pass
+    /// writes only [`PLACE_TARGET`] and the shared depth buffer.
+    pub fn new(device: &wgpu::Device) -> Self {
+        let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mesh face viewport"),
+            size: STATIC_UNIFORM_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mesh face"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mesh face"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            }],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("mesh face"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("mesh_face.wgsl").into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("mesh face"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("mesh face"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                // One raw vertex at a time — not a unit quad plus per-instance
+                // data: a face's true screen shape is an arbitrary projected
+                // quadrilateral, not an axis-aligned rectangle a shader could
+                // reconstruct from an origin and a size.
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: MeshFaceVertex::STRIDE,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 8,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32,
+                            offset: 20,
+                            shader_location: 2,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 24,
+                            shader_location: 3,
+                        },
+                    ],
+                })],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(PLACE_TARGET)],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(depth_state()),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            bind_group,
+            uniforms,
+            vertices: new_mesh_vertex_buffer(device, INITIAL_MESH_FACES * 6),
+            capacity: INITIAL_MESH_FACES * 6,
+            rows: new_mesh_row_buffer(device, INITIAL_MESH_FACES),
+            rows_capacity: INITIAL_MESH_FACES,
+        }
+    }
+
+    /// This pass's own row buffer, as `blit.wgsl` needs it: bound a second
+    /// time, as storage, so `mesh_instances[id]` can read a face's tile and
+    /// real stance back once a fragment's `Stance::MeshFace` sentinel says to
+    /// look here instead of `face_instances`.
+    pub fn rows_buffer(&self) -> &wgpu::Buffer {
+        &self.rows
+    }
+
+    /// Draw `vertices` (`crate::mesh::Face::fan`'s output, six per face) into
+    /// `target`'s place and depth, keeping its colour untouched.
+    ///
+    /// Loads rather than clears: this runs after the statics pass, into the
+    /// same static's own pixels, so its depth test can only tie or improve on
+    /// what the billboard sprite already wrote there.
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: Target<'_>,
+        vertices: &[MeshFaceVertex],
+        rows: &[MeshFaceRow],
+    ) {
+        let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
+        let projection = target.projection;
+        for value in [
+            target.width as f32,
+            target.height as f32,
+            projection.scale,
+            0.0,
+            projection.origin.x,
+            projection.origin.y,
+            0.0,
+            0.0,
+        ] {
+            uniform_bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        queue.write_buffer(&self.uniforms, 0, &uniform_bytes);
+
+        if rows.len() as u64 > self.rows_capacity {
+            self.rows_capacity = (rows.len() as u64).next_power_of_two();
+            self.rows = new_mesh_row_buffer(device, self.rows_capacity);
+        }
+        let mut row_bytes = Vec::with_capacity(rows.len() * MeshFaceRow::STRIDE as usize);
+        for row in rows {
+            row.write(&mut row_bytes);
+        }
+        if !row_bytes.is_empty() {
+            queue.write_buffer(&self.rows, 0, &row_bytes);
+        }
+
+        if vertices.is_empty() {
+            // Nothing to draw and nothing to clear: this pass owns no pixels
+            // of its own, the same reason `SpriteRenderer::render` returns
+            // early here.
+            return;
+        }
+        if vertices.len() as u64 > self.capacity {
+            self.capacity = (vertices.len() as u64).next_power_of_two();
+            self.vertices = new_mesh_vertex_buffer(device, self.capacity);
+        }
+        let mut vertex_bytes = Vec::with_capacity(vertices.len() * MeshFaceVertex::STRIDE as usize);
+        for vertex in vertices {
+            vertex.write(&mut vertex_bytes);
+        }
+        queue.write_buffer(&self.vertices, 0, &vertex_bytes);
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("mesh face"),
+            // No colour target at all: `target.view` already carries the
+            // billboard sprite's own picture, and this pass has nothing to
+            // add to it — only `target.place` and the shared depth buffer.
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target.place,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: target.depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.draw(0..vertices.len() as u32, 0..1);
+    }
+}
+
+/// How many mesh faces the row and vertex buffers start out able to hold —
+/// unmeasured against a real frame, the same honestly-unmeasured state
+/// `INITIAL_QUADS`'s own doc admits it is in: climbable statics are a small,
+/// bounded class next to ordinary ones, and both buffers grow the same
+/// power-of-two-on-demand way `SpriteRenderer`'s own instance buffer does.
+const INITIAL_MESH_FACES: u64 = 64;
+
+fn new_mesh_vertex_buffer(device: &wgpu::Device, vertices: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("mesh face vertices"),
+        size: vertices * MeshFaceVertex::STRIDE,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn new_mesh_row_buffer(device: &wgpu::Device, rows: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("mesh face rows"),
+        size: rows * MeshFaceRow::STRIDE,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
 }
 
 /// Bytes of the sprite pass's uniform block: the target's size, the scale, the

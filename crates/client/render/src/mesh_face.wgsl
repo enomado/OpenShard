@@ -1,0 +1,101 @@
+// `docs/gbuffer.md` step 4c's render pass: one raw, non-instanced vertex per
+// corner of a `crate::mesh::Face`, fan-triangulated on the CPU
+// (`Face::fan`). No colour target — the enclosing static's own billboard
+// sprite already drew the picture (`statics.wgsl`), and this pass exists
+// only to give that same static's pixels a more honest per-face normal in
+// `place` than one blended stance (`facing::Prism::tread_normal`) could.
+//
+// Depth is not derived here either, for the same reason `statics.wgsl` says
+// so of its own: it is the enclosing static's own `SpriteQuad::depth`,
+// carried through unchanged, so this pass's depth test can only tie or
+// improve on what the billboard sprite already wrote — never disagree with
+// it (`docs/gbuffer.md` decision 4).
+
+struct Viewport {
+    // Real pixels per virtual pixel — see `ground.wgsl`, which documents the
+    // same three fields at length; every world pass reads them identically.
+    size: vec2<f32>,
+    scale: f32,
+    _padding: f32,
+    // The virtual-pixel point that lands in the middle of the target.
+    origin: vec2<f32>,
+    // Uniform blocks are sized in multiples of 16 bytes.
+    _tail: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> viewport: Viewport;
+
+struct VertexOut {
+    @builtin(position) clip: vec4<f32>,
+    // This vertex's true world position, carried rather than recomputed:
+    // linear interpolation across the triangle gives every fragment its own
+    // exact world position for free, because the projection is affine and
+    // every face is planar — see `crate::mesh_face::MeshFaceVertex::world`.
+    @location(0) world: vec3<f32>,
+    // This face's row in `blit.wgsl`'s `mesh_instances` — flat, identical for
+    // all six vertices one face's fan produces.
+    @location(1) @interpolate(flat) id: u32,
+};
+
+@vertex
+fn vs_main(
+    // This corner in `Camera::to_view_exact`'s space — the same
+    // pre-viewport-zoom space `statics.wgsl`'s own `origin` is in.
+    @location(0) screen: vec2<f32>,
+    @location(1) world: vec3<f32>,
+    // Where this face sorts: the enclosing static's own depth, reused whole.
+    @location(2) depth: f32,
+    @location(3) id: u32,
+) -> VertexOut {
+    // Virtual pixels to real ones, the same single line `statics.wgsl`'s own
+    // vertex stage ends on.
+    let real = (screen - viewport.origin) * viewport.scale + viewport.size * 0.5;
+    let ndc = vec2<f32>(
+        real.x / viewport.size.x * 2.0 - 1.0,
+        1.0 - real.y / viewport.size.y * 2.0,
+    );
+
+    var out: VertexOut;
+    out.clip = vec4<f32>(ndc, depth, 1.0);
+    out.world = world;
+    out.id = id;
+    return out;
+}
+
+// `crate::place::Kind::Static` — a mesh face is a static's face.
+const KIND_STATIC: u32 = 2u;
+// `crate::place::Stance::MeshFace` — the routing sentinel `blit.wgsl` reads
+// to look this fragment's id up in `mesh_instances` instead of
+// `face_instances`. The two must agree; there is a test on the Rust side
+// pinning the number, which is the only thing that can be compared against
+// text a Rust compiler never reads.
+const STANCE_MESH_FACE: u32 = 10u;
+const PLACE_STANCE_SHIFT: u32 = 8u;
+// A hundred-and-twenty-seventh of a tile — `crate::place`'s own fraction
+// unit, the same one `statics.wgsl` packs into the attachment's low bits.
+const SUB_TILE: f32 = 127.0;
+const INSIDE: f32 = 126.0 / 127.0;
+
+struct FragmentOut {
+    @location(0) place: vec4<u32>,
+};
+
+@fragment
+fn fs_main(in: VertexOut) -> FragmentOut {
+    // Where in its tile this fragment is, and how high — both exact, both
+    // free: `in.world` already interpolated to this fragment's own true
+    // position, so there is no per-stance formula to invert a second time.
+    let sub = clamp(fract(in.world.xy), vec2<f32>(0.0), vec2<f32>(INSIDE));
+    let z = clamp(round(in.world.z), -128.0, 127.0);
+
+    var out: FragmentOut;
+    out.place = vec4<u32>(
+        in.id & 0xFFFFu,
+        in.id >> 16u,
+        u32(z + 128.0) | (STANCE_MESH_FACE << PLACE_STANCE_SHIFT),
+        KIND_STATIC
+            | (u32(round(sub.x * SUB_TILE)) << 2u)
+            | (u32(round(sub.y * SUB_TILE)) << 9u),
+    );
+    return out;
+}

@@ -28,6 +28,7 @@ use crate::camera::{Camera, TILE_HEIGHT, TileBounds};
 use crate::cutaway::{self, Cutaway};
 use crate::depth;
 use crate::geometry::{Rect, Vec2};
+use crate::mesh_face::{MeshFaceRow, MeshFaceVertex};
 use crate::sprite::SpriteQuad;
 
 /// Where a sprite standing on a tile lands, in viewport pixels.
@@ -138,6 +139,27 @@ pub struct PickedStatic {
 /// it is one answer per frame: it is read from the tile the player is standing
 /// on and every quad in the frame is tested against the same three numbers. See
 /// [`crate::cutaway`].
+/// Everything [`collect`] gathers about the statics on screen: the pictures
+/// to draw, and the honest per-face geometry `docs/gbuffer.md` step 4c's
+/// mesh pass draws over some of them.
+///
+/// One walk builds both — [`for_each_static_in`]'s own doc is why a second
+/// walk asking the same question of the same statics would be two answers to
+/// "which statics is this frame about" rather than one.
+#[derive(Debug, Default)]
+pub struct StaticGeometry {
+    /// The pictures, back to front — what this function returned before mesh
+    /// geometry existed, unchanged.
+    pub quads: Vec<SpriteQuad>,
+    /// Raw vertices for every visible climbable static's [`crate::mesh::Mesh`],
+    /// six per face ([`crate::mesh::Face::fan`]) —
+    /// [`crate::renderer::MeshFaceRenderer::render`]'s own input.
+    pub mesh_vertices: Vec<MeshFaceVertex>,
+    /// One row per face represented in `mesh_vertices`, addressed by a
+    /// vertex's own `id`.
+    pub mesh_rows: Vec<MeshFaceRow>,
+}
+
 pub fn collect(
     map: &Map,
     camera: &Camera,
@@ -145,10 +167,12 @@ pub fn collect(
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
-) -> Vec<SpriteQuad> {
+) -> StaticGeometry {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
+    let mut mesh_vertices = Vec::new();
+    let mut mesh_rows = Vec::new();
 
     for_each_static_in(map, camera.visible_tiles(), |item| {
         let at = Point::new(item.x, item.y, item.z);
@@ -166,7 +190,11 @@ pub fn collect(
         if !on_screen(camera, placed.at, &placed.sprite) {
             return;
         }
-        quads.push((placed.order, quad_of(at, &placed, base, u32::from(item.hue))));
+        let quad = quad_of(at, &placed, base, u32::from(item.hue));
+        if let Some(prism) = &placed.prism {
+            push_mesh(&mut mesh_vertices, &mut mesh_rows, camera, at, prism, quad.depth);
+        }
+        quads.push((placed.order, quad));
     });
 
     // Back to front, and a *stable* sort on the order alone: two statics on one
@@ -177,7 +205,46 @@ pub fn collect(
     // would be just as deterministic and would resolve those ties by an
     // accident of the art's numbering.
     quads.sort_by_key(|(order, _)| *order);
-    quads.into_iter().map(|(_, quad)| quad).collect()
+    StaticGeometry {
+        quads: quads.into_iter().map(|(_, quad)| quad).collect(),
+        mesh_vertices,
+        mesh_rows,
+    }
+}
+
+/// Push one climbable static's honest faces — a top and a riser per tread,
+/// [`crate::facing::Prism::mesh`] — as raw, fan-triangulated vertices.
+///
+/// `depth` is the enclosing [`SpriteQuad`]'s own, reused rather than
+/// recomputed: a second depth formula here is a second chance to disagree
+/// with the one that already decided this static's pixels
+/// (`docs/gbuffer.md` decision 4).
+fn push_mesh(
+    vertices: &mut Vec<MeshFaceVertex>,
+    rows: &mut Vec<MeshFaceRow>,
+    camera: &Camera,
+    at: Point,
+    prism: &crate::facing::Prism,
+    depth: f32,
+) {
+    let mesh = prism.mesh(i32::from(at.x), i32::from(at.y), i32::from(at.z));
+    for face in mesh.faces() {
+        let id = rows.len() as u32;
+        rows.push(MeshFaceRow {
+            tile: (at.x, at.y),
+            stance: crate::place::Stance::of_normal(face.normal)
+                .expect("Prism::mesh only ever produces normals Stance::of_normal recognizes"),
+        });
+        for corner in face.fan() {
+            let screen = camera.to_view_exact(crate::camera::project_exact(corner));
+            vertices.push(MeshFaceVertex {
+                screen,
+                world: [corner.x as f32, corner.y as f32, corner.z as f32],
+                depth,
+                id,
+            });
+        }
+    }
 }
 
 /// One placed picture: where it lands, which frame it is showing, and where it
@@ -205,6 +272,12 @@ pub(crate) struct Placed {
     /// Which way its picture faces — a rug on the ground is as flat as a floor
     /// built into the map. See [`crate::place::Stance`].
     pub(crate) stance: crate::place::Stance,
+    /// The solid this static's art is a picture of, if the client's own
+    /// `CLIMBABLE` bit and the atlas's own measurement agree it has one —
+    /// see [`crate::atlas::StaticAtlas::prism`]'s own doc for why the bit
+    /// comes first. `docs/gbuffer.md` step 4c reads this to build the
+    /// static's honest [`crate::mesh::Mesh`]; nothing else uses it yet.
+    pub(crate) prism: Option<crate::facing::Prism>,
 }
 
 /// Place one static, or `None` when there is nothing on screen for it: hidden by
@@ -245,6 +318,12 @@ pub(crate) fn place(
         // when the atlas packed this sprite. See `crate::place::Stance` and
         // `crate::facing`.
         stance: crate::place::Stance::of(tile, sprite.facing),
+        // The bit first, the atlas's own measurement second — the same
+        // order `occlusion::Builder::add`'s climbable branch already checks
+        // in, and the same reason `StaticAtlas::prism`'s own doc gives: a
+        // wall can score well against some prism by accident, and only the
+        // client's own flag says a static is one at all.
+        prism: tile.flags.is_climbable().then(|| atlas.prism(showing)).flatten(),
     })
 }
 
@@ -681,7 +760,7 @@ mod tests {
             hue: 0,
         });
         let animations = StaticAnimations::default();
-        let drawn = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN);
+        let drawn = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN).quads;
         assert_eq!(drawn.len(), 1);
         let picked = PickedStatic {
             at: Point::new(101, 99, 5),
@@ -811,11 +890,15 @@ mod tests {
         // Ten seconds, which is longer than the slowest cycle in the file. The
         // count of quads must not move: a graphic that was shown and not packed
         // is a sprite that silently stops being drawn.
-        let first = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN).len();
+        let first = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN)
+            .quads
+            .len();
         assert!(first > 300, "only {first} statics on screen");
         for step in 1..=100 {
             animations.advance(FRAME_STEP);
-            let now = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN).len();
+            let now = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN)
+                .quads
+                .len();
             assert_eq!(
                 now, first,
                 "a static vanished {step} steps in: shown but never packed"
@@ -884,7 +967,9 @@ mod tests {
         let animations = StaticAnimations::default();
         let wanted = visible_graphics(&map, &camera, &animations);
         let atlas = StaticAtlas::build(&art, wanted).expect("a screen of statics fits");
-        let open = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN).len();
+        let open = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN)
+            .quads
+            .len();
 
         // A tile in this quarter of Britain that is under something. Found
         // rather than named, for the reason `cutaway`'s own map test searches:
@@ -897,7 +982,9 @@ mod tests {
                 (cutaway != Cutaway::OPEN).then_some(cutaway)
             })
             .expect("something in Britain is under a roof");
-        let cut = collect(&map, &camera, &tiledata, &animations, &atlas, &indoors).len();
+        let cut = collect(&map, &camera, &tiledata, &animations, &atlas, &indoors)
+            .quads
+            .len();
 
         assert!(cut < open, "the cutaway removed nothing: {cut} of {open}");
         assert!(cut > 0, "the cutaway removed the whole town");
@@ -940,7 +1027,8 @@ mod tests {
             &StaticAnimations::default(),
             &atlas,
             &Cutaway::OPEN,
-        );
+        )
+        .quads;
         assert!(quads.len() > 500, "only {} statics on screen", quads.len());
 
         let mut previous = f32::INFINITY;

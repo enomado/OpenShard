@@ -54,6 +54,8 @@ pub mod gump;
 pub mod hue;
 pub mod items;
 pub mod light;
+pub mod mesh;
+pub mod mesh_face;
 pub mod mobiles;
 pub mod occlusion;
 pub mod outline;

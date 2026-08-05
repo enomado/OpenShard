@@ -721,6 +721,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
     let mut blit = Blit::new(&device, format);
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
+    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
         &device,
@@ -735,6 +736,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
             // Ground only: nothing here ever indexes either buffer.
             face_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
+            mesh_instances: &dummy_mesh_instances,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -895,6 +897,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         view: View::Lit,
     };
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
+    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
         &device,
@@ -907,6 +910,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
             // Ground only: nothing here ever indexes either buffer.
             face_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
+            mesh_instances: &dummy_mesh_instances,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -1077,6 +1081,7 @@ fn a_wall_stops_the_light_behind_it() {
     };
 
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
+    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
     let read = |blit: &mut Blit, occlusion: Occlusion| -> Frame {
         let lighting = Lighting {
             ambient: openshard_client_render::light::NIGHT,
@@ -1097,6 +1102,7 @@ fn a_wall_stops_the_light_behind_it() {
                 // Ground only: nothing here ever indexes either buffer.
                 face_instances: &dummy_instances,
                 mobile_instances: &dummy_instances,
+                mesh_instances: &dummy_mesh_instances,
                 zoom: Zoom::ONE,
                 rect: ViewportRect {
                     x: 0,
@@ -1249,6 +1255,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
     let mut blit = Blit::new(&device, surface_format);
     // No mobile pass in this test: the dummy stands in for it.
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
+    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
     blit.render(
         &device,
         &queue,
@@ -1261,6 +1268,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
             place: &place_view,
             face_instances: sprites.instances_buffer(),
             mobile_instances: &dummy_instances,
+            mesh_instances: &dummy_mesh_instances,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,
@@ -2788,7 +2796,8 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
         &StaticAnimations::default(),
         &static_atlas,
         &Cutaway::OPEN,
-    );
+    )
+    .quads;
     assert!(
         static_quads.len() > 500,
         "only {} statics in the middle of Britain",
@@ -2878,7 +2887,8 @@ fn dump_a_frame_of_britain() {
         &StaticAnimations::default(),
         &static_atlas,
         &Cutaway::OPEN,
-    );
+    )
+    .quads;
 
     // A character standing where the camera looks, facing each way in turn, so
     // the picture shows both the placement and the mirrored facings.
@@ -3145,6 +3155,7 @@ fn render_outlined(
     };
     // No mobile pass in this fixture: the dummy stands in for it.
     let dummy_instances = openshard_client_render::blit::dummy_instances(device);
+    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(device);
     Blit::new(device, format).render(
         device,
         queue,
@@ -3155,6 +3166,7 @@ fn render_outlined(
             place: &place_view,
             face_instances: sprites.instances_buffer(),
             mobile_instances: &dummy_instances,
+            mesh_instances: &dummy_mesh_instances,
             zoom,
             rect,
         },
@@ -3751,6 +3763,7 @@ fn parity_frame(
 
     let mut blit = Blit::new(device, openshard_client_render::blit::WORLD_FORMAT);
     let dummy_instances = openshard_client_render::blit::dummy_instances(device);
+    let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(device);
     // Only built above when the fixture used `Kind::Static` at all — a fixture
     // that never leaves `Surface::Upright`'s `Kind::Land` has nothing for it
     // to index and keeps using the dummy, same as ground always does.
@@ -3777,6 +3790,7 @@ fn parity_frame(
             face_instances: face_instances.as_ref().unwrap_or(&dummy_instances),
             // No mobile pixels in this fixture: the dummy stands in for it.
             mobile_instances: &dummy_instances,
+            mesh_instances: &dummy_mesh_instances,
             zoom: Zoom::ONE,
             rect: ViewportRect {
                 x: 0,

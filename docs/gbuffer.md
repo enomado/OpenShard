@@ -526,7 +526,7 @@ attributed."
       projecting these boxes' corners to screen quads, writing depth+id —
       is step 4c, not this one; decision 38.5's own discipline against
       changing where geometry lives and what it is in the same step.
-- [ ] 4c. Treads, the render half. Rasterise depth+id for each face step 4b's
+- [x] 4c. Treads, the render half. Rasterise depth+id for each face step 4b's
       occlusion grid now carries — a tread's top and riser, a lid static's own
       top — from the same instance list and depth ordering the visible passes
       already use (decision 4), the way 4a's corner id-split kept step in sync
@@ -536,6 +536,58 @@ attributed."
       something, and deciding how a face's *id* (not its occlusion box) gets
       from a `Solid` to a storage row a shader can index, is this step's own
       work, not inherited from 4b.
+
+      **Landed as a second, invisible pipeline** (`renderer::MeshFaceRenderer`,
+      `mesh_face.wgsl`), not a variant of `SpriteRenderer`'s: a `Mesh` face's
+      true screen shape is an arbitrary projected quadrilateral, not the
+      axis-aligned rectangle `statics.wgsl` instances, so the new pass draws
+      raw, CPU-triangulated vertices (`crates/client/render/src/mesh.rs`'s
+      `Face::fan`, `0,1,2,0,2,3`) instead. It writes only `place` — no colour
+      target at all, the same shape `SpriteRenderer::render_mask` already
+      uses for a pass that ignores `target.view` — so the billboard sprite's
+      own picture is untouched; only that sprite's `place` pixels get a more
+      honest per-face normal than `Prism::tread_normal`'s blend gave them.
+      Depth is the enclosing static's own `SpriteQuad::depth`, reused rather
+      than recomputed — decision 4's "a second copy of the formula is a
+      second chance to disagree with it," restated for depth instead of a
+      lighting fraction.
+
+      **The id scheme did not grow `Kind`.** `Kind` is a hard 2 bits, already
+      spoken for (`Nothing/Land/Static/Mobile`); a mesh face stays
+      `Kind::Static` and a new `Stance` value, `MeshFace = 10` (10-15 were
+      free), is a routing *sentinel* in the attachment's stance bits —
+      `blit.wgsl` sees it and reads a new, small `mesh_instances[id]` (tile +
+      the face's *real* stance) instead of `face_instances[id]`. The real
+      stance is one of `Flat`/`FaceNorth/East/South/West`, because
+      `Prism::mesh` only ever produces those five exact normals today
+      (`place::Stance::of_normal` maps a `[f32; 3]` back to one), so
+      `blit.wgsl`'s existing `outward(stance)` gives the normal unchanged —
+      the general packed-vector question the "Not settled" item below still
+      raises stays open, on purpose, because nothing built here needs more
+      than an axis-aligned normal.
+
+      **This also answered, for a mesh face, the question the fourth "Not
+      settled" item below left open for a *sprite's* face — the sub-tile
+      fraction and per-fragment `z`.** Neither a constant approximation nor a
+      restated copy of `statics.wgsl`'s per-stance analytic inversion was
+      needed: each vertex carries its own true world position (in addition
+      to its projected screen position), and because the projection is
+      affine and every face is planar, the rasterizer's own linear
+      interpolation gives every fragment an *exact* world position for
+      free — `sub = fract(world.xy)`, `z = world.z`, both exact, neither
+      approximated nor re-derived. Cheaper and more correct than either
+      option considered going in.
+
+      **Not done in this step, on purpose:** `items.rs` (server-dropped
+      ground items) does not get mesh-face collection wired in — only
+      `statics::collect`'s map-furniture walk does, though `Placed.prism` is
+      available to `items.rs` too, unused, for whenever a portable climbable
+      item needs it. No frame-test exercises the new pass directly either
+      (rendering a real staircase and asserting its `place`/depth texels,
+      the way `tests/frame.rs`'s corner/wall parity tests do) — the four
+      gates and the existing frame-parity suite are green, but that is
+      coverage of everything this step *didn't* change, not of the new
+      pass's own output; worth adding before step 5 leans on it.
 - [ ] 5. Check whether honest per-face lighting alone fixes decision 40's
       original hard-edge report, against the same reproduction that found it.
       If it does, retire `Prism::tread_normal` and `outward()`'s switch rather

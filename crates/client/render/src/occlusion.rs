@@ -638,42 +638,6 @@ impl Solid {
         crate::solid::Solid { min, max }
     }
 
-    /// The tile-relative footprint of one climb-axis strip, `lo..=hi` — both in
-    /// `0.0..=1.0`, the run fraction from the low side to `up` — shared by
-    /// [`Solid::tread_top_box_of`] (a strip, `lo < hi`) and
-    /// [`Solid::tread_riser_box_of`] (a single boundary, `lo == hi`, degenerate
-    /// on the climb axis rather than a span of it).
-    ///
-    /// `up` is `North`/`South` for a climb along `y`, `East`/`West` for one
-    /// along `x` — the same axis [`Solid::box_of`]'s panel case already names
-    /// for `up`'s own edge — and the strip is flat on that axis, full width on
-    /// the other. `up` names the high side, so `run = 0` sits at the opposite
-    /// edge and climbs towards `up` as the fraction grows — the mirror image of
-    /// `box_of`'s panel, which flattens *onto* the named edge rather than
-    /// climbing away from it.
-    fn strip_footprint(x: f64, y: f64, up: Face, lo: f64, hi: f64) -> (f64, f64, f64, f64) {
-        let (mut min_x, mut max_x, mut min_y, mut max_y) = (x, x + 1.0, y, y + 1.0);
-        match up {
-            Face::North => {
-                min_y = y + 1.0 - hi;
-                max_y = y + 1.0 - lo;
-            }
-            Face::South => {
-                min_y = y + lo;
-                max_y = y + hi;
-            }
-            Face::West => {
-                min_x = x + 1.0 - hi;
-                max_x = x + 1.0 - lo;
-            }
-            Face::East => {
-                min_x = x + lo;
-                max_x = x + hi;
-            }
-        }
-        (min_x, max_x, min_y, max_y)
-    }
-
     /// A tread's **top**: the strip it covers along the climb, flattened to the
     /// plane at its own height — a lid, not a body. This tread's rise is what
     /// [`Solid::tread_riser_box_of`] now covers; folding both into one box the
@@ -682,7 +646,9 @@ impl Solid {
     ///
     /// `index`/`count` name which strip the same way
     /// [`Prism::height_at`](crate::facing::Prism::height_at) samples a point in
-    /// it — see [`Solid::strip_footprint`].
+    /// it — see [`Prism::footprint`](crate::facing::Prism::footprint), moved
+    /// there in `gbuffer.md` step 4c so the render side answers the same
+    /// question of a tread's strip with the same arithmetic, not a second one.
     fn tread_top_box_of(
         x: i32,
         y: i32,
@@ -692,11 +658,12 @@ impl Solid {
         count: usize,
     ) -> crate::solid::Solid {
         use crate::camera::WorldSpot;
+        use crate::facing::Prism;
 
         let (x, y) = (f64::from(x), f64::from(y));
         let lo = index as f64 / count as f64;
         let hi = (index + 1) as f64 / count as f64;
-        let (min_x, max_x, min_y, max_y) = Self::strip_footprint(x, y, up, lo, hi);
+        let (min_x, max_x, min_y, max_y) = Prism::footprint(x, y, up, lo, hi);
         let z = f64::from(top_z);
         crate::solid::Solid {
             min: WorldSpot {
@@ -721,8 +688,8 @@ impl Solid {
     ///
     /// The boundary is `index / count` — the same fraction
     /// [`Solid::tread_top_box_of`]'s `lo` is for tread `index` — passed to
-    /// [`Solid::strip_footprint`] as both `lo` and `hi`, degenerate on the climb
-    /// axis: a plane, not a strip.
+    /// [`Prism::footprint`](crate::facing::Prism::footprint) as both `lo` and
+    /// `hi`, degenerate on the climb axis: a plane, not a strip.
     fn tread_riser_box_of(
         x: i32,
         y: i32,
@@ -733,10 +700,11 @@ impl Solid {
         count: usize,
     ) -> crate::solid::Solid {
         use crate::camera::WorldSpot;
+        use crate::facing::Prism;
 
         let (x, y) = (f64::from(x), f64::from(y));
         let b = index as f64 / count as f64;
-        let (min_x, max_x, min_y, max_y) = Self::strip_footprint(x, y, up, b, b);
+        let (min_x, max_x, min_y, max_y) = Prism::footprint(x, y, up, b, b);
         crate::solid::Solid {
             min: WorldSpot {
                 x: min_x,
