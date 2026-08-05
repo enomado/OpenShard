@@ -4745,6 +4745,7 @@ impl App {
                     target: &view,
                     mask: &select_view,
                     place: &place_view,
+                    face_instances: window.statics.instances_buffer(),
                     size: (render_width, render_height),
                     rect: viewport,
                 },

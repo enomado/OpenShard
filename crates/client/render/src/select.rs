@@ -97,6 +97,12 @@ pub struct Frame<'a> {
     /// Which tile each world pixel came from. The frame's own place attachment,
     /// the same one the blit lit from.
     pub place: &'a wgpu::TextureView,
+    /// The statics pass's own instance buffer, bound a second time as storage —
+    /// the same buffer `blit::Frame::face_instances` is. A `Kind::Static`
+    /// pixel's `place.x`/`place.y` is an id into this, not a tile
+    /// (`docs/gbuffer.md` step 3); the ground wash resolves it the same way
+    /// `blit.wgsl` does, for the same reason. See step 6.
+    pub face_instances: &'a wgpu::Buffer,
     /// The size of both in texels — they are one image's size, and the pass
     /// reads them at one coordinate. Carried beside the views for the reason
     /// [`outline::Frame`](crate::outline::Frame) carries one: a view does not
@@ -148,6 +154,20 @@ impl Select {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // The statics pass's own instance data, bound a second time as
+                // storage — `blit.wgsl`'s binding 9, read here for the same
+                // reason: a static's `place` is an id, not a tile. Read-only,
+                // like every other reader of it.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -264,6 +284,10 @@ impl Select {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: frame.face_instances.as_entire_binding(),
                 },
             ],
         });

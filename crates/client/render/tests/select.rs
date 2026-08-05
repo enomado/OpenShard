@@ -19,8 +19,9 @@
 //! rather than a failure where there is none.
 
 use openshard_client_render::blit::ViewportRect;
-use openshard_client_render::place::{self, Kind, STANCE_SHIFT, Stance};
+use openshard_client_render::place::{self, Kind, Place, STANCE_SHIFT, Stance};
 use openshard_client_render::select::{Frame as SelectFrame, Select, Selection};
+use openshard_client_render::sprite::SpriteQuad;
 
 /// The world image, and the surface: one size, so the pass's `uv` mapping is the
 /// identity and every assertion is about the rule rather than about sampling.
@@ -48,10 +49,15 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 /// One texel of the place attachment, packed the way the world passes write it
 /// — `crate::place` and `statics.wgsl`, whose fourth channel is the kind in the
 /// low two bits and the sub-tile fraction above it.
-fn place_texel(tile: (u16, u16), kind: Kind, stance: Stance) -> [u16; 4] {
+///
+/// `words` is the attachment's first two channels verbatim: a literal tile for
+/// [`Kind::Land`] (`ground.wgsl` never touched them) or an id into
+/// [`face_rows`] for [`Kind::Static`] (`docs/gbuffer.md` step 3) — the caller
+/// picks, this only packs.
+fn place_texel(words: (u16, u16), kind: Kind, stance: Stance) -> [u16; 4] {
     [
-        tile.0,
-        tile.1,
+        words.0,
+        words.1,
         // A height of zero, offset as the attachment carries it, with the stance
         // in the eight bits above.
         128 | ((stance as u16) << STANCE_SHIFT),
@@ -60,6 +66,52 @@ fn place_texel(tile: (u16, u16), kind: Kind, stance: Stance) -> [u16; 4] {
         (kind as u16) | (64 << 2) | (64 << 9),
     ]
 }
+
+/// A land texel: `words` is the tile itself.
+fn land_texel(tile: (u16, u16)) -> [u16; 4] {
+    place_texel(tile, Kind::Land, Stance::Flat)
+}
+
+/// A static texel: `id` is an id into [`face_rows`], not a tile — the whole
+/// point of this test since step 6. Splitting a `u32` id into the attachment's
+/// two 16-bit channels the same way `statics.wgsl` does: `id & 0xFFFF`, `id >>
+/// 16`.
+fn static_texel(id: u32, stance: Stance) -> [u16; 4] {
+    place_texel(((id & 0xFFFF) as u16, (id >> 16) as u16), Kind::Static, stance)
+}
+
+/// The only row [`scene`]'s statics need: both static bands stand on
+/// [`SELECTED`], so one id serves them both. Only `place.x` (the packed word's
+/// low half, `x | y << 16`) is ever read back by `select.wgsl` — the row's
+/// `kind`/`stance`/`z` are not, so [`Place::land`] is as good a source for them
+/// as any other constructor.
+fn face_rows() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    SpriteQuad {
+        rect: openshard_client_render::geometry::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        },
+        region: openshard_client_render::atlas::Region {
+            u: 0.0,
+            v: 0.0,
+            du: 0.0,
+            dv: 0.0,
+        },
+        depth: 0.0,
+        hue: 0,
+        place: Place::land(SELECTED.0, SELECTED.1),
+        twin: 0,
+    }
+    .write(&mut bytes);
+    bytes
+}
+
+/// The id [`face_rows`] gives [`SELECTED`] — its only row, so its own place in
+/// the buffer.
+const SELECTED_ID: u32 = 0;
 
 /// Which band of rows each kind of pixel occupies. Bands rather than scattered
 /// texels so that a failure can be read as "this band is wrong" instead of as a
@@ -78,10 +130,10 @@ fn scene() -> Vec<[u16; 4]> {
     let mut texels = Vec::with_capacity((SIZE * SIZE) as usize);
     for y in 0..SIZE {
         let texel = match y {
-            y if y < BANDS[0].1 => place_texel(SELECTED, Kind::Land, Stance::Flat),
-            y if y < BANDS[1].1 => place_texel(SELECTED, Kind::Static, Stance::Flat),
-            y if y < BANDS[2].1 => place_texel(SELECTED, Kind::Static, Stance::Upright),
-            _ => place_texel(NEIGHBOUR, Kind::Land, Stance::Flat),
+            y if y < BANDS[0].1 => land_texel(SELECTED),
+            y if y < BANDS[1].1 => static_texel(SELECTED_ID, Stance::Flat),
+            y if y < BANDS[2].1 => static_texel(SELECTED_ID, Stance::Upright),
+            _ => land_texel(NEIGHBOUR),
         };
         for _ in 0..SIZE {
             texels.push(texel);
@@ -204,6 +256,18 @@ fn wash(device: &wgpu::Device, queue: &wgpu::Queue, selection: Selection) -> Vec
         })
         .forget_lifetime();
 
+    // `face_rows`, on the GPU — what the two static bands' ids resolve
+    // through, the same way `window.statics.instances_buffer()` is what a real
+    // frame binds.
+    let rows = face_rows();
+    let face_instances = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("select test face instances"),
+        size: rows.len() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&face_instances, 0, &rows);
+
     Select::new(device, format).render(
         device,
         queue,
@@ -212,6 +276,7 @@ fn wash(device: &wgpu::Device, queue: &wgpu::Queue, selection: Selection) -> Vec
             target: &surface_view,
             mask: &mask.create_view(&wgpu::TextureViewDescriptor::default()),
             place: &place_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            face_instances: &face_instances,
             size: (SIZE, SIZE),
             rect: ViewportRect {
                 x: 0,

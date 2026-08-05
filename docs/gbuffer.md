@@ -418,12 +418,21 @@ reason.
   the free "read the screen row" trick a flat billboard gets. Still per-tile
   data, not per-pixel, just not as trivial as decision 1's paragraph makes it
   look for statics.
-- **Whether `SpriteRenderer::render_mask` shrinks.** The id closes the identity
-  gap `select.rs` uses it for today, but [`outline.md`](outline.md) D1 already
-  leans on that same silhouette pass for its own, independent reason — the
-  outline's edge lives outside the sprite's own quad and needs a mask to draw
-  against. Removing `select.rs`'s use of it does not mean the pass itself goes
-  away; check `outline.md` before assuming it does.
+- ~~Whether `SpriteRenderer::render_mask` shrinks.~~ **Answered (step 6): no —
+  checked directly rather than assumed, and the id does not close the identity
+  gap after all.** The id that lands in a static's `place.x`/`place.y` is
+  `@builtin(instance_index)` into the *main world draw's* own instance buffer
+  (`statics.wgsl`, `id = instance_index`), assigned by `statics::collect`'s
+  draw order over every static in the frame. The selected static's silhouette
+  is a second, tiny, unrelated draw — `SpriteRenderer::render_mask` over a
+  one-quad list `statics::selected` builds — with its own instance numbering
+  starting again at zero. There is no shared id space between the two, so a
+  pixel's id can never be compared against "the picked static's own id" to
+  answer "is this pixel it" — which is exactly what select.rs's own doc
+  already said ("the first cannot be answered from the second"), now
+  confirmed for the reason stated rather than assumed. `render_mask` keeps
+  both of its callers: `outline.md` D1's, unrelated and untouched, and
+  `select.rs`'s own, unchanged by anything this step found.
 - **The per-face normal format for step 4c/5 cannot be the fixed
   `Stance`-shaped set (`Flat`/`Face(N/E/S/W)`) decision 3 assumed for treads.**
   Reopened mid-session-4b: `docs/lighting.md` decision 35's rejection of
@@ -631,9 +640,64 @@ attributed."
       `outward()`'s switch — the shader-side case that would have had to
       grow to decode a `Sloped` normal had this gone the other way — was
       never built at all, so there was nothing there to remove.
-- [ ] 6. `select.rs`'s ground wash reads the id instead of tile/stance; measure
+- [x] 6. `select.rs`'s ground wash reads the id instead of tile/stance; measure
       whether `render_mask` still has a reason to run for selection specifically
       once it does, separately from outline's own use of it.
+
+      **A real bug, sitting since step 3 landed and never caught: `select.wgsl`
+      still compared a static's `place.x`/`place.y` against a selection's tile
+      directly, as if those channels still held the tile itself.** They have
+      not since step 3 moved a static's tile off the attachment and onto its
+      own instance row, addressed by id — `blit.wgsl` was updated to resolve
+      it, `select.wgsl` was not, because nothing forced the question until
+      this step went looking. The effect: the ground wash under a selected
+      wall was silently comparing an id against a tile number, which either
+      never matched (a wall's floor never washed) or matched by pure
+      coincidence — and the existing GPU test (`tests/select.rs`) never caught
+      it, because its own fixture still hand-wrote a literal tile into a
+      `Kind::Static` texel, the same pre-step-3 encoding the real shader had
+      already stopped producing. A fixture that pokes the attachment by hand
+      is a second, unchecked implementation of what the world pass puts
+      there — decision 9's own warning, landing again, for the same reason the
+      backlog already named it once for `tests/frame.rs` and `plan.rs`.
+
+      **Fixed the way `blit.wgsl` already had to be:** `select.wgsl` gains the
+      same `FaceInstance` storage binding `blit.wgsl` reads as
+      `face_instances` (the statics pass's own instance buffer, bound a second
+      time), and resolves a `Kind::Static` pixel's tile through
+      `face_instances[id].place` before comparing it against the selected
+      tile — `Kind::Land` is untouched, exactly as it is in `blit.wgsl`,
+      because ground never moved off the attachment. `mobile_instances` and
+      `mesh_instances` are not needed: the ground wash only ever tests
+      `kind == KIND_LAND || (kind == KIND_STATIC && stance == STANCE_FLAT)`,
+      and neither a mobile nor a mesh face's routing sentinel
+      (`Stance::MeshFace`) can satisfy that. A mesh face whose *real* stance
+      (in `mesh_instances`, not the attachment) is `Flat` — a tread's or a
+      lid's own top — is a real gap this leaves open, but an existing one and
+      not a new one: the attachment's stance bits were always the sentinel for
+      a mesh face, never its real stance, since step 4c landed, and nothing
+      about the id/tile bug this step targets made that better or worse.
+      Left alone on purpose rather than folded in here — decision 38.5's
+      discipline, one thing at a time.
+
+      **The plumbing already existed at the one call site that matters:**
+      `app/src/lib.rs` fetches `window.statics.instances_buffer()` a few lines
+      above where it builds `blit::Frame` already, for exactly this buffer —
+      handing the same reference to `select::Frame` cost one field, no new
+      buffer, no new upload. `tests/select.rs`'s own fixture needed the
+      larger change: its `place_texel` helper now takes the attachment's raw
+      two words rather than a tile, `static_texel` packs an id into them the
+      way `statics.wgsl` does, and a tiny `face_instances` buffer of one row
+      (both static bands in the fixture stand on the same tile) is uploaded
+      and bound alongside the place texture — the same shape
+      `tests/frame.rs`'s `parity_frame` already adopted for `blit.wgsl`. All
+      pre-existing assertions still hold with no numbers changed: the fixture
+      was testing the *rule* correctly, only the encoding it exercised the
+      rule through had gone stale.
+
+      Four gates green on `openshard-client-render` and
+      `openshard-client-app`, and the full `cargo test --workspace` besides:
+      no count moved except the fixture's own internal encoding.
 - [ ] 7. Ground's bilinear case (third "Not settled" item), once statics prove
       the shape works at all.
 

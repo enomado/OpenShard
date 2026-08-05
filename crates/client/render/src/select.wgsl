@@ -11,13 +11,20 @@
 //
 //   1. **Is this pixel the selected thing?** That is the mask: the silhouette
 //      pass drew the picked static's quad into it, depth-tested against the
-//      world, so what is in there is what is *visible* of it. Nothing in the
-//      place attachment can answer this — two walls on one tile write the same
-//      tile, the same height range and the same stance, and a screen-space pass
-//      keyed on the attachment alone would shade both.
+//      world, so what is in there is what is *visible* of it. The place
+//      attachment's id (`docs/gbuffer.md` step 3) now *can* tell two statics on
+//      one tile apart from each other, but not this pixel from the picked one —
+//      the silhouette is its own tiny draw with its own instance numbering, not
+//      a second use of the world pass's ids, so there is no id here to compare
+//      against. See `docs/gbuffer.md`'s "not settled" item on whether
+//      `render_mask` shrinks.
 //   2. **Is this pixel the ground that thing stands on?** That is the place
 //      attachment, which carries the tile of whatever was drawn at each pixel —
-//      so the answer is a comparison and needs no second mask.
+//      so the answer is a comparison, and needs no second mask, but not always a
+//      *direct* one: land carries its tile in the attachment's own channels, but
+//      a static's pixel carries an id into `face_instances` there instead
+//      (`docs/gbuffer.md` step 3), so a static's tile is one more lookup away.
+//      See step 6.
 //
 // The floor is *land or a flat static* of that tile, not land alone. Indoors the
 // land is under a wooden floor and never drawn, so "the tile the wall stands on"
@@ -46,6 +53,24 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // Which tile each world pixel came from — `crate::place`, the same attachment
 // the lighting reads.
 @group(0) @binding(1) var place_of: texture_2d<u32>;
+
+// The statics pass's own instance buffer, bound a second time as storage —
+// `docs/gbuffer.md` decision 2 and step 3, the same buffer `blit.wgsl` reads
+// as `face_instances`. A `Kind::Static` pixel's `place.x`/`place.y` is an id
+// into this, not a tile; only its `place` field is read here; the rest is
+// declared so the struct's size matches `SpriteQuad::STRIDE` and every row
+// past the first is not read at the wrong offset. See `docs/gbuffer.md` step
+// 6.
+struct FaceInstance {
+    rect: vec4<f32>,
+    region: vec4<f32>,
+    depth: f32,
+    hue: u32,
+    place: vec2<u32>,
+    twin: u32,
+};
+
+@group(0) @binding(3) var<storage, read> face_instances: array<FaceInstance>;
 
 struct Selection {
     // The mask's size in texels, which is the world image's; the rest is
@@ -101,7 +126,18 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let kind = place.w & KIND_MASK;
         let stance = (place.z >> STANCE_SHIFT) & STANCE_MASK;
         let ground = kind == KIND_LAND || (kind == KIND_STATIC && stance == STANCE_FLAT);
-        if ground && place.x == selection.tile.x && place.y == selection.tile.y {
+        // The **tile** itself, not `place.x`/`place.y` directly: a static's
+        // pixel carries an id into `face_instances` there, not a tile — see
+        // `docs/gbuffer.md` step 3 and step 6. Land is untouched, and this
+        // branch is never taken for it, so `place.x`/`place.y` stay a literal
+        // tile in that case and nothing below is reached for it.
+        var tile = place.xy;
+        if kind == KIND_STATIC {
+            let id = place.x | (place.y << 16u);
+            let row = face_instances[id].place.x;
+            tile = vec2<u32>(row & 0xFFFFu, row >> 16u);
+        }
+        if ground && tile.x == selection.tile.x && tile.y == selection.tile.y {
             wash = selection.ground;
         }
     }
