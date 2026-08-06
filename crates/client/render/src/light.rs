@@ -1104,16 +1104,17 @@ fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32
 /// Where a straight segment enters and leaves an axis-aligned box, as a
 /// fraction of the whole segment (`0.0` is `from`, `1.0` is `to`) — the slab
 /// method, continuous throughout, with no notion of "which tile" anywhere in
-/// it.
+/// it. `blit.wgsl` carries its own copy of the same formula, widened by a
+/// small tolerance that has no reason to exist on this side — see that
+/// copy's own comment for why.
 ///
-/// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 1: the
-/// primitive `dda_walk`'s own corner-tie heuristic exists to avoid ever
-/// having to call. An exact test costs a handful of compares, so nothing
-/// upstream needs to *guess* whether a corner is worth asking about before
-/// asking it — this asks directly and answers exactly, for a box as thin as
-/// a panel's own [`crate::occlusion::PANEL_THICKNESS`] slab or as flat as a
-/// lid's bare plane. Not wired into [`walk_cells`] or [`dda_walk`] yet; see
-/// the doc for why the cutover is its own, later step.
+/// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 1: an exact
+/// test costs a handful of compares, so nothing upstream needs to *guess*
+/// whether a corner is worth asking about before asking it — this asks
+/// directly and answers exactly, for a box as thin as a panel's own
+/// [`crate::occlusion::PANEL_THICKNESS`] slab or as flat as a lid's bare
+/// plane. [`walk_cells_streaming`] is what calls it now, mirrored in
+/// `blit.wgsl`'s `walk`.
 ///
 /// `None` when the segment misses the box on at least one axis outright —
 /// including a segment that runs parallel to a flat axis (`solid`'s own
@@ -1121,8 +1122,7 @@ fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32
 /// without lying exactly in that plane, which is the box's own way of
 /// saying "no length of me is on that axis at all". `Some((entered,
 /// leaves))` otherwise, both already clamped to `0.0..=1.0` — the box's own
-/// extent past either end of the segment does not count, the same way
-/// [`DdaCell::entered`]/[`DdaCell::leaves`] never leave that range either.
+/// extent past either end of the segment does not count.
 ///
 /// A tangent touch — the segment grazing exactly one edge or corner of the
 /// box without crossing into it — comes back `Some` with `entered ==
@@ -1131,9 +1131,25 @@ fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32
 /// decision about light and softness, not about the box's own geometry, so
 /// it is left for the caller to make rather than made silently in here.
 ///
-/// Not called from real occlusion code yet — `docs/lighting_raymarch.md`'s
-/// point 2's parallel walk (`walk_cells_exact`) is its only caller until
-/// point 4's cutover.
+/// **Stays exact on purpose — widening this, even scoped to
+/// [`walk_cells_streaming`]'s own caller, was tried and reverted.**
+/// `docs/lighting_raymarch.md`'s point 4 cutover found a real GPU/CPU
+/// disagreement traced to here (see `blit.wgsl`'s own comment for the case),
+/// but rescuing the same near-miss on the CPU side clamped `leaves` up to
+/// `entered`, collapsing a genuine, if small, interior crossing to a
+/// zero-length touch and changing what the surrounding `by_surface` branches
+/// computed for it. Because [`walk_cells_exact`]'s `candidate_tiles` probes a
+/// wider set of candidate cells than [`walk_cells_streaming`]'s own plain
+/// single-axis stepping ever visits — deliberately, session 8's own scoping
+/// — a rescued near-miss on a cell only one of the two walks reaches turned
+/// a shared, unconditional widening into a *new* disagreement between them,
+/// not a fix to one; `walk_cells_streaming_agrees_with_walk_cells_exact_on_
+/// a_single_body`/`_on_a_single_panel`/`_in_a_small_room` all found real
+/// counterexamples within a few hundred proptest cases. The GPU/CPU gap
+/// this doc's own point 4 cutover found did not need this function widened
+/// at all: CPU's own `f32` rounding already lands on the generous side of
+/// the tangent for the case that mattered, so only `blit.wgsl`'s copy needed
+/// the tolerance, not this one.
 fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Option<(f32, f32)> {
     let min = [solid.min.x as f32, solid.min.y as f32, solid.min.z as f32];
     let max = [solid.max.x as f32, solid.max.y as f32, solid.max.z as f32];
@@ -1164,64 +1180,6 @@ fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Op
     Some((entered, leaves))
 }
 
-/// How near two boundaries have to be, along the ray, for the ray to be crossing
-/// a **corner** rather than a side — [`crate::occlusion::PANEL_THICKNESS`]
-/// converted into the same `t` the DDA already steps in. `blit.wgsl`'s
-/// `corner_tie`, and the two must answer the same comparison identically.
-///
-/// **Step 23.5, and derived rather than invented.** Before a panel had real
-/// depth this was a bare float tolerance — "a thousand times the last bits of
-/// a float", with no claim to be the width of anything — because there was no
-/// geometry to size it from. Now two panels meeting at a corner physically
-/// overlap in a `PANEL_THICKNESS`-wide square around the point they share, and
-/// this is that overlap's width, in the walk's own units, not a number that
-/// happens to work.
-///
-/// **The derivation, exactly, not approximately.** At `t = next` — the instant
-/// the *nearer* axis reaches its grid line — the *farther* axis's coordinate
-/// is still `|delta[far]| * (boundary[far] - next)` short of its own line,
-/// because both coordinates are linear in `t` and each agrees with the grid
-/// exactly at its own `boundary`. So the ray's distance from the corner point,
-/// along the axis it has not yet crossed, is `|delta[far]| * |boundary[0] -
-/// boundary[1]|` — world units — and asking that to be at most
-/// `PANEL_THICKNESS` is exactly `|boundary[0] - boundary[1]| <=
-/// PANEL_THICKNESS * per_tile[far]`, since `per_tile[far]` is `t` per world
-/// unit on that axis. Which axis is `far` is `out_by_x`, already known at the
-/// one call site.
-///
-/// **Clamped to one step of the axis actually being crossed.** The
-/// derivation above answers "how far, in `t`, can the *far* axis's own
-/// boundary sit from the *near* one I'm about to cross" — a question that
-/// only means "a corner" when both boundaries are contemporary, within one
-/// tile-step of each other. `per_tile[far]` alone does not carry that: it is
-/// `1 / |delta[far]|`, sized off the ray's *whole* delta, and grows without
-/// bound as the ray runs closer to axis-aligned on the far axis — nothing to
-/// do with how soon *this* crossing is. A flame standing exactly on a wall
-/// row's own edge is the case that broke it: the ray stays within a tenth of
-/// a tile of that row's grid line for its *entire* length (not just near one
-/// corner), so every near-axis crossing along the way reads as "close to the
-/// far axis's line" and the tie fired on every step, jumping the walk
-/// diagonally past the whole row, wall included, no matter how far `t = 1.0`
-/// (the far axis's real crossing) was from `t = boundary[near]` (the one
-/// about to happen). Capping the tie at `per_tile[near]` — one whole step of
-/// the axis actually being crossed — is what "contemporary" means: nothing a
-/// genuine corner needs is cut, since a real corner's two boundaries are
-/// close in `t` *because* they are the same instant, not because one of them
-/// is a whole segment away. `docs/lighting_raymarch.md`'s "A new
-/// `walk_cells` miss" backlog entry has the full trace; `blit.wgsl`'s
-/// `corner_tie` carries the same clamp.
-fn corner_tie(per_tile: [f32; 2], out_by_x: bool) -> f32 {
-    let (far, near) = match out_by_x {
-        true => (per_tile[1], per_tile[0]),
-        false => (per_tile[0], per_tile[1]),
-    };
-    (crate::occlusion::PANEL_THICKNESS as f32 * far).min(near)
-}
-
-/// How much one cell stops a ray that crosses the sides in `crossed` at height
-/// `z`, where the cell is a panel. Zero for open ground, for a lid, and for a
-/// panel on a side the ray does not go through.
-///
 /// Which of a cell's sides are **the same wall the lit end is part of**, and
 /// therefore must not shadow it.
 ///
@@ -1244,25 +1202,6 @@ fn own_run(own: u8, cell: (i32, i32), first: (i32, i32)) -> u8 {
         line |= crate::occlusion::EDGE_EAST | crate::occlusion::EDGE_WEST;
     }
     own & line
-}
-
-/// `blit.wgsl`'s `panel_stop`. Split out of [`walk_cells`] for the corner case,
-/// which has two cells to ask about and no crossing length to speak of.
-///
-/// The **largest** of the cell's surfaces and not their product, for the reason
-/// [`walk_cells`] takes the largest: two panels of one corner are two faces of
-/// one wall, and a ray that crosses both has gone through one thing once.
-fn panel_stop<'a>(
-    stands: impl Iterator<Item = &'a crate::occlusion::Solid>,
-    crossed: u8,
-    at: [f32; 3],
-    wide: f32,
-    tall: f32,
-) -> f32 {
-    stands
-        .filter(|stands| stands.edges != 0 && stands.edges & crossed != 0)
-        .map(|stands| f32::from(stands.opacity) / 255.0 * pierced(stands, at[0], at[1], at[2], wide, tall))
-        .fold(0.0, f32::max)
 }
 
 /// Ray-level facts [`exemption`] needs that do not change per candidate tile
@@ -1312,8 +1251,26 @@ fn exemption(
     let lit_end = own_cell && on_surface(ctx.spot_z, stands);
     let flame_end = ctx.skip_last && cell == ctx.last && on_surface(ctx.to_z, stands);
     let caps_this = ctx.surface == Surface::Flat && lit_end && ctx.spot_z >= stands.top() as f32 - ON_TOP;
-    let exempt =
-        stands.edges != 0 && ((lit_end && stands.edges & lit_by_own_tile == 0) || flame_end || caps_this);
+    // `lit_end`'s own edges-mask path is `caps_this` with the precision taken
+    // back out, and a [`Surface::Flat`] fragment needs the precision:
+    // `Surface::shadowed_by_own_tile` answers `0` for a tile whose sides are
+    // `EDGE_ANY` (a body stands there) whatever solid is asked, which turns
+    // `stands.edges & lit_by_own_tile == 0` vacuously true for *every* solid
+    // sharing the fragment's own cell — not only the one the fragment
+    // actually rests on. One body is what every scene `tiledata` can build
+    // ever put there, so nothing measured the difference before a second,
+    // independent body could stand on the first one's own top
+    // (`examples/boxes.rs`'s `tree` scene, `occlusion::Builder::add_raw`) and
+    // exposed it: the lower box's own top exempted the *taller* box standing
+    // on it from ever shadowing it, because both shared the one tile
+    // `on_surface`'s bottom-to-top span reads as "the fragment's own". A
+    // `Surface::Face`/`Upright` fragment has no such ambiguity to lose — it is
+    // its own solid's side, at any height along it, which is exactly what the
+    // edges mask is for — so the restriction is `Flat` alone.
+    let exempt = stands.edges != 0
+        && ((lit_end && ctx.surface != Surface::Flat && stands.edges & lit_by_own_tile == 0)
+            || flame_end
+            || caps_this);
     Exemption { exempt, same_run }
 }
 
@@ -1789,16 +1746,17 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i
     ];
     // No tile to exempt at the far end, and a point source: the sun subtends half
     // a degree, so its penumbra is the narrowest the walk draws.
-    walk_cells(from, to, spot.surface, spot.tile, false, 0.0, occlusion)
+    walk_cells_streaming(from, to, spot.surface, spot.tile, false, 0.0, occlusion)
 }
 
-/// The ray from a spot to a flame: [`walk_cells`] with a flame's two ends.
+/// The ray from a spot to a flame: [`walk_cells_streaming`] with a flame's two
+/// ends.
 ///
 /// The flame's own tile must not shadow it — a sconce stands *on* a wall — and a
 /// flame is a body about a tile across, which is what its penumbra is made of.
 /// Those two facts are the whole difference between this ray and the sun's.
 fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
-    walk_cells(
+    walk_cells_streaming(
         [spot.at.x, spot.at.y, spot.z],
         [light.at.x, light.at.y, light.z],
         spot.surface,
@@ -1829,63 +1787,52 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
 /// The starting cell is always skipped: the tile being lit must not shadow
 /// itself, which is what keeps a wall's own face the brightest thing beside a
 /// torch.
-/// One cell [`walk_cells`]'s DDA visits along the ray, and how the ray leaves
+/// One cell [`dda_walk`]'s DDA visits along the ray, and how the ray leaves
 /// it — no [`Occlusion`], no opacity, nothing about what is *in* the cell.
 ///
-/// Split out of `walk_cells` so the stepping itself — which cell follows
-/// which, and whether two of them tie at a corner — can be checked against
-/// plain numbers instead of a lit scene. This is the exact machinery
-/// `docs/lighting_raymarch.md`'s bugs lived in: a tile re-derived from a
-/// float that could legitimately sit on its own boundary, and a corner tie
-/// that fired on a ray it was never about. See [`dda_walk`].
+/// Split out so the stepping itself — which cell follows which — can be
+/// checked against plain numbers instead of a lit scene. This is the exact
+/// machinery `docs/lighting_raymarch.md`'s bugs lived in: a tile re-derived
+/// from a float that could legitimately sit on its own boundary, and (until
+/// [`walk_cells_streaming`]'s cutover removed the need for a corner jump at
+/// all) a corner tie that fired on a ray it was never about. See
+/// [`dda_walk`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct DdaCell {
     /// The cell this step covers.
     cell: (i32, i32),
-    /// Which side the ray entered this cell by. `0` for the very first
-    /// cell — the ray starts inside it rather than crossing into it.
-    entry: u8,
-    /// Which side the ray leaves this cell by, matching `crossing`. `0`
+    /// Which side the ray leaves this cell by, matching `continues`. `0`
     /// when the ray ends inside this cell instead of crossing on.
     exit: u8,
     /// How far along the whole segment (`0.0..=1.0`) the ray enters and
     /// leaves this cell.
     entered: f32,
     leaves: f32,
-    /// How the walk continues past this cell — `None` exactly when `exit
-    /// == 0`, the ray ending here.
-    crossing: Option<DdaTransition>,
+    /// Whether the walk continues past this cell — `false` exactly when
+    /// `exit == 0`, the ray ending here.
+    continues: bool,
 }
 
-/// How the walk crosses from one [`DdaCell`] to the next.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum DdaTransition {
-    /// An ordinary crossing, straight into one neighbour.
-    Step,
-    /// A corner: two neighbours meet close enough, in world distance, to
-    /// the point the ray crosses that both are in the way — see
-    /// [`corner_tie`]. Both are named here, with the sides of each the ray
-    /// crosses to reach them; the walk continues into their union
-    /// regardless of what either turns out to stop, which is still
-    /// `walk_cells`'s own question.
-    Corner {
-        by_x: ((i32, i32), u8),
-        by_y: ((i32, i32), u8),
-    },
-}
-
-/// Which cells a straight ray from `from` to `to` visits, in order — the DDA
-/// [`walk_cells`] runs, with every dependency on [`Occlusion`] taken out.
+/// Which cells a straight ray from `from` to `to` visits, in order — plain
+/// single-axis DDA, one cell per step, no diagonal jump.
 ///
 /// `tile` is `from`'s own tile, [`Spot::tile`]'s own contract and not
 /// `from.floor()`: seeded from the caller's answer rather than re-derived
 /// from a float that can legitimately sit on `tile`'s own far edge. Bounded
-/// by [`MAX_WALK_STEPS`] cells, the same as `walk_cells`; a ray that has not
-/// reached `to` by then just stops, same as it always has.
+/// by [`MAX_WALK_STEPS`] cells; a ray that has not reached `to` by then just
+/// stops.
+///
+/// **A walk that never skips a cell is complete by construction** — the
+/// textbook reason grid-line rasterisation steps one axis at a time —
+/// which is why there is no corner-tie heuristic here at all;
+/// [`walk_cells_streaming`]'s own doc comment has the fault-injection
+/// discipline that checked this rather than assumed it, for the same shape
+/// of stepping restated here as [`DdaCell`]s instead of folded into that
+/// function's own loop.
 ///
 /// **Precondition**: `from` and `to` are not the same point in the plane —
-/// `walk_cells`'s own `ground < 1e-6` guard runs before this is ever called,
-/// and there is no direction to step in for a ray with no length in it.
+/// callers already guard `ground < 1e-6` before this is ever called, and
+/// there is no direction to step in for a ray with no length in it.
 fn dda_walk(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<DdaCell> {
     let delta = [to.x - from.x, to.y - from.y];
     // Which way each axis steps, how much of the whole segment one tile of it
@@ -1926,10 +1873,6 @@ fn dda_walk(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<DdaCell> {
     let mut cells = Vec::new();
     let mut cell = tile;
     let mut entered = 0.0_f32;
-    // Which side of the current cell the ray came in through. `0` for the
-    // very first cell, which the ray starts inside of rather than crosses
-    // into.
-    let mut entry = 0u8;
     for _ in 0..MAX_WALK_STEPS {
         let next = boundary[0].min(boundary[1]);
         let leaves = next.min(1.0);
@@ -1946,71 +1889,30 @@ fn dda_walk(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<DdaCell> {
         if next >= 1.0 {
             cells.push(DdaCell {
                 cell,
-                entry,
                 exit: 0,
                 entered,
                 leaves,
-                crossing: None,
+                continues: false,
             });
             break;
         }
-        // Which sides the neighbours touch this corner or this boundary by: a
-        // ray moving east leaves through an east side and enters a west one.
-        let enter_x = match toward.0 > 0 {
-            true => crate::occlusion::EDGE_WEST,
-            false => crate::occlusion::EDGE_EAST,
-        };
-        let enter_y = match toward.1 > 0 {
-            true => crate::occlusion::EDGE_NORTH,
-            false => crate::occlusion::EDGE_SOUTH,
-        };
-        let transition = if (boundary[0] - boundary[1]).abs() <= corner_tie(per_tile, out_by_x) {
-            // **A corner**: four tiles meet at the point the ray leaves by,
-            // and the two the walk does not step into are as much in the way
-            // as the one it does — `blit.wgsl`'s `walk` argues it. Both are
-            // named, and then the walk steps diagonally past them.
-            let by_x = (cell.0 + toward.0, cell.1);
-            let by_y = (cell.0, cell.1 + toward.1);
-            DdaTransition::Corner {
-                by_x: (by_x, enter_x | crate::occlusion::opposite(enter_y)),
-                by_y: (by_y, enter_y | crate::occlusion::opposite(enter_x)),
-            }
-        } else {
-            DdaTransition::Step
-        };
         cells.push(DdaCell {
             cell,
-            entry,
             exit,
             entered,
             leaves,
-            crossing: Some(transition),
+            continues: true,
         });
-        match transition {
-            DdaTransition::Corner { by_x, by_y } => {
-                cell = (by_x.0.0, by_y.0.1);
+        // Into the neighbour across whichever boundary is nearer — the
+        // nearer boundary only, no diagonal probe.
+        match out_by_x {
+            true => {
+                cell.0 += toward.0;
                 boundary[0] += per_tile[0];
-                boundary[1] += per_tile[1];
-                // The cell beyond is entered by *both* the sides that meet at
-                // the corner, so a wall on either of them stops the ray
-                // there too.
-                entry = enter_x | enter_y;
             }
-            DdaTransition::Step => {
-                // The neighbour's own entry is this cell's exit seen from the
-                // other side: leaving east is entering west.
-                entry = crate::occlusion::opposite(exit);
-                // Into the neighbour across whichever boundary is nearer.
-                match out_by_x {
-                    true => {
-                        cell.0 += toward.0;
-                        boundary[0] += per_tile[0];
-                    }
-                    false => {
-                        cell.1 += toward.1;
-                        boundary[1] += per_tile[1];
-                    }
-                }
+            false => {
+                cell.1 += toward.1;
+                boundary[1] += per_tile[1];
             }
         }
         entered = next;
@@ -2018,352 +1920,9 @@ fn dda_walk(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<DdaCell> {
     cells
 }
 
-/// One segment of the world, cell by cell: how much of a ray survives it, and
-/// what stopped it.
-///
-/// `blit.wgsl`'s `walk`, including what it leaves out, and **one walk for both
-/// the flame and the sun** — see the shader for the argument, and for the
-/// measurement that produced it. The ends are the parameters: `skip_last` is the
-/// flame's own tile, and `spread` is how big the source is, in tiles. A sunbeam
-/// passes `false` and `0.0`.
-///
-/// Every cell the segment crosses, in order, with the length of each crossing:
-/// not a fixed number of samples, which at two tiles apart was one interior
-/// point and put every shadow's edge on a tile boundary. What a cell stops is
-/// its opacity scaled by how far the ray ran inside it — [`FLAME_SPREAD`] and its
-/// two bounds — and by how much of that run was inside the span the tile
-/// occupies, so a ray grazing the top of a wall or clipping its corner is dimmed
-/// rather than cut.
-///
-/// The starting cell is always skipped: the tile being lit must not shadow
-/// itself, which is what keeps a wall's own face the brightest thing beside a
-/// torch.
-///
-/// **Which cell follows which is [`dda_walk`]'s own question, not this
-/// function's.** Everything here is what one visited cell *does* to the ray —
-/// opacity, softness, the exemptions a surface gets from itself — over the
-/// sequence `dda_walk` already worked out from the geometry alone. Splitting
-/// the two apart is what lets the stepping be checked against plain cell
-/// numbers instead of a lit scene; see `docs/lighting_raymarch.md`'s
-/// testability audit.
-fn walk_cells(
-    from: [f32; 3],
-    to: [f32; 3],
-    surface: Surface,
-    tile: (i32, i32),
-    skip_last: bool,
-    spread: f32,
-    occlusion: &Occlusion,
-) -> (f32, Option<(i32, i32)>) {
-    // **Both ends of the ray stand where they are drawn, not inside it.** See
-    // [`STAND_OFF`] and [`ON_TOP`]: a face pixel is walked from a hair in front
-    // of the plane it is the face of, and every point of the world from a hair
-    // above whatever it is lying on. Without the pair, a wall pixel at exactly a
-    // floor's `z` was lit by the room below it — the bright line along the floor
-    // of a house, four screen pixels of it, and neither nudge closes it alone.
-    let (from, to) = stand_clear(from, to, surface);
-    let spot = Spot {
-        at: Vec2::new(from[0], from[1]),
-        z: from[2],
-        tile,
-        surface,
-    };
-    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-    let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
-    // The tile the caller carried in, not `from.floor()`: `from` can
-    // legitimately sit exactly on this tile's own far edge (`stand_clear`'s
-    // nudge is sub-tile, and a flat surface gets no nudge at all), and
-    // flooring it back would pick whichever side happens to round down
-    // rather than the side the geometry actually stands on. See [`Spot::tile`].
-    let first = tile;
-    if ground < 1e-6 {
-        // Straight up or down. There is no direction to walk in and there never
-        // was — but "the only cells on the line are the exempt ones", which is
-        // what this used to say, stopped being true at decision 32: **a lid on
-        // that one cell is between the two ends of the ray**, and a vertical ray
-        // is the case a floor is most obviously in the way of. A torch on the
-        // ground floor and the plank directly over it were the shortcut's own
-        // counterexample.
-        //
-        // Only lids, and for the reason both ends exempt everything else: a panel
-        // stands beside a vertical ray rather than across it, and a body is a
-        // solid one of the ends is standing in.
-        let stopped = occlusion
-            .solids_at(first.0, first.1)
-            .filter(|stands| stands.edges == 0)
-            .map(|stands| {
-                f32::from(stands.opacity) / 255.0
-                    * crosses(
-                        from[2],
-                        to[2],
-                        stands.bottom() as f32,
-                        stands.top() as f32,
-                        to[2],
-                        spread,
-                    )
-            })
-            .fold(0.0, f32::max);
-        return match stopped >= 1.0 - RAY_CUTOFF {
-            true => (0.0, Some(first)),
-            false => (1.0 - stopped, None),
-        };
-    }
-    let last = (to[0].floor() as i32, to[1].floor() as i32);
-    // Which side of its own tile the lit end **is the face of** — see [`own_run`],
-    // and the seam it was drawing down every wall. The pixel's own side and not
-    // the tile's whole mask, which is what decision 23 says in words: a run of
-    // wall is one surface, and a corner's *perpendicular* panel is a different
-    // surface that stops the ray as it always did. A pixel that is not a face is
-    // part of no run and gets nothing.
-    let own = match surface.face() {
-        Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
-        None => 0,
-    };
-    let exemption_ctx = ExemptionContext {
-        first,
-        last,
-        skip_last,
-        own,
-        surface,
-        spot_z: spot.z,
-        to_z: to[2],
-    };
-
-    let mut through = 1.0;
-    for step in dda_walk(spot.at, Vec2::new(to[0], to[1]), first) {
-        let DdaCell {
-            cell,
-            entry,
-            exit,
-            entered,
-            leaves,
-            crossing,
-        } = step;
-        let stands = occlusion.ids_at(cell.0, cell.1);
-        let own_cell = cell == first;
-        // The union of the sides the tile's surfaces stand on. A *tile's* answer
-        // and deliberately so: what a pixel is exempted from below is the tile it
-        // is on and not one surface of it.
-        //
-        // Only on the ray's own cell, which is the only place it is read: every
-        // other cell of the walk would be paying for a second pass over its
-        // surfaces to answer a question about a pixel that is not on it.
-        let sides = match own_cell {
-            false => 0,
-            true => stands
-                .iter()
-                .fold(0, |mask, id| mask | occlusion.solid(*id).edges),
-        };
-        // **A surface does not shadow itself**, which is what "neither end of the
-        // ray is shadowed by the tile it is on" was always reaching for. The
-        // flame's end is a whole tile — a sconce burns outside the plane its tile
-        // names (`mounted_at`) and what is left on that tile is not between it and
-        // anything. The lit end is a *surface*: a face lies on its own panel and a
-        // billboard's pixels are inside their tile, but a **floor** pixel on a wall
-        // tile is inside the room, and the ray from it to a lamp in the street
-        // crosses the panel its own tile stands on. See
-        // [`Surface::shadowed_by_own_tile`], and `blit.wgsl`'s `walk`.
-        let lit_by_own_tile = match own_cell {
-            false => 0,
-            true => surface.shadowed_by_own_tile(sides),
-        };
-        // **Neither exemption is about a lid**, and that is decision 32 arriving
-        // at the two ends of the ray. Both of them are statements about things
-        // that *stand up*: a pixel lies on the panel it is the face of, a
-        // billboard's pixels are inside their own tile, and a mounted flame burns
-        // outside the plane its tile names. None of that is true of a horizontal
-        // plane — the floor over a torch's tile really is between it and
-        // everything above, and the floor over a pixel's tile really is between
-        // it and everything below. It is exactly the case a house has: a sconce
-        // at `z 36` and the upper storey's wall at `z 45` are the *same tile*
-        // with the floor at `z 40` in between, and both ends exempted it.
-        //
-        // It costs nothing where it should: a ray only crosses a plane inside its
-        // own cell when the other end is nearly straight above or below, so a
-        // lamp in the street still lights the outward face of the storey over it
-        // — that ray leaves the cell within a fraction of a tile and crosses the
-        // floor somewhere else, or nowhere.
-        if !stands.is_empty() {
-            // How soft this cell's own edge is: the penumbra a source of
-            // this size casts from this far along the ray. See
-            // [`FLAME_SPREAD`]; a `spread` of zero is a point source, and the
-            // clamp leaves it the narrowest edge the walk draws.
-            let middle = (entered + leaves) * 0.5;
-            let soft =
-                (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
-            // What the *cell* stops is the **largest** of what its surfaces stop,
-            // and not the product of them. Two panels on one tile are a corner —
-            // two faces of one wall — and a ray that crosses both has gone
-            // through one thing once; multiplying would darken every corner in
-            // the world twice over. Since step 21.2 a tile's surfaces carry
-            // spans of their own — a lid and a wall no longer share one — so the
-            // largest is also what keeps the air between two walls open where
-            // the merged span used to close it.
-            let mut stopped: f32 = 0.0;
-            for stands in stands.iter().map(|id| occlusion.solid(*id)) {
-                // On either end's own cell only a lid is asked — see `lids_only`
-                // above — and on the lit end's, only the panels the surface
-                // admits beside it: a pixel standing inside a solid is not
-                // shadowed by the solid it stands in.
-                //
-                // **And an exemption reaches only as high as the surface it is
-                // about.** A tile of a two-storey house carries a wall for each
-                // storey — `0..20` and `20..40` — and they are two surfaces. A
-                // pixel at `z 25` lies on the upper one; the lower one is under
-                // its feet and is as much an occluder to it as anybody else's
-                // wall. Exempting it let every ray out of the room below climb
-                // the column of its own wall tile, which is the leak that
-                // survived the two above: the floor stops at the wall, so the
-                // storey's wall was the one tile with no plank over the room.
-                // `on_surface` is the whole of the fix, and it is decision 28
-                // said with the `z` it never had.
-                // And which of this cell's sides are the **same run of wall**
-                // the lit end is part of, which is [`own_run`] with the same `z`
-                // test on it: a run is one surface, and the storey below is
-                // another one that happens to be under it.
-                // **A surface does not shadow itself.** [`exemption`] is the
-                // `lit_end`/`flame_end`/`caps_this` decision, shared with
-                // [`walk_cells_exact`] rather than kept as two copies of the
-                // same three lines. See its own doc comment, and
-                // `blit.wgsl`'s `walk`, for the cases it covers.
-                let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, lit_by_own_tile, stands);
-                if exempt {
-                    continue;
-                }
-                let (low, high) = (stands.bottom() as f32, stands.top() as f32);
-                let opacity = f32::from(stands.opacity) / 255.0;
-                let by_surface = match stands.edges {
-                    // A **lid** — a floor, a rug, a plank — is a *plane*, and what
-                    // a plane does to a ray is decided by whether the ray got to
-                    // the other side of it inside this cell. See [`crosses`], and
-                    // `blit.wgsl`'s `walk` for the same three lines.
-                    0 => {
-                        let from = spot.z + delta[2] * entered;
-                        let to = spot.z + delta[2] * leaves;
-                        opacity * crosses(from, to, low, high, spot.z + delta[2], spread)
-                    }
-                    // A **body** — a whole tile that stands up and whose art would
-                    // not say which way. A solid the ray travels through, so what
-                    // it stops is scaled by the length of the run inside the span.
-                    // `blit.wgsl`'s `walk` argues why all four sides belongs here:
-                    // a roof five `z` deep is pierced by neither of its sides at
-                    // 45°, and a sealed house came out sunlit.
-                    EDGE_ANY => {
-                        let from = spot.z + delta[2] * entered;
-                        let to = spot.z + delta[2] * leaves;
-                        let (bottom, top) = (from.min(to), from.max(to));
-                        let share = match top - bottom > 1e-6 {
-                            true => (top.min(high) - bottom.max(low)).max(0.0) / (top - bottom),
-                            // A level ray: it is inside the span or it is not, and
-                            // there is no length of it to take a share of.
-                            false => match bottom >= low && bottom <= high {
-                                true => 1.0,
-                                false => 0.0,
-                            },
-                        };
-                        let crossed = (leaves - entered) * ground * share;
-                        let travelled = opacity * (crossed / soft).clamp(0.0, 1.0);
-                        // And a thing that **stands up** is a surface on every
-                        // side of its tile as well as a solid inside it, so the
-                        // sides it is crossed by are pierced too — see
-                        // `blit.wgsl`'s `walk`, and decision 24. The larger of the
-                        // two answers: the length is what keeps a slab five `z`
-                        // deep opaque to a ray that goes over neither of its
-                        // sides, and the pierce is what closes the sliver a ray
-                        // clipping a corner used to walk through.
-                        //
-                        let tall = soft * FLAME_DEPTH;
-                        let stops = EDGE_ANY & !same_run;
-                        let mut stopped = travelled;
-                        for (side, at) in [(entry, entered), (exit, leaves)] {
-                            if stops & side != 0 {
-                                stopped =
-                                    stopped.max(opacity * pierces(spot.z + delta[2] * at, low, high, tall));
-                            }
-                        }
-                        stopped
-                    }
-                    // A **panel** — a surface on one side of the tile. What it does
-                    // to a ray is decided where the ray *pierces* it, at a point
-                    // and at a height, and not by how long the ray spent in the
-                    // cell. `blit.wgsl`'s `walk` argues it: the length version let
-                    // a ray through the corner between two panels and drew a fan
-                    // of spokes out of every lamp near a wall.
-                    edges => {
-                        let tall = soft * FLAME_DEPTH;
-                        // Less whatever of this cell is the same run of wall the
-                        // lit end stands in — see [`own_run`] and `same_run`.
-                        let stops = edges & !same_run;
-                        let mut stopped: f32 = 0.0;
-                        for (side, at) in [(entry, entered), (exit, leaves)] {
-                            if stops & side != 0 {
-                                // Where the ray goes through the plane, in all
-                                // three, because a **hole** is a rectangle in it
-                                // and the height alone cannot say whether the ray
-                                // went through the window or through the wall
-                                // beside it. See [`pierced`].
-                                let cross = [
-                                    spot.at.x + delta[0] * at,
-                                    spot.at.y + delta[1] * at,
-                                    spot.z + delta[2] * at,
-                                ];
-                                stopped = stopped
-                                    .max(opacity * pierced(stands, cross[0], cross[1], cross[2], soft, tall));
-                            }
-                        }
-                        stopped
-                    }
-                };
-                stopped = stopped.max(by_surface);
-            }
-            through *= 1.0 - stopped;
-            if through <= RAY_CUTOFF {
-                return (0.0, Some(cell));
-            }
-        }
-        match crossing {
-            None => break,
-            Some(DdaTransition::Step) => {}
-            Some(DdaTransition::Corner { by_x, by_y }) => {
-                // **A corner** — `blit.wgsl`'s `walk` argues it: four tiles meet at
-                // the point the ray leaves by, and the two the walk does not step
-                // into are as much in the way as the one it does. Both are asked, and
-                // then the walk steps diagonally past them.
-                let cross = [
-                    spot.at.x + delta[0] * leaves,
-                    spot.at.y + delta[1] * leaves,
-                    spot.z + delta[2] * leaves,
-                ];
-                let wide =
-                    (spread * leaves / (1.0 - leaves).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
-                let tall = wide * FLAME_DEPTH;
-                let mut corner: f32 = 0.0;
-                let mut blamed = None;
-                for (at, crossed) in [by_x, by_y] {
-                    if at == first || (skip_last && at == last) {
-                        continue;
-                    }
-                    let crossed = crossed & !own_run(own, at, first);
-                    let stops = panel_stop(occlusion.solids_at(at.0, at.1), crossed, cross, wide, tall);
-                    if stops > corner {
-                        corner = stops;
-                        blamed = Some(at);
-                    }
-                }
-                through *= 1.0 - corner;
-                if through <= RAY_CUTOFF {
-                    return (0.0, blamed);
-                }
-            }
-        }
-    }
-    (through, None)
-}
-
 /// Every tile [`walk_cells_exact`] tests solids from: [`dda_walk`]'s own
-/// straight-line cells, plus — unconditionally, not gated behind
-/// [`corner_tie`]'s heuristic — the diagonal neighbour crossed at every
-/// step.
+/// straight-line cells, plus — unconditionally — the diagonal neighbour
+/// crossed at every step.
 ///
 /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 1's answer,
 /// session 8: [`ray_vs_solid`] answers "is a candidate real" exactly, so
@@ -2391,15 +1950,15 @@ fn candidate_tiles(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<(i32, i32)> {
     let mut tiles = Vec::new();
     for step in dda_walk(from, to, tile) {
         push(&mut tiles, step.cell);
-        if step.crossing.is_some() {
-            // Both single-axis neighbours of this cell — [`DdaTransition::
-            // Corner`]'s own `by_x`/`by_y`, named at every transition
-            // whether or not `corner_tie` decides to use them. An ordinary
-            // [`DdaTransition::Step`] already visits one of the two as its
-            // very next cell; the other is the one a heuristic used to
-            // gate. Neither is the cell reached by stepping *both* axes —
-            // that one is already `dda_walk`'s own next-or-next-next cell,
-            // not a corner candidate at all.
+        if step.continues {
+            // Both single-axis neighbours of this cell, named at every
+            // transition regardless of which one `dda_walk` itself steps
+            // into next: an ordinary step already visits one of the two as
+            // its very next cell; the other is the diagonal neighbour this
+            // walk's own single-axis stepping never reaches on its own.
+            // Neither is the cell reached by stepping *both* axes — that
+            // one is already `dda_walk`'s own next-or-next-next cell, not a
+            // corner candidate at all.
             push(&mut tiles, (step.cell.0 + toward.0, step.cell.1));
             push(&mut tiles, (step.cell.0, step.cell.1 + toward.1));
         }
@@ -2683,6 +2242,321 @@ fn walk_cells_exact(
     (through, None)
 }
 
+/// A GPU-shaped reformulation of [`walk_cells_exact`], proven equivalent to
+/// it (on ordinary, non-[`crate::occlusion::Builder::add_raw`] geometry) —
+/// `docs/lighting_raymarch.md`'s point 4, and [`walk`]/[`walk_sun`]'s own
+/// walk since the cutover, mirrored in `blit.wgsl`'s `walk`.
+///
+/// Returns the blamed tile the same shape [`walk_cells`] used to: the cell
+/// being applied at the moment `through` first drops to or under
+/// [`RAY_CUTOFF`], `None` when nothing ever did. Free to add — the
+/// enumeration below already visits cells strictly in ray order, so the cell
+/// that trips the cutoff *is* the first one in ray order that fully blocked
+/// it, the same fact [`walk_cells`]'s own `Some(cell)` returns named. Kept
+/// rather than dropped because [`Reach::stopped_by`] has real readers
+/// (`tests/lighting.rs`'s assertions, `Debug` for [`Sample`],
+/// `examples/isolated_scene.rs`) that the cutover must not silently break.
+///
+/// **Why a second exact walk, rather than porting [`walk_cells_exact`]
+/// itself**: `blit.wgsl`'s `walk` returns one `f32`, `through` — nothing
+/// downstream reads which tile stopped it, unlike [`Reach::stopped_by`].
+/// [`candidate_tiles`]'s `Vec` (dynamic allocation, `O(n²)` dedup via
+/// `Vec::contains`) and [`walk_cells_exact`]'s subsequent sort by nearest
+/// crossing both exist only to name the *first* blocking tile in ray order —
+/// a question nothing downstream of `blit.wgsl`'s `walk` asks. `through` is
+/// a product of independent `(1 - stopped)` factors, one per candidate tile,
+/// and a product is order-independent (up to float noise, comfortably
+/// inside decision 9's ±1/255 tolerance) — so a bounded, bare per-fragment
+/// loop can multiply every candidate's contribution in as it is found,
+/// without ever collecting or sorting them, provided the enumeration itself
+/// never revisits a cell (which would double-count it) or misses one (which
+/// would under-occlude).
+///
+/// **The enumeration is plain single-axis DDA, one cell per step, and
+/// nothing else — no diagonal probe, and that was checked rather than
+/// assumed.** The backlog's own point 1/2 scoping (session 8) reads as
+/// asking for an *unconditional off-axis probe* alongside `dda_walk`'s own
+/// corner-jumping — because `dda_walk` still skips straight from one cell to
+/// a diagonal neighbour whenever [`corner_tie`] fires, and that skip is
+/// exactly what the probe exists to cover for. This function does not keep
+/// that skip at all: every transition steps exactly one axis, the nearer
+/// boundary, full stop — no [`corner_tie`], no [`panel_stop`], no
+/// [`DdaTransition::Corner`]. **A DDA walk that never skips a cell is
+/// complete by construction** — the textbook reason grid-line rasterisation
+/// steps one axis at a time is that doing so visits every cell a continuous
+/// line's interior passes through, with nothing left over for a diagonal
+/// probe to add. Checked, not trusted from the argument alone: an earlier
+/// draft of this function *did* carry an unconditional off-axis probe
+/// (mirroring the backlog's own framing literally), and deliberately
+/// disabling it — across the six-point counter-example, an unrestricted
+/// single-body fuzz, an unrestricted single-panel fuzz, a fuzz aimed
+/// exactly at a two-panel building corner, one fixed ray running the exact
+/// diagonal through a shared corner point, and 30,000 cases over a
+/// seven-solid room — never once produced a disagreement with
+/// [`walk_cells_exact`]. The probe was dead code for this architecture, not
+/// a simplification worth keeping "just in case"; see the doc's Session 15
+/// entry for the full account of ruling it out rather than assuming it in.
+///
+/// **The probe came back at the WGSL cutover, for a reason session 15's own
+/// fuzzing could never have reached: a second backend to disagree with.**
+/// Every fuzz above ran one CPU implementation against itself, so a tie in
+/// `boundary[0]`/`boundary[1]` always resolved the same way twice — nothing
+/// there could ever expose that a GPU's own division is not guaranteed to
+/// resolve the identical tie identically. `docs/lighting_raymarch.md`'s
+/// point 4 cutover found exactly that at `a_single_flat_face_beside_an_
+/// occluder_agrees_with_light_sample`, and the fix that survived is this
+/// function probing the untaken side of every transition — not the walk's
+/// own trajectory, which still steps one axis at a time, the nearer
+/// boundary only, same as always. A *gated* probe (only near a computed
+/// tie) was tried first and made things worse, not better: CPU and GPU do
+/// not compute a close-enough `boundary[0] - boundary[1]` to agree on which
+/// rays even count as near a tie, so widening the gate only widened the set
+/// of rays where one backend probed and the other did not. Unconditional
+/// removes the asymmetry instead of sizing it: `candidate_tiles` already
+/// names both single-axis neighbours at every transition regardless of any
+/// tie, so nothing here costs `walk_cells_exact` agreement that wasn't
+/// already priced in.
+///
+/// **What "exactly" is limited to, and why that limit is deliberate and not
+/// a shortcut.** Every solid tested here is reconstructed from `(tile,
+/// edges, bottom, top)` via [`crate::occlusion::Solid::box_of`] rather than
+/// read off [`crate::occlusion::Solid::space`] the way [`walk_cells_exact`]
+/// does — because `blit.wgsl` has no `x`/`y` channel to read a real
+/// footprint from (`docs/lighting_raymarch.md` session 14's "second bigger
+/// idea", still open) and this function exists to be a faithful preview of
+/// what the shader will be limited to as well, not a better version of it.
+/// For every *ordinary* (`tiledata`-sourced) static this reconstruction is
+/// bit-for-bit what built the real `space` in the first place — `box_of` is
+/// the one place a kind becomes geometry, and every ordinary static's
+/// `space` was built by calling it — so this function is proven to agree
+/// with `walk_cells_exact` there. `Builder::add_raw`'s sub-tile boxes are the
+/// one shape `box_of` cannot reconstruct (it only knows whole-tile-or-panel-
+/// strip shapes), and this is proven to *disagree* with `walk_cells_exact`
+/// there instead — the same already-measured, already-named gap, not a new
+/// one.
+fn walk_cells_streaming(
+    from: [f32; 3],
+    to: [f32; 3],
+    surface: Surface,
+    tile: (i32, i32),
+    skip_last: bool,
+    spread: f32,
+    occlusion: &Occlusion,
+) -> (f32, Option<(i32, i32)>) {
+    let (from, to) = stand_clear(from, to, surface);
+    let first = tile;
+    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+    if ground < 1e-6 {
+        // Same shortcut [`walk_cells_exact`] takes, unchanged: no direction
+        // to walk in, so only a lid on the one cell can stand between the
+        // ends. A lid's box is flat regardless of which way it was built, so
+        // there is nothing here for the `box_of` reconstruction to get
+        // wrong that reading `space` directly would not.
+        let stopped = occlusion
+            .solids_at(first.0, first.1)
+            .filter(|stands| stands.edges == 0)
+            .map(|stands| {
+                f32::from(stands.opacity) / 255.0
+                    * crosses(
+                        from[2],
+                        to[2],
+                        stands.bottom() as f32,
+                        stands.top() as f32,
+                        to[2],
+                        spread,
+                    )
+            })
+            .fold(0.0, f32::max);
+        return match stopped >= 1.0 - RAY_CUTOFF {
+            true => (0.0, Some(first)),
+            false => (1.0 - stopped, None),
+        };
+    }
+    let last = (to[0].floor() as i32, to[1].floor() as i32);
+    let own = match surface.face() {
+        Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
+        None => 0,
+    };
+    let exemption_ctx = ExemptionContext {
+        first,
+        last,
+        skip_last,
+        own,
+        surface,
+        spot_z: from[2],
+        to_z: to[2],
+    };
+
+    let toward = (
+        if delta[0] >= 0.0 { 1 } else { -1 },
+        if delta[1] >= 0.0 { 1 } else { -1 },
+    );
+    let mut per_tile = [1e30_f32; 2];
+    let mut boundary = [1e30_f32; 2];
+    for axis in 0..2 {
+        if delta[axis].abs() <= 1e-6 {
+            continue;
+        }
+        per_tile[axis] = 1.0 / delta[axis].abs();
+        let coord = [from[0], from[1]][axis];
+        let edge = [first.0, first.1][axis] as f32;
+        let ahead = match delta[axis] >= 0.0 {
+            true => edge + 1.0 - coord,
+            false => coord - edge,
+        };
+        boundary[axis] = ahead * per_tile[axis];
+    }
+
+    // One candidate tile's exact occlusion, folded into `through` — every
+    // solid on it tested with its own exact `ray_vs_solid` interval rather
+    // than a cell-shared one, [`walk_cells_exact`]'s own per-tile block
+    // restated over a single cell at a time. Nothing here reads which tile
+    // blamed the ray, so this can run in any order and as many times as the
+    // caller likes — the enumeration below is what has to visit each
+    // relevant cell exactly once, not this.
+    let apply = |cell: (i32, i32), through: &mut f32| {
+        let own_cell = cell == first;
+        let sides = match own_cell {
+            false => 0,
+            true => occlusion
+                .solids_at(cell.0, cell.1)
+                .fold(0, |mask, s| mask | s.edges),
+        };
+        let lit_by_own_tile = match own_cell {
+            false => 0,
+            true => surface.shadowed_by_own_tile(sides),
+        };
+        let mut stopped: f32 = 0.0;
+        for stands in occlusion.solids_at(cell.0, cell.1) {
+            let space =
+                crate::occlusion::Solid::box_of(cell.0, cell.1, stands.bottom(), stands.top(), stands.edges);
+            let Some((entered, leaves)) = ray_vs_solid(from, to, &space) else {
+                continue;
+            };
+            let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, lit_by_own_tile, stands);
+            if exempt {
+                continue;
+            }
+            let middle = (entered + leaves) * 0.5;
+            let soft =
+                (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
+            let (low, high) = (stands.bottom() as f32, stands.top() as f32);
+            let opacity = f32::from(stands.opacity) / 255.0;
+            let tall = soft * FLAME_DEPTH;
+            let by_surface = match stands.edges {
+                0 => {
+                    // Same tile-footprint lookup [`walk_cells_exact`] needs
+                    // for the same reason: a lid's own box is flat in `z`,
+                    // so its own `entered`/`leaves` collapse to one instant
+                    // rather than the before/after pair [`crosses`] needs.
+                    let footprint = crate::solid::Solid {
+                        min: crate::camera::WorldSpot {
+                            x: f64::from(cell.0),
+                            y: f64::from(cell.1),
+                            z: -1e6,
+                        },
+                        max: crate::camera::WorldSpot {
+                            x: f64::from(cell.0) + 1.0,
+                            y: f64::from(cell.1) + 1.0,
+                            z: 1e6,
+                        },
+                    };
+                    let (tile_entered, tile_leaves) =
+                        ray_vs_solid(from, to, &footprint).unwrap_or((entered, leaves));
+                    let from_z = from[2] + delta[2] * tile_entered;
+                    let to_z = from[2] + delta[2] * tile_leaves;
+                    opacity * crosses(from_z, to_z, low, high, to[2], spread)
+                }
+                EDGE_ANY => {
+                    let crossed = (leaves - entered) * ground;
+                    let travelled = opacity * (crossed / soft).clamp(0.0, 1.0);
+                    let stops = EDGE_ANY & !same_run;
+                    let mut stopped = travelled;
+                    for at in [entered, leaves] {
+                        let side = box_side([from[0] + delta[0] * at, from[1] + delta[1] * at], cell);
+                        if stops & side != 0 {
+                            stopped =
+                                stopped.max(opacity * pierces(from[2] + delta[2] * at, low, high, tall));
+                        }
+                    }
+                    stopped
+                }
+                edges => {
+                    if edges & !same_run == 0 {
+                        0.0
+                    } else {
+                        let cross = [
+                            from[0] + delta[0] * middle,
+                            from[1] + delta[1] * middle,
+                            from[2] + delta[2] * middle,
+                        ];
+                        opacity * pierced(stands, cross[0], cross[1], cross[2], soft, tall)
+                    }
+                }
+            };
+            stopped = stopped.max(by_surface);
+        }
+        *through *= 1.0 - stopped;
+    };
+
+    let mut through = 1.0_f32;
+    let mut cell = first;
+    for _ in 0..MAX_WALK_STEPS {
+        apply(cell, &mut through);
+        if through <= RAY_CUTOFF {
+            return (0.0, Some(cell));
+        }
+        let next = boundary[0].min(boundary[1]);
+        if next >= 1.0 {
+            break;
+        }
+        // Plain single-axis DDA drives the walk's own trajectory — the
+        // nearer boundary only, never skipping a cell or taking both. See
+        // this function's own doc comment for why an unconditional probe of
+        // the *trajectory itself* was tried and ruled out: a walk that never
+        // skips a cell is complete by construction, for one CPU
+        // implementation checked against itself.
+        //
+        // **The probe below is unconditional for a different reason, and
+        // does not change the trajectory.** A first attempt gated it behind
+        // `(boundary[0] - boundary[1]).abs() <= TIE_EPSILON` — cheaper, and
+        // wrong: CPU and GPU do not compute a close-enough `boundary[0] -
+        // boundary[1]` to agree on *which rays count as near a tie*, so one
+        // backend would probe a ray the other did not, and the extra
+        // occlusion only one side found showed up as a real parity failure
+        // (`the_shader_and_light_sample_agree_about_a_wall_that_faces_away`
+        // and others, found widening the gate rather than narrowing it —
+        // more rays fell on the wrong side of the asymmetry, not fewer).
+        // Probing every transition removes the asymmetry instead of trying
+        // to size it away: `candidate_tiles` already names both single-axis
+        // neighbours at every transition regardless of any tie, so
+        // `walk_cells_exact` already tests whatever this probes, and testing
+        // the same cell twice on this side changes nothing it could
+        // disagree with.
+        let out_by_x = boundary[0] < boundary[1];
+        let probe = match out_by_x {
+            true => (cell.0, cell.1 + toward.1),
+            false => (cell.0 + toward.0, cell.1),
+        };
+        apply(probe, &mut through);
+        if through <= RAY_CUTOFF {
+            return (0.0, Some(probe));
+        }
+        match out_by_x {
+            true => {
+                cell.0 += toward.0;
+                boundary[0] += per_tile[0];
+            }
+            false => {
+                cell.1 += toward.1;
+                boundary[1] += per_tile[1];
+            }
+        }
+    }
+    (through, None)
+}
+
 /// [`walk`], through [`walk_cells_exact`] instead of [`walk_cells`] — for
 /// `docs/lighting_raymarch.md`'s point 3 agreement pass, not for anywhere
 /// real.
@@ -2843,33 +2717,6 @@ mod tests {
         // A flame *in* the plane of the lid is half cut by it: it is a body
         // about a tile across, and half of it is on either side.
         assert!((crosses(22.0, 18.0, 20.0, 20.0, 20.0, FLAME_SPREAD) - 0.5).abs() < 1e-6);
-    }
-
-    /// `corner_tie`'s own claim, checked against the arithmetic rather than
-    /// trusted from it: the width it returns converts back into exactly
-    /// [`crate::occlusion::PANEL_THICKNESS`] of world distance on the axis
-    /// `out_by_x` says has *not* been crossed yet.
-    #[test]
-    fn corner_tie_converts_back_into_exactly_one_panel_thickness_of_world_distance() {
-        // A ray moving twice as fast along `x` as along `y`, so the two axes'
-        // `per_tile` genuinely differ and a swapped index would be caught
-        // rather than cancel out.
-        let delta = [2.0_f32, 1.0];
-        let per_tile = [1.0 / delta[0].abs(), 1.0 / delta[1].abs()];
-
-        // `x` reached first: the axis not yet crossed is `y`, so the tie
-        // should be exactly `PANEL_THICKNESS` of world distance along `y`.
-        let along_y = delta[1].abs() * corner_tie(per_tile, true);
-        assert!(
-            (along_y - crate::occlusion::PANEL_THICKNESS as f32).abs() < 1e-6,
-            "out_by_x should size the tie off the y axis, it converts to {along_y}",
-        );
-        // And the other way round.
-        let along_x = delta[0].abs() * corner_tie(per_tile, false);
-        assert!(
-            (along_x - crate::occlusion::PANEL_THICKNESS as f32).abs() < 1e-6,
-            "out_by_y should size the tie off the x axis, it converts to {along_x}",
-        );
     }
 
     /// A one-tile-square, fully opaque panel or body, for the small pure
@@ -3042,35 +2889,6 @@ mod tests {
         assert!(on_surface(20.0 + ON_TOP, &wall));
         assert!(!on_surface(20.0 + ON_TOP * 2.0, &wall));
         assert!(!on_surface(0.0 - ON_TOP * 2.0, &wall));
-    }
-
-    /// [`panel_stop`] asks only the panels [`crossed`] names, and takes the
-    /// largest of them rather than their product or their sum — the same
-    /// "one thing crossed once" rule [`walk_cells`]'s own per-cell occlusion
-    /// applies, checked here at the corner helper that carries it too.
-    #[test]
-    fn panel_stop_only_asks_the_crossed_panels_and_keeps_the_largest() {
-        let solids = [
-            test_solid(0, 20, crate::occlusion::EDGE_NORTH),
-            test_solid(0, 20, crate::occlusion::EDGE_EAST),
-        ];
-        let stopped = panel_stop(
-            solids.iter(),
-            crate::occlusion::EDGE_NORTH,
-            [0.5, 0.0, 10.0],
-            0.05,
-            2.0,
-        );
-        assert!((stopped - 1.0).abs() < 1e-3);
-
-        let stopped = panel_stop(
-            solids.iter(),
-            crate::occlusion::EDGE_SOUTH,
-            [0.5, 0.0, 10.0],
-            0.05,
-            2.0,
-        );
-        assert_eq!(stopped, 0.0);
     }
 
     /// [`faces`]'s own gradient: fully towards the light, fully away, and
@@ -3567,252 +3385,6 @@ mod tests {
         }
     }
 
-    /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3: the same
-    /// six-point counter-example
-    /// [`a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray`] uses,
-    /// but calling [`walk_cells`] and [`walk_cells_exact`] directly and
-    /// asking them to agree — the first of the oracles the doc's own
-    /// recommended order asks for before any cutover, and the one this bug
-    /// class actually lived in: a shallow ray that used to trip
-    /// `corner_tie` and skip the wall's whole row.
-    #[test]
-    fn walk_cells_exact_agrees_with_walk_cells_on_the_six_point_counter_example() {
-        use crate::occlusion::{Builder, Shape};
-
-        let wall = StaticTile {
-            flags: TileFlags::new(TileFlags::NO_SHOOT),
-            height: 20,
-            ..StaticTile::default()
-        };
-        let mut occlusion = Builder::new(crate::camera::TileBounds {
-            min_x: 90,
-            max_x: 110,
-            min_y: 90,
-            max_y: 110,
-        });
-        occlusion.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
-        let occlusion = occlusion.finish(&Cutaway::OPEN);
-
-        let flame = [98.0_f32, 100.0, 10.0];
-        for (y, blocked) in [
-            (99.9_f32, false),
-            (100.1, true),
-            (100.2, true),
-            (100.3, true),
-            (101.0, true),
-        ] {
-            let tile = (102, y.floor() as i32);
-            let from = [102.5_f32, y, 10.0];
-            let old = walk_cells(from, flame, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
-            let new = walk_cells_exact(from, flame, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
-            assert_eq!(
-                blocked,
-                new.0 <= RAY_CUTOFF,
-                "y {y}: walk_cells_exact expected {} but through is {} (blamed {:?})",
-                if blocked { "blocked" } else { "open" },
-                new.0,
-                new.1,
-            );
-            assert!(
-                (old.0 - new.0).abs() < 1e-4,
-                "y {y}: walk_cells through {} disagrees with walk_cells_exact through {} (blamed {:?} vs {:?})",
-                old.0,
-                new.0,
-                old.1,
-                new.1,
-            );
-        }
-    }
-
-    /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over a
-    /// single-body scene: `walk_cells` and `walk_cells_exact` fuzzed with
-    /// spots and flames anywhere within two tiles of the wall, restricted to
-    /// rays whose [`dda_walk`] never takes a [`DdaTransition::Corner`] at
-    /// all.
-    ///
-    /// **That restriction is the honest boundary of what this test can
-    /// promise, not a convenience.** A first, unrestricted version of this
-    /// fuzz found two real, distinct disagreement shapes, both confined to
-    /// candidates `walk_cells` only ever reaches through
-    /// [`DdaTransition::Corner`]'s [`panel_stop`] path rather than its
-    /// ordinary per-cell loop:
-    /// - `corner_tie` fires whenever a boundary crossing lands within
-    ///   [`crate::occlusion::PANEL_THICKNESS`] of a corner in `t`-space —
-    ///   generous by design, "for two panels that physically overlap
-    ///   there." A whole-tile body has no adjoining neighbour to overlap
-    ///   with, so that generosity blames a tile the ray's exact geometry
-    ///   never entered at all — `docs/lighting_raymarch.md`'s own backlog
-    ///   already names this shape as known slop, not a bug, for the
-    ///   panel-corner case it was found in; this fuzz found the same
-    ///   generosity misapplied to a body.
-    /// - `panel_stop` itself tests a body with a single point (the corner)
-    ///   through [`pierces`]'s height-band softness, never the length-based
-    ///   `travelled` formula the main loop gives every other body crossing.
-    ///   A ray that genuinely runs a real distance through a body's box,
-    ///   but is only ever named via a corner, comes out under-occluded by
-    ///   `walk_cells` — not a DDA-precision bug, a real gap in
-    ///   `panel_stop`'s single-point design for a shape it was never built
-    ///   to answer for (a *body*, not a *panel*).
-    ///
-    /// Both are `walk_cells`'s own known limitations, not
-    /// `walk_cells_exact` regressions — every [`ray_vs_solid`] crossing this
-    /// fuzz produced checked out against an independent point-in-box read
-    /// by hand before this test was narrowed. Restricting to corner-free
-    /// rays keeps the assertion honest: full numeric agreement wherever
-    /// `walk_cells`'s own stepping never leaves its documented per-cell
-    /// path, silence about the corner path this whole track exists to
-    /// replace rather than a false claim of parity there.
-    #[test]
-    fn walk_cells_exact_agrees_with_walk_cells_off_the_corner_tie_path() {
-        use crate::occlusion::{Builder, Shape};
-        use proptest::prelude::*;
-
-        let wall = StaticTile {
-            flags: TileFlags::new(TileFlags::NO_SHOOT),
-            height: 20,
-            ..StaticTile::default()
-        };
-        let mut occlusion = Builder::new(crate::camera::TileBounds {
-            min_x: 90,
-            max_x: 110,
-            min_y: 90,
-            max_y: 110,
-        });
-        occlusion.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
-        let occlusion = occlusion.finish(&Cutaway::OPEN);
-
-        proptest!(ProptestConfig {
-            cases: 4_000,
-            max_global_rejects: 200_000,
-            ..ProptestConfig::default()
-        }, |(
-            fx in 95.0_f32..105.0,
-            fy in 95.0_f32..105.0,
-            fz in 0.0_f32..20.0,
-            tx in 95.0_f32..105.0,
-            ty in 95.0_f32..105.0,
-            tz in 0.0_f32..20.0,
-        )| {
-            prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
-            let tile = (fx.floor() as i32, fy.floor() as i32);
-            let steps = dda_walk(Vec2::new(fx, fy), Vec2::new(tx, ty), tile);
-            prop_assume!(!steps.iter().any(|step| matches!(step.crossing, Some(DdaTransition::Corner { .. }))));
-
-            let from = [fx, fy, fz];
-            let to = [tx, ty, tz];
-            let old = walk_cells(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
-            let new = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
-            prop_assert!(
-                (old.0 - new.0).abs() < 1e-3,
-                "from {from:?} to {to:?}: walk_cells {old:?} vs walk_cells_exact {new:?}",
-            );
-        });
-    }
-
-    /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over a
-    /// single **panel** — [`Shape::faced`] rather than [`Shape::UNREAD`],
-    /// so this exercises the branch
-    /// [`walk_cells_exact`]'s own doc comment already flags as its one
-    /// deliberate simplification (one [`pierced`] sample at the crossing's
-    /// own midpoint).
-    ///
-    /// **No corner-free restriction here, because one wasn't enough — a
-    /// wider version of this fuzz found a real disagreement with no corner
-    /// in it at all.** A ray entering tile `(100, 100)` through its west
-    /// side and leaving through its east — an ordinary [`DdaTransition::
-    /// Step`], nowhere near [`corner_tie`] — still clips the tile's own
-    /// north panel (`y` in `[100.0, 100.2)`) partway through that crossing,
-    /// because the panel's real depth is not the tile's own east/west
-    /// edges [`walk_cells`]'s `entry`/`exit` gate checks. `walk_cells`
-    /// never tests the panel at all here — neither `entry` nor `exit`
-    /// names `EDGE_NORTH` — where [`ray_vs_solid`] finds the real crossing
-    /// directly. A second, independent gap in the same family as
-    /// `corner_tie`'s: a coarse side-matching approximation, not a bug in
-    /// the exact primitive replacing it.
-    ///
-    /// So this checks something weaker than full agreement, but checks it
-    /// everywhere rather than only off a boundary that turned out not to
-    /// be the real one: whichever of the two walks reports the *stronger*
-    /// occlusion — a full block the other reads as open — must be the one
-    /// [`ray_vs_solid`] backs directly. `walk_cells_exact` blocking where
-    /// `walk_cells` does not must be a real hit; `walk_cells` blocking
-    /// where `walk_cells_exact` does not must *not* be one — otherwise the
-    /// exact primitive itself would be missing a real crossing, which is a
-    /// regression this test exists to catch.
-    #[test]
-    fn walk_cells_exact_disagreements_are_backed_by_ray_vs_solid() {
-        use crate::facing::Facing;
-        use crate::occlusion::{Builder, Shape};
-        use proptest::prelude::*;
-
-        for panel in [false, true] {
-            let wall = StaticTile {
-                flags: TileFlags::new(TileFlags::NO_SHOOT),
-                height: 20,
-                ..StaticTile::default()
-            };
-            let mut occlusion = Builder::new(crate::camera::TileBounds {
-                min_x: 90,
-                max_x: 110,
-                min_y: 90,
-                max_y: 110,
-            });
-            let shape = match panel {
-                true => Shape::faced(Facing::One(Face::North)),
-                false => Shape::UNREAD,
-            };
-            occlusion.add(100, 100, 0, Graphic(0x0100), &wall, shape);
-            let occlusion = occlusion.finish(&Cutaway::OPEN);
-
-            proptest!(ProptestConfig::with_cases(8_000), |(
-                fx in 95.0_f32..105.0,
-                fy in 95.0_f32..105.0,
-                fz in 0.0_f32..20.0,
-                tx in 95.0_f32..105.0,
-                ty in 95.0_f32..105.0,
-                tz in 0.0_f32..20.0,
-            )| {
-                prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
-                let tile = (fx.floor() as i32, fy.floor() as i32);
-                let from = [fx, fy, fz];
-                let to = [tx, ty, tz];
-                let old = walk_cells(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
-                let new = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
-
-                let (from3, to3) = stand_clear(from, to, Surface::Flat);
-                let has_real_hit = |blamed: (i32, i32)| {
-                    occlusion
-                        .solids_at(blamed.0, blamed.1)
-                        .any(|stands| ray_vs_solid(from3, to3, &stands.space).is_some())
-                };
-                // A wide gap on purpose, not `RAY_CUTOFF`: softness formulas
-                // that read a solid's own crossing at slightly different
-                // points (a cell's shared `middle` versus a solid's own,
-                // exact one) can legitimately land a hair either side of
-                // `RAY_CUTOFF` near a soft edge, without either walk being
-                // wrong. That is a difference of degree, not the "blocked
-                // versus never touched at all" question this test asks.
-                if old.0 <= RAY_CUTOFF && new.0 > 0.5 {
-                    let blamed = old.1.expect("blocked implies a blamed tile");
-                    prop_assert!(
-                        !has_real_hit(blamed),
-                        "panel={panel} from {from:?} to {to:?}: walk_cells blocked at {blamed:?}, \
-                         walk_cells_exact reads it open ({new:?}) — but ray_vs_solid finds a real \
-                         hit there, so walk_cells_exact should have blocked it too and did not",
-                    );
-                } else if new.0 <= RAY_CUTOFF && old.0 > 0.5 {
-                    let blamed = new.1.expect("blocked implies a blamed tile");
-                    prop_assert!(
-                        has_real_hit(blamed),
-                        "panel={panel} from {from:?} to {to:?}: walk_cells_exact blocked at \
-                         {blamed:?} with no real ray_vs_solid hit there — a real regression, not \
-                         known walk_cells slop",
-                    );
-                }
-            });
-        }
-    }
-
     /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over the
     /// three-tread climbable stair
     /// [`a_treads_top_is_not_shadowed_by_its_own_riser`] uses. This is the
@@ -3940,33 +3512,285 @@ mod tests {
         });
     }
 
-    /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3's own
-    /// "no sound automated oracle... a deliberate stop" — closed.
-    /// [`walk_cells_exact_stays_in_range_on_the_stair`]'s own doc comment
-    /// named what a real disagreement oracle for this scene needs: the same
-    /// `on_surface`/`own_run`/`flame_end` exemption predicates a naive "any
-    /// real hit counts" check does not know about, and named re-deriving
-    /// them a second, independent time as the trap this doc's own
-    /// fault-injection discipline exists to avoid falling into by accident
-    /// (see `feedback-rederived-formula-needs-reference-gate` in project
-    /// memory). [`exemption`], pulled out of `walk_cells`/`walk_cells_exact`
-    /// this session for exactly this, is what makes *reusing* the real
-    /// predicates possible here instead of re-deriving them a third time.
-    ///
-    /// Same "whichever walk claims the stronger answer must be backed"
-    /// discipline [`walk_cells_exact_disagreements_are_backed_by_ray_vs_solid`]
-    /// already runs on the single-wall scenes, with the one addition this
-    /// richer scene needs and that one did not: a real `ray_vs_solid` hit
-    /// only backs a blocked verdict if [`exemption`] says the solid it hit
-    /// is not exempt, and — for a panel or a body — if `own_run` has not
-    /// already cancelled every side the ray could have crossed. Without
-    /// both, the stair's own flame-standing-on-its-own-tread case (a real
-    /// `ray_vs_solid` hit, correctly read as open by both walks) reads as an
-    /// unbacked disagreement and fails the test for a case that is not a
-    /// bug — the exact false alarm the smoke test above was written to
-    /// avoid running into, now closed rather than routed around.
+    /// `docs/lighting_raymarch.md`'s point 4, the same six-point counter-
+    /// example this whole track started from — full numeric agreement with
+    /// [`walk_cells_exact`]. This is a single whole-tile body
+    /// (`Shape::UNREAD`), so [`crate::occlusion::Solid::box_of`]'s
+    /// reconstruction is bit-for-bit the solid's own real `space`, and this
+    /// is the case [`walk_cells_streaming`]'s own doc comment claims exact
+    /// agreement for.
     #[test]
-    fn walk_cells_exact_disagreements_on_the_stair_are_backed_by_a_real_unexempted_hit() {
+    fn walk_cells_streaming_agrees_with_walk_cells_exact_on_the_six_point_counter_example() {
+        use crate::occlusion::{Builder, Shape};
+
+        let wall = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        occlusion.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        let flame = [98.0_f32, 100.0, 10.0];
+        for y in [99.9_f32, 100.1, 100.2, 100.3, 101.0] {
+            let tile = (102, y.floor() as i32);
+            let from = [102.5_f32, y, 10.0];
+            let exact = walk_cells_exact(from, flame, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let streaming =
+                walk_cells_streaming(from, flame, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            assert!(
+                (exact - streaming).abs() < 1e-4,
+                "y {y}: walk_cells_exact through {exact} disagrees with walk_cells_streaming through {streaming}",
+            );
+        }
+    }
+
+    /// `docs/lighting_raymarch.md`'s point 4, over the same single-body wall
+    /// scene the six-point counter-example's own occlusion is built from —
+    /// **with no corner restriction**, because [`walk_cells_streaming`] has
+    /// no corner-jump branch to be restricted away from. Full numeric
+    /// agreement with [`walk_cells_exact`] everywhere in the domain.
+    #[test]
+    fn walk_cells_streaming_agrees_with_walk_cells_exact_on_a_single_body() {
+        use crate::occlusion::{Builder, Shape};
+        use proptest::prelude::*;
+
+        let wall = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        occlusion.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        proptest!(ProptestConfig::with_cases(8_000), |(
+            fx in 95.0_f32..105.0,
+            fy in 95.0_f32..105.0,
+            fz in 0.0_f32..20.0,
+            tx in 95.0_f32..105.0,
+            ty in 95.0_f32..105.0,
+            tz in 0.0_f32..20.0,
+        )| {
+            prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
+            let tile = (fx.floor() as i32, fy.floor() as i32);
+            let from = [fx, fy, fz];
+            let to = [tx, ty, tz];
+            let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            prop_assert!(
+                (exact - streaming).abs() < 1e-3,
+                "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
+            );
+        });
+    }
+
+    /// `docs/lighting_raymarch.md`'s point 4, over a single **panel**
+    /// (`Shape::faced`) — the branch [`walk_cells_exact_disagreements_are_
+    /// backed_by_ray_vs_solid`]'s own doc comment flags as the one
+    /// deliberate simplification (one [`pierced`] sample at the crossing's
+    /// own midpoint). A panel's box is `PANEL_THICKNESS`-inset from the
+    /// plane but still exactly what [`crate::occlusion::Solid::box_of`]
+    /// builds for it, so full numeric agreement is the right bar here too,
+    /// not the weaker "stronger answer is backed" claim the `walk_cells`
+    /// comparison needed.
+    #[test]
+    fn walk_cells_streaming_agrees_with_walk_cells_exact_on_a_single_panel() {
+        use crate::facing::Facing;
+        use crate::occlusion::{Builder, Shape};
+        use proptest::prelude::*;
+
+        let wall = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        occlusion.add(
+            100,
+            100,
+            0,
+            Graphic(0x0100),
+            &wall,
+            Shape::faced(Facing::One(Face::North)),
+        );
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        proptest!(ProptestConfig::with_cases(8_000), |(
+            fx in 95.0_f32..105.0,
+            fy in 95.0_f32..105.0,
+            fz in 0.0_f32..20.0,
+            tx in 95.0_f32..105.0,
+            ty in 95.0_f32..105.0,
+            tz in 0.0_f32..20.0,
+        )| {
+            prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
+            let tile = (fx.floor() as i32, fy.floor() as i32);
+            let from = [fx, fy, fz];
+            let to = [tx, ty, tz];
+            let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            prop_assert!(
+                (exact - streaming).abs() < 1e-3,
+                "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
+            );
+        });
+    }
+
+    /// `docs/lighting_raymarch.md`'s point 4, over a small room rather than
+    /// one isolated wall — three walled sides, a doorway gap, and a
+    /// free-standing body in the open area, seven solids on six different
+    /// tiles at once. [`walk_cells_streaming`]'s own doc comment names this
+    /// as the densest of the constructions that went looking for a case
+    /// where plain single-axis DDA (no diagonal probe) misses a cell a real
+    /// ray passes through, and did not find one — this is that construction,
+    /// kept as a permanent regression rather than only run once by hand.
+    #[test]
+    fn walk_cells_streaming_agrees_with_walk_cells_exact_in_a_small_room() {
+        use crate::facing::Facing;
+        use crate::occlusion::{Builder, Shape};
+        use proptest::prelude::*;
+
+        let wall = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        occlusion.add(
+            100,
+            99,
+            0,
+            Graphic(0x0100),
+            &wall,
+            Shape::faced(Facing::One(Face::North)),
+        );
+        occlusion.add(
+            101,
+            99,
+            0,
+            Graphic(0x0100),
+            &wall,
+            Shape::faced(Facing::One(Face::North)),
+        );
+        occlusion.add(
+            99,
+            100,
+            0,
+            Graphic(0x0100),
+            &wall,
+            Shape::faced(Facing::One(Face::West)),
+        );
+        occlusion.add(
+            99,
+            101,
+            0,
+            Graphic(0x0100),
+            &wall,
+            Shape::faced(Facing::One(Face::West)),
+        );
+        occlusion.add(
+            102,
+            100,
+            0,
+            Graphic(0x0100),
+            &wall,
+            Shape::faced(Facing::One(Face::East)),
+        );
+        occlusion.add(
+            100,
+            102,
+            0,
+            Graphic(0x0100),
+            &wall,
+            Shape::faced(Facing::One(Face::South)),
+        );
+        occlusion.add(101, 101, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        proptest!(ProptestConfig::with_cases(30_000), |(
+            fx in 98.5_f32..103.5,
+            fy in 98.5_f32..103.5,
+            fz in 0.0_f32..20.0,
+            tx in 98.5_f32..103.5,
+            ty in 98.5_f32..103.5,
+            tz in 0.0_f32..20.0,
+        )| {
+            prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
+            let tile = (fx.floor() as i32, fy.floor() as i32);
+            let from = [fx, fy, fz];
+            let to = [tx, ty, tz];
+            let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            prop_assert!(
+                (exact - streaming).abs() < 1e-3,
+                "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
+            );
+        });
+    }
+
+    /// `docs/lighting_raymarch.md`'s point 4, over the three-tread climbable
+    /// stair — and a **real, new-found boundary of the reconstruction**, not
+    /// a smoke test alone.
+    ///
+    /// **Full agreement with [`walk_cells_exact`] does not hold here, and it
+    /// should not — this is a second, independent source of the same gap
+    /// session 14 already named, not a new one to chase.** A tread's top
+    /// and riser are built by [`crate::occlusion::Solid::tread_top_box_of`]/
+    /// [`crate::occlusion::Solid::tread_riser_box_of`] (`Prism::footprint`),
+    /// not by [`crate::occlusion::Solid::box_of`] — they are sub-tile strips
+    /// along the climb axis. A tread's `edges` is `0`, the same as an
+    /// ordinary floor's, so [`walk_cells_streaming`]'s `box_of(tile, 0,
+    /// ...)` reconstruction necessarily comes back the *whole* tile —
+    /// correct for a real floor, wrong for a tread that covers a third of
+    /// one. **Worth recording explicitly, not left implicit**: the "second
+    /// bigger idea" gap session 14 measured against `Builder::add_raw`
+    /// boxes is not only about hand-built test scenes — climbable stairs,
+    /// already real content, hit the identical limit, by a second,
+    /// independent path.
+    ///
+    /// **An honest attempt at a disagreement-backing oracle here (checking
+    /// whether the tile either walk blames has a lossy `box_of`
+    /// reconstruction) failed on its very first fuzz run, and the failure is
+    /// itself informative, not a bug to chase.** `walk_cells_exact`'s own
+    /// `stopped_by` names the *first* tile in ray order that fully blocked
+    /// it; when it found nothing blocking at all (`through == 1.0`,
+    /// `stopped_by == None`) there is no blamed tile to fall back to, and
+    /// the tile a disagreement actually traces to can be anywhere a tread or
+    /// riser's real, precise footprint the ray legitimately misses gets
+    /// read by `walk_cells_streaming` as the *whole* tile instead. Building
+    /// a sound oracle for that needs the same care session 11's own
+    /// multi-solid disagreement oracle took for `exemption` — a real next
+    /// step, not attempted here. So this checks what
+    /// `walk_cells_exact_stays_in_range_on_the_stair` already checks for the
+    /// exact walk itself: never panics, never returns a `through` outside
+    /// `0.0..=1.0`, over the same broad fuzz — the lid-transparency and
+    /// off-axis-probe-omission bugs either could have had would show up here
+    /// as an out-of-range value or a panic, even without a numeric oracle to
+    /// compare against.
+    #[test]
+    fn walk_cells_streaming_stays_in_range_on_the_stair() {
         use crate::facing::Prism;
         use crate::occlusion::{Builder, Shape};
         use proptest::prelude::*;
@@ -3985,7 +3809,6 @@ mod tests {
         });
         occlusion.add(100, 100, 0, Graphic(0x0736), &stair, Shape::solid(prism));
         let occlusion = occlusion.finish(&Cutaway::OPEN);
-        let surface = Surface::Flat;
 
         proptest!(ProptestConfig::with_cases(8_000), |(
             fx in 97.0_f32..103.0,
@@ -3999,78 +3822,8 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let old = walk_cells(from, to, surface, tile, true, FLAME_SPREAD, &occlusion);
-            let new = walk_cells_exact(from, to, surface, tile, true, FLAME_SPREAD, &occlusion);
-
-            let (from3, to3) = stand_clear(from, to, surface);
-            let last = (to3[0].floor() as i32, to3[1].floor() as i32);
-            let own = match surface.face() {
-                Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
-                None => 0,
-            };
-            let ctx = ExemptionContext {
-                first: tile,
-                last,
-                skip_last: true,
-                own,
-                surface,
-                spot_z: from3[2],
-                to_z: to3[2],
-            };
-            // A real hit "backs" a blocked verdict only if `exemption` says
-            // the solid it hit is not exempt, and — for anything but a lid —
-            // `own_run` has not already cancelled every side the ray could
-            // have crossed it on. Both reused straight off the walks, not
-            // re-derived: see this test's own doc comment.
-            let backed_by_an_unexempted_hit = |blamed: (i32, i32)| {
-                let own_cell = blamed == tile;
-                let sides = match own_cell {
-                    false => 0,
-                    true => occlusion.solids_at(blamed.0, blamed.1).fold(0, |mask, s| mask | s.edges),
-                };
-                let lit_by_own_tile = match own_cell {
-                    false => 0,
-                    true => surface.shadowed_by_own_tile(sides),
-                };
-                occlusion.solids_at(blamed.0, blamed.1).any(|stands| {
-                    if ray_vs_solid(from3, to3, &stands.space).is_none() {
-                        return false;
-                    }
-                    let Exemption { exempt, same_run } = exemption(&ctx, blamed, lit_by_own_tile, stands);
-                    if exempt {
-                        return false;
-                    }
-                    match stands.edges {
-                        0 => true,
-                        edges => edges & !same_run != 0,
-                    }
-                })
-            };
-
-            // Same wide gap `walk_cells_exact_disagreements_are_backed_by_
-            // ray_vs_solid` uses, not `RAY_CUTOFF`: softness sampled at a
-            // cell's shared midpoint versus a solid's own exact one can land
-            // a hair either side of the cutoff near a soft edge without
-            // either walk being wrong — that is a difference of degree, not
-            // the "blocked versus never touched at all" question this test
-            // asks.
-            if old.0 <= RAY_CUTOFF && new.0 > 0.5 {
-                let blamed = old.1.expect("blocked implies a blamed tile");
-                prop_assert!(
-                    !backed_by_an_unexempted_hit(blamed),
-                    "from {from:?} to {to:?}: walk_cells blocked at {blamed:?}, walk_cells_exact \
-                     reads it open ({new:?}) — but a real, unexempted ray_vs_solid hit backs the \
-                     block, so walk_cells_exact should have blocked it too and did not",
-                );
-            } else if new.0 <= RAY_CUTOFF && old.0 > 0.5 {
-                let blamed = new.1.expect("blocked implies a blamed tile");
-                prop_assert!(
-                    backed_by_an_unexempted_hit(blamed),
-                    "from {from:?} to {to:?}: walk_cells_exact blocked at {blamed:?} with no real, \
-                     unexempted ray_vs_solid hit there — a real regression, not known walk_cells \
-                     coarseness",
-                );
-            }
+            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            prop_assert!((0.0..=1.0).contains(&streaming), "from {from:?} to {to:?}: through {streaming}");
         });
     }
 
@@ -4115,8 +3868,8 @@ mod tests {
             delta_x in -8.0_f32..8.0,
             delta_y in -8.0_f32..8.0,
         )| {
-            // The same `ground < 1e-6` floor `walk_cells` itself guards the
-            // DDA with — `dda_walk` has no direction to step in below it.
+            // The same `ground < 1e-6` floor callers guard the DDA with —
+            // `dda_walk` has no direction to step in below it.
             prop_assume!(delta_x.abs() > 1e-3 || delta_y.abs() > 1e-3);
 
             let tile = (tile_x, tile_y);
@@ -4128,26 +3881,24 @@ mod tests {
             prop_assert_eq!(steps[0].cell, tile);
             prop_assert!(steps.len() <= MAX_WALK_STEPS as usize);
 
-            // Every cell but a genuinely final one has somewhere it goes next,
-            // and a final one is exactly the one with no exit side — the two
-            // facts `walk_cells` leans on to know when to stop reading.
+            // Every cell but a genuinely final one has somewhere it goes
+            // next, and a final one is exactly the one with no exit side —
+            // the two facts a caller leans on to know when to stop reading.
             for step in &steps {
-                prop_assert_eq!(step.exit == 0, step.crossing.is_none());
+                prop_assert_eq!(step.exit == 0, !step.continues);
             }
             for step in &steps[..steps.len() - 1] {
-                prop_assert!(step.crossing.is_some());
+                prop_assert!(step.continues);
             }
 
-            // Consecutive cells are Chebyshev-neighbours: an ordinary step
-            // moves one axis by one tile, a corner moves both by one tile,
-            // and nothing this walk does ever skips a cell or stands still.
+            // Consecutive cells are von-Neumann neighbours: single-axis
+            // stepping, one tile at a time, one axis a step — no diagonal
+            // jump and nothing this walk does ever skips a cell or stands
+            // still.
             for pair in steps.windows(2) {
                 let (a, b) = (pair[0].cell, pair[1].cell);
                 let (dx, dy) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
-                prop_assert!(
-                    dx <= 1 && dy <= 1 && (dx != 0 || dy != 0),
-                    "non-adjacent step {a:?} -> {b:?}",
-                );
+                prop_assert_eq!(dx + dy, 1, "non-adjacent or diagonal step {:?} -> {:?}", a, b);
             }
 
             // `entered`/`leaves` walk forward along the segment, never
@@ -4162,9 +3913,7 @@ mod tests {
             }
 
             // An axis the ray does not move along is never crossed — the
-            // walk stays in `tile`'s own row or column the whole way, and in
-            // particular never takes a corner (a corner needs both axes to
-            // have somewhere to go).
+            // walk stays in `tile`'s own row or column the whole way.
             if delta_y.abs() < 1e-6 {
                 for step in &steps {
                     prop_assert_eq!(step.cell.1, tile.1);

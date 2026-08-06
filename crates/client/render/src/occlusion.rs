@@ -656,7 +656,18 @@ impl Solid {
     /// a real slab, [`PANEL_THICKNESS`] deep, fattened inward from the plane its
     /// face pixels lie on — see that constant for why the record carries a
     /// number rather than staying flat, the way a lid still does.
-    fn box_of(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> crate::solid::Solid {
+    ///
+    /// `pub(crate)` since `docs/lighting_raymarch.md`'s point 4:
+    /// `light::walk_cells_streaming` reconstructs a solid's box from exactly
+    /// `(tile, edges, bottom, top)` rather than reading `Solid::space`
+    /// directly, because that is all `blit.wgsl`'s upload format will ever
+    /// carry for an ordinary static (no `x`/`y` channel — session 14's
+    /// "second bigger idea"). Reusing this rather than re-deriving the same
+    /// geometry a second time is the point: for every *ordinary* static this
+    /// is bit-for-bit what built the real `space` in the first place, so the
+    /// reconstruction is only lossy for `Builder::add_raw`'s sub-tile boxes,
+    /// which is the one gap this doc already has a name for.
+    pub(crate) fn box_of(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> crate::solid::Solid {
         use crate::camera::WorldSpot;
 
         let (x, y) = (f64::from(x), f64::from(y));
@@ -1610,6 +1621,36 @@ impl Builder {
         }
         self.arena.push((solid, self.heads[index]));
         self.heads[index] = self.arena.len() as u32 - 1;
+    }
+
+    /// One raw occluder: exactly the box given, opaque, with no shape or
+    /// height derived from a [`StaticTile`].
+    ///
+    /// Everything else in this `impl` builds a [`Solid`]'s `space` from
+    /// `tiledata` — [`Solid::box_of`] always fills a whole tile for a body or
+    /// a thin strip for a panel — because that is what a real static's
+    /// footprint always is. A hand-built scene has no such art to read
+    /// (`examples/two_cubes.rs`'s own doc: no client files at all) and
+    /// sometimes needs a box the tile grid was never asked to produce —
+    /// narrower than a tile, or stacked on top of another box rather than
+    /// standing beside it. This is that seam: the caller states the exact
+    /// AABB and it is stored as one opaque body, in the same tile bucket
+    /// [`Builder::push`] already uses for every other occluder, so the walk
+    /// finds it exactly the way it finds a wall.
+    pub fn add_raw(&mut self, x: u16, y: u16, space: crate::solid::Solid) {
+        let Some(index) = self.index(i32::from(x), i32::from(y)) else {
+            return;
+        };
+        self.push(
+            index,
+            Solid {
+                space,
+                opacity: OPAQUE,
+                edges: EDGE_ANY,
+                aperture: None,
+                roof: false,
+            },
+        );
     }
 
     /// Take a tile's sky away, as far as one static standing over it does.
