@@ -49,13 +49,16 @@ but not wired into anything real. **Point 2 is built now, session 9**:
 `walk_cells_exact` (`light.rs`, next to `walk_cells`), a parallel
 `walk_cells`-shaped function on `ray_vs_solid`, plus `candidate_tiles` (the
 doubled broad-phase) and `box_side` (a geometric replacement for a DDA
-step's `entry`/`exit` bits). Point 3 — running it against this doc's own
-oracles — is partly done: three permanent tests in `light.rs`'s own `mod
-tests` (the six-point counter-example verbatim, a corner-free full-agreement
-fuzz, and a `ray_vs_solid`-backed characterisation of every disagreement the
-corner-free restriction doesn't reach), all green, but `tests/lighting.rs`'s
-grid-sweep/fuzz oracles and `tests/frame.rs`'s parity suite were not run
-against it — see session 9's own handoff entry for what that leaves open.
+step's `entry`/`exit` bits) — three real bugs in this new code found and
+fixed by fuzzing it before trusting it, the third (every lid reading fully
+transparent) only surfaced once the fuzz moved past a single-solid scene.
+Point 3 — running it against this doc's own oracles — is partly done: five
+permanent tests in `light.rs`'s own `mod tests` (full account in the
+backlog's "Point 2 built, session 9" entry and the session 9 handoff), but
+`tests/lighting.rs`'s grid-sweep/fuzz oracles, `tests/frame.rs`'s parity
+suite, and a disagreement oracle that survives a multi-solid tile (the
+stair scene stopped at a smoke test, not a full characterisation) were not
+built — see session 9's own handoff entry for what that leaves open.
 **Not wired into `walk`/`walk_sun`/anywhere real** — point 4, the actual
 cutover, has not been touched and per the doc's own recommended order should
 not be until whoever picks this up next has read session 9's account of
@@ -982,17 +985,89 @@ there is one.
   started; the next session's natural continuation of point 3 if it wants
   breadth over the two hand-built scenes here rather than depth on them.
 
+  **A third, real bug in `walk_cells_exact` itself, found widening point 3
+  to the three-tread climbable stair — a genuine bug this time, not
+  another `walk_cells` gap.** The single-wall scenes above never put more
+  than one solid's box on a tile at once; the stair does, three lids and
+  three panels sharing one tile at three different heights, and one of the
+  lids exposed something the wall scenes could not have. A lid is flat in
+  `z` (`Solid::box_of`'s `min.z == max.z`), so `ray_vs_solid`'s own slab
+  method correctly collapses that solid's `entered` and `leaves` to the
+  exact same instant — a degenerate box really is crossed at one point in
+  `t`, not over an interval, and the primitive's own doc comment already
+  says as much ("a tangent touch... comes back `Some` with `entered ==
+  leaves`"). `crosses` was never built to be handed an interval already
+  collapsed to a point: it reads its `entering`/`leaving` arguments as the
+  ray's `z` on *either side* of a crossing, to tell "went through" from
+  "never came close," and a `from`/`to` pair that are already numerically
+  equal answers every comparison inside it as "never," regardless of the
+  real geometry. `walk_cells_exact` read every lid in the crate as fully
+  transparent, unconditionally, before this was caught.
+
+  **Fixed by asking the lid branch a different question**: not "where does
+  the ray touch this lid's own (degenerate) box" but "where does the ray
+  enter and leave the *tile's* footprint" — the same question `walk_cells`'s
+  DDA cell entry/exit answered for free, now asked explicitly with a
+  second `ray_vs_solid` call against a synthetic box sharing the tile's
+  `x`/`y` bounds with `z` left unconstrained. Confirmed as the actual fix
+  and not a guess: reverting it back to the lid's own `entered`/`leaves`
+  reproduces the exact failure the stair fuzz found (`through` pinned at
+  `1.0` through a tread whose real geometry the ray plainly crosses),
+  pinned as a permanent regression test,
+  `walk_cells_exact_does_not_read_every_lid_as_transparent`.
+
+  **The stair scene also confirmed a fourth pattern of `walk_cells`
+  coarseness, same family as the two above, not chased further**: with
+  three risers sharing one tile at different fractional `x`/`y` bands
+  (each covering only a third of the tile, the climb strip
+  `Solid::tread_riser_box_of` builds), `walk_cells`'s per-*cell* model
+  tests every solid on a tile with the *same* shared `entered`/`leaves`
+  and a `pierced` check that only ever asks about height, never about
+  where in the tile a specific riser's own footprint sits. A ray that
+  never geometrically approaches a particular riser's narrow band can
+  still trip `walk_cells`'s coarse per-cell test for it. Real, but not
+  pursued into a fix or even a clean characterisation this session — see
+  the next paragraph for why a fuzz-based oracle for this scene was
+  dropped rather than forced.
+
+  **No sound automated oracle for this scene was built, and that is a
+  deliberate stop rather than an unfinished one.** The single-wall
+  characterisation test's trick — "whichever walk claims the *stronger*
+  answer must be backed by a real `ray_vs_solid` hit" — assumes a hit that
+  exists is a hit that counts, which stopped being true the moment a tile
+  could carry an exempted solid (`flame_end`, `on_surface`) *and* a
+  non-exempted one at once: the stair fuzz's very first false alarm after
+  the lid fix was a real `ray_vs_solid` hit on a riser the flame's own end
+  legitimately stands on, correctly open in both walks, that the
+  characterisation test flagged anyway because it never re-evaluates
+  `walk_cells`'s exemption predicates before asking whether a hit "counts."
+  Doing that properly means duplicating `lit_end`/`flame_end`/`caps_this`/
+  `same_run` inside the test itself — an oracle re-deriving the same
+  formula the code under test already has, rather than checking it against
+  something independent, which is exactly the trap this doc's own
+  fault-injection discipline exists to avoid falling into by accident.
+  Landed a weaker, honest smoke test instead —
+  `walk_cells_exact_stays_in_range_on_the_stair`, asserting no panics and
+  `through` inside `0.0..=1.0` over the same fuzz domain, which the lid bug
+  above would still have failed loudly (pinned at `1.0` far more than the
+  geometry allows) — and left a real disagreement oracle for this class of
+  scene as the next piece of point-3 tooling, not a session that ran out
+  of time trying to build one in a hurry.
+
   **Point 4 — the actual cutover — has not been touched, and per the
   doc's own recommended order should not be started from a standing start
   next session.** `walk_cells_exact` is not obviously *ready* to replace
-  `walk_cells`: it is more precise in every gap found so far (both
-  `walk_cells` disagreements this session traced were `walk_cells` being
-  wrong, not `walk_cells_exact`), but "more precise" is not the same
-  question as "safe to ship" — `blit.wgsl`'s own mirror of whichever walk
-  is `pub`, decision 9's full GPU/CPU parity suite, and a real-scene
-  render (this session never rendered a frame) are all still ahead of it.
+  `walk_cells`: every *real* gap traced this session was `walk_cells` being
+  coarser, not `walk_cells_exact` being wrong, but the lid bug above is a
+  reminder that the exact primitive comes with its own, different failure
+  modes to hunt for — not "more precise" automatically, only "more precise
+  once its own bugs are found the way this session found three of them."
+  `blit.wgsl`'s own mirror of whichever walk is `pub`, decision 9's full
+  GPU/CPU parity suite, a disagreement oracle that survives a multi-solid
+  tile, and a real-scene render (this session never rendered a frame) are
+  all still ahead of it.
 
-### Session 9 — point 2 built (`walk_cells_exact`), point 3 started, two real `walk_cells` gaps found on the way
+### Session 9 — point 2 built (`walk_cells_exact`), point 3 started, three real `walk_cells_exact`/`walk_cells` gaps found on the way
 
 Continued session 8's ray-vs-Solid track by name, picking point 2 over the
 open alternative (step 5's white line) — this track needs no
@@ -1007,29 +1082,43 @@ history already lives; short version here.
   (`light.rs`, all beside `dda_walk`/`walk_cells`), the parallel
   `walk_cells`-shaped function point 2 asked for, `#[allow(dead_code)]`
   and not wired into `walk`/`walk_sun`.
-- **Found and fixed two real bugs in the new code before trusting any of
-  it**, both by the fuzz described below rather than by inspection:
-  `candidate_tiles` naming the wrong diagonal cell (fixed by matching
-  `DdaTransition::Corner`'s own `by_x`/`by_y` fields exactly), and a
-  dropped safety net for a body's corner-graze that turned out to be a
-  deliberate design choice in `walk_cells`, not a DDA workaround (restored,
-  using `box_side` in place of a DDA step's `entry`/`exit`).
-- **Found, and did not try to fix, two real pre-existing gaps in
-  `walk_cells` itself**: `panel_stop`'s single-point test under-occludes a
-  body reached only through a corner, and the per-cell panel branch's
-  `entry`/`exit`-side gate can miss a genuine panel intersection on an
-  ordinary `Step` crossing with no corner involved at all. Both are the
-  same family as `corner_tie`'s already-documented corner-grazing slop — a
-  coarse approximation the exact primitive removes by construction — and
-  neither was chased into `walk_cells` itself; `walk_cells_exact`'s answer
-  in both cases was confirmed correct by an independent `ray_vs_solid`
-  read, not assumed.
-- **Three permanent tests, not the one this doc's point 3 might have
-  implied**: full numeric parity only provably holds in a scoped
-  sub-domain (off `corner_tie`'s own path); everywhere else, a
-  `ray_vs_solid`-backed characterisation test asserts the *disagreement*
-  is explained rather than asserting agreement that does not hold. All
-  three green; full account in the backlog entry above.
+- **Found and fixed three real bugs in the new code before trusting any of
+  it**, all by fuzzing rather than by inspection: `candidate_tiles` naming
+  the wrong diagonal cell (fixed by matching `DdaTransition::Corner`'s own
+  `by_x`/`by_y` fields exactly); a dropped safety net for a body's
+  corner-graze that turned out to be a deliberate design choice in
+  `walk_cells`, not a DDA workaround (restored, using `box_side` in place
+  of a DDA step's `entry`/`exit`); and, only surfaced once the fuzz moved
+  from a single wall to the three-tread stair, every lid reading as fully
+  transparent — `ray_vs_solid`'s slab method correctly collapses a flat
+  lid's own crossing to a single point in `t`, and `crosses` was never
+  built to be handed an already-collapsed interval. Fixed by asking the
+  lid branch for the *tile's* own entry/exit instead of the lid's.
+- **Found, and did not try to fix, four real pre-existing gaps in
+  `walk_cells` itself, one of them new this session**: `panel_stop`'s
+  single-point test under-occludes a body reached only through a corner;
+  the per-cell panel branch's `entry`/`exit`-side gate can miss a genuine
+  panel intersection on an ordinary `Step` with no corner involved; and,
+  found on the stair, the same gate never checks a specific riser's own
+  fractional footprint at all, only its height, so a ray that never
+  geometrically approaches a riser's narrow band can still trip
+  `walk_cells`'s coarse per-cell test for it. All three are the same
+  family as `corner_tie`'s already-documented corner-grazing slop — a
+  coarse per-cell approximation the exact primitive removes by
+  construction — and none was chased into `walk_cells` itself.
+- **Five permanent tests, not the one or three this doc's point 3 might
+  have implied**: full numeric parity only provably holds in a scoped
+  sub-domain, one solid per tile and off `corner_tie`'s own path; a
+  `ray_vs_solid`-backed characterisation test covers single-solid scenes
+  more broadly by asserting the *disagreement* is explained rather than
+  that agreement holds; and the stair scene — multiple solids sharing one
+  tile, where that characterisation trick itself stopped being sound
+  (a real hit that both walks correctly exempt still isn't a
+  "disagreement" to explain) — got a targeted regression test for the lid
+  bug plus a range/no-panic smoke test instead of a disagreement oracle
+  this session didn't build. All five green; full account in the backlog
+  entry above, including why the stair fuzz stopped at a smoke test on
+  purpose rather than a rushed characterisation.
 - `cargo test -p openshard-client-render`, `cargo clippy -p
   openshard-client-render --all-targets`, `cargo check --workspace
   --all-targets` and `rustfmt --check crates/client/render/src/light.rs`
@@ -1038,8 +1127,10 @@ history already lives; short version here.
   starts"); `tests/lighting.rs`'s grid-sweep/fuzz oracles and
   `tests/frame.rs`'s parity suite (point 3's other half, needs a seam into
   module-private functions or scenes built the way this session's own
-  tests build them); point 4, the actual cutover, which needs the parity
-  suite and a real render before it is safe to start, not just this
+  tests build them); a disagreement oracle for a multi-solid tile that
+  re-checks `walk_cells`'s own exemption predicates rather than assuming
+  every real hit counts; point 4, the actual cutover, which needs the
+  parity suite and a real render before it is safe to start, not just this
   session's numeric confidence.
 
 ## Handoff log

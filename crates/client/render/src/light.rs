@@ -2536,8 +2536,36 @@ fn walk_cells_exact(
             let tall = soft * FLAME_DEPTH;
             let by_surface = match stands.edges {
                 0 => {
-                    let from_z = from[2] + delta[2] * entered;
-                    let to_z = from[2] + delta[2] * leaves;
+                    // **Not the lid's own `entered`/`leaves`.** A lid is
+                    // flat in `z` (`Solid::box_of`'s `min.z == max.z` for
+                    // an ordinary floor), so `ray_vs_solid`'s `z`-slab
+                    // narrows both ends to the exact same instant the ray
+                    // crosses that one height — correct as a crossing
+                    // *point*, but [`crosses`] needs the ray's `z` on each
+                    // side of that point to tell "crossed through" from
+                    // "never came close," and a from/to that are already
+                    // equal answers every comparison in [`crosses`] as
+                    // "never." What it needs is the same thing `walk_cells`
+                    // fed it: the ray's `z` where it enters and leaves the
+                    // *tile's* own footprint, not the lid's — read off a
+                    // second `ray_vs_solid` call against the tile's own `x`/
+                    // `y` bounds and an unconstrained `z`.
+                    let footprint = crate::solid::Solid {
+                        min: crate::camera::WorldSpot {
+                            x: f64::from(cell.0),
+                            y: f64::from(cell.1),
+                            z: -1e6,
+                        },
+                        max: crate::camera::WorldSpot {
+                            x: f64::from(cell.0) + 1.0,
+                            y: f64::from(cell.1) + 1.0,
+                            z: 1e6,
+                        },
+                    };
+                    let (tile_entered, tile_leaves) =
+                        ray_vs_solid(from, to, &footprint).unwrap_or((entered, leaves));
+                    let from_z = from[2] + delta[2] * tile_entered;
+                    let to_z = from[2] + delta[2] * tile_leaves;
                     opacity * crosses(from_z, to_z, low, high, to[2], spread)
                 }
                 EDGE_ANY => {
@@ -3716,6 +3744,133 @@ mod tests {
                 }
             });
         }
+    }
+
+    /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over the
+    /// three-tread climbable stair
+    /// [`a_treads_top_is_not_shadowed_by_its_own_riser`] uses. This is the
+    /// scene that found a real bug in [`walk_cells_exact`], not just
+    /// another `walk_cells` gap: a lid is flat in `z`
+    /// (`Solid::box_of`'s `min.z == max.z`) and a riser is flat in the
+    /// climb axis (`Solid::tread_riser_box_of`'s own doc comment: "a
+    /// plane, not a strip") — [`ray_vs_solid`]'s slab method correctly
+    /// collapses `entered` and `leaves` to the exact same instant on
+    /// either one, since a degenerate-thickness box is genuinely crossed
+    /// at one point in `t`, not over an interval. [`crosses`] was never
+    /// built for that: it reads `entering`/`leaving` as the ray's `z` on
+    /// *either side* of a crossing to tell "went through" from "never
+    /// close," and a from/to that already collapsed to the same value
+    /// answers every comparison in it as "never" — regardless of the real
+    /// geometry. `walk_cells_exact` read every lid as fully transparent
+    /// before this was caught, `1.0` unconditionally.
+    ///
+    /// **Fixed by asking a different question for the lid branch**: not
+    /// "where does the ray touch this lid's own (degenerate) box" but
+    /// "where does the ray enter and leave the *tile's* footprint" — a
+    /// second `ray_vs_solid` call against a synthetic box sharing the
+    /// tile's `x`/`y` bounds with `z` left unconstrained, giving
+    /// `crosses` the before/after pair it actually needs. The same
+    /// question `walk_cells`'s own DDA cell entry/exit answered for free;
+    /// `walk_cells_exact` has to ask it explicitly since it no longer
+    /// walks cells at all.
+    ///
+    /// This test pins the regression at the exact input the stair scene's
+    /// own fuzz found it at, rather than trusting the fix by reasoning
+    /// alone: reverting the tile-footprint lookup back to the lid's own
+    /// `entered`/`leaves` reproduces `walk_cells_exact` reading fully open
+    /// (`1.0`) here, confirmed by hand before this test was written.
+    #[test]
+    fn walk_cells_exact_does_not_read_every_lid_as_transparent() {
+        use crate::facing::Prism;
+        use crate::occlusion::{Builder, Shape};
+
+        let stair = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        occlusion.add(100, 100, 0, Graphic(0x0736), &stair, Shape::solid(prism));
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        let from = [101.26917_f32, 99.877884, 4.255842];
+        let to = [100.57816_f32, 100.689926, 0.0];
+        let tile = (from[0].floor() as i32, from[1].floor() as i32);
+        let new = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
+        assert!(
+            new.0 < 0.5,
+            "a ray crossing the first tread's own lid should not read as more than half open: \
+             through {} (blamed {:?})",
+            new.0,
+            new.1,
+        );
+    }
+
+    /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over the
+    /// same stair scene as
+    /// [`walk_cells_exact_does_not_read_every_lid_as_transparent`] — a
+    /// smoke test, not a parity oracle.
+    ///
+    /// **Full numeric agreement with `walk_cells`, or even the weaker
+    /// "every disagreement is a real `ray_vs_solid` hit" claim the
+    /// single-wall scenes above make, does not hold here, and chasing it
+    /// did not fit this session.** Once a tile carries several solids at
+    /// different heights and different fractional footprints — three
+    /// treads and three risers on one tile, not one body filling it —
+    /// `walk_cells`'s own per-*cell* model (one shared `entered`/`leaves`
+    /// tested against every solid on the tile, `pierced`'s z-band test
+    /// never checking a riser's own `x`/`y` extent at all) can find or
+    /// miss occlusion a per-*solid* exact test would not, in either
+    /// direction, and telling that apart from a `walk_cells_exact` bug
+    /// needs the same exemption predicates (`on_surface`, `own_run`,
+    /// `flame_end`) evaluated the same way a disagreement-characterising
+    /// test would have to duplicate — a real next step, not attempted
+    /// here. What this checks instead: `walk_cells_exact` never panics and
+    /// never returns a `through` outside `0.0..=1.0` over a broad fuzz of
+    /// this richer scene — the lid bug above would have shown up here too,
+    /// as values pinned at `1.0` far more often than the geometry allows.
+    #[test]
+    fn walk_cells_exact_stays_in_range_on_the_stair() {
+        use crate::facing::Prism;
+        use crate::occlusion::{Builder, Shape};
+        use proptest::prelude::*;
+
+        let stair = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        occlusion.add(100, 100, 0, Graphic(0x0736), &stair, Shape::solid(prism));
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        proptest!(ProptestConfig::with_cases(8_000), |(
+            fx in 97.0_f32..103.0,
+            fy in 97.0_f32..103.0,
+            fz in 0.0_f32..6.0,
+            tx in 97.0_f32..103.0,
+            ty in 97.0_f32..103.0,
+            tz in 0.0_f32..6.0,
+        )| {
+            prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
+            let tile = (fx.floor() as i32, fy.floor() as i32);
+            let from = [fx, fy, fz];
+            let to = [tx, ty, tz];
+            let new = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
+            prop_assert!((0.0..=1.0).contains(&new.0), "from {from:?} to {to:?}: through {}", new.0);
+        });
     }
 
     /// [`Spot::tile`]'s own contract, checked at the layer that used to get it
