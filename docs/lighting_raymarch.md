@@ -622,11 +622,159 @@ there is one.
   turned into a step: worth a decision of its own, on its own track, if it
   is ever picked up — not a rider on this one.
 
+- **The DDA's own stepping was untestable in isolation, and every bug this
+  doc chases lived exactly there.** A testability audit (session 7) found
+  that `light.rs` had direct numeric unit tests for `crosses` and
+  `corner_tie` already, but every other pure helper in the walk —
+  `pierces`, `inside`, `run_v`, `hole`, `pierced`, `stand_clear`,
+  `on_surface`, `own_run`, `panel_stop`, `faces` — was exercised only
+  through a full lit scene (`tests/lighting.rs`'s own suite), where a
+  failure does not localise to which of them broke. Worse than any one of
+  those: the stepping logic itself — which cell follows which, and whether
+  two of them tie at a corner — was inline inside `walk_cells`'s ~400-line
+  occlusion loop, sharing no boundary with `Occlusion` a test could stand
+  on. That loop is where `Spot.tile` (step 2) and `corner_tie`'s clamp
+  (session 6) both actually lived; a bug there could only ever be caught by
+  building a scene and rendering or sampling it — a screenshot's own
+  problem, one level removed.
+- **Fixed by extraction, not by patching**: `dda_walk` (`light.rs:1751`),
+  returning `Vec<DdaCell>` (`light.rs:1704`) with `DdaTransition`
+  (`light.rs:1724`), is `walk_cells`'s own stepping — `per_tile`,
+  `boundary`, the corner-tie decision, which cell comes next — with every
+  dependency on `Occlusion` removed. `walk_cells` (`light.rs:1911`) is now a
+  thin consumer: for each `DdaCell` it applies exactly the same occlusion
+  arithmetic it always did, and reads `crossing` to know whether to run the
+  corner-panel check. Behaviour-preserving by construction (the geometry of
+  which cell follows which was already independent of any occlusion
+  outcome, confirmed by tracing every call site before extracting), and
+  verified rather than assumed: full `cargo test -p openshard-client-render`
+  (411 pre-existing tests, including `frame.rs`'s GPU parity suite and the
+  proptest fuzzer) green before touching `walk_cells`'s body and unchanged
+  after, `cargo clippy --workspace --all-targets` and
+  `cargo fmt -p openshard-client-render -- --check` clean.
+- **Fault-injection confirmed the extraction actually carries both known
+  bugs, not just their absence of symptoms.** Reverting `dda_walk`'s edge
+  seed to `from.floor()` (step 2's bug) fails the new
+  `a_from_on_its_own_tiles_far_edge_leaves_it_almost_immediately`
+  (`light.rs:3077`) directly — `leaves` comes back `0.333` instead of near
+  zero, a whole tile of the exact slack the bug always cost. Reverting
+  `corner_tie`'s clamp to the pre-session-6 unclamped formula fails both the
+  existing `a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray`
+  *and* the new pure-geometry
+  `the_dda_walk_does_not_skip_the_wall_row_on_a_shallow_ray`
+  (`light.rs:3049`) — and the pure test's own failure message reproduces
+  the exact "two bugs, one coincidence" mechanism this backlog's "A new
+  `walk_cells` miss" entry already documented for `y = 99.9`: cells
+  `[(102, 99), (101, 100), (100, 100), (99, 100), (98, 100)]`, the spurious
+  corner jumping straight from row 99 to row 100 and landing back in the
+  wall's row by accident. Both reverts restored before committing.
+- **New pure-numeric coverage, no scene required for any of it**: the
+  six-point counter-example from "A new `walk_cells` miss" now exists twice
+  — once as the original full-scene regression test, once as
+  `the_dda_walk_does_not_skip_the_wall_row_on_a_shallow_ray` asking only
+  which cells `dda_walk` visits — plus a 1024-case proptest,
+  `dda_walk_visits_a_connected_path_of_cells_starting_at_the_callers_tile`
+  (`light.rs:3099`), checking the walk starts at the caller's own `tile`
+  (never a re-derived `floor()`), that consecutive cells are always
+  Chebyshev-neighbours, that `entered`/`leaves` only move forward and stay
+  in `0.0..=1.0`, and that an axis-aligned ray never takes a corner. All ten
+  of the previously scene-only pure helpers listed above now have their own
+  direct unit test (`inside`, `pierces`, `run_v`, `hole`, `pierced`,
+  `own_run`, `stand_clear`, `on_surface`, `panel_stop`, `faces`, all in
+  `light.rs`'s own `mod tests`), plus proptests for `inside` (clamp and
+  symmetry about the interval's centre) alongside `dda_walk`'s own. 27 new
+  test cases in `light.rs` in total, all green, none of them touching
+  `Occlusion`, `Lighting`, or a rendered frame.
+- **A design tradeoff worth naming rather than hiding**: `dda_walk` now
+  computes every cell up to `MAX_WALK_STEPS` eagerly, where `walk_cells`
+  used to stop lazily the moment `through <= RAY_CUTOFF`. This costs a
+  handful of unused `DdaCell`s on an early-cutoff ray (bounded by
+  `MAX_WALK_STEPS = 72`) and buys the separation above; cell *selection* has
+  no dependency on occlusion outcomes to begin with; not measured for a
+  real frame's worth of rays but expected negligible next to a walk that
+  already runs per-flame, per-pixel.
+- **A bigger idea, raised mid-audit and deliberately deferred to its own
+  session, not started here**: `occlusion::Solid` (`occlusion.rs:556`)
+  already stores each occluder as a real `WorldSpot`-cornered box — exact,
+  continuous, no tile index anywhere in the record. `dda_walk` doesn't
+  remove the float-boundary bug *class*, it only makes the existing walk's
+  own instance of it testable: grid-DDA over a continuous position
+  necessarily asks "which discrete tile am I in right now" at every step,
+  regardless of how precise the `Solid` looked up per cell is, which is
+  exactly why the bugs in this doc were all in `walk_cells`'s stepping and
+  never in `Solid`'s own geometry. What *would* remove the class by
+  construction is a different algorithm, not a better-tested version of
+  this one: gather the `Solid`s near a ray (the tile grid stays as exactly
+  that broad-phase) and intersect the ray against each directly — ray-vs-AABB,
+  the slab method, continuous throughout, with no discrete "current tile"
+  concept anywhere left to get wrong at a boundary. That would obsolete
+  `dda_walk`, `corner_tie` and `PANEL_THICKNESS`'s corner-overlap tolerance
+  outright rather than test them harder, which is exactly why it wants its
+  own session to scope first: which solids the broad-phase should gather
+  and how, whether the two adjoining panels `PANEL_THICKNESS` exists for
+  still need an explicit overlap tolerance or fall out of continuous
+  ray-vs-box intersection for free, and a rough sense of the cost against
+  today's `MAX_WALK_STEPS`-bounded walk before committing to the rewrite.
+
 ## Handoff log
 
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 7 — a testability audit, `dda_walk` extracted, step 5 untouched
+
+Not a continuation of step 5 — a side session, asked for by name: "which
+places in the walk/DDA can be made testable with unit tests and proptests,
+so numbers can be compared instead of pictures." Full account in the
+backlog's three new entries above; short version here.
+
+- **Audited what already had direct numeric coverage versus what only had
+  full-scene coverage.** `crosses` and `corner_tie` did; ten other pure
+  helpers in `light.rs` and the DDA stepping itself, inline inside
+  `walk_cells`, did not — a failure there could only be read off a rendered
+  or CPU-sampled scene, one level removed from the actual arithmetic.
+- **Extracted `dda_walk`/`DdaCell`/`DdaTransition` out of `walk_cells`** —
+  the stepping (`per_tile`, `boundary`, the corner-tie decision, which cell
+  follows which) with every dependency on `Occlusion` removed.
+  `walk_cells` now consumes its output and applies the same occlusion
+  arithmetic it always did. Confirmed behaviour-preserving by the full
+  existing suite (411 tests, including `frame.rs`'s GPU parity) staying
+  green before and after, not by inspection alone.
+- **Verified the new tests actually catch what they claim to, this doc's
+  own fault-injection discipline**: reverted step 2's tile-seed fix and
+  session 6's `corner_tie` clamp in turn, confirmed the relevant new tests
+  fail with the expected numbers (one of them reproducing the exact
+  "two bugs, one coincidence" mechanism the backlog already documented for
+  `y = 99.9`), reapplied, confirmed green. Both reverts were temporary and
+  restored before this session's real diff was touched again.
+- **27 new test cases**, all in `light.rs`'s own `mod tests`, none touching
+  `Occlusion`, `Lighting`, or a rendered frame: direct unit tests for all
+  ten previously scene-only helpers, a pure-geometry echo of the six-point
+  counter-example, a boundary-seed regression test, and two proptests
+  (`inside`'s symmetry, `dda_walk`'s own connectivity/monotonicity/start-tile
+  invariants over 1024 random rays).
+- **Raised, and deliberately deferred rather than started**: since
+  `occlusion::Solid` already stores exact `WorldSpot` boxes, a ray-vs-`Solid`
+  walk (gather candidates off the tile grid, intersect each directly by the
+  slab method) would remove this whole *class* of float-boundary bug by
+  construction rather than test the existing grid-DDA harder — a genuine
+  architecture change, not a bugfix, and the user asked explicitly that it
+  wait for its own session rather than ride on this one. Full reasoning and
+  the open questions it would need scoped first are in the backlog's own
+  entry.
+- `cargo test -p openshard-client-render` (338 unit tests plus every
+  integration file), `cargo clippy -p openshard-client-render --all-targets`,
+  `cargo fmt -p openshard-client-render -- --check`, and
+  `cargo check --workspace --all-targets` all clean at the end of the
+  session.
+- **Not touched**: step 5's own white line — this session never rendered a
+  frame, and the audit's scope was testability of the walk in general, not
+  diagnosis of that specific shape. Next session on the white line itself
+  should still start where session 6 left it — see "Where the next session
+  starts" above — and can read this session's ray-vs-`Solid` backlog entry
+  as an available but unstarted alternative direction, not a redirect away
+  from it.
 
 ### Session 6 — `corner_tie` fixed, and fuzzed rather than pinned to one fixture
 
