@@ -216,7 +216,7 @@ fn cell(lighting: &Lighting, x: i32, y: i32, z: f32) -> char {
     if lighting.occlusion.at(x, y).is_some() {
         return '#';
     }
-    let brightness = light::sample(Spot::at(middle, z), lighting).brightness();
+    let brightness = light::sample(Spot::at(middle, z, (x, y)), lighting).brightness();
     let step = ((brightness - FLOOR) / (CEILING - FLOOR) * RAMP.len() as f32).floor();
     RAMP[(step.max(0.0) as usize).min(RAMP.len() - 1)]
 }

@@ -37,7 +37,7 @@ step 1.
       (a dark red reads as "answer: none" without competing with `Lit`'s
       palette). Diagnostics only, zero risk, no test depends on the exact
       colour — do this one first, in isolation.
-- [ ] **2. `Spot` carries its own tile, `walk_cells` stops re-deriving it.**
+- [x] **2. `Spot` carries its own tile, `walk_cells` stops re-deriving it.**
       The CPU twin of the already-shipped `MeshFaceVertex::tile`
       (`mesh_face.rs`) fix. Add `tile: (i32, i32)` to `Spot`
       (`light.rs:1189`); `Spot::at`/`::flat`/`::face` take it from the
@@ -56,6 +56,27 @@ step 1.
       replace it. Public API change on `Spot`, one commit, then the full
       CPU/GPU parity suite (`lighting.md` decision 9) — `cargo test -p
       openshard-client-render`.
+
+      **Done, and it grew by one line the plan above did not name.** Fixing
+      only `first` left `boundary[axis]`'s seed (the per-axis loop just below
+      it, `let ahead = ...from.floor() + 1.0 - from...`) still flooring the
+      same nudged `from` to find the first grid-line crossing — consistent
+      with the old, wrong `first` and inconsistent with the new, right one.
+      A `from` sitting on its tile's exit edge would have `first` correctly
+      say "you are in this tile" while `boundary[axis]` said "you are a
+      whole tile short of its edge", handing the walk a tile of slack that
+      was never there. Reads `[tile.0, tile.1][axis]` instead, the same
+      fix in the same shape. All 15 call sites now name a tile explicitly;
+      most already had one in scope (a test's own `tile`/`x, y` fixture
+      variable, `debug.rs`'s tile iteration, `frame.rs`'s parity fixture's
+      `(x, y)`). Three did not — `isolated_scene.rs`'s `run_profile` (an
+      arbitrary point along a swept segment) and two interior-sweep helpers
+      in `tests/lighting.rs` — and got `.floor()` explicitly, which is
+      **not** a regression: the profiler exists to show what a naive
+      derivation does at a boundary, and the sweeps are genuinely interior
+      points with nothing more authoritative to carry. Full crate builds
+      (`cargo check --workspace --all-targets`); `cargo test -p
+      openshard-client-render` is step 2's own remaining item below.
 - [ ] **3. A boundary unit test, written against the fixed `Spot`.** New test
       in `tests/lighting.rs`: `light::sample` at a handful of points
       straddling an exact integer tile edge (mirroring the real tread's

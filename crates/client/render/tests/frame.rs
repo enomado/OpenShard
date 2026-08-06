@@ -4020,6 +4020,7 @@ fn the_shader_and_light_sample_agree_about_a_wall_that_faces_away() {
                     f32::from(y) + f32::from(sub_y) / 127.0,
                 ),
                 0.0,
+                (i32::from(x), i32::from(y)),
                 face,
             );
             let reach = openshard_client_render::light::sample(spot, &lighting).reaches[0];
@@ -4070,6 +4071,7 @@ fn the_shader_and_light_sample_agree_about_a_carried_beam() {
                     f32::from(y) + f32::from(sub_y) / 127.0,
                 ),
                 0.0,
+                (i32::from(x), i32::from(y)),
             );
             let reach = openshard_client_render::light::sample(spot, &lighting).reaches[0];
             if !reach.within {
@@ -4186,6 +4188,7 @@ fn assert_parity_of(
                         f32::from(y) + f32::from(sub_y) / 127.0,
                     ),
                     f32::from(z),
+                    (i32::from(x), i32::from(y)),
                 )
             };
             let sample = openshard_client_render::light::sample(spot, lighting);

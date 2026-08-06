@@ -59,6 +59,7 @@ fn main() {
     }
 
     let at = Vec2::new(px, py);
+    let tile = (px.floor() as i32, py.floor() as i32);
     println!("probing at ({px}, {py})");
     let heights: Vec<f32> = match std::env::var("ZS") {
         Ok(list) => list.split(',').map(|z| z.trim().parse().expect("z")).collect(),
@@ -66,10 +67,10 @@ fn main() {
     };
     for z in heights {
         for (name, spot) in [
-            ("flat  ", Spot::flat(at, z)),
-            ("uprght", Spot::at(at, z)),
-            ("south ", Spot::face(at, z, Face::South)),
-            ("east  ", Spot::face(at, z, Face::East)),
+            ("flat  ", Spot::flat(at, z, tile)),
+            ("uprght", Spot::at(at, z, tile)),
+            ("south ", Spot::face(at, z, tile, Face::South)),
+            ("east  ", Spot::face(at, z, tile, Face::East)),
         ] {
             let sample = light::sample(spot, &lighting);
             let reached: Vec<String> = sample

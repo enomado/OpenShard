@@ -1191,6 +1191,15 @@ pub struct Spot {
     pub at: Vec2,
     /// Its height, in the map's own `z` units.
     pub z: f32,
+    /// The tile this is a point of — **not** `at.x.floor()`/`at.y.floor()`.
+    /// A point legitimately sits on a tile's own far edge (a stair tread's
+    /// outer corner, `at.x` exactly whole) and `floor()` there picks whichever
+    /// side happens to round down, not the side the geometry actually stands
+    /// on. Every caller already knows which tile it means; carrying it here
+    /// instead of re-deriving it in [`walk_cells`] is the CPU twin of
+    /// `MeshFaceVertex::tile`'s fix to the same class of bug on the GPU side.
+    /// `docs/lighting_raymarch.md` step 2.
+    pub tile: (i32, i32),
     /// What surface of the world this is a point of.
     ///
     /// The polygon and not the tile: which way it looks, and therefore which
@@ -1208,29 +1217,32 @@ impl Spot {
     /// The neutral answer, and what every caller that predates surfaces means:
     /// nothing is known about which way it looks, so every flame that reaches it
     /// lights it. See [`Spot::flat`] and [`Spot::face`] for the two that do know.
-    pub fn at(at: Vec2, z: f32) -> Self {
+    pub fn at(at: Vec2, z: f32, tile: (i32, i32)) -> Self {
         Self {
             at,
             z,
+            tile,
             surface: Surface::Upright,
         }
     }
 
     /// A point of the ground, a floor, a rug, or the top of a wall: a surface
     /// lying in its tile, looking up.
-    pub fn flat(at: Vec2, z: f32) -> Self {
+    pub fn flat(at: Vec2, z: f32, tile: (i32, i32)) -> Self {
         Self {
             at,
             z,
+            tile,
             surface: Surface::Flat,
         }
     }
 
     /// A point of one of a tile's four vertical faces.
-    pub fn face(at: Vec2, z: f32, face: Face) -> Self {
+    pub fn face(at: Vec2, z: f32, tile: (i32, i32), face: Face) -> Self {
         Self {
             at,
             z,
+            tile,
             surface: Surface::Face(face),
         }
     }
@@ -1486,7 +1498,7 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
     // second interpolation here would be a different picture from the shader's.
     let mut multiplier = lighting.ambient.at(lighting
         .occlusion
-        .sky_at(spot.at.x.floor() as i32, spot.at.y.floor() as i32));
+        .sky_at(spot.tile.0, spot.tile.1));
     let mut reaches = Vec::with_capacity(lighting.lights.len());
     for (index, light) in lighting.lights.iter().enumerate() {
         let offset = [
@@ -1617,7 +1629,7 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i
     ];
     // No tile to exempt at the far end, and a point source: the sun subtends half
     // a degree, so its penumbra is the narrowest the walk draws.
-    walk_cells(from, to, spot.surface, false, 0.0, occlusion)
+    walk_cells(from, to, spot.surface, spot.tile, false, 0.0, occlusion)
 }
 
 /// The ray from a spot to a flame: [`walk_cells`] with a flame's two ends.
@@ -1630,6 +1642,7 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
         [spot.at.x, spot.at.y, spot.z],
         [light.at.x, light.at.y, light.z],
         spot.surface,
+        spot.tile,
         true,
         FLAME_SPREAD,
         occlusion,
@@ -1660,6 +1673,7 @@ fn walk_cells(
     from: [f32; 3],
     to: [f32; 3],
     surface: Surface,
+    tile: (i32, i32),
     skip_last: bool,
     spread: f32,
     occlusion: &Occlusion,
@@ -1674,11 +1688,17 @@ fn walk_cells(
     let spot = Spot {
         at: Vec2::new(from[0], from[1]),
         z: from[2],
+        tile,
         surface,
     };
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
-    let first = (from[0].floor() as i32, from[1].floor() as i32);
+    // The tile the caller carried in, not `from.floor()`: `from` can
+    // legitimately sit exactly on this tile's own far edge (`stand_clear`'s
+    // nudge is sub-tile, and a flat surface gets no nudge at all), and
+    // flooring it back would pick whichever side happens to round down
+    // rather than the side the geometry actually stands on. See [`Spot::tile`].
+    let first = tile;
     if ground < 1e-6 {
         // Straight up or down. There is no direction to walk in and there never
         // was — but "the only cells on the line are the exempt ones", which is
@@ -1745,9 +1765,15 @@ fn walk_cells(
         }
         per_tile[axis] = 1.0 / delta[axis].abs();
         let from = [spot.at.x, spot.at.y][axis];
+        // The known tile's own edge, not `from.floor()` — the same reason
+        // `first` reads `tile` above. A `from` sitting exactly on this axis'
+        // boundary must seed `boundary[axis]` near zero (the ray is already
+        // leaving `first`), and `from.floor()` there can just as well pick
+        // the far side and seed a whole tile of slack that was never there.
+        let edge = [tile.0, tile.1][axis] as f32;
         let ahead = match delta[axis] >= 0.0 {
-            true => from.floor() + 1.0 - from,
-            false => from - from.floor(),
+            true => edge + 1.0 - from,
+            false => from - edge,
         };
         boundary[axis] = ahead * per_tile[axis];
     }
@@ -2522,7 +2548,7 @@ mod tests {
             ((top.space.min.x + top.space.max.x) / 2.0) as f32,
             ((top.space.min.y + top.space.max.y) / 2.0) as f32,
         );
-        let spot = Spot::flat(at, top.top() as f32);
+        let spot = Spot::flat(at, top.top() as f32, (100, 100));
 
         // East of the stair, level with the top tread — the foot of the flight,
         // which is where a person actually stands a torch.

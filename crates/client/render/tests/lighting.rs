@@ -44,7 +44,11 @@ fn at(lighting: &Lighting, tile: (u16, u16), z: f32) -> f32 {
 
 /// The middle of a tile, at a height.
 fn spot(tile: (u16, u16), z: f32) -> Spot {
-    Spot::at(Vec2::new(f32::from(tile.0) + 0.5, f32::from(tile.1) + 0.5), z)
+    Spot::at(
+        Vec2::new(f32::from(tile.0) + 0.5, f32::from(tile.1) + 0.5),
+        z,
+        (i32::from(tile.0), i32::from(tile.1)),
+    )
 }
 
 /// The room, drawn, for the message a failing assertion carries.
@@ -139,7 +143,7 @@ fn the_edge_of_a_shadow_lands_where_the_geometry_puts_it() {
     let sweep: Vec<(f32, f32)> = (-100..=100)
         .map(|step| f32::from(DOORWAY.0) + 0.5 + step as f32 / 100.0)
         .map(|x| {
-            let spot = Spot::at(Vec2::new(x, y), 0.0);
+            let spot = Spot::at(Vec2::new(x, y), 0.0, (x.floor() as i32, y.floor() as i32));
             let through = light::sample(spot, &lighting)
                 .reaches
                 .iter()
@@ -204,10 +208,11 @@ fn a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched() {
     // On the far side of the wall from the torch, a tile and a half out, climbing
     // past the top of it.
     let at = Vec2::new(f32::from(CENTRE.0) + 0.5, f32::from(CENTRE.1) + 1.5);
+    let tile = (at.x.floor() as i32, at.y.floor() as i32);
     let sweep: Vec<(f32, f32)> = (0..=120)
         .map(|step| step as f32 / 4.0)
         .map(|z| {
-            let through = light::sample(Spot::at(at, z), &lighting)
+            let through = light::sample(Spot::at(at, z, tile), &lighting)
                 .reaches
                 .iter()
                 .find(|reach| reach.within)
@@ -706,7 +711,11 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
     let ambient = ambient(&lighting, tile);
     let face = |across: f32, z: f32| {
         let at = Vec2::new(f32::from(tile.0) + across, f32::from(tile.1) + 0.5);
-        light::sample(Spot::face(at, z, Face::East), &lighting).brightness()
+        light::sample(
+            Spot::face(at, z, (i32::from(tile.0), i32::from(tile.1)), Face::East),
+            &lighting,
+        )
+        .brightness()
     };
 
     // The ground floor's own wall, lit by the ground floor's own sconce, at both
@@ -798,9 +807,11 @@ fn a_ray_does_not_slip_between_two_walls_that_touch_at_a_corner() {
 fn a_ray_near_a_corner_and_off_the_exact_diagonal_still_does_not_slip_through() {
     let scene = scene::diagonal_gap();
     let lighting = scene.lighting(STILL);
+    let off_diagonal_at = Vec2::new(f32::from(CENTRE.0) + 0.25, f32::from(CENTRE.1) + 0.5);
     let off_diagonal = Spot::at(
-        Vec2::new(f32::from(CENTRE.0) + 0.25, f32::from(CENTRE.1) + 0.5),
+        off_diagonal_at,
         0.0,
+        (off_diagonal_at.x.floor() as i32, off_diagonal_at.y.floor() as i32),
     );
     let leaked = light::sample(off_diagonal, &lighting)
         .reaches
@@ -837,9 +848,11 @@ fn a_lamp_outside_a_house_corner_does_not_light_the_room_behind_it() {
 
     // Inside the house, on the diagonal running back from the flame through the
     // corner: `(1439.5, 1691.17)` of Britain, in this scene's coordinates.
+    let inside_at = Vec2::new(f32::from(CENTRE.0) - 1.5, f32::from(CENTRE.1) - 0.83);
     let inside = Spot::at(
-        Vec2::new(f32::from(CENTRE.0) - 1.5, f32::from(CENTRE.1) - 0.83),
+        inside_at,
         0.0,
+        (inside_at.x.floor() as i32, inside_at.y.floor() as i32),
     );
     let leaked = light::sample(inside, &lighting)
         .reaches
@@ -857,9 +870,11 @@ fn a_lamp_outside_a_house_corner_does_not_light_the_room_behind_it() {
     // a scene whose torch was never collected — and it is the assertion that would
     // catch a fix that closed the leak by walling the corner off in every
     // direction, which is the failure the conservative direction invites.
+    let street_at = Vec2::new(f32::from(CENTRE.0) - 1.5, f32::from(CENTRE.1) + 1.5);
     let street = Spot::at(
-        Vec2::new(f32::from(CENTRE.0) - 1.5, f32::from(CENTRE.1) + 1.5),
+        street_at,
         0.0,
+        (street_at.x.floor() as i32, street_at.y.floor() as i32),
     );
     let outside = light::sample(street, &lighting)
         .reaches
@@ -913,8 +928,9 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
     // fraction inside the tile, which is where `statics.wgsl` writes them — see
     // `INSIDE`, and decision 16 for what a clean 1 would do to the walk.
     let inside = 1.0 - 1.0 / 127.0;
+    let corner = (CENTRE.0 as i32, CENTRE.1 as i32);
     let reach = |at: Vec2, face: Face| {
-        let spot = Spot::face(at, f32::from(scene::WALL_HEIGHT) / 2.0, face);
+        let spot = Spot::face(at, f32::from(scene::WALL_HEIGHT) / 2.0, corner, face);
         light::sample(spot, &lighting)
             .reaches
             .iter()
@@ -1296,6 +1312,7 @@ fn light_runs_along_a_wall_and_stops_across_it() {
         Spot::face(
             Vec2::new(f32::from(x) + 0.5, f32::from(cy) + inside),
             f32::from(scene::WALL_HEIGHT) / 2.0,
+            (i32::from(x), i32::from(cy)),
             openshard_client_render::facing::Face::South,
         )
     };
@@ -1431,7 +1448,11 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
     // rather than the tile emptying: a ray at the height of the lower wall dies
     // on it exactly as it always did.
     let solid = light::sample(
-        Spot::at(Vec2::new(f32::from(east.0) + 0.5, f32::from(east.1) + 0.5), SOLID),
+        Spot::at(
+            Vec2::new(f32::from(east.0) + 0.5, f32::from(east.1) + 0.5),
+            SOLID,
+            (i32::from(east.0), i32::from(east.1)),
+        ),
         &Lighting {
             lights: vec![Light {
                 z: SOLID,
@@ -1521,7 +1542,8 @@ fn ray(grid: &occlusion::Occlusion, from: (f32, f32, f32), to: (f32, f32, f32)) 
         sun: None,
         view: debug::View::Lit,
     };
-    light::sample(Spot::at(Vec2::new(from.0, from.1), from.2), &lighting).reaches[0].through
+    let tile = (from.0.floor() as i32, from.1.floor() as i32);
+    light::sample(Spot::at(Vec2::new(from.0, from.1), from.2, tile), &lighting).reaches[0].through
 }
 
 /// A ray that goes through the hole in a wall passes; one that goes through the
@@ -1655,7 +1677,8 @@ fn a_hole_in_a_wall_throws_a_fan_of_light_onto_the_ground_behind_it() {
         let sweep: Vec<(f32, f32)> = (-200..=200)
             .map(|step| f32::from(cx) + 0.5 + step as f32 / 100.0)
             .map(|x| {
-                let through = light::sample(Spot::at(Vec2::new(x, y), 0.0), &lighting)
+                let tile = (x.floor() as i32, y.floor() as i32);
+                let through = light::sample(Spot::at(Vec2::new(x, y), 0.0, tile), &lighting)
                     .reaches
                     .iter()
                     .find(|reach| reach.within)

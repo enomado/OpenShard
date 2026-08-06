@@ -222,7 +222,7 @@ fn what_the_lighting_knows_about_a_place() {
         let line: String = (-AROUND * 3..=AROUND * 3)
             .map(|column| {
                 let x = f32::from(at_x) + 0.5 + column as f32 * step;
-                let spot = Spot::at(Vec2::new(x, y), 0.0);
+                let spot = Spot::at(Vec2::new(x, y), 0.0, (x.floor() as i32, y.floor() as i32));
                 let sample = light::sample(spot, &lighting);
                 // The nearest flame that reaches this far at all. `reaches` holds
                 // one entry per flame in the frame, most of them out of range, so
@@ -253,6 +253,7 @@ fn what_the_lighting_knows_about_a_place() {
     // `cone` of 0, and only the two apart tell that from a shadow.
     println!("\n=== and its four faces, halfway up — and its lid ===");
     let inside = 1.0 - 1.0 / 127.0;
+    let tile = (i32::from(at_x), i32::from(at_y));
     // The **lid** first: the top of whatever stands here, sampled the way a flat
     // static's pixel is written — with no face at all, because a horizontal
     // surface has no vertical side and the attachment carries no normal for one.
@@ -261,7 +262,7 @@ fn what_the_lighting_knows_about_a_place() {
     // in reach lights the whole of it.
     if let Some(cell) = grid.at(i32::from(at_x), i32::from(at_y)) {
         let at = Vec2::new(f32::from(at_x) + 0.5, f32::from(at_y) + 0.5);
-        let sample = light::sample(Spot::flat(at, cell.top as f32), &lighting);
+        let sample = light::sample(Spot::flat(at, cell.top as f32, tile), &lighting);
         match sample.reaches.iter().find(|reach| reach.within) {
             None => println!("lid at z {}: no flame reaches it", cell.top),
             Some(reach) => println!(
@@ -292,7 +293,7 @@ fn what_the_lighting_knows_about_a_place() {
             10.0,
         ),
     ] {
-        let sample = light::sample(Spot::face(at, z, face), &lighting);
+        let sample = light::sample(Spot::face(at, z, tile, face), &lighting);
         let nearest = sample
             .reaches
             .iter()

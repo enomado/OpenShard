@@ -277,6 +277,12 @@ fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
         let spot = light::Spot {
             at: Vec2::new(sx, sy),
             z,
+            // `floor()`, deliberately: this tool exists to bisect exactly the
+            // ambiguity `Spot::tile` closes for a real caller
+            // (`docs/lighting_raymarch.md` step 2), so the profile has to keep
+            // showing what a naively-derived tile does at a boundary sample,
+            // not paper over it with a guessed intent.
+            tile: (sx.floor() as i32, sy.floor() as i32),
             surface,
         };
         let sample = light::sample(spot, lighting);
@@ -327,6 +333,7 @@ fn face_light(
         let spot = light::Spot {
             at: Vec2::new(x as f32, y as f32),
             z: z as f32,
+            tile: (x.floor() as i32, y.floor() as i32),
             surface,
         };
         let multiplier = light::sample(spot, lighting).multiplier;
