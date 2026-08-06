@@ -1707,3 +1707,98 @@ fn a_hole_in_a_wall_throws_a_fan_of_light_onto_the_ground_behind_it() {
         picture(&scene, &lighting),
     );
 }
+
+/// A point on its own tile's far edge reads that tile, not the next one —
+/// the boundary `light::sample`'s `walk_cells` used to get wrong.
+///
+/// `docs/lighting_raymarch.md` step 3. The real defect this pins:
+/// `mesh_face.wgsl`'s `fract()` bug (`docs/lighting.md`, "Fixed: the
+/// shadow-raymarch anomaly") was a *GPU* fragment reading `world.x = 1498.0`
+/// — a stair tread's own outer corner, exactly on the tile's far edge — as
+/// belonging to the tile beyond the stair rather than the tread's own.
+/// `walk_cells`'s CPU twin had the same `floor()` and step 2 fixed it by
+/// carrying `Spot::tile` instead of re-deriving it. Written *against* that
+/// fixed `Spot` on purpose: a bare `Spot` could not even state "the point at
+/// the tile's far edge is still this tile's", so a test against the old API
+/// would only be re-encoding the bug, not catching it.
+///
+/// Same fixture as `light::tests::a_treads_top_is_not_shadowed_by_its_own_riser`
+/// — a climbable `Prism` three treads tall — read at the top tread's own
+/// outer corner instead of its middle, which is the one point the centre
+/// reading never touches.
+#[test]
+fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
+    use openshard_client_render::facing::Prism;
+    use openshard_client_render::occlusion::{Builder, Shape};
+    use openshard_protocol::wire::Graphic;
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    let stair = StaticTile {
+        flags: TileFlags::new(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE),
+        height: 20,
+        ..StaticTile::default()
+    };
+    let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+    let mut grid = Builder::new(openshard_client_render::camera::TileBounds {
+        min_x: 95,
+        max_x: 105,
+        min_y: 95,
+        max_y: 105,
+    });
+    grid.add(100, 100, 0, Graphic(0x0736), &stair, Shape::solid(prism));
+    let grid = grid.finish(&Cutaway::OPEN);
+
+    // The same fixture and the same reading as
+    // `light::tests::a_treads_top_is_not_shadowed_by_its_own_riser`: the
+    // tallest tread's own top, lit from the east, unshadowed by the riser it
+    // caps. That test only ever reads the tile's *middle* in `y`; this one
+    // extends the same claim to the tile's own far `y` edge — a whole
+    // number — which is exactly the coordinate shape the real defect had.
+    let top = grid
+        .solids_at(100, 100)
+        .filter(|solid| solid.edges == 0)
+        .max_by_key(|solid| solid.top())
+        .expect("the climb built three tops");
+    let mid_x = ((top.space.min.x + top.space.max.x) / 2.0) as f32;
+    let edge_y = top.space.max.y as f32;
+    let z = top.top() as f32;
+    let tile = (100, 100);
+
+    // East, level with the top tread — the same light the proven fixture
+    // uses, foot of the flight, where a person actually stands a torch.
+    let light = light::Light {
+        at: Vec2::new(102.5, 100.5),
+        z,
+        radius: 6.0,
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        beam: None,
+    };
+    let lighting = Lighting {
+        ambient: light::NIGHT,
+        lights: vec![light],
+        occlusion: grid,
+        sun: None,
+        view: debug::View::default(),
+    };
+
+    // The tile's own middle in `y`, and its far edge: both are points of the
+    // same tread, both fed the same `tile` a real caller would carry, and
+    // neither should be shadowed by the riser it caps
+    // (`Surface::shadowed_by_own_tile`'s exemption). A flip between them is
+    // `walk_cells` disagreeing with itself about which tile the ray left
+    // from — the old `first = from.floor()` read the far edge as the tile
+    // beyond this one, where the exemption never applies.
+    let middle = light::sample(Spot::flat(Vec2::new(mid_x, 100.5), z, tile), &lighting).reaches[0].through;
+    let on_edge = light::sample(Spot::flat(Vec2::new(mid_x, edge_y), z, tile), &lighting).reaches[0].through;
+
+    assert!(
+        (middle - on_edge).abs() < 0.05,
+        "through flips across the tile's own far edge: {middle:.3} at the tile's middle, \
+         {on_edge:.3} exactly on its far edge",
+    );
+    assert!(
+        on_edge > 0.9,
+        "the tread's own outer corner is shadowed by the riser it caps: through {on_edge:.3}",
+    );
+}

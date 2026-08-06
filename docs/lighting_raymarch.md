@@ -77,7 +77,7 @@ step 1.
       points with nothing more authoritative to carry. Full crate builds
       (`cargo check --workspace --all-targets`); `cargo test -p
       openshard-client-render` is step 2's own remaining item below.
-- [ ] **3. A boundary unit test, written against the fixed `Spot`.** New test
+- [x] **3. A boundary unit test, written against the fixed `Spot`.** New test
       in `tests/lighting.rs`: `light::sample` at a handful of points
       straddling an exact integer tile edge (mirroring the real tread's
       `world.x = 1498.0`), a flame on one side, asserting `through` is
@@ -85,6 +85,22 @@ step 1.
       *after* step 2 lands, against the tile-carrying `Spot` — written
       against today's `Spot` it would just re-encode the bug it is meant to
       catch.
+
+      **Done as `a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one`**,
+      reusing `light::tests::a_treads_top_is_not_shadowed_by_its_own_riser`'s
+      own fixture (a climbable three-tread `Prism`) rather than a new one,
+      read at the tallest tread's own far `y` edge instead of its middle.
+      **Verified it actually catches the regression, not just its own
+      geometry**: temporarily reverted both `first = tile` and the
+      `boundary[axis]` edge fix back to `.floor()` and reran — `through`
+      dropped from `1.000` at the tile's middle to `0.513` exactly on its far
+      edge, confirming the earlier, weaker draft (light east of an edge the
+      ray only ever moves *away* from) had picked a geometry the bug does
+      not reach at all: the wrong `first` only matters when the ray's own
+      path actually re-crosses back into the tile it started on, which is
+      why the working version sweeps the tile's `y` edge under the same
+      east-facing light the proven fixture already uses, rather than
+      chasing a new light position by hand.
 - [ ] **4. A brute-force CPU oracle, independent of both DDA
       implementations.** A deliberately dumb ray sampler — fixed small steps
       along the ray, an occlusion lookup at each, no cell bookkeeping, no
