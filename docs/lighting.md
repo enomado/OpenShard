@@ -44,19 +44,64 @@ OPENSHARD_CLIENT=… \
 and look at the topmost tread (the flight's uphill end) — the dash sits a
 short way in from its outer corner, on the face itself, not on an edge.
 
-**The tool this needs already exists and nobody has pointed it at this yet.**
-`isolated_scene`'s own doc, "Profiling a segment instead of drawing it" — set
-`OPENSHARD_SCENE_PROFILE_FACE=flat` (the top tread's own normal) and walk
-`OPENSHARD_SCENE_PROFILE_FROM`/`_TO` in fine steps across the top tread's own
-footprint at its own `z` (`100.0..101.0, 100.0..100.333, z=15` in this
-scene's local coordinates — read back off the `solid:` lines `isolated_scene`
-already prints to stdout every run, which name the exact tread this is). It
-prints [`light::Reach`]'s `Display` — `through`, `stopped_by`'s cell, `cone`
-— per sample point along the walk: this is "draw the ray for this point"
-already, the request made while finding this. Bisect along the walk until
-`stopped_by`/`through` flips somewhere a neighbouring sample does not, and
-that pins the exact occluder-grid cell the two rays disagree about — the
-question `light.rs`'s own occlusion walk needs answered next, not a new tool.
+**Found: it *is* an edge — the tread's own outer one, and every point on it,
+not one speck.** Bisected with the profiler this entry's first draft pointed
+at (`OPENSHARD_SCENE_PROFILE_FACE=flat`, `_FROM=1497.90,1627.20,15`,
+`_TO=1498.00,1627.20,15`, `_STEPS=100` — real map coordinates, **not** the
+synthetic ones the `solid:` lines print; `run_profile`'s `shift_f` shifts real
+into synthetic itself, so feeding it already-synthetic numbers double-shifts
+and reads "outside radius" for the whole segment, which cost the first pass
+at this): every sample from `t=0.000` to `t=0.990` reads `stopped at (100,
+99)`, unchanged for a hundred steps, and `t=1.000` — `x` exactly `1498.00`,
+the tread's own east edge — flips straight to `through 1.000`. No gradient
+between the two: a knife edge sitting exactly on the integer, not a trend
+approaching one, which is what rules out "the corner genuinely sees around
+the riser from here" and points at the grid lookup itself.
+
+**Root cause: `Surface::Flat` gets no boundary nudge, and `Surface::Face`
+does.** [`stand_clear`](../crates/client/render/src/light.rs) moves a lit
+point a hair off the surface it is *the face of* along that face's outward
+normal (`STAND_OFF`, decision-worthy already — see its own doc) before
+`walk_cells` floors it into an occlusion-grid cell — but that nudge comes from
+`face.outward()`, which only exists for `Surface::Face(_)`. `Flat` and
+`Upright` get `[0.0, 0.0]`: no nudge at all. A flat top face's own edge, at
+this tread, sits at `x = 1498.0` for every `y` in its footprint — a whole
+integer, not a fraction — and `walk_cells`' `first = (from[0].floor() as
+i32, from[1].floor() as i32)` (`light.rs:1681`) puts a point sitting exactly
+on that line one cell east of the tread, which carries no riser, so the walk
+starts there and never crosses the occluder every interior sample does. This
+is `blit.wgsl`'s `walk` too, by the same CPU/GPU parity decision 9 already
+named — unconfirmed there yet, but the floor is the same operation.
+
+**The obvious fix — nudge the origin a hair back along the ray, away from
+the flame — is not generally correct, and here is the counter-example before
+anyone writes it.** This tread's flame sits east of the sampled edge, so
+nudging west (back toward where the ray came from) happens to land in the
+tread's own cell, cell 100 — but a *west*-edge point (`x` exactly on its
+tile's low bound) with a flame also to its *west* would nudge the same
+direction the ray already travels, straight into the wrong neighbour. The
+sign that makes the first case work is which side of the boundary the
+point's own tile is actually on, and `walk_cells` has no way to know that
+from a bare `(x, y, z)` and a `Surface` — it was never given the tile. Fixing
+this for real means answering that question first, not picking a nudge sign
+that happens to work on one tread.
+
+**Where the answer probably lives: the same per-pixel id
+[`gbuffer.md`](gbuffer.md) already carries for other reasons.** The renderer
+that draws this face already knows which tile's mesh triangle it came from —
+that is lost by the time a bare `Spot` reaches `light::sample`. Widening
+`Spot`/`walk_cells` to carry (or derive from an id already in hand) the
+sample's own owning cell, and using that instead of re-deriving tile
+membership from a float that can legitimately sit exactly on a shared
+boundary, is the shape of the fix — but it is a decision, not a patch: it
+touches `Spot`'s callers on both the CPU debug path and `blit.wgsl`'s mirror,
+and decision 9's parity has to hold across both. Next session: work out
+whether an id is cheaply available at every call site (`solids.rs`,
+`statics.rs`, the GPU per-pixel path) before touching `walk_cells` itself.
+
+The second shape in the screenshot — the white line over empty background —
+is still unexplained; it was not chased this session, and may or may not
+share this cause.
 
 Everything below is the session before it.
 
