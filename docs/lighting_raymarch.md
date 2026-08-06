@@ -45,10 +45,22 @@ scene, and the reasoning is there rather than only in the handoff log.
 The backlog's "A bigger idea..." entry — replacing grid-DDA's per-cell
 stepping with direct ray-vs-`Solid` intersection — is scoped as of session 8,
 with its first primitive (`ray_vs_solid`, `light.rs:1104`) built and tested
-but not wired into anything real. Its own recommended order's point 2 (a
-parallel `walk_cells`-shaped function built on that primitive, run against
-every oracle this doc already has before any cutover) is where that track
-continues, independently of step 5 — a session can pick either one.
+but not wired into anything real. **Point 2 is built now, session 9**:
+`walk_cells_exact` (`light.rs`, next to `walk_cells`), a parallel
+`walk_cells`-shaped function on `ray_vs_solid`, plus `candidate_tiles` (the
+doubled broad-phase) and `box_side` (a geometric replacement for a DDA
+step's `entry`/`exit` bits). Point 3 — running it against this doc's own
+oracles — is partly done: three permanent tests in `light.rs`'s own `mod
+tests` (the six-point counter-example verbatim, a corner-free full-agreement
+fuzz, and a `ray_vs_solid`-backed characterisation of every disagreement the
+corner-free restriction doesn't reach), all green, but `tests/lighting.rs`'s
+grid-sweep/fuzz oracles and `tests/frame.rs`'s parity suite were not run
+against it — see session 9's own handoff entry for what that leaves open.
+**Not wired into `walk`/`walk_sun`/anywhere real** — point 4, the actual
+cutover, has not been touched and per the doc's own recommended order should
+not be until whoever picks this up next has read session 9's account of
+what "agreement" turned out to mean here: not everywhere, on purpose, and
+why that is not a reason to stop.
 
 Session 4 changed the approach rather than the diagnosis: instead of
 bisecting the white line's own screenshot further, it started building the
@@ -851,6 +863,184 @@ there is one.
   --all-targets` and `rustfmt --check crates/client/render/src/light.rs`
   all clean. Point 2 (the parallel `walk_cells`-shaped function over the
   doubled broad-phase) is next, not started.
+
+  **Point 2 built, session 9 — and "agreement" turned out to have real
+  shape, not be a single yes/no.** `candidate_tiles` (`light.rs`, right
+  after `dda_walk`) is the doubled broad-phase point 1 above asked for: it
+  walks `dda_walk`'s own straight-line cells and, at every transition,
+  additionally names both single-axis neighbours — `by_x`/`by_y`, exactly
+  what `DdaTransition::Corner` already computes, pushed unconditionally now
+  rather than only when `corner_tie` decides to. **First implementation
+  bug, found by the fuzz described below before this doc was ever
+  updated**: the first draft pushed `(cell.0 + toward.0, cell.1 +
+  toward.1)` — the cell reached by stepping *both* axes — instead of the
+  two single-axis cells. That cell is already `dda_walk`'s own next-step
+  (ordinary `Step`) or next-next cell (`Corner`'s own destination), so the
+  bug did not crash anything, it just meant the genuinely untested corner
+  candidate was never probed at all — `walk_cells_exact` disagreed with
+  `walk_cells` on **1519 of 20,000** fuzzed rays over a single wall before
+  this was caught. Fixed by pushing `by_x`/`by_y` directly, matching
+  `DdaTransition::Corner`'s own fields exactly rather than re-deriving a
+  formula for them.
+
+  `walk_cells_exact` itself (`light.rs`, right after `candidate_tiles`) is
+  `walk_cells`'s exemption/run/aperture/softness rules copied onto the new
+  broad-phase: for every candidate tile, every solid on it gets its own
+  exact `entered`/`leaves` from `ray_vs_solid` instead of a DDA cell's
+  shared, tile-boundary-derived pair, grouped back by tile so `through` is
+  still updated once per tile by the *largest* of what its solids stop —
+  `walk_cells`'s own reason (two panels of one corner are two faces of one
+  wall, crossed once) untouched. `box_side` (`light.rs`, beside
+  `candidate_tiles`) is the other piece of plumbing this needed: a body's
+  box *is* its tile's own footprint, so which side of the tile a
+  `ray_vs_solid` crossing point sits on can be read straight off which
+  tile boundary it touches, geometrically, standing in for a `DdaCell`'s
+  `entry`/`exit` bits for candidates that were never reached by an actual
+  DDA step.
+
+  **Second implementation bug, same fuzz, after the first was fixed**:
+  dropping `walk_cells`'s "does either tile-boundary side pierce this
+  body" check on an `EDGE_ANY` solid, on the theory that an exact box
+  crossing no longer needs a safety net a DDA approximation invented —
+  wrong. `walk_cells`'s own comment already says why: "the pierce is what
+  closes the sliver a ray clipping a corner used to walk through." That is
+  a deliberate design choice (a corner reads as opaque, not as
+  proportionally see-through for having been grazed at a narrow angle),
+  not a workaround for DDA imprecision, and dropping it left
+  `walk_cells_exact` reading a body's corner as almost fully open in cases
+  `walk_cells` read as fully blocked. Restored, using `box_side` to find
+  which face `ray_vs_solid`'s own `entered`/`leaves` points sit on instead
+  of carrying `entry`/`exit` from a DDA step that, for a diagonal-only
+  candidate, never happened.
+
+  **With both bugs fixed, the fuzz stopped finding new-code bugs and
+  started finding real, pre-existing gaps in `walk_cells` itself — which is
+  the whole point of this track, not a detour from it.** Two more,
+  distinct from `corner_tie`'s already-documented corner-grazing slop:
+  - `panel_stop` — the function `DdaTransition::Corner` calls instead of
+    the main loop's own per-solid formula — tests a body with one point
+    (the corner itself) through `pierces`'s height-band softness, never
+    the length-based `travelled` formula every other body crossing gets.
+    A ray that runs a real, non-trivial distance through a body's box, but
+    is only ever named via a corner, comes out under-occluded by
+    `walk_cells` — confirmed by hand (a genuine `ray_vs_solid` interval
+    0.107 of the whole segment long, `travelled` alone enough to fully
+    block, `walk_cells`'s corner path returning a partial `0.22` instead).
+  - Independently of any corner at all: `walk_cells`'s per-cell panel
+    branch only tests a panel when the DDA's `entry` or `exit` side for
+    that cell names the panel's own edge. A ray can enter a tile through
+    its west side and leave through its east — an ordinary `Step`, nowhere
+    near `corner_tie` — while still dipping into a thin north panel's real
+    depth (`PANEL_THICKNESS` inward from the tile's own north edge)
+    somewhere in the middle of that crossing. `walk_cells` never asks the
+    panel the question at all; `ray_vs_solid` finds the real hit directly.
+    Same family as `corner_tie` — a coarse side-matching approximation —
+    but a second, independent instance of it, not a variant of the first.
+
+  **Three permanent tests landed instead of one, because "does
+  `walk_cells_exact` agree with `walk_cells`" does not have one honest
+  answer over an unrestricted domain — see the two gaps just above.** All
+  in `light.rs`'s own `mod tests`, since both functions are module-private:
+  - `walk_cells_exact_agrees_with_walk_cells_on_the_six_point_counter_example`
+    — the exact scene `a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray`
+    uses, calling `walk_cells`/`walk_cells_exact` directly rather than
+    through `sample`, asserting both the blocked/open classification and
+    full numeric agreement on `through`.
+  - `walk_cells_exact_agrees_with_walk_cells_off_the_corner_tie_path` — a
+    20,000-case fuzz (relaxed `max_global_rejects`, corners are common in
+    an eight-tile domain) over the same single-wall (body) scene, `prop_
+    assume!`-restricted to rays whose `dda_walk` never takes a `Corner`
+    transition at all. Full numeric agreement holds there — the strongest
+    claim this session can make, and deliberately scoped to not claim more.
+  - `walk_cells_exact_disagreements_are_backed_by_ray_vs_solid` — no corner
+    restriction, run over both a body and a panel scene (`Shape::UNREAD`
+    and `Shape::faced`), and does not assert agreement at all. Instead: when
+    one walk reads a tile as clearly blocked (`through <= RAY_CUTOFF`) and
+    the other reads it clearly open (`through > 0.5` — a wide gap on
+    purpose, not `RAY_CUTOFF`, since softness formulas sampled at a cell's
+    shared midpoint versus a solid's own exact one can legitimately land a
+    hair either side of the cutoff near a soft edge without either walk
+    being wrong), the blamed tile is checked against `ray_vs_solid`
+    directly: whichever walk claims the *stronger* answer must be the one
+    the exact primitive backs. This is what caught both implementation
+    bugs above, and continues to hold now that they are fixed — every
+    remaining disagreement it finds is one of the two known `walk_cells`
+    gaps, not a new one.
+
+  Full `cargo test -p openshard-client-render` (all test binaries), `cargo
+  clippy -p openshard-client-render --all-targets`, `cargo check
+  --workspace --all-targets` and `rustfmt --check
+  crates/client/render/src/light.rs` all clean.
+
+  **Not run this session**: `tests/lighting.rs`'s own grid-sweep and fuzz
+  oracles, and `tests/frame.rs`'s parity suite — the doc's point 3 asks for
+  both, and neither was reached. Both work through the public API
+  (`light::sample`, a rendered `View::Shadow` frame) rather than
+  `walk_cells`/`walk_cells_exact` directly, so exercising them against the
+  new path needs either a temporary public seam or a scene built the way
+  this session's own three tests build one, inside `light.rs` itself. Not
+  started; the next session's natural continuation of point 3 if it wants
+  breadth over the two hand-built scenes here rather than depth on them.
+
+  **Point 4 — the actual cutover — has not been touched, and per the
+  doc's own recommended order should not be started from a standing start
+  next session.** `walk_cells_exact` is not obviously *ready* to replace
+  `walk_cells`: it is more precise in every gap found so far (both
+  `walk_cells` disagreements this session traced were `walk_cells` being
+  wrong, not `walk_cells_exact`), but "more precise" is not the same
+  question as "safe to ship" — `blit.wgsl`'s own mirror of whichever walk
+  is `pub`, decision 9's full GPU/CPU parity suite, and a real-scene
+  render (this session never rendered a frame) are all still ahead of it.
+
+### Session 9 — point 2 built (`walk_cells_exact`), point 3 started, two real `walk_cells` gaps found on the way
+
+Continued session 8's ray-vs-Solid track by name, picking point 2 over the
+open alternative (step 5's white line) — this track needs no
+`OPENSHARD_CLIENT` and no visual judgment, both of which point 5 does, and
+`OPENSHARD_CLIENT` was available but the numeric-oracle discipline this
+track already runs on is the more tractable of the two for a session that
+cannot look at a screenshot and judge it. Full account above, in the
+backlog's "A bigger idea..." entry, since that is where this track's own
+history already lives; short version here.
+
+- **Built `candidate_tiles`, `box_side` and `walk_cells_exact`**
+  (`light.rs`, all beside `dda_walk`/`walk_cells`), the parallel
+  `walk_cells`-shaped function point 2 asked for, `#[allow(dead_code)]`
+  and not wired into `walk`/`walk_sun`.
+- **Found and fixed two real bugs in the new code before trusting any of
+  it**, both by the fuzz described below rather than by inspection:
+  `candidate_tiles` naming the wrong diagonal cell (fixed by matching
+  `DdaTransition::Corner`'s own `by_x`/`by_y` fields exactly), and a
+  dropped safety net for a body's corner-graze that turned out to be a
+  deliberate design choice in `walk_cells`, not a DDA workaround (restored,
+  using `box_side` in place of a DDA step's `entry`/`exit`).
+- **Found, and did not try to fix, two real pre-existing gaps in
+  `walk_cells` itself**: `panel_stop`'s single-point test under-occludes a
+  body reached only through a corner, and the per-cell panel branch's
+  `entry`/`exit`-side gate can miss a genuine panel intersection on an
+  ordinary `Step` crossing with no corner involved at all. Both are the
+  same family as `corner_tie`'s already-documented corner-grazing slop — a
+  coarse approximation the exact primitive removes by construction — and
+  neither was chased into `walk_cells` itself; `walk_cells_exact`'s answer
+  in both cases was confirmed correct by an independent `ray_vs_solid`
+  read, not assumed.
+- **Three permanent tests, not the one this doc's point 3 might have
+  implied**: full numeric parity only provably holds in a scoped
+  sub-domain (off `corner_tie`'s own path); everywhere else, a
+  `ray_vs_solid`-backed characterisation test asserts the *disagreement*
+  is explained rather than asserting agreement that does not hold. All
+  three green; full account in the backlog entry above.
+- `cargo test -p openshard-client-render`, `cargo clippy -p
+  openshard-client-render --all-targets`, `cargo check --workspace
+  --all-targets` and `rustfmt --check crates/client/render/src/light.rs`
+  all clean.
+- **Not touched**: step 5's white line (see "Where the next session
+  starts"); `tests/lighting.rs`'s grid-sweep/fuzz oracles and
+  `tests/frame.rs`'s parity suite (point 3's other half, needs a seam into
+  module-private functions or scenes built the way this session's own
+  tests build them); point 4, the actual cutover, which needs the parity
+  suite and a real render before it is safe to start, not just this
+  session's numeric confidence.
 
 ## Handoff log
 
