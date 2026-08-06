@@ -9,6 +9,77 @@ copied.
 
 ## Where the next session starts
 
+**A new tool exists for exactly this class of bug:
+[`examples/synthetic_stair.rs`](../crates/client/render/examples/synthetic_stair.rs)**
+— a climbable static, alone, with no client files, no map and no art: one
+hand-built [`facing::Prism`](../crates/client/render/src/facing.rs), its own
+[`occlusion::Occlusion`](../crates/client/render/src/occlusion.rs) built the
+same way `light.rs`'s own `a_treads_top_is_not_shadowed_by_its_own_riser`
+test builds one, and one flame, run through the real
+`GroundRenderer`/`MeshFaceRenderer`/`Blit` pipeline and dumped as a picture.
+Built this session while chasing the entry below's own backlog, because a
+real screenshot has a lamppost, a texture and a second static in it, and none
+of those help decide whether a shape in `View::Shadow` is the bug or the
+scene. Its own doc comment has the environment variables; the short version:
+
+```sh
+OPENSHARD_FRAME_VIEW=7 OPENSHARD_FRAME_DUMP=/tmp/stair.ppm \
+    cargo run --release -p openshard-client-render --example synthetic_stair
+```
+
+Three things learned building it, all now load-bearing on the tool's own
+defaults:
+
+- **A stair's tread heights are *absolute* from the static's own base at `z
+  0`, not relative to the real screenshot's numbers.** The real tread this
+  whole track started from reads `z 11, 13, 15` because it stands on a `z 10`
+  platform; handed straight to `Prism::new` with a base at `z 0`, those same
+  three numbers build a rise five times taller than the real one, and every
+  proportion in the picture reads wrong. The tool's own default is `1,3,5`,
+  matching `light.rs`'s own fixtures.
+- **A flame held level with a tread reads the tile as wide open — on
+  purpose, not a bug to route around.** `Surface::shadowed_by_own_tile`'s
+  exemption (decision 32) means a light at a tread's own height sees past
+  every riser on its own tile, so a same-height light is exactly the wrong
+  fixture for looking at a shadow: it shows nothing standing between the
+  flame and anything. A ground-level flame instead reads almost the whole
+  face black, which answers "is anything blocked" but not "how does the
+  shadow vary across the face" — no single light height and offset makes
+  both a wall and a floor. `OPENSHARD_LIGHT_AT=2.5,1.0`,
+  `OPENSHARD_LIGHT_Z=2` (the tool's default) is the least degenerate
+  compromise found: the nearer tread lit, the far one in its own riser's
+  shadow, an actual line between the two.
+- **A thin, nearly-tangent lit strip inside a mostly-shadowed face can look,
+  at a coarse nearest-neighbour zoom, like a second shape disconnected from
+  the first — it is not, and the way to tell is reading raw pixels, not
+  looking harder.** Sampled a suspicious sliver at 3x zoom against
+  `View::Kind`'s silhouette pixel for pixel rather than trusting the eye a
+  second time: every pixel of it sat inside the mesh's own outline, just
+  interleaved with fully-shadowed (`through = 0`, indistinguishable from the
+  black background at a glance) pixels a few texels away. One real
+  background-side anomaly already exists in this track (next paragraph) —
+  this was not a second one, and the method that ruled it out is worth
+  reusing before writing up a new one.
+
+**Still not caught with the new tool: the CPU-only `light::sample`/
+`walk_cells` `floor()` bug below.** Several `OPENSHARD_LIGHT_AT`/`_Z`
+combinations were tried against `synthetic_stair`'s `View::Shadow`, looking
+for the same before/after contrast the real screenshot's diff showed
+(2,948 pixels flipped from a false "fully open" to a correct shadow) — none
+of them reproduced a clean, attributable difference between the fixed and
+the pre-fix `mesh_face.wgsl` formula on this synthetic geometry. That does
+not mean the CPU-side bug is smaller than it looked; it means the specific
+light placement that makes the reconstructed-position error *change the
+occlusion answer* (not just the number) was not found by hand in the time
+spent. Next session: now that the tool exists and the two working light
+configurations above are known-good starting points, either bisect
+`OPENSHARD_LIGHT_AT`/`_Z` systematically from `2.5,1.0`/`2` rather than by
+guessing, or go back to `light.rs:1681`'s `walk_cells` directly with the
+profiler this track's own earlier entry already names, which pinned the CPU
+bug's existence without needing a picture at all.
+
+Everything below is the previous session's write-up, unedited.
+
 **Fixed: the shadow-raymarch anomaly, and it was one tile of arithmetic on
 the wrong side of a `fract()`, not `walk_cells`' own `floor()`.** The chain
 below found the real mechanism before touching anything, which is why the
