@@ -52,18 +52,28 @@ doubled broad-phase) and `box_side` (a geometric replacement for a DDA
 step's `entry`/`exit` bits) — three real bugs in this new code found and
 fixed by fuzzing it before trusting it, the third (every lid reading fully
 transparent) only surfaced once the fuzz moved past a single-solid scene.
-Point 3 — running it against this doc's own oracles — is partly done: five
-permanent tests in `light.rs`'s own `mod tests` (full account in the
-backlog's "Point 2 built, session 9" entry and the session 9 handoff), but
-`tests/lighting.rs`'s grid-sweep/fuzz oracles, `tests/frame.rs`'s parity
-suite, and a disagreement oracle that survives a multi-solid tile (the
-stair scene stopped at a smoke test, not a full characterisation) were not
-built — see session 9's own handoff entry for what that leaves open.
-**Not wired into `walk`/`walk_sun`/anywhere real** — point 4, the actual
-cutover, has not been touched and per the doc's own recommended order should
-not be until whoever picks this up next has read session 9's account of
-what "agreement" turned out to mean here: not everywhere, on purpose, and
-why that is not a reason to stop.
+Point 3 — running it against this doc's own oracles — is further along now,
+session 10: five permanent tests in `light.rs`'s own `mod tests` (session 9),
+plus `sample_exact` (`light.rs`, beside `sample`) — a `#[doc(hidden)] pub`
+seam onto `walk_exact`/`walk_sun_exact`, explicitly temporary and meant to be
+deleted at point 4's cutover — which let `tests/lighting.rs`'s grid-sweep and
+fuzz oracles and `tests/frame.rs`'s own real-geometry scenes exercise
+`walk_cells_exact` for the first time through the public API rather than
+`light.rs`'s own private test module. Both were built and both pass, but
+**not by asserting bare agreement**: real scenes hit `walk_cells`'s own
+already-catalogued gaps far more than the single-wall fuzzing that found them
+first, and `tests/frame.rs`'s own oracle had to be built to arbitrate a
+disagreement against independent ground truth rather than assume either walk
+is right. See session 10's own handoff entry — the false alarm it found and
+un-found is worth reading before trusting a point-sampling oracle's "open"
+verdict again. **Still not built**: a disagreement oracle that survives a
+genuinely multi-solid tile (the stair scene stopped at a smoke test, session
+9's own scope decision, untouched since). **Not wired into
+`walk`/`walk_sun`/anywhere real** — point 4, the actual cutover, has not been
+touched and per the doc's own recommended order should not be until whoever
+picks this up next has read session 9's account of what "agreement" turned
+out to mean here: not everywhere, on purpose, and why that is not a reason to
+stop.
 
 Session 4 changed the approach rather than the diagnosis: instead of
 bisecting the white line's own screenshot further, it started building the
@@ -1132,6 +1142,126 @@ history already lives; short version here.
   every real hit counts; point 4, the actual cutover, which needs the
   parity suite and a real render before it is safe to start, not just this
   session's numeric confidence.
+
+### Session 10 — the public seam built, point 3's other half run, a false alarm found and un-found
+
+Picked point 3's other half by name, asked for explicitly: session 9 left
+`tests/lighting.rs`'s grid-sweep/fuzz oracles and `tests/frame.rs`'s
+real-geometry scenes unexercised against `walk_cells_exact`, both working
+through the public API (`light::sample`) rather than the module-private
+functions session 9's own tests called directly.
+
+- **Built the seam session 9's own handoff named as missing**: `sample_exact`
+  (`light.rs`, beside `sample`) — `#[doc(hidden)] pub`, routed through a new
+  `sample_with` both `sample` and `sample_exact` now share (refactored out of
+  `sample`'s own body rather than duplicated), calling `walk_exact`/
+  `walk_sun_exact` instead of `walk`/`walk_sun`. Explicitly documented as
+  temporary: it goes away at point 4's cutover, when `sample` itself walks
+  this path. Its existence made `ray_vs_solid`, `candidate_tiles`,
+  `box_side` and `walk_cells_exact` genuinely reachable for the first time —
+  their `#[allow(dead_code)]`s, staged since sessions 8–9, are gone.
+- **`tests/lighting.rs`: two new tests, mirroring session 2's own
+  brute-force grid and session 6's own fuzz, through `sample_exact` instead
+  of `sample`** —
+  `a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights` and
+  `a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_
+  the_exact_walk`. Both green on the first run, over the same single-wall
+  scene and the same corner-biased fuzz domain session 9's own module-private
+  fuzz already covered — this is breadth (through the real `Sample`/`Reach`
+  machinery, not `walk_cells_exact` called directly) rather than a new claim.
+- **`tests/frame.rs`: a ground-truth-arbitrated characterisation suite over
+  seven of decision 9's own real-geometry scenes** (`room`,
+  `wall_with_a_torch_beside_it`, `house_corner`, `wall_with_a_hole_in_it`,
+  `sunlit_room_with_window`, `lantern_in_a_room`, and `room` again at two
+  surfaces) — `exact_walk_disagreements`, sweeping every pixel of
+  `tests/frame.rs`'s own 64×64 parity grid, comparing `sample`/`sample_exact`
+  classification (blocked/open at `RAY_CUTOFF`) rather than asserting bare
+  numeric agreement. **The first version of this asserted zero
+  disagreements and failed on hundreds of pixels of the plainest scene
+  here**, `scene::room`: a spot standing on one tile of a straight wall run
+  blamed a *neighbour* tile of the same run for blocking light a hand-marched
+  ray never reaches. Not a new bug — `ground_truth_blocked` (an independent
+  point-in-box march, `brute_force_blocked`'s own discipline restated for
+  this test crate) backs `walk_cells_exact`'s "open" answer in every one of
+  these; `walk_cells` blames the neighbour because `corner_tie`'s heuristic
+  never considered it a candidate at all, and `candidate_tiles`'s
+  unconditional probing does. A fifth `walk_cells` gap in the shape session
+  9 catalogued four of, found this time by real map geometry rather than
+  fuzzing a synthetic one, and in the opposite direction (over-occlusion, not
+  under). Restructured the suite around this: every classification flip is
+  arbitrated by `ground_truth_blocked`, and only a flip it backs *against*
+  `walk_cells_exact` fails the test.
+- **A real false alarm, found and un-found the same session, worth reading
+  before trusting a point-sampling ground-truth oracle's "open" answer
+  again.** `wall_with_a_hole_in_it` first failed with `ground_truth_blocked`
+  backing `walk_cells` — a genuine `walk_cells_exact` bug, it looked like.
+  Hand-verifying with the exact slab formula showed a real, tiny crossing
+  (`entered` `0.03264`, `leaves` `0.03438` — about two thousandths of a tile
+  of the segment's own length) through a wall panel's box at the exact
+  lateral corner it shares with its neighbour: `walk_cells_exact` was right,
+  and `ground_truth_blocked`'s fixed `0.02`-tile step — copied from
+  `tests/lighting.rs`'s `BRUTE_STEP`, sized to
+  `occlusion::PANEL_THICKNESS`'s own depth, not to how thin a corner graze
+  through it can be — stepped clean over the sliver and reported "open" by
+  mistake. Fixed by switching `ground_truth_blocked` to a fixed twenty
+  thousand steps over the whole segment rather than a fixed step size; a
+  200,000-step search confirmed the crossing directly (blocked at
+  `t = 0.032645`, matching the slab formula's own `entered` almost exactly)
+  before the constant was trusted. **The general lesson
+  kept in that function's own doc comment**: a point-sampling oracle's
+  "blocked" is always trustworthy (a sample landing inside a box is a real
+  hit, full stop) but its "open" never rules out an arbitrarily thin sliver
+  at any finite resolution — the asymmetry this session's first draft did
+  not respect, treating both answers as equally strong evidence.
+- **The same lesson, found a second time in a test this session did not
+  write.** `cargo test --workspace` (not run until the very end, on the
+  strength of `-p openshard-client-render` alone having stayed green all
+  session) flaked: session 6's own
+  `a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle` and
+  this session's `..._through_the_exact_walk` copy both failed, on the same
+  proptest-minimised counter-example, with `walk_cells` *and*
+  `walk_cells_exact` agreeing the ray was blocked and
+  `tests/lighting.rs`'s own `brute_force_blocked` alone saying open.
+  Independently verified with the slab formula: a real hit, `entered
+  0.63355`, `leaves 0.63387` — about three thousandths of a tile of depth, a
+  ray clipping a lone wall tile's far corner at a shallow angle. The exact
+  shape of the false alarm above, in the oracle `tests/frame.rs`'s own
+  `ground_truth_blocked` was modelled on: `BRUTE_STEP = 0.02` was sized to
+  `PANEL_THICKNESS`, and nothing before this session had measured how much
+  thinner a corner graze can be than a panel. Fixed the same way — `BRUTE_
+  STEP` tightened to `0.001` — since it is shared by every test in the file,
+  not copied into a second constant the way `tests/frame.rs`'s own fix was
+  free to be. Confirmed rather than assumed: the specific counter-example
+  above now passes, and eight more full runs of both fuzz tests (`512`
+  proptest cases apiece, a fresh random seed each time) stayed green at
+  `~0.04`s each — this file's whole suite is `0.26`s, not the "thousands of
+  rays" slowdown the constant's own old comment worried about. **A
+  `cargo test -p <crate>` green run is not the same claim as `cargo test
+  --workspace`** is the operational lesson: nothing about this bug was in a
+  file this session had touched, and it was found only because the doc's own
+  closing checklist runs the wider command anyway.
+- **Numbers, for the record**: `room` at `Surface::Upright` explained 232
+  flips this way (all real `walk_cells` gaps, none unexplained), the same
+  scene at `Surface::Flat` 232 at `z 0` and 236 at `z 20`; `lantern_in_a_room`
+  (the carried-beam fixture) 232; `house_corner` 135;
+  `wall_with_a_torch_beside_it` 8; `wall_with_a_hole_in_it` 3 explained plus 9
+  left unexplained —
+  `ground_truth_blocked` returns `None` rather than guess wherever the
+  marched path crosses the hole's own aperture, the one thing it does not
+  model (`brute_force_blocked`'s own scope restriction, restated: that
+  oracle can afford a hard `assert!` that no fixture has one, this one
+  cannot, since the scene's entire point is an aperture); `sunlit_room_with_
+  window` found none at all.
+- `cargo test -p openshard-client-render` (47 in `tests/frame.rs`, 37 in
+  `tests/lighting.rs`, 350 in the lib including session 9's own five),
+  `cargo test --workspace` (after the `BRUTE_STEP` fix above), `cargo clippy
+  --workspace --all-targets`, `cargo check --workspace --all-targets` and
+  `rustfmt --check` on every file touched: all clean.
+- **Not touched**: a disagreement oracle for a genuinely multi-solid tile
+  (the stair — session 9's own scope decision, still not attempted); step
+  5's white line; point 4, the actual cutover, which still needs that
+  multi-solid oracle and a real render first, per the doc's own recommended
+  order, not just this session's own numeric confidence added to session 9's.
 
 ## Handoff log
 

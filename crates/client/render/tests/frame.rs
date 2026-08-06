@@ -4214,6 +4214,277 @@ fn assert_parity_of(
     assert_eq!(compared, (width * height) as usize);
 }
 
+/// Whether `Reach::through` counts as blocked — `light.rs`'s own
+/// `RAY_CUTOFF`, restated here rather than imported: it is not `pub`, and
+/// every oracle in `docs/lighting_raymarch.md` (`tests/lighting.rs`'s
+/// brute-force grid and fuzz) already carries its own copy of the same
+/// number rather than reach into the crate for it.
+const EXACT_WALK_BLOCKED: f32 = 0.004;
+
+/// Whether the straight segment from `from` to `to` passes through any solid
+/// standing between the two tiles the walk itself exempts — the same idea as
+/// `tests/lighting.rs`'s `brute_force_blocked`, restated here rather than
+/// shared across two independent test crates: dumb, fixed-step marching and a
+/// point-in-box test, sharing no arithmetic with either walk.
+///
+/// **Twenty thousand steps over the whole segment, not `brute_force_blocked`'s
+/// fixed `0.02`-tile step.** The first version of this oracle used that same
+/// constant and returned a false "open" for a real, `ray_vs_solid`-confirmed
+/// crossing: a ray clipping a panel box at a shallow, corner-grazing angle can
+/// spend far less than [`crate::occlusion::PANEL_THICKNESS`]'s own depth
+/// inside it — a hundredth of a tile, in the case that found this — and
+/// `brute_force_blocked`'s own step was sized to the panel's *thickness*, not
+/// to how thin a graze through it can be. A point sampler cannot rule out an
+/// arbitrarily thin sliver at any finite resolution; twenty thousand steps
+/// is a practical stand-in that this file's own scenes have not defeated, not
+/// a claim of exactness the way `ray_vs_solid`'s analytic slab test is one.
+///
+/// Returns `None` where a solid with an aperture stands on the marched path.
+/// `brute_force_blocked` instead hard-`assert!`s a scene never has one, which
+/// it can afford: every fixture in that file is hand-built to keep the
+/// premise true. This one runs over `scene::wall_with_a_hole_in_it`, whose
+/// entire point is an aperture, so a disagreement whose path crosses the hole
+/// is left unexplained rather than a reason to panic the whole sweep.
+fn ground_truth_blocked(
+    from: [f32; 3],
+    to: [f32; 3],
+    own_tile: (i32, i32),
+    target_tile: (i32, i32),
+    skip_last: bool,
+    occlusion: &Occlusion,
+) -> Option<bool> {
+    const STEPS: u32 = 20_000;
+    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    for step in 1..STEPS {
+        let t = step as f32 / STEPS as f32;
+        let point = [
+            from[0] + delta[0] * t,
+            from[1] + delta[1] * t,
+            from[2] + delta[2] * t,
+        ];
+        let tile = (point[0].floor() as i32, point[1].floor() as i32);
+        if tile == own_tile || (skip_last && tile == target_tile) {
+            continue;
+        }
+        for solid in occlusion.solids_at(tile.0, tile.1) {
+            if solid.aperture.is_some() {
+                return None;
+            }
+            let (min, max) = (solid.space.min, solid.space.max);
+            let inside = f64::from(point[0]) >= min.x
+                && f64::from(point[0]) <= max.x
+                && f64::from(point[1]) >= min.y
+                && f64::from(point[1]) <= max.y
+                && f64::from(point[2]) >= min.z
+                && f64::from(point[2]) <= max.z;
+            if inside {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
+}
+
+/// What a sweep of [`light::sample_exact`] against [`light::sample`] found,
+/// over one of decision 9's own real-geometry scenes.
+struct ExactWalkReport {
+    /// A classification flip [`ground_truth_blocked`] backs `walk_cells`
+    /// for — a genuine, new defect in `walk_cells_exact` this doc has not
+    /// already catalogued, and the only thing these tests fail on.
+    bugs: Vec<String>,
+    /// A classification flip [`ground_truth_blocked`] backs
+    /// `walk_cells_exact` for: an already-real `walk_cells` gap, the same
+    /// family `docs/lighting_raymarch.md`'s session 9 found four of.
+    explained: usize,
+    /// A classification flip this oracle cannot rule on — the marched path
+    /// crossed a solid with an aperture, which it does not model.
+    unexplained: usize,
+}
+
+/// [`light::sample_exact`] against [`light::sample`], over one of decision
+/// 9's own real-geometry scenes — `docs/lighting_raymarch.md`'s point 3, the
+/// half of it that needs no GPU because neither side being compared is the
+/// shader. The scene is the fixture, the same reason decision 9's own suite
+/// reuses these rather than a fixture built for this test alone: a room's
+/// torch, a house corner, a hole in a wall, a window's sun each put a ray
+/// through geometry nobody hand-picked to flatter either walk.
+///
+/// **Not full agreement, on purpose.** The first version of this sweep
+/// asserted zero classification flips and failed on more than a hundred
+/// pixels of the plainest scene here, `scene::room` — a spot standing on one
+/// tile of a straight wall run blamed a *neighbour* tile of the same run for
+/// blocking a ray that, marched by hand, never enters that neighbour's box
+/// at all. `docs/lighting_raymarch.md`'s session 9 already catalogued four
+/// `walk_cells` gaps this exact track's fuzzing found; this is a real fifth,
+/// found by real geometry rather than a fuzzer, in the opposite direction
+/// from the other four (over-occlusion, not under). See this test file's own
+/// handoff entry for the coordinates and the confirming hand-march.
+///
+/// So a flip is not itself a failure: [`ground_truth_blocked`] — independent
+/// of both walks, sharing no arithmetic with either — is asked to arbitrate.
+/// Backing `walk_cells_exact` explains the flip as one of `walk_cells`'s own
+/// gaps; backing `walk_cells` instead is a real bug in the exact walk, which
+/// is what fails these tests.
+fn exact_walk_disagreements(lighting: &Lighting, surface: Surface, z: i8) -> ExactWalkReport {
+    let mut report = ExactWalkReport {
+        bugs: Vec::new(),
+        explained: 0,
+        unexplained: 0,
+    };
+    for py in 0..64 {
+        for px in 0..64 {
+            let (x, y, sub_x, sub_y) = parity_place(px, py);
+            let own_tile = (i32::from(x), i32::from(y));
+            let spot = openshard_client_render::light::Spot {
+                surface,
+                ..openshard_client_render::light::Spot::at(
+                    Vec2::new(
+                        f32::from(x) + f32::from(sub_x) / 127.0,
+                        f32::from(y) + f32::from(sub_y) / 127.0,
+                    ),
+                    f32::from(z),
+                    own_tile,
+                )
+            };
+            let from = [spot.at.x, spot.at.y, spot.z];
+            let sample = openshard_client_render::light::sample(spot, lighting);
+            let exact = openshard_client_render::light::sample_exact(spot, lighting);
+            for (index, (a, b)) in sample.reaches.iter().zip(exact.reaches.iter()).enumerate() {
+                if !a.within {
+                    continue;
+                }
+                let a_blocked = a.through <= EXACT_WALK_BLOCKED;
+                let b_blocked = b.through <= EXACT_WALK_BLOCKED;
+                if a_blocked == b_blocked {
+                    continue;
+                }
+                let light = &lighting.lights[index];
+                let to = [light.at.x, light.at.y, light.z];
+                let target_tile = (light.at.x.floor() as i32, light.at.y.floor() as i32);
+                match ground_truth_blocked(from, to, own_tile, target_tile, true, &lighting.occlusion) {
+                    None => report.unexplained += 1,
+                    Some(truth) if truth == b_blocked => report.explained += 1,
+                    Some(_) => report.bugs.push(format!(
+                        "({px}, {py}) light {index}: walk_cells {} ({:.4}), walk_cells_exact {} \
+                         ({:.4}), ground truth says {}",
+                        if a_blocked { "blocked" } else { "open" },
+                        a.through,
+                        if b_blocked { "blocked" } else { "open" },
+                        b.through,
+                        if a_blocked { "blocked" } else { "open" },
+                    )),
+                }
+            }
+            // The sun has no `target_tile` of its own to skip — `walk_sun`/
+            // `walk_sun_exact` both pass `skip_last: false` — and no scene
+            // here disagreed about it even once this oracle existed to check,
+            // so it is compared but not (yet) arbitrated by ground truth.
+            if let (Some(a), Some(b)) = (sample.sun, exact.sun) {
+                let a_blocked = a.through <= EXACT_WALK_BLOCKED;
+                let b_blocked = b.through <= EXACT_WALK_BLOCKED;
+                if a_blocked != b_blocked {
+                    report.bugs.push(format!(
+                        "({px}, {py}) sun: walk_cells {} ({:.4}), walk_cells_exact {} ({:.4}), \
+                         not yet arbitrated by ground truth",
+                        if a_blocked { "blocked" } else { "open" },
+                        a.through,
+                        if b_blocked { "blocked" } else { "open" },
+                        b.through,
+                    ));
+                }
+            }
+        }
+    }
+    report
+}
+
+/// Asserts [`exact_walk_disagreements`] found no unexplained bug, and prints
+/// the explained/unexplained counts either way — visible with `--nocapture`,
+/// and in a failure's own message, since a reader deciding whether a fifth
+/// `walk_cells` gap needs its own backlog entry wants those numbers regardless
+/// of which count actually fired.
+fn assert_no_exact_walk_bugs(report: &ExactWalkReport) {
+    println!(
+        "{} explained (known walk_cells gaps), {} unexplained (aperture on the path)",
+        report.explained, report.unexplained,
+    );
+    assert!(
+        report.bugs.is_empty(),
+        "{} of 4096 pixels found a real walk_cells_exact bug:\n{}",
+        report.bugs.len(),
+        report.bugs.join("\n"),
+    );
+}
+
+#[test]
+fn the_exact_walk_agrees_with_light_sample_over_a_room() {
+    let scene = openshard_client_render::scene::room();
+    let report = exact_walk_disagreements(&scene.lighting(0.0), Surface::Upright, 0);
+    assert_no_exact_walk_bugs(&report);
+}
+
+/// And the same for a scene whose occluders are panels on named edges —
+/// see `the_shader_and_light_sample_agree_about_which_side_a_wall_is_on`'s
+/// own comment for why this shape gets its own fixture.
+#[test]
+fn the_exact_walk_agrees_with_light_sample_about_which_side_a_wall_is_on() {
+    let scene = openshard_client_render::scene::wall_with_a_torch_beside_it();
+    let report = exact_walk_disagreements(&scene.lighting(0.0), Surface::Upright, 0);
+    assert_no_exact_walk_bugs(&report);
+}
+
+/// And the same at a house corner — a run of panels meeting a faceless whole
+/// tile, exactly the shape `corner_tie` exists for and the one
+/// `docs/lighting_raymarch.md`'s session 9 traced two of `walk_cells`'s own
+/// gaps from.
+#[test]
+fn the_exact_walk_agrees_with_light_sample_at_the_corner_of_a_house() {
+    let scene = openshard_client_render::scene::house_corner();
+    let report = exact_walk_disagreements(&scene.lighting(0.0), Surface::Upright, 0);
+    assert_no_exact_walk_bugs(&report);
+}
+
+/// And the same for a scene with a hole in one of its panels — where
+/// [`ground_truth_blocked`]'s own aperture scope is expected to leave some
+/// flips unexplained rather than arbitrated, see this test's own handoff
+/// entry for the count.
+#[test]
+fn the_exact_walk_agrees_with_light_sample_about_a_hole_in_a_wall() {
+    let scene = openshard_client_render::scene::wall_with_a_hole_in_it();
+    let report = exact_walk_disagreements(&scene.lighting(0.0), Surface::Upright, 0);
+    assert_no_exact_walk_bugs(&report);
+}
+
+/// And the same for a scene with a sun in it — [`walk_sun_exact`] against
+/// [`walk_sun`], not just the flame end of the seam.
+#[test]
+fn the_exact_walk_agrees_with_light_sample_about_the_sun() {
+    let scene = openshard_client_render::scene::sunlit_room_with_window();
+    let report = exact_walk_disagreements(&scene.lighting(0.0), Surface::Upright, 0);
+    assert_no_exact_walk_bugs(&report);
+}
+
+/// And the same over a surface that looks up, at both a lit floor and a
+/// lid over the flame — decision 27's own reason for a second fixture,
+/// restated for this seam.
+#[test]
+fn the_exact_walk_agrees_with_light_sample_about_a_surface_that_looks_up() {
+    let lighting = openshard_client_render::scene::room().lighting(0.0);
+    for z in [0, 20] {
+        let report = exact_walk_disagreements(&lighting, Surface::Flat, z);
+        assert_no_exact_walk_bugs(&report);
+    }
+}
+
+/// And the same for a carried beam — the one term the other scenes above
+/// cannot exercise, since every static flame lights all ways.
+#[test]
+fn the_exact_walk_agrees_with_light_sample_about_a_carried_beam() {
+    let scene = openshard_client_render::scene::lantern_in_a_room();
+    let report = exact_walk_disagreements(&scene.lighting(0.0), Surface::Upright, 0);
+    assert_no_exact_walk_bugs(&report);
+}
+
 /// The light view has no plateau in the middle of a pool.
 ///
 /// The failure this protects against is the one it was written for: the view

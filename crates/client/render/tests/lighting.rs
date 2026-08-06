@@ -1806,11 +1806,21 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
 /// How densely [`brute_force_blocked`] samples a ray, in tiles of ground
 /// distance.
 ///
-/// Dense enough to land inside any panel a fixture here builds —
-/// `occlusion::PANEL_THICKNESS` is the thinnest a solid's box gets — without
-/// making the grid sweep below slow: a few tiles of ray at this spacing is a
-/// few hundred samples, and the sweep runs thousands of rays.
-const BRUTE_STEP: f32 = 0.02;
+/// **Not `occlusion::PANEL_THICKNESS`'s own depth, on purpose — tighter than
+/// that by twenty.** The step used to be `0.02`, sized to the thinnest a
+/// solid's box gets, and it was too coarse: `docs/lighting_raymarch.md`
+/// session 10 found this fuzz test (and its `walk_cells_exact` counterpart,
+/// added the same session) fail on a random seed whose spot and light sat
+/// exactly far enough apart that the ray only clipped the wall tile's own
+/// far corner for about three thousandths of a tile of real depth —
+/// `ray_vs_solid`-confirmed a genuine hit, `walk_cells` and
+/// `walk_cells_exact` both correctly called it blocked, and this oracle's
+/// `0.02`-tile step stepped clean over the sliver and called it open. A
+/// thin *panel* and a thin *corner graze* are different questions —
+/// `PANEL_THICKNESS` bounds the first, nothing before session 10 measured
+/// the second — so the step is tighter than either fixture in this file has
+/// yet defeated, not merely tight enough for the one that was measured.
+const BRUTE_STEP: f32 = 0.001;
 
 /// Whether the straight segment from `from` to `to` passes through any solid
 /// standing between the two tiles the walk itself exempts.
@@ -2137,6 +2147,217 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
             brute_blocked,
             "spot ({:.4}, {:.4}, {:.2}) tile {:?}, light ({:.4}, {:.4}, {:.2}) \
              tile {:?}: walk_cells says {}, the brute-force oracle says {}",
+            spot_at.x, spot_at.y, spot_z, spot_tile,
+            light_at.x, light_at.y, flame_z, target_tile,
+            if walked_blocked { "blocked" } else { "open" },
+            if brute_blocked { "blocked" } else { "open" },
+        );
+    });
+}
+
+/// The same claim as
+/// [`a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights`], but
+/// through [`light::sample_exact`] — `docs/lighting_raymarch.md`'s point 3,
+/// the ray-vs-`Solid` walk against an oracle that shares no arithmetic with
+/// either DDA.
+///
+/// `light.rs`'s own `mod tests` already checked `walk_cells_exact` against
+/// `walk_cells` directly on this exact scene (a single wall, off
+/// `corner_tie`'s path); what that could not exercise is the public seam
+/// itself — `sample_exact` threading a spot and a light through `Sample`,
+/// `Reach`, `stand_clear`, everything between "where is the flame" and "does
+/// the ray get there" that only ever runs through `sample`. Same grid, same
+/// fixture, same reason each of `spots`/`lights` is shaped the way it is —
+/// see that test's own comments — swapped to the exact walk and to a fresh,
+/// independent oracle rather than the walk this doc is trying to replace.
+#[test]
+fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
+    use openshard_client_render::occlusion::{Builder, Shape};
+    use openshard_protocol::wire::Graphic;
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    let wall = StaticTile {
+        flags: TileFlags::new(TileFlags::NO_SHOOT),
+        height: 20,
+        ..StaticTile::default()
+    };
+    let mut grid = Builder::new(openshard_client_render::camera::TileBounds {
+        min_x: 90,
+        max_x: 110,
+        min_y: 90,
+        max_y: 110,
+    });
+    grid.add(101, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+    let occlusion = grid.finish(&Cutaway::OPEN);
+
+    let mut spots = Vec::new();
+    for y in [100.2_f32, 100.5, 100.8] {
+        for z in [1.0_f32, 5.0, 10.0, 18.0] {
+            spots.push((Vec2::new(101.0, y), z));
+        }
+    }
+
+    let mut lights = Vec::new();
+    for dx in [0.5_f32, 2.5, 4.0] {
+        for dy in [-0.6_f32, -0.3, 0.0, 0.3, 2.0] {
+            for z in [0.5_f32, 8.0, 17.0, 25.0] {
+                lights.push((Vec2::new(100.0 + dx, 100.5 + dy), z));
+            }
+        }
+    }
+
+    let mut compared = 0;
+    let mut blocked_count = 0;
+    let mut disagreed = Vec::new();
+    for &(light_at, light_z) in &lights {
+        let light = light::Light {
+            at: light_at,
+            z: light_z,
+            radius: 6.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        };
+        let lighting = Lighting {
+            ambient: light::NIGHT,
+            lights: vec![light],
+            occlusion: occlusion.clone(),
+            sun: None,
+            view: debug::View::default(),
+        };
+        let target_tile = (light_at.x.floor() as i32, light_at.y.floor() as i32);
+        for &(at, z) in &spots {
+            let spot = Spot::flat(at, z, (100, 100));
+            let sample = light::sample_exact(spot, &lighting);
+            let Some(reach) = sample.reaches.iter().find(|reach| reach.within) else {
+                continue;
+            };
+            let walked_blocked = reach.through <= 0.004;
+            let brute_blocked = brute_force_blocked(
+                [at.x, at.y, z],
+                [light_at.x, light_at.y, light_z],
+                (100, 100),
+                target_tile,
+                true,
+                &occlusion,
+            );
+            compared += 1;
+            blocked_count += usize::from(walked_blocked);
+            if walked_blocked != brute_blocked {
+                disagreed.push(format!(
+                    "spot ({:.2}, {:.2}, {z:.1}), light ({:.2}, {:.2}, {light_z:.1}): \
+                     walk_cells_exact says {}, the brute-force oracle says {}",
+                    at.x,
+                    at.y,
+                    light_at.x,
+                    light_at.y,
+                    if walked_blocked { "blocked" } else { "open" },
+                    if brute_blocked { "blocked" } else { "open" },
+                ));
+            }
+        }
+    }
+    assert!(
+        compared > 100,
+        "the grid compared only {compared} spot/light pairs",
+    );
+    assert!(
+        blocked_count > 0 && blocked_count < compared,
+        "{blocked_count} of {compared} pairs were blocked; the grid should mix both",
+    );
+    assert!(
+        disagreed.is_empty(),
+        "{} of {compared} disagreed:\n{}",
+        disagreed.len(),
+        disagreed.join("\n"),
+    );
+}
+
+/// The same claim as [`a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle`],
+/// through [`light::sample_exact`] instead of [`light::sample`] —
+/// [`a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights`]'s
+/// own reason for existing, fuzzed the same way its own counterpart is:
+/// biased near the wall row's own edges, the shape that broke `corner_tie`
+/// before it carried a per-axis clamp. `candidate_tiles` probes both
+/// single-axis neighbours at every corner unconditionally, so this domain —
+/// deliberately excluded from the grid test above for being too close to a
+/// real corner — is exactly where the exact walk and `walk_cells` are least
+/// obliged to agree with each other, which is what makes it worth checking
+/// each of them against a third, independent oracle instead.
+#[test]
+fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the_exact_walk() {
+    use openshard_client_render::occlusion::{Builder, Shape};
+    use openshard_protocol::wire::Graphic;
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+    use proptest::prelude::*;
+
+    proptest!(ProptestConfig::with_cases(512), |(
+        spot_dx in 0.05_f32..8.0,
+        spot_frac in 0.05_f32..0.95,
+        spot_z in 1.0_f32..19.0,
+        flame_dx in 0.05_f32..8.0,
+        flame_z in 1.0_f32..19.0,
+        row in prop_oneof![Just(100.0_f32), Just(101.0_f32)],
+        frac in -0.3_f32..0.3,
+    )| {
+        let flame_y = row + frac;
+
+        let wall = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let mut grid = Builder::new(openshard_client_render::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        grid.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+        let occlusion = grid.finish(&Cutaway::OPEN);
+
+        let spot_at = Vec2::new(101.0 + spot_dx, 100.0 + spot_frac);
+        let spot_tile = (spot_at.x.floor() as i32, spot_at.y.floor() as i32);
+
+        let light_at = Vec2::new(99.0 - flame_dx, flame_y);
+        let target_tile = (light_at.x.floor() as i32, light_at.y.floor() as i32);
+        prop_assume!(target_tile != (100, 100));
+
+        let light = light::Light {
+            at: light_at,
+            z: flame_z,
+            radius: 30.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        };
+        let lighting = Lighting {
+            ambient: light::NIGHT,
+            lights: vec![light],
+            occlusion: occlusion.clone(),
+            sun: None,
+            view: debug::View::default(),
+        };
+
+        let spot = Spot::flat(spot_at, spot_z, spot_tile);
+        let sample = light::sample_exact(spot, &lighting);
+        let Some(reach) = sample.reaches.iter().find(|reach| reach.within) else {
+            return Ok(());
+        };
+        let walked_blocked = reach.through <= 0.004;
+        let brute_blocked = brute_force_blocked(
+            [spot_at.x, spot_at.y, spot_z],
+            [light_at.x, light_at.y, flame_z],
+            spot_tile,
+            target_tile,
+            true,
+            &occlusion,
+        );
+        prop_assert_eq!(
+            walked_blocked,
+            brute_blocked,
+            "spot ({:.4}, {:.4}, {:.2}) tile {:?}, light ({:.4}, {:.4}, {:.2}) \
+             tile {:?}: walk_cells_exact says {}, the brute-force oracle says {}",
             spot_at.x, spot_at.y, spot_z, spot_tile,
             light_at.x, light_at.y, flame_z, target_tile,
             if walked_blocked { "blocked" } else { "open" },

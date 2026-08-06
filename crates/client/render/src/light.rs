@@ -1131,11 +1131,9 @@ fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32
 /// decision about light and softness, not about the box's own geometry, so
 /// it is left for the caller to make rather than made silently in here.
 ///
-/// `#[allow(dead_code)]`: staged ahead of its call site on purpose, the way
-/// `docs/lighting_raymarch.md`'s recommended order asks for — proven against
-/// its own oracle here, in point 2's parallel walk before point 4 ever
-/// calls it from real occlusion code.
-#[allow(dead_code)]
+/// Not called from real occlusion code yet — `docs/lighting_raymarch.md`'s
+/// point 2's parallel walk (`walk_cells_exact`) is its only caller until
+/// point 4's cutover.
 fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Option<(f32, f32)> {
     let min = [solid.min.x as f32, solid.min.y as f32, solid.min.z as f32];
     let max = [solid.max.x as f32, solid.max.y as f32, solid.max.z as f32];
@@ -1578,6 +1576,29 @@ impl std::fmt::Display for Sample {
 /// its multiply by the art are the two things left out, because neither is about
 /// the lighting — see [`Sample::multiplier`].
 pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
+    sample_with(spot, lighting, walk, walk_sun)
+}
+
+/// [`sample`], through [`walk_cells_exact`] instead of [`walk_cells`].
+///
+/// A temporary public seam for `docs/lighting_raymarch.md`'s point 3, not a
+/// second code path anything real should call: the doc's own oracles
+/// (`tests/lighting.rs`'s grid-sweep and fuzz, `tests/frame.rs`'s
+/// real-geometry fixtures) run through `sample`, not `walk_cells` directly,
+/// so exercising `walk_cells_exact` against them needs its own entry point
+/// into the same machinery. It goes away at point 4's cutover, when `sample`
+/// itself walks this path and there is only one `sample` to have a seam to.
+#[doc(hidden)]
+pub fn sample_exact(spot: Spot, lighting: &Lighting) -> Sample {
+    sample_with(spot, lighting, walk_exact, walk_sun_exact)
+}
+
+fn sample_with(
+    spot: Spot,
+    lighting: &Lighting,
+    walk: impl Fn(Spot, &Light, &Occlusion) -> (f32, Option<(i32, i32)>),
+    walk_sun: impl Fn(Spot, Sun, &Occlusion) -> (f32, Option<(i32, i32)>),
+) -> Sample {
     // The ambient this *tile* has, and not the frame's: how much of the sky the
     // column over it can see decides how much of the sky term it gets. The tile
     // and not the fractional spot, because the field is a byte a tile — the blur
@@ -2307,7 +2328,6 @@ fn walk_cells(
 /// candidate named at one step can be the very next cell the straight walk
 /// reaches on its own, and [`walk_cells_exact`] would double-count a
 /// solid on it otherwise.
-#[allow(dead_code)]
 fn candidate_tiles(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<(i32, i32)> {
     let delta = [to.x - from.x, to.y - from.y];
     let toward = (
@@ -2352,7 +2372,6 @@ fn candidate_tiles(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<(i32, i32)> {
 /// tile's own four boundaries it touches, rather than carried from a DDA
 /// step that never happened for a candidate this function reaches only
 /// through [`candidate_tiles`]'s diagonal probe.
-#[allow(dead_code)]
 fn box_side(pos: [f32; 2], tile: (i32, i32)) -> u8 {
     const EPS: f32 = 1e-3;
     let mut side = 0;
@@ -2420,7 +2439,6 @@ fn box_side(pos: [f32; 2], tile: (i32, i32)) -> u8 {
 /// close together by construction and one interior sample is enough — the
 /// same fuzz that caught the body regression above stayed clean on panels
 /// alone.
-#[allow(dead_code)]
 fn walk_cells_exact(
     from: [f32; 3],
     to: [f32; 3],
@@ -2617,7 +2635,6 @@ fn walk_cells_exact(
 /// [`walk`], through [`walk_cells_exact`] instead of [`walk_cells`] — for
 /// `docs/lighting_raymarch.md`'s point 3 agreement pass, not for anywhere
 /// real.
-#[allow(dead_code)]
 fn walk_exact(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
     walk_cells_exact(
         [spot.at.x, spot.at.y, spot.z],
@@ -2632,7 +2649,6 @@ fn walk_exact(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<
 
 /// [`walk_sun`], through [`walk_cells_exact`] instead of [`walk_cells`] —
 /// see [`walk_exact`].
-#[allow(dead_code)]
 fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
     let horizontal = (sun.toward[0] * sun.toward[0] + sun.toward[1] * sun.toward[1]).sqrt();
     if horizontal < 1e-6 {
