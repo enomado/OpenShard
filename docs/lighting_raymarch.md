@@ -78,6 +78,33 @@ future solid geometry's `(x+y)` sort key ever ties or misorders) rather than
 a live bug on this geometry today. Unrelated to step 5's white line, which
 does not go through `SolidsRenderer` at all.
 
+**Session 13 extended `two_cubes.rs` from the overlay-only probe session 12
+left it as into a check of the real lit pipeline**, prompted by the user
+asking to verify visually that a solid renders and shadows correctly before
+trusting any of this doc's own diagnostics on real geometry. The same two
+boxes now also run through `GroundRenderer`/`MeshFaceRenderer`/`Blit` with an
+actual point light and a synthetic floor (`Map::from_blocks` plus one
+hand-built `Image` in a `LandAtlas`), dumping `View::Lit`/`View::Shadow` with
+a `synthetic_stair.rs`-style crosshair at the flame's own projected position.
+Getting there straight, rather than working around friction, found three real
+bugs, each caused by a half-measure and each visible only by rendering and
+looking: building only 2 of the box's 3 visible faces (`facing::Prism` only
+ever carries one climb axis) left the silhouette visibly wrong; combining
+**two independent** `Prism`s to get the third face rather than opening
+`mesh::Mesh::push` (`pub(crate)`) left a wedge-shaped crack at the box's own
+shared corner, because each prism's own `WIDTH_OVERLAP` widens a different
+axis; and leaving `Blit::Frame.ground_instances` pointed at
+`blit::dummy_ground_instances` after real ground quads existed left every
+land fragment's tile position resolving to garbage, so the floor never
+received any light regardless of proximity — `blit.wgsl`'s `KIND_LAND` branch
+reads a fragment's own tile from exactly that buffer. All three fixed:
+`mesh::Mesh::push` is `pub` now, the box is built by hand from
+`solid_a.space`/`solid_b.space`'s own exact corners (bit-identical shared
+vertices, no widening), and `ground_instances` points at
+`GroundRenderer::instances_buffer()`. Unrelated to step 5's white line, which
+this did not touch — see the handoff log's own Session 13 entry for the full
+account.
+
 **A second, independent track exists now, and it is not a fix for step 5.**
 The backlog's "A bigger idea..." entry — replacing grid-DDA's per-cell
 stepping with direct ray-vs-`Solid` intersection — is scoped as of session 8,
@@ -1178,6 +1205,62 @@ openshard-client-render --lib` (351 tests) all clean before committing.
 Step 5's white line remains open — still a third thing, not the walk, not
 `WIDTH_OVERLAP`. Point 4 (cutover) and the multi-solid oracle's own
 extension past the stair are both untouched, as before.
+
+### Session 13 — `two_cubes.rs` extended to the real lit pipeline, three bugs found and fixed by refusing three half-measures
+
+Picked up by user request: verify visually that a solid renders and shadows
+correctly, starting with `two_cubes.rs`'s own `SolidsRenderer` overlay from
+session 12 (added `OPENSHARD_CUBE_EDGES=0` along the way, fills without the
+stroke, to look at faces alone first). Then extended the same tool to run the
+two boxes through the real lit pipeline —
+`GroundRenderer`/`MeshFaceRenderer`/`Blit`, the same three passes
+`synthetic_stair.rs` uses — with an actual point light and a synthetic floor,
+because `SolidsRenderer`'s own draw-order check (session 12) says nothing
+about whether a box casts a shadow.
+
+Three real bugs surfaced, each from a half-measure taken to avoid touching
+something adjacent, and each one visible only by rendering and looking, not
+by reading the arithmetic — the user's own framing, worth keeping verbatim:
+"полумеры рождают такие нелепые баги" (half-measures give birth to exactly
+this kind of ridiculous bug).
+
+1. Built only the box's top and one riser (`facing::Prism` only ever carries
+   one climb axis) instead of all three visible faces `solid::Solid::faces`
+   draws. The render silhouette came out visibly different from the
+   `SolidsRenderer` reference picture — not a coordinate bug, just a missing
+   face, but it read like one until compared side by side.
+2. "Fixed" (1) by combining **two independent** `Prism`s (one per riser)
+   rather than opening `mesh::Mesh::push` (`pub(crate)`) to build one exact
+   mesh. Each prism's own `WIDTH_OVERLAP` (`facing.rs`) widens a different
+   axis, so the two risers' corners did not meet at the box's shared vertical
+   edge: a small wedge-shaped crack cutting into the shadow right at the
+   seam, reproducibly at both symmetric corners (user caught it from a
+   photo of the rendered frame, circled). Fixed properly: `mesh::Mesh::push`
+   is `pub` now (was `pub(crate)`), and the box is built by hand from the
+   occlusion `Solid`'s own exact corners (`solid_a.space`/`solid_b.space`) —
+   bit-identical shared vertices across all three faces, no widening
+   anywhere, the same discipline `facing.rs`'s own `SEAM_OVERLAP`/
+   `WIDTH_OVERLAP` exist to approximate for a single `Prism`'s tread/riser
+   seam, done exactly instead.
+3. Added a synthetic floor (`Map::from_blocks` plus one hand-built flat
+   `openshard_uofiles::image::Image` packed into a `LandAtlas`, drawn through
+   the real `ground::collect`/`GroundRenderer`) so a shadow has something
+   besides the boxes' own faces to fall on. It rendered, but every land pixel
+   read as "no flame reaches" in `View::Shadow`, even ground touching a lit
+   box. Cause: `Blit::Frame.ground_instances` was still pointed at
+   `blit::dummy_ground_instances` — harmless while no land was drawn, but
+   `blit.wgsl`'s `KIND_LAND` branch reads a fragment's own tile from exactly
+   that buffer (`ground_instances[id].place0`); with the dummy, every land
+   fragment's world position resolved to garbage and its distance to the
+   light was never inside the light's own radius. Fixed by pointing it at
+   `GroundRenderer::instances_buffer()`, which `GroundRenderer::render`
+   already fills from the same `GroundQuad`s handed to it.
+
+`cargo clippy -p openshard-client-render --example two_cubes --all-targets`,
+`rustfmt --check` on both changed files (`examples/two_cubes.rs`,
+`src/mesh.rs`), `cargo test -p openshard-client-render --lib` (351 tests) —
+all clean. Unrelated to step 5's white line, which this session did not
+touch, and unrelated to the ray-vs-`Solid` track below.
 
 ### Session 9 — point 2 built (`walk_cells_exact`), point 3 started, three real `walk_cells_exact`/`walk_cells` gaps found on the way
 

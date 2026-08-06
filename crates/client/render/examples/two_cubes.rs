@@ -23,9 +23,54 @@
 //!   `11` (`light::Z_PER_TILE`), so a cube whose footprint is one tile is
 //!   also one tile tall on screen rather than a flat slab or a tower.
 //! - `OPENSHARD_SCENE_ZOOM=n` — notches of `Zoom::scale_up`. Default `3`.
+//! - `OPENSHARD_CUBE_EDGES=0` — drop `Style::edges`, so what's left is the
+//!   fills alone, unmixed with the silhouette/star stroke (`Style`'s own doc:
+//!   this is what shows a face wrongly surviving behind one that should have
+//!   hidden it). Default `1`, matching the live overlay's own default.
 //! - `OPENSHARD_FRAME_DUMP=/tmp/x` — base path; this tool writes
 //!   `<path>_forward.ppm`, `<path>_forward_opaque.ppm` and
 //!   `<path>_reversed.ppm` beside it.
+//!
+//! # The same two boxes, through the real lit pipeline
+//!
+//! Everything above runs [`solids::SolidsRenderer`], a diagnostic overlay with
+//! no depth test and no lighting at all (its own module doc) — it answers
+//! "does draw order hide the far box" and nothing about whether one box casts
+//! a shadow on the other. This tool also builds each box's own top/`+x`/`+y`
+//! faces by hand from `solid_a.space`/`solid_b.space` — the exact corners
+//! `solid::Solid::faces` itself uses, unprojected, so all three faces share
+//! bit-identical vertices at the box's own edges. An earlier version of this
+//! tool built the box from two [`facing::Prism`](openshard_client_render::facing::Prism)s
+//! instead (`Prism` only ever carries one climb axis, so a top plus a single
+//! riser is all one gives) — public API only, no [`mesh::Mesh::push`] needed
+//! — but each prism's own `WIDTH_OVERLAP` widens a different axis, so the two
+//! risers' corners did not quite meet at the box's shared vertical edge: a
+//! wedge-shaped crack, cutting into the shadow right where the two faces
+//! should have met flush. `mesh::Mesh::push` is `pub` now (was `pub(crate)`)
+//! so this could be built exactly instead of worked around. Both boxes run
+//! through `GroundRenderer`/`MeshFaceRenderer`/`Blit`, the same three real passes
+//! `examples/synthetic_stair.rs` uses for one climbable static, with depth
+//! values from `depth::Order`, exactly as a real static's would be — so the
+//! near box's mesh genuinely occludes the far one's rather than relying on
+//! draw order the way the overlay above does. **A floor is drawn too**, so a
+//! shadow has something to fall on beside the boxes' own faces: one flat,
+//! hand-built land tile (an `openshard_uofiles::image::Image` filled with a
+//! single colour, packed by `LandAtlas::pack` the same way
+//! `LandAtlas::build` packs real art) repeated over a synthetic
+//! `Map::from_blocks` covering the two boxes' own bounds, and drawn by the
+//! same `ground::collect`/`GroundRenderer` the real map uses. Two extra
+//! frames come out of this half: `<path>_lit.ppm` (`View::Lit`) and
+//! `<path>_shadow.ppm` (`View::Shadow`), both marked with the same lime
+//! crosshair `synthetic_stair.rs` uses at the flame's own projected
+//! position.
+//!
+//! - `OPENSHARD_LIGHT_AT=dx,dy` — the flame's position, offset from cube A's
+//!   own tile. Default `2.5,2.5`: past cube B on the diagonal the two cubes
+//!   already stand on, so B sits between the flame and A's East face and
+//!   should shadow it.
+//! - `OPENSHARD_LIGHT_Z` / `OPENSHARD_LIGHT_RADIUS` — default `6` and `8`,
+//!   reaching over both cubes' own height (`OPENSHARD_CUBE_HEIGHT`'s default
+//!   `11`) rather than being lost under it.
 //!
 //! ```sh
 //! OPENSHARD_FRAME_DUMP=/tmp/two_cubes \
@@ -60,11 +105,56 @@ fn parse_pair(spec: &str) -> (i32, i32) {
     )
 }
 
+fn parse_pair_f32(spec: &str) -> (f32, f32) {
+    let (a, b) = spec
+        .split_once(',')
+        .unwrap_or_else(|| panic!("wanted `a,b`, got {spec:?}"));
+    (
+        a.trim().parse().unwrap_or_else(|_| panic!("{a:?}")),
+        b.trim().parse().unwrap_or_else(|_| panic!("{b:?}")),
+    )
+}
+
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+}
+
+/// A lime crosshair on a black backing plate, centred at `at` — copied from
+/// `examples/synthetic_stair.rs`'s own marker: "is the light behind the box
+/// or in front of it" is faster to answer by looking than by reading
+/// `OPENSHARD_LIGHT_AT` back, and the black backing is what keeps it visible
+/// crossing an already-white pixel, not just a black one.
+fn mark_crosshair(pixels: &mut [u8], width: u32, height: u32, at: (i32, i32)) {
+    let mut mark = |dx: i32, dy: i32, colour: [u8; 3]| {
+        let (px, py) = (at.0 + dx, at.1 + dy);
+        if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
+            return;
+        }
+        let offset = ((py as u32 * width + px as u32) * 4) as usize;
+        pixels[offset] = colour[0];
+        pixels[offset + 1] = colour[1];
+        pixels[offset + 2] = colour[2];
+        pixels[offset + 3] = 255;
+    };
+    for dy in -20..=20i32 {
+        for dx in -20..=20i32 {
+            if dx.abs() > 2 && dy.abs() > 2 {
+                continue;
+            }
+            mark(dx, dy, [0, 0, 0]);
+        }
+    }
+    for dy in -18..=18i32 {
+        for dx in -18..=18i32 {
+            if dx.abs() > 1 && dy.abs() > 1 {
+                continue;
+            }
+            mark(dx, dy, [80, 255, 0]);
+        }
+    }
 }
 
 fn dump(
@@ -74,6 +164,7 @@ fn dump(
     width: u32,
     height: u32,
     path: &PathBuf,
+    mark: Option<(i32, i32)>,
 ) {
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
@@ -111,10 +202,13 @@ fn dump(
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("waiting on our own submission");
-    let pixels = slice
+    let mut pixels = slice
         .get_mapped_range()
         .expect("the map completed above")
         .to_vec();
+    if let Some(at) = mark {
+        mark_crosshair(&mut pixels, width, height, at);
+    }
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
     for pixel in pixels.chunks_exact(4) {
         ppm.extend_from_slice(&pixel[..3]);
@@ -128,6 +222,8 @@ fn main() {
 
     let (dx, dy) = parse_pair(&env_or("OPENSHARD_CUBE_OFFSET", "1,1"));
     let height: u8 = env_or("OPENSHARD_CUBE_HEIGHT", "11").parse().expect("a number");
+    let edges: u8 = env_or("OPENSHARD_CUBE_EDGES", "1").parse().expect("0 or 1");
+    let edges = edges != 0;
 
     let a = Point::new(100, 100, 0);
     let b = Point::new((100 + dx) as u16, (100 + dy) as u16, 0);
@@ -200,38 +296,10 @@ fn main() {
     let base = env_opt("OPENSHARD_FRAME_DUMP").unwrap_or_else(|| "two_cubes".to_string());
 
     for (suffix, order, style) in [
-        (
-            "_forward.ppm",
-            &forward,
-            Style {
-                edges: true,
-                opaque: false,
-            },
-        ),
-        (
-            "_forward_opaque.ppm",
-            &forward,
-            Style {
-                edges: true,
-                opaque: true,
-            },
-        ),
-        (
-            "_reversed.ppm",
-            &reversed,
-            Style {
-                edges: true,
-                opaque: false,
-            },
-        ),
-        (
-            "_reversed_opaque.ppm",
-            &reversed,
-            Style {
-                edges: true,
-                opaque: true,
-            },
-        ),
+        ("_forward.ppm", &forward, Style { edges, opaque: false }),
+        ("_forward_opaque.ppm", &forward, Style { edges, opaque: true }),
+        ("_reversed.ppm", &reversed, Style { edges, opaque: false }),
+        ("_reversed_opaque.ppm", &reversed, Style { edges, opaque: true }),
     ] {
         let surface = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("surface"),
@@ -292,6 +360,312 @@ fn main() {
             width,
             height_px,
             &PathBuf::from(format!("{base}{suffix}")),
+            None,
+        );
+    }
+
+    // ---- The same two boxes, through the real lit pipeline: does the near
+    // one's mesh cast a shadow on the far one's? See the module doc's own
+    // "through the real lit pipeline" section for why this is a `Prism`
+    // (top + one `+x` riser) rather than `SolidsRenderer`'s three faces.
+    use openshard_client_render::atlas::{LandAtlas, TexmapAtlas};
+    use openshard_client_render::blit::Frame as BlitFrame;
+    use openshard_client_render::camera::project_exact;
+    use openshard_client_render::debug::View;
+    use openshard_client_render::depth;
+    use openshard_client_render::geometry::Vec2;
+    use openshard_client_render::light::{Light, Lighting, NIGHT};
+    use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
+    use openshard_client_render::place::Stance;
+    use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, Target};
+
+    // Two independent `Prism`s (one per riser: `facing::Prism` only ever
+    // carries one climb axis) each widen their own footprint by
+    // `facing::WIDTH_OVERLAP`, on two different axes — the top, the East
+    // riser and the South riser then don't share exact corners at the box's
+    // own vertical edge, and the crack shows up as a wedge cut into the
+    // shadow right where the two faces should meet flush (found by looking
+    // at a rendered frame, not by reading the arithmetic). Building the three
+    // faces by hand from `solid_a.space`/`solid_b.space` — the exact corners
+    // `solid::Solid::faces` itself uses, unprojected — gives all three faces
+    // bit-identical shared vertices instead, the same fix `facing.rs`'s own
+    // `SEAM_OVERLAP`/`WIDTH_OVERLAP` exist to work around for a single
+    // `Prism`'s tread/riser seam.
+    fn box_mesh(solid: openshard_client_render::solid::Solid) -> openshard_client_render::mesh::Mesh {
+        use openshard_client_render::camera::WorldSpot;
+        use openshard_client_render::mesh::{Face, Mesh};
+
+        let (lo, hi) = (solid.min, solid.max);
+        let mut mesh = Mesh::EMPTY;
+        mesh.push(
+            Face::new(
+                &[
+                    WorldSpot {
+                        x: lo.x,
+                        y: lo.y,
+                        z: hi.z,
+                    },
+                    WorldSpot {
+                        x: hi.x,
+                        y: lo.y,
+                        z: hi.z,
+                    },
+                    WorldSpot {
+                        x: hi.x,
+                        y: hi.y,
+                        z: hi.z,
+                    },
+                    WorldSpot {
+                        x: lo.x,
+                        y: hi.y,
+                        z: hi.z,
+                    },
+                ],
+                [0.0, 0.0, 1.0],
+            )
+            .expect("a 4-corner ring"),
+        );
+        mesh.push(
+            Face::new(
+                &[
+                    WorldSpot {
+                        x: hi.x,
+                        y: lo.y,
+                        z: hi.z,
+                    },
+                    WorldSpot {
+                        x: hi.x,
+                        y: hi.y,
+                        z: hi.z,
+                    },
+                    WorldSpot {
+                        x: hi.x,
+                        y: hi.y,
+                        z: lo.z,
+                    },
+                    WorldSpot {
+                        x: hi.x,
+                        y: lo.y,
+                        z: lo.z,
+                    },
+                ],
+                [1.0, 0.0, 0.0],
+            )
+            .expect("a 4-corner ring"),
+        );
+        mesh.push(
+            Face::new(
+                &[
+                    WorldSpot {
+                        x: lo.x,
+                        y: hi.y,
+                        z: hi.z,
+                    },
+                    WorldSpot {
+                        x: hi.x,
+                        y: hi.y,
+                        z: hi.z,
+                    },
+                    WorldSpot {
+                        x: hi.x,
+                        y: hi.y,
+                        z: lo.z,
+                    },
+                    WorldSpot {
+                        x: lo.x,
+                        y: hi.y,
+                        z: lo.z,
+                    },
+                ],
+                [0.0, 1.0, 0.0],
+            )
+            .expect("a 4-corner ring"),
+        );
+        mesh
+    }
+
+    let base_tile = depth::base_for(i32::from((a.x + b.x) / 2), i32::from((a.y + b.y) / 2));
+    let depth_of = |p: Point| {
+        depth::Order {
+            tile: i32::from(p.x) + i32::from(p.y),
+            priority_z: depth::static_priority_z(p.z, &cube_tile),
+        }
+        .to_depth(base_tile)
+    };
+
+    let mut rows: Vec<MeshFaceRow> = Vec::new();
+    let mut vertices: Vec<MeshFaceVertex> = Vec::new();
+    for (tile, solid) in [(a, solid_a.space), (b, solid_b.space)] {
+        let mesh = box_mesh(solid);
+        let d = depth_of(tile);
+        for face in mesh.faces() {
+            let id = rows.len() as u32;
+            rows.push(MeshFaceRow {
+                tile: (tile.x, tile.y),
+                stance: Stance::of_normal(face.normal).expect("a prism face's own axis-aligned normal"),
+            });
+            for corner in face.fan() {
+                let screen = camera.to_view_exact(project_exact(corner));
+                vertices.push(MeshFaceVertex {
+                    screen,
+                    world: [corner.x as f32, corner.y as f32, corner.z as f32],
+                    depth: d,
+                    id,
+                    tile: [f32::from(tile.x), f32::from(tile.y)],
+                });
+            }
+        }
+    }
+    eprintln!("{} mesh faces, {} vertices", rows.len(), vertices.len());
+    for (id, row) in rows.iter().enumerate() {
+        let corners: Vec<&MeshFaceVertex> = vertices.iter().filter(|v| v.id == id as u32).collect();
+        let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for c in &corners {
+            minx = minx.min(c.screen.x);
+            maxx = maxx.max(c.screen.x);
+            miny = miny.min(c.screen.y);
+            maxy = maxy.max(c.screen.y);
+        }
+        eprintln!(
+            "face {id}: tile {:?}, stance {:?}, screen x {minx:.1}..{maxx:.1}, y {miny:.1}..{maxy:.1}",
+            row.tile, row.stance,
+        );
+    }
+
+    let world = openshard_client_render::blit::world_texture(&device, width, height_px);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let place_tex = openshard_client_render::place::texture(&device, width, height_px);
+    let place_view = place_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth_tex = renderer::depth_texture(&device, width, height_px);
+    let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // A floor for a shadow to fall on: one flat, hand-built land tile —
+    // `openshard_uofiles::image::Image` is `LandAtlas::pack`'s own input and
+    // needs no client file, the same way `Shape::UNREAD` let the cubes
+    // themselves skip real art. `Map::from_blocks` repeats it everywhere,
+    // which costs nothing (`isolated_scene.rs`'s own doc: no statics, and
+    // this scene never asks it for any) and is simpler than tracking which
+    // blocks the bounds above actually touch.
+    const FLOOR_GRAPHIC: Graphic = Graphic(3);
+    let floor_pixel = openshard_uofiles::color::Color16((20 << 10) | (20 << 5) | 20);
+    let floor_image = openshard_uofiles::image::Image::new(
+        openshard_uofiles::art::LAND_TILE_SIZE,
+        openshard_uofiles::art::LAND_TILE_SIZE,
+        vec![floor_pixel; usize::from(openshard_uofiles::art::LAND_TILE_SIZE).pow(2)],
+    );
+    let blocks = (bounds.max_x as u32).div_ceil(openshard_uofiles::map::BLOCK_SIZE) + 1;
+    let synthetic_map =
+        openshard_uofiles::map::Map::from_blocks(blocks, blocks, |_x, _y| openshard_uofiles::map::LandCell {
+            tile: FLOOR_GRAPHIC.0,
+            z: 0,
+        });
+
+    let land = LandAtlas::pack([(FLOOR_GRAPHIC, floor_image)]).expect("one flat tile always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let ground_quads =
+        openshard_client_render::ground::collect(&synthetic_map, &camera, &land, &texmaps, &Cutaway::OPEN);
+    eprintln!("{} ground quads", ground_quads.len());
+    let mut ground_pass = GroundRenderer::new(&device, &queue, format, &land, &texmaps);
+    let mut mesh_pass = MeshFaceRenderer::new(&device);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let target = Target {
+        place: &place_view,
+        view: &world_view,
+        depth: &depth_view,
+        width,
+        height: height_px,
+        projection: camera.projection(),
+    };
+    ground_pass.render(&device, &queue, &mut encoder, target, &ground_quads);
+    mesh_pass.render(&device, &queue, &mut encoder, target, &vertices, &rows);
+    queue.submit([encoder.finish()]);
+
+    let (ldx, ldy) = parse_pair_f32(&env_or("OPENSHARD_LIGHT_AT", "2.5,2.5"));
+    let light_z: f32 = env_or("OPENSHARD_LIGHT_Z", "6").parse().expect("a number");
+    let light_radius: f32 = env_or("OPENSHARD_LIGHT_RADIUS", "8").parse().expect("a number");
+    eprintln!("light: at ({ldx:+}, {ldy:+}) of cube A's tile, z {light_z}, radius {light_radius}");
+    let mut lighting = Lighting {
+        ambient: NIGHT,
+        lights: vec![Light {
+            at: Vec2::new(f32::from(a.x) + ldx, f32::from(a.y) + ldy),
+            z: light_z,
+            radius: light_radius,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        }],
+        occlusion,
+        sun: None,
+        view: View::Lit,
+    };
+    // Where the flame itself projects to, marked directly on every dumped
+    // frame below: `examples/synthetic_stair.rs`'s own trick, since "is the
+    // light behind the box or in front of it" is faster to answer by looking
+    // than by reading `OPENSHARD_LIGHT_AT` back.
+    let projection = camera.projection();
+    let light_screen = camera.to_view_exact(project_exact(openshard_client_render::camera::WorldSpot {
+        x: f64::from(a.x) + f64::from(ldx),
+        y: f64::from(a.y) + f64::from(ldy),
+        z: f64::from(light_z),
+    }));
+    let light_pixel = (
+        (light_screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5,
+        (light_screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5,
+    );
+    let light_mark = (light_pixel.0.round() as i32, light_pixel.1.round() as i32);
+    eprintln!("light pixel: {light_mark:?}");
+
+    let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
+    let mut blit = openshard_client_render::blit::Blit::new(&device, format);
+    for view in [View::Lit, View::Shadow] {
+        lighting.view = view;
+        let surface = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("surface"),
+            size: wgpu::Extent3d {
+                width,
+                height: height_px,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        blit.render(
+            &device,
+            &queue,
+            &mut encoder,
+            BlitFrame {
+                target: &surface_view,
+                world: &world_view,
+                place: &place_view,
+                face_instances: &dummy_instances,
+                mobile_instances: &dummy_instances,
+                mesh_instances: mesh_pass.rows_buffer(),
+                ground_instances: ground_pass.instances_buffer(),
+                zoom: Zoom::ONE,
+                rect: openshard_client_render::blit::ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height: height_px,
+                },
+            },
+            &lighting,
+        );
+        queue.submit([encoder.finish()]);
+        dump(
+            &device,
+            &queue,
+            &surface,
+            width,
+            height_px,
+            &PathBuf::from(format!("{base}_{}.ppm", view.name())),
+            Some(light_mark),
         );
     }
 }

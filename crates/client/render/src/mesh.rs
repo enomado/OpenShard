@@ -119,13 +119,17 @@ impl Mesh {
 
     /// Add one more face.
     ///
-    /// Panics past [`MAX_MESH_FACES`] — every producer today pushes at most
-    /// that many by construction ([`crate::facing::Prism::mesh`] pushes two
-    /// per tread, capped at [`crate::facing::MAX_TREADS`]), so reaching the
-    /// limit would mean a producer's own cap and this one disagree, which is
-    /// a bug in the producer to find rather than paper over with a dropped
-    /// face.
-    pub(crate) fn push(&mut self, face: Face) {
+    /// Public: this module's own doc says any producer builds a [`Mesh`] the
+    /// same way [`crate::facing::Prism`] does, and a producer outside this
+    /// crate is only that same claim taken literally.
+    ///
+    /// Panics past [`MAX_MESH_FACES`] — every producer inside this crate today
+    /// pushes at most that many by construction ([`crate::facing::Prism::mesh`]
+    /// pushes two per tread, capped at [`crate::facing::MAX_TREADS`]), so
+    /// reaching the limit there would mean a producer's own cap and this one
+    /// disagree, a bug in the producer to find rather than paper over with a
+    /// dropped face. An outside caller takes on the same contract.
+    pub fn push(&mut self, face: Face) {
         self.faces[usize::from(self.count)] = face;
         self.count += 1;
     }
