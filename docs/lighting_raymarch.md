@@ -22,9 +22,11 @@ Written against `crates/client/render/src/light.rs`, `mesh_face.rs`,
 
 ## Where the next session starts
 
-**Two independent tracks. Track A's only open item is step 5. Track B's
-point 4 cutover landed session 16; its one open parity gap was triaged and
-closed as an accepted limitation in session 17 — read that entry before
+**Two independent tracks. Track A's only open item is step 5, and session 18
+found the first reproducible, precisely-localised anomaly this doc has ever
+pinned on it — read session 18's own entry before touching it again. Track
+B's point 4 cutover landed session 16; its one open parity gap was triaged
+and closed as an accepted limitation in session 17 — read that entry before
 reopening it.**
 
 **Track A — the tile-boundary bug (steps 1-5 below).** Steps 1-4 are done
@@ -327,6 +329,26 @@ sessions for the mechanism, not repeated here.
       pixels at pure black, which is what makes `View::Kind`'s colour at the
       same pixels the fast way to tell the line is on-mesh rather than
       re-deriving it from `View::Place` by hand every time.
+
+      **Session 18, after the point 4 rewrite: the exemption/walk hypothesis
+      is ruled out a second time, on the new algorithm, and a real, precisely
+      localised `through` discontinuity was found in its place.** Full
+      mechanism and reproduction in this step's own Handoff log entry
+      (session 18) — not repeated here — but the shape of the finding: at the
+      exact tread 3 / riser 3 seam (`y = 1627.333`, `z = 15`), `light::sample`
+      itself (not a CPU/GPU disagreement — both the `Flat` top and the
+      `Face(South)` riser read the identical `through` at every `x`) reports a
+      smooth, physically-sensible soft-shadow gradient from `0.098` down to
+      `0.069` as `x` sweeps `1497.55 → 1497.67`, then **jumps straight to
+      `1.000` between `x = 1497.67` and `x = 1497.68`** — no intermediate
+      values, where a widening penumbra predicts a continued climb through
+      `0.3`, `0.5`, `0.7`. That is the signature of a candidate solid
+      dropping out of the walk's own consideration entirely as the ray's
+      angle crosses a threshold, not of the shadow itself ending. Not
+      root-caused this session — which specific solid's `ray_vs_solid` test
+      flips, and why abruptly, is the next session's own first question, with
+      the exact profiling commands to get there already run once (see the
+      Handoff log entry).
 
 ## Backlog
 
@@ -1190,6 +1212,108 @@ there is one.
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 18 — sessions 14-17 committed, then step 5 re-opened after the point 4 rewrite: a real `through` discontinuity found and precisely localised, not yet root-caused
+
+Started by finding sessions 14-17's entire arc (`boxes.rs`, `walk_cells_
+streaming`, the WGSL cutover, the parity-gap triage) sitting uncommitted in
+the working tree — all four gates (`check`/`test`/`clippy`/`fmt`) verified
+green first, then landed as one commit (`aacbaba`) rather than four, since
+the files were touched across all four sessions closely enough that a clean
+per-session split was not worth the risk of mis-slicing verified work; the
+doc's own session-by-session entries above carry the detail a finer commit
+history would have.
+
+**Picked step 5 (the white line) as the only item "Where the next session
+starts" still named open.** Worth checking first, since the entire mechanism
+underneath it changed since session 12 last touched it: `walk_cells`,
+`corner_tie` and `panel_stop` — everything every session 3-12 investigation
+of this shape reasoned about — are gone, replaced by `walk_cells_streaming`
+and the shared `exemption` extraction. Old bisection coordinates and old
+conclusions could not simply be trusted forward.
+
+**Reproduced the doc's own repro command, live, against the post-cutover
+code.** The line is still there, unchanged in shape from the screenshots
+earlier sessions worked from — so whatever causes it survived the rewrite
+that was expected to remove the tile-boundary bug class by construction (the
+whole premise of Track B's point 4). Confirmed again, independently of
+session 3's finding, that `View::Kind` at the line's pixels reads `(64, 115,
+255)` — a static, not background — by scanning the actual `.ppm` bytes rather
+than reading the picture by eye (`python3`, raw `P6` parsing; no tool in the
+crate does this today, worth building if this track continues).
+
+**The exemption hypothesis is ruled out again, on the new algorithm, by
+direct calculation rather than a re-read of the old entries.** `light.rs`'s
+`exemption()` (session 11's extraction) exempts a `Flat` fragment from a
+solid on its own first cell only when `on_surface` says the fragment's `z`
+sits on *that* solid's own span. Worked through `ON_TOP = 1/128` by hand for
+the query point on tread 3's top (`z = 15`) against all six solids the scene
+reports (all six share one tile — this stair packs three treads and their
+risers onto a single cell, per this doc's own repeated note): only tread 3
+itself (`caps_this`'s `lit_end`, its own body) and riser 3 (the panel it
+physically rests on, `top = 15`) satisfy `on_surface`, and both are the
+solids a fragment resting on them is *supposed* to be exempt from — nothing
+here vacuously exempts a solid the fragment does not actually stand on, the
+exact shape of bug session 14 found and fixed in `boxes.rs`'s two-independent-
+bodies scene. Exemption is not the mechanism.
+
+**Profiled `OPENSHARD_SCENE_PROFILE_FACE` at the tread 3 / riser 3 seam
+(`y = 1627.333`, `z = 15`, both `flat` and `south` surfaces) and found a real
+discontinuity, not an eye-only illusion.** A sweep of `x` from `1497.55` to
+`1497.75` (`OPENSHARD_SCENE_PROFILE_STEPS=40`, fine enough to resolve a
+`0.005`-tile step) shows `light::sample`'s own `through`:
+
+```
+x=1497.55 .. 1497.67   through: 0.098 → 0.069, a smooth soft-shadow gradient
+x=1497.67 → 1497.68    through: 0.069 → 1.000, in one step — no 0.2, 0.3, 0.5
+x=1497.68 .. 1497.75   through: 1.000, flat
+```
+
+**Two things this rules out on its own, without needing the root cause
+yet.** First, it is not a CPU/GPU disagreement of session 17's own shape —
+`light::sample` (the CPU walk, `walk_cells_streaming`) shows the exact same
+jump on its own, no GPU readback involved, and `Surface::Face(South)` (the
+riser) and `Surface::Flat` (the tread top) read *identical* `through` at
+every sampled `x`, differing only in `cone` (`0.727` vs `0.000`, ordinary
+orientation-dependent falloff) — so it is not a surface-orientation artefact
+either. Second, it is not a smooth penumbra that a coarser sweep merely
+under-sampled: a widening or narrowing soft shadow moves through its own
+middle values, and this one visibly does not — the jump is a full step from
+`0.069` to `1.000` with nothing between, the signature of a candidate solid
+leaving the walk's own consideration entirely as the ray's own angle to the
+light crosses some threshold, not of a shadow's edge sweeping past the query
+point. `candidate_tiles`/`dda_walk` are the next thing to read with this
+specific transition in hand — not re-read cold, *traced* at exactly
+`x = 1497.67` versus `x = 1497.68`, the way session 6's own `corner_tie` bug
+and this session's own exemption check were both settled by calculation
+rather than by re-reading a summary.
+
+**Not root-caused this session — stopped here on purpose, the same
+discipline this doc has used before rather than guess at a fix under time
+pressure (see session 17's own reasoning for not chasing its lead further).**
+What the next session gets that no earlier session on this shape had: an
+exact coordinate pair either side of a confirmed discontinuity, on the
+*current* algorithm, with both the exemption path and the CPU/GPU-parity
+path already checked and cleared. Reproduce the profile directly:
+
+```sh
+OPENSHARD_CLIENT=… \
+    OPENSHARD_SCENE_AT=1497,1627,10 OPENSHARD_SCENE_RADIUS=1 \
+    OPENSHARD_SCENE_TILES=0x0739 OPENSHARD_SCENE_GROUND=0 \
+    OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+    OPENSHARD_SCENE_PROFILE_FACE=flat \
+    OPENSHARD_SCENE_PROFILE_FROM=1497.55,1627.333,15 \
+    OPENSHARD_SCENE_PROFILE_TO=1497.75,1627.333,15 \
+    OPENSHARD_SCENE_PROFILE_STEPS=40 \
+    cargo run --release -p openshard-client-render --example isolated_scene
+```
+
+**Verified**: `cargo check --workspace --all-targets`, `cargo test -p
+openshard-client-render` (350 lib tests, 45/5 in `frame.rs`, 37 in
+`lighting.rs`), `cargo clippy --workspace --all-targets` and `cargo fmt --all
+-- --check` all clean before the commit above; nothing in this session's own
+investigation touched a source file (profiling and pixel-reading only), so
+there was nothing further to verify after it.
 
 ### Session 17 — the open parity gap triaged, not chased: `#[ignore]`d with the reasoning attached, not patched with a tolerance
 
