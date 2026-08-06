@@ -77,14 +77,28 @@ pub struct MeshFaceVertex {
     /// This face's row index in the frame's `MeshFaceRow` list — identical
     /// for all six vertices [`crate::mesh::Face::fan`] produces for one face.
     pub id: u32,
+    /// The tile this face's static stands on — [`MeshFaceRow::tile`] again,
+    /// carried on the vertex too rather than looked up a second time.
+    ///
+    /// `mesh_face.wgsl`'s fragment stage needs it to place this fragment
+    /// inside its own tile: `world`'s `x`/`y` are exact, but a face whose own
+    /// edge sits on a whole number — this tread's outer corner, at the
+    /// flight's own footprint boundary — has nothing to tell `fract(world.xy)`
+    /// which of the two tiles that shared edge belongs to, and it always
+    /// answers the one `floor` rounds up to. Subtracting the known tile
+    /// instead of flooring the position is the fix: `docs/lighting.md`'s
+    /// shadow-raymarch anomaly, an isolated lit pixel on an otherwise
+    /// evenly-shadowed flat face, sitting exactly on that edge.
+    pub tile: [f32; 2],
 }
 
 impl MeshFaceVertex {
     /// Bytes one vertex occupies: `Float32x2` (screen), `Float32x3` (world),
-    /// `Float32` (depth) and `Uint32` (id), with no padding to match — unlike
-    /// `SpriteQuad`, nothing reads this buffer a second time as storage, so
-    /// there is no `blit.wgsl`-side mirror whose alignment to round up to.
-    pub const STRIDE: u64 = 28;
+    /// `Float32` (depth), `Uint32` (id) and `Float32x2` (tile), with no
+    /// padding to match — unlike `SpriteQuad`, nothing reads this buffer a
+    /// second time as storage, so there is no `blit.wgsl`-side mirror whose
+    /// alignment to round up to.
+    pub const STRIDE: u64 = 36;
 
     /// Append this vertex to a vertex buffer's upload bytes.
     pub fn write(&self, out: &mut Vec<u8>) {
@@ -99,6 +113,9 @@ impl MeshFaceVertex {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out.extend_from_slice(&self.id.to_le_bytes());
+        for value in self.tile {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
     }
 }
 
@@ -133,6 +150,7 @@ mod tests {
             world: [100.0, 101.0, 5.0],
             depth: 0.75,
             id: 0xABCD,
+            tile: [100.0, 100.0],
         };
         let mut out = Vec::new();
         vertex.write(&mut out);
@@ -144,5 +162,7 @@ mod tests {
         assert_eq!(&out[16..20], &5.0f32.to_le_bytes());
         assert_eq!(&out[20..24], &0.75f32.to_le_bytes(), "depth");
         assert_eq!(&out[24..28], &0xABCDu32.to_le_bytes(), "id");
+        assert_eq!(&out[28..32], &100.0f32.to_le_bytes(), "tile.x");
+        assert_eq!(&out[32..36], &100.0f32.to_le_bytes(), "tile.y");
     }
 }

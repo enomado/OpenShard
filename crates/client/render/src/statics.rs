@@ -247,6 +247,7 @@ pub(crate) fn push_mesh(
                 world: [corner.x as f32, corner.y as f32, corner.z as f32],
                 depth,
                 id,
+                tile: [at.x as f32, at.y as f32],
             });
         }
     }
@@ -1053,6 +1054,47 @@ mod tests {
         assert!(
             furthest - nearest > 1e-4,
             "every static came back at the same depth ({nearest})",
+        );
+    }
+
+    /// [`push_mesh`]'s vertices carry the enclosing static's own tile, and a
+    /// stair's footprint reaches at least as far as that tile's own far edge
+    /// — [`crate::facing::widen_footprint`] pushes the tile-crossing side
+    /// past it by a hair more. `mesh_face.wgsl`'s fragment stage leans on
+    /// both: it now subtracts this `tile` from a fragment's exact world
+    /// position instead of taking `fract()` of the position alone, because
+    /// `fract` of anything at or past a whole tile past `tile` wraps back
+    /// toward `0` — reading a corner on this stair's own far edge as sitting
+    /// on the *next* tile's near one instead. That was the shadow-raymarch
+    /// anomaly `docs/lighting.md` tracks: one fully-lit pixel on an otherwise
+    /// evenly-shadowed flat tread, where every neighbouring sample read
+    /// partly blocked.
+    #[test]
+    fn a_stair_s_mesh_vertices_carry_their_tile_and_reach_its_far_edge() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let prism = crate::facing::Prism::new(crate::facing::Face::North, &[5, 5, 5])
+            .expect("three treads is a legal profile");
+        let at = Point::new(100, 100, 0);
+        let mut vertices = Vec::new();
+        let mut rows = Vec::new();
+        push_mesh(&mut vertices, &mut rows, &camera, at, &prism, 0.0);
+
+        assert!(!vertices.is_empty(), "a three-tread stair has faces to draw");
+        for vertex in &vertices {
+            assert_eq!(
+                vertex.tile,
+                [100.0, 100.0],
+                "every corner of a static's mesh should carry the static's own tile"
+            );
+        }
+
+        let max_offset = vertices
+            .iter()
+            .flat_map(|v| [v.world[0] - v.tile[0], v.world[1] - v.tile[1]])
+            .fold(f32::MIN, f32::max);
+        assert!(
+            max_offset >= 1.0 - 1e-6,
+            "expected some corner at or past the tile's far edge (offset >= 1.0), got {max_offset}",
         );
     }
 }

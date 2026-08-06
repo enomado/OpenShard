@@ -9,6 +9,82 @@ copied.
 
 ## Where the next session starts
 
+**Fixed: the shadow-raymarch anomaly, and it was one tile of arithmetic on
+the wrong side of a `fract()`, not `walk_cells`' own `floor()`.** The chain
+below found the real mechanism before touching anything, which is why the
+first fix that would have "worked" (nudging the origin a hair back along the
+ray) got written down and rejected instead of shipped — see the counter-
+example a few paragraphs in, kept for the next time this shape of bug shows
+up somewhere the counter-example does not apply.
+
+Once the CPU/GPU parity question below was actually asked of the GPU side —
+which the entry originally left as "unconfirmed" — it turned out `blit.wgsl`'s
+`walk()` was never the culprit: it reconstructs its ray's start from a `(tile,
+sub)` pair, not a bare float, precisely so `floor()` can't misfire, and `tile`
+is the mesh face's *own authored* tile, not re-derived from anything. The bug
+was one step upstream, in how `sub` got built in the first place —
+`mesh_face.wgsl`'s `fs_main`:
+
+```wgsl
+let sub = clamp(fract(in.world.xy), vec2<f32>(0.0), vec2<f32>(INSIDE));
+```
+
+`fract()` of an exact whole number is `0.0`, not `1.0` — and this tread's own
+outer corner sits at exactly `world.x = 1498.0`, a whole number, because
+[`Prism::footprint`](../crates/client/render/src/facing.rs) holds every
+stair's tile-crossing edge at the tile's own unit square. The `INSIDE =
+126/127` constant this crate already had (`scene.rs:868`, documenting
+`statics.wgsl`'s own copy) already named this exact class of hazard for an
+ordinary wall's face — "a fraction of exactly one lands in the next tile" —
+but a mesh face's `sub` was computed from `fract()`
+alone, with no access to which tile it actually belonged to, so it could not
+apply the same guard the wall path already had. A fragment on this tread's
+own far edge read `sub = 0.0`, reconstructed as sitting on the *next* tile
+over, and the walk from there never crossed the riser that shadows every
+other point on the same face.
+
+**The fix:** give `mesh_face.wgsl` the tile it already knows CPU-side, instead
+of asking `fract()` to guess it back from a position that can legitimately
+sit on the tile's own far edge.
+[`MeshFaceVertex`](../crates/client/render/src/mesh_face.rs) grew a `tile:
+[f32; 2]` field — [`push_mesh`](../crates/client/render/src/statics.rs) was
+already carrying `at.x`/`at.y` right where it builds the vertex, so nothing
+upstream had to change to supply it — carried through as a new flat vertex
+attribute (`mesh_face.wgsl`'s `VertexOut::tile`), and `fs_main` now computes
+`sub = clamp(in.world.xy - in.tile, 0.0, INSIDE)` instead of flooring `world`
+at all. Verified by re-rendering the exact `View::Shadow` picture below:
+the isolated white dash on the tread's face is gone; the second shape (the
+white line over empty background) is untouched, which is the expected result
+of a fix aimed at the first and not the second — see below.
+[`a_stair_s_mesh_vertices_carry_their_tile_and_reach_its_far_edge`](../crates/client/render/src/statics.rs)
+pins the fact the fix leans on: every mesh face carries the tile it stands
+on, and a stair's own footprint reaches at least as far as that tile's far
+edge, not short of it.
+
+**Still open: `light::sample`/`walk_cells`'s own `floor()` (`light.rs:1681`)
+has the same class of bug, unfixed, on the CPU-only path** — the one
+`isolated_scene`'s profiler exercises, and the one anything using
+`light::sample` directly for a diagnostic or a future gameplay query would
+inherit. It could not be reached through the render pipeline itself, which is
+why fixing `mesh_face.wgsl` alone closed the live-screenshot defect, but it
+is real: a bare `Spot` built from a raw float still has no way to know which
+tile it is meant to stand on, and the counter-example below (a west-edge
+point with a west-side flame) still applies to it. Left as a decision, not a
+patch, for whoever next needs `light::sample` to be trustworthy exactly on a
+tile's edge — the fix shape is probably the same one used here: carry the
+tile alongside the position instead of re-deriving it.
+
+**The second shape in the screenshot — the white line over empty
+background — is still unexplained.** Confirmed still present, unchanged, in
+the post-fix render; it was not chased this session and may or may not share
+a cause with the one above.
+
+Everything below is the original write-up of this same defect, kept for the
+reasoning it contains — the counter-example in particular is still the
+argument against the tempting one-line fix, should this shape of bug turn up
+again somewhere the authored tile is not available to hand to the shader
+directly.
+
 **A third, different defect, found while screenshot-checking the fix below on
 a live scene: a shadow-raymarch anomaly, not a mesh-coverage gap.** The entry
 below's fix closed the mesh-coverage leak (measured: gone from the textured

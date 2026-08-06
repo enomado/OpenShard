@@ -36,6 +36,12 @@ struct VertexOut {
     // This face's row in `blit.wgsl`'s `mesh_instances` — flat, identical for
     // all six vertices one face's fan produces.
     @location(1) @interpolate(flat) id: u32,
+    // The tile this face stands on — `crate::mesh_face::MeshFaceRow::tile`
+    // again, flat like `id`: every corner of one face agrees on it, and the
+    // fragment stage needs it to place a fragment inside its own tile without
+    // flooring a position that can legitimately sit on the edge shared with
+    // the next one. See `fs_main`'s own comment.
+    @location(2) @interpolate(flat) tile: vec2<f32>,
 };
 
 @vertex
@@ -47,6 +53,7 @@ fn vs_main(
     // Where this face sorts: the enclosing static's own depth, reused whole.
     @location(2) depth: f32,
     @location(3) id: u32,
+    @location(4) tile: vec2<f32>,
 ) -> VertexOut {
     // Virtual pixels to real ones, the same single line `statics.wgsl`'s own
     // vertex stage ends on.
@@ -60,6 +67,7 @@ fn vs_main(
     out.clip = vec4<f32>(ndc, depth, 1.0);
     out.world = world;
     out.id = id;
+    out.tile = tile;
     return out;
 }
 
@@ -86,7 +94,15 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // Where in its tile this fragment is, and how high — both exact, both
     // free: `in.world` already interpolated to this fragment's own true
     // position, so there is no per-stance formula to invert a second time.
-    let sub = clamp(fract(in.world.xy), vec2<f32>(0.0), vec2<f32>(INSIDE));
+    //
+    // Subtracted from the face's own known tile, not `fract()`: a face's own
+    // edge can sit exactly on a whole number — this tread's outer corner does
+    // — and `fract` of a whole number is `0.0`, not `1.0`, so it always
+    // resolved that edge to the *next* tile rather than the one the face
+    // actually stands on. `docs/lighting.md`'s shadow-raymarch anomaly: one
+    // fragment on an otherwise evenly-shadowed flat face reading fully lit,
+    // because the walk it fed started from the wrong tile's occluders.
+    let sub = clamp(in.world.xy - in.tile, vec2<f32>(0.0), vec2<f32>(INSIDE));
     let z = clamp(round(in.world.z), -128.0, 127.0);
 
     var out: FragmentOut;

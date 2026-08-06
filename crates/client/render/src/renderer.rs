@@ -1341,6 +1341,11 @@ impl MeshFaceRenderer {
                             offset: 24,
                             shader_location: 3,
                         },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 28,
+                            shader_location: 4,
+                        },
                     ],
                 })],
             },
