@@ -2035,3 +2035,112 @@ fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
         disagreed.join("\n"),
     );
 }
+
+/// The same claim as [`a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights`]
+/// — `light::sample`'s walk agrees with [`brute_force_blocked`] — but fuzzed
+/// rather than swept over one fixed grid, and shrunk to a minimal
+/// counter-example when it disagrees.
+///
+/// **Why this exists rather than one more hand-built fixture.** The grid test
+/// deliberately keeps every ray a comfortable distance from a real corner —
+/// its own comment says so, because a DDA and a continuous sampler are not
+/// obliged to agree about a ray that only grazes one. `corner_tie`'s "A new
+/// `walk_cells` miss" bug lived exactly in that excluded region: a flame
+/// sitting near a row's own grid line, reached by a shallow ray from the
+/// other side. `flame_y` below is biased into that region on purpose — most
+/// runs land the flame within three tenths of a whole `y`, which is the
+/// shape that broke `corner_tie` before it carried a per-axis clamp — while
+/// the rest of the ranges stay free to roam, so the oracle keeps covering
+/// whatever the fixed grid does not think to ask either.
+#[test]
+fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
+    use openshard_client_render::occlusion::{Builder, Shape};
+    use openshard_protocol::wire::Graphic;
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+    use proptest::prelude::*;
+
+    proptest!(ProptestConfig::with_cases(512), |(
+        spot_dx in 0.05_f32..8.0,
+        // Kept inside the wall's own row, `(100, 100)`-`(101, 101)`: a spot in
+        // a different row can pass close enough to the wall's *corner*, on
+        // its way there, that the walk and a continuous sampler are not
+        // obliged to agree — the same carve-out
+        // `a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights`
+        // takes, found the hard way when an earlier, wider `spot_dy` range
+        // turned up exactly that corner-grazing disagreement instead of a
+        // real one.
+        spot_frac in 0.05_f32..0.95,
+        spot_z in 1.0_f32..19.0,
+        flame_dx in 0.05_f32..8.0,
+        flame_z in 1.0_f32..19.0,
+        // Which of the wall row's own two edges to bias near, and how far
+        // off it — within three tenths of a whole `y`, the shape that broke
+        // `corner_tie` before it carried a per-axis clamp.
+        row in prop_oneof![Just(100.0_f32), Just(101.0_f32)],
+        frac in -0.3_f32..0.3,
+    )| {
+        let flame_y = row + frac;
+
+        let wall = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let mut grid = Builder::new(openshard_client_render::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        grid.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+        let occlusion = grid.finish(&Cutaway::OPEN);
+
+        let spot_at = Vec2::new(101.0 + spot_dx, 100.0 + spot_frac);
+        let spot_tile = (spot_at.x.floor() as i32, spot_at.y.floor() as i32);
+
+        let light_at = Vec2::new(99.0 - flame_dx, flame_y);
+        let target_tile = (light_at.x.floor() as i32, light_at.y.floor() as i32);
+        prop_assume!(target_tile != (100, 100));
+
+        let light = light::Light {
+            at: light_at,
+            z: flame_z,
+            radius: 30.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        };
+        let lighting = Lighting {
+            ambient: light::NIGHT,
+            lights: vec![light],
+            occlusion: occlusion.clone(),
+            sun: None,
+            view: debug::View::default(),
+        };
+
+        let spot = Spot::flat(spot_at, spot_z, spot_tile);
+        let sample = light::sample(spot, &lighting);
+        let Some(reach) = sample.reaches.iter().find(|reach| reach.within) else {
+            return Ok(());
+        };
+        let walked_blocked = reach.through <= 0.004;
+        let brute_blocked = brute_force_blocked(
+            [spot_at.x, spot_at.y, spot_z],
+            [light_at.x, light_at.y, flame_z],
+            spot_tile,
+            target_tile,
+            true,
+            &occlusion,
+        );
+        prop_assert_eq!(
+            walked_blocked,
+            brute_blocked,
+            "spot ({:.4}, {:.4}, {:.2}) tile {:?}, light ({:.4}, {:.4}, {:.2}) \
+             tile {:?}: walk_cells says {}, the brute-force oracle says {}",
+            spot_at.x, spot_at.y, spot_z, spot_tile,
+            light_at.x, light_at.y, flame_z, target_tile,
+            if walked_blocked { "blocked" } else { "open" },
+            if brute_blocked { "blocked" } else { "open" },
+        );
+    });
+}

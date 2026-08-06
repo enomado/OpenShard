@@ -544,8 +544,21 @@ fn pierced(stands: vec4<u32>, id: u32, cross: vec3<f32>, wide: f32, tall: f32) -
 // `PANEL_THICKNESS` is exactly `|boundary.x - boundary.y| <= PANEL_THICKNESS *
 // per_tile[far]`, since `per_tile[far]` is `t` per world unit on that axis.
 // Which axis is `far` is `out_by_x`, already known at the one call site.
+//
+// Clamped to one step of the axis actually being crossed (`per_tile[near]`):
+// `per_tile[far]` alone is sized off the ray's whole delta and grows without
+// bound as the ray runs closer to axis-aligned on the far axis, with nothing
+// to do with how soon *this* crossing is. A ray that stays within a sliver of
+// a grid line for its *entire* length — a flame standing exactly on a wall
+// row's own edge is the case that broke it — read every near-axis crossing
+// along the way as "close to the far axis's line" and stepped diagonally past
+// a whole row on every one of them. `light::corner_tie` carries the matching
+// clamp and `docs/lighting_raymarch.md`'s "A new `walk_cells` miss" backlog
+// entry has the full trace.
 fn corner_tie(per_tile: vec2<f32>, out_by_x: bool) -> f32 {
-    return PANEL_THICKNESS * select(per_tile.x, per_tile.y, out_by_x);
+    let far = select(per_tile.x, per_tile.y, out_by_x);
+    let near = select(per_tile.y, per_tile.x, out_by_x);
+    return min(PANEL_THICKNESS * far, near);
 }
 
 // How much one cell stops a ray that crosses the sides in `crossed` at height

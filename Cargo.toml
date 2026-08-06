@@ -125,6 +125,9 @@ miniz_oxide = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# Property-based fuzzing over a hand-written oracle — random scenes, shrunk to
+# a minimal failing case rather than one fixed fixture per bug. Dev-only.
+proptest = "1"
 tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 tracing = "0.1"

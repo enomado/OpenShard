@@ -1125,12 +1125,34 @@ fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32
 /// PANEL_THICKNESS * per_tile[far]`, since `per_tile[far]` is `t` per world
 /// unit on that axis. Which axis is `far` is `out_by_x`, already known at the
 /// one call site.
+///
+/// **Clamped to one step of the axis actually being crossed.** The
+/// derivation above answers "how far, in `t`, can the *far* axis's own
+/// boundary sit from the *near* one I'm about to cross" — a question that
+/// only means "a corner" when both boundaries are contemporary, within one
+/// tile-step of each other. `per_tile[far]` alone does not carry that: it is
+/// `1 / |delta[far]|`, sized off the ray's *whole* delta, and grows without
+/// bound as the ray runs closer to axis-aligned on the far axis — nothing to
+/// do with how soon *this* crossing is. A flame standing exactly on a wall
+/// row's own edge is the case that broke it: the ray stays within a tenth of
+/// a tile of that row's grid line for its *entire* length (not just near one
+/// corner), so every near-axis crossing along the way reads as "close to the
+/// far axis's line" and the tie fired on every step, jumping the walk
+/// diagonally past the whole row, wall included, no matter how far `t = 1.0`
+/// (the far axis's real crossing) was from `t = boundary[near]` (the one
+/// about to happen). Capping the tie at `per_tile[near]` — one whole step of
+/// the axis actually being crossed — is what "contemporary" means: nothing a
+/// genuine corner needs is cut, since a real corner's two boundaries are
+/// close in `t` *because* they are the same instant, not because one of them
+/// is a whole segment away. `docs/lighting_raymarch.md`'s "A new
+/// `walk_cells` miss" backlog entry has the full trace; `blit.wgsl`'s
+/// `corner_tie` carries the same clamp.
 fn corner_tie(per_tile: [f32; 2], out_by_x: bool) -> f32 {
-    crate::occlusion::PANEL_THICKNESS as f32
-        * match out_by_x {
-            true => per_tile[1],
-            false => per_tile[0],
-        }
+    let (far, near) = match out_by_x {
+        true => (per_tile[1], per_tile[0]),
+        false => (per_tile[0], per_tile[1]),
+    };
+    (crate::occlusion::PANEL_THICKNESS as f32 * far).min(near)
 }
 
 /// How much one cell stops a ray that crosses the sides in `crossed` at height
@@ -1496,9 +1518,9 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
     // and not the fractional spot, because the field is a byte a tile — the blur
     // of `docs/lighting_world.md`'s decision 2 is what softens its edges, and a
     // second interpolation here would be a different picture from the shader's.
-    let mut multiplier = lighting.ambient.at(lighting
-        .occlusion
-        .sky_at(spot.tile.0, spot.tile.1));
+    let mut multiplier = lighting
+        .ambient
+        .at(lighting.occlusion.sky_at(spot.tile.0, spot.tile.1));
     let mut reaches = Vec::with_capacity(lighting.lights.len());
     for (index, light) in lighting.lights.iter().enumerate() {
         let offset = [
@@ -2574,5 +2596,88 @@ mod tests {
             "a tread's own top should not be dimmed by the riser it caps: through {}",
             sample.reaches[0].through,
         );
+    }
+
+    /// **A wall the flame sits exactly level with can still be skipped whole.**
+    ///
+    /// `docs/lighting_raymarch.md`'s "A new `walk_cells` miss" backlog entry,
+    /// found rendering a picture rather than sweeping for it and root-caused by
+    /// a per-iteration DDA trace. A flame standing exactly on a wall row's own
+    /// north edge (`flame.y == wall_tile.y as f32`) makes `corner_tie` balloon
+    /// for a query only a fraction of a tile off that row — `per_tile[far] = 1
+    /// / |delta[far]|` grows without bound as the ray's far-axis delta shrinks
+    /// — and the inflated tie swallows a `boundary[0]` that has nothing to do
+    /// with a real corner, stepping the walk diagonally past the entire row the
+    /// wall stands on, wall included.
+    ///
+    /// Expected answers here are worked out from the straight-line geometry
+    /// itself (does the segment's continuous path enter the wall's box for
+    /// any interior `t`), not copied from the handoff's hand-traced table —
+    /// that table's own `y = 99.9` entry turned out to be a second, unrelated
+    /// coincidence: the *old* buggy walk took a spurious diagonal corner step
+    /// at its very first boundary that happened to land it back in the wall's
+    /// row, and it went on to find the wall the ordinary way from there. The
+    /// straight segment at `y = 99.9` never actually enters the wall's row —
+    /// `y(t) < 100` for every interior `t` — so the geometrically correct
+    /// answer is *open*, and a fixed `corner_tie` reports exactly that; a
+    /// naive "matches the old table" assertion here would have pinned the old
+    /// bug's own coincidence as if it were the spec.
+    #[test]
+    fn a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray() {
+        use crate::occlusion::{Builder, Shape};
+
+        let wall = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        occlusion.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        let light = Light {
+            at: Vec2::new(98.0, 100.0),
+            z: 10.0,
+            radius: 12.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        };
+        let lighting = Lighting {
+            ambient: NIGHT,
+            lights: vec![light],
+            occlusion,
+            sun: None,
+            view: crate::debug::View::default(),
+        };
+
+        // `blocked`: whether the straight segment from `(102.5, y)` to the
+        // flame passes through the wall's box, `x` in `[100, 101]`, for any
+        // interior `t` — worked out directly rather than sampled, since the
+        // whole box is crossed on one contiguous stretch of `x`.
+        for (y, blocked) in [
+            (99.9_f32, false),
+            (100.1, true),
+            (100.2, true),
+            (100.3, true),
+            (101.0, true),
+        ] {
+            let tile = (102, y.floor() as i32);
+            let spot = Spot::flat(Vec2::new(102.5, y), 10.0, tile);
+            let sample = sample(spot, &lighting);
+            let reach = sample.reaches[0];
+            let through = reach.through;
+            assert!(
+                blocked == (through <= 0.004),
+                "y {y}: expected {} but through is {through} (stopped_by {:?})",
+                if blocked { "blocked" } else { "open" },
+                reach.stopped_by,
+            );
+        }
     }
 }

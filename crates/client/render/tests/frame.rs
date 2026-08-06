@@ -4315,6 +4315,778 @@ fn dump_the_lighting_views() {
     }
 }
 
+/// One flat [`crate::mesh::Face`], alone on its own tile, rendered through the
+/// real `GroundRenderer`/`MeshFaceRenderer`/`Blit` pipeline and checked at a
+/// grid of `(u, v)` points — ending exactly at `INSIDE` — against
+/// `light::sample` fed the same clamped, seven-bit-quantised fraction the
+/// shader computes, for every light `lights` names.
+///
+/// The primitives-first family `docs/lighting_raymarch.md`'s backlog calls
+/// for: every parity fixture above (`parity_place`/`parity_frame`) writes the
+/// `place` texture by hand, so this is the first to go through
+/// `mesh_face.wgsl`'s own vertex/fragment path — its `INSIDE` clamp on the
+/// *interpolated* `world.xy`, in particular — at all. `occlusion` is a
+/// parameter and not built here, because whether anything stands nearby is
+/// the one thing that turns out to matter: a scene with nothing to block a
+/// ray gives `through` `1.0` everywhere a light reaches, which is real
+/// coverage of the ambient/falloff/cone/beam arithmetic but, proven by fault
+/// injection rather than assumed, cannot yet exercise `walk`'s own cell
+/// selection or exemption rules — see this fixture's callers' own doc
+/// comments and the backlog's "A first real-geometry parity fixture..."
+/// entry for the full account.
+fn assert_single_face_parity(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    tile: (u16, u16),
+    face_z: i32,
+    occlusion: &Occlusion,
+    lights: &[Light],
+) {
+    use openshard_client_render::camera::{WorldSpot, project_exact};
+    use openshard_client_render::light::{Lighting, Spot};
+    use openshard_client_render::mesh::Face as MeshFace;
+    use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
+    use openshard_client_render::place::Stance;
+    use openshard_client_render::renderer::MeshFaceRenderer;
+    use openshard_client_render::scene::INSIDE;
+
+    // The face itself: one tile's worth of lid, flat, facing straight up —
+    // `facing::Prism::mesh`'s own "top" quad, minus the `Prism` and the riser
+    // beside it.
+    let corners = [
+        WorldSpot {
+            x: f64::from(tile.0),
+            y: f64::from(tile.1),
+            z: f64::from(face_z),
+        },
+        WorldSpot {
+            x: f64::from(tile.0) + 1.0,
+            y: f64::from(tile.1),
+            z: f64::from(face_z),
+        },
+        WorldSpot {
+            x: f64::from(tile.0) + 1.0,
+            y: f64::from(tile.1) + 1.0,
+            z: f64::from(face_z),
+        },
+        WorldSpot {
+            x: f64::from(tile.0),
+            y: f64::from(tile.1) + 1.0,
+            z: f64::from(face_z),
+        },
+    ];
+    let face = MeshFace::new(&corners, [0.0, 0.0, 1.0]).expect("four corners");
+
+    let (width, height): (u32, u32) = (256, 256);
+    let at = Point::new(tile.0, tile.1, face_z as i8);
+    let mut camera = Camera::new(at, width, height);
+    camera.zoom_about(
+        (width / 2) as i32,
+        (height / 2) as i32,
+        // `Zoom::ONE.scale_up()` saturates at `4:1` after three notches —
+        // `synthetic_stair`'s own doc comment names the same ceiling —  so
+        // this is already the most screen-space margin per tile-fraction the
+        // camera can give a sample point.
+        Zoom::ONE.scale_up().scale_up().scale_up(),
+    );
+    let projection = camera.projection();
+
+    const DEPTH: f32 = 0.5;
+    let mut vertices: Vec<MeshFaceVertex> = Vec::new();
+    let rows: Vec<MeshFaceRow> = vec![MeshFaceRow {
+        tile,
+        stance: Stance::Flat,
+    }];
+    // `corner_screen[k]` is `corners[k]`'s own screen position — what a
+    // bilinear read-back over `(u, v)` below needs to land on the same pixel
+    // the rasteriser does. Kept separate from `vertices` below, which is
+    // `face.fan()`'s six, fan-triangulated corners — `push_mesh`'s own shape,
+    // repeating two of the four ring corners rather than the four alone.
+    let mut corner_screen = [Vec2::new(0.0, 0.0); 4];
+    for (k, corner) in corners.iter().enumerate() {
+        corner_screen[k] = camera.to_view_exact(project_exact(*corner));
+    }
+    for corner in face.fan() {
+        vertices.push(MeshFaceVertex {
+            screen: camera.to_view_exact(project_exact(corner)),
+            world: [corner.x as f32, corner.y as f32, corner.z as f32],
+            depth: DEPTH,
+            id: 0,
+            tile: [f32::from(tile.0), f32::from(tile.1)],
+        });
+    }
+
+    let format = openshard_client_render::blit::WORLD_FORMAT;
+    let world = openshard_client_render::blit::world_texture(device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth_tex = renderer::depth_texture(device, width, height);
+    let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let land = openshard_client_render::atlas::LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = openshard_client_render::atlas::TexmapAtlas::pack([]).expect("nothing always fits");
+
+    // One light of `lights` per render: each gets its own frame, so a light
+    // behind the wall in one config and in front of it in the next never
+    // shares a picture with the other.
+    let mut compared = 0;
+    for (step, &light) in lights.iter().enumerate() {
+        let lighting = Lighting {
+            ambient: openshard_client_render::light::NIGHT,
+            lights: vec![light],
+            occlusion: occlusion.clone(),
+            sun: None,
+            view: View::Shadow,
+        };
+
+        let mut ground_pass = GroundRenderer::new(device, queue, format, &land, &texmaps);
+        let mut mesh_pass = MeshFaceRenderer::new(device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let target = Target {
+            place: &place_view,
+            view: &world_view,
+            depth: &depth_view,
+            width,
+            height,
+            projection,
+        };
+        ground_pass.render(device, queue, &mut encoder, target, &[]);
+        mesh_pass.render(device, queue, &mut encoder, target, &vertices, &rows);
+        queue.submit([encoder.finish()]);
+
+        let surface = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("surface"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut blit = Blit::new(device, format);
+        let dummy_instances = openshard_client_render::blit::dummy_instances(device);
+        let dummy_ground_instances = openshard_client_render::blit::dummy_ground_instances(device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        blit.render(
+            device,
+            queue,
+            &mut encoder,
+            openshard_client_render::blit::Frame {
+                target: &surface_view,
+                world: &world_view,
+                place: &place_view,
+                face_instances: &dummy_instances,
+                mobile_instances: &dummy_instances,
+                mesh_instances: mesh_pass.rows_buffer(),
+                ground_instances: &dummy_ground_instances,
+                zoom: Zoom::ONE,
+                rect: ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+            },
+            &lighting,
+        );
+        queue.submit([encoder.finish()]);
+
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: u64::from(width) * u64::from(height) * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &surface,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |result| {
+            result.expect("mapping a buffer this test just wrote");
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("waiting on our own submission");
+        let pixels = slice
+            .get_mapped_range()
+            .expect("the map completed above")
+            .to_vec();
+        let frame = Frame { width, pixels };
+
+        // A grid of `(u, v)` over the face, ending exactly at `INSIDE` —
+        // the case `parity_place`'s sweep above never reaches, and every
+        // point past it clamps to the same value, so `INSIDE` itself is the
+        // one worth spending a sample on rather than something closer to the
+        // true `1.0` edge: at this camera's zoom, `1.0 - INSIDE` (a
+        // hundred-and-twenty-seventh of a tile) is already under a screen
+        // pixel of margin from the quad's own rasterised boundary, and going
+        // closer than that risks reading a fragment neither triangle
+        // produced rather than a real disagreement — which is exactly what
+        // `0.999`/`1 - 1e-4` did here before being pulled back to `INSIDE`.
+        // Likewise never the exact `0.0` corner.
+        let grid: [f32; 6] = [0.05, 0.25, 0.5, 0.75, 0.95, INSIDE];
+        for &u in &grid {
+            for &v in &grid {
+                // Bilinear over the same four corners the rasteriser
+                // interpolates, in the same ring order `corners`/`corner_screen`
+                // were built in: `[0]` is `(u=0,v=0)`, `[1]` is `(u=1,v=0)`,
+                // `[2]` is `(u=1,v=1)`, `[3]` is `(u=0,v=1)`.
+                let lerp = |a: Vec2, b: Vec2, t: f32| Vec2::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+                let top = lerp(corner_screen[0], corner_screen[1], u);
+                let bottom = lerp(corner_screen[3], corner_screen[2], u);
+                let screen = lerp(top, bottom, v);
+                let px = (screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5;
+                let py = (screen.y - projection.origin.y) * projection.scale + height as f32 * 0.5;
+                // `floor`, not `round`: a continuous screen coordinate names
+                // the pixel index whose `[i, i+1)` span contains it — a
+                // fragment's own centre is `i + 0.5`, and `round` overshoots
+                // into the pixel *beyond* the true edge whenever the analytic
+                // boundary falls past `i.5`, which a sample this close to the
+                // face's own far edge reaches often enough to matter.
+                let (px, py) = (px.floor(), py.floor());
+                if px < 1.0
+                    || py < 1.0
+                    || px >= f32::from(width as u16) - 1.0
+                    || py >= f32::from(height as u16) - 1.0
+                {
+                    // Too close to the frame's own edge to trust a single
+                    // pixel read: skip rather than risk comparing against a
+                    // fragment the quad never actually covered.
+                    continue;
+                }
+
+                // `mesh_face.wgsl`'s own clamp, then the same seven-bit
+                // quantisation the place attachment stores it at.
+                let clamped_u = u.clamp(0.0, INSIDE);
+                let clamped_v = v.clamp(0.0, INSIDE);
+                let quantised_u = (clamped_u * 127.0).round() / 127.0;
+                let quantised_v = (clamped_v * 127.0).round() / 127.0;
+
+                let spot = Spot::flat(
+                    Vec2::new(f32::from(tile.0) + quantised_u, f32::from(tile.1) + quantised_v),
+                    face_z as f32,
+                    (i32::from(tile.0), i32::from(tile.1)),
+                );
+                let sample = openshard_client_render::light::sample(spot, &lighting);
+                let reach = &sample.reaches[0];
+                let want: [i32; 3] = if !reach.within {
+                    [0, 0, (0.35f32 * 255.0).round() as i32]
+                } else if reach.through <= 0.004 {
+                    [(0.2f32 * 255.0).round() as i32, 0, 0]
+                } else {
+                    let g = (reach.through * 255.0).round() as i32;
+                    [g, g, g]
+                };
+                // Alpha is not compared: `world` (the picture) is never
+                // written in this scene — no billboard sprite pass runs, only
+                // `GroundRenderer` and `MeshFaceRenderer` — and `blit.wgsl`
+                // carries `color.a` through unchanged for every non-`Lit`
+                // view. `place`'s own `Kind` (not alpha) is what gates a
+                // diagnostic view's early "background" return, and it is
+                // `Kind::Static` here precisely because the mesh face pass
+                // wrote it.
+                let drawn = frame.pixel(px as u32, py as u32);
+                for channel in 0..3 {
+                    let got = i32::from(drawn[channel]);
+                    assert!(
+                        (want[channel] - got).abs() <= 2,
+                        "light {step}, (u {u}, v {v}) -> pixel ({px}, {py}), channel {channel}: \
+                         the shader says {got}, `sample` says {want:?}\n{sample}",
+                    );
+                }
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 0, "the sweep never landed on a pixel to compare");
+}
+
+/// Eight lights around the tile, at one radius and one height above the face.
+///
+/// Shared between the fixtures below rather than inlined in each: the shape
+/// (a ring around the face's own tile centre) is the same whether or not
+/// anything stands nearby to block it, and duplicating it would be a second
+/// place for the radius or the height to drift from the other.
+fn ring_of_lights(tile: (u16, u16), face_z: i32) -> Vec<Light> {
+    (0..8)
+        .map(|step| {
+            let angle = (step as f32) * std::f32::consts::TAU / 8.0;
+            Light {
+                at: Vec2::new(
+                    f32::from(tile.0) + 0.5 + 2.0 * angle.cos(),
+                    f32::from(tile.1) + 0.5 + 2.0 * angle.sin(),
+                ),
+                z: face_z as f32 + 3.0,
+                radius: 6.0,
+                color: [1.0, 1.0, 1.0],
+                intensity: 1.0,
+                beam: None,
+            }
+        })
+        .collect()
+}
+
+/// The bounds every fixture in this family gives its own [`Occlusion`]: five
+/// tiles past the face on every side, which is more than the ring of lights
+/// above ever reaches.
+fn single_face_bounds(tile: (u16, u16)) -> TileBounds {
+    TileBounds {
+        min_x: i32::from(tile.0) - 5,
+        max_x: i32::from(tile.0) + 5,
+        min_y: i32::from(tile.1) - 5,
+        max_y: i32::from(tile.1) + 5,
+    }
+}
+
+/// The first rung: one flat face, no occluder anywhere in the scene.
+///
+/// With nothing to block a ray, `through` is `1.0` wherever a light reaches
+/// at all — real coverage of the ambient/falloff/cone/beam arithmetic, and
+/// the first parity test of any kind to run `mesh_face.wgsl`'s own
+/// vertex/fragment path, but **proven, not merely assumed, incapable of
+/// catching the boundary-walk class of bug this doc is chasing**: corrupting
+/// `mesh_face.wgsl`'s own `SUB_TILE` constant (`127.0` → `100.0`, a real
+/// disagreement between what the shader writes and what `light::sample`
+/// expects) left this fixture green, because `walk()` returns `1.0`
+/// unconditionally when nothing can block it — the miscarried fraction is
+/// never asked a question whose answer could differ. See
+/// [`a_single_flat_face_beside_an_occluder_agrees_with_light_sample`] for the
+/// next rung, which adds exactly what this one is missing.
+#[test]
+fn a_single_flat_face_agrees_with_light_sample_over_a_grid_of_lights() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let tile: (u16, u16) = (100, 100);
+    let face_z: i32 = 10;
+    let occlusion = Builder::new(single_face_bounds(tile)).finish(&Cutaway::OPEN);
+    assert_single_face_parity(
+        &device,
+        &queue,
+        tile,
+        face_z,
+        &occlusion,
+        &ring_of_lights(tile, face_z),
+    );
+}
+
+/// The second rung: the same face, plus one whole-tile occluder standing on
+/// its eastern neighbour — `a_wall_stops_the_light_behind_it`'s own
+/// `Shape::UNREAD` wall, one tile over instead of three.
+///
+/// This is the smallest scene where `walk`'s cell selection and its
+/// exemption rules have a real answer to disagree about: some of
+/// `ring_of_lights`' eight positions sit east of the wall (a ray from the
+/// face's own far edge to one of them has to cross the wall's tile), some
+/// sit west of it (on the face's own side, nothing between them at all) —
+/// so this single fixture carries both a genuinely occluded case and a
+/// genuinely open one, and the grid of `(u, v)` points `assert_single_face_parity`
+/// sweeps puts some of them right at the face's own edge shared with the
+/// wall's tile, which is exactly where the tile-boundary bug class this doc
+/// is about would show up first.
+#[test]
+fn a_single_flat_face_beside_an_occluder_agrees_with_light_sample() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let tile: (u16, u16) = (100, 100);
+    let face_z: i32 = 10;
+    let mut builder = Builder::new(single_face_bounds(tile));
+    builder.add(
+        tile.0 + 1,
+        tile.1,
+        0,
+        Graphic(0x0100),
+        &StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        },
+        Shape::UNREAD,
+    );
+    let occlusion = builder.finish(&Cutaway::OPEN);
+    assert_single_face_parity(
+        &device,
+        &queue,
+        tile,
+        face_z,
+        &occlusion,
+        &ring_of_lights(tile, face_z),
+    );
+}
+
+/// The third rung: two flat faces on adjacent tiles, sharing the edge at
+/// `west.0 + 1` — the smallest scene where a fragment's own tile ownership
+/// near a whole-number world coordinate has two real candidates instead of
+/// one, which is what `mesh_face.wgsl`'s `sub = in.world.xy - in.tile`
+/// (subtracted from the vertex's own carried tile, not `fract(world.xy)`)
+/// exists to answer correctly.
+///
+/// Deliberately reuses the same grid convention the first two rungs settled
+/// on — `INSIDE` on the side approaching the seam from below, `1.0 - INSIDE`
+/// approaching it from above, never the exact `0.0`/`1.0` corner a
+/// rasteriser is not obliged to produce a fragment for — rather than
+/// inventing a sub-pixel camera alignment to try to land a fragment exactly
+/// on the seam itself. Whether that is enough to catch the bug class this
+/// doc is chasing, or whether reaching the exact seam needs deliberately
+/// shifting the camera so the seam falls on a pixel *centre* rather than a
+/// pixel boundary, is exactly the open question the backlog entry below
+/// answers with a fault-injection result rather than an assumption.
+fn assert_two_face_edge_parity(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    west: (u16, u16),
+    face_z: i32,
+    occlusion: &Occlusion,
+    lights: &[Light],
+) {
+    use openshard_client_render::camera::{WorldSpot, project_exact};
+    use openshard_client_render::light::{Lighting, Spot};
+    use openshard_client_render::mesh::Face as MeshFace;
+    use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
+    use openshard_client_render::place::Stance;
+    use openshard_client_render::renderer::MeshFaceRenderer;
+    use openshard_client_render::scene::INSIDE;
+
+    let east = (west.0 + 1, west.1);
+    let face_corners = |tile: (u16, u16)| {
+        [
+            WorldSpot {
+                x: f64::from(tile.0),
+                y: f64::from(tile.1),
+                z: f64::from(face_z),
+            },
+            WorldSpot {
+                x: f64::from(tile.0) + 1.0,
+                y: f64::from(tile.1),
+                z: f64::from(face_z),
+            },
+            WorldSpot {
+                x: f64::from(tile.0) + 1.0,
+                y: f64::from(tile.1) + 1.0,
+                z: f64::from(face_z),
+            },
+            WorldSpot {
+                x: f64::from(tile.0),
+                y: f64::from(tile.1) + 1.0,
+                z: f64::from(face_z),
+            },
+        ]
+    };
+    let west_corners = face_corners(west);
+    let east_corners = face_corners(east);
+    let west_face = MeshFace::new(&west_corners, [0.0, 0.0, 1.0]).expect("four corners");
+    let east_face = MeshFace::new(&east_corners, [0.0, 0.0, 1.0]).expect("four corners");
+
+    let (width, height): (u32, u32) = (256, 256);
+    // Centred on the seam itself, not on either tile: the camera's own
+    // `Point` only takes whole tiles, and `west` would put the seam at the
+    // very edge of the frame, which is exactly where `assert_single_face_parity`'s
+    // own margin check throws samples away.
+    let at = Point::new(west.0, west.1, face_z as i8);
+    let mut camera = Camera::new(at, width, height);
+    camera.zoom_about(
+        (width / 2) as i32,
+        (height / 2) as i32,
+        Zoom::ONE.scale_up().scale_up().scale_up(),
+    );
+    let projection = camera.projection();
+
+    const DEPTH: f32 = 0.5;
+    let mut vertices: Vec<MeshFaceVertex> = Vec::new();
+    let rows: Vec<MeshFaceRow> = vec![
+        MeshFaceRow {
+            tile: west,
+            stance: Stance::Flat,
+        },
+        MeshFaceRow {
+            tile: east,
+            stance: Stance::Flat,
+        },
+    ];
+    let mut corner_screen = [[Vec2::new(0.0, 0.0); 4]; 2];
+    for (k, corner) in west_corners.iter().enumerate() {
+        corner_screen[0][k] = camera.to_view_exact(project_exact(*corner));
+    }
+    for (k, corner) in east_corners.iter().enumerate() {
+        corner_screen[1][k] = camera.to_view_exact(project_exact(*corner));
+    }
+    for corner in west_face.fan() {
+        vertices.push(MeshFaceVertex {
+            screen: camera.to_view_exact(project_exact(corner)),
+            world: [corner.x as f32, corner.y as f32, corner.z as f32],
+            depth: DEPTH,
+            id: 0,
+            tile: [f32::from(west.0), f32::from(west.1)],
+        });
+    }
+    for corner in east_face.fan() {
+        vertices.push(MeshFaceVertex {
+            screen: camera.to_view_exact(project_exact(corner)),
+            world: [corner.x as f32, corner.y as f32, corner.z as f32],
+            depth: DEPTH,
+            id: 1,
+            tile: [f32::from(east.0), f32::from(east.1)],
+        });
+    }
+
+    let format = openshard_client_render::blit::WORLD_FORMAT;
+    let world = openshard_client_render::blit::world_texture(device, width, height);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let place = openshard_client_render::place::texture(device, width, height);
+    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth_tex = renderer::depth_texture(device, width, height);
+    let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let land = openshard_client_render::atlas::LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = openshard_client_render::atlas::TexmapAtlas::pack([]).expect("nothing always fits");
+
+    // `(tile-of-origin, u, v)` grid, one entry per face: the near-seam values
+    // on each side, plus one further point per face for coverage away from
+    // the seam. Never the exact `0.0`/`1.0` corner — the same reason the
+    // single-face rungs above avoid it.
+    let near_seam_from_west: [f32; 3] = [0.5, 0.95, INSIDE];
+    let near_seam_from_east: [f32; 3] = [1.0 - INSIDE, 0.05, 0.5];
+    let v_grid: [f32; 3] = [0.25, 0.5, 0.75];
+
+    let mut compared = 0;
+    for (step, &light) in lights.iter().enumerate() {
+        let lighting = Lighting {
+            ambient: openshard_client_render::light::NIGHT,
+            lights: vec![light],
+            occlusion: occlusion.clone(),
+            sun: None,
+            view: View::Shadow,
+        };
+
+        let mut ground_pass = GroundRenderer::new(device, queue, format, &land, &texmaps);
+        let mut mesh_pass = MeshFaceRenderer::new(device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let target = Target {
+            place: &place_view,
+            view: &world_view,
+            depth: &depth_view,
+            width,
+            height,
+            projection,
+        };
+        ground_pass.render(device, queue, &mut encoder, target, &[]);
+        mesh_pass.render(device, queue, &mut encoder, target, &vertices, &rows);
+        queue.submit([encoder.finish()]);
+
+        let surface = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("surface"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut blit = Blit::new(device, format);
+        let dummy_instances = openshard_client_render::blit::dummy_instances(device);
+        let dummy_ground_instances = openshard_client_render::blit::dummy_ground_instances(device);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        blit.render(
+            device,
+            queue,
+            &mut encoder,
+            openshard_client_render::blit::Frame {
+                target: &surface_view,
+                world: &world_view,
+                place: &place_view,
+                face_instances: &dummy_instances,
+                mobile_instances: &dummy_instances,
+                mesh_instances: mesh_pass.rows_buffer(),
+                ground_instances: &dummy_ground_instances,
+                zoom: Zoom::ONE,
+                rect: ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+            },
+            &lighting,
+        );
+        queue.submit([encoder.finish()]);
+
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: u64::from(width) * u64::from(height) * 4,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &surface,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |result| {
+            result.expect("mapping a buffer this test just wrote");
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("waiting on our own submission");
+        let pixels = slice
+            .get_mapped_range()
+            .expect("the map completed above")
+            .to_vec();
+        let frame = Frame { width, pixels };
+
+        let faces: [((u16, u16), &[f32; 3]); 2] =
+            [(west, &near_seam_from_west), (east, &near_seam_from_east)];
+        for (face_index, (tile, u_grid)) in faces.iter().enumerate() {
+            for &u in u_grid.iter() {
+                for &v in &v_grid {
+                    let lerp =
+                        |a: Vec2, b: Vec2, t: f32| Vec2::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+                    let corners = &corner_screen[face_index];
+                    let top = lerp(corners[0], corners[1], u);
+                    let bottom = lerp(corners[3], corners[2], u);
+                    let screen = lerp(top, bottom, v);
+                    let px = (screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5;
+                    let py = (screen.y - projection.origin.y) * projection.scale + height as f32 * 0.5;
+                    let (px, py) = (px.floor(), py.floor());
+                    if px < 1.0
+                        || py < 1.0
+                        || px >= f32::from(width as u16) - 1.0
+                        || py >= f32::from(height as u16) - 1.0
+                    {
+                        continue;
+                    }
+
+                    let clamped_u = u.clamp(0.0, INSIDE);
+                    let clamped_v = v.clamp(0.0, INSIDE);
+                    let quantised_u = (clamped_u * 127.0).round() / 127.0;
+                    let quantised_v = (clamped_v * 127.0).round() / 127.0;
+
+                    let spot = Spot::flat(
+                        Vec2::new(f32::from(tile.0) + quantised_u, f32::from(tile.1) + quantised_v),
+                        face_z as f32,
+                        (i32::from(tile.0), i32::from(tile.1)),
+                    );
+                    let sample = openshard_client_render::light::sample(spot, &lighting);
+                    let reach = &sample.reaches[0];
+                    let want: [i32; 3] = if !reach.within {
+                        [0, 0, (0.35f32 * 255.0).round() as i32]
+                    } else if reach.through <= 0.004 {
+                        [(0.2f32 * 255.0).round() as i32, 0, 0]
+                    } else {
+                        let g = (reach.through * 255.0).round() as i32;
+                        [g, g, g]
+                    };
+                    let drawn = frame.pixel(px as u32, py as u32);
+                    for channel in 0..3 {
+                        let got = i32::from(drawn[channel]);
+                        assert!(
+                            (want[channel] - got).abs() <= 2,
+                            "light {step}, face {face_index} tile {tile:?}, (u {u}, v {v}) -> \
+                             pixel ({px}, {py}), channel {channel}: the shader says {got}, \
+                             `sample` says {want:?}\n{sample}",
+                        );
+                    }
+                    compared += 1;
+                }
+            }
+        }
+    }
+    assert!(compared > 0, "the sweep never landed on a pixel to compare");
+}
+
+/// The third rung: two flat faces, west and east, sharing the edge at
+/// `west.0 + 1` — one `Shape::UNREAD` wall stands two tiles east of `west`,
+/// giving both faces a genuine mix of blocked and open rays the same way
+/// [`a_single_flat_face_beside_an_occluder_agrees_with_light_sample`]'s wall
+/// does, but now with a second real mesh face (not an occluder tile) sitting
+/// directly on the other side of the sampled seam.
+///
+/// See [`assert_two_face_edge_parity`]'s own doc comment for what this rung
+/// can and cannot yet prove; the backlog entry this test's own module doc
+/// points at has the fault-injection result.
+#[test]
+fn two_faces_sharing_an_edge_agree_with_light_sample() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let west: (u16, u16) = (100, 100);
+    let face_z: i32 = 10;
+    let mut builder = Builder::new(single_face_bounds(west));
+    builder.add(
+        west.0 + 2,
+        west.1,
+        0,
+        Graphic(0x0100),
+        &StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        },
+        Shape::UNREAD,
+    );
+    let occlusion = builder.finish(&Cutaway::OPEN);
+    assert_two_face_edge_parity(
+        &device,
+        &queue,
+        west,
+        face_z,
+        &occlusion,
+        &ring_of_lights(west, face_z),
+    );
+}
+
 /// A debug view reaches the shader, and draws what it says it draws.
 ///
 /// Two things at once, and both are contracts no compiler checks: that

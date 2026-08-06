@@ -43,3 +43,4 @@ workspace = true
 
 [dev-dependencies]
 pollster = "0.4.0"
+proptest.workspace = true

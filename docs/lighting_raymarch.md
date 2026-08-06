@@ -41,6 +41,68 @@ note worth reading first if step 5 (or anything after it) reaches for the
 climbable stair as a fixture — it does not work as a brute-force oracle's
 scene, and the reasoning is there rather than only in the handoff log.
 
+Session 4 changed the approach rather than the diagnosis: instead of
+bisecting the white line's own screenshot further, it started building the
+family of small, real-geometry parity fixtures the backlog's `PARITY_TILE`
+entry calls for — a primitives-first oracle, the way a test suite is built up
+rather than one screenshot read harder. Two rungs are done, both in
+`tests/frame.rs` through a shared `assert_single_face_parity` helper: one
+hand-built flat face with no occluder (proven, by fault injection rather than
+assumption, structurally blind to the boundary-walk bug class), then the same
+face with one `Shape::UNREAD` occluder on its eastern neighbour, which the
+same fault injection *does* catch. Full account, including the exact
+fault-injected disagreement, in the backlog's two matching entries.
+
+Session 4 ended on a geometric hypothesis for why neither rung could reach
+the exact bug this doc is about, and named the fix: two faces sharing one
+edge. **Session 5 built that third rung and it does not close the gap —
+the hypothesis was wrong, not just unverified**, and the reason is worth
+reading before touching this family again: see the backlog's "The third rung
+is built, and the hypothesis behind it was wrong" entry. What actually
+reaches a fragment exactly on a whole tile coordinate is not *how many faces*
+share the seam, it is whether the camera happens to put that seam on a pixel
+*centre* rather than a pixel boundary — nothing built so far controls that
+deliberately. Either work out how to place a query point at a chosen fragment
+centre on purpose (reading back which pixel a seam's own screen position
+falls nearest to, rather than assuming a grid value lands there), or accept
+that this family of fixtures has reached its ceiling and the white line needs
+a different instrument — a debug view that reports a fragment's own
+`(tile, sub)` pair directly, so a real client session can be read without
+guessing which pixel matters first. The backlog entry has the reasoning for
+both options; neither is started.
+
+**The "A new `walk_cells` miss" lead is now fixed, session 6** — see the
+backlog entry's own "Fixed, session 6" continuation for the mechanism.
+`corner_tie` (`light.rs:1128`, `blit.wgsl:547`) now clamps at
+`per_tile[near]` (one step of the axis actually being crossed) rather than
+the segment-wide `1.0` this doc previously guessed at, which turned out not
+to be enough on its own. Landed in both the CPU and GPU walks, verified with
+the fault-injection discipline this doc uses throughout, and covered by a
+permanent regression test
+(`light::tests::a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray`)
+plus a new fuzz test over the same class of scene
+(`tests/lighting.rs`'s `a_fuzzed_flame_near_a_row_edge_agrees_with_the_
+brute_force_oracle`, `proptest` now a workspace dev-dependency). One thing
+this session found and deliberately left alone, worth reading before
+reaching for the fuzz harness again: widening the fuzz past the wall's own
+row turns up a *second*, unrelated disagreement — a ray grazing a solid's
+diagonal corner within `PANEL_THICKNESS` without entering its box — which
+looks like a bug but is `corner_tie`'s own diagonal-neighbour check working
+as designed (the same corner-grazing tolerance two adjoining wall panels
+rely on to overlap at a shared corner). The backlog entry's last paragraph
+has the confirmation that this is unrelated to the clamp fixed here (it
+reproduces against the unclamped formula too) and what an oracle would need
+to tell the two apart on purpose, if a future session wants to fuzz that
+region rather than route around it.
+
+**What is left in this doc is what step 5 already was: the still-open white
+line.** Nothing in this session's fix touches it — the scenes are unrelated
+(step 5 is about a `Flat` mesh fragment landing on a whole tile coordinate at
+a pixel *centre*, this was a DDA corner-detection bug in the occlusion walk)
+— so the next session's starting point is exactly where the paragraph above
+step 5 left it: `PARITY_TILE`, or the debug view that reports a fragment's
+own `(tile, sub)` pair directly.
+
 ## Steps
 
 - [x] **1. `blit.wgsl` — separate "blocked" from "empty" in `View::Shadow`.**
@@ -260,6 +322,273 @@ Findings go here as they turn up, same convention as `lighting.md`'s own
 backlog: what the finding is, why it is worth touching, `file:line` where
 there is one.
 
+- **A new `walk_cells` miss, found by accident while showing the user a
+  rendered picture, and confirmed not to be the already-documented `Spot`-tile
+  bug.** `docs/lighting.md`'s "Still open" entry (line 150) is about a query
+  point sitting *exactly* on a tile boundary with no tile to disambiguate it;
+  this one is not that — every query point below shares the same explicit,
+  unambiguous `Spot::tile`, computed by an ordinary `floor()` nowhere near an
+  edge. A single `Shape::UNREAD` wall on `(100, 100)`, a flame at
+  `(98.0, 100.0)` (due west, level with the wall's own north edge), sampled at
+  `(102.5, y)` for `y` stepping through the wall's own row:
+  ```
+  (102.5, 99.9) tile (102, 99):  stopped_by: Some((100, 100)), through: 0.0
+  (102.5, 100.0) tile (102, 100): stopped_by: Some((100, 100)), through: 0.0
+  (102.5, 100.1) tile (102, 100): stopped_by: None,              through: 1.0
+  (102.5, 100.2) tile (102, 100): stopped_by: None,              through: 1.0
+  (102.5, 100.3) tile (102, 100): stopped_by: Some((100, 100)), through: 0.0
+  (102.5, 101.0) tile (102, 100)/(102,101): stopped_by: Some((100, 100)), through: 0.0
+  ```
+  Four of six points on the same row, three sharing the exact same starting
+  `Spot::tile`, correctly find the wall; two — `y` in roughly
+  `(100.02, 100.22)`, a narrow band just south of the wall's own north edge —
+  do not, and read fully lit instead. On a rendered `View::Lit` frame this is
+  not a one-pixel speck: it is a visible bright streak cutting into the wall's
+  own shadow, close enough to the light source's own row to read as a second,
+  spurious "horn" beside the real shadow's edge — this is what the user
+  spotted on sight in a picture built for an unrelated reason (showing what
+  the existing rungs' scenes actually look like), not something found by
+  sweeping for it.
+  **Root-caused, same session, with a per-iteration DDA trace.** A throwaway
+  `eprintln!` in `walk_cells`'s own step loop (guarded by an env var, not
+  kept) printed `cell`, `boundary`, `entry` and `corner_tie(per_tile,
+  out_by_x)` at every iteration for the `y 100.1` (fails) and `y 100.3`
+  (passes) points side by side. The passing walk steps `(102,100) → (101,100)
+  → (100,100)`, one axis at a time, and finds the wall on the third step. The
+  failing walk steps `(102,100) → (101,99) → (100,99) → (99,99) → (98,99)` —
+  **row 99, not row 100, from the very first step**, walking straight past
+  the wall's own row entirely and reaching the flame's cell unobstructed.
+  Step 0 is identical in both traces (`boundary [0.1111, 1.0]`, same cell,
+  same physical geometry so far — the divergence is not in *where* the ray
+  is, it is in *which step the walk takes next*.
+  **The mechanism is `corner_tie` (`light.rs:1128`), and it is a real formula
+  bug, not a tolerance that merely needed retuning.** `corner_tie`'s own
+  derivation (`light.rs:1104`-`1127`) is sound for a ray that crosses both
+  axes' boundaries somewhere inside the segment: it converts
+  `PANEL_THICKNESS` world units into the `t` this DDA steps in by dividing by
+  `|delta[far]|` (`per_tile[far]`), so the *closer* two boundary crossings are
+  in `t`, the more likely they are the same physical corner. But
+  `per_tile[far] = 1 / |delta[far]|` has no ceiling, and this scene's flame
+  sits **exactly** on the wall row's own north edge (`flame.y == 100.0`,
+  `tile.y == 100`) — for the `y 100.1` query, `delta.y` is `-0.1`, so
+  `per_tile[1] = 10.0` and `corner_tie` comes out to `≈2.0`, an order of
+  magnitude past `1.0`, the largest a `boundary` value inside the segment can
+  legitimately be. `boundary[1]` for that same query is exactly `1.0` — not a
+  coincidence, it is `ahead * per_tile[1]` where `ahead` is the *same*
+  distance to the flame's own row-edge `y` that made `per_tile[1]` explode —
+  meaning the far axis's boundary sits at the very end of the whole segment,
+  at the flame itself, nowhere near the corner the walk is about to cross at
+  `t = boundary[0] = 0.111`. The tie check (`light.rs:2008`,
+  `(boundary[0] - boundary[1]).abs() <= corner_tie`) does not know that: it
+  compares a raw difference in `t` against a threshold that grew without
+  bound *because* the ray is shallow, and a threshold that large swallows any
+  `boundary[0]`, so the walk treats "the ray happens to end almost exactly on
+  a row line" as "a corner is imminent right now" and steps diagonally past
+  both neighbours of the current cell — skipping row 100, including the
+  wall, in one move. **The derivation's own assumption — that a small `t`
+  gap implies a small world-space gap — silently inverts for a ray nearly
+  parallel to the axis being compared against**, which is the same family of
+  "a value that is fine near the middle of its domain breaks at an extreme"
+  this doc's own entries have hit before (see the `floor`-vs-`round` harness
+  bug, and step 5's own vertex-ring argument), just landing in a different
+  formula this time.
+  **Not yet fixed, and not attempted this session — `corner_tie`/the tie
+  check is shared with `blit.wgsl`'s own mirror (decision 9's CPU/GPU
+  parity), so a real fix has to land in both, verified against both, not
+  patched CPU-side alone.** The shape of a fix is not obvious from this
+  entry alone: bounding `corner_tie` at `1.0` (nothing past the segment's own
+  end can be "imminent") is the first thing to try, but whether that is
+  correct or just moves the false-positive threshold is unverified — the
+  fault-injection discipline this doc already uses (revert the fix, confirm
+  the six-point counter-example fails again; apply it, confirm the
+  counter-example passes *and* the existing `a_wall_stops_the_light_behind_it`/
+  `two_faces_sharing_an_edge_agree_with_light_sample` suite stays green) is
+  the way to find out, not reading the formula harder.
+  Reproduced with two throwaway `#[ignore]`d probes in `tests/frame.rs` (an
+  ASCII heatmap, a six-point printout, and — this session — a per-iteration
+  DDA trace via a temporary `eprintln!` in `light.rs` gated on
+  `OPENSHARD_WALK_TRACE`) and a throwaway GPU picture dump; none were kept —
+  this entry is the only trace left, on purpose, so the next session does not
+  have to guess the repro back out of a screenshot. `cargo check --workspace
+  --all-targets`, `cargo clippy --workspace --all-targets` clean after every
+  revert.
+
+  **Fixed, session 6.** The bound this entry's own last paragraph guessed at
+  (`corner_tie` capped at `1.0`) turned out to be wrong when actually tried —
+  it still left the six-point counter-example failing, because `1.0` bounds
+  the tie against *the whole segment*, and this scene's spurious tie
+  (`≈0.89` in `t`) was comfortably under that. The bound that actually works
+  is capping `corner_tie` at `per_tile[near]` — one whole step of the axis
+  *actually being crossed* right now — rather than at a segment-wide
+  constant: `per_tile[far]` alone answers "how far can the far axis's
+  boundary be from the near one, in `t`, and still be `PANEL_THICKNESS`
+  away in world units," but says nothing about whether that far boundary is
+  *contemporary* with the crossing about to happen, which is the only sense
+  in which two boundaries share a corner. A ray that hugs a grid line for
+  its whole length (this scene's shape exactly) keeps a small world-space
+  gap to that line at *every* near-axis crossing along the way, not just
+  near one true corner — `per_tile[near]` is what tells those apart, since a
+  genuine corner's two boundaries are close in `t` because they are the same
+  instant, not because one of them is a whole segment away. Landed in both
+  `light.rs:1128`'s `corner_tie` and `blit.wgsl:547`'s mirror, verified with
+  the discipline this entry called for: reverted, confirmed the
+  counter-example (now a permanent test, see below) fails again; reapplied,
+  confirmed it passes and `a_wall_stops_the_light_behind_it` /
+  `two_faces_sharing_an_edge_agree_with_light_sample` / the rest of
+  `cargo test -p openshard-client-render` stay green.
+
+  **The six-point table above has one wrong entry, found re-deriving the
+  ground truth rather than trusting the transcript.** `y = 99.9` is listed as
+  correctly finding the wall, but the straight-line geometry says otherwise:
+  parametrising the segment, `y(t) < 100` for every interior `t` — the ray
+  never actually enters the wall's row, so the geometrically correct answer
+  is *open*, not blocked. The old, buggy walk got there anyway by a second,
+  unrelated route: at its very first boundary the inflated `corner_tie` fired
+  immediately (the raw difference `0.89` was still under the old,
+  unclamped-by-`per_tile[near]` threshold of `≈2.0`) and took a spurious
+  diagonal step that happened to land back in the wall's own row, from which
+  ordinary per-axis stepping found the wall the honest way. Two bugs, one
+  coincidence, and the table conflated "looks consistent with its neighbours"
+  with "is correct" — exactly what an independent oracle exists to catch
+  instead of a hand-traced printout. `light::tests::
+  a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray` (`light.rs`)
+  is the corrected, permanent version of this counter-example.
+
+  **Fuzzed, not just fixed to the one fixture.** The grid-sweep oracle
+  (`a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights`,
+  `tests/lighting.rs`) explicitly keeps every ray clear of real corners by
+  its own comment — this bug's whole shape lived in the region that
+  deliberately excludes. `tests/lighting.rs`'s new
+  `a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle`
+  (`proptest`, added as a workspace dev-dependency this session) covers that
+  region instead: the flame's `y` is biased within three tenths of a whole
+  number on purpose, everything else free to roam, shrunk to a minimal
+  counter-example on failure. It is deliberately narrower than "any two
+  points anywhere" — the spot's own `y` is kept inside the wall's row.
+  Widening that once, to see how far the fuzz could reach, immediately
+  surfaced a second, genuine disagreement: a spot near its own tile's edge in
+  a *different* row than the wall, with the ray grazing the wall's diagonal
+  corner within `PANEL_THICKNESS` without ever entering its box. That one is
+  not a bug — it is exactly the corner-grazing ambiguity the grid oracle's
+  own comment already carves out, `corner_tie`'s diagonal-neighbour check
+  treating "within panel-thickness of a shared corner" as "as much in the way
+  as the tile stepped into," by design, for two panels that physically
+  overlap there. Confirmed unrelated to this session's clamp: the same
+  disagreement reproduces against the *unclamped* formula too. Narrowing the
+  spot back to the wall's own row is what keeps the fuzz on-topic without
+  re-litigating that design choice; a future session wanting to fuzz the
+  corner-grazing case itself needs an oracle that knows about the
+  `PANEL_THICKNESS` slop, not a plain point-in-box test.
+
+- **A first real-geometry parity fixture exists now, and it is a rung, not the
+  ladder — proven blind to the boundary-walk bug class by construction, not by
+  assumption.** `tests/frame.rs`'s
+  `a_single_flat_face_agrees_with_light_sample_over_a_grid_of_lights` is the
+  gap the entry below already named closed halfway: one hand-built
+  `crate::mesh::Face` (`crate::mesh::Face::new`, no `Prism`, no risers) rendered
+  through the real `GroundRenderer`/`MeshFaceRenderer`/`Blit` pipeline, swept
+  over eight light angles and a grid of `(u, v)` points ending at `INSIDE`
+  itself, each checked against `light::sample` fed the same clamped,
+  seven-bit-quantised fraction the shader would compute. It is deliberately
+  the smallest scene that exercises `mesh_face.wgsl`'s own vertex/fragment path
+  at all — no `parity_frame` fixture above ever does, they all write the
+  `place` texture by hand. **No occluder stands anywhere in this scene, and a
+  fault-injection check proved that matters**: corrupting `mesh_face.wgsl`'s
+  own `SUB_TILE` constant (`127.0` → `100.0`, a real CPU/GPU disagreement in
+  the fraction every fragment writes) left the test green, because `walk()`
+  returns `1.0` unconditionally when nothing can block it — the tile/fraction
+  it was fed never gets asked a question whose answer could differ. The
+  fixture is real and worth keeping (it does catch a broken ambient, falloff,
+  cone or beam term, and it is the first parity test to touch mesh-face
+  rendering at all), but it cannot yet be the tool that reproduces step 5's own
+  white line, or the tile-boundary bug steps 1–4 already fixed — both need a
+  ray that can be blocked.
+- **The next rung is done too, and the same fault-injection check now catches
+  what the first rung couldn't.**
+  `a_single_flat_face_beside_an_occluder_agrees_with_light_sample`
+  (`tests/frame.rs`) is the same single face, plus one whole-tile
+  `Shape::UNREAD` occluder on its eastern neighbour —
+  `a_wall_stops_the_light_behind_it`'s own wall, one tile over rather than
+  three — swept through the same `assert_single_face_parity` helper the first
+  rung now shares with it. Confirmed to actually exercise occlusion before
+  trusting it (a temporary per-sample print, not left in): of 288 compared
+  points, 92 came back blocked and 196 open, both `Reach::within` values
+  appearing too — a scene that only ever produced one answer would pass this
+  fixture for the wrong reason. The same `SUB_TILE` corruption
+  (`127.0` → `100.0`) that the occluder-free fixture could not see now fails
+  it immediately, at `(u 0.75, v INSIDE)` on the face's own edge shared with
+  the wall's tile — the shader says `51` (a blocked-and-dark-red pixel),
+  `light::sample` says `255` (open). Reverted before committing
+  (`git checkout -- mesh_face.wgsl`); both fixtures green with the real file.
+- **Even this cannot yet reach the exact bug steps 1–4 fixed or step 5's white
+  line, and the reason is geometric rather than a gap to close by sweeping
+  harder.** Both bugs are about a fragment sitting *exactly* on a whole tile
+  number — `at.x` legitimately `1498.0`, not `1497.999...` — and a single flat
+  `Face`'s own far edge is the quad's own vertex ring: no fragment's own
+  centre is ever rasterised exactly there, which is the same reason the
+  harness's own `floor`-vs-`round` bug (next entry) bit at `INSIDE`, one
+  hundred-and-twenty-seventh of a tile short of that edge, rather than at the
+  edge itself. Reaching a fragment that reads a *whole* tile coordinate needs
+  two faces meeting at a shared seam — the real shape a stair's tread-to-tread
+  edge or a wall's own corner is — so the next rung past this one is not a
+  wider sweep of the same single quad, it is a second face on the
+  neighbouring tile sharing an edge with the first, the smallest scene where
+  a fragment can legitimately land on a coordinate that is a whole number
+  rather than approach one.
+- **The third rung is built, and the hypothesis behind it was wrong — a
+  second face sharing the seam does not, by itself, let a fragment land on
+  the seam.** `tests/frame.rs`'s
+  `two_faces_sharing_an_edge_agree_with_light_sample` (via a new
+  `assert_two_face_edge_parity` helper, deliberately not a generalisation of
+  `assert_single_face_parity` — a two-face scene has two tile origins and two
+  corner rings, and folding that into the one-face helper's signature would
+  have been the kind of parameter creep this doc's own `PARITY_TILE` entry
+  already warns about) renders a west face and an east face meeting at
+  `west.0 + 1`, with a `Shape::UNREAD` wall two tiles further east giving both
+  faces a genuine mix of blocked and open rays. Green against the real
+  shader. **Before trusting that green, ran the same `SUB_TILE` fault
+  injection the first two rungs used, and — separately — reverted
+  `mesh_face.wgsl`'s `sub = in.world.xy - in.tile` back to `fract(in.world.xy)`,
+  the exact bug steps 1–4 fixed. Both faces' own grid stays entirely on
+  `[tile, tile + 1)` — `near_seam_from_west` tops out at `INSIDE`,
+  `near_seam_from_east` bottoms out at `1.0 - INSIDE`, neither ever exactly
+  `0.0` or `1.0` — and on that half-open interval `fract(world.xy)` and
+  `world.xy - tile` are the same expression by construction, because `tile`
+  is already the floor of every point either grid samples.** The `fract()`
+  revert left the fixture green; so did running it against
+  `a_single_flat_face_beside_an_occluder_agrees_with_light_sample` again as a
+  sanity check on the pre-existing rung. **Having a second face did not
+  change what the grid could reach — it was never the number of faces that
+  mattered, it was that the query points still approach the seam without
+  ever landing on it.** The session-4 hypothesis conflated two different
+  things: a *scene* where a fragment on the seam is geometrically possible
+  (true of two adjacent faces, false of one face's own vertex ring) and a
+  *test harness* that actually produces such a fragment (neither rung's grid
+  does, because both stop at the same half-pixel margin the `floor`-vs-`round`
+  entry below already explains). Reaching the seam for real needs the query
+  point chosen from the render itself — read back which screen pixel the
+  seam's own projected position falls nearest to, then assert *that* pixel's
+  tile-of-origin, rather than picking `(u, v)` values in advance and hoping
+  one lands there. Not attempted this session; the reasoning above is
+  offered so the next session does not re-arrive at "two faces" as the fix
+  and re-spend the time this one did finding out it isn't.
+  `SUB_TILE` reverted, `fract()` reverted, both confirmed clean with
+  `git status` before either was touched again; `cargo test -p
+  openshard-client-render` (43 tests in `frame.rs`, one new), `cargo clippy
+  --workspace --all-targets` and `cargo check --workspace --all-targets` all
+  clean with the real files.
+- Also worth logging next time this fixture is extended: the harness itself
+  had a real off-by-one, caught only because a query point was deliberately
+  placed within a fraction of a pixel of the quad's own true edge (`INSIDE`
+  itself, `1/127` of a tile short of the geometric boundary). Converting a
+  continuous screen coordinate to the pixel index that covers it needs
+  `floor`, not `round` — a fragment's own sample point is its pixel's centre
+  (`i + 0.5`), and `round` reads as correct everywhere except within half a
+  pixel of a true edge, which is exactly where a boundary oracle spends most
+  of its samples by design. Cost a full debugging pass here (a bounding-box
+  scan and a single-row coverage scan of the rendered frame) before the fix
+  was obvious; worth remembering before building the next fixture in this
+  family rather than re-discovering it.
 - **`frame.rs`'s decision-9 parity suite never samples a sub-tile fraction
   past `112/127`, so it could not have caught the `walk` bug step 5 just
   fixed.** `PARITY_TILE = 8` (`tests/frame.rs:3592`) steps `sub_x`/`sub_y` in
@@ -298,6 +627,190 @@ there is one.
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 6 — `corner_tie` fixed, and fuzzed rather than pinned to one fixture
+
+Continued from session 5's handoff: the "A new `walk_cells` miss" lead was
+root-caused but not fixed.
+
+- **The fix session 5 guessed at (`corner_tie` clamped at `1.0`) was tried
+  first and did not work** — the counter-example still failed, because `1.0`
+  bounds against the whole segment and this scene's spurious tie (`≈0.89`)
+  was comfortably under that. Re-derived from the mechanism instead of
+  re-guessing: what actually distinguishes a real corner from this scene's
+  shallow-ray false positive is not the *size* of the tie but whether the far
+  axis's boundary is *contemporary* with the crossing about to happen —
+  clamping at `per_tile[near]` (one step of the axis actually being crossed)
+  encodes that directly. Landed in `light.rs:1128` and `blit.wgsl:547`.
+- **Fault-injection discipline applied both ways**, not just checked once:
+  reverted just the clamp (kept the new regression test in place) and
+  confirmed both the unit test and the new fuzz test below fail again with
+  the exact numbers this doc's backlog entry predicted; reapplied and
+  confirmed both pass, plus the whole of `cargo test -p
+  openshard-client-render` (416 test cases across `light.rs`'s own suite and
+  every integration file).
+- **Turning the six-point table into a permanent test caught a second,
+  independent mistake — in the table itself, not the code.** Re-deriving
+  `y = 99.9`'s expected answer from the segment's own parametrisation (rather
+  than trusting session 5's hand-traced printout) shows the ray never
+  actually enters the wall's row for any interior `t` — the geometrically
+  correct answer is *open*. The old buggy walk got to "blocked" anyway by an
+  unrelated coincidence: its very first boundary already tripped the
+  (unclamped) tie and took a spurious diagonal step that happened to land
+  back in the right row. `light::tests::
+  a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray` asserts the
+  re-derived answers, not the transcribed ones.
+- **Added `proptest` as a workspace dev-dependency** (user's own suggestion,
+  mid-session) and a fuzz test,
+  `a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle`
+  (`tests/lighting.rs`), biased into exactly the region the existing
+  grid-sweep oracle's own comment says it deliberately avoids — a flame near
+  a row's own grid line. First version let the spot's own `y` roam freely
+  too and immediately shrunk to a *second* disagreement: a spot near its own
+  tile edge, in a different row than the wall, with the ray grazing the
+  wall's diagonal corner within `PANEL_THICKNESS` without entering its box.
+  Traced this one too rather than assuming it was the same bug: it reproduces
+  identically against the *unclamped* formula, so it predates this session
+  and is not a regression from the fix — it is `corner_tie`'s
+  diagonal-neighbour check doing exactly what it is for (the same
+  panel-corner overlap tolerance two adjoining walls rely on), just applied
+  to a body solid one tile diagonally away instead of a literal shared panel
+  corner. Narrowed the fuzz to keep the spot inside the wall's own row, which
+  keeps the test on-topic without adjudicating that separate design question;
+  left for a future session, noted in the backlog entry's last paragraph, in
+  case it is worth fuzzing on purpose with an oracle that knows about the
+  `PANEL_THICKNESS` slop.
+- `cargo test -p openshard-client-render`, `cargo check --workspace
+  --all-targets`, `cargo clippy --workspace --all-targets`, `cargo fmt --all`
+  all clean at the end of the session.
+- **Not touched**: step 5's own white line — unrelated scene, unrelated bug
+  class, left exactly where session 4/5 left it. See "Where the next session
+  starts" above.
+
+### Session 5 — the third rung, and the hypothesis it was built to confirm turned out wrong
+
+Continued straight from session 4's handoff rather than re-diagnosing: two
+things it named as unverified.
+
+- **Re-ran session 4's own suggested pre-check first**: reverted
+  `mesh_face.wgsl`'s `sub = in.world.xy - in.tile` to `fract(in.world.xy)`
+  and confirmed `a_single_flat_face_beside_an_occluder_agrees_with_light_sample`
+  (the existing second rung) stays green, matching what session 4 argued but
+  had not measured. Reverted before touching anything else.
+- **Built the third rung**: `two_faces_sharing_an_edge_agree_with_light_sample`
+  and its own `assert_two_face_edge_parity` helper in `tests/frame.rs` — a
+  west face and an east face meeting at a shared tile edge, a `Shape::UNREAD`
+  wall two tiles further east for a genuine occluded/open mix on both faces.
+  Green against the real shader, `cargo test -p openshard-client-render` (43
+  tests), `cargo clippy --workspace --all-targets` and `cargo check
+  --workspace --all-targets` all clean.
+- **Ran the same `fract()` revert against the new rung, expecting it to catch
+  what the first two couldn't — it did not.** Full reasoning in the
+  backlog's new entry; short version: the grid both faces sample stays on
+  their own half-open `[tile, tile+1)` interval by construction (`INSIDE` and
+  `1.0 - INSIDE`, never the exact corner), and on that interval `fract()` and
+  `world.xy - tile` are the same value regardless of how many faces share the
+  seam. Session 4's hypothesis — "two faces is the smallest scene where a
+  fragment can legitimately land on a whole number" — is true about the
+  *scene* (the seam is geometrically reachable) but false about what this
+  harness's grid actually samples (it never queries the seam itself, only
+  approaches it from both sides). Also re-ran the `SUB_TILE` fault injection
+  from the first two rungs against the new one as a sanity check — it fails
+  as expected, so the new rung is not simply blind end-to-end.
+- **Did not attempt the actual fix**: reading back which real screen pixel
+  the seam's projected position falls nearest to and asserting that pixel
+  specifically, rather than sampling `(u, v)` values chosen in advance. Left
+  as the next session's starting point rather than started here — see "Where
+  the next session starts" above, including the fallback option (a debug view
+  that reports `(tile, sub)` directly) if that turns out not to be worth
+  building.
+- Showed the user the two existing rungs' own rendered frames on request, via
+  a temporary `#[ignore]`d dump test that wrote RGBA readback to PPM and
+  converted with `imagemagick`; deleted before this session's real changes
+  were touched again, never part of the diff.
+- **Found a new, real, unrelated `walk_cells` miss while showing the user a
+  third picture — a continuous floor under a torch and a wall, built to
+  answer "can I see the shadow actually fall?".** The user spotted the shadow's
+  own shape was wrong on sight, before any deliberate bug hunt; confirmed with
+  a CPU-oracle probe rather than trusting the picture. Full account,
+  including the six-point counter-example and why it is not decision 9's
+  `Spot`-tile question again, in the backlog's "A new `walk_cells` miss"
+  entry. Session ended with the user asking to start root-causing this in the
+  same sitting — continued below rather than in a new entry, since it is the
+  same session's own work.
+
+### Session 4 — the first real-geometry parity fixture, and proof of its own blind spot
+
+Changed approach rather than diagnosis: session 3 left step 5 at "bisect the
+white line's own screenshot further"; this session started building the
+primitives-first family of parity fixtures the backlog already called for
+instead — smallest scene first, the way a test suite is built rather than a
+screenshot read harder.
+
+- **Added `a_single_flat_face_agrees_with_light_sample_over_a_grid_of_lights`
+  in `tests/frame.rs`.** One hand-built `crate::mesh::Face` (no `Prism`), no
+  occluder, rendered through the real `GroundRenderer`/`MeshFaceRenderer`/
+  `Blit` pipeline over eight light angles, checked at a `(u, v)` grid ending at
+  `INSIDE` itself against `light::sample` fed the same clamped, quantised
+  fraction the shader computes. First parity test of any kind to go through
+  `mesh_face.wgsl`'s own vertex/fragment path rather than a synthetic
+  per-pixel `place` write. Green, `cargo test -p openshard-client-render` (all
+  323 tests), `cargo clippy --workspace --all-targets` and
+  `cargo check --workspace --all-targets` all clean.
+- **Proved, by fault injection rather than by reasoning about the code, that
+  this fixture cannot yet catch the bug class it exists to eventually catch.**
+  Corrupted `mesh_face.wgsl`'s `SUB_TILE` constant (`127.0` → `100.0`, a real
+  disagreement between what the shader writes and what the CPU oracle
+  expects) and the test stayed green: with no occluder anywhere in the scene,
+  `walk()` returns `1.0` unconditionally, so the tile/fraction a fragment
+  carries is never actually asked a question whose answer could differ.
+  Reverted before committing (`git checkout -- mesh_face.wgsl`). Full
+  reasoning and the concrete next scene (the same face plus one occluder on a
+  neighbouring tile) are in the backlog's own entry — next session starts
+  there, not back at the white line's screenshot.
+- **A real harness bug on the way, logged as its own backlog entry**:
+  converting a rendered frame's continuous screen coordinate to a pixel index
+  needs `floor`, not `round` — a fragment's sample point is its pixel's own
+  centre (`i + 0.5`), and `round` only disagrees with that within half a
+  pixel of a true edge, which is exactly where this family of fixtures spends
+  most of its samples on purpose. Found by a bounding-box scan and a
+  single-row coverage scan of the actual rendered frame after a query point
+  placed deliberately close to the face's own far edge came back reading
+  background; worth reading before the next fixture in this family hits the
+  same thing by surprise.
+- `light.rs` picked up an unrelated three-line `cargo fmt` normalization
+  (`sample`'s own ambient line) that predates this session — left in rather
+  than reverted, since `cargo fmt --all` is expected silent and this closes
+  one more place it was not.
+- **Continued in the same session: built the next rung, and it catches what
+  the first one proved it couldn't.** Refactored the render/compare loop into
+  a shared `assert_single_face_parity` helper (`tile`, `face_z`, `occlusion`,
+  `lights` as parameters) so the two fixtures cannot drift from each other's
+  camera, grid or comparison logic, then added
+  `a_single_flat_face_beside_an_occluder_agrees_with_light_sample`: the same
+  face, plus one whole-tile `Shape::UNREAD` occluder one tile east —
+  `a_wall_stops_the_light_behind_it`'s own wall, moved from three tiles away
+  to one. Confirmed the occluder is actually exercised before trusting the
+  fixture (a temporary per-sample print of `Reach::within`/`through`, not
+  kept): of 288 compared points, 92 blocked and 196 open. The same
+  `SUB_TILE` fault injection that the occluder-free rung could not see now
+  fails immediately, at `(u 0.75, v INSIDE)` — the shader says `51` (blocked),
+  `light::sample` says `255` (open). Reverted before committing; both
+  fixtures green with the real shader, `cargo test -p openshard-client-render`
+  (323 tests), `cargo clippy --workspace --all-targets` and
+  `cargo check --workspace --all-targets` all clean, `clippy --fix` cleared 15
+  `needless_borrow` warnings the refactor left behind (`device`/`queue`
+  becoming reference parameters rather than owned locals).
+- **Even the occluder rung cannot reach the exact bug this doc is chasing,
+  and worked out why rather than reaching for a wider sweep.** Both bugs are
+  about a fragment sitting *exactly* on a whole tile coordinate, and a single
+  quad's own far edge is its vertex ring — no fragment is ever rasterised
+  there, only arbitrarily close, which is the same geometric fact the
+  `floor`-vs-`round` entry above is a symptom of. Reaching a fragment that
+  reads a genuinely whole coordinate needs two faces sharing an edge, not a
+  wider grid on one face. Logged as the backlog's own entry rather than
+  chased this session — it is the next rung, and a session that has read it
+  should not have to re-derive it.
 
 ### Session 3 — step 5, `OPENSHARD_CLIENT` reached it, found a real bug that isn't it
 
