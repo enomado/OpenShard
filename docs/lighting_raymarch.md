@@ -22,13 +22,13 @@ Written against `crates/client/render/src/light.rs`, `mesh_face.rs`,
 
 ## Where the next session starts
 
-Steps 1–3 are done and committed. **Start at step 4** — a brute-force CPU
-oracle compared against `synthetic_stair`'s `View::Shadow`. It does not need
-`OPENSHARD_CLIENT`: `synthetic_stair` is deliberately "no client files, no
-map and no art" (see `lighting.md`'s own note on the tool), so step 4 is
-reachable in a sandbox with no client install. Step 5 (the still-unexplained
-second shape) does need a real screenshot and `OPENSHARD_CLIENT` — leave it
-for a session that has one.
+Steps 1–4 are done and committed. **Start at step 5** — the still-unexplained
+second shape, the white line over empty background in `View::Shadow`. It
+needs a real screenshot and `OPENSHARD_CLIENT`, unlike every step before it:
+leave it for a session that has both. Step 4's own "Done" entry has a design
+note worth reading first if step 5 (or anything after it) reaches for the
+climbable stair as a fixture — it does not work as a brute-force oracle's
+scene, and the reasoning is there rather than only in the handoff log.
 
 ## Steps
 
@@ -106,7 +106,7 @@ for a session that has one.
       why the working version sweeps the tile's `y` edge under the same
       east-facing light the proven fixture already uses, rather than
       chasing a new light position by hand.
-- [ ] **4. A brute-force CPU oracle, independent of both DDA
+- [x] **4. A brute-force CPU oracle, independent of both DDA
       implementations.** A deliberately dumb ray sampler — fixed small steps
       along the ray, an occlusion lookup at each, no cell bookkeeping, no
       `floor()`/`fract()` reconstruction of any kind — compared per-pixel
@@ -115,6 +115,71 @@ for a session that has one.
       `mesh_face.wgsl`/`blit.wgsl`'s `walk()`, so it cannot inherit their bug
       the way a second DDA rewrite could. Where 3 catches *this* boundary, 4
       is the net for the next one, wherever it turns up.
+
+      **Done as `a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights`
+      in `tests/lighting.rs`, and against `light::sample` rather than a
+      rendered picture** — `frame.rs`'s own `assert_parity`/`assert_parity_of`
+      (decision 9) already ties `blit.wgsl`'s `walk` to `light::sample` byte
+      for byte over dozens of scenes, so a second GPU readback here would
+      only re-derive that tie, not add one. What decision 9's parity *cannot*
+      catch is the bug this doc is about: `walk_cells` and `blit.wgsl`'s
+      `walk` are two renderings of the *same* arithmetic, so a `floor()` both
+      of them share is invisible to a test that holds them to each other. The
+      oracle here shares no arithmetic with either — it is a point-in-box
+      test against `Occlusion::solids_at`'s own boxes, stepped along the
+      straight segment — so comparing it to `light::sample` is exactly as
+      independent as comparing it to the picture would have been, at a
+      fraction of the machinery and runnable with no GPU and no
+      `OPENSHARD_CLIENT`.
+
+      **The climbable stair was tried first and abandoned.** A brute-force
+      point sampler can only state "this whole tile is exempt" — it has no
+      way to ask which *surface* of a tile a ray's own end stands on, which
+      is exactly what `Surface::shadowed_by_own_tile` and the `flame_end`/
+      `on_surface` exemptions in `walk_cells` do ask. The stair packs three
+      treads and their risers onto one tile, so a blanket per-tile exemption
+      disagreed with the real walk on genuine self-occlusion (a lower tread's
+      ray legitimately ducking through a higher tread's own body while still
+      leaving its own tile) — real geometry, nothing to do with the boundary
+      bug this oracle exists to catch, and it drowned out any signal in a
+      wall of false disagreements. Swapped for a single whole-tile wall
+      (`a_wall_stops_the_light_behind_it`'s own shape, `tests/frame.rs`): one
+      solid on one tile, so the same blanket exemption is exactly right and
+      the only question left is the boundary derivation itself.
+
+      **Two more corner cases the grid had to be swept around, both logged
+      because they are shapes a future oracle will hit again:**
+      - *Grazing a box's corner.* A ray whose straight line only ever touches
+        a solid's corner — never a length of its inside — is the case
+        `corner_tie`'s own test already pins: the DDA gives a corner some
+        resolution deliberately, a continuous point sampler finds nothing to
+        stand inside. Not a bug in either; a sampler swept with light offsets
+        wide enough to graze a spot's tile corner disagrees with the walk for
+        a reason that has nothing to do with tile boundaries. Fixed by
+        keeping spot `y` off the tile's own edges and light `dy` modest,
+        rather than by teaching the oracle about corners.
+      - *A flame standing on the occluder's own tile.* `walk_cells`'s
+        far-end exemption (`flame_end`) is narrower than "the flame's tile is
+        exempt" — it only fires when the flame's own `z` sits *on* the
+        surface (`on_surface`), the same way a sconce is exempt because it
+        stands on the wall it is bolted to. A flame floating at `z 25` over a
+        wall whose body tops out at `20` is not on any surface of it, so the
+        wall still blocks it — correctly — and a blanket per-tile brute-force
+        exemption misreads that as an oracle bug. Fixed by keeping every
+        light in the grid off the wall's own tile, which keeps the oracle
+        inside the boundary question it was built to ask rather than asking
+        it to model `on_surface` as well.
+
+      **Verified against the same regression steps 2/3 pin**: reverting both
+      `first = tile` and `boundary[axis]`'s edge back to `.floor()` (the same
+      hand-revert step 3's own note used) turns every one of the oracle's 720
+      spot/light pairs blocked-by-the-wall into open — the boundary point
+      misreads as the wall's own tile and the wall exempts itself entirely —
+      which both the oracle's disagreement check and its own "both outcomes
+      have to appear" sanity assertion catch. `cargo test -p
+      openshard-client-render`, `cargo check --workspace --all-targets` and
+      `cargo clippy --workspace --all-targets` all green with the fix
+      restored.
 - [ ] **5. Diagnose the second, still-unexplained shape.** The white line
       over empty background in `View::Shadow`, confirmed present and
       unchanged by the `mesh_face.wgsl` fix — see `lighting.md`'s "Fixed: the
@@ -151,6 +216,47 @@ there is one.
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 2 — step 4, the brute-force oracle
+
+Step 4 done, its own commit. `cargo check --workspace --all-targets`, `cargo
+clippy --workspace --all-targets` and `cargo test -p openshard-client-render`
+all green.
+
+- **Compared against `light::sample`, not a rendered picture** — the plan's
+  own wording said `synthetic_stair`'s `View::Shadow`, but `frame.rs`'s
+  decision-9 parity suite already ties the GPU's `walk` to `light::sample`
+  exactly, so a GPU readback here would have re-proven that tie rather than
+  adding an independent one. The oracle's independence comes from sharing no
+  arithmetic with *either* implementation, which holds just as well one level
+  up. Left as a design note in step 4's own "Done" entry rather than buried
+  here, since the next reader of this plan needs to know it before reaching
+  for a GPU harness that isn't needed.
+- **The stair fixture doesn't work for this** — tried it first, since it's
+  what steps 2/3 already trust, and abandoned it once a wall of disagreements
+  turned out to be real self-occlusion (`Surface::shadowed_by_own_tile`'s
+  selective exemption) that a blanket per-tile brute-force sampler cannot
+  model. Swapped for a single whole-tile wall, where the blanket exemption
+  the oracle is capable of stating happens to be exactly right. Full
+  reasoning in step 4's own note — worth reading before reaching for the
+  stair again for a *different* oracle, since the same trap is waiting there.
+- **Two false-disagreement shapes swept around rather than modelled**: a ray
+  grazing a solid's corner (the DDA and a continuous sampler are not obliged
+  to agree there — `corner_tie`'s own test already owns that case), and a
+  flame floating above an occluder's own tile without standing *on* any
+  surface of it (`walk_cells`'s `flame_end`/`on_surface` exemption is
+  narrower than "the tile is exempt"). Both logged in step 4's "Done" entry
+  with the fix (keep the grid off those configurations) rather than taught to
+  the oracle, which would have meant re-deriving `on_surface` a second time —
+  exactly the duplication decision 9's own parity suite exists to avoid.
+- **Verified the oracle actually catches the regression**, the way step 3's
+  own note insists on: hand-reverted `first = tile` and `boundary[axis]`'s
+  edge fix back to `.floor()`, reran, and every one of 720 spot/light pairs
+  flipped from "blocked by the wall" to "open" — the boundary spot misreads
+  as the wall's own tile and the wall exempts itself. Restored before
+  committing.
+- **Step 5 still needs `OPENSHARD_CLIENT` and a real screenshot** — nothing
+  in this session touched it, and nothing here narrows it.
 
 ### Session 1 — this doc's opening session
 

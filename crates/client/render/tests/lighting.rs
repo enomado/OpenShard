@@ -1802,3 +1802,236 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
         "the tread's own outer corner is shadowed by the riser it caps: through {on_edge:.3}",
     );
 }
+
+/// How densely [`brute_force_blocked`] samples a ray, in tiles of ground
+/// distance.
+///
+/// Dense enough to land inside any panel a fixture here builds —
+/// `occlusion::PANEL_THICKNESS` is the thinnest a solid's box gets — without
+/// making the grid sweep below slow: a few tiles of ray at this spacing is a
+/// few hundred samples, and the sweep runs thousands of rays.
+const BRUTE_STEP: f32 = 0.02;
+
+/// Whether the straight segment from `from` to `to` passes through any solid
+/// standing between the two tiles the walk itself exempts.
+///
+/// Deliberately dumb, the way `docs/lighting_raymarch.md` step 4 asks: fixed
+/// steps along the line, a point-in-box test against
+/// [`occlusion::Occlusion::solids_at`]'s own boxes, no `floor()`/`fract()`
+/// reconstruction of a cell and no DDA. It shares no arithmetic with
+/// `light::walk_cells` or `blit.wgsl`'s `walk`, so a bug the two of them share
+/// — the shape this whole doc is about — cannot hide from it the way a second
+/// DDA rewrite could.
+///
+/// Scoped to a binary answer, blocked or not: a boundary misread flips exactly
+/// that, and `walk_cells`'s own soft gradient across a grazing edge is a
+/// different property with its own tests already (`a_wall_stops_the_light...`
+/// et al.). Scoped to aperture-free occluders too — every fixture built below
+/// — and asserts that premise rather than silently ignoring a hole this
+/// oracle does not model.
+fn brute_force_blocked(
+    from: [f32; 3],
+    to: [f32; 3],
+    own_tile: (i32, i32),
+    target_tile: (i32, i32),
+    skip_last: bool,
+    occlusion: &occlusion::Occlusion,
+) -> bool {
+    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+    let steps = ((ground / BRUTE_STEP).ceil() as u32).max(1);
+    // Interior points only: the two ends stand where they are drawn, on the
+    // geometry they are a point of, and asking whether an endpoint is "inside"
+    // its own surface is not a question this oracle exists to answer.
+    for step in 1..steps {
+        let t = step as f32 / steps as f32;
+        let point = [
+            from[0] + delta[0] * t,
+            from[1] + delta[1] * t,
+            from[2] + delta[2] * t,
+        ];
+        let tile = (point[0].floor() as i32, point[1].floor() as i32);
+        if tile == own_tile || (skip_last && tile == target_tile) {
+            continue;
+        }
+        for solid in occlusion.solids_at(tile.0, tile.1) {
+            assert!(
+                solid.aperture.is_none(),
+                "brute_force_blocked does not model apertures; at ({}, {})",
+                tile.0,
+                tile.1,
+            );
+            let (min, max) = (solid.space.min, solid.space.max);
+            let inside = f64::from(point[0]) >= min.x
+                && f64::from(point[0]) <= max.x
+                && f64::from(point[1]) >= min.y
+                && f64::from(point[1]) <= max.y
+                && f64::from(point[2]) >= min.z
+                && f64::from(point[2]) <= max.z;
+            if inside {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A brute-force point sampler, swept over a grid of light positions and
+/// angles, agrees with `light::sample`'s `walk_cells` — the net
+/// `docs/lighting_raymarch.md` step 4 asks for, independent of both DDA
+/// implementations rather than a second one.
+///
+/// **A single whole-tile wall, not the climbable stair** step 2/3 pin their
+/// own regression against. Tried first against the stair and abandoned: the
+/// stair packs three treads and their risers onto *one* tile, and which of
+/// them a spot's own tile exempts is exactly `Surface::shadowed_by_own_tile`'s
+/// selective, surface-aware rule — a blanket "this whole tile is exempt",
+/// which is all a brute-force point sampler can cheaply state, disagreed with
+/// the real walk on genuine self-occlusion (a lower tread's ray ducking
+/// through a higher tread's own body while still leaving its tile) that has
+/// nothing to do with the boundary bug this oracle exists to catch. A plain
+/// wall's occlusion is one solid on one tile with nothing else there, so the
+/// same blanket exemption is exactly right and the only thing left to
+/// disagree about is the boundary derivation itself.
+///
+/// The spot stands exactly on the open tile's own far edge — `x` a whole
+/// number, the coordinate shape `mesh_face.wgsl`'s `fract()` bug and
+/// `walk_cells`'s old `first = from.floor()` both got wrong — at a sweep of
+/// `y` and `z` along that edge, with the wall one tile further east. A light
+/// beyond the wall is blocked by it; a light that never reaches past the wall
+/// tile at all is open; a grid of positions and heights exercises both.
+#[test]
+fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
+    use openshard_client_render::occlusion::{Builder, Shape};
+    use openshard_protocol::wire::Graphic;
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    let wall = StaticTile {
+        flags: TileFlags::new(TileFlags::NO_SHOOT),
+        height: 20,
+        ..StaticTile::default()
+    };
+    let mut grid = Builder::new(openshard_client_render::camera::TileBounds {
+        min_x: 90,
+        max_x: 110,
+        min_y: 90,
+        max_y: 110,
+    });
+    // A whole-tile occluder, no face named: `a_wall_stops_the_light_behind_it`
+    // (`tests/frame.rs`) is the same shape, for the same reason — a named edge
+    // would let the ray past on the sides it does not cross, which is a
+    // different question from the one this oracle asks.
+    grid.add(101, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+    let occlusion = grid.finish(&Cutaway::OPEN);
+
+    // Points on tile (100, 100)'s own far edge — `x` exactly `101.0` — at a
+    // spread of `y` across the tile's width and `z` up its height. Every one
+    // of them still belongs to (100, 100), one hair short of the wall's own
+    // face, which is what `Spot::tile` says and what `walk_cells`'s old
+    // `from.floor()` could read as the wall's tile instead.
+    //
+    // `y` stays inside the tile's own middle rather than sweeping to its
+    // corners: a ray aimed at a large `dy` from a corner spot grazes the
+    // wall box's own corner for a hair's width of its path, and a DDA and a
+    // continuous point sampler are not obliged to agree about a ray that
+    // only ever touches a corner — `corner_tie`'s own test is where that
+    // case is already pinned. This oracle is about which *tile* a boundary
+    // point belongs to, not about that.
+    let mut spots = Vec::new();
+    for y in [100.2_f32, 100.5, 100.8] {
+        for z in [1.0_f32, 5.0, 10.0, 18.0] {
+            spots.push((Vec2::new(101.0, y), z));
+        }
+    }
+
+    // A grid of light positions and heights: some beyond the wall (blocked),
+    // some short of it or offset far enough in `y` to clear it (open) — both
+    // outcomes have to show up, or the oracle is only ever agreeing about one
+    // of them. `dy` stays modest for the same corner-grazing reason `spots`
+    // does; `z` past the wall's own height of 20 is the "open" case for
+    // height rather than for `y`.
+    //
+    // `dx` skips the wall's own `x` span, `101..102`: a flame standing there
+    // is a flame *on* the wall's own tile, and `walk_cells`'s exemption for
+    // that case is `on_surface` — it reaches only as high as the flame sits
+    // *on* the panel, which a point floating above a body at `z 25` is not.
+    // Modelling that correctly is a real, separate claim with its own tests
+    // (`on_surface`, `flame_end`); this oracle is scoped to the boundary
+    // question and keeps every light off the tile the wall is asking about.
+    let mut lights = Vec::new();
+    for dx in [0.5_f32, 2.5, 4.0] {
+        for dy in [-0.6_f32, -0.3, 0.0, 0.3, 2.0] {
+            for z in [0.5_f32, 8.0, 17.0, 25.0] {
+                lights.push((Vec2::new(100.0 + dx, 100.5 + dy), z));
+            }
+        }
+    }
+
+    let mut compared = 0;
+    let mut blocked_count = 0;
+    let mut disagreed = Vec::new();
+    for &(light_at, light_z) in &lights {
+        let light = light::Light {
+            at: light_at,
+            z: light_z,
+            radius: 6.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        };
+        let lighting = Lighting {
+            ambient: light::NIGHT,
+            lights: vec![light],
+            occlusion: occlusion.clone(),
+            sun: None,
+            view: debug::View::default(),
+        };
+        let target_tile = (light_at.x.floor() as i32, light_at.y.floor() as i32);
+        for &(at, z) in &spots {
+            let spot = Spot::flat(at, z, (100, 100));
+            let sample = light::sample(spot, &lighting);
+            let Some(reach) = sample.reaches.iter().find(|reach| reach.within) else {
+                continue;
+            };
+            let walked_blocked = reach.through <= 0.004;
+            let brute_blocked = brute_force_blocked(
+                [at.x, at.y, z],
+                [light_at.x, light_at.y, light_z],
+                (100, 100),
+                target_tile,
+                true,
+                &occlusion,
+            );
+            compared += 1;
+            blocked_count += usize::from(walked_blocked);
+            if walked_blocked != brute_blocked {
+                disagreed.push(format!(
+                    "spot ({:.2}, {:.2}, {z:.1}), light ({:.2}, {:.2}, {light_z:.1}): \
+                     walk_cells says {}, the brute-force oracle says {}",
+                    at.x,
+                    at.y,
+                    light_at.x,
+                    light_at.y,
+                    if walked_blocked { "blocked" } else { "open" },
+                    if brute_blocked { "blocked" } else { "open" },
+                ));
+            }
+        }
+    }
+    assert!(
+        compared > 100,
+        "the grid compared only {compared} spot/light pairs",
+    );
+    // Both outcomes have to appear, or the grid's geometry never actually put
+    // the wall in the way and this test would be green for any oracle at all.
+    assert!(
+        blocked_count > 0 && blocked_count < compared,
+        "{blocked_count} of {compared} pairs were blocked; the grid should mix both",
+    );
+    assert!(
+        disagreed.is_empty(),
+        "{} of {compared} disagreed:\n{}",
+        disagreed.len(),
+        disagreed.join("\n"),
+    );
+}
