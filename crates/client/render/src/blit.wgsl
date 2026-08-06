@@ -756,7 +756,14 @@ fn opposite(side: u32) -> u32 {
 // of the crossing that is inside that span which counts, so a ray grazing the
 // top of a wall is dimmed rather than switched. That is what keeps a cellar's
 // wall out of the street above it, without a step where the two meet.
-fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: bool, spread: f32) -> f32 {
+fn walk(
+    raw_start: vec3<f32>,
+    raw_finish: vec3<f32>,
+    tile: vec2<f32>,
+    stance: u32,
+    skip_last: bool,
+    spread: f32,
+) -> f32 {
     // **Both ends stand where they are drawn, not inside what they are drawn on.**
     // See `STAND_OFF` and `ON_TOP`, and `light::stand_clear`: a face pixel is
     // walked from a hair in front of the plane it is the face of, and every point
@@ -777,7 +784,16 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
     let delta = finish - start;
     let ground = length(delta.xy);
     let lit = start;
-    let first = vec2<i32>(i32(floor(start.x)), i32(floor(start.y)));
+    // The caller's own tile, not `floor(start.x/y)`: `start` can legitimately sit
+    // exactly on this tile's own far edge — `raw_start` is a mesh face's
+    // reconstructed `(tile, sub)` pair with `sub` clamped short of `1.0`
+    // (`mesh_face.wgsl`'s `INSIDE`), and a `Flat` surface's zero `outward` adds no
+    // nudge to push it off that edge either — and flooring it back would pick
+    // whichever side happens to round down rather than the side the geometry
+    // actually stands on. `light::walk_cells`'s `first`, the same fix, and
+    // `docs/lighting_raymarch.md` step 5: this is where it names the same class of
+    // bug the CPU walk had, on the GPU walk decision 9 requires to match it.
+    let first = vec2<i32>(i32(tile.x), i32(tile.y));
     if ground < 1.0e-6 {
         // Straight up or down. There is no direction to walk in and there never
         // was — but "the only cells on the line are the exempt ones", which is
@@ -823,14 +839,19 @@ fn walk(raw_start: vec3<f32>, raw_finish: vec3<f32>, stance: u32, skip_last: boo
     let toward = vec2<i32>(select(-1, 1, delta.x >= 0.0), select(-1, 1, delta.y >= 0.0));
     var per_tile = vec2<f32>(1.0e30, 1.0e30);
     var boundary = vec2<f32>(1.0e30, 1.0e30);
+    // The known tile's own edge, not `floor(lit.x/y)` — the same reason `first`
+    // above reads `tile`. A `lit` sitting exactly on this axis' boundary must
+    // seed `boundary[axis]` near zero (the ray is already leaving `first`), and
+    // `floor(lit.x/y)` there can just as well pick the far side and seed a whole
+    // tile of slack that was never there. `light::walk_cells`'s `boundary[axis]`.
     if abs(delta.x) > 1.0e-6 {
         per_tile.x = 1.0 / abs(delta.x);
-        let ahead = select(lit.x - floor(lit.x), floor(lit.x) + 1.0 - lit.x, delta.x >= 0.0);
+        let ahead = select(lit.x - tile.x, tile.x + 1.0 - lit.x, delta.x >= 0.0);
         boundary.x = ahead * per_tile.x;
     }
     if abs(delta.y) > 1.0e-6 {
         per_tile.y = 1.0 / abs(delta.y);
-        let ahead = select(lit.y - floor(lit.y), floor(lit.y) + 1.0 - lit.y, delta.y >= 0.0);
+        let ahead = select(lit.y - tile.y, tile.y + 1.0 - lit.y, delta.y >= 0.0);
         boundary.y = ahead * per_tile.y;
     }
 
@@ -1193,7 +1214,7 @@ const MAX_SUN_TILES: f32 = 32.0;
 // `walk` draws. The fragment's own tile is skipped there as it is for a flame,
 // which is what lights a wall on the side the sun is on instead of shadowing it
 // with itself.
-fn sunlight(at: vec3<f32>, stance: u32) -> f32 {
+fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32) -> f32 {
     let horizontal = length(lighting.sun.xy);
     if horizontal < 1.0e-6 {
         // Straight overhead: nothing but the fragment's own tile is in the way,
@@ -1215,7 +1236,7 @@ fn sunlight(at: vec3<f32>, stance: u32) -> f32 {
         // which arrives here as a ceiling below every fragment there is.
         return 1.0;
     }
-    return walk(at, at + step * tiles, stance, false, 0.0);
+    return walk(at, at + step * tiles, tile, stance, false, 0.0);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -1524,7 +1545,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // The flame's own tile is exempt, and a flame is a body a tile wide:
         // `walk`'s two parameters, and the only two things that make this ray
         // different from the sun's.
-        let through = walk(at, vec3<f32>(to.x, to.y, to.z), stance, true, FLAME_SPREAD);
+        let through = walk(at, vec3<f32>(to.x, to.y, to.z), tile, stance, true, FLAME_SPREAD);
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
         // from open ground nothing reaches. That difference is the one the whole
@@ -1551,7 +1572,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // falloff, only whether anything stands between this pixel and the sky.
     var sun_through = 0.0;
     if lighting.sun_color.w > 0.0 {
-        sun_through = sunlight(at, stance);
+        sun_through = sunlight(at, tile, stance);
         lit = lit + lighting.sun_color.rgb * (lighting.sun_color.w * sun_through);
     }
 

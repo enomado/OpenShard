@@ -22,10 +22,21 @@ Written against `crates/client/render/src/light.rs`, `mesh_face.rs`,
 
 ## Where the next session starts
 
-Steps 1–4 are done and committed. **Start at step 5** — the still-unexplained
-second shape, the white line over empty background in `View::Shadow`. It
-needs a real screenshot and `OPENSHARD_CLIENT`, unlike every step before it:
-leave it for a session that has both. Step 4's own "Done" entry has a design
+Steps 1–4 are done and committed. **Step 5 is still open** — the
+still-unexplained second shape, the white line over empty background in
+`View::Shadow` — but a session with `OPENSHARD_CLIENT` finally reached it, and
+found and fixed a real, adjacent bug on the way rather than the shape itself:
+`blit.wgsl`'s own `walk` never got step 2's fix, and now does. Step 5's own
+"Found and fixed on the way" entry has the full mechanism and a reproduction
+command; its "The white line itself is untouched by this fix" entry has the
+measurements (`View::Kind`, `View::Place`'s `sub.x`) that rule out the two
+obvious suspects — background and the just-fixed boundary bug — and name the
+one thing confirmed so far: it is a `Flat` mesh fragment, at its own tile's
+far edge, immune to both fixes in this doc by construction. Start by reading
+that entry before bisecting further; the backlog's `PARITY_TILE` entry is
+the next piece of tooling worth building regardless of what step 5 turns out
+to be, since it is the reason decision 9's suite missed both bugs in this
+doc, not just the second one. Step 4's own "Done" entry still has a design
 note worth reading first if step 5 (or anything after it) reaches for the
 climbable stair as a fixture — it does not work as a brute-force oracle's
 scene, and the reasoning is there rather than only in the handoff log.
@@ -190,11 +201,82 @@ scene, and the reasoning is there rather than only in the handoff log.
       suspects. Bisect with `OPENSHARD_SCENE_PROFILE_FACE` the way the
       tread's outer edge was bisected in `lighting.md`'s own entry.
 
+      **Found and fixed on the way, and it is not this shape: `blit.wgsl`'s own
+      `walk` was never given step 2's fix.** `light.rs`'s `walk_cells` stopped
+      flooring `from` in step 2 — `first` and `boundary[axis]`'s seed both
+      read the caller's own `tile` now — but `walk`'s GPU twin, the one
+      decision 9 requires to match it byte for byte, was not touched: its
+      `first` was still `vec2<i32>(i32(floor(start.x)), i32(floor(start.y)))`
+      and `boundary.x`/`.y`'s seed was still `floor(lit.x)`/`floor(lit.y)`,
+      neither one ever given a tile to read instead. `walk` has no tile
+      parameter at all — it takes `raw_start`/`raw_finish` as bare `vec3<f32>`
+      and re-derives everything from them, exactly the shape step 2 closed on
+      the CPU side. Fixed the same way: `walk` and `sunlight` (which calls it
+      for the sun ray) both grew a `tile: vec2<f32>` parameter, read from the
+      same local `fs_main` already builds `at` from, and `first`/
+      `boundary[axis]`'s seed read it instead of flooring `start`/`lit`. Full
+      `cargo test -p openshard-client-render` (411 tests, including decision
+      9's `frame.rs` parity suite) green before and after — parity held where
+      it already held, which is expected: see the backlog entry below for why
+      that suite could not have caught this. Confirmed as a real change and
+      not a no-op by rendering the exact scene below before and after and
+      diffing the two `View::Shadow` pictures: 2,126 pixels moved, all of them
+      the north-facing risers' own boundary with the flat tread above — a
+      second, separate misread from the one already fixed, on an edge the
+      existing regression tests do not sweep.
+
+      **The white line itself is untouched by this fix.** Same scene, same
+      pixels, same shape, confirmed by diffing before/after `View::Shadow`
+      renders — the 2,126 pixels the fix did change do not include it.
+      `View::Kind` at the line's own pixels reads the static/item colour, not
+      the background one, and `View::Place`'s `sub.x` there reads `253/255 ≈
+      126/127` — exactly `mesh_face.wgsl`'s own `INSIDE` clamp, meaning this
+      is a `Flat` mesh fragment sitting right at its own tile's far edge, not
+      background at all. A `Flat` stance's `outward` is `(0, 0, 1)` — no `x`/
+      `y` nudge — so `floor(tile.x + 126/127)` was already `tile.x` before
+      this fix, correctly, for exactly the reason that made this particular
+      pixel immune to the bug just closed. Whatever reads it as fully open is
+      a third thing, still to find. Reproduce:
+
+      ```sh
+      OPENSHARD_CLIENT=… \
+          OPENSHARD_SCENE_AT=1497,1627,10 OPENSHARD_SCENE_RADIUS=1 \
+          OPENSHARD_SCENE_TILES=0x0739 OPENSHARD_SCENE_GROUND=0 \
+          OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
+          OPENSHARD_SCENE_ZOOM=2 OPENSHARD_FRAME_VIEW=7 \
+          OPENSHARD_FRAME_DUMP=/tmp/shadow.ppm \
+          cargo run --release -p openshard-client-render --example isolated_scene
+      ```
+
+      and look just above and left of the lamppost, along the topmost tread's
+      own silhouette edge — `OPENSHARD_SCENE_GROUND=0` puts true background
+      pixels at pure black, which is what makes `View::Kind`'s colour at the
+      same pixels the fast way to tell the line is on-mesh rather than
+      re-deriving it from `View::Place` by hand every time.
+
 ## Backlog
 
 Findings go here as they turn up, same convention as `lighting.md`'s own
 backlog: what the finding is, why it is worth touching, `file:line` where
 there is one.
+
+- **`frame.rs`'s decision-9 parity suite never samples a sub-tile fraction
+  past `112/127`, so it could not have caught the `walk` bug step 5 just
+  fixed.** `PARITY_TILE = 8` (`tests/frame.rs:3592`) steps `sub_x`/`sub_y` in
+  sixteenths — `0, 16, …, 112` — chosen so the fraction fits the seven-bit
+  encoding exactly, but that stops three sixteenths short of `127`, and
+  `mesh_face.wgsl`'s own `INSIDE = 126/127` clamp lives inside that gap. Every
+  scene the suite runs is faceless-ground or a stated `Surface` at a stated
+  height (`parity_frame`/`parity_place`), never a mesh face at all, so a
+  `Spot` sitting exactly where a stair's own geometry does — which is where
+  both this bug and the fixed one in steps 1–4 lived — is a case the suite
+  structurally cannot generate. Worth its own step if this track continues:
+  either widen `parity_place`'s sweep to include the `112..127` range (a
+  `Face` surface there exercises `STAND_OFF`'s nudge the same way this bug
+  needed) or build a mesh-face scene through `statics.rs`'s real `push_mesh`
+  path and run `assert_parity` against it — the gap is specifically that no
+  parity scene has ever gone through a mesh face's own vertex attributes
+  rather than a synthetic per-pixel `place` write.
 
 - **A true fixed-point world coordinate (tile + N bits of sub-tile
   resolution, one integer type, no `f32`) would remove this whole class of
@@ -216,6 +298,54 @@ there is one.
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 3 — step 5, `OPENSHARD_CLIENT` reached it, found a real bug that isn't it
+
+Committed session 2's already-written step 4 (was sitting uncommitted).
+First session on this track with `OPENSHARD_CLIENT` available, so the first
+to actually render the doc's own reproduction scene instead of reasoning
+about it secondhand.
+
+- **The white line is on-mesh, not background** — the premise "over empty
+  background... where there is no geometry at all" doesn't hold under
+  measurement. `View::Kind` at the line's own pixels reads the static/item
+  colour; true background (`OPENSHARD_SCENE_GROUND=0` makes it pure black)
+  is elsewhere in the same picture and looks nothing like it. Cost some time
+  before being checked, because at a glance a thin bright sliver next to a
+  dark region reads as "background poking through" — exactly the same
+  reading-the-eye-instead-of-the-pixels trap `lighting.md`'s own "a thin,
+  nearly-tangent lit strip" entry already named once.
+- **Found and fixed a real bug on the way, confirmed it is a different one
+  from the white line, and kept both facts in step 5's own entry rather than
+  calling either "done."** `blit.wgsl`'s `walk` had the exact bug class steps
+  1–4 fixed on the CPU side — `first` and `boundary[axis]`'s seed both
+  floored a raw float instead of reading a carried tile — and had it because
+  `walk` was never given a tile to read at all, not because the fix missed a
+  spot. Full mechanism, the fix, and how it was confirmed to be a real
+  change (a before/after picture diff, 2,126 pixels, none of them the white
+  line) are in step 5's own "Found and fixed on the way" entry.
+- **Why the existing parity suite never caught it, and it's a real gap, not
+  bad luck**: `PARITY_TILE = 8` steps sub-tile fractions in sixteenths and
+  stops at `112/127`, three short of `127`, and the `walk` bug lived in
+  exactly that last stretch — `mesh_face.wgsl`'s own `INSIDE = 126/127`
+  clamp sits inside it. Logged in the backlog rather than fixed this
+  session: widening the sweep or building a real mesh-face parity scene is
+  its own piece of work, not a rider on this one.
+- **The white line survives being ruled out twice, which narrows it more
+  than it sounds like**: it isn't background (measured), and it isn't the
+  bug just fixed (the fragment's own stance is `Flat`, whose `outward` is
+  `(0, 0, 1)` — no `x`/`y` nudge — so the fixed and unfixed formulas agree at
+  exactly this pixel, and the before/after diff confirms it: this pixel
+  isn't in it). Next session: now that a real scene renders in this sandbox,
+  bisect the same way `lighting.md`'s own entry bisected the first shape —
+  `OPENSHARD_SCENE_PROFILE_FACE` at the line's own real-world coordinates —
+  but read the `own_shadows`/`admitted` exemption logic in `walk`
+  (`blit.wgsl:899` onward) first: cell selection is now proven not to be the
+  cause here, which leaves the *exemption* rules (which of a cell's sides may
+  shadow a pixel standing on that same cell) as the next thing to doubt.
+- `cargo check --workspace --all-targets`, `cargo clippy --workspace
+  --all-targets` and `cargo test -p openshard-client-render` (411 tests) all
+  green, before and after the `walk` fix.
 
 ### Session 2 — step 4, the brute-force oracle
 
