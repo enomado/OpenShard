@@ -66,14 +66,30 @@ first, and `tests/frame.rs`'s own oracle had to be built to arbitrate a
 disagreement against independent ground truth rather than assume either walk
 is right. See session 10's own handoff entry — the false alarm it found and
 un-found is worth reading before trusting a point-sampling oracle's "open"
-verdict again. **Still not built**: a disagreement oracle that survives a
-genuinely multi-solid tile (the stair scene stopped at a smoke test, session
-9's own scope decision, untouched since). **Not wired into
-`walk`/`walk_sun`/anywhere real** — point 4, the actual cutover, has not been
-touched and per the doc's own recommended order should not be until whoever
-picks this up next has read session 9's account of what "agreement" turned
-out to mean here: not everywhere, on purpose, and why that is not a reason to
-stop.
+verdict again. **Built now, session 11**: a disagreement oracle that survives
+a genuinely multi-solid tile — the stair scene session 9 stopped at a smoke
+test over, on purpose, because the obvious oracle (any real `ray_vs_solid`
+hit counts) false-alarms the moment a tile carries an exempted solid.
+Session 11's own entry has the mechanism: `exemption`/`ExemptionContext`
+(`light.rs`, beside `panel_stop`) pulled the `lit_end`/`flame_end`/
+`caps_this`/`same_run` decision out from under `walk_cells` and
+`walk_cells_exact`, where it lived as two copies of the same three lines, so
+the oracle could *reuse* the real predicates as a third caller instead of
+re-deriving them a third time — the trap session 9 named by name. Verified
+sound in both directions by fault injection: stripped back to the naive
+"any hit counts" check and confirmed it false-alarms on exactly the
+flame-on-its-own-tread shape session 9 described by hand; separately,
+reintroduced session 9's own already-fixed lid bug and confirmed the new
+oracle catches it alongside the existing pinned regression test. **Still not
+wired into `walk`/`walk_sun`/anywhere real** — point 4, the actual cutover,
+has not been touched, and two things stand between here and it, not one:
+`blit.wgsl` has no mirror of `walk_cells_exact` in any form yet
+(`candidate_tiles`/`ray_vs_solid`/`box_side` are Rust-only — a new GPU
+primitive to design, not a port of an existing formula the way step 5's fix
+was), and no session in this backlog entry has yet rendered `walk_cells_exact`
+against a real frame. Read session 9's account of what "agreement" turned
+out to mean here before starting either: not everywhere, on purpose, and why
+that is not a reason to stop.
 
 Session 4 changed the approach rather than the diagnosis: instead of
 bisecting the white line's own screenshot further, it started building the
@@ -1262,6 +1278,79 @@ functions session 9's own tests called directly.
   5's white line; point 4, the actual cutover, which still needs that
   multi-solid oracle and a real render first, per the doc's own recommended
   order, not just this session's own numeric confidence added to session 9's.
+
+### Session 11 — the multi-solid disagreement oracle, closed by extracting `exemption` rather than re-deriving it
+
+Picked point 3's remaining gap by name, asked for explicitly: session 9's own
+"no sound automated oracle... a deliberate stop." A disagreement oracle for
+the stair needs `walk_cells`'s own `lit_end`/`flame_end`/`caps_this`/
+`same_run` exemption predicates re-evaluated before a real `ray_vs_solid` hit
+"counts" as backing a blocked verdict — without that, a real hit on a solid
+both walks correctly exempt (a flame standing on its own tread) reads as an
+unbacked disagreement and fails the test for a case that is not a bug.
+Session 9 named duplicating that formula a third time — once each already in
+`walk_cells` and `walk_cells_exact` — as the exact trap this doc's own
+fault-injection discipline exists to avoid falling into by accident.
+
+- **`exemption`/`ExemptionContext` (`light.rs`, beside `panel_stop`) pulled
+  the `lit_end`/`flame_end`/`caps_this`/`same_run` decision out from under
+  `walk_cells` and `walk_cells_exact`, where it lived as two copies of the
+  same three lines — `spot.z` versus `from[2]`, the same value read two
+  different ways, everything else identical. Reuse instead of a third copy:
+  the oracle below calls it as a third caller, not a fourth duplicate of the
+  formula. Behaviour-preserving by construction and verified rather than
+  assumed — full `cargo test -p openshard-client-render` (350 lib tests)
+  identical before and after the extraction, every count unchanged.
+  `cargo clippy`'s own `too_many_arguments` lint caught the first draft's
+  11-argument signature; `ExemptionContext` groups the ray-level facts that
+  do not change per candidate tile or per solid (`first`, `last`,
+  `skip_last`, `own`, `surface`, and the ray's own start/end `z`), built
+  once before each walk's own loop starts rather than threaded through it
+  argument by argument.
+- **`walk_cells_exact_disagreements_on_the_stair_are_backed_by_a_real_
+  unexempted_hit`** (`light.rs`'s own `mod tests`, beside the smoke test it
+  gives a reason to exist alongside) — the same three-tread climbable stair
+  and the same fuzz domain `walk_cells_exact_stays_in_range_on_the_stair`
+  already covers, and the same "whichever walk claims the stronger answer
+  must be backed" discipline the single-wall oracle
+  (`walk_cells_exact_disagreements_are_backed_by_ray_vs_solid`) already
+  runs, with the one addition this richer scene needs: a real `ray_vs_solid`
+  hit only backs a blocked verdict if `exemption` says the solid it hit is
+  not exempt, and — for anything but a lid — if `own_run` has not already
+  cancelled every side the ray could have crossed it on (`stands.edges &
+  !same_run != 0`, reusing `Exemption::same_run` rather than re-deriving
+  that too).
+- **Verified sound, not just green on the first run — this doc's own
+  fault-injection discipline, run both directions before trusting it.**
+  Stripped the exemption check back to the naive "any real hit counts" the
+  single-wall oracle uses, session 9's own named trap: failed immediately,
+  on exactly the false-alarm shape session 9 described by hand — a flame
+  standing on its own tread, a real `ray_vs_solid` hit, correctly read as
+  open by both walks, flagged as an unbacked disagreement anyway. Restored,
+  then separately reverted `walk_cells_exact`'s own already-fixed lid bug
+  (session 9's "every lid reads transparent," the tile-footprint lookup in
+  `light.rs`'s lid branch) to confirm the new oracle still catches a real
+  regression and not only avoids false ones: both this test and the
+  existing pinned regression
+  (`walk_cells_exact_does_not_read_every_lid_as_transparent`) failed
+  together, on the same reintroduced bug. Both reverts restored before being
+  trusted, and the throwaway `proptest-regressions/light.txt` artifacts each
+  one wrote deleted rather than committed. Five more full runs afterward at
+  fresh random seeds, all green at `~0.1`s each — session 10's own
+  `BRUTE_STEP` false alarm argued for running this before trusting an
+  oracle, not after a flake finds it first.
+- `cargo test --workspace` (92 test binaries, 0 failed), `cargo clippy
+  --workspace --all-targets`, `cargo check --workspace --all-targets` and
+  `cargo fmt --all -- --check` all clean at the end of the session.
+- **Not touched**: point 4, the actual cutover — still needs `blit.wgsl`'s
+  own mirror of `walk_cells_exact`, which does not exist in any form yet
+  (`candidate_tiles`/`ray_vs_solid`/`box_side` are Rust-only; this is a new
+  GPU primitive to design, not a port of an existing formula the way step
+  5's fix was), and a real rendered frame — this session, like every one
+  before it in this backlog entry, never rendered one. Step 5's white line,
+  still untouched — this session needed no `OPENSHARD_CLIENT` and no visual
+  judgment, same reasoning session 9 gave for picking this track over that
+  step.
 
 ## Handoff log
 

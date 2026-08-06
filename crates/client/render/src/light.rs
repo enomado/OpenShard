@@ -1265,6 +1265,58 @@ fn panel_stop<'a>(
         .fold(0.0, f32::max)
 }
 
+/// Ray-level facts [`exemption`] needs that do not change per candidate tile
+/// or per solid — built once, before [`walk_cells`]/[`walk_cells_exact`]'s
+/// own loop starts, rather than threaded through it argument by argument.
+///
+/// `spot_z` is the ray's own start `z`, after [`stand_clear`]'s nudge — the
+/// value both walks already call `on_surface`/`caps_this` with; `to_z` is
+/// the far end's, used only for `flame_end`.
+struct ExemptionContext {
+    first: (i32, i32),
+    last: (i32, i32),
+    skip_last: bool,
+    own: u8,
+    surface: Surface,
+    spot_z: f32,
+    to_z: f32,
+}
+
+/// Which of this tile's own sides are exempt because [`own_run`] says so, and
+/// whether `stands` itself is exempt from occluding this ray at all.
+struct Exemption {
+    /// A surface does not shadow itself: see [`walk_cells`]'s own
+    /// `lit_end`/`flame_end`/`caps_this` comments for the three cases this
+    /// covers.
+    exempt: bool,
+    /// [`own_run`]'s answer for this solid — needed by the caller even when
+    /// `exempt` is `false`, since a run does not shadow itself panel by
+    /// panel either.
+    same_run: u8,
+}
+
+/// The `lit_end`/`flame_end`/`caps_this`/`same_run` decision [`walk_cells`]
+/// and [`walk_cells_exact`] each computed inline, word for word the same in
+/// both, before this was pulled out from underneath them.
+fn exemption(
+    ctx: &ExemptionContext,
+    cell: (i32, i32),
+    lit_by_own_tile: u8,
+    stands: &crate::occlusion::Solid,
+) -> Exemption {
+    let own_cell = cell == ctx.first;
+    let same_run = match on_surface(ctx.spot_z, stands) {
+        true => own_run(ctx.own, cell, ctx.first),
+        false => 0,
+    };
+    let lit_end = own_cell && on_surface(ctx.spot_z, stands);
+    let flame_end = ctx.skip_last && cell == ctx.last && on_surface(ctx.to_z, stands);
+    let caps_this = ctx.surface == Surface::Flat && lit_end && ctx.spot_z >= stands.top() as f32 - ON_TOP;
+    let exempt =
+        stands.edges != 0 && ((lit_end && stands.edges & lit_by_own_tile == 0) || flame_end || caps_this);
+    Exemption { exempt, same_run }
+}
+
 /// A point in the world, as the lighting sees one: a fractional tile and a `z`.
 ///
 /// Fractional because that is what the place attachment carries — where in its
@@ -2067,6 +2119,15 @@ fn walk_cells(
         Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
         None => 0,
     };
+    let exemption_ctx = ExemptionContext {
+        first,
+        last,
+        skip_last,
+        own,
+        surface,
+        spot_z: spot.z,
+        to_z: to[2],
+    };
 
     let mut through = 1.0;
     for step in dda_walk(spot.at, Vec2::new(to[0], to[1]), first) {
@@ -2160,25 +2221,13 @@ fn walk_cells(
                 // the lit end is part of, which is [`own_run`] with the same `z`
                 // test on it: a run is one surface, and the storey below is
                 // another one that happens to be under it.
-                let same_run = match on_surface(spot.z, stands) {
-                    true => own_run(own, cell, first),
-                    false => 0,
-                };
-                let lit_end = own_cell && on_surface(spot.z, stands);
-                let flame_end = skip_last && cell == last && on_surface(to[2], stands);
-                // **A flat surface at or above a panel's own top is its cap, not a
-                // floor the panel rises through.** `shadowed_by_own_tile` reads
-                // every flat pixel on a named-edge tile as the room floor decision
-                // 28 was written for, and a tread's own top proves that wrong: it
-                // sits at exactly its riser's `top()`, nothing of the riser stands
-                // *above* that height, and the pixel is standing on the panel the
-                // same way a face does — not behind it. A genuine floor with a wall
-                // rising past it stays caught, because its `z` is at the panel's
-                // `bottom()` and this is false there. `blit.wgsl`'s `walk`.
-                let caps_this = surface == Surface::Flat && lit_end && spot.z >= stands.top() as f32 - ON_TOP;
-                if stands.edges != 0
-                    && ((lit_end && stands.edges & lit_by_own_tile == 0) || flame_end || caps_this)
-                {
+                // **A surface does not shadow itself.** [`exemption`] is the
+                // `lit_end`/`flame_end`/`caps_this` decision, shared with
+                // [`walk_cells_exact`] rather than kept as two copies of the
+                // same three lines. See its own doc comment, and
+                // `blit.wgsl`'s `walk`, for the cases it covers.
+                let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, lit_by_own_tile, stands);
+                if exempt {
                     continue;
                 }
                 let (low, high) = (stands.bottom() as f32, stands.top() as f32);
@@ -2480,6 +2529,15 @@ fn walk_cells_exact(
         Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
         None => 0,
     };
+    let exemption_ctx = ExemptionContext {
+        first,
+        last,
+        skip_last,
+        own,
+        surface,
+        spot_z: from[2],
+        to_z: to[2],
+    };
 
     struct Hit<'a> {
         stands: &'a crate::occlusion::Solid,
@@ -2534,16 +2592,9 @@ fn walk_cells_exact(
             leaves,
         } in hits
         {
-            let same_run = match on_surface(from[2], stands) {
-                true => own_run(own, cell, first),
-                false => 0,
-            };
-            let lit_end = own_cell && on_surface(from[2], stands);
-            let flame_end = skip_last && cell == last && on_surface(to[2], stands);
-            let caps_this = surface == Surface::Flat && lit_end && from[2] >= stands.top() as f32 - ON_TOP;
-            if stands.edges != 0
-                && ((lit_end && stands.edges & lit_by_own_tile == 0) || flame_end || caps_this)
-            {
+            // Same [`exemption`] `walk_cells` calls — see its own doc comment.
+            let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, lit_by_own_tile, stands);
+            if exempt {
                 continue;
             }
             let middle = (entered + leaves) * 0.5;
@@ -3886,6 +3937,140 @@ mod tests {
             let to = [tx, ty, tz];
             let new = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
             prop_assert!((0.0..=1.0).contains(&new.0), "from {from:?} to {to:?}: through {}", new.0);
+        });
+    }
+
+    /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3's own
+    /// "no sound automated oracle... a deliberate stop" — closed.
+    /// [`walk_cells_exact_stays_in_range_on_the_stair`]'s own doc comment
+    /// named what a real disagreement oracle for this scene needs: the same
+    /// `on_surface`/`own_run`/`flame_end` exemption predicates a naive "any
+    /// real hit counts" check does not know about, and named re-deriving
+    /// them a second, independent time as the trap this doc's own
+    /// fault-injection discipline exists to avoid falling into by accident
+    /// (see `feedback-rederived-formula-needs-reference-gate` in project
+    /// memory). [`exemption`], pulled out of `walk_cells`/`walk_cells_exact`
+    /// this session for exactly this, is what makes *reusing* the real
+    /// predicates possible here instead of re-deriving them a third time.
+    ///
+    /// Same "whichever walk claims the stronger answer must be backed"
+    /// discipline [`walk_cells_exact_disagreements_are_backed_by_ray_vs_solid`]
+    /// already runs on the single-wall scenes, with the one addition this
+    /// richer scene needs and that one did not: a real `ray_vs_solid` hit
+    /// only backs a blocked verdict if [`exemption`] says the solid it hit
+    /// is not exempt, and — for a panel or a body — if `own_run` has not
+    /// already cancelled every side the ray could have crossed. Without
+    /// both, the stair's own flame-standing-on-its-own-tread case (a real
+    /// `ray_vs_solid` hit, correctly read as open by both walks) reads as an
+    /// unbacked disagreement and fails the test for a case that is not a
+    /// bug — the exact false alarm the smoke test above was written to
+    /// avoid running into, now closed rather than routed around.
+    #[test]
+    fn walk_cells_exact_disagreements_on_the_stair_are_backed_by_a_real_unexempted_hit() {
+        use crate::facing::Prism;
+        use crate::occlusion::{Builder, Shape};
+        use proptest::prelude::*;
+
+        let stair = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        occlusion.add(100, 100, 0, Graphic(0x0736), &stair, Shape::solid(prism));
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+        let surface = Surface::Flat;
+
+        proptest!(ProptestConfig::with_cases(8_000), |(
+            fx in 97.0_f32..103.0,
+            fy in 97.0_f32..103.0,
+            fz in 0.0_f32..6.0,
+            tx in 97.0_f32..103.0,
+            ty in 97.0_f32..103.0,
+            tz in 0.0_f32..6.0,
+        )| {
+            prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
+            let tile = (fx.floor() as i32, fy.floor() as i32);
+            let from = [fx, fy, fz];
+            let to = [tx, ty, tz];
+            let old = walk_cells(from, to, surface, tile, true, FLAME_SPREAD, &occlusion);
+            let new = walk_cells_exact(from, to, surface, tile, true, FLAME_SPREAD, &occlusion);
+
+            let (from3, to3) = stand_clear(from, to, surface);
+            let last = (to3[0].floor() as i32, to3[1].floor() as i32);
+            let own = match surface.face() {
+                Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
+                None => 0,
+            };
+            let ctx = ExemptionContext {
+                first: tile,
+                last,
+                skip_last: true,
+                own,
+                surface,
+                spot_z: from3[2],
+                to_z: to3[2],
+            };
+            // A real hit "backs" a blocked verdict only if `exemption` says
+            // the solid it hit is not exempt, and — for anything but a lid —
+            // `own_run` has not already cancelled every side the ray could
+            // have crossed it on. Both reused straight off the walks, not
+            // re-derived: see this test's own doc comment.
+            let backed_by_an_unexempted_hit = |blamed: (i32, i32)| {
+                let own_cell = blamed == tile;
+                let sides = match own_cell {
+                    false => 0,
+                    true => occlusion.solids_at(blamed.0, blamed.1).fold(0, |mask, s| mask | s.edges),
+                };
+                let lit_by_own_tile = match own_cell {
+                    false => 0,
+                    true => surface.shadowed_by_own_tile(sides),
+                };
+                occlusion.solids_at(blamed.0, blamed.1).any(|stands| {
+                    if ray_vs_solid(from3, to3, &stands.space).is_none() {
+                        return false;
+                    }
+                    let Exemption { exempt, same_run } = exemption(&ctx, blamed, lit_by_own_tile, stands);
+                    if exempt {
+                        return false;
+                    }
+                    match stands.edges {
+                        0 => true,
+                        edges => edges & !same_run != 0,
+                    }
+                })
+            };
+
+            // Same wide gap `walk_cells_exact_disagreements_are_backed_by_
+            // ray_vs_solid` uses, not `RAY_CUTOFF`: softness sampled at a
+            // cell's shared midpoint versus a solid's own exact one can land
+            // a hair either side of the cutoff near a soft edge without
+            // either walk being wrong — that is a difference of degree, not
+            // the "blocked versus never touched at all" question this test
+            // asks.
+            if old.0 <= RAY_CUTOFF && new.0 > 0.5 {
+                let blamed = old.1.expect("blocked implies a blamed tile");
+                prop_assert!(
+                    !backed_by_an_unexempted_hit(blamed),
+                    "from {from:?} to {to:?}: walk_cells blocked at {blamed:?}, walk_cells_exact \
+                     reads it open ({new:?}) — but a real, unexempted ray_vs_solid hit backs the \
+                     block, so walk_cells_exact should have blocked it too and did not",
+                );
+            } else if new.0 <= RAY_CUTOFF && old.0 > 0.5 {
+                let blamed = new.1.expect("blocked implies a blamed tile");
+                prop_assert!(
+                    backed_by_an_unexempted_hit(blamed),
+                    "from {from:?} to {to:?}: walk_cells_exact blocked at {blamed:?} with no real, \
+                     unexempted ray_vs_solid hit there — a real regression, not known walk_cells \
+                     coarseness",
+                );
+            }
         });
     }
 
