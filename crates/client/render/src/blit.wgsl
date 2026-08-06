@@ -53,10 +53,8 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // wide: (z_bottom + 128, z_top + 128, opacity, PRESENT | HOLED | edges). A
 // texture and not a storage buffer because the ceiling is WebGL2 — decision 30.5.
 //
-// The box's `x` and `y` are deliberately not here: what this walk tests is a
-// plane named by the cell it is stepping through and the solid's `edges`, so the
-// two horizontal axes have no reader in this file. `Occlusion::solid_bytes` has
-// the argument, and step 23.5 is where they arrive with one.
+// The box's `x` and `y` are not in *this* plane — binding 13 below is where
+// they arrived, once a reader existed for them.
 @group(0) @binding(6) var solids: texture_2d<u32>;
 // The hole in each of those solids, indexed by the same number:
 // (near, far, z_bottom + 128, z_top + 128) — `occlusion::Aperture`. A plane
@@ -234,6 +232,12 @@ struct GroundInstance {
 };
 
 @group(0) @binding(12) var<storage, read> ground_instances: array<GroundInstance>;
+// One solid's own horizontal footprint, indexed and folded exactly as
+// `solids`/`apertures` are: (min.x, max.x, min.y, max.y), a fraction of the
+// tile it stands on quantised to a byte — `occlusion::Solid::fraction`.
+// `docs/lighting_raymarch.md`'s "second bigger idea": the reader `box_of`
+// used to have no channel to read, arrived.
+@group(0) @binding(13) var footprints: texture_2d<u32>;
 
 // The third channel is `z + 128` in its low eight bits and the sprite's stance in
 // four of the eight above — `crate::place::STANCE_SHIFT`, and `statics.wgsl`
@@ -378,12 +382,6 @@ const HOLED: u32 = 64u;
 // byte and divide it by this, so the two implementations agree exactly rather
 // than to a tolerance.
 const RUN_STEPS: f32 = 255.0;
-
-// How thick a panel's slab is, in tiles, inward from the plane its face
-// pixels lie on. `occlusion::PANEL_THICKNESS`, and the two are one number:
-// `box_of`'s own inset is sized off it and the two implementations have to
-// agree exactly.
-const PANEL_THICKNESS: f32 = 0.2;
 
 // How far past an exact tangent `ray_vs_solid`'s own `entered > leaves`
 // rejection still counts as a hit — a cross-implementation tolerance, and
@@ -631,6 +629,14 @@ fn aperture_at(id: u32) -> vec4<u32> {
     return textureLoad(apertures, at, 0);
 }
 
+// And its footprint: (min.x, max.x, min.y, max.y), read every time rather
+// than gated the way `aperture_at` is — every solid has one, where almost
+// none has a hole.
+fn footprint_at(id: u32) -> vec4<u32> {
+    let at = vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW));
+    return textureLoad(footprints, at, 0);
+}
+
 // One tile's surfaces as one box: the union of the spans, the largest opacity
 // and the union of the sides, with a `w` of zero for a tile that stands nothing.
 //
@@ -710,35 +716,31 @@ fn sky_at(x: i32, y: i32) -> f32 {
 // top of a wall is dimmed rather than switched. That is what keeps a cellar's
 // wall out of the street above it, without a step where the two meet.
 
-// The box one occluder standing on `cell` is — `light::occlusion::Solid::box_of`,
-// the one place a kind becomes geometry, reconstructed from exactly the four
-// bytes this shader's own upload carries. `docs/lighting_raymarch.md`'s point
-// 4: bit-for-bit what built the real box for every *ordinary* static, since
-// every one of those was built by calling the same function in the first
-// place; lossy only for a sub-tile `occlusion::Builder::add_raw` occluder,
-// which this upload format has no `x`/`y` channel to tell apart from a
-// whole tile regardless of this function.
+// The box one occluder standing on `cell` is — `light::occlusion::Solid::
+// box_from_footprint`, its own WGSL mirror. Used to be reconstructed from
+// only `(cell, bottom, top, edges)`, guessing whole-tile-or-panel-strip and
+// blind to a body narrower than its tile; `footprint` is `footprint_at`'s own
+// four bytes, `occlusion::Solid::fraction`'s quantised `(min.x, max.x, min.y,
+// max.y)`, so this is now a direct read rather than a guess — bit-for-bit
+// what `Solid::fraction` measured off the real `space` at upload time, lossy
+// only by that one shared quantisation step. `docs/lighting_raymarch.md`'s
+// "second bigger idea".
 struct SolidBox {
     lo: vec3<f32>,
     hi: vec3<f32>,
 };
 
-fn box_of(cell: vec2<i32>, bottom: f32, top: f32, edges: u32) -> SolidBox {
-    var lo = vec3<f32>(f32(cell.x), f32(cell.y), bottom);
-    var hi = vec3<f32>(f32(cell.x) + 1.0, f32(cell.y) + 1.0, top);
-    // A lid or a body (`edges` `0` or `EDGE_MASK`) is the whole tile, already
-    // `lo`/`hi` above. A panel is a slab `PANEL_THICKNESS` deep, fattened
-    // inward from the plane its face pixels lie on — a corner is two panels
-    // and never reaches here with both bits set at once.
-    if edges == EDGE_NORTH {
-        hi.y = f32(cell.y) + PANEL_THICKNESS;
-    } else if edges == EDGE_SOUTH {
-        lo.y = f32(cell.y) + 1.0 - PANEL_THICKNESS;
-    } else if edges == EDGE_WEST {
-        hi.x = f32(cell.x) + PANEL_THICKNESS;
-    } else if edges == EDGE_EAST {
-        lo.x = f32(cell.x) + 1.0 - PANEL_THICKNESS;
-    }
+fn box_of(cell: vec2<i32>, bottom: f32, top: f32, footprint: vec4<u32>) -> SolidBox {
+    let lo = vec3<f32>(
+        f32(cell.x) + f32(footprint.x) / 255.0,
+        f32(cell.y) + f32(footprint.z) / 255.0,
+        bottom,
+    );
+    let hi = vec3<f32>(
+        f32(cell.x) + f32(footprint.y) / 255.0,
+        f32(cell.y) + f32(footprint.w) / 255.0,
+        top,
+    );
     return SolidBox(lo, hi);
 }
 
@@ -814,23 +816,26 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
     return RayBox(true, entered, max(entered, leaves));
 }
 
-// Which side (or two, at a genuine corner) of `cell` a point sitting on its
-// boundary is on — `0` for a point on none of its four edges.
+// Which side (or two, at a genuine corner) of a body's own box a point
+// sitting on its boundary is on — `0` for a point on none of its four edges.
 // `light::box_side`: the geometric replacement for a DDA step's own
-// entry/exit, since a body's box *is* the tile's own footprint and the side
-// a crossing point sits on is read directly off which boundary it touches.
-fn box_side(pos: vec2<f32>, cell: vec2<i32>) -> u32 {
+// entry/exit, the side a crossing point sits on read directly off which of
+// the **body's own** boundaries it touches. `lo`/`hi` are the body's own
+// box (`box_of`'s own `lo`/`hi`) — not always the tile's own boundary any
+// more, now that a footprint can be narrower than its tile.
+// `docs/lighting_raymarch.md`'s "second bigger idea".
+fn box_side(pos: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> u32 {
     var side = 0u;
-    if abs(pos.x - f32(cell.x)) < 1.0e-3 {
+    if abs(pos.x - lo.x) < 1.0e-3 {
         side = side | EDGE_WEST;
     }
-    if abs(pos.x - f32(cell.x + 1)) < 1.0e-3 {
+    if abs(pos.x - hi.x) < 1.0e-3 {
         side = side | EDGE_EAST;
     }
-    if abs(pos.y - f32(cell.y)) < 1.0e-3 {
+    if abs(pos.y - lo.y) < 1.0e-3 {
         side = side | EDGE_NORTH;
     }
-    if abs(pos.y - f32(cell.y + 1)) < 1.0e-3 {
+    if abs(pos.y - hi.y) < 1.0e-3 {
         side = side | EDGE_SOUTH;
     }
     return side;
@@ -903,11 +908,11 @@ fn cell_stopped(
         let edges = stands.w & EDGE_MASK;
         let low = f32(stands.x) - 128.0;
         let high = f32(stands.y) - 128.0;
-        // The exact box this one solid is, reconstructed from exactly what
-        // this shader's upload carries, and the exact interval this ray
-        // crosses it in — `light::ray_vs_solid`, replacing the DDA's own
-        // per-*cell* `entered`/`leaves` with a per-*solid* one.
-        let bx = box_of(cell, low, high, edges);
+        // The exact box this one solid is, read off its own footprint plane
+        // rather than reconstructed from `edges`, and the exact interval
+        // this ray crosses it in — `light::ray_vs_solid`, replacing the
+        // DDA's own per-*cell* `entered`/`leaves` with a per-*solid* one.
+        let bx = box_of(cell, low, high, footprint_at(id));
         let hit = ray_vs_solid(start, finish, bx.lo, bx.hi, tolerance);
         if !hit.hit {
             continue;
@@ -940,23 +945,28 @@ fn cell_stopped(
         var by_surface = 0.0;
         if edges == 0u {
             // A **lid** — a floor, a rug, a plank. What crosses it is asked
-            // over the ray's whole run inside the tile's own footprint (an
-            // infinite-`z` box, since a lid's own box above is flat in `z`
-            // and would only ever catch the instant the ray is exactly at
-            // its height), not over `hit`'s own thin interval. `crosses`
-            // does the actual plane test on the `z` that gives it.
-            let footprint = ray_vs_solid(
+            // over the ray's whole run inside the lid's own real horizontal
+            // footprint (an infinite-`z` box, since a lid's own box above is
+            // flat in `z` and would only ever catch the instant the ray is
+            // exactly at its height), not over `hit`'s own thin interval.
+            // `crosses` does the actual plane test on the `z` that gives it.
+            // `bx.lo`/`bx.hi`'s own `x`/`y`, not the whole cell — a tread's
+            // own top is a lid narrower than its tile, and asking a wider
+            // box than the lid actually is would read a ray grazing the
+            // tile's corner past the tread's real edge as "crossed through"
+            // it. `docs/lighting_raymarch.md`'s "second bigger idea".
+            let unbounded = ray_vs_solid(
                 start,
                 finish,
-                vec3<f32>(f32(cell.x), f32(cell.y), -1.0e6),
-                vec3<f32>(f32(cell.x) + 1.0, f32(cell.y) + 1.0, 1.0e6),
+                vec3<f32>(bx.lo.x, bx.lo.y, -1.0e6),
+                vec3<f32>(bx.hi.x, bx.hi.y, 1.0e6),
                 tolerance,
             );
             var tile_entered = hit.entered;
             var tile_leaves = hit.leaves;
-            if footprint.hit {
-                tile_entered = footprint.entered;
-                tile_leaves = footprint.leaves;
+            if unbounded.hit {
+                tile_entered = unbounded.entered;
+                tile_leaves = unbounded.leaves;
             }
             by_surface = opacity * crosses(
                 lit.z + delta.z * tile_entered,
@@ -970,21 +980,24 @@ fn cell_stopped(
             // A **body** — a whole tile that stands up and whose art would
             // not say which way. A solid the ray travels *through*, so what
             // it stops is scaled by the length of the exact crossing, plus
-            // whichever of the tile's own sides the crossing's own ends
+            // whichever of the body's own sides the crossing's own ends
             // touch — see the same length-and-pierce argument `light::
             // walk_cells`'s own doc keeps, unchanged: the length is what
             // keeps a slab opaque to a ray that pierces neither of its
             // sides, the pierce is what closes the sliver a ray clipping a
-            // corner would otherwise slip through.
+            // corner would otherwise slip through. `bx.lo`/`bx.hi`'s own
+            // `xy`, not the whole cell — `box_side`'s own doc.
             let crossed_len = (hit.leaves - hit.entered) * ground;
             var body_stopped = opacity * clamp(crossed_len / soft, 0.0, 1.0);
             let stops = EDGE_MASK & ~same_run;
+            let box_lo = bx.lo.xy;
+            let box_hi = bx.hi.xy;
             let enter_point = vec2<f32>(start.x + delta.x * hit.entered, start.y + delta.y * hit.entered);
-            if (stops & box_side(enter_point, cell)) != 0u {
+            if (stops & box_side(enter_point, box_lo, box_hi)) != 0u {
                 body_stopped = max(body_stopped, opacity * pierces(start.z + delta.z * hit.entered, low, high, tall));
             }
             let leave_point = vec2<f32>(start.x + delta.x * hit.leaves, start.y + delta.y * hit.leaves);
-            if (stops & box_side(leave_point, cell)) != 0u {
+            if (stops & box_side(leave_point, box_lo, box_hi)) != 0u {
                 body_stopped = max(body_stopped, opacity * pierces(start.z + delta.z * hit.leaves, low, high, tall));
             }
             by_surface = body_stopped;

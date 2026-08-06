@@ -22,12 +22,17 @@ Written against `crates/client/render/src/light.rs`, `mesh_face.rs`,
 
 ## Where the next session starts
 
-**Two independent tracks. Track A's only open item is step 5, and session 18
-found the first reproducible, precisely-localised anomaly this doc has ever
-pinned on it — read session 18's own entry before touching it again. Track
-B's point 4 cutover landed session 16; its one open parity gap was triaged
-and closed as an accepted limitation in session 17 — read that entry before
-reopening it.**
+**Track A (steps 1-5) is closed — step 5's white line was fixed session 19,
+as a side effect of Track B's own footprint-upload landing.** Track B's
+point 4 cutover landed session 16; its one open parity gap was triaged and
+closed as an accepted limitation in session 17; the backlog's "second bigger
+idea" (the GPU footprint upload) and a `box_side` bug found alongside it
+both landed session 19. **What is open now is new, found at the very end of
+session 19, and lives only in the Backlog below**: a body's own base meets
+the ground with no shadow at all — read that entry (search "the ground
+immediately beside a body's own base") before starting, it has the repro,
+what is already ruled out, and the unfinished next step (a ground-point
+oracle, not more hand arithmetic).
 
 **Track A — the tile-boundary bug (steps 1-5 below).** Steps 1-4 are done
 and committed. Step 5 — the still-unexplained white line over empty
@@ -267,7 +272,7 @@ sessions for the mechanism, not repeated here.
       openshard-client-render`, `cargo check --workspace --all-targets` and
       `cargo clippy --workspace --all-targets` all green with the fix
       restored.
-- [ ] **5. Diagnose the second, still-unexplained shape.** The white line
+- [x] **5. Diagnose the second, still-unexplained shape.** The white line
       over empty background in `View::Shadow`, confirmed present and
       unchanged by the `mesh_face.wgsl` fix — see `lighting.md`'s "Fixed: the
       shadow-raymarch anomaly" entry, "The second shape..." — cause unknown.
@@ -349,6 +354,29 @@ sessions for the mechanism, not repeated here.
       flips, and why abruptly, is the next session's own first question, with
       the exact profiling commands to get there already run once (see the
       Handoff log entry).
+
+      **Root-caused and fixed, session 19 — not the walk's own candidate
+      selection, the lid's `crosses()` z-range hack computing against the
+      whole tile instead of the tread's own real footprint.** Found while
+      landing the backlog's GPU footprint-upload item, unlooked-for: the
+      `edges == 0` (lid) branch in both CPU walks and `blit.wgsl`'s
+      `cell_stopped` re-derives an unconstrained-`z` box to find where a
+      ray enters/leaves a lid's own horizontal footprint, and that box was
+      always the *whole cell*, correct only because every lid's own box
+      used to *be* the whole cell before this session's upload gave `box_of`
+      a real footprint to read. A tread is a lid a third of a tile wide;
+      re-run against the whole tile instead of its own real strip, a ray
+      whose true crossing of the tread's own footprint should read clean
+      could still straddle territory well outside it, which is exactly the
+      "jump with no soft edge" shape found above. Switched to the lid's own
+      real `lo`/`hi` in all three places (`stands.space` in
+      `walk_cells_exact`, `space` in `walk_cells_streaming`, `bx.lo`/`bx.hi`
+      in `blit.wgsl`) and re-ran this step's own profile: `through` now
+      reads a flat `1.000` across the entire `1497.55..1497.75` sweep, no
+      jump anywhere. Full account, including what the render's own picture
+      changed (the bright bands widened, not narrowed) and the separate
+      `box_side` bug found alongside this one, in session 19's own Handoff
+      log entry.
 
 ## Backlog
 
@@ -1150,6 +1178,28 @@ there is one.
   the CPU's own `Occlusion::solid`/`Occlusion::at`) is a caller this change
   has to keep honest, not just `walk`'s own body arm.
 
+  **Landed, session 19 — mostly as this entry sketched it, with one
+  clarification and one new gap found in the process.** Full account in the
+  Handoff log; the shape as this entry named it: `Occlusion::footprint_bytes`
+  is the new parallel plane (binding 13), `Solid::fraction` quantises
+  `space`'s own bounds to a byte relative to the tile, `Solid::
+  box_from_footprint` (CPU) and `box_of`'s new WGSL signature both read it
+  instead of guessing from `edges`. Not sketched here, and load-bearing: the
+  fix does not stop at `box_of`'s own reconstruction — `box_side`
+  (`light.rs`/`blit.wgsl`), the corner-graze detector both `EDGE_ANY` arms
+  already called, compared a crossing point against the *tile's* boundary,
+  which stopped being where a sub-tile body's own edge is the moment this
+  landed. Missing that half kept the `tree` scene's own oracle disagreement
+  at 480/9216 (unchanged from `walk_cells_exact`'s own number, not the zero a
+  correct footprint should have bought) until `box_side` was given the
+  body's own `lo`/`hi` too, at which point it dropped to 0/9216 on both
+  boxes. **A new, separate, unroot-caused gap is open at the end of this
+  session — the ground immediately at a body's own base reads fully open
+  where the render clearly should shadow it, a hard `through` jump with no
+  soft edge at all.** Its own entry is below, in this same backlog, not
+  merged into this one: it may or may not share a cause with anything above,
+  and this entry's own account is complete without it.
+
   **A separate, already-fixed bug found on the way, in `light.rs`'s own
   `exemption` (and its `blit.wgsl` mirror) — real, independent of the
   footprint gap above, landed this session.** `exemption`'s own `lit_end`
@@ -1207,11 +1257,200 @@ there is one.
   the actual WGSL port `walk_cells_streaming` now exists to make a
   mechanical translation of, rather than a second open design question.
 
+- **Open, session 19, found by the user looking at `boxes.rs`'s `tree`
+  scene right after the footprint upload landed: the ground immediately
+  beside a body's own base reads fully open, with no soft shadow edge at
+  all — a hard, one-pixel jump from the body's own opaque face straight to
+  `through = 1.0`.** Not the same shape as the `box_side` gap this same
+  session already found and fixed (that one under-counted a grazing
+  tangent; this one is a substantial, non-degenerate ray with no shadow at
+  all where a real one should shade in smoothly), and not yet root-caused —
+  read this entry before touching it, since one plausible mechanism
+  (`box_side`'s own tile-vs-body confusion) is already ruled out by the fact
+  that this session's fix to exactly that did not close it.
+
+  **Reproduce**: `OPENSHARD_BOXES_SCENE=tree OPENSHARD_SCENE_ZOOM=14
+  OPENSHARD_BOXES_ORACLE=0 OPENSHARD_FRAME_DUMP=/tmp/x cargo run --release -p
+  openshard-client-render --example boxes`, then look at `View::Shadow`
+  (`<path>_shadow.ppm`) right where box 0's own east or south face meets the
+  ground — the dark-red face (step 1's "blocked, on mesh" colour) borders
+  pure white directly, along a visibly jagged (aliased) diagonal seam, with
+  no grey penumbra band the way the *farther* shadow (the same box's own
+  cast shadow a tile or more away, correctly soft) has. Confirmed with raw
+  pixel data, not the eye: sampling `through`'s own red channel across the
+  seam on every row of a `140x100` crop at the boundary
+  (`OPENSHARD_SCENE_ZOOM=14`, crop origin `+150+260`) never once reads
+  anything between the box's own dark-red `(51, 0, 0)` and pure white
+  `(255, 255, 255)` — no `200`, no `100`, nothing — on any of the ~35 rows
+  sampled.
+
+  **What is already ruled out, so the next session does not re-check it**:
+  `box_side` reading the tile instead of the body's own edge — this
+  session's own fix, verified to land cleanly (the `tree` scene's oracle
+  went from 480/9216 to 0/9216 *on both boxes' own tops*), and the ground gap
+  reproduces identically before and after that fix, on the same commit that
+  also fixed it. `exemption`'s own `lit_end`/`caps_this` — worked through by
+  hand for a ground query point on box 0's own tile against box 0 itself:
+  `on_surface(0, box0)` is true (the ground's `z = 0` is exactly box 0's own
+  `bottom`), so `lit_end` is true, but `caps_this` needs `spot_z >=
+  stands.top() - ON_TOP` (`0 >= 3 - ON_TOP`, false) and the other exemption
+  clause is gated to `surface != Surface::Flat` (false, the ground is
+  `Flat`) — neither fires, so the ground is not vacuously exempted from its
+  own tile's body the way step 14's `exemption` bug once let it be.
+
+  **What was in progress and not finished**: extending `boxes.rs`'s own
+  independent oracle (`oracle_visible`/`segment_clear_of_box`, already used
+  for each box's own top) to a grid of *ground* points around the boxes,
+  the same way the box-top oracle already settled the `box_side` question
+  above rather than trusting a picture. That oracle has never once been
+  pointed at a ground point — it is the fastest way to tell "the ray
+  genuinely misses the box's real, narrower body, and the render is
+  correct" from "something in `cell_stopped`/`walk_cells_streaming`'s own
+  `EDGE_ANY` arm still drops a real crossing to zero," and the next session
+  should build it before guessing at a mechanism by hand the way this
+  entry's own now-abandoned arithmetic (checked against the wrong face of
+  the box at least once) already showed is easy to get wrong.
+
 ## Handoff log
 
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 19 — the GPU footprint upload landed (the backlog's "second bigger idea"), `box_side` fixed alongside it, and a new ground-shadow gap found and left open
+
+Picked up from session 18's own entry — asked by the user to look at
+`boxes.rs`'s `tree` scene (a cube on a cube) instead of continuing to chase
+step 5's stair directly, on the reasoning that the same footprint-blind
+`box_of` this doc's backlog already named ("A second bigger idea...") was a
+plausible shared cause. Confirmed first, not assumed: the `tree` scene's own
+oracle already measured a real, numbered defect (3027/9216, dropping to
+480/9216 through `walk_cells_exact`) — the backlog entry was live, not
+theoretical.
+
+**The upload, built roughly as the backlog entry sketched it, checked
+against `docs/lighting.md`'s step 23.5 first to avoid re-deriving a design
+that might already exist.** An `Explore` agent read both docs' full
+"step 23.5" and decision 38 material and reported back: 23.5 itself is
+closed (the tread/riser half, credited to `docs/gbuffer.md` steps 4b/4c,
+landed session prior to this track even starting), but the GPU-upload
+half the `blit.wgsl`/`occlusion.rs` comments both point at ("step 23.5 is
+where they arrive with a reader") was never part of that closure — no
+byte-layout decision exists anywhere, and `lighting_raymarch.md`'s own
+backlog entry is the most current, most specific sketch there is. Built
+from it directly:
+
+- `occlusion::Solid::fraction` (`occlusion.rs`) — `(min.x, max.x, min.y,
+  max.y)` as a fraction of the tile `space.min`'s own floor names, each
+  quantised to a byte. Deliberately quantised **on the CPU too**, not just
+  at upload time: `walk_cells_streaming` calls it as well as
+  `Occlusion::footprint_bytes`, so the CPU "preview" of what the GPU can do
+  stays a preview rather than silently becoming more precise than the thing
+  it previews.
+- `Occlusion::footprint_bytes` — a new parallel plane, same indexing and
+  folding as `solid_bytes`/`aperture_bytes`, written **every** frame
+  (unlike `aperture_bytes`'s hole-gated write — every solid has a
+  footprint, almost none has a hole).
+- `blit.rs` binding 13, `blit.wgsl`'s `footprints`/`footprint_at`, and
+  `box_of`'s new signature reading `vec4<u32>` fractions instead of
+  branching on `edges` — a straight read, not a guess, for every kind
+  (lid, panel, body) at once, since `space` already carries the panel inset
+  `box_of`'s old `edges`-branching used to compute at query time.
+- `Solid::box_from_footprint` (CPU mirror), `walk_cells_streaming`'s one
+  call site switched to it. `walk_cells_exact` untouched — it already reads
+  `stands.space` directly, at full precision, and stays the oracle the
+  streaming walk is checked against.
+- The lid-only `crosses()` z-range hack (`edges == 0`, both `light.rs`
+  copies and `blit.wgsl`'s `cell_stopped`) used to re-derive an
+  "unconstrained-z" box from the *whole cell* to get a before/after `z`
+  pair `crosses` needs — correct only because a lid's own box, pre-upload,
+  was always exactly the whole cell too. Switched to the solid's own real
+  `lo`/`hi` (`stands.space` in `walk_cells_exact`, `space` in
+  `walk_cells_streaming`, `bx.lo`/`bx.hi` in `blit.wgsl`) — this is what
+  actually fixed step 5's own white line, confirmed below.
+
+**Step 5's own discontinuity (session 18's finding) is gone, confirmed by
+re-running its exact profile.** The `1497.55..1497.75` sweep that used to
+show `through` climb smoothly from `0.098` to `0.069` and then *jump*
+straight to `1.000` in one step now reads a flat `1.000` across the entire
+sweep — the lid hack above was reading the tread's own crossing against the
+*whole tile*'s width, not the tread's real one-third-tile strip, so a ray
+whose true crossing of the tread's own narrow footprint was clean read as
+if it were still crossing (or not) a much wider box. Whether the render
+itself is now *more* correct or merely *different* was checked, not
+assumed: the stair's `View::Shadow` picture changed (the bright bands at
+every tread/riser seam widened, not narrowed), consistent with the old,
+too-wide lid box diluting a real, undiluted highlight across more of the
+tile than the tread actually covers.
+
+**The `tree` scene's own oracle went from 3027/9216 (pre-session, box 0's
+own top) to 480/9216 (footprint upload alone) to 0/9216 (both boxes' own
+tops, footprint upload plus the `box_side` fix below).** The 480 remainder
+was written off in session 14's own backlog entry as "the soft edge of a
+real penumbra against the oracle's own hard step, not a further bug" —
+**that explanation was wrong, or at least incomplete**: it went away
+entirely once `box_side` was fixed, meaning at least part of what looked
+like an accepted penumbra-vs-hard-step remainder was actually this second,
+unnamed bug the whole time, hiding behind a plausible-sounding explanation
+nobody had verified by removing the actual cause and watching the number
+change. Worth remembering next time a "remainder" gets written off as
+expected imprecision without a fault-injection check.
+
+**`box_side`, found only because the user kept looking at the picture
+after the footprint upload and asked why a body's own ground contact still
+looked wrong.** `box_side` (`light.rs`, both call sites, and `blit.wgsl`'s
+mirror) decides whether a ray's entry/exit point sits on a body's own edge
+— the signal that lets a shallow corner-graze still count as opaque
+(`pierces`' own boost) rather than reading as barely-blocked by length
+alone. It compared the crossing point against **the tile's own boundary**
+(`cell.x`/`cell.x + 1` etc.), which was exactly right while every body's
+box *was* the whole tile, and silently wrong the moment `box_of` started
+returning a real, narrower footprint: a ray entering a half-tile body
+through its own real west face crosses at `x ≈ 100.25`, nowhere near the
+tile's own boundary at `x = 100`/`101`, so `box_side` returned `0` and the
+`pierces()` safety net never fired at all. Symptom, found by the user and
+confirmed by raw pixel sampling before touching any code: a visible white
+wedge sandwiched between a smooth, correctly-graduated shadow gradient and
+the box's own dark face — `through` climbing from `0.069` down toward `0`
+as the query approached the box, then *snapping* to `1.000` for a short
+stretch right at the edge, rather than continuing to darken. Confirmed the
+bug was real and not a rendering nuance by computing `ray_vs_solid`'s own
+slab test by hand for a point just outside box 0's real west edge:
+`entered == leaves` exactly (a genuine tangent, zero-length crossing) —
+correctly a graze, which is precisely the case `box_side`/`pierces()` exist
+to rescue, and precisely the case that could not fire once the reference
+edge moved out from under it. **Fixed both call sites, both languages**:
+`box_side` now takes the body's own `lo`/`hi` (`stands.space` in
+`walk_cells_exact`, `space` in `walk_cells_streaming`, `bx.lo`/`bx.hi` in
+`blit.wgsl`) instead of the cell. Confirmed fixed, not just changed, by the
+oracle dropping to 0/9216 (above) and by re-rendering the same crop: the
+white wedge is gone, replaced by a shadow with a correctly dark, solid core
+near the boxes and a soft penumbra fringe further out — the physically
+expected shape for two small opaque bodies, which neither the pre-fix nor
+the mid-fix (footprint alone, `box_side` still broken) picture had.
+
+**A new, separate, unroot-caused gap found at the very end of the
+session, by the user, looking at the fixed picture: a body's own base
+still meets the ground with no shadow at all, a hard jump from the body's
+own face straight to `through = 1.000`, jagged and un-graduated.** Not the
+`box_side` gap above — reproduces identically with `box_side` fixed, on
+the same commit. Ruled out by hand (worked through `exemption`'s own
+`lit_end`/`caps_this` for a ground point on box 0's own tile against box 0
+itself: neither clause fires, so this is not the vacuous self-exemption
+session 14 already fixed once). Not yet root-caused; the entry in this
+doc's own Backlog above has the full account, the repro command, and what
+the next session should build first — an independent ground-point oracle,
+the same discipline that already caught and confirmed both bugs above,
+rather than more hand arithmetic. **Stopped here on the user's own
+instruction** ("чинить уже в следующей сессии" — fix it next session), with
+this handoff written specifically so the next session does not have to
+re-discover any of the above from a screenshot.
+
+**Verified before committing**: `cargo check --workspace --all-targets`,
+`cargo test --workspace` (every crate, not just the render one), `cargo
+clippy --workspace --all-targets` and `cargo fmt --all -- --check` all
+clean, at each of the two landing points (footprint upload alone, then
+`box_side` fixed) — not only at the end.
 
 ### Session 18 — sessions 14-17 committed, then step 5 re-opened after the point 4 rewrite: a real `through` discontinuity found and precisely localised, not yet root-caused
 

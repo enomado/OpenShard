@@ -1966,33 +1966,42 @@ fn candidate_tiles(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<(i32, i32)> {
     tiles
 }
 
-/// Which side (or two, at a genuine corner) of `tile` a point sitting on its
-/// boundary is on — [`EDGE_NORTH`](crate::occlusion::EDGE_NORTH)/
+/// Which side (or two, at a genuine corner) of a body's own box a point
+/// sitting on its boundary is on — [`EDGE_NORTH`](crate::occlusion::EDGE_NORTH)/
 /// [`EDGE_SOUTH`](crate::occlusion::EDGE_SOUTH)/
 /// [`EDGE_EAST`](crate::occlusion::EDGE_EAST)/
 /// [`EDGE_WEST`](crate::occlusion::EDGE_WEST), `0` for a point that is not on
 /// any edge of it.
 ///
-/// The geometric replacement for a [`DdaCell`]'s `entry`/`exit`: a body's
-/// box *is* the tile's own footprint (see
-/// [`crate::occlusion::Solid::box_of`]'s `EDGE_ANY` case), so the side a
+/// The geometric replacement for a [`DdaCell`]'s `entry`/`exit`: the side a
 /// [`ray_vs_solid`] crossing point sits on is read directly off which of the
-/// tile's own four boundaries it touches, rather than carried from a DDA
+/// **body's own** four boundaries it touches, rather than carried from a DDA
 /// step that never happened for a candidate this function reaches only
 /// through [`candidate_tiles`]'s diagonal probe.
-fn box_side(pos: [f32; 2], tile: (i32, i32)) -> u8 {
+///
+/// `lo`/`hi` are the body's own box — [`crate::occlusion::Solid::box_of`]'s
+/// `EDGE_ANY` case, an ordinary whole-tile body — **not** always the tile's
+/// own boundary any more: a [`crate::occlusion::Builder::add_raw`] body or a
+/// climbable static's own tread is narrower than its tile, and a crossing
+/// point on *its* edge does not sit on the tile's. Comparing against the
+/// tile the way this used to would silently stop finding a corner grazed at
+/// a narrow angle the moment the body carrying it is not the whole tile —
+/// `docs/lighting_raymarch.md`'s "second bigger idea" found this the same
+/// session it landed the footprint upload that made bodies narrower than a
+/// tile a real, common case rather than a test-only one.
+fn box_side(pos: [f32; 2], lo: [f32; 2], hi: [f32; 2]) -> u8 {
     const EPS: f32 = 1e-3;
     let mut side = 0;
-    if (pos[0] - tile.0 as f32).abs() < EPS {
+    if (pos[0] - lo[0]).abs() < EPS {
         side |= crate::occlusion::EDGE_WEST;
     }
-    if (pos[0] - (tile.0 + 1) as f32).abs() < EPS {
+    if (pos[0] - hi[0]).abs() < EPS {
         side |= crate::occlusion::EDGE_EAST;
     }
-    if (pos[1] - tile.1 as f32).abs() < EPS {
+    if (pos[1] - lo[1]).abs() < EPS {
         side |= crate::occlusion::EDGE_NORTH;
     }
-    if (pos[1] - (tile.1 + 1) as f32).abs() < EPS {
+    if (pos[1] - hi[1]).abs() < EPS {
         side |= crate::occlusion::EDGE_SOUTH;
     }
     side
@@ -2173,20 +2182,26 @@ fn walk_cells_exact(
                     // side of that point to tell "crossed through" from
                     // "never came close," and a from/to that are already
                     // equal answers every comparison in [`crosses`] as
-                    // "never." What it needs is the same thing `walk_cells`
-                    // fed it: the ray's `z` where it enters and leaves the
-                    // *tile's* own footprint, not the lid's — read off a
-                    // second `ray_vs_solid` call against the tile's own `x`/
-                    // `y` bounds and an unconstrained `z`.
+                    // "never." What it needs is the ray's `z` where it
+                    // enters and leaves the lid's own real horizontal
+                    // footprint, over an unconstrained `z` — `stands.space`
+                    // itself, not the whole tile: a tread's own top is a lid
+                    // narrower than its tile, and asking a wider box than
+                    // the lid actually is would let a ray graze the tile's
+                    // corner past the tread's real edge read as "crossed
+                    // through" the tread. Was the whole tile until
+                    // `docs/lighting_raymarch.md`'s "second bigger idea"
+                    // landed — nothing before that could tell a sub-tile
+                    // lid's own bounds from its tile's.
                     let footprint = crate::solid::Solid {
                         min: crate::camera::WorldSpot {
-                            x: f64::from(cell.0),
-                            y: f64::from(cell.1),
+                            x: stands.space.min.x,
+                            y: stands.space.min.y,
                             z: -1e6,
                         },
                         max: crate::camera::WorldSpot {
-                            x: f64::from(cell.0) + 1.0,
-                            y: f64::from(cell.1) + 1.0,
+                            x: stands.space.max.x,
+                            y: stands.space.max.y,
                             z: 1e6,
                         },
                     };
@@ -2207,11 +2222,14 @@ fn walk_cells_exact(
                     // the ray entered/left by is read off the exact
                     // crossing points themselves — [`box_side`] — rather
                     // than carried from a DDA step, since there is no DDA
-                    // step here to carry it from.
+                    // step here to carry it from. `stands.space`'s own
+                    // bounds, not the tile's — `box_side`'s own doc.
                     let stops = EDGE_ANY & !same_run;
                     let mut stopped = travelled;
+                    let lo = [stands.space.min.x as f32, stands.space.min.y as f32];
+                    let hi = [stands.space.max.x as f32, stands.space.max.y as f32];
                     for at in [entered, leaves] {
-                        let side = box_side([from[0] + delta[0] * at, from[1] + delta[1] * at], cell);
+                        let side = box_side([from[0] + delta[0] * at, from[1] + delta[1] * at], lo, hi);
                         if stops & side != 0 {
                             stopped =
                                 stopped.max(opacity * pierces(from[2] + delta[2] * at, low, high, tall));
@@ -2319,21 +2337,21 @@ fn walk_cells_exact(
 ///
 /// **What "exactly" is limited to, and why that limit is deliberate and not
 /// a shortcut.** Every solid tested here is reconstructed from `(tile,
-/// edges, bottom, top)` via [`crate::occlusion::Solid::box_of`] rather than
-/// read off [`crate::occlusion::Solid::space`] the way [`walk_cells_exact`]
-/// does — because `blit.wgsl` has no `x`/`y` channel to read a real
-/// footprint from (`docs/lighting_raymarch.md` session 14's "second bigger
-/// idea", still open) and this function exists to be a faithful preview of
-/// what the shader will be limited to as well, not a better version of it.
-/// For every *ordinary* (`tiledata`-sourced) static this reconstruction is
-/// bit-for-bit what built the real `space` in the first place — `box_of` is
-/// the one place a kind becomes geometry, and every ordinary static's
-/// `space` was built by calling it — so this function is proven to agree
-/// with `walk_cells_exact` there. `Builder::add_raw`'s sub-tile boxes are the
-/// one shape `box_of` cannot reconstruct (it only knows whole-tile-or-panel-
-/// strip shapes), and this is proven to *disagree* with `walk_cells_exact`
-/// there instead — the same already-measured, already-named gap, not a new
-/// one.
+/// bottom, top, fraction)` via [`crate::occlusion::Solid::box_from_footprint`]
+/// rather than read off [`crate::occlusion::Solid::space`] the way
+/// [`walk_cells_exact`] does — because `blit.wgsl` reads exactly that same
+/// quantised-to-a-byte fraction, not `space`'s own `f64`s, and this function
+/// exists to be a faithful preview of what the shader does, not a better
+/// version of it. `docs/lighting_raymarch.md`'s "second bigger idea" (session
+/// 14) is what closed the gap this comment used to describe: `Builder::
+/// add_raw`'s sub-tile boxes and a climbable static's own treads/risers used
+/// to be the one shape neither this function nor `blit.wgsl` could tell apart
+/// from a whole tile, because the four-byte upload had no `x`/`y` channel at
+/// all. `Occlusion::footprint_bytes` is that channel, landed once a reader
+/// existed on both sides — see `docs/lighting_raymarch.md`'s own Handoff log
+/// for which session. What is left lossy here is only the byte quantisation itself —
+/// `Solid::fraction`'s own `1/255` of a tile — which both backends share and
+/// decision 9's own parity tolerance already absorbs.
 fn walk_cells_streaming(
     from: [f32; 3],
     to: [f32; 3],
@@ -2429,8 +2447,13 @@ fn walk_cells_streaming(
         };
         let mut stopped: f32 = 0.0;
         for stands in occlusion.solids_at(cell.0, cell.1) {
-            let space =
-                crate::occlusion::Solid::box_of(cell.0, cell.1, stands.bottom(), stands.top(), stands.edges);
+            let space = crate::occlusion::Solid::box_from_footprint(
+                cell.0,
+                cell.1,
+                stands.bottom(),
+                stands.top(),
+                stands.fraction(),
+            );
             let Some((entered, leaves)) = ray_vs_solid(from, to, &space) else {
                 continue;
             };
@@ -2450,15 +2473,17 @@ fn walk_cells_streaming(
                     // for the same reason: a lid's own box is flat in `z`,
                     // so its own `entered`/`leaves` collapse to one instant
                     // rather than the before/after pair [`crosses`] needs.
+                    // `space` here, not the whole tile — see
+                    // `walk_cells_exact`'s own copy of this comment.
                     let footprint = crate::solid::Solid {
                         min: crate::camera::WorldSpot {
-                            x: f64::from(cell.0),
-                            y: f64::from(cell.1),
+                            x: space.min.x,
+                            y: space.min.y,
                             z: -1e6,
                         },
                         max: crate::camera::WorldSpot {
-                            x: f64::from(cell.0) + 1.0,
-                            y: f64::from(cell.1) + 1.0,
+                            x: space.max.x,
+                            y: space.max.y,
                             z: 1e6,
                         },
                     };
@@ -2473,8 +2498,11 @@ fn walk_cells_streaming(
                     let travelled = opacity * (crossed / soft).clamp(0.0, 1.0);
                     let stops = EDGE_ANY & !same_run;
                     let mut stopped = travelled;
+                    // `space`'s own bounds, not the tile's — `box_side`'s own doc.
+                    let lo = [space.min.x as f32, space.min.y as f32];
+                    let hi = [space.max.x as f32, space.max.y as f32];
                     for at in [entered, leaves] {
-                        let side = box_side([from[0] + delta[0] * at, from[1] + delta[1] * at], cell);
+                        let side = box_side([from[0] + delta[0] * at, from[1] + delta[1] * at], lo, hi);
                         if stops & side != 0 {
                             stopped =
                                 stopped.max(opacity * pierces(from[2] + delta[2] * at, low, high, tall));

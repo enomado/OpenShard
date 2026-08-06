@@ -710,6 +710,73 @@ impl Solid {
         crate::solid::Solid { min, max }
     }
 
+    /// This solid's own horizontal footprint, as a fraction of the tile it
+    /// stands on — `(min.x, max.x, min.y, max.y)`, each quantised to a byte.
+    ///
+    /// Not [`Solid::footprint`] — that answers *which whole tiles* a solid's
+    /// plane spills into (decision 38.2's bake-time question); this answers
+    /// *where inside one tile* its box actually sits, which is a different
+    /// question at a different grain, needed by a different caller.
+    ///
+    /// What [`Occlusion::footprint_bytes`] uploads and
+    /// [`Solid::box_from_footprint`] reconstructs from, and the reason it is
+    /// quantised **here**, on the CPU, rather than read as `f64` only at
+    /// upload time: `light::walk_cells_streaming` calls this too, and it
+    /// exists to preview exactly what the GPU can do — see its own doc
+    /// comment. A CPU that read `space` at full precision while the GPU read
+    /// a lossy byte would silently stop being that preview and reopen a
+    /// parity gap decision 9's suite would have to grow a new tolerance for.
+    ///
+    /// A solid is always one tile's (`Builder::finish`'s own doc: "nothing
+    /// the builder holds is referenced twice"), so the tile to measure the
+    /// fraction against is unambiguous — `space.min`'s own floor, not a tile
+    /// carried separately.
+    pub fn fraction(&self) -> [u8; 4] {
+        let tile_x = self.space.min.x.floor();
+        let tile_y = self.space.min.y.floor();
+        let frac = |value: f64, tile: f64| (((value - tile).clamp(0.0, 1.0)) * 255.0).round() as u8;
+        [
+            frac(self.space.min.x, tile_x),
+            frac(self.space.max.x, tile_x),
+            frac(self.space.min.y, tile_y),
+            frac(self.space.max.y, tile_y),
+        ]
+    }
+
+    /// The box [`Solid::box_of`] would have built if it could read a real
+    /// footprint instead of guessing whole-tile-or-panel-strip from `edges`
+    /// alone — `docs/lighting_raymarch.md`'s "second bigger idea" landed.
+    ///
+    /// `footprint` is [`Solid::fraction`]'s own four bytes: for an ordinary
+    /// `tiledata`-sourced static this reconstructs the exact same box
+    /// `box_of` would (a lid or a body is `(0, 255, 0, 255)`, a panel is
+    /// already narrowed by [`PANEL_THICKNESS`] before it is quantised), and
+    /// for a [`Builder::add_raw`] sub-tile occluder or a climbable static's
+    /// own tread/riser it reconstructs the real footprint neither `box_of`
+    /// nor the old four-byte upload could tell apart from a whole tile.
+    pub fn box_from_footprint(
+        x: i32,
+        y: i32,
+        bottom: i32,
+        top: i32,
+        footprint: [u8; 4],
+    ) -> crate::solid::Solid {
+        use crate::camera::WorldSpot;
+        let frac = |byte: u8| f64::from(byte) / 255.0;
+        crate::solid::Solid {
+            min: WorldSpot {
+                x: f64::from(x) + frac(footprint[0]),
+                y: f64::from(y) + frac(footprint[2]),
+                z: f64::from(bottom),
+            },
+            max: WorldSpot {
+                x: f64::from(x) + frac(footprint[1]),
+                y: f64::from(y) + frac(footprint[3]),
+                z: f64::from(top),
+            },
+        }
+    }
+
     /// A tread's **top**: the strip it covers along the climb, flattened to the
     /// plane at its own height — a lid, not a body. This tread's rise is what
     /// [`Solid::tread_riser_box_of`] now covers; folding both into one box the
@@ -1253,15 +1320,19 @@ impl Occlusion {
     /// — a 255-tall static based at 100 has a top no channel holds, and a wall
     /// that reaches past the top of the world may as well stop there.
     ///
-    /// **The box's `x` and `y` are not uploaded, and that is a statement rather
-    /// than an omission.** What the walk tests is a plane named by the cell it is
-    /// stepping through and the solid's `edges` — a panel on the north side of
-    /// this cell is the line `y = cell.y`, derived where it is used — so the two
-    /// horizontal axes have no reader in the shader. Sending them would put four
-    /// channels of geometry beside a walk that ignores them, which is exactly how
-    /// a format grows a field nobody dares change. Step 23.5 is where a ray is
-    /// tested against the box itself and where these channels arrive with a
-    /// reader; until then the box lives on the CPU, where the views read it.
+    /// **The box's `x` and `y` are not in *this* plane — they were withheld
+    /// until a reader existed for them, and now one does.** What used to be
+    /// true here — the horizontal axes have no reader in the shader, a panel
+    /// on the north side of a cell is the line `y = cell.y`, derived where it
+    /// is used, and sending four more channels beside a walk that ignored
+    /// them would be exactly how a format grows a field nobody dares change —
+    /// held for exactly as long as it stayed true. `docs/lighting_raymarch.md`'s
+    /// "second bigger idea": [`Occlusion::footprint_bytes`] is that reader's
+    /// own plane, not four more channels of this one, for the same reason
+    /// [`Occlusion::aperture_bytes`] is a plane and not four more channels —
+    /// this list is what the walk reads cell after cell in a loop, and adding
+    /// width to every texel here would widen the one thing the loop actually
+    /// pays for on every solid, not just the ones a footprint narrows.
     ///
     /// [`PRESENT`] is still written, and it is still not padding: a lid's mask is
     /// legitimately zero, so a texel of all zeros has to be distinguishable from
@@ -1329,6 +1400,33 @@ impl Occlusion {
     /// a plane of zeros does not need laying out and sending every frame.
     pub fn any_aperture(&self) -> bool {
         self.solids.iter().any(|solid| solid.aperture.is_some())
+    }
+
+    /// The **footprints** as the texture the shader reads: `Rgba8Uint`, one
+    /// texel a solid, indexed and folded exactly as [`Occlusion::solid_bytes`]
+    /// and [`Occlusion::aperture_bytes`] already are.
+    ///
+    /// `(min.x, max.x, min.y, max.y)`, [`Solid::fraction`]'s own four bytes —
+    /// `docs/lighting_raymarch.md`'s "second bigger idea" landed: the box's
+    /// horizontal extent, deliberately withheld from [`Occlusion::solid_bytes`]
+    /// until a reader existed for it (that comment's own words), now has one
+    /// on both sides — `blit.wgsl`'s `box_of` reads this plane instead of
+    /// reconstructing a whole tile or a panel strip from `edges` alone.
+    ///
+    /// Written every frame, unlike [`Occlusion::aperture_bytes`]'s own
+    /// hole-gated write: every solid has a footprint (an ordinary lid or body
+    /// is simply `(0, 255, 0, 255)`, the whole tile), where almost none has a
+    /// hole, so there is no bit here to gate the read on the way
+    /// [`HOLED`] gates `apertures`.
+    pub fn footprint_bytes(&self) -> Vec<u8> {
+        let row = LIST_ROW as usize;
+        let rows = self.solids.len().div_ceil(row).max(1);
+        let mut bytes = Vec::with_capacity(rows * row * 4);
+        for solid in &self.solids {
+            bytes.extend_from_slice(&solid.fraction());
+        }
+        bytes.resize(rows * row * 4, 0);
+        bytes
     }
 }
 
