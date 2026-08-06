@@ -106,9 +106,24 @@ step 1.
 
 ## Backlog
 
-Nothing yet — findings go here as they turn up, same convention as
-`lighting.md`'s own backlog: what the finding is, why it is worth touching,
-`file:line` where there is one.
+Findings go here as they turn up, same convention as `lighting.md`'s own
+backlog: what the finding is, why it is worth touching, `file:line` where
+there is one.
+
+- **A true fixed-point world coordinate (tile + N bits of sub-tile
+  resolution, one integer type, no `f32`) would remove this whole class of
+  bug at the source instead of working around it.** Raised while doing step
+  2: `Spot.tile` plus an `f32` fraction is already a *hybrid* of this — it
+  mirrors `mesh_face.wgsl`/`blit.wgsl`'s own `(tile, sub)` pair — and once
+  the tile is carried and never re-derived, the fraction sitting on an exact
+  boundary is harmless: nothing branches on it for cell selection anymore.
+  So a full fixed-point rewrite buys **nothing more for this specific bug
+  class** than step 2 already closes. What it would buy is broader: no float
+  epsilon anywhere a world position is stored or compared, which is a
+  question about `geometry::Vec2`, the camera, movement and the protocol —
+  not about lighting, and not scoped to one crate. Left here rather than
+  turned into a step: worth a decision of its own, on its own track, if it
+  is ever picked up — not a rider on this one.
 
 ## Handoff log
 
