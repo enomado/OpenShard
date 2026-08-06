@@ -7,7 +7,22 @@ way and left undone. It supersedes the lighting half of
 what is still true there is linked from the backlog at the bottom rather than
 copied.
 
+**The shadow-raymarch boundary-correctness track split out to its own
+document:** [`lighting_raymarch.md`](lighting_raymarch.md). Opened because
+the entry below's own thread ("Fixed: the shadow-raymarch anomaly...") found
+the same class of bug twice — once on the GPU side (`mesh_face.wgsl`'s
+`fract()`), once still open on the CPU side (`light.rs`'s `walk_cells`/
+`sample`) — and left a second, unrelated shape unexplained. Enough sessions'
+worth of work (fixes, an oracle, tooling) that it earned its own living plan
+rather than staying inside this file's "next session" note; **that document
+is where the next session on this thread starts, not here.**
+
 ## Where the next session starts
+
+Everything below this line is the narrative that opened the track above — the
+`synthetic_stair` tool, the fixed `mesh_face.wgsl` bug, the still-open CPU
+one, and the second, unexplained shape — kept for the reasoning, not as a
+to-do list. The to-do list is [`lighting_raymarch.md`](lighting_raymarch.md).
 
 **A new tool exists for exactly this class of bug:
 [`examples/synthetic_stair.rs`](../crates/client/render/examples/synthetic_stair.rs)**
