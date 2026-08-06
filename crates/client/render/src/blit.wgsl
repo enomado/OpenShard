@@ -1346,6 +1346,17 @@ fn debug_color(
         if nearest >= 1.0 {
             return vec3<f32>(0.0, 0.0, 0.35);
         }
+        // Dark red for "a flame reaches, and is fully blocked" — the walk's
+        // own answer of "none", not silence. Left as pure black this read
+        // identically to the cleared background this fragment never reaches
+        // (`KIND_NOTHING`, above, returns `color` before this view is ever
+        // asked), and that has cost a wrong diagnosis twice: a shadowed pixel
+        // beside empty background read as an orphaned shape, and a face's own
+        // outline read as fewer sides than it has. `docs/lighting_raymarch.md`
+        // step 1. `0.004` is `light.rs`'s own `RAY_CUTOFF`.
+        if nearest_through <= 0.004 {
+            return vec3<f32>(0.2, 0.0, 0.0);
+        }
         return vec3<f32>(nearest_through);
     }
     // VIEW_REACH: how many flames got through, green through red, and the same

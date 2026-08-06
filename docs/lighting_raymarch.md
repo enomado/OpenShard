@@ -27,7 +27,7 @@ step 1.
 
 ## Steps
 
-- [ ] **1. `blit.wgsl` — separate "blocked" from "empty" in `View::Shadow`.**
+- [x] **1. `blit.wgsl` — separate "blocked" from "empty" in `View::Shadow`.**
       `through == 0.0` (a ray this pixel *has*, fully stopped) and
       `KIND_NOTHING` (no ray at all, empty background) both paint pure black
       today. Cost this track a wrong diagnosis twice already — an "orphaned
