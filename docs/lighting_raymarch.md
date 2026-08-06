@@ -41,6 +41,43 @@ note worth reading first if step 5 (or anything after it) reaches for the
 climbable stair as a fixture — it does not work as a brute-force oracle's
 scene, and the reasoning is there rather than only in the handoff log.
 
+**Session 12 ruled out one specific hypothesis for the `Flat` fragment's own
+edge, by fault injection rather than argument, and it was not it.**
+`facing.rs`'s `WIDTH_OVERLAP` (`0.03`, widening a climbing prism's
+tile-crossing edge — the axis perpendicular to the climb, `x` for this
+stair's own `Face::North`) looked like a strong candidate: a mesh quad wider
+than the occlusion `Solid` backing it, painting real pixels over what the
+occlusion model still calls background. Sweeping `light.rs`'s own CPU walk
+across the topmost tread's `y` band at the clamped edge
+(`OPENSHARD_SCENE_PROFILE_FACE=flat`, `x` pinned at `1497 + 126/127`, `y`
+from `1627.333` to `1627.000`) found exactly the open/blocked split the
+hypothesis predicted — open near the tread's own riser, blocked near the
+tile's true north edge — which looked like confirmation. It was not: setting
+`WIDTH_OVERLAP` to `0.0` and diffing `View::Shadow` before/after (`944`
+changed pixels) moved nothing at the white line's own location; the diff was
+entirely the hairline seam bug `WIDTH_OVERLAP` was built to close in the
+first place, reopened. The `y`-sweep's open/blocked split is real but is not
+evidence of this particular overhang — it is `light.rs`'s ordinary,
+correct answer for a real point near a tread's own riser, and reading it as
+confirmation without the fault-injection step would have been the mistake.
+`WIDTH_OVERLAP` restored to `0.03` before anything was committed. Whatever
+paints the white line is still a third thing, unfound — the next session
+should not re-spend time on this specific hypothesis.
+
+Session 12 also built `examples/two_cubes.rs`, prompted by a live question
+about `SolidsRenderer`'s own translucent default reading like a bug in the
+`OPENSHARD_SCENE_SOLIDS=white` picture of the real stair: two hand-built unit
+cubes (`Builder`/`Shape::UNREAD`, no client files at all) confirm
+`SolidsRenderer::render`'s pipeline has `depth_stencil: None` — no hardware
+depth test — so occlusion correctness rests entirely on `solid::standing`'s
+own draw order, and a reversed order visibly paints the farther cube over
+the nearer one even with `opaque: true`. Checked against the real stair with
+`OPENSHARD_SCENE_SOLIDS_OPAQUE=1`: renders clean, no bleed-through, so this
+is a documented latent fragility (no depth buffer to fall back on if a
+future solid geometry's `(x+y)` sort key ever ties or misorders) rather than
+a live bug on this geometry today. Unrelated to step 5's white line, which
+does not go through `SolidsRenderer` at all.
+
 **A second, independent track exists now, and it is not a fix for step 5.**
 The backlog's "A bigger idea..." entry — replacing grid-DDA's per-cell
 stepping with direct ray-vs-`Solid` intersection — is scoped as of session 8,
@@ -1092,6 +1129,55 @@ there is one.
   GPU/CPU parity suite, a disagreement oracle that survives a multi-solid
   tile, and a real-scene render (this session never rendered a frame) are
   all still ahead of it.
+
+### Session 12 — step 5's `WIDTH_OVERLAP` hypothesis ruled out by fault injection, `two_cubes.rs` built
+
+Picked up step 5 (the white line) by user choice over the other two open
+threads (point 4 cutover, extending the multi-solid oracle past the stair).
+Reproduced the doc's own repro command live (`OPENSHARD_CLIENT` reached, see
+`docs/development.md`), confirmed the line still present in `View::Shadow`,
+and profiled it two ways with `OPENSHARD_SCENE_PROFILE_FACE=flat`: sweeping
+`x` at the tread's mid-`y` found the CPU walk correctly occluded right up to
+the tile's true edge (no anomaly), sweeping `y` at the clamped-edge `x`
+(`1497 + 126/127`) found a real open/blocked split across the tread's own
+`y` band. That split looked like it confirmed a `WIDTH_OVERLAP`-overhang
+hypothesis (`facing.rs`'s `0.03` render-mesh widening, unmatched by the
+occlusion `Solid`'s exact footprint) — geometrically plausible, arithmetic
+lined up with the measured `sub.x`. Fault injection (`WIDTH_OVERLAP = 0.0`,
+re-render, diff `View::Shadow` before/after) falsified it directly: `944`
+pixels changed, none of them the white line, all of them the hairline seam
+bug `WIDTH_OVERLAP` exists to close, reopened by zeroing it. Reverted before
+anything else touched the file. The lesson for the next session: the `y`-
+sweep's open/blocked split is real physics near a tread's own riser, not
+evidence of an overhang — a plausible-sounding geometric argument still
+needs the same fault-injection discipline session 9–11 already established
+for the disagreement oracle, and very nearly did not get it here.
+
+Redirected mid-session to a live question: does `OPENSHARD_SCENE_SOLIDS`'s
+default translucent picture of the real stair (a faint diagonal highlight
+across the tread/riser seams) indicate a genuine draw-order bug in
+`SolidsRenderer`, or is it the deliberate blend `solids.rs`'s own `Style`
+doc already names? Built `examples/two_cubes.rs` to answer it without the
+stair's own confounds: two hand-built unit cubes (`Builder`/`Shape::UNREAD`,
+`StaticTile` with `NO_SHOOT` set by hand — no client files, no map, no art),
+drawn forward and with draw order reversed, translucent and opaque.
+Confirmed `SolidsRenderer::render`'s pipeline has `depth_stencil: None` — no
+hardware depth test at all — so occlusion correctness is entirely the
+caller's responsibility via `solid::standing`'s own sort; the reversed-order
+picture visibly paints the farther cube over the nearer one even under
+`opaque: true`, which is what a caller getting that sort wrong would look
+like. Checked the real stair the same way
+(`OPENSHARD_SCENE_SOLIDS_OPAQUE=1`): clean, no bleed-through, so the
+diagonal highlight in the default picture is ordinary translucent blending
+at a real seam, not a misordered draw — this specific geometry's sort key
+is fine today, but the mechanism has no safety net if a future one is not.
+`two_cubes.rs` is a reusable probe for the next time this question comes up
+on different geometry. `cargo clippy`, `rustfmt` and `cargo test -p
+openshard-client-render --lib` (351 tests) all clean before committing.
+
+Step 5's white line remains open — still a third thing, not the walk, not
+`WIDTH_OVERLAP`. Point 4 (cutover) and the multi-solid oracle's own
+extension past the stair are both untouched, as before.
 
 ### Session 9 — point 2 built (`walk_cells_exact`), point 3 started, three real `walk_cells_exact`/`walk_cells` gaps found on the way
 
