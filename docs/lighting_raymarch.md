@@ -22,8 +22,13 @@ Written against `crates/client/render/src/light.rs`, `mesh_face.rs`,
 
 ## Where the next session starts
 
-Nothing done yet — this doc was just split out of `lighting.md`. Start at
-step 1.
+Steps 1–3 are done and committed. **Start at step 4** — a brute-force CPU
+oracle compared against `synthetic_stair`'s `View::Shadow`. It does not need
+`OPENSHARD_CLIENT`: `synthetic_stair` is deliberately "no client files, no
+map and no art" (see `lighting.md`'s own note on the tool), so step 4 is
+reachable in a sandbox with no client install. Step 5 (the still-unexplained
+second shape) does need a real screenshot and `OPENSHARD_CLIENT` — leave it
+for a session that has one.
 
 ## Steps
 
@@ -146,3 +151,33 @@ there is one.
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 1 — this doc's opening session
+
+Steps 1, 2 and 3 done, each its own commit (`eb85ea6`, `24298d1`, `755ff99`;
+doc scaffolding in `c0a306b` and `c7f4535`). `cargo check --workspace
+--all-targets` and the full `openshard-client-render` suite are green.
+
+- **Step 2 grew by one line the plan didn't name**: `boundary[axis]`'s seed
+  had the same `.floor()` as `first` and needed the same fix, or `first`
+  being right while `boundary` still assumed the old wrong tile would have
+  been a *new* inconsistency, not a fix. See step 2's own "Done, and it grew"
+  note for the reasoning.
+- **A design question came up mid-session and was logged, not chased**:
+  whether to replace `f32` world coordinates with a true fixed-point
+  tile+sub-tile type everywhere. Answer, in the backlog below: it buys
+  nothing more for *this* bug class than `Spot.tile` already closes, and
+  it's a repo-wide question, not a lighting one.
+- **The boundary test in step 3 does not follow the plan's own example
+  literally** ("mirroring the real tread's `world.x = 1498.0`"). The first
+  draft picked a light position that never re-crossed the boundary it was
+  supposed to be testing and stayed green even with both fixes reverted by
+  hand — worth remembering: **a boundary test has to make the ray travel
+  back through the tile it started on, not just start on the boundary**.
+  The version that shipped reuses the already-proven
+  `a_treads_top_is_not_shadowed_by_its_own_riser` fixture instead of
+  inventing new geometry, and was itself verified against a hand revert
+  before being trusted (`1.000` → `0.513`, logged in step 3's own note).
+- **Step 4 needs no `OPENSHARD_CLIENT`** — `synthetic_stair` is built with no
+  client files at all — so it's reachable in a sandbox; step 5 does need one
+  and a real screenshot, so it waits for a session that has both.
