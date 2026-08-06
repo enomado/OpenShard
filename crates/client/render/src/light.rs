@@ -1101,6 +1101,71 @@ fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32
     }
 }
 
+/// Where a straight segment enters and leaves an axis-aligned box, as a
+/// fraction of the whole segment (`0.0` is `from`, `1.0` is `to`) — the slab
+/// method, continuous throughout, with no notion of "which tile" anywhere in
+/// it.
+///
+/// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 1: the
+/// primitive `dda_walk`'s own corner-tie heuristic exists to avoid ever
+/// having to call. An exact test costs a handful of compares, so nothing
+/// upstream needs to *guess* whether a corner is worth asking about before
+/// asking it — this asks directly and answers exactly, for a box as thin as
+/// a panel's own [`crate::occlusion::PANEL_THICKNESS`] slab or as flat as a
+/// lid's bare plane. Not wired into [`walk_cells`] or [`dda_walk`] yet; see
+/// the doc for why the cutover is its own, later step.
+///
+/// `None` when the segment misses the box on at least one axis outright —
+/// including a segment that runs parallel to a flat axis (`solid`'s own
+/// extent there is a single value, a lid's height or a panel's outer face)
+/// without lying exactly in that plane, which is the box's own way of
+/// saying "no length of me is on that axis at all". `Some((entered,
+/// leaves))` otherwise, both already clamped to `0.0..=1.0` — the box's own
+/// extent past either end of the segment does not count, the same way
+/// [`DdaCell::entered`]/[`DdaCell::leaves`] never leave that range either.
+///
+/// A tangent touch — the segment grazing exactly one edge or corner of the
+/// box without crossing into it — comes back `Some` with `entered ==
+/// leaves`: a real but zero-length crossing, deliberately not folded into
+/// `None` here. Whether a caller treats a point-touch as "blocked" is a
+/// decision about light and softness, not about the box's own geometry, so
+/// it is left for the caller to make rather than made silently in here.
+///
+/// `#[allow(dead_code)]`: staged ahead of its call site on purpose, the way
+/// `docs/lighting_raymarch.md`'s recommended order asks for — proven against
+/// its own oracle here, in point 2's parallel walk before point 4 ever
+/// calls it from real occlusion code.
+#[allow(dead_code)]
+fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Option<(f32, f32)> {
+    let min = [solid.min.x as f32, solid.min.y as f32, solid.min.z as f32];
+    let max = [solid.max.x as f32, solid.max.y as f32, solid.max.z as f32];
+    let (mut entered, mut leaves) = (0.0_f32, 1.0_f32);
+    for axis in 0..3 {
+        let delta = to[axis] - from[axis];
+        if delta.abs() <= 1e-9 {
+            // Parallel to this axis: every point of the segment sits at the
+            // same coordinate, so the box either spans it or the segment
+            // misses it for its whole length — nothing a `t` interval can
+            // narrow.
+            if from[axis] < min[axis] || from[axis] > max[axis] {
+                return None;
+            }
+            continue;
+        }
+        let (t1, t2) = ((min[axis] - from[axis]) / delta, (max[axis] - from[axis]) / delta);
+        let (near, far) = match t1 <= t2 {
+            true => (t1, t2),
+            false => (t2, t1),
+        };
+        entered = entered.max(near);
+        leaves = leaves.min(far);
+        if entered > leaves {
+            return None;
+        }
+    }
+    Some((entered, leaves))
+}
+
 /// How near two boundaries have to be, along the ray, for the ray to be crossing
 /// a **corner** rather than a side — [`crate::occlusion::PANEL_THICKNESS`]
 /// converted into the same `t` the DDA already steps in. `blit.wgsl`'s
@@ -3166,6 +3231,223 @@ mod tests {
                 for step in &steps {
                     prop_assert_eq!(step.cell.0, tile.0);
                 }
+            }
+        });
+    }
+
+    /// A unit box built at `(0, 0)`, spanning `0..1` on every axis — the
+    /// smallest real box [`ray_vs_solid`]'s hand-computed tests below share,
+    /// so a straight line through its middle has fractions worth doing in
+    /// one's head.
+    fn unit_box() -> crate::solid::Solid {
+        crate::solid::Solid {
+            min: crate::camera::WorldSpot {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            max: crate::camera::WorldSpot {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        }
+    }
+
+    /// [`ray_vs_solid`]'s ordinary case, checked against hand-computed
+    /// fractions rather than trusted from the slab arithmetic: a ray along
+    /// `x`, level in `y` and `z`, from `x = -1` to `x = 2` — it enters the
+    /// box's `x = 0` face a third of the way along and leaves the `x = 1`
+    /// face two thirds of the way along.
+    #[test]
+    fn ray_vs_solid_finds_the_hand_computed_crossing_of_a_unit_box() {
+        let (entered, leaves) =
+            ray_vs_solid([-1.0, 0.5, 0.5], [2.0, 0.5, 0.5], &unit_box()).expect("the ray crosses the box");
+        assert!((entered - 1.0 / 3.0).abs() < 1e-5, "entered = {entered}");
+        assert!((leaves - 2.0 / 3.0).abs() < 1e-5, "leaves = {leaves}");
+    }
+
+    /// A ray that never comes near the box misses cleanly.
+    #[test]
+    fn ray_vs_solid_misses_a_box_it_never_approaches() {
+        assert_eq!(ray_vs_solid([-5.0, 5.0, 0.5], [5.0, 5.0, 0.5], &unit_box()), None);
+    }
+
+    /// Both ends of the ray already inside the box: the whole segment is a
+    /// crossing, `entered` at `0.0` and `leaves` at `1.0` — no length of the
+    /// segment is outside the box to clip away.
+    #[test]
+    fn ray_vs_solid_is_the_whole_segment_when_both_ends_are_inside() {
+        let solid = crate::solid::Solid {
+            min: crate::camera::WorldSpot {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            max: crate::camera::WorldSpot {
+                x: 10.0,
+                y: 10.0,
+                z: 10.0,
+            },
+        };
+        assert_eq!(
+            ray_vs_solid([2.0, 3.0, 4.0], [5.0, 6.0, 7.0], &solid),
+            Some((0.0, 1.0)),
+        );
+    }
+
+    /// A degenerate box flat on `z` — a lid's own shape — still answers
+    /// correctly: a ray that crosses the plane finds it at the fraction the
+    /// plane's own `z` predicts, and a level ray that never reaches that
+    /// height at all misses outright rather than reading as an edge case.
+    #[test]
+    fn ray_vs_solid_finds_a_flat_lid_only_exactly_on_its_own_plane() {
+        let lid = crate::solid::Solid {
+            min: crate::camera::WorldSpot {
+                x: 0.0,
+                y: 0.0,
+                z: 20.0,
+            },
+            max: crate::camera::WorldSpot {
+                x: 1.0,
+                y: 1.0,
+                z: 20.0,
+            },
+        };
+        // Descends from z = 30 to z = 10 through the footprint's own
+        // centre: crosses z = 20 exactly halfway.
+        let (entered, leaves) =
+            ray_vs_solid([0.5, 0.5, 30.0], [0.5, 0.5, 10.0], &lid).expect("crosses the lid's own plane");
+        assert!((entered - 0.5).abs() < 1e-5);
+        assert!((leaves - 0.5).abs() < 1e-5);
+
+        assert_eq!(ray_vs_solid([0.5, 0.5, 25.0], [0.9, 0.9, 25.0], &lid), None);
+    }
+
+    /// A degenerate box narrow on one axis — a panel's own shape,
+    /// [`crate::occlusion::PANEL_THICKNESS`] deep — is pierced over exactly
+    /// that width of `t`, not the whole tile the panel stands on.
+    #[test]
+    fn ray_vs_solid_pierces_a_thin_panel_over_exactly_its_own_thickness() {
+        let panel = crate::solid::Solid {
+            min: crate::camera::WorldSpot {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            max: crate::camera::WorldSpot {
+                x: 1.0,
+                y: crate::occlusion::PANEL_THICKNESS,
+                z: 20.0,
+            },
+        };
+        // Straight along y, from y = -1 to y = 1 — the panel is
+        // `PANEL_THICKNESS` of the segment's own 2.0 world units, so it
+        // should be pierced for exactly that share of `t`.
+        let (entered, leaves) =
+            ray_vs_solid([0.5, -1.0, 10.0], [0.5, 1.0, 10.0], &panel).expect("crosses the thin panel");
+        assert!((entered - 0.5).abs() < 1e-5);
+        let expected_leaves = 0.5 + crate::occlusion::PANEL_THICKNESS as f32 / 2.0;
+        assert!(
+            (leaves - expected_leaves).abs() < 1e-5,
+            "leaves = {leaves}, expected {expected_leaves}",
+        );
+    }
+
+    /// A ray that only ever grazes one corner of the box — never a length of
+    /// its inside — still gets an answer, not `None`: the same corner
+    /// [`corner_tie`]'s own tolerance exists to approximate, answered
+    /// exactly here instead. `entered` and `leaves` collapse to the same
+    /// `t`, a real but zero-length crossing.
+    #[test]
+    fn ray_vs_solid_returns_a_zero_length_crossing_at_a_tangent_corner() {
+        // A diagonal ray through exactly the unit box's own (1, 1) corner in
+        // the ground plane, level in z.
+        let (entered, leaves) =
+            ray_vs_solid([0.0, 2.0, 0.5], [2.0, 0.0, 0.5], &unit_box()).expect("touches the corner");
+        assert!(
+            (entered - leaves).abs() < 1e-5,
+            "entered = {entered}, leaves = {leaves}"
+        );
+    }
+
+    /// [`ray_vs_solid`]'s own claim, checked against an independent
+    /// characterisation rather than trusted from the slab arithmetic: a
+    /// point sampled at a given `t` along the segment lies inside the box
+    /// exactly when `t` is inside the interval this returns. The same
+    /// point-in-box oracle discipline step 4's brute-force sampler already
+    /// uses against the whole walk, applied here to the one primitive a
+    /// future ray-vs-`Solid` walk would build on —
+    /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 1.
+    ///
+    /// Boxes and segment endpoints are integer-anchored on purpose, so a
+    /// random `t` landing within a hair of a face is rare rather than
+    /// impossible: right at a face is exactly where a slab intersection and
+    /// a naive point-in-box check can disagree by a rounding error smaller
+    /// than either is precise to, which is not the disagreement this oracle
+    /// is checking for — `near_a_boundary` skips only those samples.
+    #[test]
+    fn ray_vs_solid_agrees_with_plain_point_in_box_at_every_t() {
+        use proptest::prelude::*;
+
+        proptest!(ProptestConfig::with_cases(2048), |(
+            min_x in -20_i32..20,
+            min_y in -20_i32..20,
+            min_z in -20_i32..20,
+            size_x in 1_i32..6,
+            size_y in 1_i32..6,
+            size_z in 1_i32..6,
+            from_x in -30.0_f32..30.0,
+            from_y in -30.0_f32..30.0,
+            from_z in -30.0_f32..30.0,
+            to_x in -30.0_f32..30.0,
+            to_y in -30.0_f32..30.0,
+            to_z in -30.0_f32..30.0,
+            t in 0.0_f32..1.0,
+        )| {
+            let min = [min_x as f32, min_y as f32, min_z as f32];
+            let max = [min_x + size_x, min_y + size_y, min_z + size_z].map(|v| v as f32);
+            let solid = crate::solid::Solid {
+                min: crate::camera::WorldSpot {
+                    x: f64::from(min[0]),
+                    y: f64::from(min[1]),
+                    z: f64::from(min[2]),
+                },
+                max: crate::camera::WorldSpot {
+                    x: f64::from(max[0]),
+                    y: f64::from(max[1]),
+                    z: f64::from(max[2]),
+                },
+            };
+            let from = [from_x, from_y, from_z];
+            let to = [to_x, to_y, to_z];
+            prop_assume!((0..3).any(|axis| (to[axis] - from[axis]).abs() > 1e-3));
+
+            let point = [
+                from[0] + (to[0] - from[0]) * t,
+                from[1] + (to[1] - from[1]) * t,
+                from[2] + (to[2] - from[2]) * t,
+            ];
+            let near_a_boundary = (0..3).any(|axis| {
+                (point[axis] - min[axis]).abs() < 1e-3 || (point[axis] - max[axis]).abs() < 1e-3
+            });
+            prop_assume!(!near_a_boundary);
+            let inside = (0..3).all(|axis| point[axis] >= min[axis] && point[axis] <= max[axis]);
+
+            match ray_vs_solid(from, to, &solid) {
+                Some((entered, leaves)) => {
+                    let claims_inside = t >= entered - 1e-4 && t <= leaves + 1e-4;
+                    prop_assert_eq!(
+                        inside, claims_inside,
+                        "t {}, point {:?}, box {:?}..{:?}, interval {}..{}",
+                        t, point, min, max, entered, leaves,
+                    );
+                }
+                None => prop_assert!(
+                    !inside,
+                    "t {}, point {:?} reads inside a box the primitive missed entirely",
+                    t, point,
+                ),
             }
         });
     }

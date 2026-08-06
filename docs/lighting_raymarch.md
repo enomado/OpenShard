@@ -41,6 +41,15 @@ note worth reading first if step 5 (or anything after it) reaches for the
 climbable stair as a fixture — it does not work as a brute-force oracle's
 scene, and the reasoning is there rather than only in the handoff log.
 
+**A second, independent track exists now, and it is not a fix for step 5.**
+The backlog's "A bigger idea..." entry — replacing grid-DDA's per-cell
+stepping with direct ray-vs-`Solid` intersection — is scoped as of session 8,
+with its first primitive (`ray_vs_solid`, `light.rs:1104`) built and tested
+but not wired into anything real. Its own recommended order's point 2 (a
+parallel `walk_cells`-shaped function built on that primitive, run against
+every oracle this doc already has before any cutover) is where that track
+continues, independently of step 5 — a session can pick either one.
+
 Session 4 changed the approach rather than the diagnosis: instead of
 bisecting the white line's own screenshot further, it started building the
 family of small, real-geometry parity fixtures the backlog's `PARITY_TILE`
@@ -716,11 +725,184 @@ there is one.
   ray-vs-box intersection for free, and a rough sense of the cost against
   today's `MAX_WALK_STEPS`-bounded walk before committing to the rewrite.
 
+  **Scoped, session 8 — all three questions answered by reading
+  `walk_cells`, `dda_walk` and `blit.wgsl`'s `walk` line by line, not by
+  guessing from this entry's own summary.** The picture is better and worse
+  than the paragraph above assumed: better, because two of the three named
+  frictions turn out to dissolve rather than need a design; worse, because
+  `walk_cells` carries far more per-solid business logic than "does this ray
+  hit this box" — self-shadow exemptions, wall-run continuity, apertures,
+  penumbra softness — all of it keyed to *tile identity*, which any
+  replacement still has to carry.
+
+  1. **Which solids the broad-phase gathers, and how.** Not a bounding box —
+     a straight ray at 45° over `MAX_WALK_STEPS = 72` cells has a 72×72
+     bounding box, two orders of magnitude more tiles than the ray actually
+     passes near. The existing cell enumeration is already the right shape
+     and already correct and tested (`dda_walk`, session 7's extraction):
+     walk it as today for the *straight* neighbour at each step, and instead
+     of conditionally adding the diagonal neighbour only when `corner_tie`'s
+     heuristic fires, add it **unconditionally** — every step transition
+     names both `by_x` and `by_y` already (`light.rs:1834`-`1839`), the walk
+     just doesn't visit both today. Candidate count roughly doubles (two
+     cells probed per step instead of one), still `O(walk length)`, nowhere
+     near a bounding box.
+  2. **Whether `PANEL_THICKNESS`/`corner_tie` survive.** `corner_tie` — the
+     heuristic itself, comparing a `t`-space gap between two boundaries
+     against a threshold — is fully replaced, not kept: it exists only to
+     guess whether a diagonal neighbour is "close enough" to matter *before*
+     paying to look at it. Once every corner candidate is probed
+     unconditionally (point 1) and each probe is an exact ray-vs-box test
+     against a panel that is *already* `PANEL_THICKNESS` deep
+     (`occlusion.rs`'s `box_of`, `EDGE_NORTH`/`EDGE_SOUTH`/`EDGE_WEST`/
+     `EDGE_EAST`), the question "is this corner within `PANEL_THICKNESS`"
+     answers itself: the box either contains the crossing point or it
+     doesn't. `PANEL_THICKNESS` itself survives as the physical depth of a
+     panel's box — that's geometry, not a walk-algorithm approximation, and
+     nothing here touches it. What goes: `corner_tie` (`light.rs:1150`,
+     `blit.wgsl:558`), `DdaTransition::Corner`'s special-cased handling in
+     `walk_cells` (`light.rs:2192`-`2222`) and `panel_stop`
+     (`light.rs:1192`, called only from that special case) — three things
+     this doc has twice had to fix a bug in (steps 1-4's boundary bug,
+     session 6's shallow-ray bug), gone by construction rather than tested
+     harder.
+  3. **Rough cost.** Roughly a wash, not a win or a loss worth the rewrite on
+     its own. Each corner probe is a handful of slab compares (six, for a 3D
+     AABB) against a real solid's box — about what `corner_tie` plus the
+     conditional `panel_stop` call already cost when the tie fired, paid
+     unconditionally instead of on a heuristic's say-so. No change to
+     `MAX_WALK_STEPS` or the broad-phase's own cell count. The rewrite's
+     case has to rest on correctness (removing a bug class by construction)
+     and testability, not on speed.
+
+  **What does not get simpler, and has to be carried by any replacement,
+  not designed around**: `walk_cells` (`light.rs:1911`-`2226`) is not just
+  "does the ray hit a box" — `own_cell`/`first`/`last` (self-shadow
+  exemption), `same_run`/`own_run` (a run of wall not shadowing itself,
+  keyed to tile row/column adjacency), `on_surface`/`caps_this` (which
+  surface of a multi-storey tile a pixel actually stands on), apertures
+  (`pierced`, a hole in a specific panel), and per-cell penumbra softness
+  scaled by how far along the ray a crossing happens (`entered`/`leaves`,
+  feeding `soft`/`wide`/`tall`) are all still needed and are all keyed to a
+  solid's *originating tile*, which a plain "list of boxes near this ray"
+  does not carry on its own. The broad-phase has to hand over `(tile,
+  &Solid)` pairs, not bare `&Solid`s, or `own_run`/`on_surface` have nothing
+  to compare tiles against. None of this is a reason not to do the rewrite —
+  it is the reason it is a body-swap of `walk_cells`'s *stepping*, not a
+  rewrite of its *rules*, and why the safe order is to prove the new
+  stepping against the old one before cutting over, not after.
+
+  **Recommended shape, in the order this doc's own discipline already
+  argues for (see step 4's brute-force oracle, session 6/7's
+  fault-injection): build the replacement as a second path, gate it against
+  the existing suite as an oracle, cut over only once it wins.**
+  1. A new pure primitive — segment-vs-AABB, the slab method, taking a
+     `crate::solid::Solid` (`solid.rs:33`, already exact `WorldSpot`-cornered
+     `min`/`max`) and a segment, returning `entered`/`leaves` in `0.0..=1.0`
+     or nothing. No `Occlusion`, no tile, no walk — the same isolation
+     `dda_walk` itself was extracted for, testable against a hand-computed
+     truth table and a proptest oracle (a point sampled at a random `t`
+     inside vs. outside the returned interval should agree with plain
+     point-in-box, the same independence discipline step 4's brute-force
+     oracle already uses). No existing helper does this anywhere in the
+     crate — checked before writing a new one, per the repo's reuse rule.
+  2. A parallel `walk_cells`-shaped function built on it, `(tile, &Solid)`
+     pairs from the doubled broad-phase in point 1 above, the *same*
+     exemption/run/aperture/softness rules `walk_cells` already has —
+     copied and adapted, not re-derived from scratch, since re-deriving is
+     exactly what has bitten this doc before (see `feedback-
+     rederived-formula-needs-reference-gate` in project memory). Not wired
+     into any real frame yet.
+  3. Run both paths over every scene this doc already has an oracle for —
+     the grid-sweep and fuzz oracles in `tests/lighting.rs`, the
+     `frame.rs` parity suite, the permanent regression tests for both fixed
+     bugs — asserting the two `walk_cells`-shaped functions agree with each
+     other, not just each with `light::sample`'s old formula. Disagreements
+     here are the interesting output of this step, not a failure: each one
+     is either a bug in the new path or a case the old one already had wrong
+     that the fuzz/parity suites happened not to reach.
+  4. Only once 3 is clean does replacing `walk_cells` become a one-function
+     swap, mirrored in `blit.wgsl` the same way step 5's `walk` fix already
+     was, with decision 9's full parity suite as the gate.
+
+  Not started this session — this is the scope, not the rewrite. Whether it
+  is worth its own living-plan doc (this doc's own precedent: split out of
+  `lighting.md` once it was "enough sessions' worth of work that it does
+  not belong buried") is an open question for whoever starts point 1, not
+  answered here.
+
+  **Point 1 built and tested, same session.** `ray_vs_solid`
+  (`light.rs:1104`) — segment-vs-`crate::solid::Solid`, the slab method,
+  `Option<(entered, leaves)>` in `0.0..=1.0`. Pure, no `Occlusion`, no tile,
+  `#[allow(dead_code)]` and not called from anywhere real yet — staged
+  ahead of point 2 on purpose, the way the recommended order above asks
+  for. Six hand-computed unit tests (a straight crossing checked against
+  fractions worked out by hand, a clean miss, both ends already inside, a
+  degenerate flat lid, a degenerate thin panel exactly
+  `PANEL_THICKNESS` deep, a tangent corner touch returning a real
+  zero-length interval rather than `None`) plus a 2048-case proptest
+  checking the one thing worth an independent oracle for: a point sampled
+  at a random `t` along the segment lies inside the box exactly when `t`
+  falls inside the returned interval — the same point-in-box discipline
+  step 4's brute-force sampler already uses against the whole walk, turned
+  on this one primitive instead. All seven green; `cargo test -p
+  openshard-client-render` (full crate, 16 test binaries), `cargo clippy -p
+  openshard-client-render --all-targets`, `cargo check --workspace
+  --all-targets` and `rustfmt --check crates/client/render/src/light.rs`
+  all clean. Point 2 (the parallel `walk_cells`-shaped function over the
+  doubled broad-phase) is next, not started.
+
 ## Handoff log
 
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 8 — the ray-vs-Solid idea scoped, its first primitive built
+
+Picked up session 7's deliberately-deferred idea by name, asked for
+explicitly: `occlusion::Solid` already stores exact boxes, so replace
+grid-DDA's per-cell stepping with direct ray-vs-box intersection instead of
+testing the existing stepping harder. Full account in the backlog's "A
+bigger idea..." entry, now two sessions long; short version here.
+
+- **Scoped all three questions the backlog entry deferred**, by reading
+  `walk_cells`/`dda_walk`/`blit.wgsl`'s `walk` line by line rather than
+  guessing from the entry's own summary. Broad-phase cost dissolves — reuse
+  `dda_walk`'s own cell enumeration, just probe the corner-diagonal
+  neighbour unconditionally at every step instead of gating it behind
+  `corner_tie`'s heuristic. `corner_tie`, `DdaTransition::Corner`'s
+  special-cased handling and `panel_stop`'s corner call all go away by
+  construction once every candidate gets an exact test rather than a
+  proximity guess — three things this doc has twice had to fix a bug in.
+  `PANEL_THICKNESS` itself survives unchanged; it is the panel's own
+  physical depth, not a walk-algorithm approximation.
+- **Named what does not get simpler**: `walk_cells` is not just "does the
+  ray hit a box" — self-shadow exemption, wall-run continuity, apertures
+  and per-cell penumbra softness are all real rules, all keyed to a
+  solid's *originating tile*, and any replacement has to carry them rather
+  than design around them. This is a body-swap of the stepping, not a
+  rewrite of the rules.
+- **Recommended order, matching this doc's own fault-injection
+  discipline**: build the new stepping as a second path, prove it agrees
+  with the old one over every oracle this doc already has, cut over only
+  once that holds. Four numbered points in the backlog entry.
+- **Built and tested point 1**: `ray_vs_solid` (`light.rs:1104`), a pure
+  segment-vs-AABB slab-method primitive, no `Occlusion` or tile dependency,
+  `#[allow(dead_code)]` and deliberately not wired into anything real yet.
+  Six hand-computed unit tests plus a 2048-case proptest checking it
+  against an independent point-in-box characterisation, the same oracle
+  discipline step 4's brute-force sampler already established for this doc.
+- Full `cargo test -p openshard-client-render` (16 test binaries), `cargo
+  clippy -p openshard-client-render --all-targets`, `cargo check
+  --workspace --all-targets` and `rustfmt --check
+  crates/client/render/src/light.rs` all clean at the end of the session.
+- **Not touched**: step 5's own white line, and points 2-4 of the
+  ray-vs-Solid plan (the parallel walk, the agreement pass over the
+  existing oracles, the actual cutover). Point 2 is the natural next piece
+  if this track continues; step 5 is still exactly where session 6/7 left
+  it if the next session goes there instead — see "Where the next session
+  starts" above.
 
 ### Session 7 — a testability audit, `dda_walk` extracted, step 5 untouched
 
