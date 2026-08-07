@@ -9,9 +9,10 @@ None of it is architecture. For that, [`architecture.md`](architecture.md).
 
 ## Reference sources
 
-Two other emulators. Neither is vendored, neither is a dependency, and neither is
-copied — they are read. Where your checkouts of them are is your own business:
-put the paths in `CLAUDE.local.md`, which is gitignored beside this file.
+Other people's emulators, and one other client. None is vendored, none is a
+dependency, and — with the single exception called out below — none is copied:
+they are read. Where your checkouts of them are is your own business: put the
+paths in `CLAUDE.local.md`, which is gitignored beside this file.
 
 **SphereServer**, if a checkout is available: `Source-X/` (the C++ engine) and
 `Scripts-X/` (the .scp scriptpack). Read it for **observed protocol behaviour**,
@@ -28,6 +29,17 @@ Ultima Online on screen in *actual* 3D rather than as sprites. Read it for the
 animation — see "3D character models" below. It is **GPL**, and this project is
 MIT/Apache-2.0: not a line of its code and not one of its assets may land here.
 Its observations may, rewritten.
+
+**anima-client** (Rust, on GitHub), a UO client written from scratch: a headless
+sans-IO core (`anima-core` — protocol, world model, Z-aware A\*, asset parsers)
+with the renderers on top, validated against a live ServUO. It is the only
+reference here that implements *our counterpart* rather than another server, so
+where it and this tree disagree about a packet, one of the two is wrong about
+the wire and it is worth finding out which. It is **MIT OR Apache-2.0** —
+declared in every crate from its first commit, licence files added 2026-08-07 —
+which is this project's own pair, so unlike everything else on this list its code
+may be borrowed outright, with the copyright and licence kept. Its author read
+this file against that tree and sent back the stun/disarm finding below.
 
 **Three engines that lit a two-dimensional world**, read for the lighting plan
 and none of them a UO reference: **OpenNox** (GPL-3, Go, a reimplementation of
@@ -209,6 +221,30 @@ while a search cannot tell a *stale* answer — one to a step a rollback already
 voided — from a real desync at all. ClassicUO calls both a bad step, so every
 wall hit on a slow link costs it a needless resync. Counting what is still owed
 (`Walk::draining`) distinguishes them; see `docs/client.md`.
+
+**ClassicUO has the pre-AOS stun and disarm subcommands swapped.** `0xBF`
+subcommand `0x09` is *disarm* and `0x0A` is *stun*; the client says the opposite.
+`OutgoingPackets.cs`'s `Send_StunRequest` writes `0x09` and `Send_DisarmRequest`
+writes `0x0A`, while ServUO registers `RegisterExtended(0x09, true,
+DisarmRequest)` and `RegisterExtended(0x0A, true, StunRequest)`
+(`Server/Network/PacketHandlers.cs`), and Razor (`Razor/Network/Packets.cs`)
+writes ServUO's pairing. Two independent receivers agreeing is suggestive, not
+proof — what settles it is that the two handlers gate on *different skills*, so
+the shard's own reply names which one you sent.
+`Scripts/Items/Equipment/Weapons/Fists.cs` wants ArmsLore and Wrestling ≥ 80 to
+ready a disarm, Anatomy and Wrestling ≥ 80 to ready a stun. With hands free,
+ArmsLore and Wrestling at 100 and Anatomy at 0, `0x09` answers cliloc 1019013
+*"You get yourself ready to disarm your opponent"* and `0x0A` answers 1004008
+*"You are not skilled enough to stun your opponent"*, and inverting the skills
+inverts both replies. The server registration is right and the client is the
+outlier. Nothing about getting it backwards is loud: sending the client's pairing
+arms the *other* special with no error at all, and a server that takes the
+pairing from the client hands every player the wrong move. Both handlers return
+immediately when `Core.AOS`, and an AOS-era client sends `Send_UseCombatAbility`
+instead (`GameActions.cs`), so this is a pre-AOS-only trap — which is exactly the
+era a from-scratch shard implements first. The live measurement is
+anima-client's, on a running ServUO (its issue #1); everything else above is
+checkable in the two checkouts.
 
 ## The client's data files
 
