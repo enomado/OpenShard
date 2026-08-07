@@ -88,6 +88,50 @@ Named, so the plan can be checked against the tree:
 size, a ray does have a cutoff, and a walk does have a step budget. They stop
 being *stand-ins* for the things above.
 
+## How this is judged
+
+**The instrument is a picture beside the path tracer's, looked at by a person.**
+Not a number, and not a second implementation of our own arithmetic. Written down
+here because it decides what a test in this crate is *for*, and because it retires
+most of what the tree called a lighting test.
+
+Twelve went on 2026-08-08 — nine `the_shader_…_agrees_with_light_sample` and the
+three flat-face parity rungs, 1,172 lines, `tests/frame.rs` from 5,981 to 4,809.
+The reason is one sentence: **their subject is the agreement of two of our own
+implementations of the model phases 2–5 delete.** A sweep comparing `blit.wesl`
+against `light::sample` cannot go red because the model is wrong — only because
+the model is replaced, and both of its sides are being replaced. `assert_parity`,
+`assert_parity_of`, `assert_single_face_parity`, `assert_two_face_edge_parity`,
+`ring_of_lights` and `single_face_bounds` went with them.
+
+Two of the twelve carried the `#[ignore]`d corner-tie tie-break, so the CPU/GPU
+tie-break gap `lighting_raymarch.md` records is now recorded *only* in prose. It
+was never going to be closed by a test that outlives the walk it is about.
+
+What survives, and the rule that decides it — **does the test's subject survive
+the rebuild?**
+
+- **The brute-force oracles stay.** `tests/lighting.rs`'s `brute_force_blocked`
+  and `frame.rs`'s `ground_truth_blocked` are dumb fixed-step point samplers
+  against `solids_at`'s own boxes: no DDA, no `floor()`/`fract()` reconstruction,
+  no shared arithmetic with either walk. Their subject is the occlusion grid and
+  its boundary derivation, which phase 4 keeps. This is the one non-circular
+  coverage in the tree and retiring it would be retiring a role, not an
+  instrument.
+- **World claims stay, as claims.** "A shut room keeps its light inside", "a hole
+  in a floor lets the light through", "a torch does not light the storey above
+  it" are statements about the world and survive the rebuild verbatim. Their
+  *margins* do not: `> 0.2` and `< 1e-6` were calibrated against a pipeline that
+  has already changed once under them — see `brighter_by`'s own account of what
+  phase 1 did to every one of them. Expect to re-take them per phase, and expect
+  that re-taking to be a judgement rather than a fix.
+- **Pipeline mechanics stay untouched.** Blit texel-for-texel, the hue ramp,
+  sprite silhouettes, depth order, the camera. None of it is about light.
+- **Pictures are promoted.** `tests/pictures.rs`, `tests/traced.rs`,
+  `dump_the_lighting_views`, `examples/synthetic_stair.rs` are no longer a side
+  channel — they are the acceptance instrument, and the work they still need is
+  to put the engine's frame and the tracer's *side by side* for one look.
+
 ## What arrives, in detail
 
 ### The G-buffer
@@ -435,13 +479,20 @@ Things noticed while writing this, not blocking any phase:
   still true is that this is one scene and one pixel of it: the vertical case
   needs the flame exactly over a swept fragment, so one flame buys one comparison.
   A sweep that varied the flame across the tile would buy the whole strip.
-- **Parity is circular for any defect both walks share.** It compares the shader
-  against `light::sample`, so a rule wrong in the same way on both sides reports
-  agreement. Both fixes above went in together, which is exactly that case — the
-  new test carries a *direct* claim about the frame's own pixels beside the sweep
-  for this reason, and it is the direct claim that fires when the shader's gate is
-  removed. Worth knowing before trusting a green parity run as evidence a shader
-  is right rather than merely consistent.
+- ~~**Parity is circular for any defect both walks share.**~~ **Acted on.** It
+  compared the shader against `light::sample`, so a rule wrong in the same way on
+  both sides reported agreement — and the whole family is now deleted, see *How
+  this is judged*. What is left of that test is its *direct* half:
+  `the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under` reads two
+  of the frame's own pixels and no longer calls a sweep at all. It is the direct
+  claim that fires when the shader's gate is removed, and it was always the only
+  half that could.
+- **The parity apparatus was built on `place`'s packing, which is why it could not
+  have survived phase 2 anyway.** `parity_frame` writes the attachment by hand,
+  texel by texel, in the exact `z + 128 | stance` layout — so it is a second
+  author of the format the G-buffer replaces. `parity_place`, `parity_frame` and
+  `Fixture` are kept for now because three surviving tests draw a frame through
+  them; phase 2 rewrites all three against the G-buffer or deletes them.
 - The three-tread flight is rebuilt by hand in five tests in `light.rs` and now a
   sixth in `frame.rs`, each restating the same `Prism::new(Face::North, &[1, 3,
   5])` and the same tile bounds. It is the scene every stair defect is found on
