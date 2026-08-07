@@ -29,10 +29,12 @@
 //!   default shape (two whole-tile boxes, offset `1,0` — due east, a
 //!   straight line rather than a diagonal) at a shorter height, built here
 //!   only so both scenes go through one tool with one set of knobs.
-//! - `OPENSHARD_SCENE_ZOOM=n` — notches of `Zoom::scale_up`. Default `7` for
-//!   `tree`, `3` for `line` (`two_cubes.rs`'s own default): `tree`'s boxes
-//!   are sub-tile, so the same 512×512 canvas needs a much closer zoom to
-//!   fill it.
+//! - `OPENSHARD_SCENE_ZOOM=n` — notches of `Zoom::scale_up`, from `Zoom::ONE`.
+//!   Default `3` for both scenes, which is **the top of the ladder**:
+//!   `camera::LADDER` has three rungs above 1:1 and `scale_up` stops at the
+//!   last, so 3 and 7 and 70 are all 4:1 and all the same picture. `tree`'s
+//!   own default said `7` for a while and meant nothing by it — a knob whose
+//!   value cannot be read back out of the frame is a knob that has to say so.
 //! - `OPENSHARD_LIGHT_AT=dx,dy` / `OPENSHARD_LIGHT_Z` / `OPENSHARD_LIGHT_RADIUS`
 //!   — same meaning as `two_cubes.rs`'s own, offset from the scene's first
 //!   box's own tile. Both scenes' defaults put the flame up and to the
@@ -48,7 +50,12 @@
 //!   heights and two footprint widths (tile fractions), default `3`/`3`/
 //!   `0.5`/`0.33333`. For pushing the shapes further apart than the default
 //!   — a wider gap between the two boxes' own silhouettes is easier to read
-//!   a shadow's own edge against.
+//!   a shadow's own edge against. **These four defaults, this scene, and this
+//!   tool's own zoom and flame defaults are the reference scene**
+//!   (`docs/lighting.md`, "Testing and instrumentation"), and the oracle
+//!   counts recorded there are what they produce: override one for a single
+//!   run to ask a question, but editing a default here silently retires every
+//!   recorded number.
 //! - `OPENSHARD_FRAME_DUMP=/tmp/x` — base path; writes `<path>_lit.ppm` and
 //!   `<path>_shadow.ppm` beside it, both marked with a lime crosshair at the
 //!   flame's own projected position (`synthetic_stair.rs`'s own trick).
@@ -101,21 +108,34 @@
 //! exact by construction (a lid is at an integer `z`, the ground is at
 //! `z = 0`). The defect that doc traces lives on a *vertical* face, where
 //! height varies continuously down the wall and `pack_place` rounded it to the
-//! nearest unit (phase 1 has since given it a fraction) — this grids each
-//! box's own rendered vertical faces (`east` and `south`; `box_mesh` never
-//! builds the other two, since an isometric camera never sees them) and reads
-//! the rendered `View::Shadow` frame back at each point's own projected pixel,
-//! the same way the ground oracle does. A sample can land on a pixel a
-//! *different* box's face owns instead — decided by the renderer's own
-//! painter's-order key (`depth::Order`, reused rather than re-derived: a
-//! screen-ownership question, no part of the shadow arithmetic under test) and
-//! a plain point-in-quad test against every rendered face's own projected
-//! corners — and a skip there is not a pass: every reported line carries
-//! sampled/compared/disagreeing, and the total compared is asserted
-//! non-trivial. Each face also reports **where** up its own height the
-//! disagreements sat, as runs of grid rows: the count says a phase moved the
-//! number, the runs say whether what is left is the same defect made smaller
-//! or a different one that the first was hiding.
+//! nearest unit (phase 1 has since given it a fraction). It sweeps **every
+//! pixel the rendered `place` attachment says a box's own `east` or `south`
+//! face drew** (`box_mesh` never builds the other two, since an isometric
+//! camera never sees them), reads that fragment's own world position back out
+//! of the same attachment, and lays the independent slab test's answer about
+//! *that* point against the rendered `View::Shadow` pixel.
+//!
+//! Both halves of that are the renderer's own answer rather than a
+//! reconstruction of it, and both replaced a shape that guessed:
+//!
+//! - **Whose pixel it is.** A world point projected to a pixel lands on
+//!   whatever the depth test left there — the ground half a pixel under a
+//!   face's base, a nearer box, a box's own top. The attachment names the
+//!   instance row that drew each pixel; the old shape re-derived every face's
+//!   screen quad instead and was blind to the ground pass entirely, which was
+//!   212 of the 278 disagreements the `tree` scene used to report.
+//! - **Which point it is.** A pixel's fragment sits at the pixel's centre and
+//!   the attachment quantises what it carries (a hundred-and-twenty-eighth of
+//!   a tile, a sixteenth of a `z` unit), so a sample point that skipped both
+//!   is a fragment the rasteriser could not produce.
+//!
+//! Every reported line carries the pixels drawn and the disagreements, and the
+//! total is asserted non-trivial — a detector that compares nothing reads like
+//! one that found nothing. Each face also reports **where** up its own height
+//! the disagreements sat, as runs of bands, and **which walk is out**:
+//! `light::sample` siding with the independent oracle means the shader alone,
+//! siding with the rendered pixel means the engine's own arithmetic in both
+//! implementations at once. Those are opposite next steps.
 //!
 //! ```sh
 //! OPENSHARD_FRAME_DUMP=/tmp/tree OPENSHARD_BOXES_SCENE=tree \
@@ -197,6 +217,114 @@ fn mark_crosshair(pixels: &mut [u8], width: u32, height: u32, at: (i32, i32)) {
             mark(dx, dy, [80, 255, 0]);
         }
     }
+}
+
+/// One texel of the `place` attachment, decoded: **who drew this pixel**.
+///
+/// The renderer's own answer to a question every oracle in this tool has to
+/// ask and used to answer by reconstructing the picture on the CPU — which
+/// surface owns the pixel a world point projects to. A sample point is a point
+/// of a *surface*, and the pixel under it belongs to whatever the depth test
+/// left there: the ground behind a box, a nearer box's face, or the face being
+/// sampled. Comparing a rendered pixel that some other surface drew against an
+/// oracle's answer about this one is not a measurement of anything.
+///
+/// See [`openshard_client_render::place`] for the format.
+/// It also carries **where in the world the fragment itself is**, which is not
+/// the world point that projected onto it: the pixel's own fragment sits at the
+/// pixel's centre, and the attachment quantises what it carries — a
+/// hundred-and-twenty-seventh of a tile across, a sixteenth of a `z` unit up.
+/// That is the point the shader lit, so it is the point an oracle has to ask
+/// about; anything else compares the picture against a fragment the rasteriser
+/// could not produce.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Drawn {
+    /// [`openshard_client_render::place::Kind`]'s own two bits.
+    kind: u32,
+    /// The stance, which for a mesh face is the [`Stance::MeshFace`] routing
+    /// sentinel rather than the face's real one.
+    stance: u32,
+    /// The instance row this fragment's picture came from — a `MeshFaceRow`
+    /// for a mesh face, a ground quad for land.
+    id: u32,
+    /// Where in its tile the fragment is, both axes, `0.0..1.0`. The tile
+    /// itself is not here — it is in the instance row `id` names.
+    sub: (f64, f64),
+    /// And how high, in the map's own `z` units.
+    z: f64,
+}
+
+/// The `place` attachment read back, one [`Drawn`] a pixel, row-major.
+///
+/// `Rgba16Uint`, eight bytes a texel — `place::texture` asks for `COPY_SRC`
+/// exactly so this is possible, and its own doc says so.
+fn read_place(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    place: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Vec<Drawn> {
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("place readback"),
+        size: u64::from(width) * u64::from(height) * 8,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: place,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 8),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| {
+        result.expect("mapping a buffer this example just wrote")
+    });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("waiting on our own submission");
+    let bytes = slice
+        .get_mapped_range()
+        .expect("the map completed above")
+        .to_vec();
+    bytes
+        .chunks_exact(8)
+        .map(|texel| {
+            let channel = |i: usize| u32::from(u16::from_le_bytes([texel[i * 2], texel[i * 2 + 1]]));
+            Drawn {
+                kind: channel(3) & 3,
+                stance: (channel(2) >> openshard_client_render::place::STANCE_SHIFT) & 15,
+                id: channel(0) | (channel(1) << 16),
+                sub: (
+                    f64::from((channel(3) >> 2) & 127) / 127.0,
+                    f64::from((channel(3) >> 9) & 127) / 127.0,
+                ),
+                // Through `place::unpacked_height` and not `& 0xFF`: the whole
+                // units alone still look like a height and quietly put every
+                // fragment of a vertical face back on the staircase
+                // `docs/lighting_height.md` phase 1 removed.
+                z: f64::from(openshard_client_render::place::unpacked_height(channel(2) as u16)),
+            }
+        })
+        .collect()
 }
 
 fn dump(
@@ -588,15 +716,15 @@ fn main() {
     let occlusion = builder.finish(&Cutaway::OPEN);
 
     let (width, height_px): (u32, u32) = (512, 512);
-    // `tree`'s boxes are sub-tile, so its default sits three notches past
-    // `line`'s — found by looking at a rendered frame at each notch, not by
-    // arithmetic (`two_cubes.rs`'s own session 13 lesson): the fixed 512×512
-    // canvas holds a whole-tile box comfortably at `line`'s zoom, and a
-    // half-tile one only once zoomed in this much further.
-    let default_zoom = if scene_name == "tree" { "7" } else { "3" };
-    let zoom_notches: u32 = env_or("OPENSHARD_SCENE_ZOOM", default_zoom)
-        .parse()
-        .expect("a number");
+    // Three notches is the top of `camera::LADDER` — 4:1, the closest this
+    // crate's own wheel goes — and both scenes want it: a whole-tile box fills
+    // the fixed 512×512 canvas comfortably there and a half-tile one is still
+    // readable. `tree`'s default read `7` until it was noticed that
+    // `Zoom::scale_up` stops at the last rung, so the four extra notches were
+    // four calls that returned the same value: the frame at 3 and at 7 is the
+    // same frame, oracle counts included, which is how it was checked rather
+    // than argued.
+    let zoom_notches: u32 = env_or("OPENSHARD_SCENE_ZOOM", "3").parse().expect("a number");
     let centre_x = (i32::from(min_tx) + i32::from(max_tx)) / 2;
     let centre_y = (i32::from(min_ty) + i32::from(max_ty)) / 2;
     let mut camera = Camera::new(
@@ -613,7 +741,13 @@ fn main() {
     let base_tile = depth::base_for(centre_x, centre_y);
     let mut rows: Vec<MeshFaceRow> = Vec::new();
     let mut vertices: Vec<MeshFaceVertex> = Vec::new();
-    for b in &boxes {
+    // Which row each box's each face was pushed as, kept while it is pushed
+    // rather than re-derived from `rows.len()` arithmetic later: it is what the
+    // face oracle compares the rendered `place` attachment's own id against, so
+    // "this pixel is box 2's south face" is the renderer's answer and not this
+    // tool's guess about the order it built its own list in.
+    let mut face_rows: Vec<(usize, Stance, u32)> = Vec::new();
+    for (box_index, b) in boxes.iter().enumerate() {
         let solid = b.solid();
         let d = depth::Order {
             tile: i32::from(b.tile.0) + i32::from(b.tile.1),
@@ -623,9 +757,11 @@ fn main() {
         let mesh = box_mesh(solid);
         for face in mesh.faces() {
             let id = rows.len() as u32;
+            let stance = Stance::of_normal(face.normal).expect("a box face's own axis-aligned normal");
+            face_rows.push((box_index, stance, id));
             rows.push(MeshFaceRow {
                 tile: (b.tile.0, b.tile.1),
-                stance: Stance::of_normal(face.normal).expect("a box face's own axis-aligned normal"),
+                stance,
             });
             for corner in face.fan() {
                 let screen = camera.to_view_exact(project_exact(corner));
@@ -729,6 +865,13 @@ fn main() {
     ground_pass.render(&device, &queue, &mut encoder, target, &ground_quads);
     mesh_pass.render(&device, &queue, &mut encoder, target, &vertices, &rows);
     queue.submit([encoder.finish()]);
+
+    // What the world passes actually left on each pixel. Read once, here,
+    // because it is the *world* passes' output and the blit below neither
+    // writes it nor changes it however many views are dumped — and every oracle
+    // in this tool needs it to know whether the pixel it is about to read is a
+    // pixel of the surface it is asking about. See [`Drawn`].
+    let drawn = read_place(&device, &queue, &place_tex, width, height_px);
 
     let first = &boxes[0];
     // Picked by looking at a rendered frame, the same way the zoom default
@@ -942,8 +1085,16 @@ fn main() {
     // reads the exact pixel the renderer itself drew), and compares the
     // rendered `View::Shadow` pixel there against `segment_clear_of_box`, the
     // same independent, no-shared-arithmetic oracle the box-top check already
-    // trusts. A point inside any box's own footprint is skipped — the pixel the
-    // camera finds there is the box's mesh, not the ground underneath it.
+    // trusts.
+    //
+    // **Standing outside every box's footprint is not enough to be looking at
+    // the ground.** A box's picture *rises* out of its footprint, so the ground
+    // for a tile or two north of one is drawn over by that box's own faces —
+    // and this used to read those pixels as though they were the ground's,
+    // which is what the bulk of its own "rendered too dark" points were. The
+    // rendered `place` attachment says who drew each pixel (`drawn`, and the
+    // face oracle's own note), so a point whose pixel is not land is skipped
+    // and counted as skipped.
     type Mismatch = (f64, f64, f32, (u8, u8, u8));
     if env_opt("OPENSHARD_BOXES_GROUND_ORACLE").as_deref() != Some("0") {
         let light_at = (
@@ -957,6 +1108,9 @@ fn main() {
         let min_y = boxes.iter().map(|b| b.min.1).fold(f64::MAX, f64::min) - margin;
         let max_y = boxes.iter().map(|b| b.max.1).fold(f64::MIN, f64::max) + margin;
         let side = 240u32;
+        let mut sampled = 0usize;
+        let mut compared = 0usize;
+        let mut drawn_by_another = 0usize;
         let mut mismatches = 0usize;
         let mut too_dark = 0usize;
         let mut too_light = 0usize;
@@ -968,12 +1122,7 @@ fn main() {
                 let v = (row as f64 + 0.5) / f64::from(side);
                 let x = min_x + u * (max_x - min_x);
                 let y = min_y + v * (max_y - min_y);
-                if boxes
-                    .iter()
-                    .any(|b| x >= b.min.0 && x <= b.max.0 && y >= b.min.1 && y <= b.max.1)
-                {
-                    continue;
-                }
+                sampled += 1;
                 let screen = camera.to_view_exact(project_exact(WorldSpot { x, y, z: 0.0 }));
                 let px = (screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5;
                 let py = (screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5;
@@ -987,6 +1136,13 @@ fn main() {
                 if pxi >= width || pyi >= height_px {
                     continue;
                 }
+                if drawn[(pyi * width + pxi) as usize].kind
+                    != openshard_client_render::place::Kind::Land as u32
+                {
+                    drawn_by_another += 1;
+                    continue;
+                }
+                compared += 1;
                 let offset = ((pyi * width + pxi) * 4) as usize;
                 let gpu_lit = shadow_pixels[offset] > 128;
                 // The GPU never lights the *continuous* `(x, y)` — `ground.wgsl`'s
@@ -1035,9 +1191,14 @@ fn main() {
             }
         }
         eprintln!(
-            "ground oracle vs rendered View::Shadow: {mismatches}/{} sampled ground points disagree \
-             ({too_dark} rendered too dark, {too_light} rendered too light)",
-            side * side
+            "ground oracle vs rendered View::Shadow: {mismatches}/{compared} compared ground points \
+             disagree ({too_dark} rendered too dark, {too_light} rendered too light); {sampled} sampled, \
+             {drawn_by_another} skipped as another surface's pixel"
+        );
+        assert!(
+            compared > 100,
+            "the ground oracle compared only {compared} of {sampled} sampled points — a detector that \
+             compares nothing reads exactly like a detector that found nothing"
         );
         for (label, examples) in [
             ("too dark", &examples_too_dark),
@@ -1056,229 +1217,182 @@ fn main() {
     // a box's own flat top, where an integer height is exact (a lid *is* at
     // an integer `z`); the ground oracle samples the ground, `z = 0`,
     // likewise exact. The defect lives on a vertical face, where height
-    // varies continuously and `pack_place` rounded it to the nearest unit —
-    // this grids each box's own rendered vertical faces (`box_mesh` only
-    // ever builds the two an isometric camera can see; the other two are
-    // permanently self-occluded and would only ever measure that), projects
-    // each point through the real camera to the pixel the renderer actually
-    // drew, and reads the rendered `View::Shadow` frame back there — checked
-    // against `segment_clear_of_box`, the same independent slab test the
-    // other two oracles already trust, no arithmetic shared with `light.rs`
-    // or `blit.wesl`.
+    // varies continuously and `pack_place` rounded it to the nearest unit.
     //
-    // A sample point can land on a pixel a *different* box's face owns
-    // instead — `owned_by_someone_nearer` below answers that with the
-    // renderer's own painter's-order key (`depth::Order`, reused rather than
-    // re-derived: it is a screen-ownership concern, not part of the shadow
-    // arithmetic under test) and a plain point-in-quad test against every
-    // rendered face's own projected corners. A skip there is not a pass:
-    // every line below carries sampled/compared/disagreeing, and the total
-    // compared is asserted non-trivial — a detector that silently compares
-    // nothing reads exactly like a detector that found nothing.
+    // **It sweeps pixels and not world points.** Every pixel of the frame the
+    // rendered `place` attachment says a box's own vertical face drew — the
+    // renderer's answer, not a reconstruction of it — is one comparison: the
+    // fragment's own world position is read back out of that attachment
+    // (`Drawn`), the independent `segment_clear_of_box` is asked about *that*
+    // point, and the answer is laid against the rendered `View::Shadow` pixel.
+    // No arithmetic here is shared with `light.rs` or `blit.wesl`.
+    //
+    // Both halves of that are corrections of an earlier shape that gridded
+    // world points over each face and projected them, and both were worth
+    // hundreds of phantom disagreements on the `tree` scene:
+    //
+    // - **Whose pixel is it.** A projected sample lands on whatever the depth
+    //   test left there — the ground half a pixel under a face's base, a
+    //   nearer box's face, a box's own top. The old shape answered that by
+    //   re-deriving every face's screen quad and running a point-in-quad test
+    //   with a hand-rolled painter's-order tie-break, which was blind to the
+    //   ground pass entirely (212 of `tree`'s own 278 disagreements were the
+    //   ground, correctly shadowed, read as though it were the face's).
+    // - **Which point is it.** The pixel's own fragment sits at the pixel's
+    //   centre, and the attachment quantises what it carries — a
+    //   hundred-and-twenty-seventh of a tile, a sixteenth of a `z` unit. A
+    //   sample point that skipped both is a fragment the rasteriser could not
+    //   produce, and near a grazing corner the difference decides the answer.
+    //   The ground oracle already knew this and quantised by hand; reading the
+    //   attachment is the same statement, exactly, and for every axis at once.
+    //
+    // A face with no pixels at all is not a pass: every line below carries
+    // sampled and disagreeing, and the total is asserted non-trivial — a
+    // detector that silently compares nothing reads exactly like a detector
+    // that found nothing.
     if env_opt("OPENSHARD_BOXES_FACE_ORACLE").as_deref() != Some("0") {
         let light_at = (
             f64::from(first.tile.0) + f64::from(ldx),
             f64::from(first.tile.1) + f64::from(ldy),
             f64::from(light_z),
         );
-        let box_depth: Vec<f32> = boxes
-            .iter()
-            .map(|b| {
-                depth::Order {
-                    tile: i32::from(b.tile.0) + i32::from(b.tile.1),
-                    priority_z: depth::static_priority_z(b.min.2.round() as i8, &cube_tile),
-                }
-                .to_depth(base_tile)
-            })
-            .collect();
-        let to_pixel = |at: WorldSpot| {
-            let screen = camera.to_view_exact(project_exact(at));
-            (
-                (screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5,
-                (screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5,
-            )
-        };
-
-        // Every rendered face's own screen quad, box tops included — a
-        // vertical face's own sample can land behind a *different* box's top
-        // as easily as behind its side.
-        struct ScreenFace {
-            box_index: usize,
-            corners: [(f32, f32); 4],
-            depth: f32,
-        }
-        let mut screen_faces: Vec<ScreenFace> = Vec::new();
-        for (index, b) in boxes.iter().enumerate() {
-            for face in box_mesh(b.solid()).faces() {
-                let v = face.vertices();
-                screen_faces.push(ScreenFace {
-                    box_index: index,
-                    corners: [to_pixel(v[0]), to_pixel(v[1]), to_pixel(v[2]), to_pixel(v[3])],
-                    depth: box_depth[index],
-                });
-            }
-        }
-        // Whether `p` lies inside a convex quad: the cross product of each
-        // edge with `p` keeps one sign all the way round, or `p` is outside
-        // it.
-        fn point_in_quad(corners: &[(f32, f32); 4], p: (f32, f32)) -> bool {
-            let mut sign = 0.0f32;
-            for i in 0..4 {
-                let (a, b) = (corners[i], corners[(i + 1) % 4]);
-                let cross = (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
-                if cross.abs() < 1e-6 {
-                    continue;
-                }
-                if sign == 0.0 {
-                    sign = cross.signum();
-                } else if cross.signum() != sign {
-                    return false;
-                }
-            }
-            true
-        }
-        // Whether some *other* box's face already owns pixel `p`, at this
-        // box's own depth or nearer. `LessEqual` (`renderer.rs`'s own doc on
-        // `depth_state`) means a tie goes to whichever box was pushed later,
-        // which is every box after this one in the scene's own `Vec` order.
-        let owned_by_someone_nearer = |box_index: usize, p: (f32, f32)| {
-            screen_faces.iter().any(|f| {
-                f.box_index != box_index
-                    && (f.depth < box_depth[box_index]
-                        || (f.depth == box_depth[box_index] && f.box_index > box_index))
-                    && point_in_quad(&f.corners, p)
-            })
-        };
-
-        let side = 64u32;
+        // How many bands to report a face's disagreements in, up its own
+        // height. Not a sampling grid any more — the sweep is exhaustive over
+        // the face's pixels — only the resolution the "where" line reads at.
+        let bands = 64usize;
         let mut total_sampled = 0usize;
-        let mut total_compared = 0usize;
         let mut total_disagreeing = 0usize;
         for (index, b) in boxes.iter().enumerate() {
             for (face, label) in [(WallFace::East, "east"), (WallFace::South, "south")] {
+                // Which row this face was drawn as. The attachment names a row,
+                // so this is what "the pixel is this face's" compares against —
+                // and a face that was never pushed would be a scene this tool
+                // cannot ask about at all, which is a panic and not a skip.
+                let own_row = face_rows
+                    .iter()
+                    .find(|(box_index, stance, _)| *box_index == index && *stance == Stance::face(face))
+                    .map(|(_, _, id)| *id)
+                    .expect("every box pushes an east and a south face");
                 let mut sampled = 0usize;
-                let mut compared = 0usize;
                 let mut disagreeing = 0usize;
+                // And which of the two walks is out, on every disagreement.
+                // `light::sample` is the CPU's own preview of exactly what the
+                // shader does (`docs/lighting.md` decision 9 holds the two to
+                // each other), so a disagreement where it sides with the
+                // independent oracle is the *shader* alone being out — a parity
+                // gap — and one where it sides with the rendered pixel is the
+                // engine's own arithmetic being out, in both implementations at
+                // once. Those are opposite next steps, and a count that does not
+                // tell them apart names neither.
+                let mut shader_alone = 0usize;
+                let mut engine_together = 0usize;
                 let mut examples: Vec<String> = Vec::new();
-                // Where up the face each disagreement sat, one counter a grid
-                // row. A total alone says a phase moved the number; it cannot
-                // say whether what is left is the same defect made smaller or a
+                // Where up the face each disagreement sat, one counter a band.
+                // A total alone says a phase moved the number; it cannot say
+                // whether what is left is the same defect made smaller or a
                 // different one that was always there, and those want opposite
                 // next steps. `docs/lighting_height.md` phase 1's own residual
                 // is the case in point: it is not spread over the face at all,
-                // it is the bottom row or two of every face plus one band, which
-                // is a shape the count could never have shown.
-                let mut disagreeing_rows = vec![0usize; side as usize];
-                for row in 0..side {
-                    for col in 0..side {
-                        let u = (f64::from(col) + 0.5) / f64::from(side);
-                        let v = (f64::from(row) + 0.5) / f64::from(side);
-                        let (x, y, z) = match face {
-                            WallFace::East => (
-                                b.max.0,
-                                b.min.1 + u * (b.max.1 - b.min.1),
-                                b.min.2 + v * (b.max.2 - b.min.2),
-                            ),
-                            WallFace::South => (
-                                b.min.0 + u * (b.max.0 - b.min.0),
-                                b.max.1,
-                                b.min.2 + v * (b.max.2 - b.min.2),
-                            ),
-                            WallFace::North | WallFace::West => {
-                                unreachable!("box_mesh only ever builds an east or south vertical face")
-                            }
-                        };
-                        sampled += 1;
-                        let (px, py) = to_pixel(WorldSpot { x, y, z });
-                        if px < 0.0 || py < 0.0 || px >= width as f32 || py >= height_px as f32 {
-                            continue;
+                // it is one band, which is a shape the count could never have
+                // shown.
+                let mut disagreeing_bands = vec![0usize; bands];
+                for pixel in 0..(width * height_px) as usize {
+                    let texel = drawn[pixel];
+                    // Whose pixel this is, as the renderer wrote it. A mesh
+                    // face's row is addressed through the `MeshFace` sentinel
+                    // — `place::Stance::MeshFace`'s own doc — so all three of
+                    // kind, sentinel and row have to be this face's.
+                    if texel.kind != openshard_client_render::place::Kind::Static as u32
+                        || texel.stance != Stance::MeshFace as u32
+                        || texel.id != own_row
+                    {
+                        continue;
+                    }
+                    // The fragment's own world position, off the attachment:
+                    // the tile from the row this pixel names, the rest from the
+                    // texel. This is the point the shader lit.
+                    let row = &rows[texel.id as usize];
+                    let (x, y, z) = (
+                        f64::from(row.tile.0) + texel.sub.0,
+                        f64::from(row.tile.1) + texel.sub.1,
+                        texel.z,
+                    );
+                    sampled += 1;
+                    let gpu_lit = shadow_pixels[pixel * 4] > 128;
+                    let independent = oracle_visible((x, y, z), light_at, &boxes, index);
+                    if independent != gpu_lit {
+                        disagreeing += 1;
+                        let up = ((z - b.min.2) / (b.max.2 - b.min.2) * bands as f64) as usize;
+                        disagreeing_bands[up.min(bands - 1)] += 1;
+                        let spot = light::Spot::face(
+                            Vec2::new(x as f32, y as f32),
+                            z as f32,
+                            (i32::from(b.tile.0), i32::from(b.tile.1)),
+                            face,
+                        );
+                        let through = light::sample(spot, &lighting)
+                            .reaches
+                            .first()
+                            .map_or(0.0, |reach| if reach.within { reach.through } else { 0.0 });
+                        match (through > 0.5) == independent {
+                            true => shader_alone += 1,
+                            false => engine_together += 1,
                         }
-                        let (pxi, pyi) = (px.round() as u32, py.round() as u32);
-                        // `round`, not the check just above, is what can land
-                        // exactly on the far edge (the ground oracle's own
-                        // comment has the full account).
-                        if pxi >= width || pyi >= height_px {
-                            continue;
-                        }
-                        if owned_by_someone_nearer(index, (px, py)) {
-                            continue;
-                        }
-                        compared += 1;
-                        let offset = ((pyi * width + pxi) * 4) as usize;
-                        let gpu_lit = shadow_pixels[offset] > 128;
-                        let independent = oracle_visible((x, y, z), light_at, &boxes, index);
-                        if independent != gpu_lit {
-                            disagreeing += 1;
-                            disagreeing_rows[row as usize] += 1;
-                            if examples.len() < 8 {
-                                let spot = light::Spot::face(
-                                    Vec2::new(x as f32, y as f32),
-                                    z as f32,
-                                    (i32::from(b.tile.0), i32::from(b.tile.1)),
-                                    face,
-                                );
-                                let through = light::sample(spot, &lighting)
-                                    .reaches
-                                    .first()
-                                    .map_or(0.0, |reach| if reach.within { reach.through } else { 0.0 });
-                                examples.push(format!(
-                                    "  [box {index} {label}] ({x:.3}, {y:.3}, {z:.3}): independent oracle \
-                                     says {}, rendered says {}, light::sample through={through:.3}",
-                                    if independent { "lit" } else { "shadowed" },
-                                    if gpu_lit { "lit" } else { "shadowed" },
-                                ));
-                            }
+                        if examples.len() < 8 {
+                            examples.push(format!(
+                                "  [box {index} {label}] ({x:.3}, {y:.3}, {z:.3}): independent oracle \
+                                 says {}, rendered says {}, light::sample through={through:.3}",
+                                if independent { "lit" } else { "shadowed" },
+                                if gpu_lit { "lit" } else { "shadowed" },
+                            ));
                         }
                     }
                 }
                 eprintln!(
-                    "face oracle, box {index}'s own {label} face: {sampled} sampled, {compared} compared, \
-                     {disagreeing} disagree ({} skipped: off-canvas or owned by a nearer face)",
-                    sampled - compared,
+                    "face oracle, box {index}'s own {label} face: {sampled} pixels drawn, \
+                     {disagreeing} disagree ({shader_alone} the shader alone, {engine_together} both \
+                     walks together)",
                 );
                 if disagreeing > 0 {
-                    // Runs of adjacent rows rather than a row apiece: a defect
+                    // Runs of adjacent bands rather than a band apiece: a defect
                     // that is a band prints as one entry, and one that is spread
                     // over the face prints as many, which is the distinction
-                    // worth reading at a glance. Row 0 is the foot of the face.
-                    let mut bands: Vec<String> = Vec::new();
-                    let mut row = 0usize;
-                    while row < disagreeing_rows.len() {
-                        if disagreeing_rows[row] == 0 {
-                            row += 1;
+                    // worth reading at a glance. Band 0 is the foot of the face.
+                    let mut runs: Vec<String> = Vec::new();
+                    let mut band = 0usize;
+                    while band < disagreeing_bands.len() {
+                        if disagreeing_bands[band] == 0 {
+                            band += 1;
                             continue;
                         }
-                        let start = row;
+                        let start = band;
                         let mut points = 0usize;
-                        while row < disagreeing_rows.len() && disagreeing_rows[row] > 0 {
-                            points += disagreeing_rows[row];
-                            row += 1;
+                        while band < disagreeing_bands.len() && disagreeing_bands[band] > 0 {
+                            points += disagreeing_bands[band];
+                            band += 1;
                         }
-                        let low =
-                            b.min.2 + (f64::from(start as u32) + 0.5) / f64::from(side) * (b.max.2 - b.min.2);
-                        let high =
-                            b.min.2 + (f64::from(row as u32) - 0.5) / f64::from(side) * (b.max.2 - b.min.2);
-                        bands.push(format!(
-                            "rows {start}..{row} (z {low:.2}..{high:.2}, {points} points)"
+                        let low = b.min.2 + start as f64 / bands as f64 * (b.max.2 - b.min.2);
+                        let high = b.min.2 + band as f64 / bands as f64 * (b.max.2 - b.min.2);
+                        runs.push(format!(
+                            "bands {start}..{band} (z {low:.2}..{high:.2}, {points} pixels)"
                         ));
                     }
-                    eprintln!("  where: {}", bands.join(", "));
+                    eprintln!("  where: {}", runs.join(", "));
                 }
                 for example in &examples {
                     eprintln!("{example}");
                 }
                 total_sampled += sampled;
-                total_compared += compared;
                 total_disagreeing += disagreeing;
             }
         }
         eprintln!(
-            "face oracle vs rendered View::Shadow: {total_disagreeing}/{total_compared} compared points \
-             disagree ({total_sampled} sampled total)"
+            "face oracle vs rendered View::Shadow: {total_disagreeing}/{total_sampled} drawn face pixels \
+             disagree"
         );
         assert!(
-            total_compared > 100,
-            "the face oracle compared only {total_compared} of {total_sampled} sampled points — a \
+            total_sampled > 100,
+            "the face oracle found only {total_sampled} pixels of the boxes' own vertical faces — a \
              detector that compares nothing reads exactly like a detector that found nothing"
         );
     }
