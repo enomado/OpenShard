@@ -592,23 +592,25 @@ says so is the descending case rather than the count.
 Picked up while phases 1 and 2 landed, while the oracles were repaired, and
 while phase 3 landed; none of it blocked any of them.
 
-- **`examples/synthetic_stair`'s own doc comment states the defect as the
-  expected shape.** It says the default flame "lights the nearer tread and
-  leaves the far one in its own riser's shadow", citing
-  `Surface::shadowed_by_own_tile` and decision 32 — a function phase 3 deleted
-  as vacuous. A fixture whose comment expects the bug is a fixture nobody will
-  read as red.
 
-- **`own_run` is the last exemption that reads a height, and the question it
-  stands in for has no scene.** A ray leaving a wall pixel *along* the wall
-  grazes the neighbouring tiles' panels of the same wall — different statics,
-  therefore different owners, so identity cannot answer it and `own_run`'s
-  same-row/same-column mask gated on `on_surface` is what still does. The
-  `pair` fixture is one tile and cannot see it; a scene that can (a run of wall
-  across three tiles, a lamp standing near it, the face oracle pointed at the
-  seams) has to come with whatever touches it. Until then this is a known
-  guess sitting where a measurement belongs, and it is the *only* one left on
-  the fragment side.
+- **`own_run` is the last exemption that reads a height. It now has a scene, and
+  on that scene it holds.** A ray leaving a wall pixel *along* the wall grazes
+  the neighbouring tiles' panels of the same wall — different statics, therefore
+  different owners, so identity cannot answer it and `own_run`'s
+  same-row/same-column mask gated on `on_surface` is what still does. The `pair`
+  fixture is one tile and cannot see it; `OPENSHARD_STAIR_RUN=n` on
+  `examples/synthetic_stair` can — `n` flights side by side *across* the climb,
+  so their risers are one plane cut on tile boundaries and their treads abut at
+  equal `z`. Measured with the flame **in the riser plane and at its height**,
+  which is the one arrangement where a ray runs along the wall without also
+  climbing through the treads over it: one flight and three produce the same
+  shape, and the blocked count scales with area (5012 → 15088) instead of gaining
+  a stroke per seam. So the guess is not visibly wrong here — it is still a
+  guess, and what the fixture did surface was phase 4's lid, once per flight.
+  What is still missing before this entry can close: the same run built out of
+  *wall* statics rather than climbable ones, and an oracle pointed at the seams,
+  so the claim rests on an independent reference rather than on a stroke nobody
+  saw.
 - **`flame_end` is still a height test, and it is `mounted_at`'s question.** The
   far end of a ray is a flame, not a fragment, so there is no owner to compare —
   the arm that exempts the solid a sconce is mounted on asks `on_surface(to_z,

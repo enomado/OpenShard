@@ -20,12 +20,25 @@
 //!   `11,13,15` looks like a real staircase only because the real one it was
 //!   copied from stands on a `z 10` base; used as absolute heights from `z 0`
 //!   here, it renders five times too tall.
-//! - `OPENSHARD_LIGHT_AT=dx,dy` — the flame's position, offset from the
-//!   static's own tile. Default `2.5,1.0`, which lights the nearer tread and
-//!   leaves the far one in its own riser's shadow — a light held level with
-//!   any one tread instead reads *nothing* in the way at all
-//!   (`Surface::shadowed_by_own_tile`'s exemption, decision 32), which is the
-//!   wrong shape for looking at a shadow.
+//! - `OPENSHARD_STAIR_RUN=n` — how many flights stand side by side, **across**
+//!   the climb rather than along it. Default `1`. A run is the only way to ask
+//!   about a seam between two *different* statics: abutting treads of two
+//!   neighbouring flights sit at the same `z` on either side of a tile
+//!   boundary, so identity cannot say they are one surface (they are not one
+//!   static) and `own_run`'s same-row/same-column mask is what stands in for
+//!   it. One flight cannot pose that question at all.
+//! - `OPENSHARD_LIGHT_AT=dx,dy` — the flame's position, offset from the run's
+//!   first tile. Default `2.5,1.0`, below the top tread and in front of the
+//!   flight.
+//!
+//!   This line used to say that the default "leaves the far tread in its own
+//!   riser's shadow", citing `Surface::shadowed_by_own_tile` and decision 32 —
+//!   a function `docs/lighting_height.md` phase 3 deleted as vacuous. What the
+//!   default actually shows is phase 4's defect: the far tread is stopped by
+//!   **its own top lid**, the plane it is drawn on, and the seams down every
+//!   tread/riser join are the same thing at the foot of a riser. A fixture
+//!   whose own comment expects the bug is a fixture nobody reads as red, so
+//!   this says what it is instead.
 //! - `OPENSHARD_LIGHT_Z` / `OPENSHARD_LIGHT_RADIUS` — default `2` and `6`.
 //! - `OPENSHARD_FRAME_VIEW=n` — an index into `debug::View::ALL`; `7` is
 //!   `Shadow`. Default `0`, `Lit` — mostly uninformative here, since this
@@ -114,6 +127,8 @@ fn main() {
     let up = parse_face(&env_or("OPENSHARD_STAIR_UP", "north"));
     let treads = parse_treads(&env_or("OPENSHARD_STAIR_TREADS", "1,3,5"));
     let prism = Prism::new(up, &treads).expect("1..=MAX_TREADS heights");
+    let run: u16 = env_or("OPENSHARD_STAIR_RUN", "1").parse().expect("a number");
+    assert!(run >= 1, "OPENSHARD_STAIR_RUN wants at least one flight");
     let at = Point::new(100, 100, 0);
 
     let stair = StaticTile {
@@ -121,32 +136,58 @@ fn main() {
         height: 20,
         ..StaticTile::default()
     };
+    // Where each flight of the run stands. **Across** the climb, never along
+    // it: side by side, every flight's treads meet its neighbour's at a tile
+    // boundary *at the same height*, which is the arrangement a wide staircase
+    // has and the one question a single flight cannot pose — two abutting
+    // treads at one `z` are different statics, therefore different owners, so
+    // identity does not answer for them and `own_run`'s mask is what does.
+    let flights: Vec<Point> = (0..run)
+        .map(|step| match up {
+            Face::North | Face::South => Point::new(at.x + step, at.y, at.z),
+            Face::East | Face::West => Point::new(at.x, at.y + step, at.z),
+        })
+        .collect();
     let bounds = openshard_client_render::camera::TileBounds {
-        min_x: 95,
-        max_x: 105,
-        min_y: 95,
-        max_y: 105,
+        min_x: 90,
+        max_x: 110,
+        min_y: 90,
+        max_y: 110,
     };
     let mut builder = Builder::new(bounds);
-    builder.add(at.x, at.y, at.z, Graphic(0x0736), &stair, Shape::solid(prism));
+    for stands in &flights {
+        builder.add(
+            stands.x,
+            stands.y,
+            stands.z,
+            Graphic(0x0736),
+            &stair,
+            Shape::solid(prism),
+        );
+    }
     let occlusion = builder.finish(&Cutaway::OPEN);
 
-    for solid in occlusion.solids_at(i32::from(at.x), i32::from(at.y)) {
-        eprintln!(
-            "solid: x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.1}..{:.1}, edges {:#06b}",
-            solid.space.min.x,
-            solid.space.max.x,
-            solid.space.min.y,
-            solid.space.max.y,
-            solid.space.min.z,
-            solid.space.max.z,
-            solid.edges,
-        );
+    for stands in &flights {
+        for solid in occlusion.solids_at(i32::from(stands.x), i32::from(stands.y)) {
+            eprintln!(
+                "solid ({}, {}): x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.1}..{:.1}, edges {:#06b}",
+                stands.x,
+                stands.y,
+                solid.space.min.x,
+                solid.space.max.x,
+                solid.space.min.y,
+                solid.space.max.y,
+                solid.space.min.z,
+                solid.space.max.z,
+                solid.edges,
+            );
+        }
     }
 
     let (width, height): (u32, u32) = (512, 512);
     let zoom_notches: u32 = env_or("OPENSHARD_SCENE_ZOOM", "3").parse().expect("a number");
-    let mut camera = Camera::new(at, width, height);
+    // On the middle of the run, so a run of three is not half off the frame.
+    let mut camera = Camera::new(flights[flights.len() / 2], width, height);
     let mut zoom = Zoom::ONE;
     for _ in 0..zoom_notches {
         zoom = zoom.scale_up();
@@ -154,37 +195,53 @@ fn main() {
     camera.zoom_about((width / 2) as i32, (height / 2) as i32, zoom);
 
     const DEPTH: f32 = 0.5;
-    let mesh = prism.mesh(i32::from(at.x), i32::from(at.y), i32::from(at.z));
-    // The flight is **one** occluder of its tile however many treads it was cut
-    // into — one `Builder::add` is one owner (`docs/lighting_height.md` phase 3),
-    // so every face below carries this one number and no tread shadows another.
-    let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, Graphic(0x0736));
-    assert_ne!(
-        owner,
-        openshard_client_render::occlusion::OwnerId::NONE,
-        "the flight is not in the grid this tool built",
-    );
     let mut vertices: Vec<MeshFaceVertex> = Vec::new();
     let mut rows: Vec<MeshFaceRow> = Vec::new();
-    for face in mesh.faces() {
-        let id = rows.len() as u32;
-        rows.push(MeshFaceRow {
-            tile: (at.x, at.y),
-            stance: Stance::of_normal(face.normal).expect("a stair's own normals are all recognized"),
-            owner: u32::from(owner.raw()),
-        });
-        for corner in face.fan() {
-            let screen = camera.to_view_exact(project_exact(corner));
-            vertices.push(MeshFaceVertex {
-                screen,
-                world: [corner.x as f32, corner.y as f32, corner.z as f32],
-                depth: DEPTH,
-                id,
-                tile: [f32::from(at.x), f32::from(at.y)],
+    for stands in &flights {
+        let mesh = prism.mesh(i32::from(stands.x), i32::from(stands.y), i32::from(stands.z));
+        // A flight is **one** occluder of its tile however many treads it was cut
+        // into — one `Builder::add` is one owner (`docs/lighting_height.md` phase
+        // 3), so every face of it carries this one number and no tread of it
+        // shadows another. Each flight of a run gets its **own**, which is the
+        // whole point of building the run: neighbours are not each other's.
+        let owner = occlusion.owner_at(
+            i32::from(stands.x),
+            i32::from(stands.y),
+            stands.z,
+            Graphic(0x0736),
+        );
+        assert_ne!(
+            owner,
+            openshard_client_render::occlusion::OwnerId::NONE,
+            "the flight at ({}, {}) is not in the grid this tool built",
+            stands.x,
+            stands.y,
+        );
+        for face in mesh.faces() {
+            let id = rows.len() as u32;
+            rows.push(MeshFaceRow {
+                tile: (stands.x, stands.y),
+                stance: Stance::of_normal(face.normal).expect("a stair's own normals are all recognized"),
+                owner: u32::from(owner.raw()),
             });
+            for corner in face.fan() {
+                let screen = camera.to_view_exact(project_exact(corner));
+                vertices.push(MeshFaceVertex {
+                    screen,
+                    world: [corner.x as f32, corner.y as f32, corner.z as f32],
+                    depth: DEPTH,
+                    id,
+                    tile: [f32::from(stands.x), f32::from(stands.y)],
+                });
+            }
         }
     }
-    eprintln!("{} faces, {} vertices", rows.len(), vertices.len());
+    eprintln!(
+        "{} flights, {} faces, {} vertices",
+        flights.len(),
+        rows.len(),
+        vertices.len()
+    );
     for (id, row) in rows.iter().enumerate() {
         let corners: Vec<&MeshFaceVertex> = vertices.iter().filter(|v| v.id == id as u32).collect();
         let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
@@ -195,8 +252,8 @@ fn main() {
             maxy = maxy.max(c.screen.y);
         }
         eprintln!(
-            "face {id}: stance {:?}, screen x {minx:.1}..{maxx:.1}, y {miny:.1}..{maxy:.1}",
-            row.stance,
+            "face {id}: tile ({}, {}), owner {}, stance {:?}, screen x {minx:.1}..{maxx:.1}, y {miny:.1}..{maxy:.1}",
+            row.tile.0, row.tile.1, row.owner, row.stance,
         );
     }
 
@@ -283,14 +340,28 @@ fn main() {
                 Some("upright") => openshard_client_render::light::Surface::Upright,
                 Some(other) => openshard_client_render::light::Surface::Face(parse_face(other)),
             };
+            // The tile under the point, and *that* tile's owner. A drawn
+            // fragment gets its owner from the tile its own static stands on, so
+            // a probe that borrowed a neighbour's would be asking a question no
+            // pixel asks. A point on a tile boundary belongs to whichever side
+            // `floor` picks, which is a real ambiguity — so the tile and the
+            // owner are both printed rather than assumed.
+            let tile = (px.floor() as i32, py.floor() as i32);
+            let owner = lighting.occlusion.owner_at(tile.0, tile.1, at.z, Graphic(0x0736));
             let spot = openshard_client_render::light::Spot {
                 at: openshard_client_render::geometry::Vec2::new(px, py),
                 z: pz,
-                tile: (i32::from(at.x), i32::from(at.y)),
+                tile,
                 surface,
                 owner,
             };
-            eprint!("probe {surface:?}: {}", openshard_client_render::light::sample(spot, &lighting));
+            eprint!(
+                "probe {surface:?} on ({}, {}) owner {}: {}",
+                tile.0,
+                tile.1,
+                owner.raw(),
+                openshard_client_render::light::sample(spot, &lighting),
+            );
         }
     }
 
