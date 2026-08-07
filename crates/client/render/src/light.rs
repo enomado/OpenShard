@@ -1020,9 +1020,16 @@ fn stand_clear(from: [f32; 3], to: [f32; 3], surface: Surface) -> ([f32; 3], [f3
 /// tolerance, it stopped being a point of its own wall and the wall shadowed it —
 /// the room's own wall went dark at the one height its cap is drawn at.
 ///
+/// `low`/`high` are the solid's `z` span and **not** its
+/// [`bottom`](crate::occlusion::Solid::bottom)/`top`, which is
+/// `docs/lighting_height.md` phase 2: each walk hands the span it is entitled to
+/// read — [`walk_cells_exact`] the record's own exact one, [`walk_cells_streaming`]
+/// the one the GPU can reconstruct off the wire — instead of this deciding for
+/// both by rounding.
+///
 /// `blit.wgsl`'s `on_surface`.
-fn on_surface(z: f32, stands: &crate::occlusion::Solid) -> bool {
-    z >= stands.bottom() as f32 - ON_TOP && z <= stands.top() as f32 + ON_TOP
+fn on_surface(z: f32, low: f32, high: f32) -> bool {
+    z >= low - ON_TOP && z <= high + ON_TOP
 }
 
 /// A soft interval: `1.0` well inside `low..=high`, `0.0` well outside, and a
@@ -1089,15 +1096,37 @@ fn hole(aperture: Option<crate::occlusion::Aperture>, v: f32, z: f32, wide: f32,
 /// The whole of step 21.3 in one line, and the reason it is one line is decision
 /// 30.7: a panel was already *pierced at a point* rather than travelled through,
 /// so the point was already being computed and a window is what that point is
-/// asked about. `(px, py, z)` is where the ray crosses; `wide` is the penumbra
-/// in tiles along the run and `tall` the same number in `z`.
+/// asked about. `cross` is where the ray crosses, in all three — one point and
+/// not three loose coordinates, which is what `blit.wgsl`'s own `vec3<f32>`
+/// parameter has always been and what both callers already had in hand; `wide`
+/// is the penumbra in tiles along the run and `tall` the same number in `z`.
+///
+/// `low`/`high` are the panel's own `z` span, passed in for the reason
+/// [`on_surface`]'s are.
 ///
 /// `blit.wgsl`'s `pierced`.
-fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32, tall: f32) -> f32 {
-    let across = pierces(z, stands.bottom() as f32, stands.top() as f32, tall);
+fn pierced(
+    stands: &crate::occlusion::Solid,
+    low: f32,
+    high: f32,
+    cross: [f32; 3],
+    wide: f32,
+    tall: f32,
+) -> f32 {
+    let across = pierces(cross[2], low, high, tall);
     match stands.aperture {
         None => across,
-        Some(_) => across * (1.0 - hole(stands.aperture, run_v(stands.edges, px, py), z, wide, tall)),
+        Some(_) => {
+            across
+                * (1.0
+                    - hole(
+                        stands.aperture,
+                        run_v(stands.edges, cross[0], cross[1]),
+                        cross[2],
+                        wide,
+                        tall,
+                    ))
+        }
     }
 }
 
@@ -1244,20 +1273,28 @@ struct Exemption {
 /// The `lit_end`/`flame_end`/`caps_this`/`same_run` decision [`walk_cells`]
 /// and [`walk_cells_exact`] each computed inline, word for word the same in
 /// both, before this was pulled out from underneath them.
+///
+/// `low`/`high` are the solid's own `z` span, the walk's to choose — see
+/// [`on_surface`]. Every question here is a question about height, so this is
+/// the whole of what `docs/lighting_height.md` phase 2 changes on this side: an
+/// occluder rounded to a whole unit made "is this fragment inside the thing it
+/// is drawn from" answerable half a unit away from where the thing actually is.
 fn exemption(
     ctx: &ExemptionContext,
     cell: (i32, i32),
     lit_by_own_tile: u8,
     stands: &crate::occlusion::Solid,
+    low: f32,
+    high: f32,
 ) -> Exemption {
     let own_cell = cell == ctx.first;
-    let same_run = match on_surface(ctx.spot_z, stands) {
+    let same_run = match on_surface(ctx.spot_z, low, high) {
         true => own_run(ctx.own, cell, ctx.first),
         false => 0,
     };
-    let lit_end = own_cell && on_surface(ctx.spot_z, stands);
-    let flame_end = ctx.skip_last && cell == ctx.last && on_surface(ctx.to_z, stands);
-    let caps_this = ctx.surface == Surface::Flat && lit_end && ctx.spot_z >= stands.top() as f32 - ON_TOP;
+    let lit_end = own_cell && on_surface(ctx.spot_z, low, high);
+    let flame_end = ctx.skip_last && cell == ctx.last && on_surface(ctx.to_z, low, high);
+    let caps_this = ctx.surface == Surface::Flat && lit_end && ctx.spot_z >= high - ON_TOP;
     // `lit_end`'s own edges-mask path is `caps_this` with the precision taken
     // back out, and a [`Surface::Flat`] fragment needs the precision:
     // `Surface::shadowed_by_own_tile` answers `0` for a tile whose sides are
@@ -2043,14 +2080,7 @@ fn walk_cells_exact(
             .filter(|stands| stands.edges == 0)
             .map(|stands| {
                 f32::from(stands.opacity) / 255.0
-                    * crosses(
-                        from[2],
-                        to[2],
-                        stands.bottom() as f32,
-                        stands.top() as f32,
-                        to[2],
-                        spread,
-                    )
+                    * crosses(from[2], to[2], stands.low(), stands.high(), to[2], spread)
             })
             .fold(0.0, f32::max);
         return match stopped >= 1.0 - RAY_CUTOFF {
@@ -2126,15 +2156,21 @@ fn walk_cells_exact(
             leaves,
         } in hits
         {
+            // The record's own span, exactly — this walk reads `space` for the
+            // box it tests, and reading a *rounded* height for the same solid's
+            // exemptions and its `crosses` would be two different solids in one
+            // iteration. `walk_cells_streaming`'s own copy is the quantised one
+            // on purpose; see its doc comment.
+            let (low, high) = (stands.low(), stands.high());
             // Same [`exemption`] `walk_cells` calls — see its own doc comment.
-            let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, lit_by_own_tile, stands);
+            let Exemption { exempt, same_run } =
+                exemption(&exemption_ctx, cell, lit_by_own_tile, stands, low, high);
             if exempt {
                 continue;
             }
             let middle = (entered + leaves) * 0.5;
             let soft =
                 (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
-            let (low, high) = (stands.bottom() as f32, stands.top() as f32);
             let opacity = f32::from(stands.opacity) / 255.0;
             let tall = soft * FLAME_DEPTH;
             let by_surface = match stands.edges {
@@ -2195,7 +2231,7 @@ fn walk_cells_exact(
                             from[1] + delta[1] * middle,
                             from[2] + delta[2] * middle,
                         ];
-                        opacity * pierced(stands, cross[0], cross[1], cross[2], soft, tall)
+                        opacity * pierced(stands, low, high, cross, soft, tall)
                     }
                 }
             };
@@ -2301,6 +2337,20 @@ fn walk_cells_exact(
 /// for which session. What is left lossy here is only the byte quantisation itself —
 /// `Solid::fraction`'s own `1/255` of a tile — which both backends share and
 /// decision 9's own parity tolerance already absorbs.
+/// The `z` span [`walk_cells_streaming`] is entitled to read: the one the wire
+/// carries, put back together out of [`crate::occlusion::Occlusion::solid_bytes`]'s
+/// two whole units and [`crate::occlusion::Occlusion::solid_z_bytes`]'s two
+/// fractions, and **not** [`crate::occlusion::Solid::low`]/`high`'s exact
+/// corners.
+///
+/// The vertical half of the discipline [`crate::occlusion::Solid::fraction`]
+/// already states for the horizontal one: this walk exists to preview exactly
+/// what `blit.wgsl` can do, and a CPU reading full precision where the GPU reads
+/// a byte silently stops being that preview. `docs/lighting_height.md` phase 2.
+fn wire_span(stands: &crate::occlusion::Solid) -> (f32, f32) {
+    crate::occlusion::Solid::span_from_bytes(stands.bottom(), stands.top(), stands.z_fraction())
+}
+
 fn walk_cells_streaming(
     from: [f32; 3],
     to: [f32; 3],
@@ -2319,20 +2369,16 @@ fn walk_cells_streaming(
         // to walk in, so only a lid on the one cell can stand between the
         // ends. A lid's box is flat regardless of which way it was built, so
         // there is nothing here for the `box_of` reconstruction to get
-        // wrong that reading `space` directly would not.
+        // wrong horizontally that reading `space` directly would not — but its
+        // *height* is [`wire_span`]'s all the same, because a lid at a
+        // fractional `z` is exactly what the GPU now reads to a byte and this
+        // is the preview of it.
         let stopped = occlusion
             .solids_at(first.0, first.1)
             .filter(|stands| stands.edges == 0)
             .map(|stands| {
-                f32::from(stands.opacity) / 255.0
-                    * crosses(
-                        from[2],
-                        to[2],
-                        stands.bottom() as f32,
-                        stands.top() as f32,
-                        to[2],
-                        spread,
-                    )
+                let (low, high) = wire_span(stands);
+                f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high, to[2], spread)
             })
             .fold(0.0, f32::max);
         return match stopped >= 1.0 - RAY_CUTOFF {
@@ -2396,24 +2442,23 @@ fn walk_cells_streaming(
         };
         let mut stopped: f32 = 0.0;
         for stands in occlusion.solids_at(cell.0, cell.1) {
-            let space = crate::occlusion::Solid::box_from_footprint(
-                cell.0,
-                cell.1,
-                stands.bottom(),
-                stands.top(),
-                stands.fraction(),
-            );
+            // The wire's own span, quantised exactly as the upload quantises
+            // it — the vertical half of the same discipline `stands.fraction()`
+            // below is the horizontal half of. See [`wire_span`].
+            let (low, high) = wire_span(stands);
+            let space =
+                crate::occlusion::Solid::box_from_footprint(cell.0, cell.1, low, high, stands.fraction());
             let Some((entered, leaves)) = ray_vs_solid(from, to, &space) else {
                 continue;
             };
-            let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, lit_by_own_tile, stands);
+            let Exemption { exempt, same_run } =
+                exemption(&exemption_ctx, cell, lit_by_own_tile, stands, low, high);
             if exempt {
                 continue;
             }
             let middle = (entered + leaves) * 0.5;
             let soft =
                 (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
-            let (low, high) = (stands.bottom() as f32, stands.top() as f32);
             let opacity = f32::from(stands.opacity) / 255.0;
             let tall = soft * FLAME_DEPTH;
             let by_surface = match stands.edges {
@@ -2456,7 +2501,7 @@ fn walk_cells_streaming(
                             from[1] + delta[1] * middle,
                             from[2] + delta[2] * middle,
                         ];
-                        opacity * pierced(stands, cross[0], cross[1], cross[2], soft, tall)
+                        opacity * pierced(stands, low, high, cross, soft, tall)
                     }
                 }
             };
@@ -2801,14 +2846,14 @@ mod tests {
     fn pierced_is_pierces_with_no_hole_and_open_where_the_hole_is() {
         let wall = test_solid(0, 20, crate::occlusion::EDGE_NORTH);
         assert_eq!(
-            pierced(&wall, 0.5, 0.0, 10.0, 0.05, 2.0),
+            pierced(&wall, wall.low(), wall.high(), [0.5, 0.0, 10.0], 0.05, 2.0),
             pierces(10.0, 0.0, 20.0, 2.0),
         );
 
         let mut windowed = wall;
         windowed.aperture = Some(crate::occlusion::Aperture::new(0.25, 0.75, 5, 15));
-        assert!(pierced(&windowed, 0.5, 0.0, 10.0, 0.05, 1.0) < 1e-3);
-        assert!((pierced(&windowed, 0.9, 0.0, 10.0, 0.05, 1.0) - 1.0).abs() < 1e-3);
+        assert!(pierced(&windowed, 0.0, 20.0, [0.5, 0.0, 10.0], 0.05, 1.0) < 1e-3);
+        assert!((pierced(&windowed, 0.0, 20.0, [0.9, 0.0, 10.0], 0.05, 1.0) - 1.0).abs() < 1e-3);
     }
 
     /// [`own_run`]'s bitmask logic, exhaustively over its four shapes: same
@@ -2849,11 +2894,58 @@ mod tests {
     #[test]
     fn on_surface_is_inclusive_of_both_ends_by_exactly_on_top() {
         let wall = test_solid(0, 20, crate::occlusion::EDGE_NORTH);
-        assert!(on_surface(0.0, &wall));
-        assert!(on_surface(20.0, &wall));
-        assert!(on_surface(20.0 + ON_TOP, &wall));
-        assert!(!on_surface(20.0 + ON_TOP * 2.0, &wall));
-        assert!(!on_surface(0.0 - ON_TOP * 2.0, &wall));
+        let (low, high) = (wall.low(), wall.high());
+        assert!(on_surface(0.0, low, high));
+        assert!(on_surface(20.0, low, high));
+        assert!(on_surface(20.0 + ON_TOP, low, high));
+        assert!(!on_surface(20.0 + ON_TOP * 2.0, low, high));
+        assert!(!on_surface(0.0 - ON_TOP * 2.0, low, high));
+    }
+
+    /// And that the span it is inclusive of is the caller's own, fraction
+    /// included — `docs/lighting_height.md` phase 2's whole point on this side.
+    ///
+    /// A box based half a unit up is the case the plan's control scene
+    /// (`OPENSHARD_TREE_H1=3.5`) is made of: rounded to `4`, the bottom half
+    /// unit of the box's own faces reads as *below* the box, and every rule that
+    /// asks whether a fragment belongs to the thing it was drawn from answers
+    /// no for it.
+    #[test]
+    fn on_surface_reads_a_fractional_span_and_not_a_rounded_one() {
+        let box_at_half = crate::occlusion::Solid {
+            space: crate::solid::Solid {
+                min: crate::camera::WorldSpot {
+                    x: 5.0,
+                    y: 5.0,
+                    z: 3.5,
+                },
+                max: crate::camera::WorldSpot {
+                    x: 6.0,
+                    y: 6.0,
+                    z: 6.5,
+                },
+            },
+            opacity: 255,
+            edges: crate::occlusion::EDGE_ANY,
+            aperture: None,
+            roof: false,
+        };
+        let (low, high) = (box_at_half.low(), box_at_half.high());
+        assert_eq!((low, high), (3.5, 6.5));
+        assert!(
+            on_surface(3.6, low, high),
+            "a fragment of the box's own face, a tenth of a unit up it"
+        );
+        assert!(
+            !on_surface(3.4, low, high),
+            "and one below the box entirely, which `bottom()`'s own rounding to 4 could not tell apart"
+        );
+        // And the same span off the wire, which is what the GPU reads: one
+        // step of `Solid::Z_FRACTION_STEPS` is all this may lose.
+        let (wire_low, wire_high) = wire_span(&box_at_half);
+        let step = (1.0 / crate::occlusion::Solid::Z_FRACTION_STEPS) as f32;
+        assert!((wire_low - 3.5).abs() <= step, "{wire_low}");
+        assert!((wire_high - 6.5).abs() <= step, "{wire_high}");
     }
 
     /// [`faces`]'s own gradient: fully towards the light, fully away, and

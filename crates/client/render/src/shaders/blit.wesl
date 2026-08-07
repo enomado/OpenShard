@@ -234,6 +234,26 @@ struct GroundInstance {
 // `docs/lighting_raymarch.md`'s "second bigger idea": the reader `box_of`
 // used to have no channel to read, arrived.
 @group(0) @binding(13) var footprints: texture_2d<u32>;
+// And the fraction of a `z` unit `solids`' own two whole-unit channels rounded
+// away, indexed and folded the same way: a signed offset from each rounded unit,
+// `-0.5 ..= 0.5` over `SOLID_Z_STEPS` steps around `SOLID_Z_ZERO` —
+// `occlusion::Solid::z_fraction`. `docs/lighting_height.md` phase 2: the
+// horizontal half of a solid's box has been exact since `footprints` landed, and
+// the vertical half was a whole unit, so a box based at `z 3.5` arrived here
+// spanning `4` and the bottom half unit of its own faces sat below its own
+// solid.
+@group(0) @binding(14) var solid_z: texture_2d<u32>;
+
+// Steps of that fraction across the whole half unit either way, and the byte in
+// the middle of them that means "the rounding was exact".
+//
+// `occlusion::Solid::Z_FRACTION_STEPS`/`Z_FRACTION_ZERO`, and nothing but a
+// person can compare the two pairs. 254 and not 255 so that the middle step is
+// exactly zero: every static in a real map stands at a whole `z`, and an odd
+// number of steps has no middle for that overwhelmingly common answer to land
+// on.
+const SOLID_Z_STEPS: f32 = 254.0;
+const SOLID_Z_ZERO: f32 = 127.0;
 
 // The third channel is `z`'s whole units offset by 128 in its low eight bits,
 // sixteenths of a unit in the four above them, and the sprite's stance in the
@@ -465,8 +485,13 @@ const ON_TOP: f32 = 1.0 / 128.0;
 // wall's top cap stops being a point of its own wall and the wall shadows it.
 // What the exemptions are asked, one surface at a time — see `walk`, and
 // `light::on_surface`.
-fn on_surface(z: f32, stands: vec4<u32>) -> bool {
-    return z >= f32(stands.x) - 128.0 - ON_TOP && z <= f32(stands.y) - 128.0 + ON_TOP;
+//
+// `low`/`high` are `span_of`'s pair and not the texel's own two channels: this
+// is a question about whether a fragment is a point *of* the solid, and half a
+// unit of rounding is the difference between a face's bottom row belonging to
+// the box it is drawn on and standing under it.
+fn on_surface(z: f32, low: f32, high: f32) -> bool {
+    return z >= low - ON_TOP && z <= high + ON_TOP;
 }
 
 // A soft interval: 1 well inside `low..=high`, 0 well outside, and a gradient
@@ -519,8 +544,8 @@ fn hole(texel: vec4<u32>, v: f32, z: f32, wide: f32, tall: f32) -> f32 {
 // where its hole is; `cross` is where the ray goes through the plane, in all
 // three, because the height alone cannot say whether the ray went through the
 // window or through the wall beside it. `light::pierced`.
-fn pierced(stands: vec4<u32>, id: u32, cross: vec3<f32>, wide: f32, tall: f32) -> f32 {
-    let across = pierces(cross.z, f32(stands.x) - 128.0, f32(stands.y) - 128.0, tall);
+fn pierced(stands: vec4<u32>, id: u32, low: f32, high: f32, cross: vec3<f32>, wide: f32, tall: f32) -> f32 {
+    let across = pierces(cross.z, low, high, tall);
     if (stands.w & HOLED) == 0u {
         return across;
     }
@@ -627,25 +652,62 @@ fn footprint_at(id: u32) -> vec4<u32> {
     return textureLoad(footprints, at, 0);
 }
 
+// The `z` span one solid really occupies: `solid_at`'s two whole units and
+// `solid_z`'s two fractions, added back together.
+//
+// `light::wire_span`, and `occlusion::Solid::span_from_bytes` is the arithmetic.
+// **The one place this pass turns a solid's texel into a height** — every rule
+// that asks about one (`on_surface`, `pierces`, `crosses`, `box_of`) takes the
+// pair from here rather than reading `stands.x`/`stands.y` itself, because a
+// reader that does that still compiles, still looks like a height, and quietly
+// puts the occluder back on the whole-unit staircase this plane exists to
+// remove. `docs/lighting_height.md` phase 2.
+fn span_of(stands: vec4<u32>, id: u32) -> vec2<f32> {
+    let fraction = textureLoad(solid_z, vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW)), 0);
+    return vec2<f32>(
+        f32(stands.x) - 128.0 + (f32(fraction.x) - SOLID_Z_ZERO) / SOLID_Z_STEPS,
+        f32(stands.y) - 128.0 + (f32(fraction.y) - SOLID_Z_ZERO) / SOLID_Z_STEPS,
+    );
+}
+
 // One tile's surfaces as one box: the union of the spans, the largest opacity
-// and the union of the sides, with a `w` of zero for a tile that stands nothing.
+// and the union of the sides, with `edges` of zero for a tile that stands
+// nothing.
 //
 // `Occlusion::at`'s merged view, and for the same readers — a picture of the
 // grid rather than a step of the walk. The walk stopped asking it when the list
 // arrived, so nothing in the hot loop pays for this.
-fn merged_at(x: i32, y: i32) -> vec4<u32> {
-    let span = solids_at(x, y);
-    if span.y == 0u {
-        return vec4<u32>(0u);
+//
+// The span comes out of `span_of` like every other height in this pass, and not
+// as the two raw channels this used to hand back. Its one reader is a
+// *diagnostic* picture, which is exactly where phase 1 was bitten: `plan.rs`'s
+// elevation view kept its own copy of a format, rounded the height, and drew the
+// staircase the plan was about into the instrument meant to show it.
+struct MergedCell {
+    low: f32,
+    high: f32,
+    opacity: u32,
+    edges: u32,
+};
+
+fn merged_at(x: i32, y: i32) -> MergedCell {
+    let run = solids_at(x, y);
+    if run.y == 0u {
+        return MergedCell(0.0, 0.0, 0u, 0u);
     }
-    var merged = solid_at(id_at(span.x));
-    for (var i = 1u; i < span.y; i = i + 1u) {
-        let stands = solid_at(id_at(span.x + i));
-        merged = vec4<u32>(
-            min(merged.x, stands.x),
-            max(merged.y, stands.y),
-            max(merged.z, stands.z),
-            merged.w | stands.w,
+    let first_id = id_at(run.x);
+    let first = solid_at(first_id);
+    let first_span = span_of(first, first_id);
+    var merged = MergedCell(first_span.x, first_span.y, first.z, first.w);
+    for (var i = 1u; i < run.y; i = i + 1u) {
+        let id = id_at(run.x + i);
+        let stands = solid_at(id);
+        let span = span_of(stands, id);
+        merged = MergedCell(
+            min(merged.low, span.x),
+            max(merged.high, span.y),
+            max(merged.opacity, stands.z),
+            merged.edges | stands.w,
         );
     }
     return merged;
@@ -877,8 +939,11 @@ fn cell_stopped(
         let id = id_at(span.x + k);
         let stands = solid_at(id);
         let edges = stands.w & EDGE_MASK;
-        let low = f32(stands.x) - 128.0;
-        let high = f32(stands.y) - 128.0;
+        // The solid's real `z` span, fraction included — `span_of`, never the
+        // texel's two channels on their own. `light::wire_span`.
+        let vertical = span_of(stands, id);
+        let low = vertical.x;
+        let high = vertical.y;
         // The exact box this one solid is, read off its own footprint plane
         // rather than reconstructed from `edges`, and the exact interval
         // this ray crosses it in — `light::ray_vs_solid`, replacing the
@@ -891,9 +956,10 @@ fn cell_stopped(
         // Same `lit_end`/`flame_end`/`caps_this`/`same_run` decision the old
         // walk computed inline — see its own comments, unchanged in shape,
         // just asked once per solid instead of once per cell.
-        let same_run = select(0u, own_run(own, cell, first), on_surface(lit.z, stands));
-        let lit_end = own_cell && on_surface(lit.z, stands);
-        let flame_end = skip_last && cell.x == last.x && cell.y == last.y && on_surface(finish.z, stands);
+        let same_run = select(0u, own_run(own, cell, first), on_surface(lit.z, low, high));
+        let lit_end = own_cell && on_surface(lit.z, low, high);
+        let flame_end =
+            skip_last && cell.x == last.x && cell.y == last.y && on_surface(finish.z, low, high);
         let caps_this = stance == STANCE_FLAT && lit_end && lit.z >= high - ON_TOP;
         if edges != 0u
             && ((lit_end && stance != STANCE_FLAT && (edges & admitted) == 0u)
@@ -965,7 +1031,7 @@ fn cell_stopped(
             // the lit end stands in.
             let stops = edges & ~same_run;
             if stops != 0u {
-                by_surface = opacity * pierced(stands, id, start + delta * middle, soft, tall);
+                by_surface = opacity * pierced(stands, id, low, high, start + delta * middle, soft, tall);
             }
         }
         stopped = max(stopped, by_surface);
@@ -1024,15 +1090,17 @@ fn walk(
         let straight = solids_at(first.x, first.y);
         var stopped = 0.0;
         for (var i = 0u; i < straight.y; i = i + 1u) {
-            let stands = solid_at(id_at(straight.x + i));
+            let id = id_at(straight.x + i);
+            let stands = solid_at(id);
             if (stands.w & EDGE_MASK) != 0u {
                 continue;
             }
+            let vertical = span_of(stands, id);
             let stops = f32(stands.z) / 255.0 * crosses(
                 start.z,
                 finish.z,
-                f32(stands.x) - 128.0,
-                f32(stands.y) - 128.0,
+                vertical.x,
+                vertical.y,
                 finish.z,
                 spread,
             );
@@ -1315,17 +1383,15 @@ fn debug_color(
     }
     if view == VIEW_OCCLUDERS {
         let cell = merged_at(i32(floor(at.x)), i32(floor(at.y)));
-        if cell.w == 0u {
+        if cell.edges == 0u {
             return vec3<f32>(0.06, 0.06, 0.10);
         }
-        let opacity = f32(cell.z) / 255.0;
-        let bottom = f32(cell.x) - 128.0;
-        let top = f32(cell.y) - 128.0;
+        let opacity = f32(cell.opacity) / 255.0;
         // Red where this pixel's own height is inside the span the tile stops
         // light at, blue where the tile occludes but not here. The second colour
         // is the one worth having: a wall of an upper storey standing over an
         // open street is blue, and a shadow appearing under it would be the bug.
-        if at.z >= bottom && at.z <= top {
+        if at.z >= cell.low && at.z <= cell.high {
             return vec3<f32>(0.25 + 0.75 * opacity, 0.05, 0.05);
         }
         return vec3<f32>(0.05, 0.10, 0.25 + 0.55 * opacity);

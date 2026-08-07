@@ -1,6 +1,8 @@
 # Height as a continuous quantity
 
-A fragment's height, and an occluder's, are integers today. Everything a
+A fragment's height, and an occluder's, were integers when this was written —
+phases 1 and 2 below are what changed that, and `## Status` is where it
+stands. Everything a
 shadow decides — where a ray starts, which box it enters, whether a solid is
 the fragment's own — is decided from those integers. On a floor or a lid
 that is exact, because a lid *is* at an integer `z`. On anything standing
@@ -128,6 +130,7 @@ a mesh face, a slope, a tread.
 
 Done when: `tree` at an integer joint and `tree` at `H1=3.5` agree with the
 face oracle to the same tolerance, instead of one being clean by luck.
+*(Landed — 278 and 235, the same shape on both. See `## Status`.)*
 
 ## Phase 3 — identity instead of coincidence
 
@@ -220,7 +223,56 @@ oracle reads 3027/9216 and 9216/9216 against `light::sample`, a **CPU-side**
 disagreement that no part of phase 1 touches (the `place` attachment is not on
 that path). Same cause, one layer over: a solid whose `z` span is fractional.
 
-Phase 2 next.
+Phase 2 done: the occluder's height is continuous end to end, and the two
+configurations now agree instead of one being clean by luck.
+
+| oracle, `tree` | `H1=3` before | `H1=3` after | `H1=3.5` before | `H1=3.5` after |
+|---|---|---|---|---|
+| face oracle | 278/16384 | **278** — identical, face by face and row-run by row-run | 1103/16384 | **235/16384** |
+| box 0's own top | 0/9216 | 0 | 3027/9216 | **0** |
+| box 1's own top | 0/9216 | 0 | 9216/9216 | **0** |
+| ground oracle | 509/57600 | 509 | 1325/57600 | 574 |
+
+The integer column is the control and it does not move *at all*: at a whole `z`
+every fraction this phase adds is zero, so the run is bit-for-bit the one before
+it — which is what says the 868 points the fractional column lost were the
+rounding and not a second change riding along with it. The two CPU-side box-top
+numbers the last session flagged as phase 2's entry (3027 and 9216, a solid
+whose span was rounded under a *flat* sample) are gone outright.
+
+What is left, 235 and 278, is now **one shape in both**: about 200 points in the
+bottom one-to-five grid rows of every face, and a band of 44–66 just under the
+lower box's top. Both are `exemption`'s guess — a fragment at the foot of a face
+shadowed by the thing it stands on, and the lower box's top being the same plane
+as the upper box's base — and neither is reachable by precision at all. That is
+phase 3, and the plan's own opening paragraph said so.
+
+How it is carried, since the answer differs from what this section sketched:
+
+- **A signed fraction around the *rounded* unit**, not a `floor` and a
+  remainder. `Occlusion::solid_bytes`' two whole-unit channels keep meaning
+  exactly what they meant, so every reader that has not been taught about the
+  new plane — `Occlusion::at`'s merged view, every test fixture that spells the
+  four bytes out — reads the same number it read before rather than one silently
+  a unit low. 254 steps and not 255, so the middle step is *exactly* zero: every
+  static in a real map stands at a whole `z`, and an odd count has no middle for
+  that answer to land on.
+- **`span_of` is the only place in `blit.wesl` that turns a solid's texel into a
+  height**, and `light::wire_span` its CPU twin. A reader that decodes
+  `stands.x` itself still compiles and still looks like a height, which is the
+  failure phase 1 hit in `plan.rs`.
+- `on_surface`, `pierced`/`pierces`, `crosses` and `box_of` take the span as a
+  parameter on both sides now, so each walk supplies the one it is entitled to:
+  `walk_cells_exact` the record's own `f64` corners, `walk_cells_streaming` the
+  quantised one off the wire — the vertical half of the discipline
+  `Solid::fraction` already stated for the horizontal one.
+- The audit the phase asked for is done: no `bottom()`/`top()` call is left on
+  either walk. What survives is the upload's byte, the cutaway, and
+  `Occlusion::at`'s merged view, and each says so in its doc comment.
+  `solid::standing`'s painter-order key was a fourth and is now the exact span —
+  two boxes half a unit apart used to tie.
+
+Phase 3 next.
 
 Open questions, deliberately not pre-decided:
 
@@ -239,7 +291,22 @@ Open questions, deliberately not pre-decided:
 
 ## Backlog
 
-Picked up while phase 1 landed; none of it blocked the phase.
+Picked up while phases 1 and 2 landed; none of it blocked either.
+
+- **`tests/cost.rs`'s "what the upload sends" measures three planes of five.**
+  Its `black_box` sums `bytes` + `field_bytes` + `id_bytes` + `solid_bytes`, and
+  has never included `footprint_bytes`; `solid_z_bytes` is now a second one
+  missing. A cost line that names most of a thing reads as the whole of it.
+- **`plan.rs`'s elevation picture takes its own height from a rounded `top`**
+  (`Occlusion::at`'s merged `Cell`, still `i32`): a wall standing to `z 3.5` is
+  drawn in a frame four units tall, with half a unit of nothing at the top. The
+  `z` it *samples* at each pixel row is continuous since phase 1, so this is the
+  frame and not the measurement — but it is the same instrument, and the same
+  class.
+- **`Occlusion::at`'s `Cell` is still whole units.** Its three readers are the
+  wireframe, the plan view and `mounted_at` (which reads `edges` only), so
+  nothing that decides a shadow reads it — deliberately left, and worth
+  revisiting if a fourth reader ever wants a height rather than a picture.
 
 - **Two hand-copies of the third channel are left**, and both are correct
   today only by accident: `tests/select.rs`'s `place_texel` and

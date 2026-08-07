@@ -330,7 +330,19 @@ pub fn standing(occlusion: &crate::occlusion::Occlusion, cut: Cut) -> Vec<(Solid
         })
         .filter(|(_, _, solid)| cut.shows(solid))
         .collect();
-    found.sort_by_key(|(x, y, solid)| (x + y, solid.bottom(), solid.top()));
+    // The height half of the key is the solid's own exact span and not
+    // `bottom()`/`top()`'s rounded one: two boxes stacked half a unit apart tie
+    // under a rounding, and a tie here is an arbitrary order between two things
+    // one of which is genuinely in front of the other. `total_cmp` because the
+    // key is `f32` and the sort wants a total order — a `z` here is never `NaN`
+    // (it comes off a solid's own box), and `total_cmp` says so without a
+    // comparator that would silently reorder if one ever were.
+    found.sort_by(|(ax, ay, a), (bx, by, b)| {
+        (ax + ay)
+            .cmp(&(bx + by))
+            .then(a.low().total_cmp(&b.low()))
+            .then(a.high().total_cmp(&b.high()))
+    });
     found
         .into_iter()
         .map(|(_, _, solid)| (drawn(solid), kind_colour(solid)))

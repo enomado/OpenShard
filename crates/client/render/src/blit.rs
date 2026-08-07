@@ -158,6 +158,14 @@ pub struct Blit {
     /// [`Blit::apertures`] is — but written every frame regardless, unlike
     /// apertures: every solid has a footprint, where almost none has a hole.
     footprints: wgpu::Texture,
+    /// And what its two whole-unit `z` channels rounded away, one texel a solid
+    /// and in the same order — see
+    /// [`Occlusion::solid_z_bytes`](crate::occlusion::Occlusion::solid_z_bytes).
+    ///
+    /// Grown and written on exactly [`Blit::footprints`]'s terms, and for the
+    /// same reason: it is the other half of one solid's own box, and the two
+    /// halves must never be indexed by a number only one of them holds.
+    solid_z: wgpu::Texture,
 }
 
 impl Blit {
@@ -350,6 +358,18 @@ impl Blit {
                     },
                     count: None,
                 },
+                // And the vertical half of the same box: what 6's two whole-unit
+                // `z` channels rounded away. `docs/lighting_height.md` phase 2.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -430,6 +450,7 @@ impl Blit {
             solids: grid_texture(device, "solids", crate::occlusion::LIST_ROW, 1),
             apertures: grid_texture(device, "apertures", crate::occlusion::LIST_ROW, 1),
             footprints: grid_texture(device, "footprints", crate::occlusion::LIST_ROW, 1),
+            solid_z: grid_texture(device, "solid z", crate::occlusion::LIST_ROW, 1),
         }
     }
 
@@ -548,6 +569,12 @@ impl Blit {
                         &self
                             .footprints
                             .create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.solid_z.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
                 },
             ],
@@ -832,14 +859,16 @@ impl Blit {
         let bytes = lighting.occlusion.solid_bytes();
         let rows = (bytes.len() / (row as usize * 4)) as u32;
         if self.solids.height() != rows {
-            // The three planes are indexed by one number, so they are grown
-            // together and never apart — a hole or footprint texel at an
-            // index the solid texture holds and one of these does not would
-            // read as no hole, or the whole tile, which is the one direction
-            // this cannot be allowed to be wrong in silently.
+            // The four planes are indexed by one number, so they are grown
+            // together and never apart — a hole, footprint or height-fraction
+            // texel at an index the solid texture holds and one of these does
+            // not would read as no hole, or the whole tile, or half a unit low,
+            // which is the one direction this cannot be allowed to be wrong in
+            // silently.
             self.solids = grid_texture(device, "solids", row, rows);
             self.apertures = grid_texture(device, "apertures", row, rows);
             self.footprints = grid_texture(device, "footprints", row, rows);
+            self.solid_z = grid_texture(device, "solid z", row, rows);
         }
         // The references are their own height: equal to the solids' until
         // something is shared, and *not* assumed equal, because the day the two
@@ -877,6 +906,9 @@ impl Blit {
         // an ordinary lid or body is the whole tile, `(0, 255, 0, 255)` — so
         // there is no bit to gate this read on the way `HOLED` gates that one.
         list(&self.footprints, &lighting.occlusion.footprint_bytes());
+        // And the other half of the same box, on the same terms: a solid's
+        // height has a fraction, and "none" is a byte rather than an absence.
+        list(&self.solid_z, &lighting.occlusion.solid_z_bytes());
         // And the holes, only where there are any. What makes skipping this safe
         // rather than a stale read is the `HOLED` bit: it is written into the
         // surface plane above, on this frame, and the shader reads a hole only
