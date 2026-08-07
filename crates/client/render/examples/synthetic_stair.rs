@@ -135,6 +135,11 @@
 //!     cargo run --release -p openshard-client-render --example synthetic_stair
 //! ```
 
+// This tool uses the readback and the shade decoder; the box scene and the
+// reference tracer's comparison next to them belong to `boxes.rs` and to
+// `tests/traced.rs`. A shared module every consumer uses all of is a module
+// that has stopped being shared.
+#[allow(dead_code)]
 mod oracle;
 
 use std::path::PathBuf;

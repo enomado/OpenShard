@@ -277,7 +277,12 @@ knew to ask about a spot on the floor under the torch.
 ## Running it
 
 ```sh
-# The gate. On by default, every run of the tool.
+# The gate, as a test. Skips itself where there is no GPU adapter.
+cargo test -p openshard-client-render --test traced -- --nocapture
+```
+
+```sh
+# The same gate as a picture. On by default, every run of the tool.
 OPENSHARD_FRAME_DUMP=/tmp/tree OPENSHARD_BOXES_SCENE=tree \
     cargo run --release -p openshard-client-render --example boxes
 ```
@@ -311,6 +316,12 @@ Built and current:
   decision is a measured number.
 - Degenerate mode is a gate, runs by default in `examples/boxes.rs`, and reads
   zero interior disagreements on `tree`, `line` and `pair`.
+- **The gate is in `cargo test`**: `crates/client/render/tests/traced.rs` builds
+  the `line` scene through the real `GroundRenderer`/`MeshFaceRenderer`/`Blit`
+  pipeline offscreen and asserts on it, skipping where there is no GPU adapter.
+  It reproduces the tool's numbers exactly and runs in about half a second. The
+  judging is shared with the tool rather than copied — one implementation of
+  what counts as a disagreement.
 - Surface disagreements are split on the silhouette, by the same neighbourhood
   test the lit ones use, and only the interior ones are named.
 - Full mode renders soft shadows, a cosine term, indirect light and ambient
@@ -318,12 +329,20 @@ Built and current:
 
 ## Backlog
 
-- **The gate is not in CI.** It runs inside `examples/boxes.rs`, which needs a
-  GPU adapter, so `cargo test --workspace` never reaches it — the same
-  limitation every other oracle in that file has. The tracer itself needs no
-  GPU; what needs one is the frame it is compared against. A test that renders
-  the frame offscreen under `tests/` would close this, and would be the first
-  thing to break if the walk regressed.
+- **The gate compares one scene, not three.** `tests/traced.rs` runs `line`;
+  `tree` and `pair` are still the tool's alone. Each is a second GPU frame, so
+  the cost is real but small — the question is whether the gate should own the
+  reference scene's own defaults, which would make editing one of the tool's
+  knobs a test failure rather than a silent retirement of a recorded number.
+- **The gate and the tool build their scene twice.** The *judging* is one
+  implementation (`examples/oracle/pathtrace.rs`, shared by `#[path]`), which is
+  the part where a defect could hide. The pipeline around it — occlusion grid,
+  camera, mesh rows, ground quads, blit, readback — is written once in
+  `examples/boxes.rs`'s own `main` and again in the test, as every GPU fixture
+  in this crate does. It cannot make a disagreement disappear, only fail to
+  produce one, which is what the test's three non-triviality assertions are for.
+  Lifting it into `examples/oracle/` would take the tool's `main` apart, and its
+  env knobs and dumps are half of what is in there.
 - **Nothing runs it over a real map.** All three scenes are hand-built boxes.
   A static off `tiledata` is a sprite with a `Solid` approximation behind it,
   and the tracer would be checking the approximation rather than what a player

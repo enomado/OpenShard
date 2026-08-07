@@ -398,11 +398,9 @@ still wanted.
 **Known gaps that outlive the rebuild**
 - The corner-tie CPU/GPU parity gap, with two `#[ignore]`d tests
   (`lighting_raymarch.md`). Phase 4 does not touch stepping, so it stays.
-- `line`'s 833 surface disagreements in the path tracer, unexplained
-  (`lighting_reference.md`).
-- The tracer's gate is not in CI, needs a GPU adapter for the frame side; and
-  nothing runs it over a real map (`lighting_reference.md`). **Phase 0's own
-  work.**
+- Nothing runs the tracer over a real map — all three scenes are hand-built
+  boxes (`lighting_reference.md`). **Phase 0's own work**, along with the
+  brightness calibration that phase's "done when" actually asks for.
 - The tracer is single-threaded, 13 s a frame — too slow for a sweep, and a
   sweep is how the last three defects were found (`lighting_reference.md`).
 - Buffer capacity is one flat `INITIAL_QUADS = 4096` for all kinds, and the

@@ -3,11 +3,18 @@
 //! decode the one debug view an oracle can be checked against, and ask an
 //! independent question about a segment and a box.
 //!
-//! Not a library — a module two examples share (`mod oracle;`), because the
+//! Not a library — a module the scene tools share (`mod oracle;`), because the
 //! alternative is two copies of a slab test. Two copies of a *geometric
 //! primitive* is the shape that drifts: both look right, both are read rather
 //! than run, and the day one of them grows a tolerance the other does not, two
 //! oracles disagree about a scene neither of them is wrong about.
+//!
+//! It cannot be a library and it is not one by oversight: [`pathtrace`] uses
+//! `openshard-client-pathtrace`, which is a **dev-dependency** of this crate
+//! precisely so the reference cannot be reached from the shipped renderer. Code
+//! that names it can therefore live in `examples/` or in `tests/` and nowhere
+//! else — so `tests/traced.rs` reaches this module by `#[path]` rather than by
+//! a second copy. See that file's own doc for the argument.
 //!
 //! Everything here is deliberately free of `light.rs` and `blit.wesl`
 //! arithmetic. That is the whole claim an oracle makes — reusing the thing
@@ -15,6 +22,9 @@
 //! other and nothing else — so the only engine code this module touches is the
 //! `place` attachment's own *format* (`crate::place`), which is a wire, not an
 //! answer.
+
+pub mod boxes;
+pub mod pathtrace;
 
 use openshard_client_render::place;
 
@@ -274,20 +284,17 @@ fn mark_crosshair(pixels: &mut [u8], width: u32, height: u32, at: (i32, i32)) {
     }
 }
 
-/// Read one rendered frame back, write it out as a PPM with `mark`'s crosshair
-/// on it, and return the pixels **without** the crosshair.
+/// One rendered frame's pixels, `RGBA8`, row-major.
 ///
-/// The two are separate on purpose: the mark is for a person looking at the
-/// picture, and an oracle reading the same frame back must not find a lime cross
-/// where the shader wrote a shadow term.
-pub fn dump(
+/// Split out of [`dump`] because the gate under `tests/` wants the frame and
+/// not a file: a test that writes a picture every green run is a test that
+/// fills a directory to say nothing.
+pub fn read_surface(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     surface: &wgpu::Texture,
     width: u32,
     height: u32,
-    path: &std::path::Path,
-    mark: Option<(i32, i32)>,
 ) -> Vec<u8> {
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
@@ -325,10 +332,27 @@ pub fn dump(
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("waiting on our own submission");
-    let pixels = slice
+    slice
         .get_mapped_range()
         .expect("the map completed above")
-        .to_vec();
+        .to_vec()
+}
+
+/// [`read_surface`], marked with a crosshair and written out as a PPM.
+///
+/// Returns the *unmarked* pixels: the crosshair is for a person looking at the
+/// picture, and an oracle reading the mark back as a lit pixel would be an
+/// oracle measuring its own annotation.
+pub fn dump(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    surface: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+    mark: Option<(i32, i32)>,
+) -> Vec<u8> {
+    let pixels = read_surface(device, queue, surface, width, height);
     let mut marked = pixels.clone();
     if let Some(at) = mark {
         mark_crosshair(&mut marked, width, height, at);
