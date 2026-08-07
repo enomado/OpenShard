@@ -284,6 +284,87 @@ Written down rather than guessed at:
    per-corner heights, so it has real normals — and its art is nearly unshaded, so
    `N·L` on it is pure gain. Probably free, worth confirming early.
 
+## The plans this consolidates
+
+Seven documents describe how the current lighting was built, and a session that
+starts by reading them starts by reading five thousand lines to find out which
+paragraphs are still true. **This is the entry point now.** Each of them stays as
+the record of how something was built and why — nothing is deleted, and the
+reasoning in them is worth more than the code it justified — but the *live work*
+is here, in one list.
+
+| document | what it is | what happens to it |
+|---|---|---|
+| [`lighting.md`](lighting.md) | the current system, end to end: place attachment, occlusion grid, ray walk, sun, beams, doors, art measurement | **the thing being replaced.** Its mechanisms are retired phase by phase; its *content* work (below) survives untouched |
+| [`lighting_world.md`](lighting_world.md) | ambient, the sky field, the day curve, tonal response | **mostly survives.** The sky field is ambient occlusion by another name and phase 8 adopts it; the day curve and the tonal response become phase 1's and phase 8's business |
+| [`lighting_raymarch.md`](lighting_raymarch.md) | the DDA walk, CPU/GPU parity, the tile-boundary hazard | **survives as the walk.** Phase 4 changes what a hit *means* (identity, no bias), not how cells are stepped. Its corner-tie parity gap outlives the rebuild |
+| [`lighting_geometry.md`](lighting_geometry.md) | box → mesh occluders, never started | **cheaper after phase 4**, which makes primitives addressable by id. The choice of primitive shape stays its own question |
+| [`lighting_height.md`](lighting_height.md) | the height track: four landed phases and a long backlog | **the backlog is mostly deleted rather than fixed** — see the mapping below |
+| [`lighting_reference.md`](lighting_reference.md) | the path tracer, a third opinion with no shared arithmetic | **becomes phase 0**, the oracle everything else is judged by |
+| [`gbuffer.md`](gbuffer.md) | the `place` attachment's format, ids, per-face mesh geometry | **phase 2 replaces the format** and inherits every one of its readers. Its open question — how to encode a normal for a non-axis-aligned face — is answered there: octahedral, in the buffer |
+| [`world_coordinates.md`](world_coordinates.md) | a position should carry its own cell; one metric | **half of it is phase 2** (positions as data, `z` in tiles once). The CPU-side type stays its own track |
+
+### What each phase deletes from `lighting_height.md`'s backlog
+
+So that backlog can be read as "work" rather than as a list of things that may or
+may not still matter:
+
+| backlog entry | fate |
+|---|---|
+| `FACE_EDGE`'s two scales; the flame at a surface's own height | **phase 3** — there is no band |
+| `STAND_OFF`/`ON_TOP` at a grazing corner; the `ON_TOP` twin | **phase 4** — there is no nudge |
+| risers excused as a group; `own_run`; `flame_end`'s height test; a mobile shadowed by its own wall | **phase 4** — identity answers all four |
+| the `ground < 1e-6` shortcut ignoring a lid's footprint | **phase 4**, and worth fixing alone if that slips |
+| `WIDTH_OVERLAP`'s border | **phase 6** |
+| the riser penumbra graded over a third of a face | **phase 5** |
+| the wire's span rounding to nearest; the exact-tangent definition | **phase 4** — a primitive is not a byte range any more |
+| `boxes.rs` reading `Unreached` as shadowed; `two_cubes.rs`'s old idiom; the projection idiom stated five times; `mesh::Face`/`facing::Face` colliding | **survive** — instrument work, still worth doing |
+| `Occlusion::owner_at`'s linear scan; `selected`/`outlined` stamping `OwnerId::NONE` | **survive**, reshaped by phase 4's ids |
+| `tests/cost.rs` measuring three planes of five; `plan::Wall::top` as an `i32`; hand-copies of the third channel | **survive**, and phase 2 is when they get corrected |
+
+### Carried over: work no phase here deletes
+
+Gathered from every document above, because these are the things that would
+otherwise be lost between plans. None of it blocks the rebuild; all of it is
+still wanted.
+
+**Content and features**
+- The day curve — until it lands, a default frame carries no ambient split at
+  all and a house reads as bright as the street (`lighting_world.md`).
+- Light carried by mobiles other than the local player; a serial-derived flicker
+  phase (`lighting_world.md`).
+- The screen-space glow for a flame's own halo, and the sunbeam shaft through a
+  window (`lighting.md`).
+- Doors, the ported open/shut occlusion table — built, and untouched by any of
+  this.
+- Land as an occluder: a hill casts no shadow today (`lighting.md`).
+- Leaded/lattice window apertures, refused rather than measured; the aperture
+  channel of the field is reserved and always zero (`lighting.md`,
+  `lighting_world.md`).
+- `Builder::add` consuming an authored `Blocks` list — the table format supports
+  arches and lintels, nothing wires one into the live grid (`lighting.md`).
+- Night Sight's interaction with a real day curve is undecided
+  (`lighting_world.md`).
+- A mobile as a soft sub-tile occluder; a body's diagonal footprint the
+  axis-aligned `Solid` cannot state (`lighting.md`, `lighting_world.md`).
+
+**Known gaps that outlive the rebuild**
+- The corner-tie CPU/GPU parity gap, with two `#[ignore]`d tests
+  (`lighting_raymarch.md`). Phase 4 does not touch stepping, so it stays.
+- `line`'s 833 surface disagreements in the path tracer, unexplained
+  (`lighting_reference.md`).
+- The tracer's gate is not in CI, needs a GPU adapter for the frame side; and
+  nothing runs it over a real map (`lighting_reference.md`). **Phase 0's own
+  work.**
+- The tracer is single-threaded, 13 s a frame — too slow for a sweep, and a
+  sweep is how the last three defects were found (`lighting_reference.md`).
+- Buffer capacity is one flat `INITIAL_QUADS = 4096` for all kinds, and the
+  widest real frame reallocates on its first frame, every run (`gbuffer.md`).
+- A climbable the prism-fit cannot decompose still occludes as a whole-tile
+  body (`gbuffer.md`).
+- A courtyard overhang can make the sky-column test misread a tile; 28 of 2,560
+  outdoor tiles in Britain read dark (`lighting_world.md`).
+
 ## Backlog
 
 Things noticed while writing this, not blocking any phase:

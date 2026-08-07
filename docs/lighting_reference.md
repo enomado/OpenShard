@@ -1,5 +1,9 @@
 # The reference path tracer
 
+> **This is [`lighting_rebuild.md`](lighting_rebuild.md)'s phase 0** — the oracle the rebuild is judged by.
+> One thing is asked of it there that it does not have yet: a **BRDF switch**, so it can compute what the engine computes as well as what physics does. An oracle that can only compute one model decides the model.
+
+
 A second renderer of the same scene, written to have none of the first one's
 ideas. Where `light.rs` and `blit.wesl` decide a shadow by walking a grid of
 tiles — carrying a cell, stepping to a boundary, asking an occluder whether it

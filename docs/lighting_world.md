@@ -1,5 +1,9 @@
 # Lighting, part two: the light a place has
 
+> **Consolidated into [`lighting_rebuild.md`](lighting_rebuild.md)** — ambient and the sky field, most of which survives.
+> That document is the entry point: it lists what is still live here, which rebuild phase retires or inherits it, and what carries over untouched. This file stays as the record of how it was built and why.
+
+
 Current state of the ambient/sky-field system: what it computes today, the
 data format it shares with [`lighting.md`](lighting.md)'s occlusion grid, and
 which parts of the design are built versus still a plan. The reasoning behind

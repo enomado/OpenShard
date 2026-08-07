@@ -1,5 +1,9 @@
 # The shadow raymarch: boundary precision and CPU/GPU parity
 
+> **Consolidated into [`lighting_rebuild.md`](lighting_rebuild.md)** — the walk itself, which survives.
+> That document is the entry point: it lists what is still live here, which rebuild phase retires or inherits it, and what carries over untouched. This file stays as the record of how it was built and why.
+
+
 Current state of the boundary-precision machinery inside the shadow ray
 walk: how a cell index is derived without landing on the wrong side of a
 tile edge, what is proven identical between the CPU and GPU implementations

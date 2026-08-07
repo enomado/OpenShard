@@ -1,5 +1,9 @@
 # The occluding primitive: box or mesh
 
+> **Consolidated into [`lighting_rebuild.md`](lighting_rebuild.md)** — box-to-mesh occluders, never started.
+> That document is the entry point: it lists what is still live here, which rebuild phase retires or inherits it, and what carries over untouched. This file stays as the record of how it was built and why.
+
+
 Terrain and statics occlusion moves from a fixed axis-aligned box to a
 general mesh, where a box cannot state the shape. The box stays the default
 and remains free for everything it already covers. Mobiles and characters

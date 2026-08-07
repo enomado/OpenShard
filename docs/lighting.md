@@ -1,5 +1,9 @@
 # Lighting: a flame that a wall can stop
 
+> **Consolidated into [`lighting_rebuild.md`](lighting_rebuild.md)** — the system being replaced.
+> That document is the entry point: it lists what is still live here, which rebuild phase retires or inherits it, and what carries over untouched. This file stays as the record of how it was built and why.
+
+
 Current state of the point-light/shadow pass: what it computes, the data
 formats it reads and writes, and the engineering compromises it currently
 ships with. The reasoning behind each choice — arguments made, alternatives

@@ -1,5 +1,9 @@
 # A position is not a coordinate
 
+> **Consolidated into [`lighting_rebuild.md`](lighting_rebuild.md)** — one metric, half of which is phase 2.
+> That document is the entry point: it lists what is still live here, which rebuild phase retires or inherits it, and what carries over untouched. This file stays as the record of how it was built and why.
+
+
 **The world is already continuous.** `camera::WorldSpot` is three `f64` in tiles,
 `occlusion::Solid::space` is two of them, `light::Spot` carries an `f32` pair and
 an `f32` height, and `docs/lighting_height.md`'s phases 1 and 2 made height

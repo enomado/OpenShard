@@ -1,5 +1,9 @@
 # The G-buffer: the place attachment
 
+> **Consolidated into [`lighting_rebuild.md`](lighting_rebuild.md)** — the `place` format, which phase 2 replaces.
+> That document is the entry point: it lists what is still live here, which rebuild phase retires or inherits it, and what carries over untouched. This file stays as the record of how it was built and why.
+
+
 Every world pass (`ground.wesl`, `statics.wesl`, `mesh_face.wesl`) writes a second
 colour target beside the picture: for each visible pixel, which tile the thing
 drawn there belongs to, its height, what kind of thing it is, and which way its

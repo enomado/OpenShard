@@ -1,5 +1,9 @@
 # Height as a continuous quantity
 
+> **Consolidated into [`lighting_rebuild.md`](lighting_rebuild.md)** — the height track, whose backlog is mostly deleted rather than fixed.
+> That document is the entry point: it lists what is still live here, which rebuild phase retires or inherits it, and what carries over untouched. This file stays as the record of how it was built and why.
+
+
 A fragment's height, and an occluder's, were integers when this was written —
 phases 1 and 2 below are what changed that, and `## Status` is where it
 stands. Everything a
