@@ -236,14 +236,36 @@ impl Slab {
     /// those pixels are real pixels of this face drawn beyond its own plane's
     /// span — which is why this saturates rather than asserting.
     fn along(&self, point: (f64, f64, f64), up: Face) -> f64 {
-        let (value, low, high) = match self.part {
-            Part::Riser => (point.2, self.min.2, self.max.2),
-            Part::Top if climbs_along_y(up) => (point.1, self.min.1, self.max.1),
-            Part::Top => (point.0, self.min.0, self.max.0),
-        };
+        let (value, low, high) = self.varying(point, up);
         match high > low {
             true => ((value - low) / (high - low)).clamp(0.0, 1.0),
             false => 0.0,
+        }
+    }
+
+    /// Whether a fragment of this face is drawn **beyond the plane's own span**
+    /// — past either end of the axis [`Slab::along`] measures.
+    ///
+    /// This is the hairline down every tread/riser join, named rather than
+    /// inferred. `Prism::mesh` grows every riser by `SEAM_OVERLAP` at both `z`
+    /// ends so the last-submitted face wins a coincident edge outright instead
+    /// of leaving it to a sub-pixel tie — real pixels of a riser, drawn under
+    /// the tread it stands on and over the tread it rises to, at a place the
+    /// staircase's own body fills. Whatever those pixels are lit as, they are
+    /// not lit as the surface they stand in for, and a count that folded them
+    /// into the rest of the face could not say whether a seam in the picture is
+    /// the lighting's answer or the mesh's own overlap.
+    fn beyond_its_plane(&self, point: (f64, f64, f64), up: Face) -> bool {
+        let (value, low, high) = self.varying(point, up);
+        value < low || value > high
+    }
+
+    /// The coordinate this face varies along, with that axis's own span.
+    fn varying(&self, point: (f64, f64, f64), up: Face) -> (f64, f64, f64) {
+        match self.part {
+            Part::Riser => (point.2, self.min.2, self.max.2),
+            Part::Top if climbs_along_y(up) => (point.1, self.min.1, self.max.1),
+            Part::Top => (point.0, self.min.0, self.max.0),
         }
     }
 
@@ -840,6 +862,10 @@ fn main() {
         let mut shader_alone = 0usize;
         let mut engine_together = 0usize;
         let mut disagreeing_bands = vec![0usize; bands];
+        // The seam, counted as its own class rather than left inside the total.
+        // See [`Slab::beyond_its_plane`].
+        let mut beyond = 0usize;
+        let mut beyond_disagreeing = 0usize;
         let mut examples: Vec<String> = Vec::new();
         for (pixel, texel) in drawn.iter().enumerate() {
             // Whose pixel this is, as the renderer wrote it. A mesh face's row
@@ -874,10 +900,17 @@ fn main() {
                 continue;
             }
             compared += 1;
+            let seam = slab.beyond_its_plane(point, up);
+            if seam {
+                beyond += 1;
+            }
             let rendered_lit = shade.lit();
             let independent = oracle_visible(point, flame, &slabs, id);
             if independent == rendered_lit {
                 continue;
+            }
+            if seam {
+                beyond_disagreeing += 1;
             }
             let band = (slab.along(point, up) * bands as f64) as usize;
             disagreeing_bands[band.min(bands - 1)] += 1;
@@ -926,6 +959,12 @@ fn main() {
              {engine_together} both walks together), {unreached} out of every pool",
             slab.label(),
         );
+        if beyond > 0 {
+            eprintln!(
+                "  of which {beyond} are drawn beyond this face's own plane — `Prism::mesh`'s seam \
+                 overlap, inside the staircase's own body — and {beyond_disagreeing} of those disagree"
+            );
+        }
         if disagreeing > 0 {
             let axis = match slab.part {
                 Part::Riser => "z",
