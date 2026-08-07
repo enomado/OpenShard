@@ -784,6 +784,26 @@ counter-example was for, and the probe that defines the phase still reads
 the same *kind* of solid the rule excuses, still stopping the ray because that
 crossing is at `t > 0`.
 
+> 🚨 **And every number in that table was counted on pixels the flame stands
+> behind.** The backlog's first entry has the measurement: on this scene tread
+> 1's top and tread 2's top — the two faces the `1522` and the `1346` are
+> counted on — set aside **5516** and **5423** fragments as back-facing and
+> compare **none**. `light::faces` gives them `(−1/11)/0.2 + 0.5 ≈ 0.045`, so
+> whatever the occlusion term does there reaches the picture at a twentieth of a
+> flame's contribution.
+>
+> **What that takes back:** "a whole tread top, black" was black mostly because
+> the flame is under it, not only because of the lid, and this section's headline
+> counts are of a class the picture barely shows.
+>
+> **What it does not take back:** the rule. An occlusion term is either right or
+> wrong independently of what multiplies it afterwards, the counter-example probe
+> is a *riser* with the flame above and beyond — in front of it, and still
+> compared — and the three-ray mutation test in `light.rs` is geometry with no
+> facing term anywhere near it. What the phase needs is a scene that shows the
+> same defect on a face the flame is in front of; it does not have one, and the
+> backlog says so.
+
 > **Both columns are with `Prism::mesh`'s `SEAM_OVERLAP` still in.** It was
 > removed immediately after — see the backlog's first entry — and that changes the
 > "after" column again, because the seam pixels stop being drawn and one band of
@@ -946,33 +966,47 @@ rule landed; none of it blocked any of them.
   What is left of that row is the entry below: the two spikes sit at `z 1` and
   `z 3`, which are two of this flight's own tread heights, and nowhere else.
 
-- **The residual at a tread/riser join is one defect with a sign, and the sign
-  is which side of the riser the flame is on.** Found by orbiting the flame
-  around the flight — eight positions on a circle of `2.5` tiles at `z 2.5`,
-  which is a question no single scene can be asked and no count at one angle can
-  answer:
+- 🚨 **The oracle had no half-space test, and most of this track's residuals
+  were that.** Found by orbiting the flame around the flight — eight positions on
+  a circle of `2.5` tiles at `z 2.5` — and reading the *sign* of what came out:
 
   | flame | E | SE | S | SW | W | NW | N | NE |
   |---|---|---|---|---|---|---|---|---|
-  | disagreeing | 41 | 550 | 841 | 541 | 42 | 449 | 748 | 455 |
-  | sign | mixed | too light | too light | too light | mixed | too dark | too dark | too dark |
+  | as first read | 41 | 550 | 841 | 541 | 42 | 449 | 748 | 455 |
+  | sign | mixed | light | light | light | mixed | **dark** | **dark** | **dark** |
+  | with facing counted apart | 21 | **2** | 93 | **2** | 18 | **0** | **0** | **0** |
 
-  In front of the flight it under-shadows, behind it it over-shadows, and along
-  the ridge it is right to within forty pixels. The per-face breakdown is the
-  proof that it is *one* defect rather than two: with the flame due south, tread
-  1's top disagrees over bands **28..32** — the end where it meets the riser
-  above it — by **654** pixels; with the flame due north, the same face disagrees
-  over bands **0..4** — the end where it meets the riser below it — by **654**
-  pixels. Same count, mirrored band. Tread 2's riser and tread 0's riser pair off
-  the same way at 94 and 94.
+  The first reading looked like one defect with a sign — under-shadowing in front
+  of the flight, over-shadowing behind it, mirrored counts of `654` on the same
+  face from either side. It was not a defect at all. **A one-sided surface cannot
+  be lit from behind**, so for a fragment the flame stands behind, "is anything in
+  the way" is not a question about that fragment's shade: `light::faces` decides
+  it before occlusion is ever asked. The oracle had no such test, drew those
+  fragments as *lit*, and reported every one of them as the renderer being wrong.
 
-  It is the nudges, and now their price has a shape rather than a scalar:
-  `STAND_OFF` walks a face pixel `2/127` of a tile *in front of its own plane*
-  and `ON_TOP` lifts every ray `1/128` of a `z`, so at the corner where a tread
-  meets a riser the ray starts on one side of a surface it should be crossing —
-  and which side depends on where the flame stands. A fix has to be judged on the
-  whole orbit and not on one placement, because a nudge tuned to make the south
-  case right makes the north case worse by construction.
+  `Slab::faces` is that test now, and back-facing pixels are counted apart rather
+  than folded in — the identical argument `Shade::Unreached` already carries one
+  axis over, that a fragment outside every pool is dark because of a *radius* and
+  a visibility oracle has no opinion about radii. The whole back half of the orbit
+  goes to zero.
+
+  **What that costs every number this section records**, re-measured:
+
+  | scene | as recorded | with facing counted apart |
+  |---|---|---|
+  | single flight, `2.5,1.4` | 316/23912 | **41/12973** |
+  | the run, flame above | 1706/68962 | **133/56034** |
+
+  And the sharpest of it: on phase 4's own default scene, tread 1's top and tread
+  2's top now compare **0 pixels** and set aside **5516** and **5423** — *every*
+  fragment of the two faces the phase was about has the flame behind it. Those
+  faces are what the `1522` and `1346` were counted on. See the phase's own
+  section for what that does and does not take back.
+
+  The band the engine gives between a plane and `FACE_EDGE/2` behind it is
+  deliberate softening and is not judged here either way; the oracle's rule is the
+  geometric one — strictly behind means strictly unlit — and where the two differ
+  the engine is being generous beyond geometry rather than wrong.
 
 - **A flame at exactly a surface's own height loses most of that surface's
   shadow, and integer heights are the common case.** The sweep above makes the
@@ -1086,8 +1120,16 @@ rule landed; none of it blocked any of them.
   that phase 4's rule then took to 7 — every one of them "rendered too light",
   banded at the top of every riser, on a flame standing above and beyond. Both
   walks together, so it is the engine's arithmetic in both implementations and
-  not a parity gap. After phase 4 it is **1687 of 1834**, and it is now the whole
-  of what that scene disagrees about. The shape a fix would take is the one the
+  not a parity gap. After phase 4 it is **1687 of 1834**.
+
+  🚨 **And then almost all of it turned out to be the oracle**, which had no
+  half-space test: on that scene the flame stands at `y 100.5`, north of every
+  riser's plane, and a riser looks south. With back-facing fragments counted apart
+  the run reads **133 of 56034**, so `STAND_OFF`'s measured price at a grazing
+  corner is at most that and not `1687`. The entry stays because the mechanism is
+  real and `docs/lighting_height.md`'s own `ON_TOP` twin is measured on a face the
+  flame *is* in front of — but it has no scene with a number on it any more, and
+  finding one is the work. The shape a fix would take is the one the
   entry below already guesses at — a nudge scaled to the surface rather than to
   the attachment's format — and it now has a scene and a number to be judged on.
 

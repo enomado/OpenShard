@@ -296,6 +296,47 @@ impl Slab {
         }
     }
 
+    /// Which way this plane looks, in the same units a flame's offset is stated
+    /// in — `x`/`y` across the map, `z` in tiles.
+    ///
+    /// **What it is for is refusing to have an opinion.** A one-sided surface
+    /// cannot be lit from behind, so for a fragment the flame stands *behind*,
+    /// "is anything in the way" is not a question about that fragment's shade at
+    /// all — the shade is decided by the facing term before occlusion is ever
+    /// asked. Counting such a pixel as a disagreement measures the oracle's own
+    /// missing half-space test and calls it the renderer's fault.
+    ///
+    /// This is exactly the argument `Shade::Unreached` already carries one axis
+    /// over: a fragment outside every pool is dark because of a *radius*, and a
+    /// visibility oracle has no opinion about radii either. Both classes are
+    /// counted apart rather than folded in.
+    fn normal(&self, up: Face) -> (f64, f64, f64) {
+        match self.part {
+            Part::Top => (0.0, 0.0, 1.0),
+            Part::Riser => {
+                let [x, y] = descends_towards(up).outward();
+                (f64::from(x), f64::from(y), 0.0)
+            }
+        }
+    }
+
+    /// Whether the flame stands on the side this plane looks at.
+    ///
+    /// A strict half-space and no band: a fragment inside the engine's own
+    /// `FACE_EDGE` softening is still a fragment whose occlusion term means
+    /// something, so only the ones the flame is *behind* are set aside. `z` is
+    /// divided into tiles first, the way `light::sample_with` states the offset.
+    fn faces(&self, point: (f64, f64, f64), flame: (f64, f64, f64), up: Face) -> bool {
+        let z_per_tile = f64::from(openshard_client_render::light::Z_PER_TILE);
+        let normal = self.normal(up);
+        let toward = (
+            flame.0 - point.0,
+            flame.1 - point.1,
+            (flame.2 - point.2) / z_per_tile,
+        );
+        normal.0 * toward.0 + normal.1 * toward.1 + normal.2 * toward.2 > 0.0
+    }
+
     /// This plane's four corners, in the ring order
     /// [`Prism::mesh`](openshard_client_render::facing::Prism) pushes them.
     ///
@@ -583,8 +624,13 @@ struct Covered {
 ///
 /// Painter order, later face wins, which is `Prism::mesh`'s own submission order
 /// and what the mesh pass's `LessEqual` depth does with one depth per static.
+// Eight: the geometry and which way it climbs, the camera, the flame and its
+// reach, the frame's size, and where to write. A struct for any subset would be
+// a second spelling of arguments this one function is the only caller of.
+#[allow(clippy::too_many_arguments)]
 fn write_reference(
     slabs: &[Slab],
+    up: Face,
     camera: &Camera,
     flame: (f64, f64, f64),
     radius: f64,
@@ -661,13 +707,24 @@ fn write_reference(
                     (flame.2 - point.2) / z_per_tile,
                 );
                 let distance = (offset.0 * offset.0 + offset.1 * offset.1 + offset.2 * offset.2).sqrt();
-                match (distance >= radius, oracle_visible(*point, flame, slabs, *plane)) {
-                    // The same three answers `Shade` decodes, in the same
-                    // colours `blit.wesl` writes them, so the two pictures can
-                    // be read against each other without a legend.
-                    (true, _) => [0, 0, 89],
-                    (false, true) => [255, 255, 255],
-                    (false, false) => [51, 0, 0],
+                let slab = &slabs[*plane];
+                match (
+                    distance >= radius,
+                    slab.faces(*point, flame, up),
+                    oracle_visible(*point, flame, slabs, *plane),
+                ) {
+                    // The three answers `Shade` decodes, in the colours
+                    // `blit.wesl` writes them, so the two pictures can be read
+                    // against each other without a legend — and a fourth this
+                    // side has and that frame does not.
+                    (true, _, _) => [0, 0, 89],
+                    // **The flame is behind this surface**, so its shade is
+                    // decided before occlusion is asked and neither picture's
+                    // answer here is about geometry. Its own colour rather than
+                    // one of the three: see `Slab::faces`.
+                    (false, false, _) => [40, 40, 64],
+                    (false, true, true) => [255, 255, 255],
+                    (false, true, false) => [51, 0, 0],
                 }
             }
         };
@@ -702,9 +759,14 @@ fn write_difference(rendered: &[u8], reference: &[u8], width: u32, height: u32, 
         let mine = &reference[pixel * 3..pixel * 3 + 3];
         let drew_theirs = Shade::of(theirs);
         let drew_mine = mine != [0, 0, 0];
+        // The flame stands behind this surface, so neither picture's answer
+        // here is about geometry — `Slab::faces`. Its own dim colour, and it is
+        // never a disagreement.
+        let behind = mine == [40, 40, 64];
         let colour = match (theirs == [0, 0, 0], drew_mine) {
             (true, false) => [0, 0, 0],
             (false, false) | (true, true) => [220, 200, 0],
+            _ if behind => [30, 30, 46],
             (false, true) => {
                 let lit = drew_theirs.lit();
                 let should = mine == [255, 255, 255];
@@ -1126,6 +1188,7 @@ fn main() {
     // cannot describe a shape.
     let reference = write_reference(
         &slabs,
+        up,
         &camera,
         flame,
         f64::from(light_radius),
@@ -1160,6 +1223,7 @@ fn main() {
     for (id, slab) in slabs.iter().enumerate() {
         let mut compared = 0usize;
         let mut unreached = 0usize;
+        let mut behind_the_flame = 0usize;
         let mut too_dark = 0usize;
         let mut too_light = 0usize;
         // And which of the two walks is out, on every disagreement.
@@ -1208,6 +1272,16 @@ fn main() {
             // that fell out of reach cannot read as a face that agreed.
             if shade == Shade::Unreached {
                 unreached += 1;
+                continue;
+            }
+            // And the other class this oracle has no opinion about: a surface
+            // the flame stands *behind*. Its shade is decided by the facing term
+            // before occlusion is ever asked, so measuring the occlusion term
+            // there measures this oracle's own missing half-space test. Counted
+            // apart, exactly as `Unreached` is, and for the same reason —
+            // `Slab::faces`.
+            if !slab.faces(point, flame, up) {
+                behind_the_flame += 1;
                 continue;
             }
             compared += 1;
@@ -1267,7 +1341,8 @@ fn main() {
         eprintln!(
             "face oracle, {}: {compared} pixels compared, {disagreeing} disagree \
              ({too_dark} rendered too dark, {too_light} too light; {shader_alone} the shader alone, \
-             {engine_together} both walks together), {unreached} out of every pool",
+             {engine_together} both walks together), {unreached} out of every pool, \
+             {behind_the_flame} with the flame behind them",
             slab.label(),
         );
         if beyond > 0 {
