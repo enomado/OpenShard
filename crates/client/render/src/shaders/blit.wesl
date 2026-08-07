@@ -400,7 +400,22 @@ const RUN_STEPS: f32 = 255.0;
 // this one; widening only here, to agree with what the CPU side already
 // computes unprompted, is what `light::ray_vs_solid`'s own doc comment
 // argues is the narrower, correct fix.
-const RAY_TANGENT_TOLERANCE: f32 = 1.0e-2;
+//
+// **It is a rounding-scale number and it used to be `1.0e-2`**, which is not
+// a rounding scale at all: `entered` and `leaves` are fractions of the whole
+// segment, so a hundredth of one is a hundredth of the way from a fragment to
+// its flame — around a screen pixel of world at this crate's own top zoom, and
+// every box in the frame silently a pixel fatter wherever a ray grazed it. It
+// cost 299 of the 302 disagreements `examples/boxes.rs`'s ground oracle
+// reported on the `tree` scene and 27 of its face oracle's 43, all of them the
+// shader alone against a `light::sample` that agreed with the independent
+// geometry. And it never bought what it was introduced for:
+// `the_shader_and_light_sample_agree_about_a_carried_beam` and
+// `the_shader_lights_a_frame_as_light_sample_does` fail on the same pixel with
+// the same two numbers at `1.0e-2`, at `1.0e-6` and at `0.0` — measured, not
+// argued. What is left here is the guard the comment above describes and
+// nothing more: two `f32` implementations of one formula, one rounding apart.
+const RAY_TANGENT_TOLERANCE: f32 = 1.0e-6;
 
 // How much of a panel a ray pierces at height `z` runs into: 1 well inside the
 // span it occupies, 0 well outside, and a gradient `tall` `z` units wide across
@@ -811,16 +826,12 @@ struct RayBox {
     leaves: f32,
 };
 
-// `tolerance` is `RAY_TANGENT_TOLERANCE` at `walk`'s own cell and `0.0` at
-// its unconditional tie-break probe — see `cell_stopped`'s own comment for
-// why the two calls do not share one answer.
-//
 // A flame is a point source, and a point source's shadow is exact — no
 // widened corner test, no taper: an intersection here already means the
 // segment genuinely passed through the box. See `docs/lighting_raymarch.md`'s
 // "hard shadows" decision; `light::ray_vs_solid` is the whole test now, for
 // every edge kind, and this is its mirror.
-fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>, tolerance: f32) -> RayBox {
+fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> RayBox {
     var entered = 0.0;
     var leaves = 1.0;
     let delta = ray_to - ray_from;
@@ -833,12 +844,12 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
         let t2 = (hi.x - ray_from.x) / delta.x;
         entered = max(entered, min(t1, t2));
         leaves = min(leaves, max(t1, t2));
-        // `tolerance`, not a bare `entered > leaves`: `light::ray_vs_solid`'s
-        // own doc comment has the reason — a ray grazing a box's corner can
-        // close one axis's interval a few thousandths of `t` before the
-        // other opens, and CPU and GPU are not guaranteed to agree which
-        // side of that razor-thin gap is real for the identical segment.
-        if entered > leaves + tolerance {
+        // `RAY_TANGENT_TOLERANCE`, not a bare `entered > leaves`: its own
+        // comment has the reason — a ray grazing a box's corner can close one
+        // axis's interval one rounding of `t` before the other opens, and CPU
+        // and GPU are not guaranteed to agree which side of that razor-thin
+        // gap is real for the identical segment.
+        if entered > leaves + RAY_TANGENT_TOLERANCE {
             return RayBox(false, 0.0, 0.0);
         }
     }
@@ -851,7 +862,7 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
         let t2 = (hi.y - ray_from.y) / delta.y;
         entered = max(entered, min(t1, t2));
         leaves = min(leaves, max(t1, t2));
-        if entered > leaves + tolerance {
+        if entered > leaves + RAY_TANGENT_TOLERANCE {
             return RayBox(false, 0.0, 0.0);
         }
     }
@@ -864,7 +875,7 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
         let t2 = (hi.z - ray_from.z) / delta.z;
         entered = max(entered, min(t1, t2));
         leaves = min(leaves, max(t1, t2));
-        if entered > leaves + tolerance {
+        if entered > leaves + RAY_TANGENT_TOLERANCE {
             return RayBox(false, 0.0, 0.0);
         }
     }
@@ -879,22 +890,20 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
 // cell its own unconditional tie-break probe tests without moving the
 // walk's own trajectory there — see `walk`'s own comment at the call sites.
 //
-// `tolerance` is `ray_vs_solid`'s own, passed through rather than fixed here
-// — `RAY_TANGENT_TOLERANCE` for `walk`'s own cell, `0.0` for the probe.
-// **The two calls need different answers, and that was found the hard
-// way.** A single shared tolerance, tried first, fixed the walk's own cell
-// (`the_shader_and_light_sample_agree_about_a_carried_beam`'s own gap) but
-// broke four *other*, previously-green parity tests
+// **The walk's own cell and its probe share one tolerance, and that took a
+// measurement to be allowed.** This used to take the tolerance as a parameter
+// — `RAY_TANGENT_TOLERANCE` here, a hard `0.0` at the probe — because sharing
+// the *old* `1.0e-2` broke four previously-green parity tests
 // (`_about_a_wall_that_faces_away`, `_about_which_side_a_wall_is_on`,
-// `_about_a_hole_in_a_wall`, `_at_the_corner_of_a_house`) once the probe
-// went unconditional: a probed cell is a diagonal neighbour by
-// construction, which is exactly the geometry a ray is likeliest to graze
-// rather than cross, so the same tolerance that rescues one genuine
-// near-tangent on the walk's own trajectory also rescues many spurious ones
-// on cells the ray never meaningfully approaches. `light::walk_cells_
-// streaming`'s own probe needs no such split — it stays exact both places,
-// because CPU's own rounding already lands on the generous side of the one
-// tangent that mattered without being asked to.
+// `_about_a_hole_in_a_wall`, `_at_the_corner_of_a_house`) once the probe went
+// unconditional: a probed cell is a diagonal neighbour by construction, which
+// is exactly the geometry a ray is likeliest to graze rather than cross, so a
+// tolerance a hundredth of a segment wide rescued spurious near-tangents on
+// cells the ray never approached. At a rounding-scale tolerance there is
+// nothing spurious left to rescue — the whole parity suite and all three of
+// `examples/boxes.rs`'s oracles read the same with it shared as with the probe
+// exact — so the parameter is gone and both calls are the one function.
+// `light::walk_cells_streaming`'s own probe has always been exact both places.
 fn cell_stopped(
     cell: vec2<i32>,
     first: vec2<i32>,
@@ -907,7 +916,6 @@ fn cell_stopped(
     finish: vec3<f32>,
     delta: vec3<f32>,
     ground: f32,
-    tolerance: f32,
 ) -> f32 {
     let own_cell = cell.x == first.x && cell.y == first.y;
     let span = solids_at(cell.x, cell.y);
@@ -946,7 +954,7 @@ fn cell_stopped(
         // this ray crosses it in — `light::ray_vs_solid`, replacing the
         // DDA's own per-*cell* `entered`/`leaves` with a per-*solid* one.
         let bx = box_of(cell, low, high, footprint_at(id));
-        let hit = ray_vs_solid(start, finish, bx.lo, bx.hi, tolerance);
+        let hit = ray_vs_solid(start, finish, bx.lo, bx.hi);
         if !hit.hit {
             continue;
         }
@@ -994,7 +1002,6 @@ fn cell_stopped(
                 finish,
                 vec3<f32>(bx.lo.x, bx.lo.y, -1.0e6),
                 vec3<f32>(bx.hi.x, bx.hi.y, 1.0e6),
-                tolerance,
             );
             var tile_entered = hit.entered;
             var tile_leaves = hit.leaves;
@@ -1149,7 +1156,6 @@ fn walk(
     for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let stopped = cell_stopped(
             cell, first, last, own, stance, skip_last, spread, start, finish, delta, ground,
-            RAY_TANGENT_TOLERANCE,
         );
         through = through * (1.0 - stopped);
         if through <= 0.004 {
@@ -1188,7 +1194,7 @@ fn walk(
             out_by_x,
         );
         let probe_stopped = cell_stopped(
-            probe, first, last, own, stance, skip_last, spread, start, finish, delta, ground, 0.0,
+            probe, first, last, own, stance, skip_last, spread, start, finish, delta, ground,
         );
         through = through * (1.0 - probe_stopped);
         if through <= 0.004 {
