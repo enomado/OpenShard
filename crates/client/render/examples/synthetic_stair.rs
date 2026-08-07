@@ -320,13 +320,16 @@ impl Slab {
         }
     }
 
-    /// Whether the flame stands on the side this plane looks at.
+    /// How far in front of this plane the flame stands, in tiles, along the
+    /// plane's own normal — negative behind it.
     ///
-    /// A strict half-space and no band: a fragment inside the engine's own
-    /// `FACE_EDGE` softening is still a fragment whose occlusion term means
-    /// something, so only the ones the flame is *behind* are set aside. `z` is
-    /// divided into tiles first, the way `light::sample_with` states the offset.
-    fn faces(&self, point: (f64, f64, f64), flame: (f64, f64, f64), up: Face) -> bool {
+    /// `light::faces`'s own `along`, which is a distance and not a cosine:
+    /// `toward` is left unnormalised there on purpose, so the band the engine
+    /// softens over is a band in *tiles off the plane* and this number is what
+    /// [`FACE_EDGE`](openshard_client_render::light::FACE_EDGE) is measured
+    /// against. `z` is divided into tiles first, the way `light::sample_with`
+    /// states the offset.
+    fn off_plane(&self, point: (f64, f64, f64), flame: (f64, f64, f64), up: Face) -> f64 {
         let z_per_tile = f64::from(openshard_client_render::light::Z_PER_TILE);
         let normal = self.normal(up);
         let toward = (
@@ -334,7 +337,16 @@ impl Slab {
             flame.1 - point.1,
             (flame.2 - point.2) / z_per_tile,
         );
-        normal.0 * toward.0 + normal.1 * toward.1 + normal.2 * toward.2 > 0.0
+        normal.0 * toward.0 + normal.1 * toward.1 + normal.2 * toward.2
+    }
+
+    /// Whether the flame stands on the side this plane looks at.
+    ///
+    /// A strict half-space and no band: a fragment inside the engine's own
+    /// `FACE_EDGE` softening is still a fragment whose occlusion term means
+    /// something, so only the ones the flame is *behind* are set aside.
+    fn faces(&self, point: (f64, f64, f64), flame: (f64, f64, f64), up: Face) -> bool {
+        self.off_plane(point, flame, up) > 0.0
     }
 
     /// This plane's four corners, in the ring order
@@ -600,44 +612,22 @@ struct Covered {
     at: (f64, f64, f64),
 }
 
-/// **The scene rendered a second time, from the geometry alone** — the oracle as
-/// a *picture* rather than as a count.
-///
-/// Every other check in this file reduces the frame to numbers: so many pixels
-/// compared, so many disagreeing, banded so. A number cannot say *what the wrong
-/// thing looks like*, and a wrong shape is the thing an eye reads instantly and a
-/// counter cannot describe at all — "the shadow on this riser has a staircase
-/// edge" is not a quantity. So this draws the answer.
+/// **The scene rasterised a second time, from the geometry alone** — which plane
+/// covers each pixel and where in the world that pixel's fragment sits.
 ///
 /// Nothing of the renderer is used but the **camera**, deliberately: the two
 /// pictures have to land on the same pixels to be laid over each other, and where
 /// a fragment projects is not what any of this is about. Everything else is this
-/// file's own — [`Slab::quad`]'s polygons rasterised here, the world position of a
-/// covered pixel interpolated here, and the shadow decided by
-/// [`oracle_visible`]'s independent slab test.
-///
-/// It is a **point** light and a hard shadow: no penumbra, no falloff, no soft
-/// crossing. That is a difference from the engine's picture rather than a defect
-/// in either, and it is the reason the two are written side by side instead of
-/// subtracted — a band of grey along every shadow edge is the engine's flame
-/// having a size, and a *shape* that differs is not.
+/// file's own — [`Slab::quad`]'s polygons rasterised here and the world position
+/// of a covered pixel interpolated here.
 ///
 /// Painter order, later face wins, which is `Prism::mesh`'s own submission order
 /// and what the mesh pass's `LessEqual` depth does with one depth per static.
-// Eight: the geometry and which way it climbs, the camera, the flame and its
-// reach, the frame's size, and where to write. A struct for any subset would be
-// a second spelling of arguments this one function is the only caller of.
-#[allow(clippy::too_many_arguments)]
-fn write_reference(
-    slabs: &[Slab],
-    up: Face,
-    camera: &Camera,
-    flame: (f64, f64, f64),
-    radius: f64,
-    width: u32,
-    height: u32,
-    path: &std::path::Path,
-) -> Vec<u8> {
+///
+/// Separate from the two pictures drawn out of it because they differ only in
+/// what they *say* about a covered pixel — visibility, or light — and a second
+/// copy of a rasteriser is a second set of edges to disagree about.
+fn cover(slabs: &[Slab], camera: &Camera, width: u32, height: u32) -> Vec<Option<Covered>> {
     let projection = camera.projection();
     let to_pixel = |corner: (f64, f64, f64)| {
         let screen = camera.to_view_exact(project_exact(WorldSpot {
@@ -694,7 +684,40 @@ fn write_reference(
             }
         }
     }
+    covered
+}
 
+/// **What the geometry says is in shadow**, as a picture: the visibility term
+/// alone, drawn over [`cover`]'s own rasterisation.
+///
+/// Every other check in this file reduces the frame to numbers: so many pixels
+/// compared, so many disagreeing, banded so. A number cannot say *what the wrong
+/// thing looks like*, and a wrong shape is the thing an eye reads instantly and a
+/// counter cannot describe at all — "the shadow on this riser has a staircase
+/// edge" is not a quantity. So this draws the answer.
+///
+/// It is a **point** light and a hard shadow: no penumbra, no falloff, no soft
+/// crossing. That is a difference from the engine's picture rather than a defect
+/// in either, and it is the reason the two are written side by side instead of
+/// subtracted — a band of grey along every shadow edge is the engine's flame
+/// having a size, and a *shape* that differs is not.
+///
+/// It judges a **term** and not the light, which is what
+/// [`write_light_reference`] beside it is for.
+// Eight: the covered pixels, the geometry and which way it climbs, the flame and
+// its reach, the frame's size, and where to write. A struct for any subset would
+// be a second spelling of arguments this one function is the only caller of.
+#[allow(clippy::too_many_arguments)]
+fn write_reference(
+    covered: &[Option<Covered>],
+    slabs: &[Slab],
+    up: Face,
+    flame: (f64, f64, f64),
+    radius: f64,
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+) -> Vec<u8> {
     let z_per_tile = f64::from(openshard_client_render::light::Z_PER_TILE);
     let mut shade = vec![0u8; (width * height * 3) as usize];
     for (pixel, drawn) in covered.iter().enumerate() {
@@ -735,6 +758,342 @@ fn write_reference(
     std::fs::write(path, ppm).expect("writing the reference frame");
     eprintln!("wrote {}", path.display());
     shade
+}
+
+/// What the reference says one covered pixel is **lit** to.
+#[derive(Clone, Copy)]
+struct Lit {
+    /// What the flames add there, linear and per channel, before the frame's own
+    /// clamp — the quantity `blit.wesl`'s `flames` accumulates and `View::Flames`
+    /// writes.
+    added: [f32; 3],
+    /// How far the nearest flame stands off this fragment's own plane, in tiles —
+    /// [`Slab::off_plane`]. Not part of the answer: it is what says whether the
+    /// pixel sits inside the band the engine softens `faces` over, and therefore
+    /// whether a disagreement here is a defect or a known difference.
+    off_plane: f64,
+    /// Which plane and which fragment this is, carried so a disagreement can be
+    /// **named**. A count with no address is a count nobody can chase: every
+    /// wrong attribution on this track came from reading a number and guessing
+    /// which surface it was about.
+    covered: Covered,
+}
+
+/// **The light itself, from the geometry** — the oracle this track has never had.
+///
+/// Every other oracle here judges a *term*: `View::Shadow` is `through` alone and
+/// [`write_reference`] draws pure visibility. A term that is multiplied by
+/// something before it reaches a pixel can be wrong in ways the pixel never
+/// shows, and can be judged wrong where the pixel would not have cared — which is
+/// exactly how a missing half-space test stood as this track's largest residual
+/// for two sessions. This computes what the engine computes, out of the scene's
+/// own parameters:
+///
+/// `colour × intensity × (1 − d)² × visibility × facing`, summed over the flames,
+/// with `d` the three-dimensional distance in tiles over the flame's radius.
+///
+/// Two of those five are the engine's arithmetic re-derived and three are not:
+/// the falloff and the pool are stated in `light.rs`'s own doc and restated here,
+/// `visibility` is [`oracle_visible`]'s independent slab test, and `facing` is
+/// **strict geometry** — a one-sided surface behind the flame is unlit, full
+/// stop. The engine's is a band [`FACE_EDGE`](openshard_client_render::light::FACE_EDGE)
+/// wide, deliberately, and the difference between the two is the price of that
+/// band. It is measured rather than hidden: see [`write_light_difference`].
+///
+/// What is deliberately **not** here is the flame's own size. The engine's is a
+/// body a tile across and this is a point, so every shadow edge differs by a
+/// penumbra — and that difference is the question the two pictures exist to ask,
+/// not a defect to tune away.
+///
+/// The scene's `Lighting` is read for its **lights** and nothing else: where a
+/// flame stands, how far it reaches and how brightly it burns are the scene's own
+/// input, not the renderer's answer. Its occlusion grid is never touched.
+fn write_light_reference(
+    covered: &[Option<Covered>],
+    slabs: &[Slab],
+    up: Face,
+    lights: &[Light],
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+) -> Vec<Option<Lit>> {
+    let z_per_tile = f64::from(openshard_client_render::light::Z_PER_TILE);
+    assert!(
+        lights.iter().all(|light| light.beam.is_none()),
+        "the reference has no cone: this scene's flame is a beam, and judging its light \
+         would need `Beam::lights` re-derived here as well"
+    );
+    let lit: Vec<Option<Lit>> = covered
+        .iter()
+        .map(|drawn| {
+            let Covered { plane, at: point } = (*drawn)?;
+            let slab = &slabs[plane];
+            let mut added = [0.0f32; 3];
+            let mut nearest = f64::INFINITY;
+            let mut off_plane = 0.0;
+            for light in lights {
+                let flame = (f64::from(light.at.x), f64::from(light.at.y), f64::from(light.z));
+                let offset = (
+                    flame.0 - point.0,
+                    flame.1 - point.1,
+                    (flame.2 - point.2) / z_per_tile,
+                );
+                let distance = (offset.0 * offset.0 + offset.1 * offset.1 + offset.2 * offset.2).sqrt();
+                let d = distance / f64::from(light.radius).max(0.001);
+                // The nearest flame's stand-off, by the same `d` the shader's own
+                // `nearest` is kept by, so this pairs with what `View::Shadow`
+                // reports for the same pixel.
+                if d < nearest {
+                    nearest = d;
+                    off_plane = slab.off_plane(point, flame, up);
+                }
+                if d >= 1.0 || !slab.faces(point, flame, up) {
+                    continue;
+                }
+                if !oracle_visible(point, flame, slabs, plane) {
+                    continue;
+                }
+                let fall = (1.0 - d) as f32;
+                for (channel, colour) in added.iter_mut().zip(light.color) {
+                    *channel += colour * light.intensity * fall * fall;
+                }
+            }
+            Some(Lit {
+                added,
+                off_plane,
+                covered: Covered { plane, at: point },
+            })
+        })
+        .collect();
+
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for pixel in &lit {
+        // The frame's own clamp, so the two pictures are the same quantity in the
+        // same units: `View::Flames` clamps to `0..=1` and writes eight bits.
+        let colour = pixel.map_or([0, 0, 0], |Lit { added, .. }| {
+            added.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
+        });
+        ppm.extend_from_slice(&colour);
+    }
+    std::fs::write(path, ppm).expect("writing the light reference frame");
+    eprintln!("wrote {}", path.display());
+    lit
+}
+
+/// Where the rendered `View::Flames` frame and [`write_light_reference`]'s own
+/// disagree **about how bright a pixel is**, as a picture and as a price list.
+///
+/// A pixel here is one of six things, and five of them are not "the renderer is
+/// wrong":
+///
+/// - **grey** — the two agree to `TOLERANCE`, drawn at the brightness they agree
+///   on so the scene's own shape stays readable underneath;
+/// - **red** — the renderer is brighter than the geometry allows, **blue** —
+///   darker, both scaled by how far apart they are;
+/// - **magenta** — the engine's own `through` is strictly between nothing and
+///   everything, which is its flame having a size. Read off the `View::Shadow`
+///   frame rather than guessed at, so it is the engine's own statement of where
+///   its penumbra is;
+/// - **green** — the flame stands within half of
+///   [`FACE_EDGE`](openshard_client_render::light::FACE_EDGE) of this fragment's
+///   own plane, where the engine softens `faces` and this oracle rules strictly.
+///   **The one this picture was built to price**: those pixels get a sum and a
+///   worst case printed, which is the first number anyone has put on that band;
+/// - **olive** — the reference is at or over the frame's ceiling, where eight
+///   bits cannot say how much brighter one side is;
+/// - **yellow** — the two rasterisers gave this pixel to **different planes**, so
+///   they are not lighting the same surface and the two numbers are not
+///   comparable. Which plane a pixel belongs to is asked of the `place`
+///   attachment — the renderer's own answer — and never inferred from this file's
+///   own painter order. It cost a wrong reading to learn: at a tread's own top
+///   edge the engine draws the **lid** and this file's order draws the **riser**,
+///   the lid's normal points up, the flame stood at exactly that lid's height, so
+///   the engine's `faces` was `0.5` and the reference's was `1.0` — a clean factor
+///   of two that reads exactly like a lighting defect and is a disagreement about
+///   whose pixel it is;
+/// - **orange / cyan** — only one of the two drew anything at all, [`write_difference`]'s
+///   own two classes and the same two colours.
+#[allow(clippy::too_many_arguments)]
+fn write_light_difference(
+    rendered: &[u8],
+    reference: &[Option<Lit>],
+    shadow: &[u8],
+    drawn: &[oracle::Drawn],
+    slabs: &[Slab],
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+) {
+    /// How far apart the two may be and still be called the same number: two
+    /// steps of the eight-bit frame both sides are read out of. One step is the
+    /// quantisation itself and the second is the two summations rounding the same
+    /// products differently — anything above that is arithmetic, not format.
+    const TOLERANCE: f32 = 2.0 / 255.0;
+    let face_edge = f64::from(openshard_client_render::light::FACE_EDGE);
+
+    let mut agreed = 0usize;
+    let mut brighter = 0usize;
+    let mut darker = 0usize;
+    let mut penumbra = 0usize;
+    let mut in_band = 0usize;
+    let mut clipped = 0usize;
+    let mut disputed = 0usize;
+    let mut renderer_alone = 0usize;
+    let mut reference_alone = 0usize;
+    let mut worst = 0.0f32;
+    let mut band_cost = 0.0f32;
+    let mut band_worst = 0.0f32;
+    let mut examples: Vec<(usize, String)> = Vec::new();
+
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for pixel in 0..(width * height) as usize {
+        let theirs = [
+            f32::from(rendered[pixel * 4]) / 255.0,
+            f32::from(rendered[pixel * 4 + 1]) / 255.0,
+            f32::from(rendered[pixel * 4 + 2]) / 255.0,
+        ];
+        // A pixel the renderer left at the cleared background is one it drew
+        // nothing on; a flames frame is black where a fragment is lit by no
+        // flame, so "drew nothing" has to come from the place attachment's own
+        // answer instead — which is what the `kind` byte of the shadow frame
+        // carries here, since that view paints every drawn fragment one of three
+        // colours and none of them is black.
+        let drew_theirs = shadow[pixel * 4..pixel * 4 + 3] != [0, 0, 0];
+        let colour = match (drew_theirs, reference[pixel]) {
+            (false, None) => [0, 0, 0],
+            (true, None) => {
+                renderer_alone += 1;
+                [235, 140, 0]
+            }
+            (false, Some(_)) => {
+                reference_alone += 1;
+                [0, 200, 200]
+            }
+            (
+                true,
+                Some(Lit {
+                    added,
+                    off_plane,
+                    covered: Covered { plane, at },
+                }),
+            ) => {
+                let mine = added.map(|channel| channel.clamp(0.0, 1.0));
+                let apart = theirs
+                    .iter()
+                    .zip(mine)
+                    .map(|(engine, geometry)| (engine - geometry).abs())
+                    .fold(0.0f32, f32::max);
+                let signed = theirs[0] - mine[0];
+                let through = Shade::of([shadow[pixel * 4], shadow[pixel * 4 + 1], shadow[pixel * 4 + 2]]);
+                let soft = matches!(through, Shade::Through(value) if value < 255);
+                // Whose pixel the *renderer* says this is. A mesh face's row is
+                // addressed through the `MeshFace` sentinel — `place::Stance`'s
+                // own doc — so all three of kind, sentinel and row have to match
+                // the plane this file's rasteriser chose.
+                let texel = &drawn[pixel];
+                let same_plane = texel.kind == Kind::Static as u32
+                    && texel.stance == Stance::MeshFace as u32
+                    && texel.id as usize == plane;
+                match (
+                    !same_plane,
+                    added.iter().any(|channel| *channel >= 1.0),
+                    soft,
+                    off_plane.abs() <= face_edge / 2.0,
+                    apart <= TOLERANCE,
+                ) {
+                    // First of all, because every class below is a statement
+                    // about one surface and this one says there are two.
+                    (true, ..) => {
+                        disputed += 1;
+                        [200, 200, 0]
+                    }
+                    (_, true, ..) => {
+                        clipped += 1;
+                        [140, 140, 0]
+                    }
+                    // Before the band, because a penumbra pixel inside the band is
+                    // still a penumbra pixel and the band's price must not collect
+                    // the flame's own softness.
+                    (_, _, true, ..) => {
+                        penumbra += 1;
+                        [140, 0, 140]
+                    }
+                    (_, _, _, true, _) => {
+                        in_band += 1;
+                        band_cost += apart;
+                        band_worst = band_worst.max(apart);
+                        [0, 140, 60]
+                    }
+                    (_, _, _, _, true) => {
+                        agreed += 1;
+                        let value = (theirs[0] * 90.0) as u8;
+                        [value, value, value]
+                    }
+                    _ => {
+                        worst = worst.max(apart);
+                        // Two of each sign, because the two are opposite defects
+                        // and a list that fills up with whichever comes first in
+                        // scan order names only one of them.
+                        let sign = usize::from(signed > 0.0);
+                        if examples.iter().filter(|(had, _)| *had == sign).count() < 2 {
+                            let through = match through {
+                                Shade::Unreached => "no flame reaches".to_string(),
+                                Shade::Blocked => "fully blocked".to_string(),
+                                Shade::Through(value) => format!("through {value}/255"),
+                            };
+                            examples.push((
+                                sign,
+                                format!(
+                                    "  [{}] at ({:.2}, {:.2}, z {:.2}): rendered {:.3}, geometry \
+                                     {:.3}, {through}, flame {:.3} tiles off this plane",
+                                    slabs[plane].label(),
+                                    at.0,
+                                    at.1,
+                                    at.2,
+                                    theirs[0],
+                                    mine[0],
+                                    off_plane,
+                                ),
+                            ));
+                        }
+                        let strength = 100 + (155.0 * (apart * 4.0).min(1.0)) as u8;
+                        match signed > 0.0 {
+                            true => {
+                                brighter += 1;
+                                [strength, 40, 40]
+                            }
+                            false => {
+                                darker += 1;
+                                [40, 80, strength]
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        ppm.extend_from_slice(&colour);
+    }
+    std::fs::write(path, ppm).expect("writing the light difference frame");
+    eprintln!("wrote {}", path.display());
+    eprintln!(
+        "light oracle vs rendered View::Flames: {} of {} judged pixels differ by more than \
+         {TOLERANCE:.3} ({brighter} rendered brighter, {darker} darker, worst {worst:.3}); \
+         set aside: {penumbra} in the engine's own penumbra, {in_band} inside FACE_EDGE, \
+         {clipped} at the frame's ceiling, {disputed} given to different planes by the two \
+         rasterisers, {renderer_alone}/{reference_alone} drawn by one side only",
+        brighter + darker,
+        agreed + brighter + darker,
+    );
+    if in_band > 0 {
+        eprintln!(
+            "  what FACE_EDGE costs on those {in_band} pixels: {band_cost:.1} of a full channel \
+             in total, {:.3} on average, {band_worst:.3} at worst",
+            band_cost / in_band as f32,
+        );
+    }
+    for (_, example) in &examples {
+        eprintln!("{example}");
+    }
 }
 
 /// Where the rendered frame and [`write_reference`]'s own disagree, as a picture.
@@ -1144,9 +1503,19 @@ fn main() {
     if oracle_on && selected != View::Shadow {
         views.push(View::Shadow);
     }
+    // And `Flames`, which is what the light oracle judges: the pools' own
+    // contribution with the ambient left out and no curve over it, so a byte in
+    // that frame is the number the shader added and can be compared with a number
+    // rather than with a threshold. `Light` beside it is the same quantity seen
+    // through `knee` and with the ambient in, which is what an eye should look at
+    // and not what an oracle can subtract.
+    if oracle_on && selected != View::Flames {
+        views.push(View::Flames);
+    }
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
     let dummy_ground_instances = openshard_client_render::blit::dummy_ground_instances(&device);
     let mut shadow_pixels: Vec<u8> = Vec::new();
+    let mut flame_pixels: Vec<u8> = Vec::new();
     for view in views {
         lighting.view = view;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -1178,8 +1547,10 @@ fn main() {
             false => beside(&dumped, view.name()),
         };
         let pixels = dump(&device, &queue, &surface, width, height, &path, Some(light_mark));
-        if view == View::Shadow {
-            shadow_pixels = pixels;
+        match view {
+            View::Shadow => shadow_pixels = pixels,
+            View::Flames => flame_pixels = pixels,
+            _ => {}
         }
     }
 
@@ -1210,10 +1581,11 @@ fn main() {
     // The scene drawn again from the geometry, and where the two pictures differ
     // — see `write_reference`, and the module header's own note about why a count
     // cannot describe a shape.
+    let covered = cover(&slabs, &camera, width, height);
     let reference = write_reference(
+        &covered,
         &slabs,
         up,
-        &camera,
         flame,
         f64::from(light_radius),
         width,
@@ -1226,6 +1598,28 @@ fn main() {
         width,
         height,
         &beside(&dumped, "difference"),
+    );
+    // And the same scene judged as **light** rather than as a visibility term —
+    // the two pictures above answer "is anything in the way", which is one factor
+    // of five in what a person sees.
+    let lit = write_light_reference(
+        &covered,
+        &slabs,
+        up,
+        &lighting.lights,
+        width,
+        height,
+        &beside(&dumped, "reference_light"),
+    );
+    write_light_difference(
+        &flame_pixels,
+        &lit,
+        &shadow_pixels,
+        &drawn,
+        &slabs,
+        width,
+        height,
+        &beside(&dumped, "difference_light"),
     );
 
     // The face oracle. See this module's own doc for what it is and why it

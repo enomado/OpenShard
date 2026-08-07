@@ -1642,7 +1642,15 @@ impl Surface {
 /// Not a step, for the reason a beam's rim is not one: a hard edge is what the
 /// eye finds first, and a lamp walking past the end of a wall would switch its
 /// face off between two frames.
-const FACE_EDGE: f32 = 0.2;
+/// `pub` because an oracle has to know how wide the band is to say what it costs.
+/// A picture oracle rules on strict geometry — a flame behind a one-sided surface
+/// lights it not at all — and the engine's answer inside this band is deliberately
+/// not that. Those pixels are neither an agreement nor a defect, so an instrument
+/// that cannot name the band either folds a known softening into its residual or,
+/// worse, refuses to judge the whole face and reports nothing at all. Sharing the
+/// number is not sharing the formula: nothing outside this module computes
+/// [`faces`].
+pub const FACE_EDGE: f32 = 0.2;
 
 /// How much of a flame `toward` reaches a surface facing `normal` — `1.0` in
 /// front of it, `0.0` behind it, and a gradient [`FACE_EDGE`] wide across the

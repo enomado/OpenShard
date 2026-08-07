@@ -974,8 +974,39 @@ rule landed; none of it blocked any of them.
   `compared + behind` is `23912` at every height, and how it splits is which
   faces the flame is in front of.
 
-- **Every oracle on this track judges a *term*, not the light, and the next one
-  should judge the light.** `View::Shadow` is `through` alone — no `faces`, no
+- ✅ **The light-judging oracle exists, and the first thing it did was take back
+  a class of its own.** `write_light_reference` computes what the engine computes
+  — `colour × intensity × (1 − d)² × visibility × facing`, summed over the flames
+  — out of the scene's own parameters, and `write_light_difference` lays it
+  against a rendered `View::Flames` frame, which is the pools' contribution with
+  the ambient left out and no curve over it, so a byte in it is a number rather
+  than a threshold. `View::Light` was the backlog's own suggestion and is the
+  wrong frame for this: `knee(lit)` has the ambient in it and a curve over it, and
+  an oracle would have to invert both.
+
+  Six classes, five of which are not "the renderer is wrong": agreement,
+  brighter, darker, the engine's own penumbra (read off the `View::Shadow` frame,
+  not guessed), inside `FACE_EDGE`, at the frame's ceiling, and — the one that had
+  to be added after the first run — **the two rasterisers gave this pixel to
+  different planes**. That last class was 88 pixels reading as "the renderer is
+  half as bright as it should be", a clean factor of two, at a tread's own top
+  edge: the engine drew the **lid** there and this file's painter order drew the
+  **riser**, the lid's normal points up, the flame stood at exactly that lid's
+  height, so the engine's `faces` was `0.5` and the reference's `1.0`. Asking the
+  `place` attachment whose pixel it is — the renderer's own answer, the same gate
+  the counting oracle has always had — takes the whole "darker" column to **zero**
+  at every flame height.
+
+  What survives is one-signed and now has a magnitude instead of a pixel count:
+  the engine is **brighter** than the geometry allows, on the top band of the
+  topmost riser, by up to **`0.51` of a channel**. Across the sweep: 175, 139, 57,
+  50, 57, 25, 0, 0, 0, 0 pixels for flame `z` `0 … 4.5`. That is `STAND_OFF`'s
+  entry below, which lost its number to the half-space correction and has one
+  again — in brightness, which is what a person sees, rather than in pixels of a
+  term.
+
+- ~~**Every oracle on this track judges a *term*, not the light, and the next one
+  should judge the light.**~~ **Done, above.** `View::Shadow` is `through` alone — no `faces`, no
   falloff, no cone — and `write_reference` draws pure visibility beside it. That
   pairing is honest as far as it goes and it is the reason the half-space bug
   above could live: a quantity that is multiplied by something before it reaches
@@ -999,15 +1030,34 @@ rule landed; none of it blocked any of them.
   run scene with the flame above and beyond is the nearest thing in the tree and
   it exercises the counter-example rather than the defect.
 
-- **The engine lights surfaces the flame stands behind, by design, and nobody
-  has priced it.** `light::faces` is not a step: it is a band `FACE_EDGE = 0.2`
-  tiles wide centred on the plane, so a flame an eighth of a tile behind a wall
-  still contributes a quarter of its light to that wall's face. The reason is
-  stated where the constant is — a hard edge is what the eye finds first, and a
-  lamp walking past the end of a wall would switch its face off between two
-  frames — and it is a real reason. It is also why the oracle's own rule
-  (strictly behind means strictly unlit) and the engine's differ over a band, and
-  what a `View::Light` comparison would put a number on first.
+- 🚨 **`FACE_EDGE` is one constant at two incomparable scales: ±4 px across a
+  wall's face, ±1.1 `z` above a lid.** `light::faces` is not a step but a band
+  `FACE_EDGE = 0.2` tiles wide centred on the plane, and `along` is a **distance
+  in tiles** and not a cosine. For a vertical face that is a tenth of a tile
+  either side — four screen pixels at `4:1`, exactly the softening it was written
+  to be. For a horizontal one the same tenth of a tile is `0.1 × Z_PER_TILE`,
+  and `Z_PER_TILE` is `44/4 = 11`: **`1.1` `z` units**, which is more than half
+  the height of a stair's step and about a third of a table's. A lid does not get
+  a soft rim from this — it gets a graded answer over the whole of it.
+
+  Seen the moment the light oracle drew it: on the sweep's own scene, with the
+  flame at `z 2` between treads at `z 1` and `z 3`, **7059 pixels** — the entire
+  drawn area of both lids — fall inside the band, against `3940` of genuine
+  penumbra. The picture shows the two lids solid green from edge to edge.
+
+  What it costs *there* is small, because the flame is near the middle of the
+  band on one lid and near its end on the other: `0.020` of a channel on average
+  and `0.029` at worst. The costly arrangement is the degenerate one — a flame
+  exactly in a lid's plane reads `faces = 0.5`, so **half** that surface's light
+  is a decision by a constant rather than by geometry, and every static in the
+  client's files stands at a whole `z`. That is the same class the entry below
+  used to record as a spike; measuring it is what the sweep with this oracle is
+  for.
+
+  The reason for a band is real and is stated where the constant is: a hard edge
+  is what the eye finds first, and a lamp walking past the end of a wall would
+  switch its face off between two frames. What is not stated anywhere is that the
+  number buying four pixels of softness on a wall buys a whole step on a stair.
 
 - 🚨 **The oracle had no half-space test, and most of this track's residuals
   were that.** Found by orbiting the flame around the flight — eight positions on
