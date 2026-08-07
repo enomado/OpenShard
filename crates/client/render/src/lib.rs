@@ -70,3 +70,4 @@ pub mod solids;
 pub mod sprite;
 pub mod statics;
 pub mod text;
+pub mod tonemap;

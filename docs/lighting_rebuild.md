@@ -215,11 +215,38 @@ no occluders, to within the frame's own quantisation — which is a statement ab
 falloff and colour handling alone, and is the calibration everything else rests
 on.
 
-**Phase 1 — linear and HDR.** sRGB decode, `Rgba16Float` accumulation, exposure
-and tonemap in one pass. No behaviour change intended beyond correctness of the
-maths.
-*Done when:* a mid-grey lit by two equal flames is twice as bright as one, which
-is false today; and `tests/pictures.rs` baselines are re-taken deliberately.
+**Phase 1 — linear and HDR.** *(Landed.)* sRGB decode, the multiplication in
+linear radiance, exposure and an ACES curve, encoded once.
+`shaders/tonemap.wesl` and `src/tonemap.rs` are the pair, and nothing else in the
+crate may spell those curves again.
+
+What it cost, which was not the shader: **every authored light value silently
+changed meaning.** `NIGHT.sky = 0.20` was a fraction of a *displayed* value, and
+`0.20` of radiance is an overcast afternoon — the first frame after the change
+had no night in it at all. So every one of them is now `srgb_to_linear` of the
+number a person chose, with the chosen number kept in
+`the_authored_light_values_are_their_own_srgb_intent`: the artistic intent stays
+written down beside its conversion, and a constant nudged by hand to make a
+picture look right turns that test red instead of quietly redefining what "night"
+was. `GROUND_AMBIENT`, `NIGHT`, `SKYLIGHT`, `TORCH`, `CAMPFIRE` and `midday`'s sun
+all moved; the campfire's `1.25` is past sRGB's domain and carries the exponent
+alone.
+
+Three tests changed rather than broke, and each got stronger for it. The blit's
+"copy, byte for byte" is now `tonemap::shade_u8` of the world texel — it catches a
+blit that shifts by a texel *and* a colour pipeline that has drifted from its own
+twin. The CPU/GPU parity sweep predicts through the same pipeline. And the pool
+test's ratios are taken in **linear** light, because "twice as bright" was being
+asserted about sRGB bytes, where it means nothing.
+
+*Done when:* two equal flames are twice one flame in linear light
+(`two_equal_lights_are_twice_one_in_linear_light`), and the picture baselines are
+re-taken deliberately. **Both done.**
+
+What phase 1 deliberately did *not* do: `Rgba16Float` accumulation. The whole
+composition happens in one shader pass, in `f32` registers, so there is nothing to
+store at intermediate precision yet — the moment a second pass appears (bloom, or
+the glow layer), that is when the target format matters.
 
 **Phase 2 — the G-buffer.** Position, normal, ids, albedo. `place`'s packing goes;
 its readers (select, outline, tooltips, every oracle in `examples/`) move to `ids`.

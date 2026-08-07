@@ -638,7 +638,8 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture
     Frame { width, pixels }
 }
 
-/// At zoom 1 the blit is a copy, byte for byte.
+/// At zoom 1 the blit moves no pixel: every texel of the surface is the world
+/// image's own texel, put through the colour pipeline and nothing else.
 ///
 /// The property every pixel-exact assertion in this file depends on now that the
 /// world is drawn offscreen and stretched onto the surface: if the blit is not
@@ -646,6 +647,15 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture
 /// screen never shows. A half-texel of sampling error, a flipped vertical axis
 /// or a filter left on all read as "slightly soft" on a screenshot and are exact
 /// here.
+///
+/// It used to assert a byte-for-byte copy, and could while lighting was a
+/// multiplication of stored bytes by `1.0`. `docs/lighting_rebuild.md`'s phase 1
+/// decodes the art out of sRGB, multiplies in linear light and curves the
+/// result, and a curve that left `1.0` alone would not be a curve. So the
+/// prediction goes through `tonemap::shade_u8` — which is a **stronger**
+/// assertion than the copy was: it catches a blit that shifts by a texel and a
+/// colour pipeline that has drifted from its own CPU twin, and only the first of
+/// those was ever covered here.
 ///
 /// No client files: the scene is two coloured diamonds made in memory, which is
 /// enough to have edges — a flat field of one colour would survive any of those
@@ -767,11 +777,22 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
     );
     for y in 0..height {
         for x in 0..width {
-            assert_eq!(
-                blitted.pixel(x, y),
-                drawn.pixel(x, y),
-                "({x}, {y}) came out of the blit changed",
-            );
+            let world = drawn.pixel(x, y);
+            let got = blitted.pixel(x, y);
+            // `Lighting::NONE` is a white ambient, so the light is `1.0` on
+            // every channel and what is left is the pipeline itself.
+            let rgb = openshard_client_render::tonemap::shade_u8([world[0], world[1], world[2]], [1.0; 3]);
+            let want = [rgb[0], rgb[1], rgb[2], world[3]];
+            // One step, for the reason the parity sweep allows one: the GPU and
+            // the CPU evaluate the same `pow` on different hardware.
+            for channel in 0..4 {
+                let apart = i32::from(want[channel]) - i32::from(got[channel]);
+                assert!(
+                    apart.abs() <= 1,
+                    "({x}, {y}) channel {channel}: the blit drew {got:?}, the pipeline says \
+                     {want:?} for a world texel of {world:?}",
+                );
+            }
         }
     }
 }
@@ -934,7 +955,17 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
     // between two black pixels and holds for any shader at all.
     assert!(drawn.drawn() > 60_000, "the world image is mostly empty");
 
-    let luma = |pixel: [u8; 4]| u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2]);
+    // **In linear light, not in stored bytes.** Every comparison below is a
+    // ratio — "twice as bright", "brighter than" — and a ratio of sRGB bytes is
+    // a statement about a transfer function rather than about the light. The
+    // frame is `encode(tonemap(radiance))`, so decoding gives back the tonemapped
+    // radiance: monotone in the light, which is all a ratio here needs.
+    let luma = |pixel: [u8; 4]| {
+        let channel = |value: u8| openshard_client_render::tonemap::srgb_to_linear(f32::from(value) / 255.0);
+        // Scaled to the same `0..765` the byte sum used, so the numbers in these
+        // messages stay the size a reader of this test is used to.
+        ((channel(pixel[0]) + channel(pixel[1]) + channel(pixel[2])) * 255.0) as u32
+    };
     // A tile's own middle: `GroundQuad::x`/`y` is the diamond's centre in
     // viewport pixels, which is the one pixel of a tile that is certainly the
     // tile's own and not its neighbour's.
@@ -978,7 +1009,11 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         .take(3)
         .enumerate()
     {
-        let expected = (f32::from(*drawn) * ambient).round() as i32;
+        // Through the pipeline rather than by multiplying the stored byte —
+        // `docs/lighting_rebuild.md` phase 1, and the same correction the wall
+        // test below carries.
+        let expected = (openshard_client_render::tonemap::shade(f32::from(*drawn) / 255.0, ambient) * 255.0)
+            .round() as i32;
         assert!(
             (i32::from(*got) - expected).abs() <= 1,
             "outside the pool, channel {channel} is {got} against the ambient's {expected}",
@@ -1189,13 +1224,17 @@ fn a_wall_stops_the_light_behind_it() {
     );
     // Not merely dimmer: as dark as the ambient alone, which is what "stops"
     // means and what a falloff that happened to be steep would not reproduce.
-    let unlit = luma(read_back(&device, &queue, &world).pixel(centre_of(102).0 as u32, 128));
+    let world_pixel = read_back(&device, &queue, &world).pixel(centre_of(102).0 as u32, 128);
     // Nothing was ever shaded into this grid — the wall went in through
     // `Occlusion::add`, which is about rays and not about the sky — so every tile
     // still sees the whole of it and the ambient is the night's two terms summed.
     let night = openshard_client_render::light::NIGHT.at(openshard_client_render::occlusion::SKY_OPEN);
-    let ambient: f32 = night.iter().sum::<f32>() / 3.0;
-    let expected = (unlit as f32 * ambient) as u32;
+    // Through the colour pipeline, not by multiplying the stored bytes: an
+    // unlit byte times an ambient is not the byte an ambient produces, and
+    // `docs/lighting_rebuild.md` phase 1 is that sentence.
+    let ambient_pixel =
+        openshard_client_render::tonemap::shade_u8([world_pixel[0], world_pixel[1], world_pixel[2]], night);
+    let expected: u32 = ambient_pixel.iter().copied().map(u32::from).sum();
     assert!(
         behind <= expected + 3,
         "the shadow is a dimming rather than a shadow: {behind} against the ambient's {expected}",
@@ -4444,11 +4483,18 @@ fn assert_parity_of(
             let sample = openshard_client_render::light::sample(spot, lighting);
             let drawn = frame.pixel(px, py);
             for (channel, want) in sample.multiplier.iter().enumerate() {
-                // The world is white, so the drawn value is the multiplier
-                // clamped and quantised. One step of tolerance: the two sides
-                // round a float to a byte through different hardware, and
-                // nothing this test is about lives inside a 1/255th.
-                let want = (want.min(1.0) * 255.0).round() as i32;
+                // The world is white, so the drawn value is what the colour
+                // pipeline makes of the multiplier alone — decoded, curved and
+                // encoded, `crate::tonemap::shade` being the twin of the
+                // shader's own. It used to be `min(want, 1.0)`, which was the
+                // shader's own clamp restated; `docs/lighting_rebuild.md`
+                // phase 1 replaced both with a curve.
+                //
+                // One step of tolerance: the two sides round a float to a byte
+                // through different hardware, and nothing this test is about
+                // lives inside a 1/255th.
+                let want = openshard_client_render::tonemap::shade(1.0, *want);
+                let want = (want * 255.0).round() as i32;
                 let got = i32::from(drawn[channel]);
                 assert!(
                     (want - got).abs() <= 1,

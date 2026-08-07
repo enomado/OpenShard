@@ -453,7 +453,16 @@ impl Lighting {
 ///
 /// Invented here, in the way `docs/lighting_world.md`'s decision 11 says every
 /// number in this plan is: held by a scene, not argued into existence.
-pub const GROUND_AMBIENT: [f32; 3] = [0.12, 0.13, 0.18];
+///
+/// **Linear**, like every light quantity in this module since
+/// `docs/lighting_rebuild.md`'s phase 1. It was authored as `[0.12, 0.13, 0.18]`
+/// — how dark the floor *looks* — back when the shader multiplied stored sRGB
+/// bytes, and that is what those numbers meant: a fraction of a **displayed**
+/// value. Now the multiplication happens in linear radiance, so the authored
+/// intent is `srgb_to_linear` of each, which is what these are.
+/// `the_authored_light_values_are_their_own_srgb_intent` asserts the pair, so
+/// the artistic number is not lost and the two cannot drift.
+pub const GROUND_AMBIENT: [f32; 3] = [0.013_412, 0.015_325, 0.027_212];
 
 /// Night, as the reference isometrics draw it: dark, and *cooler* than the art.
 ///
@@ -464,9 +473,14 @@ pub const GROUND_AMBIENT: [f32; 3] = [0.12, 0.13, 0.18];
 /// The two terms sum to the `[0.30, 0.33, 0.45]` this was one colour of before
 /// the split, so a street at night is exactly as dark as it was and what changed
 /// is only what happens indoors.
+///
+/// Linear, and authored as `sky: [0.20, 0.22, 0.31]`, `ground: [0.10, 0.11,
+/// 0.14]` — see [`GROUND_AMBIENT`] for why those are not the numbers here. This
+/// is the constant the change is most visible on: `0.20` of a displayed value is
+/// a dark street, and `0.20` of *radiance* is a bright overcast afternoon.
 pub const NIGHT: Ambient = Ambient {
-    sky: [0.20, 0.22, 0.31],
-    ground: [0.10, 0.11, 0.14],
+    sky: [0.033_105, 0.039_682, 0.078_288],
+    ground: [0.010_023, 0.011_645, 0.017_389],
 };
 
 /// What a daylit world is lit by *away from the sun*: the sky.
@@ -479,8 +493,9 @@ pub const NIGHT: Ambient = Ambient {
 /// Split like [`NIGHT`] and for the same reason: the two terms sum to the
 /// `[0.55, 0.55, 0.62]` a daylit frame had everywhere, so the street is
 /// unchanged and the room under the roof is what moved.
+/// Linear, authored as `[0.43, 0.42, 0.44]`.
 pub const SKYLIGHT: Ambient = Ambient {
-    sky: [0.43, 0.42, 0.44],
+    sky: [0.154_872, 0.147_319, 0.162_647],
     ground: GROUND_AMBIENT,
 };
 
@@ -492,7 +507,9 @@ pub const SKYLIGHT: Ambient = Ambient {
 /// say, and when it does, this is the function that goes and no call site
 /// changes.
 pub fn midday() -> Sun {
-    Sun::towards(1.0, 0.0, 1.0, [1.0, 0.97, 0.88], 0.55)
+    // Linear, authored as the colour `[1.0, 0.97, 0.88]` at `0.55` — see
+    // [`GROUND_AMBIENT`] for why the numbers moved and the constants did not.
+    Sun::towards(1.0, 0.0, 1.0, [1.0, 0.933_107, 0.748_414], 0.263_273)
 }
 
 /// How one kind of flame burns, before the flicker.
@@ -516,16 +533,21 @@ const TORCH: Flame = Flame {
     // Six tiles. The reference isometrics light a good deal more than the tile
     // the fire is on — a pool a tile wide reads as a bug, not as a torch.
     radius: 6.0,
-    color: [1.0, 0.72, 0.36],
-    intensity: 0.95,
+    // Linear, authored as `[1.0, 0.72, 0.36]` at `0.95` — [`GROUND_AMBIENT`].
+    color: [1.0, 0.477_000, 0.106_539],
+    intensity: 0.890_005,
     flicker: 0.10,
 };
 
 /// A campfire: wider, brighter, steadier.
 const CAMPFIRE: Flame = Flame {
     radius: 9.0,
-    color: [1.0, 0.66, 0.30],
-    intensity: 1.25,
+    // Linear, authored as `[1.0, 0.66, 0.30]` at `1.25`. The intensity is past
+    // the range sRGB is defined on, so it carries the curve's exponent alone:
+    // `1.25^2.4`. A fire brighter than white is ordinary and is exactly what a
+    // tonemap is for.
+    color: [1.0, 0.393_123, 0.073_239],
+    intensity: 1.708_378,
     flicker: 0.07,
 };
 
@@ -3350,6 +3372,49 @@ mod tests {
             .exempt,
             "two absences of an owner read as one owner",
         );
+    }
+
+    /// Every authored light value is exactly `srgb_to_linear` of the number a
+    /// person chose, and the numbers a person chose are in this test.
+    ///
+    /// `docs/lighting_rebuild.md` phase 1 moved the multiplication into linear
+    /// radiance, which silently changed what every one of these constants means:
+    /// `0.20` of a displayed value is a dark street and `0.20` of radiance is an
+    /// overcast afternoon. Converting them is not a tweak and must not read like
+    /// one — so the artistic intent stays written down here, beside the
+    /// conversion, and a constant nudged by hand to make a picture look right
+    /// turns this red rather than quietly redefining what "night" was.
+    ///
+    /// Intensities above `1.0` are outside sRGB's domain and carry the curve's
+    /// exponent alone; the campfire is the only one, and it is checked the same
+    /// way.
+    #[test]
+    fn the_authored_light_values_are_their_own_srgb_intent() {
+        let linear = crate::tonemap::srgb_to_linear;
+        let same = |got: f32, authored: f32| {
+            let want = linear(authored);
+            assert!(
+                (got - want).abs() < 5e-6,
+                "authored {authored} is {want} in linear light, the constant says {got}",
+            );
+        };
+        let all = |got: [f32; 3], authored: [f32; 3]| {
+            for (got, authored) in got.into_iter().zip(authored) {
+                same(got, authored);
+            }
+        };
+        all(GROUND_AMBIENT, [0.12, 0.13, 0.18]);
+        all(NIGHT.sky, [0.20, 0.22, 0.31]);
+        all(NIGHT.ground, [0.10, 0.11, 0.14]);
+        all(SKYLIGHT.sky, [0.43, 0.42, 0.44]);
+        all(TORCH.color, [1.0, 0.72, 0.36]);
+        same(TORCH.intensity, 0.95);
+        all(CAMPFIRE.color, [1.0, 0.66, 0.30]);
+        // Past sRGB's domain: the exponent alone.
+        assert!((CAMPFIRE.intensity - 1.25_f32.powf(2.4)).abs() < 5e-6);
+        let sun = midday();
+        all(sun.color, [1.0, 0.97, 0.88]);
+        same(sun.intensity, 0.55);
     }
 
     /// [`faces`]'s own gradient: fully towards the light, fully away, and

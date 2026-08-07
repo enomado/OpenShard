@@ -18,6 +18,8 @@ import package::place_format::{
     STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
 };
 
+import package::tonemap::shade;
+
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -1725,13 +1727,23 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // pixel the art left black stays black, which is what makes the light look
     // like it is falling on the scene instead of floating above it.
     //
-    // With no lights and a white ambient every channel is multiplied by exactly
-    // `1.0` and this is the copy it has always been. `light::Lighting::NONE` is
-    // that case, and a frame test asserts the whole surface texel for texel.
-    // Alpha carried through untouched, not written as `1.0`: this pass copies
-    // an image and lighting is about how bright a pixel is, not about whether it
-    // is there. The world passes already write an opaque frame; a surface whose
-    // alpha this decided would differ from the world image in a channel nobody
-    // lit, which is exactly what the copy test reads.
-    return vec4<f32>(min(color.rgb * lit, vec3<f32>(1.0)), color.a);
+    // **Through `shade`, which is the whole of `docs/lighting_rebuild.md`'s
+    // phase 1**: the art is decoded out of sRGB, the multiplication happens in
+    // linear radiance, and the result is curved and encoded once. What this
+    // replaced was `min(color.rgb * lit, 1.0)` — a multiplication of stored
+    // bytes, in which two equal flames are not twice one flame and a surface at
+    // half the distance is not four times as bright, so no reference renderer
+    // could agree with this pass even in principle.
+    //
+    // `Lighting::NONE` is no longer a texel-for-texel copy of the world image
+    // and cannot be: a light of exactly `1.0` still goes through the curve, and
+    // a curve that left its input alone would not be one. The frame test that
+    // asserted the copy now asserts `crate::tonemap::shade_u8` of it, which is a
+    // stronger statement — it catches a blit that shifts by a texel *and* a
+    // colour pipeline that drifts from its own twin.
+    //
+    // Alpha carried through untouched, not written as `1.0`: this pass shades an
+    // image and lighting is about how bright a pixel is, not about whether it is
+    // there.
+    return vec4<f32>(shade(color.rgb, lit), color.a);
 }
