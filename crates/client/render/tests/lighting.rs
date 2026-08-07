@@ -303,7 +303,7 @@ fn the_report_names_the_cell_that_stopped_the_ray() {
         .find(|reach| reach.within)
         .unwrap_or_else(|| panic!("the torch does not even reach the tile:\n{sample}"));
     assert_eq!(
-        reach.stopped_by,
+        reach.stopped_by.map(|stopper| stopper.cell),
         Some((i32::from(CENTRE.0 + scene::ROOM_HALF), i32::from(CENTRE.1))),
         "stopped somewhere other than the east wall:\n{sample}",
     );
@@ -329,7 +329,7 @@ fn opening_a_door_spills_light_onto_the_ground_outside() {
     let shut_reach = light::sample(spot(outside, 0.0), &shut_light).reaches[0];
     let open_reach = light::sample(spot(outside, 0.0), &open_light).reaches[0];
     assert_eq!(
-        shut_reach.stopped_by,
+        shut_reach.stopped_by.map(|stopper| stopper.cell),
         Some((i32::from(DOORWAY.0), i32::from(DOORWAY.1))),
         "a shut door is not a wall{}",
         picture(&shut, &shut_light),
@@ -1013,7 +1013,10 @@ fn a_wall_throws_its_shadow_away_from_the_sun() {
     let bright = light::sample(spot(sunlit, 0.0), &lighting);
 
     assert_eq!(
-        dark.sun.expect("a sunlit frame").stopped_by,
+        dark.sun
+            .expect("a sunlit frame")
+            .stopped_by
+            .map(|stopper| stopper.cell),
         Some((i32::from(CENTRE.0), i32::from(CENTRE.1))),
         "the tile away from the sun is not shadowed by the wall:\n{dark}{}",
         picture(&scene, &lighting),

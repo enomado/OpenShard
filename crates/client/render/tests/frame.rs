@@ -4699,7 +4699,7 @@ fn exact_walk_disagreements(lighting: &Lighting, surface: Surface, z: i8) -> Exa
                             && !blamed_tile_has_a_real_crossing(
                                 from,
                                 to,
-                                b.stopped_by.expect("blocked implies a blamed tile"),
+                                b.stopped_by.expect("blocked implies a blamed tile").cell,
                                 &lighting.occlusion,
                             ) =>
                     {

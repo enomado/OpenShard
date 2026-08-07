@@ -513,10 +513,91 @@ section left open when phase 2 landed are answered there:
   numbers — which is why phase 3's own byte goes in a plane that already
   exists rather than in a fifth one.
 
+## Phase 4 — a fragment is not shadowed by the lid it stands on
+
+Phase 3 replaced the height *guess* with identity and left one thing standing
+beside it: `exemption`'s `stands.edges != 0`, which refuses a lid **before** it
+ever compares owners. It is the last categorical carve-out in a predicate whose
+other arm is now a fact, and it is what two visible artefacts on
+`examples/synthetic_stair` turned out to be — both of them, one cause.
+
+### What it looks like, and what it measured
+
+The scene is one flight, treads `1,3,5`, on one tile, its own occlusion, one
+flame; nothing else exists in the frame to misread. Two shapes come out of it:
+
+- **A hard hairline down every tread/riser join.** Cross-referencing the
+  `shadow` dump against `place` and `height` at the same pixel puts them at
+  `sub.y` `0.329` and `0.671` — the two riser planes — at the `z` of the tread
+  each riser *stands on*, with `sub.x` running the whole width of the tile. It
+  is the bottom row of a riser, entire. The pixels are not dimmed, they are
+  `through <= RAY_CUTOFF`: a hard flip, not a soft edge.
+- **A whole tread top, black,** wherever the flame is below it.
+
+Neither is the display. Measured in the dump's own pixels across the zoom
+ladder, the count goes 22 → 88 → 132 → 346 while the silhouette grows 75 → 242
+px wide: the seam grows faster than the outline rather than staying a sampled
+pixel.
+
+`Reach::stopped_by` names the culprit outright once it carries a `Stopper`:
+
+| probe | answer |
+|---|---|
+| foot of a riser, `z 0.9375` | `stopped by (100, 100) owner 1, lid z 1.00..1.00` |
+| foot of a riser, `z 1.0` | `through 1.00` |
+| top tread, `z 5.0`, flame below | `stopped by (100, 100) owner 1, lid z 5.00..5.00` |
+| middle tread, `z 3.0` | `through 0.14` — the same lid, partially |
+
+**Owner 1 is the fragment's own owner**, and the top tread's case is the purest
+statement available: it is stopped by *the very plane it is drawn on*. This is
+self-intersection at `t = 0`, and it has exactly two canonical answers — an
+epsilon, or dropping the primitive the ray left from. Phase 3 chose the second
+and stopped one predicate short of it.
+
+The epsilon is what stands there today, and it is the wrong size by
+construction: `ON_TOP` is `1/128` of a `z` unit while the `place` attachment
+quantises `z` to sixteenths, so a fragment's reported height sits up to `1/32`
+below the surface it is drawn on and the nudge covers an eighth of that. A sweep
+says so — `ON_TOP` at `1/128`, `1/64`, `1/32` leaves the seam at 346/347/350
+pixels, `1/16` halves it to 176, `1/4` takes it to **0**. It narrows
+continuously rather than switching off, because the error it fights is the
+pixel's, not the format's. `ON_TOP`'s own doc comment still says "the attachment
+quantises `z` to whole ones" — the sentence that justified the number, left
+behind by phase 1.
+
+### The rule, stated once
+
+> A contact at the ray's origin does not count. A crossing at `t > 0` counts,
+> whoever owns the solid.
+
+Everything falls out of that: the lid of a fragment's own static does not shadow
+it at the start, the *same* lid still shadows a ray that genuinely descends
+through it later, and `ON_TOP` stops being "lift the point off its surface". It
+is not a fifth special case, it is the four existing ones minus two.
+
+What the rule does **not** answer, and must not be stretched to: `own_run` (the
+neighbouring tile's panel is a different static, so a different owner) and
+`flame_end` (a flame has no owner at all). Both stay their own questions.
+
+### Not yet done
+
+The instrument is in — `light::Stopper`, and `synthetic_stair`'s
+`OPENSHARD_STAIR_PROBE`. The rule is not. Done when: the stair scene reads zero
+blocked pixels at every zoom notch with `ON_TOP` at its own value, a ray that
+descends through a lower tread is still stopped by it, and the mutation that
+says so is the descending case rather than the count.
+
 ## Backlog
 
 Picked up while phases 1 and 2 landed, while the oracles were repaired, and
 while phase 3 landed; none of it blocked any of them.
+
+- **`examples/synthetic_stair`'s own doc comment states the defect as the
+  expected shape.** It says the default flame "lights the nearer tread and
+  leaves the far one in its own riser's shadow", citing
+  `Surface::shadowed_by_own_tile` and decision 32 — a function phase 3 deleted
+  as vacuous. A fixture whose comment expects the bug is a fixture nobody will
+  read as red.
 
 - **`own_run` is the last exemption that reads a height, and the question it
   stands in for has no scene.** A ray leaving a wall pixel *along* the wall

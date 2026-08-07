@@ -33,6 +33,13 @@
 //!   tool in this crate uses.
 //! - `OPENSHARD_SCENE_ZOOM=n` — notches of `Zoom::scale_up`. Default `3`,
 //!   already the ladder's own maximum (`4:1`) from `Zoom::ONE`.
+//! - `OPENSHARD_STAIR_PROBE=x,y,z[,surface];…` — one `light::sample` report per
+//!   spot, printed beside the picture. World coordinates, not pixels, and
+//!   `surface` is `flat` (the default), `upright`, or a face name — a tread top
+//!   is `flat` and a riser is the face it climbs away from. Each probe carries
+//!   the flight's own owner, so it is the same question a drawn fragment asks;
+//!   the report names which solid stopped the ray, which is what tells "my own
+//!   riser shadowed me" from "my own tread's lid did".
 //!
 //! The picture gets one more mark that is not the shader's own output: a lime
 //! crosshair on a black backing plate at the flame's own projected position,
@@ -255,6 +262,38 @@ fn main() {
             .parse::<usize>()
             .expect("an index")],
     };
+    // The CPU twin of a pixel, on demand. A picture says a fragment came out
+    // black; this says *what* took its ray, by name — and after
+    // `docs/lighting_height.md` phase 3 the name that decides the answer is the
+    // owner, so a probe carries the flight's own [`occlusion::OwnerId`] exactly
+    // as the mesh rows above do. A probe built with `OwnerId::NONE` would be a
+    // point of nothing and would answer a question no pixel of this scene asks.
+    if let Some(spec) = env_opt("OPENSHARD_STAIR_PROBE") {
+        for one in spec.split(';').filter(|s| !s.trim().is_empty()) {
+            let mut fields = one.split(',');
+            let mut number = |what: &str| -> f32 {
+                fields
+                    .next()
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or_else(|| panic!("OPENSHARD_STAIR_PROBE wants {what} in {one:?}"))
+            };
+            let (px, py, pz) = (number("x"), number("y"), number("z"));
+            let surface = match fields.next().map(str::trim) {
+                Some("flat") | None => openshard_client_render::light::Surface::Flat,
+                Some("upright") => openshard_client_render::light::Surface::Upright,
+                Some(other) => openshard_client_render::light::Surface::Face(parse_face(other)),
+            };
+            let spot = openshard_client_render::light::Spot {
+                at: openshard_client_render::geometry::Vec2::new(px, py),
+                z: pz,
+                tile: (i32::from(at.x), i32::from(at.y)),
+                surface,
+                owner,
+            };
+            eprint!("probe {surface:?}: {}", openshard_client_render::light::sample(spot, &lighting));
+        }
+    }
+
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
     let dummy_ground_instances = openshard_client_render::blit::dummy_ground_instances(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

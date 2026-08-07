@@ -1574,6 +1574,73 @@ fn faces(normal: [f32; 3], toward: [f32; 3]) -> f32 {
     (along / FACE_EDGE + 0.5).clamp(0.0, 1.0)
 }
 
+/// What took a ray to nothing: not only *where* it was stopped, but *by what*.
+///
+/// A blamed tile answers "which wall" for exactly as long as a tile holds one
+/// thing. A stair's own tile holds six — three tread tops and three risers — and
+/// every question worth asking about it ("is this fragment shadowed by its own
+/// flight, and by which part of it") reads the same cell whatever the answer
+/// turns out to be. A diagnostic that cannot separate those answers cannot be
+/// used to choose between the fixes they call for, and choosing between them by
+/// reading the code instead is how `docs/lighting_height.md` twice let a
+/// plausible attribution stand as a measured cause.
+///
+/// So the cell stays and the occluder is named beside it. [`Stopper::owner`] is
+/// the very fact [`exemption`] compares, so a report carrying it can be read
+/// against the fragment's own [`Spot::owner`] with nothing re-derived in
+/// between: equal owners on a solid that still stopped the ray says the
+/// exemption did not fire, and different owners says it was never entitled to.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Stopper {
+    /// The tile it stands on — what [`Reach::stopped_by`] was, alone, before
+    /// there was anything beside it.
+    pub cell: (i32, i32),
+    /// Which occluder of [`Stopper::cell`] this is, off the reference the walk
+    /// followed to reach it — the number [`exemption`] compares, not a position
+    /// in any list. See [`crate::occlusion::OwnerId`].
+    pub owner: crate::occlusion::OwnerId,
+    /// Its sides: `0` for a lid, [`crate::occlusion::EDGE_ANY`] for a body,
+    /// anything else for a panel.
+    ///
+    /// The shape rather than the identity, and it is here because "a lid of my
+    /// own static" and "a panel of my own static" are two different defects
+    /// wearing the same owner — the first is [`exemption`]'s deliberate carve-out
+    /// for lids, the second would be identity failing to reach at all.
+    pub edges: u8,
+    /// The `z` span **the walk that blamed it actually read**: the record's
+    /// exact corners from [`walk_cells_exact`], the wire's quantised one from
+    /// [`walk_cells_streaming`].
+    ///
+    /// Deliberately not normalised to one of the two. Which span a walk is
+    /// entitled to is the discipline `docs/lighting_height.md` phase 2 states,
+    /// and a report that quietly picked the exact one would hide the walk that
+    /// read the other.
+    pub span: (f32, f32),
+}
+
+impl std::fmt::Display for Stopper {
+    /// `(100, 100) owner 1, lid z 3.00..3.00` — the cell, the number
+    /// [`exemption`] compares, and the shape, in the order a person asks for
+    /// them. One formatting, because the flame's report and the sun's both want
+    /// exactly this and a second copy would drift.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shape = match self.edges {
+            0 => "lid",
+            EDGE_ANY => "body",
+            _ => "panel",
+        };
+        write!(
+            f,
+            "({}, {}) owner {}, {shape} z {:.2}..{:.2}",
+            self.cell.0,
+            self.cell.1,
+            self.owner.raw(),
+            self.span.0,
+            self.span.1,
+        )
+    }
+}
+
 /// What one flame did to one spot, and why.
 ///
 /// The *why* is the point: a pool that is missing has one of three causes — the
@@ -1608,12 +1675,13 @@ pub struct Reach {
     /// a report that gave one number could not tell a spot behind the player
     /// from a spot behind a wall.
     pub cone: f32,
-    /// The tile that stopped the ray, where one did.
+    /// What stopped the ray, where anything did.
     ///
-    /// The *first* cell that took the survival to zero, which is the one worth
-    /// naming: a ray crossing two walls is stopped by the first of them and the
-    /// second is a fact about the map, not about this pixel.
-    pub stopped_by: Option<(i32, i32)>,
+    /// The *first* cell that took the survival to zero and the solid on it that
+    /// took most of it — which is the pair worth naming: a ray crossing two walls
+    /// is stopped by the first of them and the second is a fact about the map,
+    /// not about this pixel. See [`Stopper`].
+    pub stopped_by: Option<Stopper>,
     /// What this flame added to the multiplier, linear, per channel.
     pub added: [f32; 3],
 }
@@ -1677,7 +1745,7 @@ impl std::fmt::Display for Sample {
             // tile is behind a wall or behind the character.
             match (reach.within, reach.stopped_by) {
                 (false, _) => writeln!(f, ", outside its radius")?,
-                (true, Some((x, y))) => writeln!(f, ", stopped at ({x}, {y})")?,
+                (true, Some(stopper)) => writeln!(f, ", stopped by {stopper}")?,
                 (true, None) => writeln!(
                     f,
                     ", through {:.2}, beam {:.2}, adds {:.3}",
@@ -1689,7 +1757,7 @@ impl std::fmt::Display for Sample {
         }
         if let Some(sun) = self.sun {
             match sun.stopped_by {
-                Some((x, y)) => writeln!(f, "  sun: in shadow of ({x}, {y})")?,
+                Some(stopper) => writeln!(f, "  sun: in shadow of {stopper}")?,
                 None => writeln!(
                     f,
                     "  sun: through {:.2}, adds {:.3}",
@@ -1730,8 +1798,8 @@ pub fn sample_exact(spot: Spot, lighting: &Lighting) -> Sample {
 fn sample_with(
     spot: Spot,
     lighting: &Lighting,
-    walk: impl Fn(Spot, &Light, &Occlusion) -> (f32, Option<(i32, i32)>),
-    walk_sun: impl Fn(Spot, Sun, &Occlusion) -> (f32, Option<(i32, i32)>),
+    walk: impl Fn(Spot, &Light, &Occlusion) -> (f32, Option<Stopper>),
+    walk_sun: impl Fn(Spot, Sun, &Occlusion) -> (f32, Option<Stopper>),
 ) -> Sample {
     // The ambient this *tile* has, and not the frame's: how much of the sky the
     // column over it can see decides how much of the sky term it gets. The tile
@@ -1840,7 +1908,7 @@ fn sample_with(
 /// in reverse: a wall's own pixels are on a tile that stops light, and a wall
 /// that shadowed itself would be black on the side the sun is on. The far end is
 /// *not* skipped — there is no tile there, only a point in the sky.
-fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
+fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
     let horizontal = (sun.toward[0] * sun.toward[0] + sun.toward[1] * sun.toward[1]).sqrt();
     if horizontal < 1e-6 {
         // Straight overhead: there is no direction to walk along the ground, and
@@ -1880,7 +1948,7 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i
 /// The flame's own tile must not shadow it — a sconce stands *on* a wall — and a
 /// flame is a body about a tile across, which is what its penumbra is made of.
 /// Those two facts are the whole difference between this ray and the sun's.
-fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
+fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
     walk_cells_streaming(
         [spot.at.x, spot.at.y, spot.z],
         [light.at.x, light.at.y, light.z],
@@ -2146,7 +2214,7 @@ fn walk_cells_exact(
     skip_last: bool,
     spread: f32,
     occlusion: &Occlusion,
-) -> (f32, Option<(i32, i32)>) {
+) -> (f32, Option<Stopper>) {
     let (from, to) = stand_clear(from, to, lit.surface);
     let first = lit.tile;
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -2154,16 +2222,32 @@ fn walk_cells_exact(
     if ground < 1e-6 {
         // Same shortcut `walk_cells` takes, unchanged: no direction to walk
         // in, so only a lid on the one cell can stand between the ends.
-        let stopped = occlusion
-            .solids_at(first.0, first.1)
-            .filter(|stands| stands.edges == 0)
-            .map(|stands| {
-                f32::from(stands.opacity) / 255.0
-                    * crosses(from[2], to[2], stands.low(), stands.high(), to[2], spread)
-            })
-            .fold(0.0, f32::max);
+        // `cell` rather than `solids_at` for the owner beside each lid — the two
+        // follow the same references in the same order, so this enumerates
+        // exactly what it always did.
+        let mut stopped: f32 = 0.0;
+        let mut worst: Option<Stopper> = None;
+        for (stands, owner) in occlusion.cell(first.0, first.1) {
+            if stands.edges != 0 {
+                continue;
+            }
+            let (low, high) = (stands.low(), stands.high());
+            let by_surface =
+                f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high, to[2], spread);
+            if by_surface > stopped {
+                stopped = by_surface;
+                worst = Some(Stopper {
+                    cell: first,
+                    owner,
+                    edges: stands.edges,
+                    span: (low, high),
+                });
+            }
+        }
         return match stopped >= 1.0 - RAY_CUTOFF {
-            true => (0.0, Some(first)),
+            // A `stopped` that reaches the cutoff came from some lid, so there is
+            // one to name — the invariant this `expect` states rather than hides.
+            true => (0.0, Some(worst.expect("a lid took the ray to nothing"))),
             false => (1.0 - stopped, None),
         };
     }
@@ -2223,6 +2307,10 @@ fn walk_cells_exact(
     let mut through = 1.0;
     for (cell, hits) in by_tile {
         let mut stopped: f32 = 0.0;
+        // The solid of this cell that took the most of the ray, kept beside the
+        // number it produced. `>` and not `>=`, so a tie names the one the walk
+        // met first rather than the last one to equal it.
+        let mut worst: Option<Stopper> = None;
         for Hit {
             stands,
             owner,
@@ -2308,11 +2396,24 @@ fn walk_cells_exact(
                     }
                 }
             };
-            stopped = stopped.max(by_surface);
+            if by_surface > stopped {
+                stopped = by_surface;
+                worst = Some(Stopper {
+                    cell,
+                    owner,
+                    edges: stands.edges,
+                    span: (low, high),
+                });
+            }
         }
         through *= 1.0 - stopped;
         if through <= RAY_CUTOFF {
-            return (0.0, Some(cell));
+            // `through` was over the cutoff before this cell and is under it
+            // after, so `stopped` is above zero and some solid produced it.
+            return (
+                0.0,
+                Some(worst.expect("a cell that trips the cutoff has a solid that did it")),
+            );
         }
     }
     (through, None)
@@ -2430,7 +2531,7 @@ fn walk_cells_streaming(
     skip_last: bool,
     spread: f32,
     occlusion: &Occlusion,
-) -> (f32, Option<(i32, i32)>) {
+) -> (f32, Option<Stopper>) {
     let (from, to) = stand_clear(from, to, lit.surface);
     let first = lit.tile;
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -2444,16 +2545,27 @@ fn walk_cells_streaming(
         // *height* is [`wire_span`]'s all the same, because a lid at a
         // fractional `z` is exactly what the GPU now reads to a byte and this
         // is the preview of it.
-        let stopped = occlusion
-            .solids_at(first.0, first.1)
-            .filter(|stands| stands.edges == 0)
-            .map(|stands| {
-                let (low, high) = wire_span(stands);
-                f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high, to[2], spread)
-            })
-            .fold(0.0, f32::max);
+        let mut stopped: f32 = 0.0;
+        let mut worst: Option<Stopper> = None;
+        for (stands, owner) in occlusion.cell(first.0, first.1) {
+            if stands.edges != 0 {
+                continue;
+            }
+            let (low, high) = wire_span(stands);
+            let by_surface =
+                f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high, to[2], spread);
+            if by_surface > stopped {
+                stopped = by_surface;
+                worst = Some(Stopper {
+                    cell: first,
+                    owner,
+                    edges: stands.edges,
+                    span: (low, high),
+                });
+            }
+        }
         return match stopped >= 1.0 - RAY_CUTOFF {
-            true => (0.0, Some(first)),
+            true => (0.0, Some(worst.expect("a lid took the ray to nothing"))),
             false => (1.0 - stopped, None),
         };
     }
@@ -2499,8 +2611,12 @@ fn walk_cells_streaming(
     // blamed the ray, so this can run in any order and as many times as the
     // caller likes — the enumeration below is what has to visit each
     // relevant cell exactly once, not this.
-    let apply = |cell: (i32, i32), through: &mut f32| {
+    // Returns the solid that took the most of the ray on this cell, so the
+    // caller can name it where the cutoff trips — the same `>`-not-`>=` tie rule
+    // [`walk_cells_exact`] keeps. `None` where nothing on the cell touched it.
+    let apply = |cell: (i32, i32), through: &mut f32| -> Option<Stopper> {
         let mut stopped: f32 = 0.0;
+        let mut worst: Option<Stopper> = None;
         for (stands, owner) in occlusion.cell(cell.0, cell.1) {
             // The wire's own span, quantised exactly as the upload quantises
             // it — the vertical half of the same discipline `stands.fraction()`
@@ -2564,17 +2680,29 @@ fn walk_cells_streaming(
                     }
                 }
             };
-            stopped = stopped.max(by_surface);
+            if by_surface > stopped {
+                stopped = by_surface;
+                worst = Some(Stopper {
+                    cell,
+                    owner,
+                    edges: stands.edges,
+                    span: (low, high),
+                });
+            }
         }
         *through *= 1.0 - stopped;
+        worst
     };
 
     let mut through = 1.0_f32;
     let mut cell = first;
     for _ in 0..MAX_WALK_STEPS {
-        apply(cell, &mut through);
+        let worst = apply(cell, &mut through);
         if through <= RAY_CUTOFF {
-            return (0.0, Some(cell));
+            return (
+                0.0,
+                Some(worst.expect("a cell that trips the cutoff has a solid that did it")),
+            );
         }
         let next = boundary[0].min(boundary[1]);
         if next >= 1.0 {
@@ -2608,9 +2736,12 @@ fn walk_cells_streaming(
             true => (cell.0, cell.1 + toward.1),
             false => (cell.0 + toward.0, cell.1),
         };
-        apply(probe, &mut through);
+        let worst = apply(probe, &mut through);
         if through <= RAY_CUTOFF {
-            return (0.0, Some(probe));
+            return (
+                0.0,
+                Some(worst.expect("a probe that trips the cutoff has a solid that did it")),
+            );
         }
         match out_by_x {
             true => {
@@ -2629,7 +2760,7 @@ fn walk_cells_streaming(
 /// [`walk`], through [`walk_cells_exact`] instead of [`walk_cells`] — for
 /// `docs/lighting_raymarch.md`'s point 3 agreement pass, not for anywhere
 /// real.
-fn walk_exact(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
+fn walk_exact(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
     walk_cells_exact(
         [spot.at.x, spot.at.y, spot.z],
         [light.at.x, light.at.y, light.z],
@@ -2642,7 +2773,7 @@ fn walk_exact(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<
 
 /// [`walk_sun`], through [`walk_cells_exact`] instead of [`walk_cells`] —
 /// see [`walk_exact`].
-fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i32)>) {
+fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
     let horizontal = (sun.toward[0] * sun.toward[0] + sun.toward[1] * sun.toward[1]).sqrt();
     if horizontal < 1e-6 {
         return (1.0, None);

@@ -300,7 +300,7 @@ fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
             }
             match (reach.within, reach.stopped_by) {
                 (false, _) => print!("  | light {}: outside radius", reach.light),
-                (true, Some((cx, cy))) => print!("  | light {}: stopped at ({cx}, {cy})", reach.light),
+                (true, Some(stopper)) => print!("  | light {}: stopped by {stopper}", reach.light),
                 (true, None) => print!(
                     "  | light {}: through {:.3} cone {:.3}",
                     reach.light, reach.through, reach.cone
