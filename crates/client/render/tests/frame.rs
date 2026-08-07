@@ -1689,10 +1689,18 @@ fn every_pixel_names_the_tile_it_came_from() {
     // Its height is the pixel's own, not the sprite's base: four pixels up the
     // picture is one unit of `z`, which is what gives a wall a gradient down its
     // face instead of one flat brightness.
+    //
+    // And two pixels up is **half** a unit, which the channel can now say:
+    // `docs/lighting_height.md` phase 1 put a fraction under the whole units,
+    // and before it this same pair of pixels could only differ by a whole one
+    // or by none at all — which is the staircase that phase is about. Decoded
+    // through `place::unpacked_height` rather than subtracted raw, because the
+    // channel's low eight bits are no longer the whole of the height.
     let higher = places.at(64, 62);
+    let height = openshard_client_render::place::unpacked_height;
     assert_eq!(
-        i32::from(higher[2]) - i32::from(wall_pixel[2]),
-        1,
+        height(higher[2]) - height(wall_pixel[2]),
+        0.5,
         "two pixels up the wall is not half a unit of height: {higher:?} against {wall_pixel:?}",
     );
     // A pixel of the ground beside it: an id naming the one ground quad this
@@ -1707,12 +1715,19 @@ fn every_pixel_names_the_tile_it_came_from() {
         Place::land(300, 400),
         "the ground beside the wall named something else",
     );
-    // `128 | (STANCE_FLAT << 8)`: `ground.wgsl` now stamps its own stance
-    // alongside the height, the same way `statics.wgsl` always has — see
-    // `docs/lighting_raymarch.md`'s ground-stance entry for why a land pixel
-    // that never named one read as `Stance::Upright` to `blit.wgsl`'s own
-    // exemption logic instead.
-    assert_eq!(ground_pixel[2], 384, "and another height");
+    // `ground.wgsl` stamps its own stance alongside the height, the same way
+    // `statics.wgsl` always has — see `docs/lighting_raymarch.md`'s
+    // ground-stance entry for why a land pixel that never named one read as
+    // `Stance::Upright` to `blit.wgsl`'s own exemption logic instead. Said
+    // through `place::packed_height` rather than as the literal this was
+    // (`384`, which was `128 | STANCE_FLAT << 8`): a literal here pins the
+    // *layout* as much as the value, and the layout has since moved once, for
+    // `docs/lighting_height.md` phase 1's fraction.
+    assert_eq!(
+        ground_pixel[2],
+        openshard_client_render::place::packed_height(0.0, openshard_client_render::place::Stance::Flat),
+        "and another height",
+    );
     assert_eq!(ground_pixel[3] & 3, 1, "and another kind");
     // And the ground's fraction of its tile moves with the pixel, which is what
     // the lighting reads to make a pool a gradient rather than a set of flat
@@ -1772,8 +1787,9 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     // each, above the two the kind takes.
     let sub = |place: [u16; 4]| ((place[3] >> 2) & 127, (place[3] >> 9) & 127);
     // The third channel is a height *and* a stance — `crate::place::STANCE_SHIFT`
-    // — so a test about heights has to say which half it means.
-    let height = |place: [u16; 4]| place[2] & 0xFF;
+    // — so a test about heights has to say which part it means. The height is
+    // both of its own fields together, which is what `unpacked_height` is for.
+    let height = |place: [u16; 4]| openshard_client_render::place::unpacked_height(place[2]);
     let stance = |place: [u16; 4]| place[2] >> openshard_client_render::place::STANCE_SHIFT;
 
     let at = Point::new(301, 400, 15);
@@ -1808,7 +1824,7 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     // tile, which the fraction has already spent.
     assert_eq!(
         [height(middle), height(places.at(62, 72))],
-        [(i32::from(at.z) + 128) as u16; 2],
+        [f32::from(at.z); 2],
         "a floor's pixels stand at different heights",
     );
     // And it says it is a floor, in the bits above the height. That the channel

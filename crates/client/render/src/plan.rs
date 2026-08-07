@@ -302,7 +302,7 @@ pub fn draw(
             // and its tile's panels got the right to shadow it. An instrument
             // that does not write what the world pass writes answers about
             // itself. Decisions 27 and 28.
-            128 | (crate::place::Stance::Flat as u16) << crate::place::STANCE_SHIFT,
+            crate::place::packed_height(0.0, crate::place::Stance::Flat),
             1 | (sub_x as u16) << 2 | (sub_y as u16) << 9,
         ]
     });
@@ -373,7 +373,14 @@ pub fn elevation(
         [
             tile_x,
             tile_y,
-            (z.round() as i32 + 128).clamp(0, 255) as u16 | (stance as u16) << crate::place::STANCE_SHIFT,
+            // Through `packed_height`, which keeps the height's fraction: this
+            // picture's whole vertical axis *is* height down a face, so a
+            // packing that rounded it to whole units — as this line did, with
+            // its own copy of the format — drew the one-unit treads
+            // `docs/lighting_height.md` is about, in the instrument meant to
+            // show them. An instrument that does not write what the world pass
+            // writes answers about itself.
+            crate::place::packed_height(z, stance),
             2 | ((sub_x * 127.0) as u16) << 2 | ((sub_y * 127.0) as u16) << 9,
         ]
     });

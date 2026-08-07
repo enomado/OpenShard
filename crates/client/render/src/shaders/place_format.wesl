@@ -31,12 +31,42 @@ const KIND_MOBILE: u32 = 3u;
 const SUB_TILE_MASK: u32 = 127u;
 const SUB_TILE: f32 = 127.0;
 
-// Where the third channel's stance bits sit — `z + 128` in the low eight
-// bits of a `u16`, stance in four of the eight above.
-// `crate::place::STANCE_SHIFT` is the same number, stated once more in Rust.
-const PLACE_STANCE_SHIFT: u32 = 8u;
+// How the third channel is divided: `z`'s whole units, offset by 128, in the
+// low eight bits of a `u16`; **sixteenths of a unit** in the four above them;
+// the stance in the four above those. `crate::place::STANCE_SHIFT` and its
+// neighbours are the same numbers, stated once more in Rust.
+//
+// The fraction is `docs/lighting_height.md` phase 1, and the four bits it
+// takes were spare here before it. Until then this channel held `round(raw_z)`
+// alone, which is exact on a floor or a lid — a lid *is* at an integer `z` —
+// and a lie on anything standing up: height varies continuously down a
+// vertical face, and rounding it to the nearest unit turns one surface into a
+// staircase of one-unit treads, each lit as though it were a whole unit higher
+// or lower than it really is. Sixteenths because a `z` unit is four screen
+// pixels at zoom 1, so one step is a quarter of a pixel — under anything a
+// frame can show. Eight bits of fraction would have meant moving the stance
+// out of the channel entirely, which is real work for precision nothing can
+// see; see the plan doc's "Why four bits and not eight".
+const PLACE_STANCE_SHIFT: u32 = 12u;
 const PLACE_STANCE_MASK: u32 = 15u;
+const PLACE_Z_FRAC_SHIFT: u32 = 8u;
+const PLACE_Z_FRAC_MASK: u32 = 15u;
 const PLACE_Z_MASK: u32 = 255u;
+
+// Steps of that fraction in one `z` unit — `PLACE_Z_FRAC_MASK + 1`, named
+// apart from it because every use is arithmetic on an `f32` rather than a mask.
+const PLACE_Z_FRAC_STEPS: f32 = 16.0;
+
+// The height a packed third channel holds, whole units and fraction together.
+//
+// The one place the two fields are put back into a number, so that a reader
+// cannot take the whole units and quietly drop the rest — which is exactly
+// what every reader did before the fraction existed, and would keep doing
+// without a fault, one sixteenth of a unit at a time.
+fn unpack_place_z(channel: u32) -> f32 {
+    return f32(channel & PLACE_Z_MASK) - 128.0
+        + f32((channel >> PLACE_Z_FRAC_SHIFT) & PLACE_Z_FRAC_MASK) / PLACE_Z_FRAC_STEPS;
+}
 
 // `crate::place::Stance`, in the four bits above.
 const STANCE_UPRIGHT: u32 = 0u;
@@ -72,8 +102,32 @@ const STANCE_MESH_FACE: u32 = 10u;
 // harmless where a caller's own range is already inside `0.0..1.0`, and a
 // second gate on the one thing every one of the three used to get separately
 // right.
+//
+// **The height is quantised once, in sixteenths, and only then split** into
+// the two fields — not clamped to whole units and rounded a second time for
+// the remainder. Rounding twice is not the same arithmetic, and it has a
+// failure the single rounding cannot have: a remainder that rounds up to a
+// full unit carries into the field above, which here is not a higher digit of
+// anything but the *stance*. A wall whose fraction happened to land near one
+// would have reported itself a floor.
 fn pack_place(id: u32, raw_z: f32, stance: u32, kind: u32, sub: vec2<f32>) -> vec4<u32> {
-    let z = u32(clamp(round(raw_z), -128.0, 127.0) + 128.0) | (stance << PLACE_STANCE_SHIFT);
+    // The same range the clamp always covered, stated in the units the field
+    // now counts in: `-128 .. 127 + 15/16` is everything the two fields can
+    // say together, and a height outside it is pinned to the nearer end
+    // exactly as it was before.
+    let steps = i32(clamp(
+        round(raw_z * PLACE_Z_FRAC_STEPS),
+        -128.0 * PLACE_Z_FRAC_STEPS,
+        128.0 * PLACE_Z_FRAC_STEPS - 1.0,
+    ));
+    // An **arithmetic** shift, which is what makes this a `floor` and not a
+    // truncation: a height of -3.5 is -4 whole units and eight sixteenths, the
+    // way `unpack_place_z` adds them back, rather than -3 and minus eight. The
+    // mask below is the same statement for the remainder — always positive,
+    // always under one unit.
+    let z = u32((steps >> 4u) + 128)
+        | (u32(steps & i32(PLACE_Z_FRAC_MASK)) << PLACE_Z_FRAC_SHIFT)
+        | (stance << PLACE_STANCE_SHIFT);
     let clamped = clamp(sub, vec2<f32>(0.0), vec2<f32>(1.0));
     let packed_sub = (u32(round(clamped.x * SUB_TILE)) << 2u) | (u32(round(clamped.y * SUB_TILE)) << 9u);
     return vec4<u32>(id & 0xFFFFu, id >> 16u, z, kind | packed_sub);

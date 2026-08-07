@@ -14,7 +14,7 @@
 import package::place_format::{
     KIND_MASK, KIND_NOTHING, KIND_LAND, KIND_STATIC, KIND_MOBILE,
     SUB_TILE_MASK, SUB_TILE, PLACE_STANCE_SHIFT, PLACE_STANCE_MASK,
-    PLACE_Z_MASK, STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
+    unpack_place_z, STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
     STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
 };
 
@@ -235,14 +235,15 @@ struct GroundInstance {
 // used to have no channel to read, arrived.
 @group(0) @binding(13) var footprints: texture_2d<u32>;
 
-// The third channel is `z + 128` in its low eight bits and the sprite's stance in
-// four of the eight above — `crate::place::STANCE_SHIFT`, and `statics.wgsl`
-// writes it. The four faces are the only values this pass reads: a flat or
+// The third channel is `z`'s whole units offset by 128 in its low eight bits,
+// sixteenths of a unit in the four above them, and the sprite's stance in the
+// four above those — `crate::place::STANCE_SHIFT`, and `statics.wgsl` writes
+// it. The four faces are the only stance values this pass reads: a flat or
 // faceless surface has no direction to be lit from, and a **corner** never
 // arrives here at all — `statics.wgsl` has already resolved it to the face of the
 // half the fragment was drawn on, because a corner's two surfaces are two halves
 // of one picture and one pixel is on one of them. `PLACE_STANCE_SHIFT`/
-// `PLACE_STANCE_MASK`/`PLACE_Z_MASK`/`STANCE_MESH_FACE`/`STANCE_FLAT`/
+// `PLACE_STANCE_MASK`/`unpack_place_z`/`STANCE_MESH_FACE`/`STANCE_FLAT`/
 // `STANCE_FACE_NORTH`/`STANCE_FACE_EAST`/`STANCE_FACE_SOUTH`/`STANCE_FACE_WEST`
 // are the import above, `place_format.wesl`. `STANCE_MESH_FACE` is not a real
 // stance, a routing sentinel the mesh-face pass writes instead of one of the
@@ -1451,7 +1452,13 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         }
         tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
     }
-    let at = vec3<f32>(tile.x + sub.x, tile.y + sub.y, f32(place.z & PLACE_Z_MASK) - 128.0);
+    // The height is the channel's two fields together — whole units and the
+    // sixteenths above them, `docs/lighting_height.md` phase 1. Through
+    // `unpack_place_z` rather than by hand: reading only the low eight bits
+    // still compiles, still draws, and quietly puts every fragment of a
+    // vertical face back on the staircase of one-unit treads the fraction
+    // exists to remove.
+    let at = vec3<f32>(tile.x + sub.x, tile.y + sub.y, unpack_place_z(place.z));
     // And which way the surface drawn here looks, where it is a wall's face. Zero
     // for the ground, for a mobile and for anything standing up whose art would
     // not name an edge — none of those has a side to be lit from.

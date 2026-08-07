@@ -100,18 +100,22 @@
 //! cannot see at all: both sample a *flat* surface, where an integer height is
 //! exact by construction (a lid is at an integer `z`, the ground is at
 //! `z = 0`). The defect that doc traces lives on a *vertical* face, where
-//! height varies continuously down the wall and `pack_place` rounds it to the
-//! nearest unit — this grids each box's own rendered vertical faces (`east`
-//! and `south`; `box_mesh` never builds the other two, since an isometric
-//! camera never sees them) and reads the rendered `View::Shadow` frame back at
-//! each point's own projected pixel, the same way the ground oracle does. A
-//! sample can land on a pixel a *different* box's face owns instead — decided
-//! by the renderer's own painter's-order key (`depth::Order`, reused rather
-//! than re-derived: a screen-ownership question, no part of the shadow
-//! arithmetic under test) and a plain point-in-quad test against every
-//! rendered face's own projected corners — and a skip there is not a pass:
-//! every reported line carries sampled/compared/disagreeing, and the total
-//! compared is asserted non-trivial.
+//! height varies continuously down the wall and `pack_place` rounded it to the
+//! nearest unit (phase 1 has since given it a fraction) — this grids each
+//! box's own rendered vertical faces (`east` and `south`; `box_mesh` never
+//! builds the other two, since an isometric camera never sees them) and reads
+//! the rendered `View::Shadow` frame back at each point's own projected pixel,
+//! the same way the ground oracle does. A sample can land on a pixel a
+//! *different* box's face owns instead — decided by the renderer's own
+//! painter's-order key (`depth::Order`, reused rather than re-derived: a
+//! screen-ownership question, no part of the shadow arithmetic under test) and
+//! a plain point-in-quad test against every rendered face's own projected
+//! corners — and a skip there is not a pass: every reported line carries
+//! sampled/compared/disagreeing, and the total compared is asserted
+//! non-trivial. Each face also reports **where** up its own height the
+//! disagreements sat, as runs of grid rows: the count says a phase moved the
+//! number, the runs say whether what is left is the same defect made smaller
+//! or a different one that the first was hiding.
 //!
 //! ```sh
 //! OPENSHARD_FRAME_DUMP=/tmp/tree OPENSHARD_BOXES_SCENE=tree \
@@ -1052,7 +1056,7 @@ fn main() {
     // a box's own flat top, where an integer height is exact (a lid *is* at
     // an integer `z`); the ground oracle samples the ground, `z = 0`,
     // likewise exact. The defect lives on a vertical face, where height
-    // varies continuously and `pack_place` rounds it to the nearest unit —
+    // varies continuously and `pack_place` rounded it to the nearest unit —
     // this grids each box's own rendered vertical faces (`box_mesh` only
     // ever builds the two an isometric camera can see; the other two are
     // permanently self-occluded and would only ever measure that), projects
@@ -1156,6 +1160,15 @@ fn main() {
                 let mut compared = 0usize;
                 let mut disagreeing = 0usize;
                 let mut examples: Vec<String> = Vec::new();
+                // Where up the face each disagreement sat, one counter a grid
+                // row. A total alone says a phase moved the number; it cannot
+                // say whether what is left is the same defect made smaller or a
+                // different one that was always there, and those want opposite
+                // next steps. `docs/lighting_height.md` phase 1's own residual
+                // is the case in point: it is not spread over the face at all,
+                // it is the bottom row or two of every face plus one band, which
+                // is a shape the count could never have shown.
+                let mut disagreeing_rows = vec![0usize; side as usize];
                 for row in 0..side {
                     for col in 0..side {
                         let u = (f64::from(col) + 0.5) / f64::from(side);
@@ -1196,6 +1209,7 @@ fn main() {
                         let independent = oracle_visible((x, y, z), light_at, &boxes, index);
                         if independent != gpu_lit {
                             disagreeing += 1;
+                            disagreeing_rows[row as usize] += 1;
                             if examples.len() < 8 {
                                 let spot = light::Spot::face(
                                     Vec2::new(x as f32, y as f32),
@@ -1222,6 +1236,34 @@ fn main() {
                      {disagreeing} disagree ({} skipped: off-canvas or owned by a nearer face)",
                     sampled - compared,
                 );
+                if disagreeing > 0 {
+                    // Runs of adjacent rows rather than a row apiece: a defect
+                    // that is a band prints as one entry, and one that is spread
+                    // over the face prints as many, which is the distinction
+                    // worth reading at a glance. Row 0 is the foot of the face.
+                    let mut bands: Vec<String> = Vec::new();
+                    let mut row = 0usize;
+                    while row < disagreeing_rows.len() {
+                        if disagreeing_rows[row] == 0 {
+                            row += 1;
+                            continue;
+                        }
+                        let start = row;
+                        let mut points = 0usize;
+                        while row < disagreeing_rows.len() && disagreeing_rows[row] > 0 {
+                            points += disagreeing_rows[row];
+                            row += 1;
+                        }
+                        let low =
+                            b.min.2 + (f64::from(start as u32) + 0.5) / f64::from(side) * (b.max.2 - b.min.2);
+                        let high =
+                            b.min.2 + (f64::from(row as u32) - 0.5) / f64::from(side) * (b.max.2 - b.min.2);
+                        bands.push(format!(
+                            "rows {start}..{row} (z {low:.2}..{high:.2}, {points} points)"
+                        ));
+                    }
+                    eprintln!("  where: {}", bands.join(", "));
+                }
                 for example in &examples {
                     eprintln!("{example}");
                 }

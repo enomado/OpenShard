@@ -17,13 +17,20 @@
 //!
 //! # The format
 //!
-//! `Rgba16Uint`, as `(id, z + 128, kind and the fraction)` — the first channel
-//! is spare rather than a fifth field. Integers because these are an id and a
-//! `z`, and a `u16` holds either exactly: a coordinate on the largest facet a
-//! client ships (7,168 across), or `docs/gbuffer.md` decision 2's id, which
-//! nothing this client has ever drawn a frame of has come near filling.
-//! `Rgba16Uint` is colour-renderable in WebGL2, which is the ceiling this
-//! crate draws under — see the crate docs.
+//! `Rgba16Uint`, as `(id, height and stance, kind and the fraction)` — the
+//! first channel is spare rather than a fifth field. Integers because these are
+//! an id and a `z`, and a `u16` holds either exactly: a coordinate on the
+//! largest facet a client ships (7,168 across), or `docs/gbuffer.md` decision
+//! 2's id, which nothing this client has ever drawn a frame of has come near
+//! filling. `Rgba16Uint` is colour-renderable in WebGL2, which is the ceiling
+//! this crate draws under — see the crate docs.
+//!
+//! The height is not one of those integers, and that is `docs/lighting_height.md`
+//! phase 1: the third channel is `z`'s whole units offset by 128, then
+//! [`Z_FRAC_SHIFT`]'s four bits of sixteenths, then [`STANCE_SHIFT`]'s stance.
+//! A tile's height *is* an integer, so nothing on the ground or on a lid
+//! noticed; a vertical face's is not, and rounding it made a staircase of a
+//! wall. [`packed_height`] and [`unpacked_height`] are the two ends of it here.
 //!
 //! **The tile itself does not ride here for any kind.** `docs/gbuffer.md`
 //! step 3 moved a static's and a mobile's `x`/`y` to their own pass's instance
@@ -117,9 +124,10 @@ pub enum Kind {
 ///
 /// It rides in **four bits** of the instance's second word, which is what the
 /// eleven values need and what [`Place::packed`] reserves — and it reaches the
-/// attachment too, in the eight bits a `z + 128` leaves spare in the third
-/// channel's `u16`. See [`STANCE_SHIFT`]. Four where six values needed three,
-/// and neither word had to grow: both have eight or more bits spare above it.
+/// attachment too, in the top four bits of the third channel's `u16`, above the
+/// height and the height's fraction. See [`STANCE_SHIFT`]. Four where six
+/// values needed three, and neither word had to grow: both have eight or more
+/// bits spare above it.
 ///
 /// **Why the lighting needs it, when the fraction is already there.** A fraction
 /// says where in its tile a pixel is; a face says **which way that surface
@@ -371,22 +379,88 @@ impl Place {
     }
 }
 
-/// Where a [`Stance`] rides in the attachment's third channel, above the height.
+/// Where a [`Stance`] rides in the attachment's third channel, above the height
+/// and above its fraction.
 ///
-/// The channel is a `u16` holding `z + 128`, which needs eight bits and has
-/// sixteen. Four of the spare eight carry the stance, so a fragment can ask
-/// which way the surface it is looking at faces without a second attachment or a
-/// wider format.
+/// The channel is a `u16`. Eight bits hold `z`'s whole units offset by 128,
+/// four hold [`Z_FRAC_SHIFT`]'s sixteenths of a unit, and the four above those
+/// carry the stance — so a fragment can ask which way the surface it is looking
+/// at faces without a second attachment or a wider format.
 ///
 /// What arrives here is never a corner: `statics.wgsl` resolves a corner to the
 /// face of the half the fragment is on before it writes this, so the reader —
 /// `blit.wgsl`'s `outward` — sees one surface with one normal and has no case
 /// for two.
 ///
-/// `statics.wgsl`'s `PLACE_STANCE_SHIFT` and `blit.wgsl`'s reader are the other
-/// two places this number appears, and nothing but a person can compare the
-/// three. A test below writes and reads one back.
-pub const STANCE_SHIFT: u32 = 8;
+/// `place_format.wesl`'s `PLACE_STANCE_SHIFT` is the other place this number
+/// appears, and nothing but a person can compare the two. [`packed_height`]
+/// below is what everything on this side goes through, and a test round-trips
+/// it.
+pub const STANCE_SHIFT: u32 = 12;
+
+/// Where the height's fraction rides in that channel, between the whole units
+/// and the stance: sixteenths of a `z` unit, four bits of them.
+///
+/// `docs/lighting_height.md` phase 1. Before it the channel held `round(z)`
+/// alone — exact on a floor or a lid, because a lid *is* at an integer `z`, and
+/// a lie on anything standing up: height varies continuously down a vertical
+/// face, and rounding it to the nearest unit turns one surface into a staircase
+/// of one-unit treads, each lit as though it were a whole unit higher or lower
+/// than it really is.
+///
+/// Sixteenths because a `z` unit is four screen pixels at zoom 1, so one step
+/// is a quarter of a pixel — under anything a frame can show — and four bits
+/// were already spare here. `place_format.wesl`'s `PLACE_Z_FRAC_SHIFT`.
+pub const Z_FRAC_SHIFT: u32 = 8;
+
+/// The fraction's mask: `place_format.wesl`'s `PLACE_Z_FRAC_MASK`.
+pub const Z_FRAC_MASK: u16 = 15;
+
+/// Steps of that fraction in one `z` unit — [`Z_FRAC_MASK`] plus one, named
+/// apart from it because every use is arithmetic on an `f32` rather than a
+/// mask. `place_format.wesl`'s `PLACE_Z_FRAC_STEPS`.
+pub const Z_FRAC_STEPS: f32 = 16.0;
+
+/// The attachment's third channel, packed: a continuous height and a stance.
+///
+/// The Rust twin of `place_format.wesl`'s `pack_place`, for the two things on
+/// this side that write the attachment without a world pass — [`crate::plan`]'s
+/// diagnostic pictures, and the tests that upload a frame of places to compare
+/// the blit against [`crate::light::sample`]. Both used to spell the packing
+/// out by hand, which is a copy of a format that has now moved once; a copy
+/// that stays behind does not fail to compile, it just draws a wall in
+/// one-unit treads again.
+///
+/// The height is quantised once, in sixteenths, and only then split — the same
+/// arithmetic and the same reason as the shader's: a remainder rounded up
+/// separately can carry a full unit into the field above, and the field above
+/// is the stance, not a higher digit of anything.
+pub fn packed_height(z: f32, stance: Stance) -> u16 {
+    // The range the two fields can express together: `-128 ..= 127 + 15/16`.
+    // A height outside it is pinned to the nearer end, which is what the
+    // channel has always done with a `z` no map holds.
+    let steps = (z * Z_FRAC_STEPS)
+        .round()
+        .clamp(-128.0 * Z_FRAC_STEPS, 128.0 * Z_FRAC_STEPS - 1.0) as i32;
+    // `div_euclid`/`rem_euclid` rather than `/` and `%`: this is a `floor` into
+    // the whole units with a remainder that stays positive, so that -3.5 packs
+    // as -4 and eight sixteenths — the way [`unpacked_height`] adds them back —
+    // and not as -3 and minus eight.
+    let whole = steps.div_euclid(i32::from(Z_FRAC_MASK) + 1);
+    let frac = steps.rem_euclid(i32::from(Z_FRAC_MASK) + 1);
+    (whole + 128) as u16 | (frac as u16) << Z_FRAC_SHIFT | (stance as u16) << STANCE_SHIFT
+}
+
+/// The height that channel holds, whole units and fraction together: the twin
+/// of `place_format.wesl`'s `unpack_place_z`, and what a test that reads a
+/// rendered attachment back should decode a height with.
+///
+/// Not a `& 0xFF`: reading only the whole units still compiles and still looks
+/// like a height, and quietly puts a vertical face's fragment back on the
+/// staircase the fraction exists to remove.
+pub fn unpacked_height(channel: u16) -> f32 {
+    f32::from(channel & 0xFF) - 128.0 + f32::from((channel >> Z_FRAC_SHIFT) & Z_FRAC_MASK) / Z_FRAC_STEPS
+}
 
 /// The format of the attachment. See this module's header.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Uint;
@@ -572,6 +646,75 @@ mod tests {
         assert_eq!(Kind::Land as u32, 1);
         assert_eq!(Kind::Static as u32, 2);
         assert_eq!(Kind::Mobile as u32, 3);
+    }
+
+    /// A height packs and unpacks to within half a step of the fraction, and a
+    /// stance rides beside it untouched.
+    ///
+    /// The contract `docs/lighting_height.md` phase 1 rests on, and the one
+    /// thing that can be checked on this side: the shader's `pack_place` and
+    /// `unpack_place_z` are the same arithmetic in a file no Rust compiler
+    /// reads. What this pins is that the round trip is *continuous* — a
+    /// quarter-unit step in `z` survives it, which is exactly what rounding to
+    /// whole units destroyed — and that the fraction never leaks upwards into
+    /// the stance's bits.
+    #[test]
+    fn a_height_round_trips_through_its_fraction() {
+        // A quarter of a unit apart is four steps of the fraction: under
+        // rounding these three were all one height, which is the staircase.
+        for (z, expect) in [(13.25, 13.25), (13.5, 13.5), (13.75, 13.75)] {
+            let packed = packed_height(z, Stance::FaceSouth);
+            assert_eq!(unpacked_height(packed), expect, "{z} did not survive packing");
+            assert_eq!(
+                packed >> STANCE_SHIFT,
+                Stance::FaceSouth as u16,
+                "{z}'s fraction reached into the stance",
+            );
+        }
+        // Anything between two steps lands on the nearer, never further than
+        // half a step away — a thirty-second of a unit, an eighth of a screen
+        // pixel at zoom 1.
+        for z in [-40.03, -0.7, 0.0, 7.31, 63.99] {
+            let error: f32 = unpacked_height(packed_height(z, Stance::Flat)) - z;
+            assert!(error.abs() <= 0.5 / Z_FRAC_STEPS, "{z} came back {error} out");
+        }
+        // A negative height floors into the whole units with the remainder
+        // still positive, the way the shader's arithmetic shift does it —
+        // -3.5 is -4 and eight sixteenths, not -3 and minus eight.
+        let packed = packed_height(-3.5, Stance::Upright);
+        assert_eq!(
+            packed & 0xFF,
+            (-4i32 + 128) as u16,
+            "the whole units did not floor"
+        );
+        assert_eq!(
+            (packed >> Z_FRAC_SHIFT) & Z_FRAC_MASK,
+            8,
+            "and the remainder went negative"
+        );
+    }
+
+    /// The ends of the range are the ends of what the *two* fields hold, and a
+    /// height past either one is pinned there rather than wrapping.
+    ///
+    /// The clamp is the same one the channel always had; what moved is that its
+    /// top end is now `127 + 15/16` rather than `127`. A wrap here would put a
+    /// tower's roof under the ground, which is the failure worth a test.
+    #[test]
+    fn a_height_outside_the_range_is_pinned_to_its_end() {
+        assert_eq!(unpacked_height(packed_height(-900.0, Stance::Flat)), -128.0);
+        assert_eq!(
+            unpacked_height(packed_height(900.0, Stance::Flat)),
+            127.0 + 15.0 / Z_FRAC_STEPS,
+        );
+        // And the stance is undisturbed at both ends: a clamp that overflowed
+        // its field would show up here first.
+        for z in [-900.0, 900.0] {
+            assert_eq!(
+                packed_height(z, Stance::FaceEast) >> STANCE_SHIFT,
+                Stance::FaceEast as u16,
+            );
+        }
     }
 
     /// The lowest and highest `z` a map holds both survive the offset, which is

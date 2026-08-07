@@ -21,8 +21,10 @@ something standing on top of a face must touch that face's top edge.
 
 Three facts, each verified against the tree rather than argued:
 
-1. `pack_place` (`shaders/place_format.wesl:75`) writes
-   `round(raw_z)` — eight bits, one unit a step. `mesh_face.wesl:100`
+1. `pack_place` (`shaders/place_format.wesl`) wrote
+   `round(raw_z)` — eight bits, one unit a step; phase 1 below is what
+   replaced it, and the three facts here are as they stood before it.
+   `mesh_face.wesl:100`
    hands it `in.world.z`, which is interpolated down a face and genuinely
    continuous; `statics.wesl` does the same for a wall's sprite. So every
    fragment of a vertical face reports one of four heights on a box three
@@ -94,7 +96,9 @@ Four spare bits sit in the `place` attachment's third channel: it is a
 
 Done when: `View::Height` no longer bands on a vertical face, and the face
 oracle's disagreement count drops to whatever the penumbra's soft edge
-accounts for.
+accounts for. *(Landed. The first half held; the second was the wrong
+criterion — what is left is a hard disagreement at the foot of every face, not
+a soft edge. See `## Status`.)*
 
 **Why four bits and not eight.** Eight would need the stance moved out of
 the channel entirely, into the id channels — real work, for precision
@@ -169,11 +173,54 @@ Phase 0 done: the face oracle lives in `examples/boxes.rs`
 points disagree at the default `H1=3`, `light::sample` agreeing with the
 independent oracle at every disagreement checked by hand (`through=1.000`,
 "lit", against a rendered pixel reading "shadowed"), which places the fault
-on the GPU side, not the CPU walk. `OPENSHARD_TREE_H1=3.5` brings it down
-(691/16384) but not to zero — the residual matches the same soft-edge
-baseline the box-top oracle already reports against `walk_cells_exact`
-(~5%), so it is not read as a second bug; phase 1's own "done when" already
-expects a non-zero floor from the penumbra. Phase 1 next.
+on the GPU side, not the CPU walk. It now also reports **where** up each face
+its disagreements sat, as runs of grid rows — added in phase 1, because a
+count alone cannot tell a defect made smaller from a different defect the
+first one was hiding, and phase 1's residual turned out to be exactly that
+distinction.
+
+Phase 1 done: **956 → 278 of 16384** on `tree` at `H1=3`, and the shape says
+what moved. Rounding was restored for one run to take the before-picture with
+the same instrument, so these are one measurement apart and nothing else:
+
+| face | before | after |
+|---|---|---|
+| box 0 east | 128, all in rows 0..3 (`z` 0.02..0.12) | 128, rows 0..3 — untouched |
+| box 0 south | 746: 2 at the foot, **744 in rows 31..64** (`z` 1.48..2.98) | 68: 2 at the foot, 66 in rows 41..63 |
+| box 1 east | 81, all in rows 0..4 (`z` 3.02..3.16) | 81, rows 0..4 — untouched |
+| box 1 south | 1, at the foot | 1, at the foot |
+
+So phase 1 removed 678 of the 744 points of the dark patch inside the lower
+box's south face — the defect this plan opens with — and moved nothing at all
+outside it. `View::Height` down one column of that face went from **4 distinct
+values in runs of 15-17 pixels to 49, one step per pixel**; down box 0's east
+face, 5 to 60. The banding is gone.
+
+**The residual is not the penumbra**, and phase 1's own "done when" above
+guessed wrong about that: `light::sample` reads `through=1.000` at these
+points, a hard disagreement rather than a soft edge. 210 of the 278 are the
+bottom one-to-five grid rows of a face — a fragment at the very foot of a face
+being shadowed by the thing it stands on. That is `exemption`'s guess, phase 3,
+and no amount of height precision reaches it; the ~5% soft-edge baseline the
+box-top oracle reports against `walk_cells_exact` is a different measurement
+against a different reference and should not have been borrowed as this
+phase's floor.
+
+`OPENSHARD_TREE_H1=3.5` **went the other way: 691 → 1103**, and that is
+expected rather than a regression. With the fragment's height continuous and
+the occluder's still rounded (`Solid::bottom`/`top`, phase 2), a box whose own
+base is at 3.5 is uploaded as a solid spanning 4..7, so the bottom half-unit of
+its own faces now sits *below* its own solid and stops being exempt from it.
+Before phase 1 the two roundings cancelled and hid that. This is precisely what
+phase 2's "done when" asks for — the two configurations agreeing rather than
+one being clean by luck — and it now has a number to close.
+
+Not from phase 1 and worth knowing before phase 2: at `H1=3.5` the box-top
+oracle reads 3027/9216 and 9216/9216 against `light::sample`, a **CPU-side**
+disagreement that no part of phase 1 touches (the `place` attachment is not on
+that path). Same cause, one layer over: a solid whose `z` span is fractional.
+
+Phase 2 next.
 
 Open questions, deliberately not pre-decided:
 
