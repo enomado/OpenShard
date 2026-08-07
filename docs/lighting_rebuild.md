@@ -468,6 +468,27 @@ Things noticed while writing this, not blocking any phase:
   over_footprint` and `blit.wesl`'s twin. Only the horizontal half, because a
   vertical ray's height answer is `crosses`'s soft one and `ray_vs_solid` would
   answer it hard, erasing the penumbra.
+- **There is no lit-against-lit picture, and three separate things stop one being
+  drawn.** The tool writes the engine's shaded frame (`<base>_lit.ppm`) and the
+  tracer's (`<base>_pathtrace_full.ppm`) as two files, and the only thing it puts
+  *side by side* is a pair of shadow masks. Laying the two shaded pictures beside
+  each other today would show a difference for three reasons that are not about
+  light: the tracer's albedos are written down in `oracle::pathtrace::Mirror::of`
+  (`[0.72, 0.70, 0.66]` for a body, `[0.42, 0.44, 0.40]` for the ground) and are
+  not the engine's art; its flame is `intensity: 6.0` against the engine's `1.0`;
+  and it has no ambient where the engine has `NIGHT`. A fourth, underneath them:
+  `mesh_face.wesl` writes only the `place` attachment, so a box's *face* has no
+  albedo in the world texture at all — there is nothing on the engine's side to
+  compare a body's colour against yet.
+
+  This is phase 0's "done when" restated as a picture, and it is the thing to fix
+  before anybody judges a phase by looking. The smallest honest first scene is the
+  one that phase already names: **one flame, flat ground, no occluders**, where
+  the albedo is the same ground art on both sides and what is left to differ is
+  falloff, intensity and colour handling alone. The two encodes must also pass
+  through **one** curve — `tonemap::tonemap` then `linear_to_srgb` — and
+  `pathtrace_comparison`'s hand-rolled sRGB is a second spelling of the second
+  half of that, which phase 1's own rule forbids.
 - `examples/two_cubes.rs` still projects world points without asking whose pixel
   it got. Phase 2 moves every other reader to `ids`; this one should go with them.
 - **The parity harness could not see a sub-tile lid, and still barely can.** The
