@@ -784,6 +784,15 @@ counter-example was for, and the probe that defines the phase still reads
 the same *kind* of solid the rule excuses, still stopping the ray because that
 crossing is at `t > 0`.
 
+> **Both columns are with `Prism::mesh`'s `SEAM_OVERLAP` still in.** It was
+> removed immediately after — see the backlog's first entry — and that changes the
+> "after" column again, because the seam pixels stop being drawn and one band of
+> every tread top starts being: the single flight reads **316/23912** and the run
+> **1706/68962 (23 too dark)**. The probe above is unchanged, the tread tops stay
+> at zero away from that band, and `boxes.rs` has no prism in it. The two changes
+> are recorded apart because they are two, and because the second one is only
+> legible against the first.
+
 **And one number in the section above was wrong, which the fix is what
 found.** "With the flame genuinely above the run, every tread top there already
 reads 0 or 2" — flight 2's bottom tread read **510**, all too light, and the
@@ -834,6 +843,12 @@ So, in order:
    are the 1120 seam pixels (`Prism::mesh`'s own overlap, honest) and the
    run's 2190 too-light riser tops (`STAND_OFF`, a separate backlog entry). A
    fix that took the grand total to zero would have eaten at least one of them.
+
+   *(The seam class no longer exists: `SEAM_OVERLAP` was removed right after this
+   phase landed — the backlog's first entry — so those 1120 pixels are not drawn
+   at all now. "Must not move" was the right instruction for a lighting fix, and
+   it held: the rule left them where they were, and a separate, deliberate
+   geometry change is what took them off the screen.)*
 
    **That done-when is what caught the second defect.** Written against the
    grand total it would have read green at 3031 → 7250, since the tread tops
@@ -890,45 +905,56 @@ Picked up while phases 1 and 2 landed, while the oracles were repaired, and
 while phase 3 landed, and while phase 4's oracle was built, and while phase 4's
 rule landed; none of it blocked any of them.
 
-- **The seam is honest lighting on pixels that should not be on screen.** The
-  oracle settled that `Prism::mesh`'s `SEAM_OVERLAP` pixels are shadowed
-  correctly — they are a riser drawn inside the staircase's own body — and that
-  is a statement about the *lighting* only. What the picture shows is a one-pixel
-  **dark hairline across every lit tread**, because those riser pixels win the
-  depth test over the tread they stand on and are the ones a person sees. Being
-  right about their shade does not earn them the pixel. The overlap exists so the
-  last-submitted face wins a coincident edge outright instead of leaving it to a
-  sub-pixel tie; what wants deciding is whether the face that should win that tie
-  is the one currently winning it. `examples/synthetic_stair`'s face map
-  (`OPENSHARD_FRAME_DUMP` writes `<stem>_faces.ppm`) is where to look: the seam
-  reads as a dim hairline inside a bright band.
+- ~~**The seam is honest lighting on pixels that should not be on screen.**~~
+  **Done — `SEAM_OVERLAP` is gone.** The oracle settled that its pixels were
+  *shadowed* correctly — they are a riser drawn inside the staircase's own body
+  — and that turned out to be a statement about the lighting only. What the
+  picture showed was a one-pixel **dark hairline across every lit tread**,
+  because those riser pixels win the depth tie over the tread they stand on and
+  are the ones a person sees; and, measured against a build with the constant at
+  `0.0`, a **3 px** overrun at both `z` ends of every riser, so each step's
+  corner sat `2.4` px off where the geometry puts it in both directions. That is
+  the "the planes look offset" reading of the picture, and it was right.
 
-  **And it is not only a hairline — it moves the step's own corner.** Measured by
-  rendering the face map twice, once with both overlaps set to `0.0`: at the east
-  corner of a flight the riser overruns the tread above it by **3 px** and the
-  tread below it by **3 px** (`0.15` `z` × `16` px per `z` at `4:1` is `2.4`, and
-  it applies at both ends), so the bright wedge of each tread meets the riser
-  three pixels late at the top and three early at the bottom rather than at the
-  corner point. That is the "the planes look offset" reading of this picture, and
-  it is right: they are, by exactly this constant.
+  The constant existed to make the last-submitted face win a coincident edge
+  rather than leave it to a sub-pixel tie. **There is no tie.** A tread's top and
+  its own riser are built from the same `footprint` expression and the same
+  `top_z`, so their shared corners are bit-identical in world space, and
+  `statics::push_mesh` projects a corner with a pure function of that corner —
+  identical corners cannot land on two screen positions, and the rasteriser's own
+  fill rule gives every pixel of the edge to exactly one triangle. The face map
+  measured the consequence directly: **zero** pixels inside a flight's silhouette
+  belonging to no face, over four climb directions × four zoom notches × five
+  tread profiles, the tread count being what moves that edge's sub-pixel phase.
+  `facing.rs`'s `a_tread_and_its_riser_share_an_edge_bit_for_bit` is the gate.
 
-- **`WIDTH_OVERLAP` puts a jag on the outer silhouette.** The same face map shows
-  a face poking `0.03` of a tile past its own tile, which is a **2 px** tooth at
-  `4:1` — measured the same way, the east silhouette sits at column 317 with the
-  overlap and 315 without. It is deliberate — the constant's own doc argues it
-  closes a leak along a riser's outer edge, where `SEAM_OVERLAP` cannot reach
-  because that edge borders no other face — so this is a note that the cure is
-  visible at the zoom the fixture runs at, not that the constant is wrong. Nobody
-  has measured the leak it closes against the tooth it draws.
+  `docs/gbuffer.md` carried the reading that justified it and now carries the
+  correction beside it. The hairline that motivated it was real — it was the
+  *outer* silhouette, which is `WIDTH_OVERLAP`'s own doc's measurement, an edge
+  bordering no other face at all.
 
-  **What the same experiment says about simply removing them: don't.** With both
-  at `0.0` the flight draws 22528 face pixels instead of 24106 — the overlaps are
-  about 7% of its drawn area — and the face oracle goes from **136** disagreements
-  to **302**, all but two of them "too light". Every coincident edge is then a
-  sub-pixel tie, and a pixel that lands exactly on a plane's boundary is the one
-  `STAND_OFF` costs the most at. So the overlaps are paying for something real,
-  and the question is which face should win the tie rather than whether there
-  should be one.
+  **What removing it uncovered**, because a defect can hold another: the single
+  flight goes 136 → 316 disagreements and the run 1834 → 1706 (its "too dark"
+  147 → 23, since 123 of those *were* seam pixels). The 273 new ones are the last
+  band of every tread top — the row where it meets its own riser — reading lit
+  where the geometry says shadowed, and the sample's own report names the point:
+  a fragment at `(100.00, 100.66, z 3.0)`, which is the riser's plane at the
+  riser's own top. `ON_TOP` lifts the ray a hundred-and-twenty-eighth above that
+  top, so it clears a crossing the geometry has by a hair. Same class as the
+  `STAND_OFF` entry below, same corner, the other axis — and those pixels were
+  always computed that way, they were just being drawn by the riser.
+
+- **`WIDTH_OVERLAP` puts a jag on the outer silhouette, and it is the one that
+  still has a cause.** The face map shows a face poking `0.03` of a tile past its
+  own tile, which is a **2 px** tooth at `4:1` — measured against a build with it
+  at `0.0`, the east silhouette sits at column 317 with it and 315 without. Unlike
+  the retired `SEAM_OVERLAP` beside it, the edge it is about borders no other
+  face: it is the fitted prism against the art's true silhouette, and those two
+  genuinely differ (`best_prism`'s score is never exactly `1.0`). So the leak is
+  real and an overlap does hide it — it is still a fudge that draws a visible
+  tooth, and nobody has measured the sliver it hides against the tooth it draws.
+  The honest alternatives are to stop drawing the sprite behind a meshed static,
+  or to clip it to the mesh.
 
 - **The `ground < 1e-6` shortcut in both walks ignores a lid's own footprint.**
   A ray with no horizontal run takes a shortcut past the candidate-cell loop and

@@ -865,10 +865,6 @@ fn main() {
         }
     }
 
-    if !oracle_on {
-        return;
-    }
-
     // **Which face drew each pixel**, as a picture, beside the frame that was
     // asked for. The oracle below reads exactly this and reports it as counts;
     // a count cannot answer "why is there a white strip down the east side", and
@@ -877,7 +873,16 @@ fn main() {
     // `SEAM_OVERLAP` painting a riser over the tread it stands on, or
     // `WIDTH_OVERLAP` poking a face past its own tile — reads off the picture
     // instead of being argued about.
+    //
+    // **Above `OPENSHARD_STAIR_ORACLE`'s own early return**, since it answers a
+    // question about the drawing and not about the lighting: a sweep asking "does
+    // this mesh ever leave a hole" wants the map without paying for a per-pixel
+    // visibility oracle it is not reading.
     write_face_map(&drawn, &slabs, width, height, &beside(&dumped, "faces"));
+
+    if !oracle_on {
+        return;
+    }
 
     // The face oracle. See this module's own doc for what it is and why it
     // comes before the fix rather than after it.

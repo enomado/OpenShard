@@ -268,11 +268,30 @@ four-corner face as `0,1,2,0,2,3`.
 builds one `Mesh` per climbable, prism-fit static: a flat top per tread at
 its own real height, and a riser between it and the tread (or the static's
 own base) before it, facing `[-ox, -oy, 0]` for the climb direction's
-outward `[ox, oy]`. Adjacent risers are grown by `SEAM_OVERLAP` on both `z`
-ends — a real overlap in world space, not a coincident edge relying on the
-rasteriser to agree with itself — because two exactly-touching quads left a
-hairline of the enclosing sprite's own flat shading surviving at the
-projected pixels the rasteriser assigned to neither triangle.
+outward `[ox, oy]`. A riser stops at exactly the two treads' own heights, and
+the tie at that edge is watertight by construction: both sides are built from
+the same `footprint` expression and the same `top_z`, so the shared corners are
+bit-identical in world space, and `statics::push_mesh` projects a corner with a
+pure function of that corner.
+
+> **This paragraph used to say the opposite, and the reading in it was wrong.**
+> Risers were grown by a `SEAM_OVERLAP` of `0.15` `z` at both ends "because two
+> exactly-touching quads left a hairline of the enclosing sprite's own flat
+> shading surviving at the projected pixels the rasteriser assigned to neither
+> triangle". The hairline was real; the edge named for it was not.
+> `examples/synthetic_stair`'s face map — one colour per plane, straight off the
+> `place` attachment — finds **zero** pixels inside a flight's silhouette
+> belonging to no face without the overlap, over four climb directions × four
+> zoom notches × five tread profiles, and the tread count is what moves that
+> edge's own sub-pixel phase. `WIDTH_OVERLAP`'s own doc had already measured
+> where the leak actually was — "not at a tread/riser tie at all", but the outer
+> silhouette, where the fitted prism meets the art's true one and no second face
+> borders the edge at all — and the constant aimed at the wrong edge was left
+> standing beside it. What it cost while it stood: 1120 pixels of a single
+> flight drawn outside their own plane, a one-pixel dark hairline across every
+> lit tread, and every step's corner displaced `2.4` px at `4:1`.
+> `facing.rs`'s `a_tread_and_its_riser_share_an_edge_bit_for_bit` is the gate on
+> the property that replaces it.
 
 `Prism::tread_normal` (a blended `Surface::Flat`/`Surface::Face` normal
 standing in for a tread's top) and `light::Surface::Sloped` /

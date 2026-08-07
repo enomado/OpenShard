@@ -1021,19 +1021,31 @@ pub struct Prism {
     count: u8,
 }
 
-/// How far [`Prism::mesh`] grows every riser past the tread it meets, in `z`.
-///
-/// A hairline, not a measurement: `docs/lighting.md`'s "Where the next session
-/// starts" found the enclosing sprite's own flat shading surviving in a
-/// hairline along the tread/riser edge — the projected pixels the rasteriser,
-/// for reasons that trace to neither triangle owning the coincident edge
-/// outright, assigns to neither triangle. A real overlap this small is below
-/// what any tread's own height (`Prism::heights` is at least one whole `z`,
-/// and the client draws nothing shorter) could show as a mis-shaped step, and
-/// it is smaller by two orders of magnitude than [`MAX_TREADS`]'s own
-/// worth-having tread — there is no profile this could visibly shorten or
-/// lengthen a riser by.
-const SEAM_OVERLAP: f64 = 0.15;
+// **`SEAM_OVERLAP` lived here**, `0.15` of a `z` unit, and every riser was grown
+// by it at both ends. It was there to close a hairline of the enclosing sprite's
+// own flat shading surviving along the tread/riser edge (`docs/gbuffer.md`'s
+// Geometry section), on the reading that the rasteriser assigns a coincident
+// edge's pixels to neither triangle.
+//
+// **Removed, because the hairline is not there.** A tread's top and its own
+// riser meet at an edge built from the same `lo`/`hi` arithmetic on both sides,
+// so their shared corners are bit-identical in world space, and
+// `statics::push_mesh` projects a corner with a pure function of that corner —
+// two identical corners cannot land on two screen positions. That makes the tie
+// watertight by the fill rule rather than by luck, which is what
+// `a_tread_and_its_riser_share_an_edge_bit_for_bit` now states, and
+// `examples/synthetic_stair`'s face map is what measured it: **zero** pixels
+// inside the flight's silhouette belong to no face, over four climb directions ×
+// four zoom notches × five tread profiles — thirty-six renders, and the tread
+// count is what moves the seam's own sub-pixel phase.
+//
+// What it cost while it stood: 1120 pixels of a single flight drawn *outside*
+// their own plane's span, which is a one-pixel dark hairline across every lit
+// tread (the riser winning the depth tie over the tread it stands on), and every
+// step's corner displaced by `2.4` px at `4:1` in both directions. The real
+// hairline was the *outer* silhouette, which is [`WIDTH_OVERLAP`]'s own doc's
+// measurement and is a different edge with a different cause — the fitted prism
+// against the art's true silhouette, bordering no other face at all.
 
 /// How far [`Prism::mesh`] grows every face's own *width* — the tile-crossing
 /// edge [`Prism::footprint`] never moves with `lo`/`hi` — past the tile's own
@@ -1042,20 +1054,27 @@ const SEAM_OVERLAP: f64 = 0.15;
 /// Measuring the actual leak this reproduction shows (`docs/lighting.md`
 /// again) found the longest runs of it were not at a tread/riser tie at all:
 /// a whole riser's own side, its full height, one screen column wide — the
-/// *outer* silhouette [`SEAM_OVERLAP`] cannot reach, because that edge borders
-/// no other face to overlap with, only the fitted box's own edge against the
-/// art's true silhouette (`best_prism`'s score is never exactly `1.0` —
-/// `PRISM_FITS`'s own doc has the numbers). The same fraction-of-a-pixel this
-/// file already reasons in.
+/// *outer* silhouette, because that edge borders no other face to overlap with,
+/// only the fitted box's own edge against the art's true silhouette
+/// (`best_prism`'s score is never exactly `1.0` — `PRISM_FITS`'s own doc has the
+/// numbers). The same fraction-of-a-pixel this file already reasons in.
+///
+/// **This is the one that has a cause a real overlap can answer**, and the
+/// sentence above is what says so: the retired `SEAM_OVERLAP` beside it was
+/// aimed at the tread/riser tie, which borders another face and is watertight
+/// without help. Here there is nothing on the other side of the edge but the
+/// sprite, and the two silhouettes genuinely differ. It is still a fudge — it
+/// draws a two-pixel tooth at `4:1` — and nobody has measured the sliver it
+/// hides against the tooth it draws; see `docs/lighting_height.md`'s backlog.
 const WIDTH_OVERLAP: f64 = 0.03;
 
 /// Grows a footprint's own tile-crossing edge by [`WIDTH_OVERLAP`] — the pair
 /// [`Prism::footprint`] holds at the tile's unit square regardless of `lo`/
 /// `hi`, which for [`Face::North`]/[`Face::South`] is `x` and for
 /// [`Face::East`]/[`Face::West`] is `y`. The `lo`/`hi` pair is left exactly as
-/// `footprint` returned it: that edge is the tread/riser tie [`SEAM_OVERLAP`]
-/// already handles, built from arithmetic both sides share, and widening it
-/// here would just move the tie rather than close it.
+/// `footprint` returned it: that edge is the tread/riser tie, built from
+/// arithmetic both sides share and watertight because of it, and widening it
+/// here would just move the tie rather than close anything.
 fn widen_footprint(up: Face, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> (f64, f64, f64, f64) {
     match up {
         Face::North | Face::South => (min_x - WIDTH_OVERLAP, max_x + WIDTH_OVERLAP, min_y, max_y),
@@ -1188,20 +1207,22 @@ impl Prism {
     /// below, the same direction `occlusion::Solid::tread_riser_box_of`'s own doc
     /// names.
     ///
-    /// A tread's top and its own riser meet at an edge built from the exact same
-    /// `lo`/`hi` arithmetic on both sides, so the two quads' shared corners are
-    /// bit-identical in world space — and still `docs/lighting.md`'s "Where the
-    /// next session starts" found a hairline of the enclosing sprite's own flat
-    /// shading surviving along that edge, in the rendered frame, at the
-    /// projected pixels the rasteriser assigns to neither triangle. Growing
-    /// every riser by [`SEAM_OVERLAP`] on both z ends closes that hairline by
-    /// construction — a real overlap in world space rather than a coincident
-    /// edge relying on the rasteriser to agree with itself — without another
-    /// depth formula: every riser is still the honest plane between two
-    /// treads, just [`SEAM_OVERLAP`] taller than the treads it meets so the
-    /// last-submitted face (`push_mesh`'s draw order, and this method's own,
-    /// puts every riser after the top it borders) wins the seam outright
-    /// instead of leaving it to a sub-pixel tie.
+    /// **A tread's top and its own riser meet exactly, and that is what closes
+    /// the seam.** Both sides of the shared edge are built from the same `lo`
+    /// and the same `top_z` — [`Prism::footprint`] with `(lo, hi)` for the top
+    /// and with `(lo, lo)` for the riser, which is the same expression evaluated
+    /// twice — so the two quads' shared corners are bit-identical in world
+    /// space, and [`crate::statics::push_mesh`] projects a corner with a pure
+    /// function of that corner. Two identical corners cannot land on two screen
+    /// positions, so the tie is watertight by the rasteriser's own fill rule
+    /// rather than by anything this method adds.
+    ///
+    /// Every riser used to be grown by a `SEAM_OVERLAP` of `0.15` `z` at both
+    /// ends so that the last-submitted face would win that edge outright. It is
+    /// gone: see the comment where the constant stood for what it was aimed at,
+    /// what measured that the hairline is not at this edge, and what it cost
+    /// while it stood. [`a_tread_and_its_riser_share_an_edge_bit_for_bit`] is the
+    /// gate that keeps the meeting exact.
     pub fn mesh(&self, x: i32, y: i32, base_z: i32) -> crate::mesh::Mesh {
         use crate::camera::WorldSpot;
         use crate::mesh::Face as MeshFace;
@@ -1246,8 +1267,10 @@ impl Prism {
 
             let (min_x, max_x, min_y, max_y) = Self::footprint(f64::from(x), f64::from(y), self.up, lo, lo);
             let (min_x, max_x, min_y, max_y) = widen_footprint(self.up, min_x, max_x, min_y, max_y);
-            let riser_top = f64::from(top_z) + SEAM_OVERLAP;
-            let riser_low = f64::from(low_z) - SEAM_OVERLAP;
+            // Exactly the two treads' own heights. See this method's own doc for
+            // why an overlap here is not what closes the seam.
+            let riser_top = f64::from(top_z);
+            let riser_low = f64::from(low_z);
             let riser = [
                 WorldSpot {
                     x: min_x,
@@ -2470,17 +2493,81 @@ mod tests {
             } else {
                 f64::from(heights[tread - 1])
             };
-            // Not exactly `low`/`height`: `SEAM_OVERLAP` grows every riser a
-            // hairline past the tread it meets, on purpose — see its own doc.
+            // Exactly `low`/`height`, both ends. A riser used to be grown a
+            // hairline past each — see the comment where `SEAM_OVERLAP` stood.
             let zs: Vec<f64> = riser.vertices().iter().map(|v| v.z).collect();
             assert!(
-                zs.contains(&(low - SEAM_OVERLAP)),
-                "riser {tread} should overlap down past {low}: {zs:?}"
+                zs.contains(&low),
+                "riser {tread} should start at exactly {low}: {zs:?}"
             );
             assert!(
-                zs.contains(&(f64::from(height) + SEAM_OVERLAP)),
-                "riser {tread} should overlap up past {height}: {zs:?}"
+                zs.contains(&f64::from(height)),
+                "riser {tread} should stop at exactly {height}: {zs:?}"
             );
+        }
+    }
+
+    /// **The seam is closed by construction, and this is the construction.**
+    ///
+    /// A tread's top and its own riser share an edge, and every corner of it is
+    /// bit-identical on both sides — the same `f64`, not two values a tolerance
+    /// would call equal. That is the whole reason the retired `SEAM_OVERLAP` is
+    /// not needed: [`crate::statics::push_mesh`] projects a corner with a pure
+    /// function of that corner, so identical corners land on identical screen
+    /// positions and the rasteriser's own fill rule gives every pixel of the
+    /// shared edge to exactly one of the two triangles. `examples/synthetic_stair`
+    /// measured the consequence — zero pixels inside a flight's silhouette
+    /// belonging to no face, over thirty-six renders — and this is the property
+    /// that measurement rests on, stated where it can fail loudly.
+    ///
+    /// Both edges of every riser: the one it shares with its own tread's top, and
+    /// the one it shares with the tread below it. Every climb direction, because
+    /// [`Prism::footprint`]'s four arms are four separate expressions and only
+    /// this says they agree with themselves.
+    #[test]
+    fn a_tread_and_its_riser_share_an_edge_bit_for_bit() {
+        for up in [Face::North, Face::East, Face::South, Face::West] {
+            let heights = [1u8, 3, 5];
+            let prism = Prism::new(up, &heights).expect("three treads");
+            let mesh = prism.mesh(100, 100, 0);
+            let faces = mesh.faces();
+            // The corners of one face at a given `z`, sorted, so two rings that
+            // list the same edge in different orders compare equal.
+            let edge_at = |face: &crate::mesh::Face, z: f64| {
+                let mut corners: Vec<(u64, u64)> = face
+                    .vertices()
+                    .iter()
+                    .filter(|corner| corner.z == z)
+                    .map(|corner| (corner.x.to_bits(), corner.y.to_bits()))
+                    .collect();
+                corners.sort_unstable();
+                corners
+            };
+            for (tread, &height) in heights.iter().enumerate() {
+                let top = &faces[tread * 2];
+                let riser = &faces[tread * 2 + 1];
+                let z = f64::from(height);
+                let shared = edge_at(riser, z);
+                assert_eq!(shared.len(), 2, "{up:?} riser {tread} has a top edge");
+                let over = edge_at(top, z);
+                assert!(
+                    shared.iter().all(|corner| over.contains(corner)),
+                    "{up:?}: riser {tread}'s top edge is not two corners of its own tread's top"
+                );
+                if tread == 0 {
+                    continue;
+                }
+                // And downwards: the riser's low edge lies in the plane of the
+                // tread below, at that tread's own height.
+                let below = f64::from(heights[tread - 1]);
+                let low = edge_at(riser, below);
+                assert_eq!(low.len(), 2, "{up:?} riser {tread} has a bottom edge");
+                let under = edge_at(&faces[(tread - 1) * 2], below);
+                assert!(
+                    low.iter().all(|corner| under.contains(corner)),
+                    "{up:?}: riser {tread}'s bottom edge is not two corners of the tread below it"
+                );
+            }
         }
     }
 
