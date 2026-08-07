@@ -208,12 +208,33 @@ that used to be here and is now fixed — is in the archive under
   nothing about what gets drawn, only where the constants live: what it
   closes is the *value* drifting between files — five copies of
   `PLACE_STANCE_SHIFT` silently disagreeing, or a new `Stance` value added
-  to one file's copy and not another's. It does **not** close session 23's
-  own failure mode: a producer that never reads a shared constant at all —
-  never stamps the bit — compiles clean either way, WESL or plain WGSL,
-  because that is an omission in the logic, not a wrong value. Closing that
-  half would need the test-time or compile-time check the earlier draft of
-  this entry proposed and did not build; still open, not scoped as a step.
+  to one file's copy and not another's. It does not, by itself, close
+  session 23's own failure mode: a producer that never reads a shared
+  constant at all — never stamps the bit — still compiles clean either way,
+  WESL or plain WGSL, because that is an omission in the logic, not a wrong
+  value.
+
+  **The omission half — narrowed, not closed.** `place_format.wesl` now
+  also carries `pack_place(id, raw_z, stance, kind, sub) -> vec4<u32>`, the
+  one `vec4<u32>` literal `ground.wgsl`/`statics.wgsl`/`mesh_face.wgsl` each
+  built by hand before this — structurally identical across all three once
+  written down side by side. All three now call it instead. `stance` is a
+  required parameter, so a producer can no longer build a `place` value
+  without deciding on one at all — session 23's own bug (never touching
+  `stance`, leaving it at the implicit `0` `Stance::Upright` decodes to) can
+  no longer happen *by omission*. It can still happen by **commission**: a
+  producer can still pass `STANCE_UPRIGHT` where `STANCE_FLAT` was meant,
+  and WESL has no way to know that is wrong. What changes is that the wrong
+  value is now a token sitting in a call's argument list — visible to a
+  reader and a diff — rather than a bit that silently never got OR'd into a
+  hand-built literal buried among several others. Closing what remains (a
+  wrong-but-present `stance` argument) needs a test-time oracle per
+  producer/stance pair, not a language feature; still open, not scoped as a
+  step. `blit.wgsl`/`select.wgsl` only *read* `place` and have nothing
+  analogous to share — the asymmetry is inherent, not left undone.
+  Verified with the same three checks as the constants migration above:
+  `cargo test --workspace`/clippy/fmt clean, and both scenes' oracles
+  unchanged.
 
 - **Someday/maybe, not scoped as a step**: a full fixed-point world
   coordinate (tile + N bits of sub-tile resolution, no `f32`) would remove

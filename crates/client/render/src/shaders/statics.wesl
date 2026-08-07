@@ -15,8 +15,8 @@
 // the formula is a second chance to disagree with it — see `crate::depth`.
 
 import package::place_format::{
-    KIND_MASK, SUB_TILE, PLACE_STANCE_SHIFT, STANCE_FLAT, STANCE_FACE_NORTH,
-    STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST, STANCE_CORNER,
+    KIND_MASK, SUB_TILE, STANCE_FLAT, STANCE_FACE_NORTH, STANCE_FACE_EAST,
+    STANCE_FACE_SOUTH, STANCE_FACE_WEST, STANCE_CORNER, pack_place,
 };
 
 struct Viewport {
@@ -351,13 +351,6 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // one value for the whole instance — would flatten exactly what they
     // exist to vary. Only the id replaces `x`/`y`; everything else here is
     // unchanged from before this pass had one.
-    out.place = vec4<u32>(
-        id & 0xFFFFu,
-        id >> 16u,
-        u32(clamp(round(z), -128.0, 127.0) + 128.0) | (stance << PLACE_STANCE_SHIFT),
-        ((in.place.y >> 8u) & KIND_MASK)
-            | (u32(round(sub.x * SUB_TILE)) << 2u)
-            | (u32(round(sub.y * SUB_TILE)) << 9u),
-    );
+    out.place = pack_place(id, z, stance, (in.place.y >> 8u) & KIND_MASK, sub);
     return out;
 }

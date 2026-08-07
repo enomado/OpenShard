@@ -51,3 +51,30 @@ const STANCE_CORNER: u32 = 6u;
 // `crate::place::Stance::MeshFace` — not a real stance, a routing sentinel
 // the mesh-face pass writes instead of one of the five above.
 const STANCE_MESH_FACE: u32 = 10u;
+
+// What `ground.wgsl`/`statics.wgsl`/`mesh_face.wgsl` each built by hand, one
+// `vec4<u32>` literal per file, before this: `id` split across the first two
+// channels, `z` and `stance` folded into the third, `kind` and the tile-local
+// fraction into the fourth. Sharing this closes half of session 23's bug
+// class rather than the whole of it — see `docs/lighting_raymarch.md`'s own
+// note on the distinction — but it closes the more dangerous half: `stance`
+// is a required parameter here, so a producer literally cannot build a
+// `place` value without deciding on one. Getting the *value* wrong (passing
+// `STANCE_UPRIGHT` where `STANCE_FLAT` was meant) is still possible and still
+// a bug, but it is now a line a person reading the call site can see and
+// question — not a bit that simply never got OR'd in, invisible until a
+// scene happens to tell the two apart.
+//
+// `raw_z` and `sub` are each pre-clamp: every call site before this clamped
+// `z` to `-128.0..127.0` and `sub` to its own tile (statics/mesh_face to
+// `0.0..INSIDE`, ground to the full `0.0..1.0`) before folding it in, and
+// this repeats both clamps rather than trusting the caller already did —
+// harmless where a caller's own range is already inside `0.0..1.0`, and a
+// second gate on the one thing every one of the three used to get separately
+// right.
+fn pack_place(id: u32, raw_z: f32, stance: u32, kind: u32, sub: vec2<f32>) -> vec4<u32> {
+    let z = u32(clamp(round(raw_z), -128.0, 127.0) + 128.0) | (stance << PLACE_STANCE_SHIFT);
+    let clamped = clamp(sub, vec2<f32>(0.0), vec2<f32>(1.0));
+    let packed_sub = (u32(round(clamped.x * SUB_TILE)) << 2u) | (u32(round(clamped.y * SUB_TILE)) << 9u);
+    return vec4<u32>(id & 0xFFFFu, id >> 16u, z, kind | packed_sub);
+}

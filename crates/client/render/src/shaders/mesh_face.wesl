@@ -12,7 +12,7 @@
 // improve on what the billboard sprite already wrote — never disagree with
 // it (`docs/gbuffer.md` decision 4).
 
-import package::place_format::{KIND_STATIC, STANCE_MESH_FACE, PLACE_STANCE_SHIFT, SUB_TILE};
+import package::place_format::{KIND_STATIC, STANCE_MESH_FACE, pack_place};
 
 struct Viewport {
     // Real pixels per virtual pixel — see `ground.wgsl`, which documents the
@@ -95,16 +95,8 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // fragment on an otherwise evenly-shadowed flat face reading fully lit,
     // because the walk it fed started from the wrong tile's occluders.
     let sub = clamp(in.world.xy - in.tile, vec2<f32>(0.0), vec2<f32>(INSIDE));
-    let z = clamp(round(in.world.z), -128.0, 127.0);
 
     var out: FragmentOut;
-    out.place = vec4<u32>(
-        in.id & 0xFFFFu,
-        in.id >> 16u,
-        u32(z + 128.0) | (STANCE_MESH_FACE << PLACE_STANCE_SHIFT),
-        KIND_STATIC
-            | (u32(round(sub.x * SUB_TILE)) << 2u)
-            | (u32(round(sub.y * SUB_TILE)) << 9u),
-    );
+    out.place = pack_place(in.id, in.world.z, STANCE_MESH_FACE, KIND_STATIC, sub);
     return out;
 }

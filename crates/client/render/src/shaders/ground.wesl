@@ -33,7 +33,7 @@
 // draws it flat, which leaves gaps against its stretched neighbours; ours stays
 // watertight and is textured approximately. See docs/client.md.
 
-import package::place_format::{KIND_LAND, PLACE_STANCE_SHIFT, STANCE_FLAT, SUB_TILE};
+import package::place_format::{KIND_LAND, STANCE_FLAT, pack_place};
 
 struct Viewport {
     // The target's size in *real* pixels — the display's, which at a
@@ -191,10 +191,7 @@ fn vs_main(
 // whole instance shares — carrying either from the row would flatten exactly
 // what they exist to vary.
 fn place_of(in: VertexOut) -> vec4<u32> {
-    let z = u32(clamp(round(in.place_z), -128.0, 127.0) + 128.0) | (STANCE_FLAT << PLACE_STANCE_SHIFT);
-    let local = clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0));
-    let sub = (u32(round(local.x * SUB_TILE)) << 2u) | (u32(round(local.y * SUB_TILE)) << 9u);
-    return vec4<u32>(in.id & 0xFFFFu, in.id >> 16u, z, KIND_LAND | sub);
+    return pack_place(in.id, in.place_z, STANCE_FLAT, KIND_LAND, in.local);
 }
 
 @fragment
