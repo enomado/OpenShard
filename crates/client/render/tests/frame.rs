@@ -34,7 +34,7 @@ use openshard_client_render::light::{Light, Lighting, Surface};
 const TORCH_TILES: f32 = 3.0;
 use openshard_client_render::camera::TileBounds;
 use openshard_client_render::mobiles::{self, Mobile};
-use openshard_client_render::occlusion::{Builder, Occlusion, Shape};
+use openshard_client_render::occlusion::{Builder, Occlusion, OwnerId, Shape};
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place::Place;
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
@@ -3874,6 +3874,42 @@ fn parity_place(px: u32, py: u32) -> (u16, u16, u16, u16) {
     (tile_x, tile_y, sub_x, sub_y)
 }
 
+/// What every pixel of a parity fixture *is*: a surface, at a height, of an
+/// occluder.
+///
+/// The three travel together because they are one statement about the fragment
+/// and the two sides have to make the same one — the attachment says it to the
+/// shader and the [`Spot`](openshard_client_render::light::Spot) says it to
+/// `light::sample`, and a fixture that set them apart could tell the two
+/// different stories without failing to compile.
+#[derive(Clone, Copy)]
+struct Fixture {
+    surface: Surface,
+    z: i8,
+    /// Which occluder of its own cell every pixel is a point of.
+    ///
+    /// [`OwnerId::NONE`] for every fixture that predates sub-tile lids, and that
+    /// is the honest default: those scenes are flat ground and walls, where a
+    /// pixel is a point of nothing and identity decides nothing. A fixture whose
+    /// scene has a *flight* in it must say otherwise — a tread's top is excused
+    /// from its own lid by identity alone, and without an owner the fragment is
+    /// shadowed by the very step it stands on and every other question about it
+    /// is unreachable.
+    owner: OwnerId,
+}
+
+impl Fixture {
+    /// Flat ground at `z = 0`, a point of nothing: what every parity scene was
+    /// before there was anything else to be.
+    fn ground() -> Self {
+        Self {
+            surface: Surface::Upright,
+            z: 0,
+            owner: OwnerId::NONE,
+        }
+    }
+}
+
 /// One frame of the parity fixture: a white world, a place attachment this test
 /// wrote, and `scene::room`'s lighting drawn in `view`.
 ///
@@ -3886,9 +3922,9 @@ fn parity_frame(
     lighting: &Lighting,
     width: u32,
     height: u32,
-    surface: Surface,
-    z: i8,
+    fixture: Fixture,
 ) -> Frame {
+    let Fixture { surface, z, owner } = fixture;
     let world = openshard_client_render::blit::world_texture(device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let place = openshard_client_render::place::texture(device, width, height);
@@ -3927,7 +3963,8 @@ fn parity_frame(
                 // never a second half to point at — see
                 // `crate::sprite::split_corners` for the real pass's row.
                 twin: 0,
-                owner: 0,
+                // The fixture's own, so the shader is told what `Spot` is told.
+                owner: u32::from(owner.raw()),
             }
             .write(&mut face_rows);
             id
@@ -4272,6 +4309,129 @@ fn the_shader_and_light_sample_agree_about_the_sun() {
 /// a floor at 0 is under it — lit — and a lid at 20 is over it, which is the wall's
 /// top cap and the picture the report came in as: a bright diamond where a corner's
 /// cap is, lit by a lamp standing well below it.
+/// **A vertical ray on the GPU is stopped only by lids it is actually under.**
+///
+/// `light::a_vertical_ray_is_not_stopped_by_lids_it_is_not_over` is the same
+/// claim about the two CPU walks; this is the shader's own copy of the shortcut,
+/// and it needed a fixture of its own because **nothing here could see it**.
+/// Deleting the gate from `blit.wesl` alone left all forty-seven frame tests
+/// green: no parity scene has a sub-tile lid in it, so the branch that reads one
+/// was never run. The gap was in the harness, not in the sweep's size.
+///
+/// Two claims, and the first is the one that is not circular. Parity compares the
+/// shader against `light::sample`, and both were fixed together — so on its own
+/// it would report agreement whether or not either is right. So the frame is also
+/// read **directly**: the pixel over the top tread is lit and the pixel over the
+/// middle one is not, which is a statement about this scene's geometry that
+/// neither walk gets a vote on.
+///
+/// Why those two pixels. Every point of the tile is over exactly one tread — the
+/// three strips tile it — so "a lid the ray is not under" is only reachable from
+/// a fragment standing on a tread of its own, excused from that one lid by
+/// identity and asking about the other two. Hence [`Fixture::owner`]: without it
+/// the fragment is shadowed by the step it stands on and the question never
+/// arises. The middle-tread pixel is the control, blocked by its own tread's lid
+/// two units under it, and it is what says the scene occludes at all.
+#[test]
+fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+
+    // The three-tread flight of `light`'s own copy of this test: north, so the
+    // treads divide the tile up `y` — tread 0 over `100.667..101` capped at
+    // `z 1`, tread 1 over `100.333..100.667` at `z 3`, tread 2 over
+    // `100..100.333` at `z 5`.
+    let stair = openshard_uofiles::tiledata::StaticTile {
+        flags: openshard_uofiles::tiledata::TileFlags::new(
+            openshard_uofiles::tiledata::TileFlags::NO_SHOOT
+                | openshard_uofiles::tiledata::TileFlags::CLIMBABLE,
+        ),
+        height: 20,
+        ..openshard_uofiles::tiledata::StaticTile::default()
+    };
+    let prism =
+        openshard_client_render::facing::Prism::new(openshard_client_render::facing::Face::North, &[1, 3, 5])
+            .expect("three treads");
+    let (cx, cy) = openshard_client_render::scene::CENTRE;
+    let mut builder = Builder::new(TileBounds {
+        min_x: i32::from(cx) - 10,
+        max_x: i32::from(cx) + 10,
+        min_y: i32::from(cy) - 10,
+        max_y: i32::from(cy) + 10,
+    });
+    let graphic = Graphic(0x0736);
+    builder.add(cx, cy, 0, graphic, &stair, Shape::solid(prism));
+    let occlusion = builder.finish(&Cutaway::OPEN);
+    let owner = occlusion.owner_at(i32::from(cx), i32::from(cy), 0, graphic);
+    assert!(
+        !owner.same(OwnerId::NONE),
+        "the flight has to have an owner or the fragment is shadowed by its own tread",
+    );
+
+    // The pixel the ray is vertical at, and its control. Both are on the centre
+    // tile; `LIT` sits in the *bottom* tread's strip and `BLOCKED` in the middle
+    // tread's. The flame's position comes out of `parity_place` rather than being
+    // written down again — "directly above" has to be exact, and a second copy of
+    // the fixture's own arithmetic is the one way to get it a float off.
+    //
+    // **Above and not below**, which is not arbitrary: a `Stance::Flat` fragment
+    // looks up, so a flame under it is behind its own plane and `light::faces`
+    // takes the whole term to nothing — both pixels come out at the ambient and
+    // the fixture measures the facing rule instead of the shortcut. Hence the
+    // bottom tread: it is the one whose two neighbouring lids are *over* it.
+    const LIT: (u32, u32) = (35, 38);
+    const BLOCKED: (u32, u32) = (35, 35);
+    let (x, y, sub_x, sub_y) = parity_place(LIT.0, LIT.1);
+    assert_eq!(
+        (x, y),
+        (cx, cy),
+        "the lit pixel has to be on the flight's own tile"
+    );
+    let over = Vec2::new(
+        f32::from(x) + f32::from(sub_x) / 127.0,
+        f32::from(y) + f32::from(sub_y) / 127.0,
+    );
+
+    let lighting = Lighting {
+        ambient: openshard_client_render::light::NIGHT,
+        lights: vec![Light {
+            at: over,
+            // Well above the flight, so the ray runs up past every tread.
+            z: 15.0,
+            radius: 40.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        }],
+        occlusion,
+        sun: None,
+        view: View::default(),
+    };
+    let fixture = Fixture {
+        surface: Surface::Flat,
+        // The bottom tread's own height: what makes `LIT` a point *of* that
+        // tread rather than of the air over it.
+        z: 1,
+        owner,
+    };
+
+    let (width, height) = (64, 64);
+    let frame = parity_frame(&device, &queue, &lighting, width, height, fixture);
+    let lit = frame.pixel(LIT.0, LIT.1);
+    let blocked = frame.pixel(BLOCKED.0, BLOCKED.1);
+    assert!(
+        lit[0] > blocked[0] + 40,
+        "the flame is directly over {LIT:?} and the lids between them are strips \
+         of the tile it is not under: {lit:?} there against {blocked:?} over the \
+         middle tread, which its own lid does stop",
+    );
+
+    // And the shader agrees with `light::sample` over the whole sweep, which is
+    // what carries the CPU walk's own version of this claim onto the GPU.
+    assert_parity_of(&device, &queue, &lighting, fixture);
+}
+
 #[test]
 fn the_shader_and_light_sample_agree_about_a_surface_that_looks_up() {
     let Some((device, queue)) = gpu() else {
@@ -4279,7 +4439,16 @@ fn the_shader_and_light_sample_agree_about_a_surface_that_looks_up() {
     };
     let lighting = openshard_client_render::scene::room().lighting(0.0);
     for z in [0, 20] {
-        assert_parity_of(&device, &queue, &lighting, Surface::Flat, z);
+        assert_parity_of(
+            &device,
+            &queue,
+            &lighting,
+            Fixture {
+                surface: Surface::Flat,
+                z,
+                ..Fixture::ground()
+            },
+        );
     }
 }
 
@@ -4320,7 +4489,15 @@ fn the_shader_and_light_sample_agree_about_a_wall_that_faces_away() {
         "{lit} pixels of face towards the flame, {behind} away from it",
     );
 
-    assert_parity_of(&device, &queue, &lighting, Surface::Face(face), 0);
+    assert_parity_of(
+        &device,
+        &queue,
+        &lighting,
+        Fixture {
+            surface: Surface::Face(face),
+            ..Fixture::ground()
+        },
+    );
 }
 
 /// And the same for a frame with a beam in it.
@@ -4446,7 +4623,7 @@ fn the_shader_and_light_sample_agree_about_the_sky_a_tile_can_see() {
 /// divergence in the falloff, in either ray walk or in the exemptions all show
 /// up here.
 fn assert_parity(device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting) {
-    assert_parity_of(device, queue, lighting, Surface::Upright, 0);
+    assert_parity_of(device, queue, lighting, Fixture::ground());
 }
 
 /// The same, over a frame whose every pixel is a stated *surface* at a stated
@@ -4455,15 +4632,10 @@ fn assert_parity(device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting
 /// One more fixture and not a second test for every scene: what a surface changes
 /// is one term of the loop — see `light::faces` — and the loop is what parity is
 /// about. `docs/lighting.md`, decisions 22 and 27.
-fn assert_parity_of(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    lighting: &Lighting,
-    surface: Surface,
-    z: i8,
-) {
+fn assert_parity_of(device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting, fixture: Fixture) {
+    let Fixture { surface, z, owner } = fixture;
     let (width, height) = (64, 64);
-    let frame = parity_frame(device, queue, lighting, width, height, surface, z);
+    let frame = parity_frame(device, queue, lighting, width, height, fixture);
 
     let mut compared = 0;
     for py in 0..height {
@@ -4479,6 +4651,7 @@ fn assert_parity_of(
                     f32::from(z),
                     (i32::from(x), i32::from(y)),
                 )
+                .owned_by(owner)
             };
             let sample = openshard_client_render::light::sample(spot, lighting);
             let drawn = frame.pixel(px, py);
@@ -4891,7 +5064,7 @@ fn the_light_view_keeps_a_pools_shape_where_it_is_brightest() {
     let scene = openshard_client_render::scene::room();
     let mut lighting = scene.lighting(0.0);
     lighting.view = View::Light;
-    let frame = parity_frame(&device, &queue, &lighting, width, height, Surface::Upright, 0);
+    let frame = parity_frame(&device, &queue, &lighting, width, height, Fixture::ground());
 
     // The torch is at the room's centre, which the fixture puts at the middle of
     // the frame: a row through it runs from the pool's rim to its brightest
@@ -4982,7 +5155,7 @@ fn dump_the_lighting_views() {
         for view in View::ALL {
             let mut lighting = scene.lighting(0.0);
             lighting.view = view;
-            let frame = parity_frame(&device, &queue, &lighting, width, height, Surface::Upright, 0);
+            let frame = parity_frame(&device, &queue, &lighting, width, height, Fixture::ground());
             let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
             for pixel in frame.pixels.chunks_exact(4) {
                 ppm.extend_from_slice(&pixel[..3]);
@@ -5785,7 +5958,7 @@ fn a_debug_view_reaches_the_shader() {
     let scene = openshard_client_render::scene::room();
     let mut lighting = scene.lighting(0.0);
     lighting.view = View::Kind;
-    let frame = parity_frame(&device, &queue, &lighting, width, height, Surface::Upright, 0);
+    let frame = parity_frame(&device, &queue, &lighting, width, height, Fixture::ground());
 
     // Every pixel of the fixture is land, and the kind view paints land one
     // colour whatever the lighting did — so a frame that still shows a pool of

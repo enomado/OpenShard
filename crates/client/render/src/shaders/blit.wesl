@@ -840,6 +840,19 @@ fn box_of(cell: vec2<i32>, bottom: f32, top: f32, footprint: vec4<u32>) -> Solid
     return SolidBox(lo, hi);
 }
 
+// Whether a point stands over a solid's own horizontal footprint —
+// `light::over_footprint`, and `ray_vs_solid`'s parallel-axis branch on the two
+// horizontal axes alone, both ends inclusive as they are there.
+//
+// Used by the no-horizontal-run shortcut in `walk`, which cannot call
+// `ray_vs_solid` outright: that one answers the *height* half hard, and a
+// vertical ray's height answer is `crosses`'s soft one — a flame is a body
+// `spread` deep, so a lid a little past the end of the ray still takes part of
+// it. The Rust twin's doc comment states the same split.
+fn over_footprint(at: vec3<f32>, bx: SolidBox) -> bool {
+    return at.x >= bx.lo.x && at.x <= bx.hi.x && at.y >= bx.lo.y && at.y <= bx.hi.y;
+}
+
 // Where a straight segment enters and leaves an axis-aligned box, as a
 // fraction of the whole segment (`0.0` is `from`, `1.0` is `to`) — the slab
 // method, continuous throughout, no notion of "which tile" anywhere in it.
@@ -1147,6 +1160,17 @@ fn walk(
                 continue;
             }
             let vertical = span_of(id);
+            // And only the lids this ray is actually **under**. A tread's top is
+            // a lid narrower than its tile; the walk below this shortcut has
+            // asked it since sub-tile footprints landed and this shortcut did
+            // not follow, so a flight's three treads shadowed one another from
+            // straight above and below. `docs/lighting_height.md`'s backlog, and
+            // `light::walk_cells_streaming`'s own copy of the same gate — the
+            // box is the wire's on both axes, for the same reason `span_of`'s
+            // height is.
+            if !over_footprint(start, box_of(first, vertical.x, vertical.y, footprint_at(id))) {
+                continue;
+            }
             // Phase 4's rule, here too — `light::walk_cells_streaming`'s own copy
             // of it in this same shortcut. Every solid this loop sees is on the
             // fragment's own cell by construction, so the owner is the whole of

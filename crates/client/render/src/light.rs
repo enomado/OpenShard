@@ -1278,6 +1278,28 @@ fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Op
     Some((entered, leaves))
 }
 
+/// Whether a point stands over a solid's own horizontal footprint.
+///
+/// [`ray_vs_solid`]'s parallel-axis branch, on the two horizontal axes alone,
+/// and deliberately the same rule rather than a second one: a segment that does
+/// not move along an axis either sits inside the box's span on that axis for its
+/// whole length or misses the box entirely, and both ends count as inside there
+/// exactly as they do here.
+///
+/// **Why the halves are split** instead of the vertical-ray shortcuts simply
+/// calling [`ray_vs_solid`]: a vertical ray's *height* answer is [`crosses`]'s,
+/// and that one is soft. A flame is a body `spread` deep rather than a point, so
+/// a lid a little past the end of the ray still takes part of it, and a lid the
+/// ray ends exactly on takes half. `ray_vs_solid` answers the same question
+/// hard, and using it whole would erase the penumbra the shortcut's own
+/// [`crosses`] call exists to compute — trading one defect for a visible one.
+fn over_footprint(at: [f32; 3], solid: &crate::solid::Solid) -> bool {
+    at[0] >= solid.min.x as f32
+        && at[0] <= solid.max.x as f32
+        && at[1] >= solid.min.y as f32
+        && at[1] <= solid.max.y as f32
+}
+
 /// Which of a cell's sides are **the same wall the lit end is part of**, and
 /// therefore must not shadow it.
 ///
@@ -2376,6 +2398,15 @@ fn walk_cells_exact(
             if stands.edges != 0 {
                 continue;
             }
+            // And only the lids this ray is actually **under**. A tread's top is
+            // a lid narrower than its tile, and the main path has asked this
+            // since sub-tile footprints landed — this shortcut did not follow,
+            // which made a flight's three treads shadow one another from
+            // straight above and below. `docs/lighting_height.md`'s backlog, and
+            // `a_vertical_ray_is_not_stopped_by_lids_it_is_not_over`.
+            if !over_footprint(from, &stands.space) {
+                continue;
+            }
             let (low, high) = (stands.low(), stands.high());
             // Phase 4's rule, here too. Every solid this loop sees is on the
             // fragment's own cell by construction, so the owner is the whole of
@@ -2694,14 +2725,18 @@ fn walk_cells_streaming(
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
-        // Same shortcut [`walk_cells_exact`] takes, unchanged: no direction
-        // to walk in, so only a lid on the one cell can stand between the
-        // ends. A lid's box is flat regardless of which way it was built, so
-        // there is nothing here for the `box_of` reconstruction to get
-        // wrong horizontally that reading `space` directly would not — but its
-        // *height* is [`wire_span`]'s all the same, because a lid at a
-        // fractional `z` is exactly what the GPU now reads to a byte and this
-        // is the preview of it.
+        // Same shortcut [`walk_cells_exact`] takes: no direction to walk in, so
+        // only a lid on the one cell can stand between the ends — and only one
+        // this ray is under, which is the footprint gate below.
+        //
+        // Both halves of the box are the **wire's**, not `space`'s, because this
+        // walk is the preview of what the GPU reads: [`wire_span`] for the
+        // height, since a lid at a fractional `z` is quantised to a byte on the
+        // way up, and [`crate::occlusion::Solid::box_from_footprint`] for the
+        // horizontal extent, which is quantised the same way. The main path
+        // below reconstructs exactly this pair for exactly this reason; a
+        // shortcut that read `space` directly would be a second, finer answer to
+        // a question the shader cannot ask that precisely.
         let mut stopped: f32 = 0.0;
         let mut worst: Option<Stopper> = None;
         for (stands, owner) in occlusion.cell(first.0, first.1) {
@@ -2709,6 +2744,11 @@ fn walk_cells_streaming(
                 continue;
             }
             let (low, high) = wire_span(stands);
+            let space =
+                crate::occlusion::Solid::box_from_footprint(first.0, first.1, low, high, stands.fraction());
+            if !over_footprint(from, &space) {
+                continue;
+            }
             // Phase 4's rule — [`walk_cells_exact`]'s own copy of this says why.
             if lit.owner.same(owner) && drawn_on(drawn_z, low, high) {
                 continue;
@@ -3909,6 +3949,103 @@ mod tests {
         assert!(
             streaming < 0.5 && exact < 0.5,
             "a flat fragment is a point of no panel, so its own flight's riser stops the ray: \
+             streaming {streaming}, exact {exact}",
+        );
+    }
+
+    /// **A ray with no horizontal run is still only stopped by lids it is
+    /// actually under.**
+    ///
+    /// `docs/lighting_height.md`'s backlog entry, and the reason the ray above
+    /// this one is *slanted*: both walks take a shortcut when a ray has no
+    /// horizontal run — there is no direction to step in, so only this one cell
+    /// can hold anything — and the shortcut applied [`crosses`] to **every** lid
+    /// on the cell without asking whether the ray is over that lid at all. The
+    /// main path stopped doing that when sub-tile footprints landed; the
+    /// shortcut did not follow.
+    ///
+    /// A flight is exactly where that shows: its three treads are three lids on
+    /// one tile, each a *strip* of it, and no point is over more than one of
+    /// them. So a fragment on a tread lit from straight above or below was
+    /// shadowed by the other two treads — surfaces standing over a part of the
+    /// tile it is nowhere near.
+    ///
+    /// Both directions, because they fail through different lids: from the top
+    /// tread downwards the two lower lids are below the fragment and the ray
+    /// runs down past them, and from the bottom tread upwards the two higher
+    /// lids are above it and the ray runs up past them. A fix that gated only
+    /// one end would leave the other reading as a real occlusion.
+    ///
+    /// Its own tread's lid is not what is being asserted away: that one is
+    /// excused by [`drawn_on`] and identity, which is the test above's subject.
+    /// Every riser is excused here by having an `edges` at all — the shortcut
+    /// has never looked at panels, and a panel stands beside a vertical ray
+    /// rather than across it.
+    #[test]
+    fn a_vertical_ray_is_not_stopped_by_lids_it_is_not_over() {
+        use crate::facing::Prism;
+        use crate::occlusion::{Builder, Shape};
+
+        let stair = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE),
+            height: 20,
+            ..StaticTile::default()
+        };
+        // The same flight as the test above, and the same divisions: tread 0
+        // over `y 100.667..101` capped at `z 1`, tread 1 over `100.333..100.667`
+        // at `z 3`, tread 2 over `100..100.333` at `z 5`.
+        let prism = Prism::new(Face::North, &[1, 3, 5]).expect("three treads");
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        let graphic = Graphic(0x0736);
+        occlusion.add(100, 100, 0, graphic, &stair, Shape::solid(prism));
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+        let owner = occlusion.owner_at(100, 100, 0, graphic);
+
+        let walked = |spot: Spot, at: Vec2, z: f32| {
+            let lighting = Lighting {
+                ambient: NIGHT,
+                lights: vec![Light {
+                    at,
+                    z,
+                    radius: 40.0,
+                    color: [1.0, 1.0, 1.0],
+                    intensity: 1.0,
+                    beam: None,
+                }],
+                occlusion: occlusion.clone(),
+                sun: None,
+                view: crate::debug::View::default(),
+            };
+            (
+                sample(spot, &lighting).reaches[0].through,
+                sample_exact(spot, &lighting).reaches[0].through,
+            )
+        };
+
+        // Straight down off the top tread. The flame is directly under the
+        // fragment, so the ray's horizontal run is zero by construction rather
+        // than by a tolerance — `Spot::flat` carries no outward normal, so
+        // `stand_clear` lifts it in `z` alone and cannot nudge it off the line.
+        let on_top = Spot::flat(Vec2::new(100.5, 100.15), 5.0, (100, 100)).owned_by(owner);
+        let (streaming, exact) = walked(on_top, Vec2::new(100.5, 100.15), -5.0);
+        assert!(
+            streaming > 0.99 && exact > 0.99,
+            "the lower treads are strips of `y` this ray is never over: \
+             streaming {streaming}, exact {exact}",
+        );
+
+        // And straight up off the bottom tread, where the two lids in question
+        // are the ones *above* the fragment.
+        let on_bottom = Spot::flat(Vec2::new(100.5, 100.8), 1.0, (100, 100)).owned_by(owner);
+        let (streaming, exact) = walked(on_bottom, Vec2::new(100.5, 100.8), 15.0);
+        assert!(
+            streaming > 0.99 && exact > 0.99,
+            "the higher treads are strips of `y` this ray is never over: \
              streaming {streaming}, exact {exact}",
         );
     }

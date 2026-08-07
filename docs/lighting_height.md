@@ -1214,7 +1214,8 @@ rule landed; none of it blocked any of them.
   now has a number and the other does not. The honest alternatives are to stop
   drawing the sprite behind a meshed static, or to clip it to the mesh.
 
-- **The `ground < 1e-6` shortcut in both walks ignores a lid's own footprint.**
+- ~~**The `ground < 1e-6` shortcut in both walks ignores a lid's own
+  footprint.**~~ **Fixed.**
   A ray with no horizontal run takes a shortcut past the candidate-cell loop and
   applies `crosses` to *every* lid on the cell, with no test of whether the ray
   is over that lid at all. The main path stopped doing that when sub-tile
@@ -1225,6 +1226,17 @@ rule landed; none of it blocked any of them.
   over. Three copies to fix (`walk_cells_exact`, `walk_cells_streaming`,
   `blit.wesl`'s own). Found writing phase 4's mutation test, which had to slant
   its first ray to avoid it.
+
+  All three gate on the footprint now — `light::over_footprint` and
+  `blit.wesl`'s twin, the horizontal half of `ray_vs_solid`'s parallel-axis rule
+  and only the horizontal half, because the height answer is `crosses`'s soft one
+  and `ray_vs_solid` would answer it hard. The slanted ray is joined by a
+  straight one that no longer needs to be: `light::a_vertical_ray_is_not_stopped
+  _by_lids_it_is_not_over`, and `frame::the_shader_does_not_stop_a_vertical_ray
+  _with_a_lid_it_is_not_under` for the shader's copy — which had no coverage at
+  all until now, and stayed green with its fix deleted. See
+  `docs/lighting_rebuild.md`'s backlog for what that says about the parity
+  harness.
 
 - **A flight's risers are still excused as a group.** Phase 4's panel arm asks
   whether the fragment's own stance names the panel's side, which is exact and is

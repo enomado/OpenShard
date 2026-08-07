@@ -361,7 +361,7 @@ may not still matter:
 | `FACE_EDGE`'s two scales; the flame at a surface's own height | **phase 3** — there is no band |
 | `STAND_OFF`/`ON_TOP` at a grazing corner; the `ON_TOP` twin | **phase 4** — there is no nudge |
 | risers excused as a group; `own_run`; `flame_end`'s height test; a mobile shadowed by its own wall | **phase 4** — identity answers all four |
-| the `ground < 1e-6` shortcut ignoring a lid's footprint | **phase 4**, and worth fixing alone if that slips |
+| the `ground < 1e-6` shortcut ignoring a lid's footprint | **fixed** — it was worth fixing alone, and was |
 | `WIDTH_OVERLAP`'s border | **phase 6** |
 | the riser penumbra graded over a third of a face | **phase 5** |
 | the wire's span rounding to nearest; the exact-tangent definition | **phase 4** — a primitive is not a byte range any more |
@@ -417,7 +417,36 @@ Things noticed while writing this, not blocking any phase:
 - `docs/lighting_height.md`'s backlog does not disappear — most of its entries
   are *deleted* by a phase here rather than fixed, and each should be marked with
   which phase kills it rather than left reading as work.
-- The `ground < 1e-6` shortcut (both walks and the shader) is a real defect today
-  and becomes moot at phase 4; if phase 4 slips, it is worth fixing alone.
+- ~~The `ground < 1e-6` shortcut (both walks and the shader) is a real defect
+  today and becomes moot at phase 4; if phase 4 slips, it is worth fixing
+  alone.~~ **Fixed.** All three copies gate on the lid's own footprint now, by
+  the horizontal half of `ray_vs_solid`'s parallel-axis rule — `light::
+  over_footprint` and `blit.wesl`'s twin. Only the horizontal half, because a
+  vertical ray's height answer is `crosses`'s soft one and `ray_vs_solid` would
+  answer it hard, erasing the penumbra.
 - `examples/two_cubes.rs` still projects world points without asking whose pixel
   it got. Phase 2 moves every other reader to `ids`; this one should go with them.
+- **The parity harness could not see a sub-tile lid, and still barely can.** The
+  shader's copy of the shortcut above was fixed and forty-seven frame tests
+  stayed green with the fix deleted again: no parity scene had a solid narrower
+  than its tile, so the branch was never run. It has one now, and `Fixture` can
+  state an *owner* — without which a fragment on a tread is shadowed by the step
+  it stands on and every finer question about a flight is unreachable. What is
+  still true is that this is one scene and one pixel of it: the vertical case
+  needs the flame exactly over a swept fragment, so one flame buys one comparison.
+  A sweep that varied the flame across the tile would buy the whole strip.
+- **Parity is circular for any defect both walks share.** It compares the shader
+  against `light::sample`, so a rule wrong in the same way on both sides reports
+  agreement. Both fixes above went in together, which is exactly that case — the
+  new test carries a *direct* claim about the frame's own pixels beside the sweep
+  for this reason, and it is the direct claim that fires when the shader's gate is
+  removed. Worth knowing before trusting a green parity run as evidence a shader
+  is right rather than merely consistent.
+- The three-tread flight is rebuilt by hand in five tests in `light.rs` and now a
+  sixth in `frame.rs`, each restating the same `Prism::new(Face::North, &[1, 3,
+  5])` and the same tile bounds. It is the scene every stair defect is found on
+  and it should be one constructor.
+- `renderer.rs`'s `depth_state()` has lost its doc comment: `PLACE_TARGET` was
+  inserted between the comment and the function, so the whole explanation of the
+  depth test and its `LessEqual` tie-break now reads as documentation of the place
+  attachment, and the function itself has none.
