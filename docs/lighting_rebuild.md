@@ -108,6 +108,18 @@ thing shadow rays compare.
 `albedo × N·L × light colour × intensity × attenuation × shadow`, summed over
 lights, plus `albedo × sky colour × sky visibility` for ambient.
 
+**The formula is already there and its argument is wrong**, which is worth
+knowing before phase 3 rewrites it. `light::faces` is
+`clamp(along / FACE_EDGE + 0.5)`, and that shape — `N·L × k + 0.5` — is
+*wrapped diffuse*, the ordinary stylised BRDF. What is passed to it is not a
+cosine: `along` is `dot(normal, toward)` with `toward` left unnormalised, so it
+is a **distance**. That single missing normalisation is where the two scales come
+from, and it means phase 3 is smaller than it looks: normalise the argument, and
+the band becomes angular and identical for every surface; set the width to `2.0`
+and it *is* half-Lambert. The full `N·L` is then one more step, and the width is a
+knob between "hard half-space, as today" and "Lambert", which is exactly the
+dial between keeping the pre-shaded look and replacing it.
+
 Lambert with no `1/π`, and the intensities calibrated to match: the constant is a
 convention, and putting it in would mean re-tuning every flame in the tree for a
 factor everyone then divides back out. Stated here so nobody re-derives it as a
@@ -247,6 +259,14 @@ What phase 1 deliberately did *not* do: `Rgba16Float` accumulation. The whole
 composition happens in one shader pass, in `f32` registers, so there is nothing to
 store at intermediate precision yet — the moment a second pass appears (bloom, or
 the glow layer), that is when the target format matters.
+
+And what the pictures say, three ways, on `one-torch-on-open-ground` and
+`a-shut-room-with-a-torch-in-it`: the old pipeline and the restated one put the
+**night at the same level** — which is the whole claim of the restatement — while
+the pool between them is wider, warmer and no longer burnt to a white core, since
+the light now sums physically and the shoulder holds the top instead of a clamp
+flattening it. The middle picture, linear light with the old numbers, is what
+"the constants silently changed meaning" looks like: no night at all.
 
 **Phase 2 — the G-buffer.** Position, normal, ids, albedo. `place`'s packing goes;
 its readers (select, outline, tooltips, every oracle in `examples/`) move to `ids`.
