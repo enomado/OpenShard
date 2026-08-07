@@ -21,7 +21,7 @@
 //! not two `facing::Prism`s) are built from that same [`BoxSpec`], so the
 //! two can never disagree the way `two_cubes.rs`'s session 13 bug did.
 //!
-//! - `OPENSHARD_BOXES_SCENE=tree|pair|line` — which scene to build. Default
+//! - `OPENSHARD_BOXES_SCENE=tree|pair|line|stair` — which scene to build. Default
 //!   `tree`: two boxes on one tile, the lower a half-tile footprint, the
 //!   upper a third-tile footprint standing directly on top of it — small on
 //!   purpose, to see whether a shape that narrow still throws a shadow with
@@ -31,7 +31,9 @@
 //!   `line` is `two_cubes.rs`'s own default shape (two whole-tile boxes,
 //!   offset `1,0` — due east, a straight line rather than a diagonal) at a
 //!   shorter height, built here only so both scenes go through one tool with
-//!   one set of knobs.
+//!   one set of knobs. `stair` is `synthetic_stair.rs`'s own default flight
+//!   restated as boxes, which is what lets the reference tracer see it at
+//!   all: see [`scene_stair`].
 //! - `OPENSHARD_SCENE_ZOOM=n` — notches of `Zoom::scale_up`, from `Zoom::ONE`.
 //!   Default `3` for both scenes, which is **the top of the ladder**:
 //!   `camera::LADDER` has three rungs above 1:1 and `scale_up` stops at the
@@ -322,6 +324,69 @@ fn scene_line() -> Vec<BoxSpec> {
     ]
 }
 
+/// `synthetic_stair.rs`'s own default flight, restated as boxes: one tile, a
+/// three-tread climb towards `north`, each tread a full-width strip a third of
+/// a tile deep standing on the static's own base at `z 0`.
+///
+/// The heights and the strip layout are not invented here — they are
+/// `facing::Prism::new(Face::North, &[1, 3, 5])`'s own, read off
+/// `Prism::footprint`: `up` names the *high* side, so the run climbs from the
+/// `+y` edge towards `-y`, and tread `i` of `n` occupies the strip
+/// `[i/n, (i+1)/n]` of it. A box per tread and not a prism, because that is the
+/// one shape the reference tracer can see: `openshard-client-pathtrace` has an
+/// axis-aligned box and nothing else, and a stepped prism *is* a stack of them.
+///
+/// What it buys is the phase 4 question — a tread standing in its own riser's
+/// shadow, a hairline along every tread/riser join — asked of the one renderer
+/// that has no tiles, no owners and no self-occlusion exemption to get it wrong
+/// with. `synthetic_stair.rs` asks it of a geometric oracle that shares this
+/// tool's own camera; this asks it of a path tracer that shares no arithmetic
+/// at all.
+///
+/// The three boxes meet exactly at their shared strip boundaries, which is
+/// deliberate: it is where a riser and the tread below it join, and a gap or an
+/// overlap there would be a light leak this scene exists to look for.
+///
+/// **They are returned top tread first, so the near one is painted last.** The
+/// boxes share a tile and therefore a `depth::Order`, and a tie there goes to
+/// whichever was pushed later, so the *last* box painted is the one that wins.
+/// Every tread's own `+y` face is a full-height quad ([`box_mesh`] gives a
+/// `Solid` three faces and knows nothing about what abuts it), and the part of
+/// it below the tread in front is *interior to the union* — real geometry that
+/// no camera can see. Painting the near treads last is what buries it, exactly
+/// as an isometric painter's order should. In climb order instead, a tread's
+/// buried riser is drawn over the tread in front of it, and the reference tracer
+/// reports it: 3,784 pixels of "the frame draws box 2's south face, the tracer
+/// sees body 1", none of them on a silhouette. The tracer was right and the
+/// order was what was wrong — which is the first thing this scene found.
+fn scene_stair() -> Vec<BoxSpec> {
+    let (tx, ty) = (100u16, 100u16);
+    let treads: Vec<f64> = env_or("OPENSHARD_STAIR_TREADS", "1,3,5")
+        .split(',')
+        .map(|h| h.trim().parse().expect("a number"))
+        .collect();
+    assert!(!treads.is_empty(), "a flight with no treads is not a scene");
+    let n = treads.len() as f64;
+    let (x0, y0) = (f64::from(tx), f64::from(ty));
+    treads
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(i, &h)| {
+            // `Prism::footprint`'s own `Face::North` branch, for the run
+            // `[i/n, (i+1)/n]`: the low tread sits at the `+y` edge, which is
+            // also the near one, which is why the climb order is the paint
+            // order here.
+            let (lo, hi) = (i as f64 / n, (i as f64 + 1.0) / n);
+            BoxSpec {
+                tile: (tx, ty),
+                min: (x0, y0 + 1.0 - hi, 0.0),
+                max: (x0 + 1.0, y0 + 1.0 - lo, h),
+            }
+        })
+        .collect()
+}
+
 /// Whether `point` can see `light` at all, geometrically — every box but
 /// `skip` (the one `point` itself rests on, which must not shadow itself)
 /// tested by [`segment_clear_of_box`].
@@ -402,7 +467,8 @@ fn main() {
         "tree" => scene_tree(),
         "pair" => scene_pair(),
         "line" => scene_line(),
-        other => panic!("unknown OPENSHARD_BOXES_SCENE {other:?}, wanted tree, pair or line"),
+        "stair" => scene_stair(),
+        other => panic!("unknown OPENSHARD_BOXES_SCENE {other:?}, wanted tree, pair, line or stair"),
     };
     eprintln!("scene {scene_name:?}: {} boxes", boxes.len());
     for (i, b) in boxes.iter().enumerate() {
@@ -658,6 +724,12 @@ fn main() {
         // through the near box, and any pixel of that face the frame draws lit
         // is a pixel the near box was exempted from shadowing.
         "pair" => (2.0, -1.0, "1.5", "6"),
+        // `synthetic_stair.rs`'s own default flame, verbatim (`OPENSHARD_LIGHT_AT`
+        // `2.5,1.0`, `_Z` 2, `_RADIUS` 6) and offset from the same tile — the
+        // flight's first tread. Low and in front of the climb, which is what puts
+        // the far tread in shadow and draws a hairline on every tread/riser join.
+        // Two tools rendering one scene under two flames would be two scenes.
+        "stair" => (2.5, 1.0, "2", "6"),
         _ => (2.5, -1.5, "6", "8"),
     };
     let (ldx, ldy) = env_opt("OPENSHARD_LIGHT_AT")
