@@ -489,6 +489,50 @@ fn beside(path: &std::path::Path, what: &str) -> PathBuf {
     named
 }
 
+/// One colour per plane of the run, over the pixels the `place` attachment says
+/// that plane drew — the same field the oracle judges, drawn instead of counted.
+///
+/// A top and its own riser are deliberately **near** each other in hue and a
+/// tread away is far: what is worth seeing here is a face landing where the one
+/// beside it should be, and two planes that neighbour in the world reading as two
+/// unrelated colours makes every honest boundary as loud as a wrong one. Tops are
+/// the bright half of a pair and risers the dim half, so a riser drawn over the
+/// tread it stands on — `Prism::mesh`'s `SEAM_OVERLAP`, which is real pixels of a
+/// riser under a tread — shows as a dark hairline inside a bright band rather
+/// than as another edge.
+///
+/// Everything that is not one of the run's own faces is black: the ground, the
+/// background, and any pixel whose row is outside `slabs`.
+fn write_face_map(drawn: &[oracle::Drawn], slabs: &[Slab], width: u32, height: u32, path: &std::path::Path) {
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for texel in drawn {
+        let of = |id: usize| -> [u8; 3] {
+            let slab = &slabs[id];
+            // Three primaries by flight, shaded by tread, halved for a riser.
+            let step = 255 - (slab.tread as u32 * 60).min(180) as u8;
+            let value = match slab.part {
+                Part::Top => step,
+                Part::Riser => step / 2,
+            };
+            match slab.flight % 3 {
+                0 => [value, value / 4, value / 4],
+                1 => [value / 4, value, value / 4],
+                _ => [value / 4, value / 4, value],
+            }
+        };
+        let colour = match texel.kind == Kind::Static as u32
+            && texel.stance == Stance::MeshFace as u32
+            && (texel.id as usize) < slabs.len()
+        {
+            true => of(texel.id as usize),
+            false => [0, 0, 0],
+        };
+        ppm.extend_from_slice(&colour);
+    }
+    std::fs::write(path, ppm).expect("writing the face map");
+    eprintln!("wrote {}", path.display());
+}
+
 fn main() {
     let (device, queue) = gpu().expect("an adapter");
 
@@ -824,6 +868,16 @@ fn main() {
     if !oracle_on {
         return;
     }
+
+    // **Which face drew each pixel**, as a picture, beside the frame that was
+    // asked for. The oracle below reads exactly this and reports it as counts;
+    // a count cannot answer "why is there a white strip down the east side", and
+    // that question is asked of a *drawing* rather than of the lighting. One
+    // colour a plane, so a face landing where it should not — `Prism::mesh`'s
+    // `SEAM_OVERLAP` painting a riser over the tread it stands on, or
+    // `WIDTH_OVERLAP` poking a face past its own tile — reads off the picture
+    // instead of being argued about.
+    write_face_map(&drawn, &slabs, width, height, &beside(&dumped, "faces"));
 
     // The face oracle. See this module's own doc for what it is and why it
     // comes before the fix rather than after it.
