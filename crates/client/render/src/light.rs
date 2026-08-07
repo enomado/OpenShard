@@ -1032,6 +1032,46 @@ fn on_surface(z: f32, low: f32, high: f32) -> bool {
     z >= low - ON_TOP && z <= high + ON_TOP
 }
 
+/// Whether a **lid** is a plane the fragment is drawn *on*, rather than one
+/// standing between it and the flame — `docs/lighting_height.md` phase 4's rule,
+/// and the whole of the geometry in it.
+///
+/// > A contact at the ray's origin does not count. A crossing at `t > 0` counts,
+/// > whoever owns the solid.
+///
+/// Two facts, and no tolerance in either.
+///
+/// **The lid is a plane** — `low == high`, which is what an ordinary floor and a
+/// tread's own top both are. Not a special case but the condition that makes "a
+/// contact at the origin does not count" and "this primitive does not count" one
+/// sentence: a plane is crossed at a single point, so a ray leaving one crosses
+/// it at its own origin and nowhere else, and there is no later crossing left for
+/// an exemption to swallow. A lid with a real depth is a *slab* — a sloped roof
+/// section, [`crate::occlusion::Solid::box_of`]'s own comment — and a ray that
+/// descends into one from its own top face genuinely travels through it. That
+/// crossing is not at the origin, so it still counts, and this says `false` for
+/// it rather than pretending the two shapes are one.
+///
+/// **And the fragment is drawn at that plane's own height.** `drawn` and not the
+/// ray's start: [`stand_clear`]'s [`ON_TOP`] is the *walk's* nudge and not the
+/// fragment's, and a question about which surface a fragment **is** has to be
+/// asked where the fragment is. Exact equality and not [`on_surface`] for the
+/// same reason — the nudge is the only thing there was ever a tolerance for
+/// here, and both sides of this are exact on the wire: a lid's `z` is an integer
+/// or the fraction [`crate::occlusion::Occlusion::solid_z_bytes`] ships, and a
+/// fragment's is the sixteenth [`crate::place::unpacked_height`] hands back.
+///
+/// **It is not on its own the rule.** [`exemption`] asks it only of a solid that
+/// carries the fragment's own owner on the fragment's own cell, and that gate is
+/// load-bearing rather than tidiness: a wall's face pixel at exactly the `z` of
+/// the floor its wall stands on is drawn at that floor's height too, and
+/// exempting *it* is the bright stroke a house wore along its floorboards that
+/// [`ON_TOP`] was added to close. Being at a plane's height is not being a point
+/// of it; being at it **and owned by it** is.
+fn drawn_on(drawn: f32, low: f32, high: f32) -> bool {
+    low == high && drawn == low
+}
+
 /// A soft interval: `1.0` well inside `low..=high`, `0.0` well outside, and a
 /// gradient `band` wide across each edge.
 ///
@@ -1288,6 +1328,15 @@ impl LitEnd {
 /// far end's; both are heights, and after `docs/lighting_height.md` phase 3 the
 /// only things left that read them are the two questions identity cannot answer
 /// — see [`exemption`].
+///
+/// `drawn_z` is the *same* end's height **before** that nudge, and the two are
+/// both here because they answer different questions. `spot_z` is where the ray
+/// starts, which is the right thing to ask "did this ray run along that panel";
+/// `drawn_z` is where the fragment is, which is the only thing that can answer
+/// "is that plane the one I am drawn on" — see [`drawn_on`]. A single field would
+/// have to be one or the other, and phase 4's whole defect is a nudge of a
+/// hundred-and-twenty-eighth answering the second question as though it were the
+/// first.
 struct ExemptionContext {
     first: (i32, i32),
     last: (i32, i32),
@@ -1295,6 +1344,7 @@ struct ExemptionContext {
     own: u8,
     owner: crate::occlusion::OwnerId,
     spot_z: f32,
+    drawn_z: f32,
     to_z: f32,
 }
 
@@ -1350,6 +1400,16 @@ struct Exemption {
 ///   different owners. That is not identity at all, it is one surface cut on a
 ///   tile boundary, and [`own_run`] is what stands in for it until a scene that
 ///   can show it exists — `pair` is one tile and cannot.
+/// - **[`drawn_on`].** Phase 4, and the one that is not a proxy for identity but
+///   a *refinement* of it. Identity is per static and a static is several planes:
+///   one [`crate::occlusion::Builder::add`] of a flight pushes a lid and a panel
+///   per tread, all carrying one owner, and a fragment is a point of exactly one
+///   of them. For a panel that does not matter — a surface does not shadow
+///   another part of itself, so the whole static is excused — but a flight's
+///   tread tops genuinely shadow each other, so which *plane* the fragment is on
+///   has to be said. Nothing on the wire says it (see that function, and
+///   `docs/lighting_height.md` phase 4 for what it would cost to), so the height
+///   answers it, exactly and for a plane only.
 fn exemption(
     ctx: &ExemptionContext,
     cell: (i32, i32),
@@ -1369,12 +1429,38 @@ fn exemption(
     // `docs/lighting_height.md`'s phase 3 table are the measurement of.
     let lit_end = own_cell && ctx.owner.same(owner);
     let flame_end = ctx.skip_last && cell == ctx.last && on_surface(ctx.to_z, low, high);
-    // A lid is still never exempt, and that is geometry rather than identity: a
-    // ray travels *through* a lid's plane, so a floor between the fragment and
-    // the flame is in the way whoever laid it — including the fragment's own
-    // static, whose tread top is a lid the ray leaves from above. `stand_clear`'s
-    // `ON_TOP` is what keeps that crossing from counting, not this.
-    let exempt = stands.edges != 0 && (lit_end || flame_end);
+    // **Which of the static's surfaces the fragment is a point of, and not merely
+    // which static.** `docs/lighting_height.md` phase 4. An owner is per
+    // [`crate::occlusion::Builder::add`] and a static is several solids — a
+    // flight pushes a lid and a panel per tread, all carrying one owner — so
+    // identity alone excuses a fragment from surfaces that genuinely stand
+    // between it and the flame. A flight's own treads shadow each other, and its
+    // own risers shadow its tread tops; that is its body, not a self-shadow.
+    //
+    // Nothing on the wire names the solid (see this function's own doc), so each
+    // shape is asked the one exact question the wire *can* answer about it. Both
+    // answers are facts the fragment already carries, compared against facts the
+    // solid already carries; neither is a tolerance and neither is a height
+    // standing in for identity, which is what phase 3 removed.
+    let is_mine = match stands.edges {
+        // A **lid**: the fragment is drawn at this plane's own height. See
+        // [`drawn_on`], which is the whole of phase 4's rule.
+        0 => drawn_on(ctx.drawn_z, low, high),
+        // A **body** — a whole tile that stands up and whose art would not say
+        // which way. It has no face for a fragment to be a point of one of, and a
+        // fragment of one carries [`crate::place::Stance::Upright`] for exactly
+        // that reason, so identity is the whole of the answer here. That is what
+        // `examples/boxes.rs`'s `pair` measured phase 3 against.
+        EDGE_ANY => true,
+        // A **panel**: the fragment is drawn on the side this one stands on. A
+        // static that pushed a named panel gave its fragments a face to carry —
+        // [`crate::place::Stance::of`] hands a face to exactly the statics
+        // [`crate::occlusion::edges_of`] hands a named edge — so `own` is a fact
+        // and not a fallback, and a fragment of a *lid* of the same static
+        // carries no side at all and is a point of no panel of it.
+        edges => edges & ctx.own != 0,
+    };
+    let exempt = (lit_end && is_mine) || (stands.edges != 0 && flame_end);
     Exemption { exempt, same_run }
 }
 
@@ -2241,6 +2327,9 @@ fn walk_cells_exact(
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
+    // Where the fragment is, kept before [`stand_clear`] moves the ray off it —
+    // see [`ExemptionContext::drawn_z`].
+    let drawn_z = from[2];
     let (from, to) = stand_clear(from, to, lit.surface);
     let first = lit.tile;
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -2258,6 +2347,14 @@ fn walk_cells_exact(
                 continue;
             }
             let (low, high) = (stands.low(), stands.high());
+            // Phase 4's rule, here too. Every solid this loop sees is on the
+            // fragment's own cell by construction, so the owner is the whole of
+            // what [`exemption`] would add — and a ray going straight up or down
+            // off a tread is exactly the ray whose only contact with that tread's
+            // own top is the point it started at.
+            if lit.owner.same(owner) && drawn_on(drawn_z, low, high) {
+                continue;
+            }
             let by_surface =
                 f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high, to[2], spread);
             if by_surface > stopped {
@@ -2289,6 +2386,7 @@ fn walk_cells_exact(
         own,
         owner: lit.owner,
         spot_z: from[2],
+        drawn_z,
         to_z: to[2],
     };
 
@@ -2558,6 +2656,9 @@ fn walk_cells_streaming(
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
+    // See [`walk_cells_exact`]'s own copy: the fragment's height, before
+    // [`stand_clear`] moves the ray off it.
+    let drawn_z = from[2];
     let (from, to) = stand_clear(from, to, lit.surface);
     let first = lit.tile;
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
@@ -2578,6 +2679,10 @@ fn walk_cells_streaming(
                 continue;
             }
             let (low, high) = wire_span(stands);
+            // Phase 4's rule — [`walk_cells_exact`]'s own copy of this says why.
+            if lit.owner.same(owner) && drawn_on(drawn_z, low, high) {
+                continue;
+            }
             let by_surface =
                 f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high, to[2], spread);
             if by_surface > stopped {
@@ -2607,6 +2712,7 @@ fn walk_cells_streaming(
         own,
         owner: lit.owner,
         spot_z: from[2],
+        drawn_z,
         to_z: to[2],
     };
 
@@ -3200,6 +3306,7 @@ mod tests {
             // Halfway up both spans, so a height test would answer "mine" for
             // either of them.
             spot_z: 10.0,
+            drawn_z: 10.0,
             to_z: 10.0,
         };
         let exempt = |cell, owner| exemption(&ctx, cell, &mine, owner, mine.low(), mine.high()).exempt;
@@ -3609,6 +3716,127 @@ mod tests {
             sample.reaches[0].through > 0.9,
             "a tread's own top should not be dimmed by the riser it caps: through {}",
             sample.reaches[0].through,
+        );
+    }
+
+    /// `docs/lighting_height.md` **phase 4**, at the walk rather than at
+    /// [`exemption`]: a fragment is not shadowed by the plane it is drawn on, and
+    /// **is** shadowed by every other plane of its own static.
+    ///
+    /// One flight, three treads `1,3,5`, climbing north on one tile — the scene
+    /// `examples/synthetic_stair` draws and the face oracle measured. Its six
+    /// solids are one [`crate::occlusion::Builder::add`] and therefore one
+    /// [`crate::occlusion::OwnerId`], so identity alone cannot tell any of them
+    /// from any other, and everything asserted here is about what stands beside
+    /// it. Both walks, because a rule one of them has is a parity gap.
+    ///
+    /// Three rays, and each one kills a different mutation:
+    ///
+    /// - **Off a tread's own top, steeply down.** The only solid on the line is
+    ///   that tread's own lid and the ray leaves its plane, so the only contact
+    ///   is at the origin. Red before this phase — [`stand_clear`]'s [`ON_TOP`]
+    ///   lifted the fragment a hundred-and-twenty-eighth clear of its own top and
+    ///   turned that contact into a crossing, which is what painted 1522 and 1346
+    ///   pixels of the middle and top treads black.
+    /// - **Off a riser, up and east, over that flight's own bottom tread.** The
+    ///   *same kind* of solid — a lid of the fragment's own static — and it must
+    ///   still stop the ray, because that crossing is at `t > 0` and well away
+    ///   from where the ray started: a lamp above and beyond a staircase genuinely
+    ///   cannot see the front of its bottom step. A fix phrased as "a fragment is
+    ///   never shadowed by its own static's lid" lights this one, which is the
+    ///   whole reason [`drawn_on`] compares a height instead of stopping at the
+    ///   owner.
+    /// - **Off a tread's top, down and south, into the riser under it.** A
+    ///   *panel* of the fragment's own static, and the fragment is a point of no
+    ///   panel of it at all: it is flat, and a flat fragment carries no side.
+    ///   This one is red without the `edges & own` arm and green with it, while
+    ///   the other two are green either way — which is what says the lid half and
+    ///   the panel half are two properties rather than one restated. It is also
+    ///   the defect the lid was hiding: with the tread tops still black for the
+    ///   wrong reason, this ray's answer could not be read off the picture.
+    #[test]
+    fn a_fragment_is_shadowed_by_every_plane_of_its_own_static_but_the_one_it_is_drawn_on() {
+        use crate::facing::Prism;
+        use crate::occlusion::{Builder, Shape};
+
+        let stair = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE),
+            height: 20,
+            ..StaticTile::default()
+        };
+        // North, so the treads divide the tile up `y`: tread 0 over
+        // `100.667..101` capped at `z 1`, tread 1 over `100.333..100.667` at
+        // `z 3`, tread 2 over `100..100.333` at `z 5`, and a riser standing on
+        // each strip's own low edge.
+        let prism = Prism::new(Face::North, &[1, 3, 5]).expect("three treads");
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        let graphic = Graphic(0x0736);
+        occlusion.add(100, 100, 0, graphic, &stair, Shape::solid(prism));
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+        let owner = occlusion.owner_at(100, 100, 0, graphic);
+        assert!(
+            !owner.same(crate::occlusion::OwnerId::NONE),
+            "the flight has to have an owner for any of this to be about identity"
+        );
+
+        let walked = |spot: Spot, at: Vec2, z: f32| {
+            let lighting = Lighting {
+                ambient: NIGHT,
+                lights: vec![Light {
+                    at,
+                    z,
+                    // Wide enough that nothing here is out of reach: this is a
+                    // test about what stands in the way, not about falloff.
+                    radius: 40.0,
+                    color: [1.0, 1.0, 1.0],
+                    intensity: 1.0,
+                    beam: None,
+                }],
+                occlusion: occlusion.clone(),
+                sun: None,
+                view: crate::debug::View::default(),
+            };
+            let streaming = sample(spot, &lighting).reaches[0].through;
+            let exact = sample_exact(spot, &lighting).reaches[0].through;
+            (streaming, exact)
+        };
+
+        // 1. Off the top tread's own top, down past the flight. Nothing else is
+        //    under it: the two lower treads' lids are strips of `y` this ray is
+        //    never over, and every riser stands on a `y` it never reaches.
+        let on_top = Spot::flat(Vec2::new(100.5, 100.15), 5.0, (100, 100)).owned_by(owner);
+        let (streaming, exact) = walked(on_top, Vec2::new(100.6, 100.25), -5.0);
+        assert!(
+            streaming > 0.99 && exact > 0.99,
+            "a tread's own top is a contact at the ray's origin, not a crossing: \
+             streaming {streaming}, exact {exact}",
+        );
+
+        // 2. The counter-example, and the same lid at `t > 0`: off the bottom
+        //    riser's own face, east and up, crossing tread 0's own top a fifth of
+        //    the way along and well inside its strip.
+        let on_riser = Spot::face(Vec2::new(100.5, 100.99), 0.5, (100, 100), Face::South).owned_by(owner);
+        let (streaming, exact) = walked(on_riser, Vec2::new(103.0, 100.5), 5.0);
+        assert!(
+            streaming < 0.5 && exact < 0.5,
+            "the flight's own body is between this riser and a lamp above and beyond it: \
+             streaming {streaming}, exact {exact}",
+        );
+
+        // 3. The panel half: off the middle tread's top, south and down, straight
+        //    into the riser that tread stands against. Same owner, and a surface
+        //    the fragment is not a point of.
+        let on_middle = Spot::flat(Vec2::new(100.5, 100.4), 3.0, (100, 100)).owned_by(owner);
+        let (streaming, exact) = walked(on_middle, Vec2::new(100.5, 101.5), 1.0);
+        assert!(
+            streaming < 0.5 && exact < 0.5,
+            "a flat fragment is a point of no panel, so its own flight's riser stops the ray: \
+             streaming {streaming}, exact {exact}",
         );
     }
 

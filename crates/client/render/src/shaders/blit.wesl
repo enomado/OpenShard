@@ -517,6 +517,21 @@ fn on_surface(z: f32, low: f32, high: f32) -> bool {
     return z >= low - ON_TOP && z <= high + ON_TOP;
 }
 
+// Whether a **lid** is a plane the fragment is drawn *on*, rather than one
+// standing between it and the flame. `docs/lighting_height.md` phase 4's rule,
+// and `light::drawn_on` — see that function for the whole of the argument. Two
+// facts, no tolerance: the lid is a plane (`low == high`), so a ray leaving it
+// crosses it at its own origin and nowhere else and there is no later crossing an
+// exemption could swallow; and the fragment is drawn at exactly that height,
+// asked of `drawn`, which is `walk`'s `raw_start.z` and **not** its nudged
+// `start.z`. The nudge is the walk's own; a question about which surface a
+// fragment *is* has to be asked where the fragment is, and a
+// hundred-and-twenty-eighth of `ON_TOP` answering it as a crossing is exactly
+// what painted a stair's tread tops black.
+fn drawn_on(drawn: f32, low: f32, high: f32) -> bool {
+    return low == high && drawn == low;
+}
+
 // A soft interval: 1 well inside `low..=high`, 0 well outside, and a gradient
 // `band` wide across each edge.
 //
@@ -930,6 +945,11 @@ fn cell_stopped(
     spread: f32,
     start: vec3<f32>,
     finish: vec3<f32>,
+    // The lit end's height **before** `walk`'s own `ON_TOP` moved `start` off it.
+    // The two travel together and answer different questions — `light::
+    // ExemptionContext`'s `spot_z`/`drawn_z` pair, and `drawn_on` for which is
+    // which.
+    drawn_z: f32,
     delta: vec3<f32>,
     ground: f32,
 ) -> f32 {
@@ -977,7 +997,22 @@ fn cell_stopped(
         let lit_end = own_cell && owner != OWNER_NONE && owner == reference.y;
         let flame_end =
             skip_last && cell.x == last.x && cell.y == last.y && on_surface(finish.z, low, high);
-        if edges != 0u && (lit_end || flame_end) {
+        // **Which of the static's surfaces the fragment is a point of, and not
+        // merely which static** — `light::exemption`'s own `match` on `edges`,
+        // and see it for the whole argument. An owner is per static and a static
+        // is several solids; a flight's own risers stand between its own tread
+        // tops and a flame, and that is its body rather than a self-shadow. Each
+        // shape is asked the one exact question the wire can answer about it: a
+        // lid, the height the fragment is drawn at; a body, nothing, since it has
+        // no face to be a point of one of; a panel, whether the fragment's own
+        // stance names the side this panel stands on.
+        var is_mine = (edges & own) != 0u;
+        if edges == 0u {
+            is_mine = drawn_on(drawn_z, low, high);
+        } else if edges == EDGE_MASK {
+            is_mine = true;
+        }
+        if (lit_end && is_mine) || (edges != 0u && flame_end) {
             continue;
         }
         // How soft this crossing's own edge is: the penumbra a source of
@@ -1103,12 +1138,22 @@ fn walk(
         let straight = solids_at(first.x, first.y);
         var stopped = 0.0;
         for (var i = 0u; i < straight.y; i = i + 1u) {
-            let id = id_at(straight.x + i).x;
+            let reference = id_at(straight.x + i);
+            let id = reference.x;
             let stands = solid_at(id);
             if (stands.w & EDGE_MASK) != 0u {
                 continue;
             }
             let vertical = span_of(id);
+            // Phase 4's rule, here too — `light::walk_cells_streaming`'s own copy
+            // of it in this same shortcut. Every solid this loop sees is on the
+            // fragment's own cell by construction, so the owner is the whole of
+            // what `cell_stopped` would add, and a ray going straight up or down
+            // off a tread is exactly the ray whose only contact with that tread's
+            // own top is the point it started at.
+            if owner != OWNER_NONE && owner == reference.y && drawn_on(raw_start.z, vertical.x, vertical.y) {
+                continue;
+            }
             let stops = f32(stands.z) / 255.0 * crosses(
                 start.z,
                 finish.z,
@@ -1164,7 +1209,7 @@ fn walk(
     var cell = first;
     for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let stopped = cell_stopped(
-            cell, first, last, own, owner, stance, skip_last, spread, start, finish, delta, ground,
+            cell, first, last, own, owner, stance, skip_last, spread, start, finish, raw_start.z, delta, ground,
         );
         through = through * (1.0 - stopped);
         if through <= 0.004 {
@@ -1203,7 +1248,7 @@ fn walk(
             out_by_x,
         );
         let probe_stopped = cell_stopped(
-            probe, first, last, own, owner, stance, skip_last, spread, start, finish, delta, ground,
+            probe, first, last, own, owner, stance, skip_last, spread, start, finish, raw_start.z, delta, ground,
         );
         through = through * (1.0 - probe_stopped);
         if through <= 0.004 {
