@@ -903,14 +903,32 @@ rule landed; none of it blocked any of them.
   (`OPENSHARD_FRAME_DUMP` writes `<stem>_faces.ppm`) is where to look: the seam
   reads as a dim hairline inside a bright band.
 
+  **And it is not only a hairline — it moves the step's own corner.** Measured by
+  rendering the face map twice, once with both overlaps set to `0.0`: at the east
+  corner of a flight the riser overruns the tread above it by **3 px** and the
+  tread below it by **3 px** (`0.15` `z` × `16` px per `z` at `4:1` is `2.4`, and
+  it applies at both ends), so the bright wedge of each tread meets the riser
+  three pixels late at the top and three early at the bottom rather than at the
+  corner point. That is the "the planes look offset" reading of this picture, and
+  it is right: they are, by exactly this constant.
+
 - **`WIDTH_OVERLAP` puts a jag on the outer silhouette.** The same face map shows
-  a face poking `0.03` of a tile past its own tile on the west edge, which is a
-  one-pixel tooth on the silhouette at `4:1`. It is deliberate — the constant's
-  own doc argues it closes a leak along a riser's outer edge, where
-  `SEAM_OVERLAP` cannot reach because that edge borders no other face — so this
-  is a note that the cure is visible at the zoom the fixture runs at, not that
-  the constant is wrong. Nobody has measured the leak it closes against the tooth
-  it draws.
+  a face poking `0.03` of a tile past its own tile, which is a **2 px** tooth at
+  `4:1` — measured the same way, the east silhouette sits at column 317 with the
+  overlap and 315 without. It is deliberate — the constant's own doc argues it
+  closes a leak along a riser's outer edge, where `SEAM_OVERLAP` cannot reach
+  because that edge borders no other face — so this is a note that the cure is
+  visible at the zoom the fixture runs at, not that the constant is wrong. Nobody
+  has measured the leak it closes against the tooth it draws.
+
+  **What the same experiment says about simply removing them: don't.** With both
+  at `0.0` the flight draws 22528 face pixels instead of 24106 — the overlaps are
+  about 7% of its drawn area — and the face oracle goes from **136** disagreements
+  to **302**, all but two of them "too light". Every coincident edge is then a
+  sub-pixel tie, and a pixel that lands exactly on a plane's boundary is the one
+  `STAND_OFF` costs the most at. So the overlaps are paying for something real,
+  and the question is which face should win the tie rather than whether there
+  should be one.
 
 - **The `ground < 1e-6` shortcut in both walks ignores a lid's own footprint.**
   A ray with no horizontal run takes a shortcut past the candidate-cell loop and
