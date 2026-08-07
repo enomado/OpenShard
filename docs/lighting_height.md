@@ -532,12 +532,21 @@ flame; nothing else exists in the frame to misread. Two shapes come out of it:
   each riser *stands on*, with `sub.x` running the whole width of the tile. It
   is the bottom row of a riser, entire. The pixels are not dimmed, they are
   `through <= RAY_CUTOFF`: a hard flip, not a soft edge.
-- **A whole tread top, black,** wherever the flame is below it.
+
+  **This one is not the defect, and the oracle is what said so** — see "What the
+  oracle said" below. Everything measured about it here is right and the reading
+  put on it was not: those pixels are `Prism::mesh`'s own `SEAM_OVERLAP`,
+  fragments of a riser drawn *under* the tread it stands on, and shadowing them
+  is what the geometry there says. The whole paragraph is left standing rather
+  than corrected in place, because "every number was right and the conclusion was
+  not" is the thing worth being able to re-read.
+- **A whole tread top, black,** wherever the flame is below it. This one is.
 
 Neither is the display. Measured in the dump's own pixels across the zoom
 ladder, the count goes 22 → 88 → 132 → 346 while the silhouette grows 75 → 242
 px wide: the seam grows faster than the outline rather than staying a sampled
-pixel.
+pixel. (Which is also what a fixed *world-space* feature does — `0.15` of a `z`
+unit is `2.4` px at `4:1` — so this ruled out the display and nothing else.)
 
 `Reach::stopped_by` names the culprit outright once it carries a `Stopper`:
 
@@ -610,11 +619,83 @@ of it that reads an owner is gated on `own_cell` — but a person reading the
 report was. `light::stands_to` now spells the relation out in the report rather
 than leaving two equal numbers side by side.
 
+### What the oracle said, and what it took back
+
+Steps 1 and 2 below are done. `examples/synthetic_stair` now carries the face
+oracle `examples/boxes.rs` has, and the two share it — `examples/oracle/mod.rs`,
+one slab test, because two copies of a geometric primitive is the shape that
+drifts. Every pixel the rendered `place` attachment says a flight's own face
+drew is one comparison: the fragment's own world position off that attachment,
+an independent segment-vs-AABB test about *that* point, against the rendered
+`View::Shadow` pixel.
+
+What the oracle has that `boxes.rs`'s does not is **which occluder a fragment is
+excused from**. `boxes.rs` drops the whole box a point rests on. A flight is one
+static, one owner and **six planes**, and a fragment is a point of exactly one of
+them — the face the renderer drew it from. So the oracle drops that one plane and
+counts every other, its own flight's included. That is the rule above with no
+epsilon in it: a ray leaving a plane crosses that plane at its own origin and
+nowhere else, so "a contact at the origin does not count" and "this primitive
+does not count" are one sentence for a plane. Its geometry is re-derived from the
+tread profile and then gated, plane for plane, against the grid's own solids and
+against the drawn mesh's own normals and planes, so a divergence between two
+derivations panics by name rather than arriving as a count.
+
+It is red before any fix, and it took two of this section's own claims back.
+
+**The hairline is not this phase's defect.** `Prism::mesh` grows every riser by
+`SEAM_OVERLAP` — `0.15` of a `z` unit — at both ends, so the last-submitted face
+wins a coincident edge outright instead of leaving it to a sub-pixel tie. Those
+are real pixels of a riser drawn *under the tread it stands on*, at a place the
+staircase's own body fills, and being shadowed there is honest. The oracle counts
+them as their own class: **1120 pixels of a single flight are drawn beyond their
+own plane's span, and 2 of them disagree.** The rest agree — renderer and
+independent geometry both say shadowed. Two numbers already in this section
+point the same way and were read as something else: `0.15` `z` is `2.4` px at
+`4:1`, which is the measured 2 px width, and the seam growing with the zoom
+ladder is a world-space feature behaving like one, not a defect outgrowing its
+outline.
+
+**Both flame placements written down here are degenerate**, each sitting exactly
+in a plane of the geometry, and a grazing scene answers on the quantum rather
+than on the geometry:
+
+| scene | disagreeing | what moved |
+|---|---|---|
+| one flight, `2.5,1.0` (this section's default) | 5779/24106 | flame is at `y 101.0` — **riser 0's own plane** |
+| the same, flame at `2.5,1.4` | 3031/24106 | riser 0 goes 456 → **0**; the picture is unchanged |
+| the run, `LIGHT_Z=5` (§ the counter-example) | 7545/69508 | flame is at `z 5` — **the top treads' own height** |
+| the same, `LIGHT_Z=6` | 2337/69508 | every tread top goes to 0 or 2 |
+
+Off the degeneracies, the residual is two clean classes and they have opposite
+signs:
+
+- **Tread tops rendered too dark** — 1522 and 1346 of the middle and top treads,
+  `2868` of the single flight's `2929`. This is phase 4's lid, and
+  `light::sample`'s own report names it: `stopped by (100, 100) owner 1, lid z
+  5.00..5.00 — THE FRAGMENT'S OWN OCCLUDER`. Both walks together on every one of
+  them; no parity gap anywhere in any run.
+- **Riser tops rendered too light** — the whole of the run scene's 2190, banded
+  at the top sixteenth of every riser. Not this phase's: it is `STAND_OFF`
+  walking a face pixel `2/127` of a tile in front of its own plane, which at the
+  corner where a riser meets the tread above it is six times the geometric margin
+  and clears that tread's lid outright. The backlog entry that says nobody has
+  priced `STAND_OFF` at a grazing corner now has a price.
+
+The counter-example scene is where the fix's verdict has to be "unchanged", and
+the oracle says something better than that: with the flame genuinely above the
+run, **every tread top there already reads 0 or 2** — the honest occlusions are
+honest today. The fix has to leave that alone, and now there is a number saying
+what "alone" is.
+
+The proportion holds across the zoom ladder — 192/1498, 747/6012, 1725/13449,
+3031/24106, all within a quarter of a point of 12.6% — so none of it is sampling.
+
 ### Not yet done, and the order it goes in
 
-The instrument is in — `light::Stopper`, `light::stands_to`, and
-`synthetic_stair`'s `OPENSHARD_STAIR_PROBE`. The rule is not, **and the oracle
-comes before it.**
+The instrument is in — `light::Stopper`, `light::stands_to`,
+`synthetic_stair`'s `OPENSHARD_STAIR_PROBE`, and now the face oracle. The rule
+is not.
 
 That ordering is this plan's own phase 0 restated, and it is worth restating
 because everything above is a reason to skip it: the defect is understood, the
@@ -627,19 +708,21 @@ side doing the judging.
 
 So, in order:
 
-1. **A face oracle for `synthetic_stair`**, the shape `examples/boxes.rs`
-   already has: grid the flight's own faces, project each point to the pixel the
-   renderer actually drew, ask the `place` attachment whose pixel it got, and
-   compare against a fresh slab test that shares no arithmetic with `light.rs`
-   or `blit.wesl`. It **counts what it compared**, not only what disagreed.
-   Red on the single flight and on the seams before anything is fixed.
-2. **The same oracle over the run**, where its verdict has to be "unchanged" —
-   the counter-example above is a scene the fix must leave alone, and only an
-   oracle can say "unchanged and still right" rather than "unchanged".
-3. **Then the rule.** Done when: the single flight reads zero at every zoom
-   notch with `ON_TOP` at its own value, the run's honest occlusions are
-   untouched, and the mutation that says so is the `t > 0` crossing rather than
-   the count.
+1. ~~**A face oracle for `synthetic_stair`**~~ — done, and it is the section
+   above. It counts what it compared, counts the pixels no flame reaches apart
+   from those it judged, and asserts the total non-trivial.
+2. ~~**The same oracle over the run**~~ — done. Its verdict there is better than
+   "unchanged": with the flame genuinely above the run, the tread tops read 0.
+3. **Then the rule.** Done when: the single flight's **tread tops** read zero
+   with `ON_TOP` at its own value, at every zoom notch, on a flame *off* every
+   plane of the geometry; the run's tread tops stay at zero; and the mutation
+   that says so is the `t > 0` crossing rather than the count.
+
+   The target is the 2868 too-dark tread-top pixels of the single flight
+   (`OPENSHARD_LIGHT_AT=2.5,1.4`), and the two classes that must **not** move
+   are the 1120 seam pixels (`Prism::mesh`'s own overlap, honest) and the
+   run's 2190 too-light riser tops (`STAND_OFF`, a separate backlog entry). A
+   fix that took the grand total to zero would have eaten at least one of them.
 
 **Where the rule should live is a design question, not a patch site.** The three
 candidates, so the next session does not re-derive them: a `t`-threshold inside
@@ -652,11 +735,60 @@ puts the fact next to the other fact, and needs "at the origin" to be a
 geometric statement rather than a tolerance. Decide it with the oracle already
 red, not before.
 
+**And the oracle is now a fourth candidate's argument.** What it does is the
+second option, and it needed no tolerance to do it — because it has something
+`exemption` does not: the fragment names the *plane* it is a point of, not the
+static. `Spot::owner` is an `OwnerId` per `Builder::add`, so a flight's six
+solids share one, and every candidate above is an attempt to recover per-plane
+identity from a per-static number plus geometry. The mesh row already carries
+which face drew the pixel. Whether the fragment should carry the solid rather
+than the owner is the question the oracle's own shape asks, and it is worth
+pricing before an epsilon is chosen: `Occlusion` would have to hand out a
+per-solid id the way `owner_at` hands out a per-static one, and every producer
+of a `place` row would have to know which of its own faces it is pushing —
+which `statics::selected` and `items::outlined` cannot, and already stamp
+`OwnerId::NONE` for.
+
 ## Backlog
 
 Picked up while phases 1 and 2 landed, while the oracles were repaired, and
-while phase 3 landed; none of it blocked any of them.
+while phase 3 landed, and while phase 4's oracle was built; none of it blocked
+any of them.
 
+- **`STAND_OFF` lights the top sixteenth of every riser from behind, and that is
+  its price at a corner.** The backlog entry below says nobody has priced
+  `STAND_OFF`/`ON_TOP` at a grazing corner; phase 4's oracle priced one of them.
+  A face pixel is walked from `2/127` of a tile in front of its own plane, and at
+  the inner corner where a riser meets the tread above it that is about six times
+  the geometric margin — enough for a ray to clear that tread's own lid outright.
+  Measured: **2190 of the run scene's 2337 disagreements**, every one of them
+  "rendered too light", banded at the top of every riser, on a flame standing
+  above and beyond. Both walks together, so it is the engine's arithmetic in both
+  implementations and not a parity gap. The shape a fix would take is the one the
+  entry below already guesses at — a nudge scaled to the surface rather than to
+  the attachment's format — and it now has a scene and a number to be judged on.
+
+- **Both of phase 4's own flame placements sit in a plane of the geometry**, and
+  a scene that grazes answers on the quantum rather than on the geometry.
+  `OPENSHARD_LIGHT_AT`'s default `2.5,1.0` puts the flame at `y 101.0`, which is
+  the first riser's own plane; the counter-example's `OPENSHARD_LIGHT_Z=5` puts
+  it at exactly the top treads' height. Each costs a class of pure tangency —
+  456 pixels and 5208 pixels respectively, both of which vanish when the flame
+  moves a fraction off the plane, with no visible change to the picture. The
+  defaults are **left as they are** on purpose: they are what phase 4's own
+  recorded numbers were measured on, and moving them silently retires those. What
+  wants deciding is whether a fixture default should ever be a degenerate
+  arrangement, given that every number taken on one has to be read twice.
+
+- **`boxes.rs` still reads a fragment outside every pool as a shadowed one.**
+  `Shade` (in `examples/oracle/mod.rs`) decodes the three answers `blit.wesl`
+  writes into the shadow frame; `boxes.rs` calls `Shade::lit`, which is the
+  half-channel test it always used and answers `false` for `Unreached` as well as
+  for `Blocked`. On `tree`'s own scene nothing is out of reach so nothing is
+  wrong today, and adopting the distinction there would move that tool's recorded
+  counts for a reason unrelated to what they record. `synthetic_stair` counts
+  `Unreached` apart and reports it; `boxes.rs` should, next time its numbers are
+  being re-baselined for another reason.
 
 - **`own_run` is the last exemption that reads a height. It now has a scene, and
   on that scene it holds.** A ray leaving a wall pixel *along* the wall grazes
