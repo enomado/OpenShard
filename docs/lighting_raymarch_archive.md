@@ -13,6 +13,21 @@ Read [`lighting_raymarch.md`](lighting_raymarch.md) first for what is
 actually open. Come here when a step or backlog entry there points at a
 session or a past fix and you want the mechanism, not just the outcome.
 
+**Origin, and the two-track naming used throughout this log.** This track
+began as a thread inside [`lighting.md`](lighting.md) — a cell index
+re-derived from a float that can legitimately sit on the cell's own
+boundary, found twice (GPU and CPU sides), plus one further shape chased
+over many sessions afterward. The plan that grew out of it, before this
+file split off from it, named two tracks, and sessions below refer to both
+by name: **Track A**, the original tile-boundary bug — the five steps
+below, closed once step 5's white line was finally tracked down (session
+3's "the white line is on-mesh, not background" through later sessions'
+follow-through); and **Track B**, the ray-vs-Solid rewrite — the four
+backlog points below (`ray_vs_solid`, `walk_cells_exact`, the disagreement
+oracle, the DDA cutover), which went on to subsume the `corner_tie`/
+`panel_stop` machinery Track A's own fixes had originally been built
+against.
+
 ## Steps
 
 - [x] **1. `blit.wgsl` — separate "blocked" from "empty" in `View::Shadow`.**
@@ -1296,6 +1311,155 @@ there is one.
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 24 — the `place` format's five hand-copied shader constant blocks became one shared WESL import, `pack_place()` closes the omission half of session 23's bug class, and both remaining producers get direct pixel-decode coverage
+
+Picked up from session 23's own bug shape — `ground.wgsl` had gone a full
+session without stamping `stance` at all, and nothing caught it because the
+format was three independent hand-built `vec4<u32>` literals
+(`statics.wgsl`, `ground.wgsl`, `mesh_face.wgsl`), each with its own copy of
+the shift/mask constants, since WGSL modules cannot share a Rust `const`.
+Two questions followed: could the five files share one copy of the
+constants at all, given plain WGSL has no `#include`; and if so, could the
+packing itself be pulled into one function so a producer could no longer
+*forget* to pass a stance in the first place.
+
+**Language survey, decided first.** `rust-gpu` (real Rust compiled to
+SPIR-V) was considered and rejected — this crate targets `wasm32`/WebGL2 as
+well as native (`Cargo.toml`'s own header, `docs/client.md`'s "the browser
+is a target, so it constrains the design now"), and no browser shader input
+is SPIR-V: WebGL2 never was, and WebGPU's own spec settled on WGSL as its
+one input language, full stop, not a transitional one. `rust-gpu` would
+have meant two parallel shader implementations, worse than the duplication
+it was meant to fix. [WESL](https://wesl-lang.dev/) (`wesl-rs`, the `wesl`
+crate) was chosen instead: an `import`-carrying superset of WGSL that still
+compiles down to plain WGSL, so neither target is touched.
+
+**The pilot, then the rest.** `ground.wgsl` moved first, alone, to prove
+the shape before touching the other four: `src/shaders/ground.wesl` imports
+the format's constants from a new `src/shaders/place_format.wesl` instead
+of declaring its own copy. `statics.wgsl`, `mesh_face.wgsl`, `select.wgsl`
+and `blit.wgsl` (~1500 lines, the biggest, done last) followed the same
+move. `crates/client/render/build.rs` compiles all five at build time — the
+crate's first build-dependency, `wesl = "0.4"` — and each of
+`renderer.rs`/`blit.rs`/`select.rs` swapped its
+`include_str!("<name>.wgsl")` for
+`include_str!(concat!(env!("OUT_DIR"), "/<name>.wgsl"))`. `blit.wesl` and
+`select.wesl` were copied byte-for-byte and edited only at their own const
+blocks, verified by diffing the migrated file against the original — the
+1500-line raymarch body was never retyped by hand. `statics.wesl` kept its
+own `STANCE_SHIFT`/`STANCE_MASK` local on purpose: a different word, the
+*instance* input's stance bits at shift 16, not the attachment's own shift
+8, and it was never duplicated across files in the first place.
+
+**One quirk the pilot surfaced, true for all five.** `wesl-rs`'s parser is
+stricter than naga's about mixing `<<` and `|` without parentheses — WGSL's
+own grammar requires them, and naga had been accepting `ground.wgsl`'s
+`sub` line unparenthesized anyway. The other four files already
+parenthesized every mixed expression and needed no fix.
+
+**Verified after all five landed:** `cargo test --workspace`/clippy/fmt
+clean, and both the `tree` and `line` scenes' box-top and ground oracles
+read identically before and after the full migration — confirmed by
+stashing it and rerunning against the original `.wgsl` files. The migration
+changes nothing about what gets drawn, only where the constants live: it
+closes the *value* drifting between files (five copies of
+`PLACE_STANCE_SHIFT` silently disagreeing, or a new `Stance` value added to
+one file's copy and not another's). It does not, by itself, close session
+23's own failure mode — a producer that never reads a shared constant at
+all still compiles clean either way, WESL or plain WGSL, because that is an
+omission in the logic, not a wrong value.
+
+**`pack_place()` — narrows the omission half, does not close the commission
+half.** `place_format.wesl` also now carries
+`pack_place(id, raw_z, stance, kind, sub) -> vec4<u32>`, the one
+`vec4<u32>` literal `ground.wgsl`/`statics.wgsl`/`mesh_face.wgsl` each
+built by hand before this — structurally identical across all three once
+written down side by side. All three now call it instead of building their
+own. `stance` is a required parameter, so a producer can no longer build a
+`place` value without deciding on one at all — session 23's own bug (never
+touching `stance`, leaving it at the implicit `0` `Stance::Upright` decodes
+to) can no longer happen *by omission*. It can still happen by
+**commission**: a producer can pass `STANCE_UPRIGHT` where `STANCE_FLAT`
+was meant, and WESL has no way to know that is wrong — what changes is that
+the wrong value is now a token in a call's argument list, visible to a
+reader and a diff, rather than a bit that silently never got OR'd into a
+hand-built literal. Verified with the same three checks as the constants
+migration: `cargo test --workspace`/clippy/fmt clean, both scenes' oracles
+unchanged.
+
+**Handoff written, then picked up the same session: the test-time
+oracle.** The plumbing already existed and did not need building —
+`tests/frame.rs`'s `render_places` (then ~line 2113) renders ground +
+statics into a real `place` attachment and hands back the raw `[u16; 4]`
+per pixel, and `place::STANCE_SHIFT` is the Rust-side constant to decode
+with. Two tests already did this *directly* and were the model to copy:
+`a_floor_spreads_across_its_tile_and_a_wall_stands_up_it`'s fixture asserts
+a `Stance::Flat` static's own pixel decodes to `Stance::Flat as u16`;
+`a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on` does the
+same for `Stance::FaceEast`/`Stance::FaceSouth`. Direct means decode the
+bits and compare against the constant — not "does `light::sample` also
+predict the right shadow," which is what `a_wall_stops_the_light_behind_it`
+does instead, and which is exactly the kind of check that passed for the
+wrong reason twice in a row for session 23's own bug, per its own doc
+comment.
+
+Both remaining `pack_place` callers got the same direct coverage:
+
+1. **`ground.wgsl` → `a_ground_pixel_carries_its_own_stance`.** A
+   `[GroundQuad]`-only fixture (empty statics, no new plumbing needed —
+   `render_places` already ran the ground pass), decoding a ground pixel's
+   `place.z` through `place::STANCE_SHIFT` and comparing against
+   `Stance::Flat` by name, rather than
+   `every_pixel_names_the_tile_it_came_from`'s own hardcoded
+   `ground_pixel[2] == 384` — true, and still there, but `384` is
+   `128 | (STANCE_FLAT << 8)` folded together with no reader able to tell
+   height and stance apart without doing the arithmetic. Verified it
+   actually catches session 23's bug shape: flipping `ground.wgsl`'s
+   `pack_place` call from `STANCE_FLAT` to `STANCE_UPRIGHT` and rerunning
+   turned this test red (`left: 0, right: 1`); reverted after confirming,
+   `git diff` on the shader came back empty.
+2. **`mesh_face.wgsl` →
+   `a_mesh_face_pixel_carries_the_mesh_face_sentinel`.** Needed the one
+   piece of new plumbing predicted in the
+   handoff: `render_places` now takes `mesh_vertices`/`mesh_rows` and
+   drives `MeshFaceRenderer` right after the statics pass, the same order
+   `crates/client/app/src/lib.rs`'s real frame runs it in — all existing
+   callers updated to pass `&[], &[]`. The new test builds one flat
+   two-triangle quad by hand and asserts the fragment's `place.z` stance
+   decodes to `Stance::MeshFace as u16` — the routing sentinel this pass
+   always writes, not the real face (`MeshFaceRow::stance`), which lives in
+   a separate storage buffer `blit.wgsl` reads, not this attachment.
+   Verified the same way: flipping `mesh_face.wgsl`'s `pack_place` call to
+   `STANCE_UPRIGHT` turned it red (`left: 0, right: 10`), reverted clean.
+
+`statics.wgsl`'s five real stances (`Flat`/four faces) are the widest
+surface and the best-covered already — `Flat` and two of the four faces are
+pinned directly as above; `FaceNorth`/`FaceWest` are not (rare in practice,
+five graphics out of 1197 per `blit.wgsl`'s own comment on `outward`) —
+worth a third case in the same fixture if this is ever revisited, not
+scoped as a step, no bug has pointed at it.
+
+**A count correction, found while verifying the WESL migration changed
+nothing about rendering, unrelated to the migration itself.** Session 23's
+own ground-oracle measurement (its own entry below, "What is left") reported
+`159` (tree) / `692` (line) disagreeing points as "what is left." Rerunning
+the same oracle this session, the `tree` scene reads `527` total (`368`
+"too dark" + `159` "too light") — confirmed identical on the pre-migration
+code by `git stash`ing the WESL change and rerunning, so the migration did
+not cause it. The `159` "too light" half matches session 23's own figure
+exactly, so nothing about the *real* residual moved; the `368` "too dark"
+half was already named and explained in session 23's own entry (a known
+false-positive of the oracle's own methodology — the projected world
+point's screen pixel is actually covered by a taller neighbour's mesh,
+isometric depth — `364` before the `STANCE_FLAT` fix, `368` after, barely
+moved by it). The apparent "new" total was session 23's own two
+already-understood numbers added together, not a new bug — logged here
+only so a future session rerunning the oracle and seeing `527` does not go
+looking for what changed.
+
+**Verified, full workspace:** `cargo test --workspace`/clippy/fmt clean,
+`cargo check --workspace --all-targets` clean.
 
 ### Session 23 — the session-22 ground-shadow gap root-caused and fixed: `ground.wgsl` never stamped a stance, so land read as `Upright` and wrongly earned a wall-mount exemption
 

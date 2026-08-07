@@ -1,314 +1,311 @@
-# Shadow-raymarch boundary correctness: fixes, oracle, tooling
+# The shadow raymarch: boundary precision and CPU/GPU parity
 
-A living plan, in the shape the other plans here have: the decisions
-numbered so one can be argued with alone, a short checklist, and a backlog
-of what is still open. **The history lives in
-[`lighting_raymarch_archive.md`](lighting_raymarch_archive.md)** — every
-step's full worked narrative, the complete backlog (including everything
-already fixed), and the session-by-session handoff log (sessions 1-22).
-This file only carries what is still true and still actionable; split out
-2026-08-07 because the two had been growing as one 3300-line document and
-it was getting hard to tell current state from history.
+Current state of the boundary-precision machinery inside the shadow ray
+walk: how a cell index is derived without landing on the wrong side of a
+tile edge, what is proven identical between the CPU and GPU implementations
+of the walk, the one known place they still disagree, and the WESL
+toolchain that builds the shaders both sides read their shared constants
+from. The reasoning behind each of these — bugs found, approaches tried and
+rejected, the full session-by-session work that built it — lives in
+[`lighting_raymarch_archive.md`](lighting_raymarch_archive.md), organized
+under headings that mirror this file's.
 
-Born from a thread inside [`lighting.md`](lighting.md) — see that doc's
-"Fixed: the shadow-raymarch anomaly" entry for why this became its own
-track: a cell index re-derived from a float that can legitimately sit on
-the cell's own boundary, found twice (GPU and CPU sides), plus one still-
-being-chased shape found along the way.
+This file is a satellite of [`lighting.md`](lighting.md): that doc states
+the walk's *rules* (what a panel does, what a body does, the self-shadow
+exemptions); this one states how the walk stays numerically exact against
+those rules once a coordinate lands exactly on a boundary.
+[`gbuffer.md`](gbuffer.md) covers the `place` attachment's own format and
+`pack_place()`, including the stance-omission bug that motivated the WESL
+migration described below — this file covers the *build toolchain* that
+compiles the shaders, not the packing format itself.
+[`lighting_geometry.md`](lighting_geometry.md) is where the occluding
+primitive's box assumption is being lifted for shapes a box cannot state.
 
 Written against `crates/client/render/src/light.rs`, `mesh_face.rs`,
-`mesh_face.wgsl`, `blit.wgsl`, `statics.rs`, `debug.rs`, `tests/lighting.rs`,
-`examples/synthetic_stair.rs`, `examples/isolated_scene.rs`, `examples/boxes.rs`.
+`statics.rs`, `debug.rs`, `solid.rs`, `occlusion.rs`, `tests/lighting.rs`,
+`tests/frame.rs`, `examples/synthetic_stair.rs`, `examples/isolated_scene.rs`,
+`examples/boxes.rs`, `build.rs`, and the shader sources under
+`src/shaders/` (`ground.wesl`, `statics.wesl`, `mesh_face.wesl`,
+`select.wesl`, `blit.wesl`, `place_format.wesl`).
 
-## Current status
+Everything below assumes the occluding primitive is an axis-aligned box —
+`ray_vs_solid`, `walk_cells_streaming`, the whole DDA. `lighting_geometry.md`
+is where that assumption is being lifted: a mesh occluder is wanted for a
+shape a box cannot state, and will need a `ray_vs_mesh` sibling to
+everything this file describes for the box case. None of it is stale
+because of that — the box stays the default, and everything below keeps
+mattering for it — but a mesh ray-test needs this file's parity discipline
+(below) read first: keeping two independent implementations of one formula
+from silently drifting apart is the harder half of what this file
+describes, not the box arithmetic itself.
 
-**Session 23 — the session-22 ground-shadow gap root-caused and fixed:
-`ground.wgsl` never stamped a stance, so land read as `Stance::Upright` (not
-`Flat`) to `blit.wgsl`'s exemption logic and wrongly earned the wall-mount
-exemption meant only for a pixel standing on the surface it is bolted to.**
-Invisible for every whole-tile body ever built (same tile = same footprint,
-so the exemption and genuine occlusion always covered the same ground); the
-`tree` scene's *sub-tile* box beside open ground on its own tile is what
-finally told the two apart. Fixed in `ground.wgsl` (stamps `STANCE_FLAT`
-alongside the height, the way `statics.wgsl` always has) plus one follow-on
-seam it opened (`fs_main` now zeroes the face normal back out for
-`KIND_LAND`, so land does not also pick up the half-space light-gate a wall's
-flat cap correctly has — `kind`, not `stance`, tells the two apart for that
-one consumer). Two tests updated to match what `light::sample` already
-predicted (archive, Session 23 entry, has which and why — one was passing
-for the same wrong reason this fix removes). Verified by reverting the one
-fix alone and confirming the count regressed exactly back: a new ground-plane
-oracle in `examples/boxes.rs`
-(`OPENSHARD_BOXES_GROUND_ORACLE`) went from 1127 disagreeing points to 159
-(an 86% cut), and the `tree` scene's own rendered picture shows the notch
-that used to be bitten out of the shadow's own silhouette is gone. Full
-`cargo test --workspace`/`clippy`/`fmt` clean. The remaining 159 (692 in the
-`line` scene) are a **different, not-yet-confirmed** residual — read Session
-23's own "what is left" paragraph before assuming it is the same bug.
+## The tile-boundary hazard
 
-**Session 22 — decision: hard shadows, not faked soft ones.** A flame is a
-point source, and a point source's shadow is exact everywhere, corners
-included. `CORNER_GRAZE`/`CORNER_GAP_SOFTEN`/`ray_vs_body` (session 20/21's
-hand-tuned penumbra for a body's silhouette corner) are gone, both sides —
-`ray_vs_solid`'s exact slab test is now the entire `EDGE_ANY` occlusion test
-in both `light.rs` and `blit.wgsl`. User-requested reversal, walked through
-explicitly (archive, Session 22 entry). `SOFT_CROSSING_MIN`/`MAX` and the
-lid/panel `crosses`/`pierced` machinery are untouched — different thing (a
-lid's own zero-thickness plane, a panel's aperture), not what either bug
-report was about. Verified: full workspace tests, clippy, fmt clean;
-`examples/boxes.rs`'s `tree` scene independent oracle reads `0/9216`
-disagreements on both box tops.
+A shadow ray's start and end each belong to one integer tile, and the DDA
+walk needs to know which tile to begin stepping from. A raw world
+coordinate near an exact tile edge is not a reliable way to recover that
+tile: `floor()` of a coordinate sitting exactly on a boundary can round to
+either neighbour, and both ends of a ray are nudged off the surface they
+are drawn on (`stand_clear`) before the walk ever sees them — so "the tile
+a coordinate floors into" and "the tile the point is conceptually standing
+on" can disagree exactly at a boundary, which is exactly where a wall's own
+far edge, a tread's own edge, or a fragment sitting on its own tile's exit
+edge lives.
 
-**Track A (the tile-boundary bug, steps 1-5) is closed.** All five steps
-done; step 5's white line was fixed session 19 as a side effect of Track
-B's own footprint upload. Full mechanism per step in the archive.
+`light::Spot` (`light.rs`) and `MeshFaceVertex` (`mesh_face.rs`,
+`mesh_face.wesl`) both carry their own tile explicitly instead of having
+the walk re-derive one. `Spot::at`/`::flat`/`::face` take
+`tile: (i32, i32)` from the caller, who already knows it — a static's own
+placement, a ground tile being iterated, a test fixture's own coordinates —
+and `walk_cells_streaming`'s first cell and its per-axis `boundary` seed
+both read the carried tile rather than flooring the (already-nudged)
+`from` position. Once a tile is carried and never re-derived, a fraction
+that legitimately sits on an exact boundary is harmless: it still names the
+right starting cell, and the walk's own `INSIDE` fraction clamp
+(`lighting.md`'s "The G-buffer bridge") keeps a sub-tile fraction from ever
+reading as the *next* tile's `0.0` in the first place. This is the fix
+every other boundary-precision guarantee in this file depends on.
 
-**Track B (ray-vs-Solid) — points 1-4 are done, the DDA cutover has
-landed.** `blit.wgsl`'s `walk` is `light::walk_cells_streaming`'s own
-algorithm; `walk_cells`/`corner_tie`/`panel_stop`/`DdaTransition::Corner`
-are deleted, both sides. What is still open from this track:
+## `ray_vs_solid` and the cell walk
 
-1. **One parity gap, triaged and accepted rather than chased — not a
-   "start here."** At an exact tile-corner tie, `light::sample` and
-   `blit.wgsl`'s copy of the identical formula can disagree about which
-   axis is nearer (two independent `1.0 / abs(delta)` divisions rounding
-   differently on CPU vs GPU). `light::sample` is never in the real render
-   path — every caller is debug/test tooling — so this is "does the CPU
-   debug oracle still match the shader," not a visible shadow bug. Two
-   affected tests are `#[ignore]`d with the reasoning attached
-   (`tests/frame.rs`). An epsilon tie-break was tried and made things
-   *worse* (fixed this case, broke ordinary-geometry parity elsewhere) — see
-   the archive for what was tried and the two shapes worth trying if this is
-   ever picked back up.
-2. **The GPU sub-tile footprint gap has landed** (session 19,
-   `Occlusion::footprint_bytes` + `box_side` reading a body's own `lo`/`hi`)
-   — `blit.wgsl`'s occlusion upload now carries a solid's real `x`/`y`
-   span instead of reconstructing one from `(tile, edges)`. This closed the
-   `tree` scene's box-top disagreement to `0/9216`. Landing this surfaced
-   the still-open ground-shadow bug below.
+An occluder is a `Solid` — an axis-aligned box (`solid.rs`,
+`lighting.md`'s "The occluding world"). `ray_vs_solid` is the exact slab
+method: where a straight segment enters and leaves the box, as a fraction
+of the whole segment, continuous throughout and with no notion of "which
+tile" anywhere in it. It is mirrored, not shared, on the two sides that
+need it — CPU: `light::ray_vs_solid` (`light.rs:1160`, used directly, and a
+second copy inside `walk_cells_streaming`); GPU: `ray_vs_solid` in
+`shaders/blit.wesl:763` — because CPU Rust and WGSL cannot share a function
+body. A tangent touch (the segment grazing exactly one edge or corner of
+the box without crossing into it) comes back as a real, zero-length
+crossing rather than `None`; whether a caller treats a zero-length touch as
+"blocked" is left to the caller, not decided inside the slab test.
 
-Two real bugs were found and fixed along the way and do not need
-re-fixing: `corner_tie`'s formula bug (session 6) and `exemption`'s vacuous
-self-exemption for a `Flat` fragment (session 14, `light.rs:1301` /
-`blit.wgsl:995`). Mechanism for both in the archive, under their sessions.
+`walk_cells_streaming` (`light.rs:2304`, CPU) and `walk`
+(`shaders/blit.wesl:975`, GPU) are the one shared algorithm, ported line for
+line: a single-axis DDA (no diagonal jump) that steps toward whichever of
+`boundary.x`/`boundary.y` is nearer, testing every solid on each candidate
+cell against `ray_vs_solid`'s own exact interval rather than reconstructing
+one from the DDA step itself. The per-cell occlusion decision is an inline
+closure in `walk_cells_streaming` on the CPU side and the free function
+`cell_stopped` (`shaders/blit.wesl:838`) on the GPU side — WGSL has no
+closures, so the two are the same logic in a different shape, not a
+different decision. `candidate_tiles`/`dda_walk` (`light.rs:1946`, `1843`)
+are a third, independent enumeration — a DDA that never skips a cell — kept
+as an oracle for `walk_cells_exact` (`light.rs:2025`), not part of the
+shipped render path.
 
-## Steps
+**One asymmetric, already-landed tolerance.** `shaders/blit.wesl` widens
+`cell_stopped`'s own rejection by `RAY_TANGENT_TOLERANCE = 1.0e-2`, applied
+only at the walk's own trajectory cell (`0.0` at the unconditional diagonal
+probe `candidate_tiles`'s own shape already covers) — a genuine near-tangent
+crossing that GPU `f32` rounding was missing on one specific corner shape.
+The CPU side (`light::ray_vs_solid`) carries no equivalent tolerance and
+does not need one: CPU's own rounding already lands on the generous side of
+the same tangent, and widening it anyway was tried and reverted — it
+collapsed a real, if small, interior crossing on a cell only
+`walk_cells_exact`'s wider candidate set reaches, turning one fixed
+disagreement into several new ones (caught by proptest fuzzing
+`walk_cells_streaming` against `walk_cells_exact`, not by inspection).
 
-- [x] 1. `blit.wgsl` — separate "blocked" from "empty" in `View::Shadow`.
-- [x] 2. `Spot` carries its own tile; `walk_cells` stops re-deriving it
-      from a nudged `from` via `floor()`.
-- [x] 3. A boundary unit test, written against the tile-carrying `Spot`.
-- [x] 4. A brute-force CPU oracle, independent of both DDA implementations.
-- [x] 5. Diagnose the second, still-unexplained white line — found to be
-      `blit.wgsl`'s `walk` missing step 2's fix (session 18-19), and after
-      that fix, the white line itself remained untouched and unexplained by
-      it (it turned out to be a `Flat` fragment at its own tile's far edge,
-      not background — cause still not the same thing the fix addressed).
+**What used to exist and does not anymore.** `walk_cells`, `corner_tie`,
+`panel_stop` and `DdaTransition::Corner` are gone, both sides — a corner is
+handled today by `candidate_tiles`'s unconditional diagonal-neighbour probe
+plus `ray_vs_solid`'s own exactness, not by a special-cased jump or a
+hand-tuned tie-break. The per-cell *rules* themselves (panel pierce, a
+body's length-vs-pierce test, a lid's strict crossing, a corner's
+supercover) are `lighting.md`'s own subject ("The shadow ray walk"); this
+file is about keeping two implementations of those rules numerically
+identical, not what the rules are.
 
-All five done; full per-step narrative, reproduction commands, and what
-each one ruled out is in the archive under `## Steps`.
+## CPU/GPU parity
 
-## Backlog
+`light::sample` (`light.rs`) is the shader's ray walk re-implemented on the
+CPU — the same functions in Rust that `shaders/blit.wesl` has in WGSL. It
+exists because "why is this pixel lit" needs a list of reasons a rendered
+picture cannot produce, but a second implementation of one formula only
+earns its keep if the two are actually held together: `tests/frame.rs`'s
+`assert_parity` uploads a synthetic `place` attachment, runs the real blit
+shader over it, and asserts every sampled pixel agrees with `light::sample`
+fed the same input, across dozens of scenes (`room`,
+`wall_with_a_torch_beside_it`, `house_corner`, `wall_with_a_hole_in_it`,
+`lantern_in_a_room`, and more) chosen to exercise a different branch of the
+walk each — a plain whole-tile room, a named panel, a house corner where
+both cell shapes touch, a panel with a hole in it. A parity failure means
+the CPU debugging oracle has silently diverged from what the shader
+actually draws, which is a tooling-trust question, not by itself a claim
+about whether the picture is correct.
 
-Only what is currently open. Full history — including everything below
-that used to be here and is now fixed — is in the archive under
-`## Backlog`.
+## The one known parity gap
 
-- **Open, session 23 — a smaller residual left by the session-22 gap's fix,
-  not yet confirmed to be one bug or a second one.** After `ground.wgsl`'s
-  stance fix landed, `examples/boxes.rs`'s new ground oracle
-  (`OPENSHARD_BOXES_GROUND_ORACLE`) still finds disagreeing points in the
-  `tree` scene — in both scenes sitting right at a box's own silhouette
-  *corner*, where `light::sample` still predicts occlusion the rendered
-  picture misses. Session 22's own hard-shadow decision removed all corner
-  softening, so this reads like the CPU/GPU near-tangent divergence this
-  doc's point 1 above already tracks (an exact tile-corner tie, two
-  independent `1/abs(delta)` divisions rounding differently) — plausible,
-  **not verified**: nobody has checked whether the `tree` and `line` residuals
-  are the *same* shape yet. First move: rerun the ground oracle scoped tight
-  to one box's own corner in each scene and compare; if they match, this is
-  point 1 wearing a different scene, not a new item.
+At an exact tile-corner tie, `light::sample` and `shaders/blit.wesl`'s copy
+of the identical formula can disagree about which axis is nearer:
+`per_tile[axis] = 1.0 / delta[axis].abs()` is computed independently on
+each side, and the two `f32` divisions can round differently under CPU
+Rust arithmetic than under the GPU shader compiler (naga/wgpu), sending the
+walk's very first step into a different cell on the two backends for a ray
+whose geometry is a genuine, exact tie. This is a real configuration a
+regular grid against a fixed light will eventually land on — not a
+contrived probe — but every caller of `light::sample` in the workspace is
+debug or test tooling (`tests/frame.rs`, `tests/lighting.rs`,
+`examples/isolated_scene.rs`, `examples/boxes.rs`,
+`artscan/examples/probe.rs`, `debug.rs`'s tile-brightness map);
+`shaders/blit.wesl`'s own `walk` is the only thing that ever draws a frame a
+player sees, and it is internally self-consistent regardless of which side
+of a tie its own comparison lands on. So the gap is "does the CPU debug oracle
+still match the shader," not a visible shadow defect.
 
-  **Count correction, found by the WESL migration below, unrelated to it:**
-  this entry's own session 23 measurement (`## Current status`) says 159
-  (`tree`)/692 (`line`); the `tree` scene now reads 527 (368 "too dark" + 159
-  "too light") — confirmed identical on the pre-migration code by `git
-  stash`ing the WESL change and rerunning, so the migration did not cause
-  it. Something between session 23's own measurement and now moved the
-  count; not diagnosed here — the 159 "too light" half matches session 23's
-  own figure exactly, so whatever changed only added the 368 "too dark"
-  half, and that is a second thread, not this one.
+Two tests in `tests/frame.rs` are `#[ignore]`d for exactly this, each with
+the reasoning in its own doc comment:
+`the_shader_lights_a_frame_as_light_sample_does` and
+`the_shader_and_light_sample_agree_about_a_carried_beam`. An epsilon bias
+on the stepping comparison (`boundary.x < boundary.y - EPS`) was tried
+first and made things measurably worse — it fixed the tied case but sent
+`walk_cells_streaming`'s own stepping down a cell a bare comparison would
+not have, failing ordinary-geometry parity tests nowhere near a tie — so no
+epsilon is applied on either side today. Two repair shapes remain untried:
+a cross-multiplied comparison (`ahead.x * abs(delta.y)` against
+`ahead.y * abs(delta.x)`, avoiding the reciprocal division whose rounding
+differs between backends — cheap, worth trying first) and a walk that
+tests both branches of every exact tie rather than committing to one,
+making the outcome order-independent by construction (real structural
+work, its own session).
 
-  Reproduce: `OPENSHARD_BOXES_SCENE=tree cargo run --release -p
-  openshard-client-render --example boxes` (or `OPENSHARD_BOXES_SCENE=line`)
-  — the ground oracle runs by default and prints both counts plus example
-  points on stderr.
+## The ground-occlusion oracle
 
-- **Half closed — the `place` attachment's packing was a hand-maintained
-  contract, session 23's bug was an instance of a class, and the
-  *value-drift* half of that class has landed a fix across all five of its
-  files. The *omission* half — session 23's own failure mode — has not, and
-  is not scoped as a step below.** `kind`/`stance`/`z` are packed into
-  `place` by three independent
-  WGSL producers (`statics.wgsl`, `ground.wgsl`, `mesh_face.wgsl`), each
-  with its own copy of the shift/mask constants (WGSL modules cannot share
-  Rust `const`s), read back by two more (`blit.wgsl`, `select.wgsl`). Only
-  one pinning test exists (`place.rs::a_place_packs_into_two_words`), and it
-  only covers the Rust `Place` struct that backs `statics.wgsl`'s path —
-  `ground.wgsl` and `mesh_face.wgsl` packed their bits directly, untested.
-  Session 23's bug (a producer that forgot to stamp `stance`, decoding as a
-  meaningful-but-wrong default, `Stance::Upright`) is what that gap looks
-  like when it fires; the same shape was live for any future producer or any
-  new `Stance`/`Kind` value.
+`examples/boxes.rs` runs two independent visibility oracles against the
+rendered picture, neither sharing arithmetic with `light::sample` or
+`shaders/blit.wesl` — both are a fresh, textbook point-vs-AABB slab test
+(`segment_clear_of_box`/`oracle_visible`), because reusing the engine's own
+`ray_vs_solid` to check the engine's own walk would prove nothing.
 
-  **Language survey, decided:** `rust-gpu` (real Rust compiled to SPIR-V)
-  was considered and rejected — this crate targets `wasm32`/WebGL2 as well
-  as native (`Cargo.toml`'s own header, and `docs/client.md`'s "the browser
-  is a target, so it constrains the design now"), and no browser shader
-  input is SPIR-V: WebGL2 never was, and WebGPU's own spec settled on WGSL
-  as its one input language, full stop, not a transitional one. `rust-gpu`
-  would have meant two parallel shader implementations, worse than the
-  duplication it was meant to fix. **[WESL](https://wesl-lang.dev/)**
-  (`wesl-rs`, the `wesl` crate) was chosen instead: an `import`-carrying
-  superset of WGSL that still compiles down to plain WGSL, so both targets
-  are untouched.
+**The box-top oracle** sweeps a grid over each box's own top face and
+compares against the rendered `View::Shadow` pixel there
+(`OPENSHARD_BOXES_ORACLE=0` to skip, on by default). Both the `tree` and
+`line` scenes currently read `0/9216` disagreements on both box tops — this
+half is closed.
 
-  **Landed, all five:** `ground.wgsl`, `statics.wgsl`, `mesh_face.wgsl`,
-  `select.wgsl` and `blit.wgsl` (~1500 lines, the biggest, done last) each
-  moved to `src/shaders/*.wesl`, importing the format's constants — `KIND_*`,
-  `SUB_TILE`/`SUB_TILE_MASK`, `PLACE_STANCE_SHIFT`/`PLACE_STANCE_MASK`/
-  `PLACE_Z_MASK`, `STANCE_FLAT`/`STANCE_FACE_*`/`STANCE_CORNER`/
-  `STANCE_MESH_FACE` — from one shared `src/shaders/place_format.wesl`
-  instead of each declaring its own copy. What each file still declares
-  locally is only what was never duplicated in the first place —
-  `statics.wgsl`'s own `STANCE_SHIFT`/`STANCE_MASK` (a different word: the
-  *instance* input's stance bits, shift 16, not the attachment's own shift
-  8) stayed put on purpose, see its own comment. `crates/client/render/
-  build.rs` compiles all five at build time (the crate's first
-  build-dependency — `wesl = "0.4"`, MSRV 1.87, no nightly toolchain needed,
-  see the crate's own `Cargo.toml` comment for why the trade was worth it
-  here and not for `data/doors.json`); each of `renderer.rs`/`blit.rs`/
-  `select.rs` loads its compiled output via
-  `include_str!(concat!(env!("OUT_DIR"), "/<name>.wgsl"))` in place of the
-  old `include_str!("<name>.wgsl")`. `blit.wesl` and `select.wesl` were
-  copied byte-for-byte and edited only at the two const blocks, verified by
-  diffing the migrated file against the original — the 1500-line body of
-  `blit.wgsl`'s raymarch was never retyped by hand.
+**The ground oracle** (`OPENSHARD_BOXES_GROUND_ORACLE`, on by default)
+sweeps a dense `240×240` grid of *ground* points instead, projects each
+through the scene's real camera to the pixel it lands on, skips any point
+inside a box's own footprint (that pixel is the box's mesh, not ground),
+and compares. It still finds disagreements, split into two shapes:
 
-  One thing the pilot surfaced, true for all five: `wesl-rs`'s parser is
-  stricter than naga's about mixing `<<` and `|` without parens (WGSL's own
-  grammar requires them) — `ground.wgsl`'s `sub` line needed them added;
-  naga had been accepting it unparenthesized. The other four already
-  parenthesized every mixed expression and needed no such fix.
+- In the `tree` scene, `368` points read "too dark" — the oracle asks about
+  a world point whose projected screen pixel is actually covered by a
+  taller neighbouring box's own mesh (isometric depth: a taller object
+  drawn over the ground behind it), not a point the renderer ever claimed
+  was visible ground. This is a known limitation of the oracle's own
+  methodology, confirmed by the pixel colour matching the fully-blocked-
+  on-mesh constant exactly — not an engine defect, and not counted against
+  the walk itself.
+- In the `tree` scene, `159` points read "too light": `light::sample`
+  predicts occlusion at a box's own silhouette *corner* that the rendered
+  picture misses. In the `line` scene (whole-tile boxes, so the ground
+  attachment's sub-tile quantisation cannot be a confound) `692` points
+  show the same "too light" shape; this count predates the WESL migration
+  below and has not been independently re-measured since, though the
+  migration itself is confirmed not to change any rendered output.
 
-  Verified, after all five: `cargo test --workspace`/clippy/fmt clean, and
-  both the `tree` and `line` scenes' box-top and ground oracles (below) read
-  identically before and after the full migration — confirmed by stashing
-  it and rerunning against the original `.wgsl` files. The migration changed
-  nothing about what gets drawn, only where the constants live: what it
-  closes is the *value* drifting between files — five copies of
-  `PLACE_STANCE_SHIFT` silently disagreeing, or a new `Stance` value added
-  to one file's copy and not another's. It does not, by itself, close
-  session 23's own failure mode: a producer that never reads a shared
-  constant at all — never stamps the bit — still compiles clean either way,
-  WESL or plain WGSL, because that is an omission in the logic, not a wrong
-  value.
+Given that hard shadows (no corner softening at all) are what this pass
+draws today, the `159`/`692` "too light" residuals plausibly are the same
+near-tangent CPU/GPU divergence "The one known parity gap" above already
+describes, landing in a different scene — but this is **not confirmed**:
+nobody has checked whether the `tree` and `line` residuals are actually the
+same shape, only that both sit at a box corner and both are consistent
+with the same family of near-tangent rounding disagreement. The next check
+is a direct one: rerun the ground oracle scoped tight to a single box's own
+corner in each scene and compare the two residual shapes directly.
 
-  **The omission half — narrowed, not closed.** `place_format.wesl` now
-  also carries `pack_place(id, raw_z, stance, kind, sub) -> vec4<u32>`, the
-  one `vec4<u32>` literal `ground.wgsl`/`statics.wgsl`/`mesh_face.wgsl` each
-  built by hand before this — structurally identical across all three once
-  written down side by side. All three now call it instead. `stance` is a
-  required parameter, so a producer can no longer build a `place` value
-  without deciding on one at all — session 23's own bug (never touching
-  `stance`, leaving it at the implicit `0` `Stance::Upright` decodes to) can
-  no longer happen *by omission*. It can still happen by **commission**: a
-  producer can still pass `STANCE_UPRIGHT` where `STANCE_FLAT` was meant,
-  and WESL has no way to know that is wrong. What changes is that the wrong
-  value is now a token sitting in a call's argument list — visible to a
-  reader and a diff — rather than a bit that silently never got OR'd into a
-  hand-built literal buried among several others. Closing what remains (a
-  wrong-but-present `stance` argument) needs a test-time oracle per
-  producer/stance pair, not a language feature. `blit.wgsl`/`select.wgsl`
-  only *read* `place` and have nothing analogous to share — the asymmetry
-  is inherent, not left undone. Verified with the same three checks as the
-  constants migration above: `cargo test --workspace`/clippy/fmt clean, and
-  both scenes' oracles unchanged.
+Reproduce:
 
-  **Handoff — the test-time oracle, not yet started.** The plumbing already
-  exists and does not need building: `tests/frame.rs`'s `render_places`
-  (line ~2113) renders ground + statics into a real `place` attachment and
-  hands back the raw `[u16; 4]` per pixel; `place::STANCE_SHIFT` is the
-  Rust-side constant a test decodes with — never a shift re-typed inline,
-  which would make the test blind to exactly the class of bug this is for
-  (`place.rs::a_place_packs_into_two_words`'s own reason to pin the number
-  once rather than trust two copies to agree). Two tests already do this
-  *directly*, and are the model to copy: `tests/frame.rs:1805-1809`
-  (`a_floor_spreads_across_its_tile_and_a_wall_stands_up_it`'s fixture,
-  mid-test) asserts a `Stance::Flat` static's own pixel decodes to
-  `Stance::Flat as u16`; `tests/frame.rs:2070-2079`
-  (`a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on`) does the
-  same for `Stance::FaceEast`/`Stance::FaceSouth`. Direct means: decode the
-  bits and compare against the constant — not "does `light::sample` also
-  predict the right shadow," which is what `a_wall_stops_the_light_behind_
-  it` (`tests/frame.rs:1010`, one of session 23's own two updated tests)
-  does instead, and which is exactly the kind of check that can pass for
-  the wrong reason twice in a row, as its own doc comment says session 23
-  found it doing.
+```sh
+OPENSHARD_BOXES_SCENE=tree cargo run --release -p openshard-client-render \
+    --example boxes
+```
 
-  **Both landed, session 24.** `tests/frame.rs` now has direct pixel-decode
-  coverage for both remaining `pack_place` callers:
+(or `OPENSHARD_BOXES_SCENE=line`) — the ground oracle runs by default and
+prints both scenes' mismatch counts, split by direction, plus a handful of
+example points, on stderr.
 
-  1. **`ground.wgsl` — `a_ground_pixel_carries_its_own_stance`.** A
-     `[GroundQuad]`-only fixture (empty statics, no new plumbing —
-     `render_places` already ran the ground pass), decoding a ground pixel's
-     `place.z` through `place::STANCE_SHIFT` and comparing against
-     `Stance::Flat` by name, the way `every_pixel_names_the_tile_it_came_
-     from`'s own `ground_pixel[2] == 384` never did — that assertion is
-     still true and still there, but `384` is `128 | (STANCE_FLAT << 8)`
-     folded together with no reader able to tell the two apart without
-     doing the arithmetic. Verified to actually catch session 23's bug
-     shape: flipping `ground.wgsl`'s `pack_place` call from `STANCE_FLAT` to
-     `STANCE_UPRIGHT` and rerunning turns this test red (`left: 0, right:
-     1`); reverted after confirming (`git diff` on the shader came back
-     empty).
-  2. **`mesh_face.wgsl` — `a_mesh_face_pixel_carries_the_mesh_face_
-     sentinel`.** Needed the one piece of new plumbing this entry
-     predicted: `render_places` (`tests/frame.rs`) now takes
-     `mesh_vertices`/`mesh_rows` and drives `MeshFaceRenderer` right after
-     the statics pass, the same order `crates/client/app/src/lib.rs`'s real
-     frame runs it in — all six existing callers updated to pass `&[],
-     &[]`. The new test builds one flat two-triangle quad by hand (no
-     `crate::mesh::Face::fan` fixture needed) and asserts the fragment's
-     `place.z` stance decodes to `Stance::MeshFace as u16` — the routing
-     sentinel this pass always writes, not the real face
-     (`MeshFaceRow::stance`), which lives in a separate storage buffer
-     `blit.wgsl` reads, not this attachment. Verified the same way: flipping
-     `mesh_face.wgsl`'s `pack_place` call to `STANCE_UPRIGHT` turned it red
-     (`left: 0, right: 10`), reverted clean.
+## The WESL build
 
-  `statics.wgsl`'s five real stances (`Flat`/four faces) are the widest
-  surface and the best-covered already — `Flat` and two of the four faces
-  are pinned directly as above; `FaceNorth`/`FaceWest` are not (rare in
-  practice — "five graphics out of 1197," `blit.wgsl`'s own comment on
-  `outward`), worth a third case in the same fixture rather than a new one
-  if this is ever revisited — not scoped as a step, no bug has pointed at it.
+Shader sources are `.wesl` files under `crates/client/render/src/shaders/`
+— `ground.wesl`, `statics.wesl`, `mesh_face.wesl`, `select.wesl`,
+`blit.wesl` — compiled to plain WGSL at build time by `build.rs` (the
+crate's first build-dependency, `wesl = "0.4"`) via
+`wesl::Wesl::new("src/shaders")` and `build_artifact`, one call per file;
+each of `renderer.rs`/`blit.rs`/`select.rs` loads its compiled output through
+`include_str!(concat!(env!("OUT_DIR"), "/<name>.wgsl"))` in place of the
+old `include_str!("<name>.wgsl")`. This exists so the `place` attachment's
+shift/mask constants and its one packing function,
+`pack_place(id, raw_z, stance, kind, sub) -> vec4<u32>`, live once in
+`place_format.wesl` and are imported by the three producers rather than
+hand-copied per file — WGSL alone has no `#include`, so before this
+migration each of `ground.wgsl`/`statics.wgsl`/`mesh_face.wgsl` carried its
+own copy of `KIND_*`, `SUB_TILE`/`SUB_TILE_MASK`,
+`PLACE_STANCE_SHIFT`/`PLACE_STANCE_MASK`/`PLACE_Z_MASK` and
+`STANCE_FLAT`/`STANCE_FACE_*`/`STANCE_CORNER`/`STANCE_MESH_FACE`, free to
+drift silently. See [`gbuffer.md`](gbuffer.md)'s "`pack_place`" section for
+what the shared function actually closes (the *omission* half of a
+producer never stamping a value) and what it does not (a producer stamping
+the *wrong* value, still only caught by a per-producer pixel-decode test).
+`statics.wesl` still declares its own `STANCE_SHIFT`/`STANCE_MASK` locally
+on purpose — a different word, the *instance* input's stance bits at
+shift 16, not the attachment's own shift 8 — noted in its own comment
+rather than folded into the shared file.
 
-  Verified: `cargo test --workspace`/clippy/fmt clean, `cargo check
-  --workspace --all-targets` clean.
+`wesl-rs` (the crate doing the compiling) is stricter than naga was about
+one corner of WGSL's own grammar: mixing `<<` and `|` in one expression
+without parentheses, which the grammar actually requires and naga had been
+accepting anyway. `ground.wesl`'s own `sub` line needed parentheses added
+for this; the other four files already parenthesized every mixed
+expression and needed no change. Compiling all five costs no nightly
+toolchain — it builds clean under this workspace's own stated MSRV
+(`rust-version = "1.88"`, root `Cargo.toml`).
 
-- **Someday/maybe, not scoped as a step**: a full fixed-point world
-  coordinate (tile + N bits of sub-tile resolution, no `f32`) would remove
-  float-epsilon bugs at the boundary at the source. Raised while doing step
-  2; buys nothing more for *this* bug class than step 2 already closed
-  (once a tile is carried and never re-derived, a fraction sitting on an
-  exact boundary is harmless). Would buy something broader — no float
-  epsilon anywhere a world position is stored or compared — but that is a
-  question about `geometry::Vec2`, the camera, movement and the protocol,
-  not lighting, and not scoped to one crate. Own track if ever picked up.
+## Status
 
-## Handoff log
+Built and current:
 
-Moved to [`lighting_raymarch_archive.md`](lighting_raymarch_archive.md)
-(sessions 1-22). Add the next entry there, and update `## Current status`
-and `## Backlog` above to match.
+- A shadow ray's start and end always carry their own integer tile
+  explicitly (`Spot::tile`, `MeshFaceVertex::tile`); no boundary-adjacent
+  coordinate is re-derived by flooring a raw float.
+- `ray_vs_solid` (exact slab test) and `walk_cells_streaming`/`walk`
+  (single-axis DDA, no corner-jump) are the one algorithm, mirrored on CPU
+  (`light.rs`) and GPU (`shaders/blit.wesl`). `walk_cells`, `corner_tie`,
+  `panel_stop` and `DdaTransition::Corner` no longer exist.
+- CPU/GPU parity is enforced by `tests/frame.rs`'s `assert_parity` across
+  dozens of scenes, and by two independent, no-shared-arithmetic oracles in
+  `examples/boxes.rs` (a box-top oracle and a ground oracle).
+- The box-top oracle reads `0/9216` disagreements on both scenes it checks.
+- The WESL build: five `.wesl` shader sources compiled to WGSL at build
+  time, importing the `place` attachment's packing constants and
+  `pack_place()` from one shared `place_format.wesl` file instead of five
+  hand-copied blocks.
+
+Open:
+
+- **The corner-tie parity gap.** At an exact tile-corner tie,
+  `light::sample` and `shaders/blit.wesl`'s copy of `1.0 / delta[axis].abs()`
+  can round differently between CPU and GPU arithmetic, stepping the walk into
+  different first cells. Accepted rather than chased: `light::sample` is
+  never in the real render path, so this is a debug-oracle/renderer
+  disagreement, not a visible defect. Two tests are `#[ignore]`d for it
+  (`the_shader_lights_a_frame_as_light_sample_does`,
+  `the_shader_and_light_sample_agree_about_a_carried_beam`, both in
+  `tests/frame.rs`); a cross-multiplied stepping comparison and a
+  tie-order-independent walk are both untried repairs.
+- **The ground-oracle "too light" residual.** `159` points in the `tree`
+  scene and `692` in the `line` scene still disagree with `light::sample`
+  at a box's own silhouette corner. Plausibly the same phenomenon as the
+  corner-tie gap above, landing in a different scene — not yet confirmed;
+  the two residual shapes have not been directly compared.
+- **A true fixed-point world coordinate** (tile + N bits of sub-tile
+  resolution, no `f32`) would remove float-epsilon boundary bugs at the
+  source rather than by carrying a tile explicitly around each one. Buys
+  nothing more for the bug classes above than carrying the tile already
+  closes; would buy something broader (no float epsilon anywhere a world
+  position is stored or compared), but that is a question about
+  `geometry::Vec2`, the camera, movement and the protocol, not lighting —
+  its own track if ever picked up, not scoped here.

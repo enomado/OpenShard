@@ -1,498 +1,525 @@
 # Lighting, part two: the light a place has
 
-A living plan, in the shape the others here have: the decisions numbered so one
-can be argued with alone, the steps, and a backlog. It stands on
-[`lighting.md`](lighting.md), which is where the pass moved out of the screen and
-into the world and learned that a wall stops a flame. That is the hard half and
-it is built. This is the other half, and its subject is not shadows — it is
-**where the light in a frame comes from when nothing is burning**.
+Current state of the ambient/sky-field system: what it computes today, the
+data format it shares with [`lighting.md`](lighting.md)'s occlusion grid, and
+which parts of the design are built versus still a plan. The reasoning behind
+each choice — arguments made, alternatives tried and rejected, and the
+session-by-session narrative that produced the design — lives in
+[`lighting_world_archive.md`](lighting_world_archive.md), organized under
+headings that mirror this file's.
 
-## Where the next session starts
+[`lighting.md`](lighting.md) is the flame/shadow pass: a wall stops a torch,
+per fragment, by a real grid traversal. That subject is shadows. This file's
+subject is not shadows — it is **where the light in a frame comes from when
+nothing is burning**: why the inside of a house should be darker than the
+street outside it with nothing in either, and why a windowless cellar should
+still be more than pure black.
 
-**Steps 1 and 2 are built: a roofed room is darker than the street outside it,
-in the shader and in `light::sample` alike.** `View::Sky` is what it is looked at
-with.
+## Overview
 
-**Step 3 is next, and it is the one that makes any of this visible in the
-client.** The reason is in the backlog below: the ordinary daylit frame is
-`Lighting::NONE`, which carries no grid at all, so today the split only reaches
-the eye at night or with the sun key held. The day curve is what makes *every*
-frame a lit frame, and until it lands step 2 is a thing the tests can see and a
-player mostly cannot.
+The ambient a fragment is lit by is split into two colours that are summed,
+weighted by how much of the sky the fragment's tile can see:
 
-Steps 9 and 10 are
-blocked on [`lighting.md`](lighting.md)'s steps 15 and 16 and should not be
-started before them. **Step 8 is no longer blocked**: its step 14 is built — the
-occlusion grid is drawn as boxes, under its own checkbox in the Tile panel — so a
-soft body is now a thing that can be looked at while it walks, which decision 9
-says is the only way it can be judged at all.
-
-Step 7, the tonal response, is the one to take when the appetite is for a
-screenshot rather than for a subsystem: it touches one shader, it is judged by
-eye against a before/after pair, and it is independent of everything else here.
-
-## The thing worth copying
-
-Nox (Westwood, 2000) is the isometric game whose lighting still reads as right,
-and it is worth being exact about *why*, because the obvious answer is wrong. The
-obvious answer is "shadows": light stopped at walls, beams came out of doorways.
-We already do that, per fragment, with a real grid traversal — strictly more than
-Nox, which flood-filled a per-vertex lightmap once and interpolated it.
-
-What Nox actually had that this client does not:
-
-- **A room was darker than the street**, with nothing in the room and nothing on
-  the street. Not because of a "dungeon flag" — because a roof is between the
-  floor and the sky. Walking through a door was a change in light, and that one
-  fact is most of the atmosphere.
-- **Light moved.** Your torch, a fireball in flight, a burning corpse, a spell.
-  The pool travelled with the thing, smoothly, and the world changed around it.
-  Ours is nailed to map statics and to items lying on the ground.
-- **A fire was the brightest thing in the frame.** Emitters were not subject to
-  the darkness they were dispelling.
-- **The picture had one tonal response.** Dark was blue and detailless, light was
-  warm and blew out at the centre, and the two met on a curve. Ours multiplies
-  the art by a colour, which can only ever darken, and clips whichever channel
-  the ambient is poorest in.
-
-None of these is a shadow. All four are about the light a place has before
-anything happens in it — which is why this is a second plan and not a step in the
-first one.
-
-**Out of scope, deliberately.** Everything is computed on the client; the server
-is not asked for a single new byte and `0x4F`/`0x4E` remain the whole protocol
-surface (decision 3 says what that costs). The raggedness of a lit wall — the
-per-pixel fraction along an upright sprite's face — is
-[`lighting.md`](lighting.md)'s decisions 13 and 14 and its steps 15 and 16, and
-is being worked elsewhere; nothing here should touch `statics.wgsl`.
-
-## Where this meets the flame plan
-
-[`lighting.md`](lighting.md) is not finished — its steps 14 (the occluder boxes,
-drawn), 15 (a wall's facing measured from its art), 16 (the window's aperture)
-and 6 (the measurement) are open, and three of the four are load-bearing here.
-The seam, stated once so neither plan has to guess at the other:
-
-- **Step 14 is this plan's instrument too, and it is built.** The boxes are the
-  grid drawn as wireframe in `shell::draw_occluders`, and everything below adds
-  to that same
-  grid: a sky byte per cell (decision 1), a body that moves through it
-  (decision 9). Neither gets its own visualiser — that is
-  [`lighting.md`](lighting.md)'s decision 8, and it holds here: a second copy of
-  the unpacking answers about its copy of the frame.
-- **Step 15 is what a wall's ambient waits for** — decision 13 below.
-- **Step 16 is what a lit room at noon waits for** — decision 14 below.
-- **One widening of the occlusion cell, not three — and it is made.** The cell is
-  `Rgba8Uint` and full; step 16 needs room for its aperture, the sky byte needed
-  room, and a soft body's opacity wants a fifth answer. One format decision with
-  three callers, taken by step 1 because it landed first: a **second plane** over
-  the same rectangle, `(sky, aperture, body, unused)`, rather than a wider cell.
-  The occluder cell is what a ray walks through, cell after cell in a loop; the
-  plane is what a tile *is*, read once. Step 16 writes the second channel and
-  nothing about the first moves.
-- **Step 6's measurement gates both.** Nothing here turns on by default before
-  the number the other plan owes.
-
-## Decisions
-
-**1. A tile that cannot see the sky does not get the sky's light.**
-The ambient is one colour for the whole frame today, so the inside of a house is
-lit exactly as brightly as the street outside it, and a dungeon is dark only
-because the server said the whole world was. Split the ambient in two:
-
-```
-ambient(tile) = SKYLIGHT * sky(tile) * daylight  +  GROUND_AMBIENT
+```text
+ambient(tile) = ground + sky * share(tile)
 ```
 
-`sky(tile)` in `0..=1` is how much of the sky that tile can see; `GROUND_AMBIENT`
-is a small, cold floor that a windowless cellar still gets, so that a room with
-no torch in it is deep rather than pure black — an unlit black rectangle is not
-atmosphere, it is a bug report.
+`share(tile)` is a per-tile byte — how much of the sky an unobstructed column
+above that tile's floor can see, `0` under an opaque roof and up to
+`SKY_OPEN = 255` (`occlusion.rs:939`) in the open — computed by walking the
+same occlusion grid [`lighting.md`](lighting.md)'s shadow rays walk, on the
+CPU, once a frame. This is [`crate::light::Ambient`] (`light.rs:297`) and
+[`Ambient::at`] (`light.rs:349`); the sky-share byte itself is
+[`Occlusion::sky_at`] (`occlusion.rs:1142`).
 
-`sky` is the cheapest question the occlusion grid can be asked: a column test.
-Anything opaque standing over the tile above its floor takes the sky away. The
-grid already carries a `z` span and an opacity per tile, so a roof is an occluder
-that happens to be overhead, and the answer is a byte.
+Everything else in the plan this file used to be — a day/night colour curve,
+mobiles and effects carrying their own light, an emitter that isn't dimmed by
+its own darkness, a softer falloff and a fade at the light-count cap, a real
+tonal response instead of a hard clip, a mobile as a soft occluder, a wall
+face sampling the tile it looks into rather than its own, a fog-of-war
+curtain — is design, not yet code. Each has its own section below, stated as
+what it would do and why it hasn't landed, not as an argued case; the argued
+case is in the archive.
 
-**2. The sky term is blurred by a tile, and that blur is the doorway.**
-A raw column test steps from 1 to 0 at the wall line, and a step is the artefact
-this whole track exists to remove. A 3×3 average over the sky field — one pass,
-on the CPU, over a grid that is already a few hundred tiles — makes the threshold
-of an open door brighter than the middle of the room and the eave of a roof
-brighter than under it. It is not a simulation of anything; it is the shape the
-right answer has, for one blur of a small array.
+**Out of scope, deliberately.** Everything here runs on the client; the
+server is not asked for a single new byte, and `0x4F` (the overall light
+level packet, `crates/common/protocol/src/world.rs:894`) remains the whole
+protocol surface this reads. The per-pixel raggedness of a lit wall — the
+fraction along an upright sprite's face — is
+[`lighting.md`](lighting.md)'s subject, in `statics.wesl`, and nothing here
+touches it.
 
-**3. The cutaway takes a roof away from the eye, not from the sun.**
-The cutaway removes the storeys the player is not on so that a house has an
-inside. If the sky test read the *drawn* set of statics, standing indoors would
-delete the roof and flood the room with noon — the player would carry daylight
-into every building. So `sky` is computed from the map as it is, not as it is
-drawn, and it is the one consumer of the occlusion walk that ignores
-`cutaway::shows`.
+**Also out of scope: which primitive underlies the occluder this plan reads.**
+Whether a roof or a wall is a box or a mesh is decided in
+[`lighting_geometry.md`](lighting_geometry.md), not here — the sky-column walk
+described below reads whatever the grid holds, box or mesh alike, and does not
+care which. One open question is left for this file rather than that one:
+whether a sloped mesh roof still gives the column test a clean single-bit
+in-or-out answer, or needs a fractional, partial-coverage answer the current
+byte-per-tile multiplicative model doesn't have today. See "The sky field"
+and "Status" below.
 
-This is a real inversion of [`lighting.md`](lighting.md)'s decision 4, whose whole
-argument is that a static the cutaway removed must not cast a shadow — and the
-inversion is right, for a reason worth stating: a *shadow* is a thing the player
-would see falling from something that is not there, and a *missing ambient* is
-the absence of light from a thing the player knows is there, because they walked
-under it. One is an artefact, the other is the point.
+## The sky field
 
-**4. Day is a curve with a colour, not a level with a key.**
-The server sends `0x4F` as a number from 0 to 31 in steps, and F10 is a switch
-between two constants. Neither is a sunset. The client keeps its own
-time-of-day scalar, driven by the server's level and **eased towards it over a
-few seconds**, and maps it through a ramp that is a colour and not a brightness:
-amber at dawn, white at noon, amber and lower at dusk, and at night the blue that
-`light::NIGHT` already is. A step in the server's level then reads as the sun
-moving rather than as somebody flipping a switch, and no new packet is needed to
-get it.
+**Built.** A tile's sky share starts at `SKY_OPEN` and is multiplied down by
+every occluder standing in its column above the tile's own floor height —
+[`Builder::shade`] (`occlusion.rs:1770-1784`), called from the same walk that
+already visits every static for the shadow grid, so this costs one land
+lookup per static already touched rather than a second pass over the map.
+Multiplicative and not additive: two roofs over one tile don't make it darker
+than black, and a pane under a slate roof is as dark as the slate.
 
-The sun's direction ([`lighting.md`](lighting.md) decision 12) comes from the same
-scalar: elevation and azimuth are the curve's other two outputs, so the shadows
-on the street turn as the day passes and lengthen into the evening — for free,
-because the machine that walks them is built.
+**Membership is the same test the shadow walk uses.** A roof is an occluder
+here because a roof static carries `WINDOW | NO_SHOOT` — [`stops_light`]
+(`occlusion.rs:126-128`), the same membership `lighting.md`'s shadow walk
+reads, a fact about arrows and not a fact invented for lids. No separate flag
+or lookup exists for "is this a roof"; the column test asks the same opacity
+byte the ray walk does.
 
-**5. Anything that burns carries its light, and it carries it smoothly.**
-`light::collect` walks map statics and ground items. It must also walk:
+**A window passes its share rather than blocking outright.** `WINDOW`'s
+opacity is `PANE = 51` out of 255 (`occlusion.rs:390`), so
+`Builder::shade`'s multiply lets `(255 - 51) / 255`, four fifths, of what
+was already there through — a glazed roof lets four fifths of the sky
+through where a slate one lets none. This is deliberately the crude half of
+what a window could do: it changes how much sky a tile *starts with* before
+the blur below spreads it, not a directional patch of daylight seeded at the
+window and falling off inward (see "A wall's ambient and a window's sky").
 
-- **mobiles** — an equipped light source on a mobile's layer, which is how the
-  reference does it (`GameScene.AddLight(this, item, ...)` from `MobileView`),
-  and which is what finally makes a player holding a torch light the room;
-- **effects** — a spell, a projectile, an explosion, each a light for as long as
-  it draws;
-- the player, whose torch replaces the "personal light level" fudge: `0x4E` is a
-  floor under the darkness, so it brightens the whole screen including the far
-  side of a wall. A real light on the player's own tile is the honest form of the
-  same intent and gets shadows for nothing.
+**The test always reads the map as it stands, never as it is drawn.** This is
+the one reader of the occlusion grid that does not consult
+[`cutaway::shows`] — every other consumer (the shadow walk, the wireframe
+view) only sees what the frame's [`Cutaway`] left visible, because a shadow
+cast by a static the cutaway removed from the picture is an artefact: nothing
+in the image is making it. The sky test is the opposite: if it read the
+*drawn* set of statics, standing indoors would delete the roof over the
+player's own head and flood the room with noon, carrying daylight into every
+building the player enters. A missing ambient from a roof the player knows is
+there, because they walked under it, is the point rather than a bug.
 
-**Smoothly** is the part that is easy to get wrong. A mobile's *sprite* is
-interpolated between tiles; if its light is placed at its tile, the pool jumps a
-whole tile at a time while the thing carrying it slides. The light takes the same
-interpolated world position the sprite is drawn from — which the renderer already
-computes — and the flicker phase comes from the mobile's serial rather than from
-its tile, or the pool changes its character as it walks.
+**The field is blurred once, after every occluder has shaded it in.**
+[`Builder::blur_sky`] (`occlusion.rs:1805-1825`) is a single 3×3 average over
+the grid's own rectangle, edges repeated rather than falling off outside it —
+averaging in an assumed-open tile past the grid's own edge would draw a
+bright rim around the inside of every frame's border, a picture of where the
+grid ends rather than of where a roof does. A raw column test steps from
+`SKY_OPEN` to `0` exactly at the wall line; the blur is what turns that step
+into a doorway brighter than the room behind it and an eave brighter than
+the floor under it. It is not a simulation of light bouncing through a
+doorway — it is the shape a blur of a small array happens to have, applied
+once, never twice.
 
-**6. An emitter is not subject to the dark it dispels.**
-A campfire at night is currently art multiplied by a night ambient, plus its own
-light at distance zero. If that sum comes out below 1 the fire is a *dim* fire,
-which no fire is. The rule: a fragment whose tile hosts an emitter is lit by at
-least that emitter's own colour at full intensity — the multiplier is clamped
-from below rather than accumulated to. It is one `max` in the loop, and it is
-what makes a torch look like a torch instead of like an orange sprite.
+**Format.** The finished field is a second `Rgba8Uint` texture over the same
+rectangle the occlusion grid's index covers, one texel a tile —
+[`Occlusion::field_bytes`] (`occlusion.rs:1171-1177`). Its four channels are
+`(sky, aperture, body, unused)`: what a *tile is*, read once per fragment,
+as opposed to `Occlusion`'s own cell format, which is what a *ray* walks
+through in a loop. Only the first channel is written today —
+`field_bytes` emits `(sky, 0, 0, 0)` for every tile — the other three are
+reserved, not padding: `aperture` for the fuller window pass-through
+[`lighting.md`](lighting.md)'s own aperture measurement would seed, `body`
+for a soft occluder's opacity when a mobile becomes one (see "Bodies as
+occluders"), and one channel still unclaimed by either.
 
-**7. Falloff is a shape that reaches zero, and the light set fades at its edge.**
-Two pops to remove, both structural:
+**Cost, measured on the built scenes and on Britain at the widest zoom:** one
+land lookup per static in a walk that already touched it, and one 9-tap pass
+over the grid — 187×187 tiles at the widest zoom, on the CPU, once a frame
+(`light.rs:3112-3113`). Nothing per fragment at this stage: no shader reads
+the field plane until it is uploaded (see "The two ambients").
 
-- A falloff that is still bright at the radius switches off at the rim. The
-  window `(1 - (d/r)^2)^2` — smooth, exactly zero at `r`, inverse-square-ish in
-  the middle — has no rim.
-- `Lighting::MAX` is 64 and `collect` truncates by distance from the eye, so the
-  65th torch appears and vanishes as the camera moves. The last few in the sorted
-  list fade out over the tail rather than being cut, so a light leaves by getting
-  dimmer.
+**A wall tile has no sky of its own.** A wall shades its own column the same
+as anything else standing in it, so a wall tile's own `sky_at` reads `0` —
+the ring of tiles a house's outer walls stand on is exactly as "roofed" as
+the room inside, by this test alone. That is not visible yet in the ordinary
+lit frame (see "The day curve"), but it is visible under `View::Sky` once the
+sky field is on, and it is exactly the gap "A wall's ambient and a window's
+sky" below exists to close: a wall face samples its own tile's zero rather
+than the tile the face looks into.
 
-**8. The frame is composed in linear light and mapped once, at the end.**
-Multiplying the art by a colour can only darken it, so there is no such thing as
-a bright pool — only a less dark one — and the channel the ambient is poorest in
-clips first, which is why a blue night makes warm art go grey before it goes
-dark. What is wanted is the ordinary photographic answer: accumulate in linear,
-then one tonal curve with a shoulder, so a flame's centre rolls off warm instead
-of clipping, plus a *toned* lift in the shadows (the ambient's own colour, not
-grey), plus a triangular dither before the 8-bit write — a large smooth pool on a
-dark floor is exactly the picture 8-bit banding is visible in.
+**Known, currently unmeasured edge cases.** A courtyard roof overhang is
+sometimes drawn on the tile *next to* the one its static actually stands
+over — a static is art rising from its own diamond, and an eave can overdraw
+its neighbour — so the column test can read a covered tile as open, or an
+open courtyard tile as roofed, depending on which tile the overhanging
+static's own footprint is anchored to. Nothing has measured this against a
+real house scene yet. Separately, a graphic whose sub-tile footprint
+[`lighting.md`](lighting.md)'s facing detector could not read becomes a
+whole-tile `EDGE_ANY` occluder there, and the sky column test inherits the
+same over-blocking the shadow walk gets from it — a narrow post reads as a
+solid tile of roof. A scan of the block of Britain
+[`lighting.md`](lighting.md)'s own cutaway tests walk found 28 of 2,560
+tiles the cutaway calls outdoors reading dark under the column test; most are
+wall tiles (the paragraph above), the remainder the overhang case.
 
-**The trap, said out loud:** the client's art is already lit. Every tile and
-sprite has baked highlights implying a fixed sun, so real coloured light on top of
-it is a double count, and the more saturated the ambient the more obviously
-wrong it looks. Nox's art was drawn for Nox's lighting; ours was not. The
-practical consequence is that the curve's job is as much restraint as reach, and
-that any value here is held by a scene rather than by a formula.
+## The two ambients
 
-**9. A body between a flame and a wall makes a shadow, and it is a box that
-moves.**
-Mobiles are not in the occlusion grid, so a crowd around a campfire is a crowd of
-things standing in a light that goes straight through them. A mobile is a short,
-soft occluder — a partial opacity over a span of about a body's height — and the
-grid takes it the same way it takes a static. The reference does not do this;
-that is not an argument against it, it is the reason it needs its own scene and
-its own value.
+**Built.** [`Ambient`] (`light.rs:297-302`) is two RGB triples, `sky` and
+`ground`, rather than one colour and a brightness: a sky is blue where a
+cellar's own floor light is bluer still, and a single number could only ever
+say how *much* light a place has, never what kind.
 
-It is also the first cell in the grid whose *contents change while nothing about
-the map does*, and that is why it waits for [`lighting.md`](lighting.md)'s step
-14: a box drawn over a walking body is the only cheap way to see whether it is
-the right height, whether it is snapped to the tile while the sprite slides
-(decision 5's mistake, arriving from the other side), and whether it is left
-behind when the body moves on. A soft occluder that is wrong is not a visible
-bug — it is a slightly darker wall — so without the instrument this step cannot
-be judged at all.
+```rust
+// Ambient::at, light.rs:349-356
+pub fn at(self, sky: u8) -> [f32; 3] {
+    let share = f32::from(sky) / f32::from(SKY_OPEN);
+    let mut lit = self.ground;
+    for (channel, sky) in lit.iter_mut().zip(self.sky) {
+        *channel += sky * share;
+    }
+    lit
+}
+```
 
-**10. Sight is not light, and this client cannot enforce either.**
-Nox's other famous half is that you see only what your character sees. It could
-do that because it was authoritative. Here the server has already sent everything
-in range, so any "fog of war" drawn on the client is a curtain over data the
-player's own memory holds — cosmetic, cheatable, and dishonest if presented as
-anything else. It is worth having as an *option*, because dimming what is behind
-a wall looks superb and costs one more use of the walk that is already there, and
-it is worth never letting it decide anything. If it should ever be a rule, the
-rule lives on the server and this pass is not where it starts.
+Three constant `Ambient`s exist:
 
-**11. What each of these is held by is a scene, not a number.**
-`render/src/scene.rs` is the pattern: a built map, a built tiledata, a list of
-items, a camera, and an ASCII diagram a failing test prints. Every decision above
-that invents a constant — `GROUND_AMBIENT`, the day ramp, the body's opacity, the
-tonal curve's shoulder — gets one, and the constant is tuned against the picture
-rather than argued into existence. The existing list of invented values
-(`occlusion::PANE`, `light::flame`, `FLAME_SPREAD`) is already the longest
-section of the other plan's backlog; this one should not lengthen it silently.
+- **`Ambient::DAY`** (`light.rs:311-314`): `sky = [1,1,1]`, `ground = [0,0,0]`
+  — the identity, full daylight under an open column and nothing at all
+  under a lid, at which the blit is a copy of the world image.
+- **`NIGHT`** (`light.rs:467-470`): `sky = [0.20, 0.22, 0.31]`,
+  `ground = [0.10, 0.11, 0.14]` — the two terms sum to `[0.30, 0.33, 0.45]`,
+  the single colour night was before the split, so a street at night reads
+  exactly as dark as it always did and the whole of what changed is indoors.
+- **`SKYLIGHT`** (`light.rs:482-485`): `sky = [0.43, 0.42, 0.44]`,
+  `ground = GROUND_AMBIENT` — sums to `[0.55, 0.55, 0.62]`, likewise the
+  daylit frame's old single colour, well short of white so a sun in the
+  frame still has shadows to cast and well short of black so a shadow at
+  noon reads as a shadow rather than a hole.
 
-**13. A wall's face takes the ambient of the tile it looks at.**
-Decision 1 gives every tile its own share of the sky, and then a wall tile makes
-the split visible in the worst way: it is one tile with a face on each side, one
-of which is a room and the other a street. Sampled at its own cell it is either
-too bright indoors or too dark outdoors, and no per-tile answer fixes that,
-because the two faces are not in the same place — they are on opposite edges of
-one cell.
+`GROUND_AMBIENT = [0.12, 0.13, 0.18]` (`light.rs:456`) is the one number this
+plan has actually invented and shipped: small, because the whole of what the
+split buys is a room darker than the street and a generous floor gives that
+straight back; cold, because it stands in for bounced light off stone and
+plaster rather than for a source, and a warm floor would take the one hue a
+flame gets to keep for itself.
 
-[`lighting.md`](lighting.md)'s step 15 is exactly the missing measurement: a face
-read out of the art, and a pixel's `v` along it. With a facing, a wall's pixels
-sample the sky field at the tile the face **looks into** — `(x, y-1)` for a north
-face and so on — and a house's outer walls are lit by the day while its inner
-walls are lit by whatever is burning inside. Without a facing they sample their
-own cell, which is today's behaviour and stays the fallback for every graphic the
-detector refuses. That refusal is the important half: step 15's detector must be
-able to say *undecided*, and this is the consumer that shows why — a corner post
-guessed wrong is a wall lit from the wrong world.
+**`Ambient::flattened`** (`light.rs:333-342`) sums the split back into one
+term — `sky: [0,0,0]`, `ground: sky + ground` — recovering exactly the
+single-colour ambient this pass had before the field existed. This is what
+the client uses by default (see below), because judging a point light's own
+falloff wants one thing changing in the picture at a time, and the field is
+the larger visual signal in a lit frame if left on.
 
-**14. A window passes sky, not only sun.**
-Decision 1 will read a room with four glazed walls as a cellar, because the sky
-test is a column and the sky does not come through the roof. That is right for
-the roof and wrong for the room: at noon a windowed hall is *daylit*, and it is
-daylit by the sky rather than by the disc of the sun — the sunbeam is a patch on
-the floor, the daylight is everywhere.
+**Wiring.** The client picks one of three skies — `light::NIGHT` (F10),
+`light::SKYLIGHT` (F8, "sunlit"), or nothing (plain daylight, the identity) —
+then, unless the sky-field toggle (`self.sky_field`, F6, off by default) is
+held on, flattens whichever it picked before building the frame's `Lighting`
+(`crates/client/app/src/lib.rs:4663-4681`). With no sky chosen at all, the
+frame is `Lighting::NONE` and no grid is built (see "The day curve").
 
-So the aperture of [`lighting.md`](lighting.md)'s step 16 has a second consumer.
-Where a cell carries one, it seeds the sky field with the sky visible through it,
-and decision 2's blur is what spreads it into the room — a fall-off from the
-window inwards, which is what a window does. Before step 16 lands there is a
-cruder version that is still better than nothing and worth having in the
-meantime: a cell whose opacity is `PANE` rather than `OPAQUE` passes its share of
-the sky to the tile behind it. That is one line in the same column test, it needs
-no new data, and it means a chapel is not a crypt.
+**Both sides read the same field.** `blit.wesl` reads the field plane as a
+second grid texture, binding 5 (`shaders/blit.wesl:58`), uploaded beside the
+occlusion grid's own textures and never apart from them
+(`blit.rs:824`), and does `Ambient::at`'s same arithmetic per fragment via
+one `textureLoad` plus a multiply-add (`shaders/blit.wesl:664`).
+`light::sample`'s CPU walk does the identical lookup —
+`lighting.ambient.at(lighting.occlusion.sky_at(spot.tile.0, spot.tile.1))`
+(`light.rs:1623-1625`) — using the fragment's own tile, not the fractional
+world position within it: the field is a byte a tile, and a second
+interpolation on the CPU side would disagree with the shader's own read of
+the same texel. [`lighting.md`](lighting.md)'s parity test is what keeps the
+two held together, and it gained a third fixture scene for exactly this
+field: `roofed_room` (`scene.rs:1021`, used in `tests/frame.rs:4327` and
+`tests/frame.rs:4877`), because every earlier parity scene is lit by an
+ambient that happens to be nearly uniform across almost all of it — a shader
+reading the wrong plane could still agree with the CPU almost everywhere.
+`roofed_room`'s own sky spread is asserted before its pixels are compared.
 
-**15. Nothing here lands ahead of the measurement.**
-[`lighting.md`](lighting.md)'s step 6 — a frame time at the widest zoom — is
-still open, and three decisions here add per-fragment or per-frame cost (1 and 2
-a grid pass, 5 more lights, 8 a curve on every pixel). The number comes first,
-and each step states what it cost.
+**The instrument is the field on the ground, not the wireframe.**
+`View::Sky` (`debug.rs:147`, `VIEW_SKY = 9u` in `shaders/blit.wesl:142`)
+draws the sky share **on the ground itself** — white under open air, black
+under a roof, a gradient across a doorway (`shaders/blit.wesl:1268-1275`) —
+rather than as a colour on the occlusion wireframe's boxes
+(`shell::draw_occluders`, `crates/client/app/src/shell.rs:2082`). The
+wireframe still shades by opacity/kind (a lid amber, a panel red, a
+whole-tile body violet, a pane cyan — `shell.rs:2072-2078`), unchanged by
+any of this, and that is deliberate: the failure the sky field actually has
+is a tile that is *wrongly open* — an eave that didn't cover the floor
+under it, a roof static standing one tile over — and shading a box by its
+sky share would only ever be visible where there is a box at all. A hole in
+a roof is exactly where there is no box, and would be invisible in the one
+view meant to find it.
 
-## Steps
+**Cost, measured at the widest zoom:** one more `Rgba8Uint` texture of the
+grid's own rectangle uploaded per frame — 140KB at the widest zoom, doubling
+what the pass already uploads for the occlusion grid itself
+(`light.rs:3112-3113`) — and one `textureLoad` plus a multiply-add per
+fragment. No walk, no loop.
 
-- [x] **1. The sky field.** `occlusion.rs` gained a per-tile sky byte from the
-      un-cut column test of decision 1/3, the `PANE` leak of decision 14, and the
-      blur of decision 2 — `Occlusion::shade`, `blur_sky` and `sky_at`, built out
-      of `collect`'s existing walk rather than a second one. The format is a
-      **second `Rgba8Uint` plane over the same rectangle**, `field_bytes`, whose
-      channels are `(sky, aperture, body, unused)`: the cell stays what a *ray*
-      walks through and the plane is what a *tile is*, which is the line the
-      three callers actually fall on. Decided once, as the seam above asks.
+**A dangling predicate.** `Lighting::is_identity` (`light.rs:437-442`) now
+accounts for the occlusion grid being non-empty (a grid with a roof in it may
+darken a tile even with no flame burning, so it is no longer the identity
+just because `lights` is empty) — but nothing calls it as an early skip
+anywhere in the render path; the blit multiplies unconditionally regardless
+of its answer. Only its own unit test (`light.rs:2873-2879`) reads it today.
 
-      Tested on the built scenes — `roofed_room`, `roofed_room_with_open_door`
-      and `roofed_room_with_window` are new, and the last two differ from the
-      first by one graphic each — and on Britain, which is where the assumption
-      underneath the whole column test is checked: see the backlog.
+## The day curve
 
-      **The cost**, per decision 15: one land lookup per static in a walk that
-      already touched it, and one 9-tap pass over the grid — 187x187 tiles at the
-      widest zoom, on the CPU, once a frame. Nothing per fragment: no shader
-      reads the plane until step 2.
+**Not built.** The server sends `0x4F` as a level from 0 to 31 in discrete
+steps, and F10 is a switch between two fixed constants (`NIGHT`/nothing).
+Neither is a sunset. The intended design is a `Daylight` type holding the
+client's own time-of-day scalar, driven by the server's level but **eased
+towards it over a few seconds** rather than snapping, mapped through a ramp
+that is a colour and not a brightness — amber at dawn, white at noon, amber
+and lower at dusk, `NIGHT` at night — with F10 becoming an override of the
+scalar rather than a swap between two constants, so the debug key and the
+real path would be one code path. The same scalar would drive
+[`lighting.md`](lighting.md)'s sun direction (elevation and azimuth), so
+shadows would turn and lengthen as the day passed without a second thing to
+build.
 
-      **Left undone**: the drawn half. The sky byte was to shade the boxes
-      [`lighting.md`](lighting.md)'s step 14 strokes; step 2 drew the field on
-      the ground instead, as this plan's own backlog asked, and step 14's boxes
-      — now built — are strokes coloured by *opacity* and say nothing about the
-      sky. The two views are read side by side rather than one inside the other,
-      and the backlog below says why that is the right way round. It is not a small
-      omission: a field this cheap to compute is a field it is cheap to be wrong
-      about everywhere at once, and the backlog below says why the wireframe is
-      the wrong instrument for it anyway.
-- [x] **2. The two ambients.** `Lighting::ambient` is an `Ambient` — a sky colour
-      and a ground colour — and `Ambient::at` is the one place the two are mixed
-      by a tile's sky byte. `blit.wgsl` reads the field plane as a second grid
-      texture (binding 5, uploaded beside the occluders and never apart from
-      them) and does the same arithmetic per fragment; `light::sample` reads
-      `sky_at` at the fragment's own tile. The parity test of the other plan's
-      decision 9 keeps the two honest, and it gained a **third scene** for it:
-      `roofed_room`, because every other parity fixture is lit by an ambient that
-      happens to be uniform over almost all of it, so a shader reading the wrong
-      plane would still have agreed nearly everywhere. That scene's own sky
-      spread is asserted before the pixels are compared.
+**This is what the rest of the split actually waits on.** An ordinary
+daylit frame today picks no sky at all and is built as `Lighting::NONE`
+(`light.rs:405-411`), whose occlusion field is `Occlusion::EMPTY`
+(`occlusion.rs:1037-1049`) — no grid, no sky field, nothing for a fragment to
+read. The sky split is real and tested (see above), but it only reaches the
+screen at night (F10) or under the sun key (F8), or with the sky-field key
+(F6) held on top of one of those — a player in the ordinary daylit mode,
+which is most of the time, sees a house lit exactly as brightly as the
+street outside it, same as before this plan existed. The day curve is the
+step that makes *every* frame carry an ambient, which is what turns the split
+from a thing the tests can see into a thing a player does.
 
-      `NIGHT` and `SKYLIGHT` are split so that their two terms **sum to what each
-      was as one colour**: a street is exactly as bright as it was and the whole
-      of the visible change is indoors. The new number is `GROUND_AMBIENT`.
+## Emitters and the light they carry
 
-      The instrument, which is step 1's "left undone" arriving by the route its
-      own backlog asked for: `View::Sky` draws the field **on the ground** rather
-      than as shading on the wireframe boxes — a hole in a roof is exactly where
-      there is no box, and would be invisible in the view meant to find it.
+**Not built.** `light::collect` (`light.rs:660`) walks map statics and
+server-dropped ground items only — it takes neither a mobile list nor an
+effect list, so nothing standing on a mobile's own equipped layer, and no
+spell, projectile or explosion in flight, casts any light today. The
+player's own held torch is a separate, already-built mechanism
+([`lighting.md`](lighting.md)'s carried-flame beam, added to the frame after
+`collect` runs) — what's missing here is everything else that burns and
+moves: another mobile's torch, a fireball mid-flight, a burning corpse.
 
-      **The cost**, per decision 15: one more `Rgba8Uint` texture of the grid's
-      own rectangle uploaded per frame (140KB at the widest zoom, doubling what
-      the pass uploads), and one `textureLoad` plus a multiply-add per fragment.
-      No walk, no loop.
-- [ ] **3. The day curve.** A `Daylight` in `light.rs`: the server's `0x4F` level
-      in, an eased scalar, and out of it the ambient pair *and* the sun's
-      direction. F10 becomes an override of the scalar rather than a swap of two
-      constants, so the debug key and the real path are one code path.
-- [ ] **4. Emitters that move.** `collect` takes mobiles and effects; a light
-      takes an interpolated position and a serial-derived flicker phase. The
-      player's torch lights the player's room; `0x4E`'s floor comes out.
-- [ ] **5. Emissive emitters.** Decision 6's clamp, in the shader and in
-      `sample`, with a night scene whose only subject is that the fire is the
-      brightest thing in it.
-- [ ] **6. Falloff and the fade at the cut.** Decision 7, both halves, plus a
-      test that walks a camera past a 65th light and asserts no discontinuity.
-- [ ] **7. The tonal response.** Decision 8: linear accumulation, a shoulder, a
-      toned shadow lift, dither. This is the step most likely to be argued about
-      and the one most obviously judged by a screenshot — a before/after pair of
-      the same scene belongs in the commit.
-- [ ] **8. Bodies as occluders.** Decision 9, behind its own scene, and judged
-      with [`lighting.md`](lighting.md)'s step 14 — which is now built, so this
-      one is open rather than blocked.
-- [ ] **9. A wall's face takes its own side's ambient.** Decision 13, after
-      [`lighting.md`](lighting.md)'s step 15 has a facing to offer. Held to a
-      frame test of a house at noon: the outer face of a wall is day, the inner
-      face of the same tile is not, and a graphic the detector refused looks
-      exactly as it does today.
-- [ ] **10. Sky through the aperture.** Decision 14's second half, after
-      [`lighting.md`](lighting.md)'s step 16. The `PANE` approximation of step 1
-      is what it replaces, and the test is that it replaces it *upwards* — the
-      hall does not get darker when the real aperture arrives.
-- [ ] **11. The optional curtain.** Decision 10, off by default, and documented
-      as cosmetic where a reader will see it.
+The design each of those would need is the same one the player's own torch
+already has, generalized: a light placed at the thing's **interpolated**
+world position rather than its tile, because a mobile's sprite already
+slides between tiles and a light snapped to the tile would jump a whole tile
+at a time while the sprite carrying it slides continuously — and a flicker
+phase keyed off the mobile's own serial rather than off its tile, so the
+light's character doesn't visibly change the moment it crosses a tile
+boundary.
 
-## Backlog
+**An emitter is not yet exempt from the darkness it's supposed to dispel.**
+A campfire at night is currently art multiplied by the night ambient, plus
+its own point light at distance zero — nothing clamps that sum from below,
+so if the two together come out under `1.0` the fire renders as a dim fire,
+which no fire is. No such clamp exists in `light.rs` or `blit.wesl` today;
+the intended fix is one `max` in the per-fragment loop, so a fragment on an
+emitter's own tile is lit by at least that emitter's own colour at full
+intensity regardless of what the ambient multiplier would otherwise give it.
 
-Written while drafting this, and not to be lost:
+**The personal light level packet has no separate identity in this
+codebase.** Real UO client protocols distinguish an "overall" light level
+from a "personal" one; here only `0x4F` (`crates/common/protocol/src/world.rs:894`,
+"overall light level") exists, and the **Night Sight** spell
+(`server/world/src/tick/spells.rs`) is implemented by resending the caster
+its own copy of that same packet at its brightest value — unicast, not
+broadcast (documented as a "visual no-op until a day/night cycle exists" in
+`docs/roadmap.md`). Once the day curve above makes `0x4F` drive a real
+per-frame ambient, Night Sight's resend needs to mean something different
+from an ordinary level change *for that one client only*, and nothing has
+decided how the client would tell the two apart — a genuine open question
+this section leaves for whoever builds the day curve, not a settled design.
 
-- **The sky field and the sun are asking one question twice.** Decision 1's
-  column test is "can this tile see straight up"; `walk_sun` is "can this tile
-  see the sun's direction". At noon they are the same walk with a different
-  vector, and a shared traversal would answer both — which is also what the other
-  plan's backlog wants for the sun's tile-at-a-time stepping. Worth doing when
-  both are built, not before: two callers is when the shape of the shared thing
-  is visible.
-- **A roof over a courtyard is a lie the map tells.** Some UO houses have tiles
-  that are roofed in the art but whose statics do not stand over the floor tile —
-  overhangs are drawn on the tile *next* to the one they cover, because a static
-  is a picture rising from its own diamond. Decision 1 will read those as sky.
-  Whether it matters is a question for a real house, and the scene that answers
-  it does not exist yet.
-- **`Lighting::MAX` at 64 is a guess that nobody has hit.** Britain at the widest
-  zoom with every window burning (the other plan's backlog: 80 window graphics
-  carry `LIGHT_SOURCE`) is the case that finds out. The truncation is only worth
-  fading (step 6) if it happens; the measurement of step 12 will say.
-- **The personal light level has a second meaning.** `0x4E` is also how a shard
-  says "this player has night sight" — a spell, an item. Replacing it with a
-  torch on the player's tile (decision 5) is right for the torch and wrong for
-  night sight, which is not a light at all but a change to how dark the dark is
-  *for one viewer*. Both want to exist: a source, and a floor under the ambient.
-- **~~The occluder wireframe draws tiles, not surfaces.~~ Fixed, and it is the
-  view a gap is looked for in.** It drew `Occlusion::boxes()` — the *merged*
-  `at()` — which is the world as it was before [`lighting.md`](lighting.md)'s
-  step 21.2: a floor and the wall on its tile came out as one box from the
-  floor's `z` to the wall's top, two walls with a storey of air between them came
-  out as one box through the air, and which edge a panel stands on was not in the
-  picture at all. Every gap the view is opened to find is a gap between two of
-  those things. It now draws each of the walk's three kinds as the shape it is —
-  a lid is one horizontal quad, a panel is one vertical quad **on its named
-  edge**, a body is the box — and the count beside the checkbox counts surfaces.
-  The table between the diamond's corner order and `facing::Face`'s naming is
-  derived in a test from `Face::place_at`, which is what the shader places a face
-  pixel with, so the wireframe cannot draw a wall on a side its pixels are not on.
-- **A narrow graphic becomes a whole tile of occluder, and a house's corner is
-  one.** Britain's `1509,1635` — the tile that reads as lit when its neighbours
-  are dark — carries `0x00CC`: a 44-wide picture whose silhouette occupies
-  **columns 12 to 31**, a centred peak, with `0x00DF` above it the same shape
-  thirty-three pixels tall (`artscan`'s `shape` example prints both).
-  `facing::facing_of` refuses it by its own rule — a picture narrower than a tile
-  cannot cover an edge of the half it belongs to — and the fallback is
-  `EDGE_ANY`, so twenty columns of art become an occluder across the whole
-  square, standing among neighbours that are panels on one edge. It over-blocks
-  in every direction at once, and it is what the eye reads as the odd tile. The
-  model has no narrow body: a surface is a plane on an edge or the whole tile. So
-  this is a decision rather than a fix — what a centred picture wants is a body
-  whose *footprint* is the columns it covers, which is a second measurement per
-  graphic, a second number per surface and a third rule in the walk.
-- **A box is drawn for what stands, and the sky is what does not.** The wireframe
-  of [`lighting.md`](lighting.md)'s step 14 shows occluders; the failure this
-  plan will actually hit is a tile that is *wrongly open* — an eave that did not
-  cover the floor under it, a roof whose statics stand one tile over. Shading the
-  boxes by the sky byte (step 1) shows the second kind only where there is a box
-  at all, so a hole in a roof is invisible in the very view meant to find it. The
-  honest instrument is the field drawn on the ground, as the terrain overlay
-  already draws a per-tile number, and it is worth remembering before adding a
-  third view rather than a second use of that one.
-- **~~`FLOOR` may be the roof test that already exists.~~ Settled: a real roof is
-  already in the grid.** The column test rests on a roof being an occluder at
-  all, and membership is `WINDOW | NO_SHOOT` — a fact about *arrows*, which
-  nothing said was also a fact about lids. Measured over the block of Britain the
-  cutaway's tests walk: **203 roof statics, 203 of them `NO_SHOOT`**. So the
-  height comparison stands, no flag lookup is needed, and
-  `occlusion::britains_rooms_are_dark_and_its_streets_are_not` is what says so if
-  a patch ever changes it. **The wider question that entry was really asking —
-  whether an upper storey's floor is a lid for the storey below — was answered by
-  measuring it, and the answer is that membership was never the problem.** A
-  house's floor plank *is* `NO_SHOOT`: over the same block, 2,755 of the 4,647
-  `FLOOR` statics are opaque, and the open ones are rugs, grass and road decals.
-  Every real floor was in the grid all along. What it was not was an *occluder*,
-  because it is `height 0` and the walk scaled a lid by the length of the ray
-  inside its span — [`lighting.md`](lighting.md)'s decision 32, and the storey
-  above a torch was lit through its own floorboards until it landed. The sky half
-  of this is unaffected: `Builder::shade` reads the same opacity and always did
-  take a floor's column away.
-- **A wall tile has no sky of its own, and decision 13 is what that costs.** A
-  wall shades its own column, so every wall tile reads 0 and the ring of a house
-  is as dark as the room inside it. That is invisible today — nothing samples the
-  field — and it is exactly the case decision 13 exists for: at step 2 the outer
-  face of a house will take the ambient of a cell that never sees the sun. The
-  fallback until step 15 offers a facing is the tile's own cell, which is this
-  zero; whether that reads as "wrong" or as "a wall in shadow" is a question for
-  the first screenshot of step 2, and it may want the wall's *brightest*
-  neighbour rather than its own cell as the interim answer.
-- **28 of 2560 tiles the cutaway calls outdoors read dark.** The measurement
-  above, in its other direction. Some are wall tiles (the entry above); the rest
-  are the overhangs the courtyard entry names, arriving from the side that can be
-  counted. Worth re-reading when that scene exists: the number is a bound on how
-  wrong the eave case actually is, and it is small.
-- **`field_bytes` has three channels nobody writes.** Deliberate — the format is
-  decided once, per the seam above — but a plane of zeros uploaded every frame is
-  a thing that can be forgotten. Whoever lands step 16's aperture or step 8's
-  soft body should find them already waiting; if neither has landed by the time
-  something else wants the space, that is when to reconsider, not before.
-- **The daylit frame is `Lighting::NONE`, and decision 1 cannot reach it.** The
-  client picks between three skies: night, a daylight with a sun, and plain
-  daylight — and the third is `Lighting::NONE`, which carries an empty grid on
-  purpose, so that the blit is a copy and the frame tests can compare it texel
-  for texel. An empty grid is open sky everywhere, so a house's inside is lit as
-  brightly as the road in exactly the mode a player is in most of the time. This
-  is not a bug in step 2, it is what step 3 is for: once the day curve makes
-  every frame carry an ambient, the third case stops existing. Whoever lands it
-  should check what happens to the copy tests — they want a lighting that is the
-  identity, and `Lighting::NONE` will still be it, but the *app* will no longer
-  be a caller of it.
-- **`Lighting::is_identity` now asks about the grid, and only one test calls
-  it.** It has always been the answer to "may the blit skip everything", and
-  nothing skips anything on it — the blit multiplies unconditionally. Either it
-  should be wired to an early-out or it should go; a predicate that only its own
-  test reads is a claim nobody is holding to.
-- **A wall tile has no sky and the interim answer is still its own cell.** The
-  entry below predicted this and step 2 is where it is now visible: at noon the
-  outer face of a house takes the ambient of a cell that never sees the sun, and
-  a house therefore has a dark ring around it under `View::Sky`. It reads as *a
-  wall in shadow* rather than as wrong, which is why it was left — but it is the
-  first thing to look at in the first screenshot, and decision 13 is the fix.
-- **Nothing in this plan knows about weather.** An overcast sky is exactly the
-  sky term of decision 1 multiplied by a number, and rain is the same with a
-  colour — which is to say this arrives almost for free once the sky field is a
-  field, and it is worth not designing it away in the meantime.
+## Falloff and the light set's edge
+
+**Falloff is already smooth at the light's own radius.** A point light's
+contribution is scaled by `fall * fall` where `fall = 1.0 - (distance /
+radius)` (`light.rs:1664-1667`), continuous and exactly zero at the radius,
+with a zero derivative there too — a light does not pop at its own rim
+today. (An earlier version of this plan proposed a different curve to fix a
+"still bright at the radius" problem; the falloff in the codebase already
+tapers to zero smoothly and has for some time, so that half of the concern
+no longer describes anything in the current source.)
+
+**Not built: a fade at the light-count cap.** `Lighting::MAX = 64`
+(`light.rs:402`) is a hard truncation — `collect` sorts the frame's lights
+by distance from the camera's eye tile and calls
+`lights.truncate(Lighting::MAX)` (`light.rs:719`) — so the 65th-nearest light
+simply isn't in the list; there is no fade as one crosses the boundary from
+inside the kept set to outside it as the camera moves. Whether this is ever
+actually visible in practice — whether a real scene puts more than 64 lights
+in view at once — is a measurement [`lighting.md`](lighting.md) owns (its own
+notes on window-graphic light-source density); nothing here repeats it.
+
+## The tonal response
+
+**Not built — the real frame is a hard clip.** The composed pixel is
+literally `min(color.rgb * lit, vec3(1.0))` (`shaders/blit.wesl:1594`): the
+art multiplied by the accumulated light, clamped to `1.0` per channel. Since
+multiplying can only ever darken the art, there is no such thing as a bright
+pool on screen today — only a less-dark one — and whichever channel the
+ambient is poorest in clips first, which is why a blue night ambient makes
+warm art go grey before it goes dark rather than rolling off smoothly.
+
+The intended replacement: accumulate in linear light (already true), then a
+single tonal curve with a shoulder so a flame's centre rolls off warm
+instead of clipping to white, a *toned* lift in the shadows (the ambient's
+own colour, not a flat grey), and a triangular dither before the 8-bit
+write — a large, smooth, dark-floor pool is exactly the picture 8-bit
+banding is visible in.
+
+A curve with a shoulder already exists in the shader —
+`fn knee` (`shaders/blit.wesl:1241-1247`, `KNEE = 0.6`) — but it is wired
+only into the `View::Light` debug view, to make that view's `0..1` range
+readable against real values that run past `1.1`; it is never applied to
+`fs_main`'s real composed output. The shape of the curve this plan wants is
+arguably already solved and sitting unused by the path that would benefit
+from it.
+
+**The trap, worth keeping in view when this lands:** the client's own art is
+already lit — every tile and sprite has baked highlights implying a fixed
+sun — so real coloured light stacked on top of it is a double count, and the
+more saturated the ambient gets the more obviously wrong that looks. The
+curve's job, when it exists, is as much restraint as reach, and any constant
+it needs is one to hold against a built scene rather than to argue into
+existence (see "Constants held by a scene" below).
+
+## Bodies as occluders
+
+**Not built.** No mobile is pushed into the occlusion grid as a `Solid`
+anywhere in `occlusion.rs` today, so a crowd standing around a campfire
+stands in light that passes straight through every one of them. The intended
+design is a mobile as a short, soft occluder — a partial opacity over a span
+of roughly a body's height, taken by the grid the same way a static is,
+placed and cleared as the mobile moves rather than baked with the map.
+
+This is the first case in the grid whose contents would change while nothing
+about the map does, which is why it needs its own scene and its own
+constant rather than reusing one of `lighting.md`'s: whether the box is the
+right height, snapped to the tile while the sprite slides between tiles (the
+interpolation mistake "Emitters and the light they carry" above describes,
+arriving from the other side), and cleared once the body moves on, is not
+something a single screenshot answers. [`lighting.md`](lighting.md)'s own
+occlusion wireframe (`shell::draw_occluders`) and its solids diagnostic view
+(F5, `crates/client/render/src/solids.rs`) are both already built and would
+both serve as that instrument once a mobile's box exists to draw — nothing
+about this plan is waiting on either of them anymore.
+
+## A wall's ambient and a window's sky
+
+**Not built.** A wall tile's own sky share is always `0` (see "The sky
+field"), and neither `light::sample` nor `blit.wesl` samples anything but
+the fragment's own tile when computing its ambient — a wall's two faces, one
+looking into a room and one looking into the street, both currently read the
+same zero-sky ambient of the wall's own cell, rather than the ambient of
+whichever tile each face actually looks into. Under `View::Sky` this shows
+as a dark ring around the outside of every roofed building, indistinguishable
+from "a wall in shadow" until it's pointed out.
+
+The fix this plan has in mind: sample a wall face's ambient at the tile the
+face **looks into** — `(x, y-1)` for a north face and so on — rather than at
+its own cell. [`lighting.md`](lighting.md)'s own facing measurement (which
+edge of a tile a wall's art stands on, `facing::facing_of`) is already built
+and available (see [`lighting.md`](lighting.md)'s "The art-measurement
+pipeline"), so nothing external blocks starting this — it just hasn't been
+wired into the ambient lookup yet. Where the facing detector refuses to name
+an edge (a corner post it can't read cleanly), the fallback stays the wall's
+own cell, exactly as it reads today.
+
+**The window's aperture is the same shape of gap.** "The sky field" above
+already gives a `WINDOW` tile a crude pass-through — its opacity lets four
+fifths of whatever sky share was already at that tile continue past it. What
+isn't built is the fuller version: seeding the field's own `aperture`
+channel (currently always zero — see "The sky field") with what a measured
+window opening actually passes, so the existing blur spreads a real
+directional falloff inward from the window rather than a flat per-tile
+share. [`lighting.md`](lighting.md)'s aperture measurement
+(`facing::aperture_of`, which finds the largest rectangle inscribed in a
+window's transparent region) is already built and available for this — the
+gap is entirely in wiring its answer into `field_bytes`' second channel,
+not in measuring anything new.
+
+## The optional curtain
+
+**Not built, and deliberately deferred.** Sight is not the same question as
+light, and this client cannot enforce either: the server already sends
+everything within range, so any fog-of-war drawn on the client would be a
+curtain over data the player's own memory already holds — cosmetic and
+cheatable, not a real information boundary. It would be worth having as an
+option regardless, because dimming what's behind a wall looks good and reuses
+the walk this plan already has, and it would be worth never letting it
+decide anything that matters. If it should ever be a real rule, that rule
+belongs on the server; this pass is not where it would start. No code exists
+for this today.
+
+## Constants held by a scene
+
+Every number this plan invents — `GROUND_AMBIENT` today; the day curve's
+ramp, a soft body's opacity, the tonal curve's shoulder, once each lands — is
+tuned against a scene built in `crates/client/render/src/scene.rs`, the same
+library [`lighting.md`](lighting.md)'s own tests use, rather than argued into
+existence from first principles. A constant with no scene backing it is a
+number nobody is actually holding to a picture.
+
+## Status
+
+**Built and in the live render path:**
+- The sky field's column test (`Builder::shade`), its same-membership rule
+  with the shadow walk, its 3×3 blur, and its deliberate independence from
+  the frame's `Cutaway`.
+- The `(sky, aperture, body, unused)` field format (`Occlusion::field_bytes`)
+  as a second `Rgba8Uint` plane, with only the `sky` channel populated.
+- The two-ambient split (`Ambient`, `Ambient::at`, `Ambient::flattened`),
+  `NIGHT`/`SKYLIGHT`/`GROUND_AMBIENT`, wired through F10 (night), F8 (sun)
+  and F6 (sky field, off by default and flattened when off).
+- CPU/GPU parity for the field specifically (the `roofed_room` fixture).
+- The `View::Sky` instrument, drawing the field on the ground rather than as
+  a colour on the occlusion wireframe.
+- A point light's falloff already tapering smoothly to zero at its own
+  radius.
+
+**Not yet built:**
+- The day curve — the step that makes an ordinary daylit frame carry any
+  ambient split at all. Until it lands, the default frame is
+  `Lighting::NONE` with an empty occlusion grid, and a house's inside reads
+  exactly as bright as the street outside it in the mode a player is in most
+  of the time; the split is visible today only by holding F10 or F8 (and, on
+  top of either, F6).
+- Mobiles and effects carrying light, with an interpolated position and a
+  serial-derived flicker phase; only the player's own held torch (a separate,
+  already-built mechanism in `lighting.md`) casts light today.
+- The emissive clamp that keeps a fire from reading as dim under a strong
+  ambient.
+- A fade for the light list's `MAX = 64` truncation as a camera crosses the
+  boundary of which lights are kept.
+- The real tonal response (a shoulder curve, a toned shadow lift, dither) for
+  the actual composed frame — today a hard `min(color * lit, 1.0)` clip. A
+  shoulder curve already exists in the shader (`fn knee`) but is wired only
+  into a debug view.
+- A mobile as a soft, sub-tile-height occluder in the grid.
+- A wall face sampling the ambient of the tile it looks into rather than its
+  own cell — unblocked (the facing measurement it needs is built in
+  `lighting.md`) but not yet wired.
+- The window aperture's fuller, directional pass-through into the field's
+  `aperture` channel — unblocked (the measurement it needs is built in
+  `lighting.md`) but not yet wired; the crude flat pass-through in "The sky
+  field" is what stands in for it today.
+- An optional fog-of-war curtain — no code exists, and it is deliberately
+  scoped to stay cosmetic if it is ever built.
+
+**Deferred to a sibling document:**
+- Whether the sky-column test's occluder is a box or a mesh —
+  [`lighting_geometry.md`](lighting_geometry.md) owns that choice, and this
+  plan's own column walk is agnostic to it. Left open here: whether a sloped
+  mesh roof still gives the column test a clean single-bit answer, or needs a
+  fractional one the current per-tile byte can't represent.
+
+**Known, standing gaps** (not bugs in progress — stable, current facts):
+- `field_bytes`'s `aperture`, `body` and `unused` channels are always zero;
+  the format reserves the room, nothing writes it yet.
+- `Lighting::is_identity` accounts for the occlusion grid but is not wired
+  to any early-out in the render path — only its own unit test reads it.
+- A courtyard roof overhang drawn on the tile adjacent to the one its static
+  actually stands over can make the column test misread that tile's sky,
+  unmeasured against a real house scene.
+- A narrow-footprint graphic the facing detector can't read becomes a
+  whole-tile occluder and over-blocks the sky the same way it over-blocks a
+  shadow — inherited from `lighting.md`'s own occlusion model, not specific
+  to this plan.
+- A scan of 2,560 tiles Britain's cutaway calls outdoors found 28 reading
+  dark under the column test — mostly wall tiles, the rest the overhang
+  case above.
+- Night Sight resends the caster the same `0x4F` overall-light packet
+  unicast rather than using any distinct "personal light" signal — how that
+  should interact with a real per-frame day curve, once one exists, is
+  undecided.
