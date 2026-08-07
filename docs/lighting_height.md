@@ -966,6 +966,41 @@ rule landed; none of it blocked any of them.
   What is left of that row is the entry below: the two spikes sit at `z 1` and
   `z 3`, which are two of this flight's own tread heights, and nowhere else.
 
+- **Every oracle on this track judges a *term*, not the light, and the next one
+  should judge the light.** `View::Shadow` is `through` alone — no `faces`, no
+  falloff, no cone — and `write_reference` draws pure visibility beside it. That
+  pairing is honest as far as it goes and it is the reason the half-space bug
+  above could live: a quantity that is multiplied by something before it reaches
+  a pixel can be wrong in ways the pixel never shows, and can be *judged* wrong
+  where the pixel would not have cared. The engine already has the other view —
+  `View::Light`, "the lighting alone, with the art thrown away" — and the
+  reference already has the geometry to compute the same thing: visibility ×
+  half-space × inverse-square falloff × the pool's radius. What it does not have
+  is the flame's own size, and it should not grow one: the point-source
+  difference is the *question* those two pictures are for. Then a disagreement
+  means "this pixel would look wrong", which is what nobody has been able to say
+  yet.
+
+- **Phase 4 has no scene that shows its own defect on a surface the flame faces,
+  and that is the work its section is missing.** Its default puts the flame under
+  the tread tops it is about, so `light::faces` gives them about `0.045` and the
+  occlusion term reaches the picture at a twentieth. The rule is right and its
+  mutation test is geometry, but the *picture* argument for it was made on a
+  class the picture barely shows. A fixture where a lid of the fragment's own
+  static stands between it and a flame it is turned towards would settle it; the
+  run scene with the flame above and beyond is the nearest thing in the tree and
+  it exercises the counter-example rather than the defect.
+
+- **The engine lights surfaces the flame stands behind, by design, and nobody
+  has priced it.** `light::faces` is not a step: it is a band `FACE_EDGE = 0.2`
+  tiles wide centred on the plane, so a flame an eighth of a tile behind a wall
+  still contributes a quarter of its light to that wall's face. The reason is
+  stated where the constant is — a hard edge is what the eye finds first, and a
+  lamp walking past the end of a wall would switch its face off between two
+  frames — and it is a real reason. It is also why the oracle's own rule
+  (strictly behind means strictly unlit) and the engine's differ over a band, and
+  what a `View::Light` comparison would put a number on first.
+
 - 🚨 **The oracle had no half-space test, and most of this track's residuals
   were that.** Found by orbiting the flame around the flight — eight positions on
   a circle of `2.5` tiles at `z 2.5` — and reading the *sign* of what came out:
