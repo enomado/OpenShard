@@ -234,26 +234,22 @@ struct GroundInstance {
 // `docs/lighting_raymarch.md`'s "second bigger idea": the reader `box_of`
 // used to have no channel to read, arrived.
 @group(0) @binding(13) var footprints: texture_2d<u32>;
-// And the fraction of a `z` unit `solids`' own two whole-unit channels rounded
-// away, indexed and folded the same way: a signed offset from each rounded unit,
-// `-0.5 ..= 0.5` over `SOLID_Z_STEPS` steps around `SOLID_Z_ZERO` —
-// `occlusion::Solid::z_fraction`. `docs/lighting_height.md` phase 2: the
-// horizontal half of a solid's box has been exact since `footprints` landed, and
-// the vertical half was a whole unit, so a box based at `z 3.5` arrived here
-// spanning `4` and the bottom half unit of its own faces sat below its own
-// solid.
+// And a solid's own `z` span, indexed and folded the same way: sixteen bits an
+// end, low byte first, in steps of `1/SOLID_Z_STEPS` from `SOLID_Z_FLOOR` —
+// `occlusion::Solid::z_bytes`, and **the only place a solid's height is on the
+// wire**. `docs/lighting_height.md` phase 2: the horizontal half of a solid's
+// box had been exact since `footprints` landed, and the vertical half was a
+// whole unit, so a box based at `z 3.5` arrived here spanning `4` and the bottom
+// half unit of its own faces sat below its own solid.
 @group(0) @binding(14) var solid_z: texture_2d<u32>;
 
-// Steps of that fraction across the whole half unit either way, and the byte in
-// the middle of them that means "the rounding was exact".
+// Steps of a `z` unit that plane carries one in, and where it counts from.
 //
-// `occlusion::Solid::Z_FRACTION_STEPS`/`Z_FRACTION_ZERO`, and nothing but a
-// person can compare the two pairs. 254 and not 255 so that the middle step is
-// exactly zero: every static in a real map stands at a whole `z`, and an odd
-// number of steps has no middle for that overwhelmingly common answer to land
-// on.
-const SOLID_Z_STEPS: f32 = 254.0;
-const SOLID_Z_ZERO: f32 = 127.0;
+// `occlusion::Solid::Z_STEPS` and `occlusion::Z_FLOOR`, and nothing but a person
+// can compare the two pairs. A power of two, so a whole `z` — what every static
+// off `tiledata` stands at — lands on a step exactly.
+const SOLID_Z_STEPS: f32 = 256.0;
+const SOLID_Z_FLOOR: f32 = -128.0;
 
 // The third channel is `z`'s whole units offset by 128 in its low eight bits,
 // sixteenths of a unit in the four above them, and the sprite's stance in the
@@ -630,7 +626,11 @@ fn id_at(reference: u32) -> u32 {
     return id.x | (id.y << 8u) | (id.z << 16u);
 }
 
-// One solid of the list: (z_bottom + 128, z_top + 128, opacity, PRESENT | HOLED | edges).
+// One solid of the list: (0, 0, opacity, PRESENT | HOLED | edges).
+//
+// The first two channels held `(z_bottom + 128, z_top + 128)` until
+// `docs/lighting_height.md` phase 2 gave the span sixteen bits an end in
+// `solid_z`; they are zero now rather than a rounded copy of it. See `span_of`.
 fn solid_at(id: u32) -> vec4<u32> {
     let at = vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW));
     return textureLoad(solids, at, 0);
@@ -652,21 +652,18 @@ fn footprint_at(id: u32) -> vec4<u32> {
     return textureLoad(footprints, at, 0);
 }
 
-// The `z` span one solid really occupies: `solid_at`'s two whole units and
-// `solid_z`'s two fractions, added back together.
+// The `z` span one solid occupies, off `solid_z`'s own four bytes.
 //
 // `light::wire_span`, and `occlusion::Solid::span_from_bytes` is the arithmetic.
-// **The one place this pass turns a solid's texel into a height** — every rule
-// that asks about one (`on_surface`, `pierces`, `crosses`, `box_of`) takes the
-// pair from here rather than reading `stands.x`/`stands.y` itself, because a
-// reader that does that still compiles, still looks like a height, and quietly
-// puts the occluder back on the whole-unit staircase this plane exists to
-// remove. `docs/lighting_height.md` phase 2.
-fn span_of(stands: vec4<u32>, id: u32) -> vec2<f32> {
-    let fraction = textureLoad(solid_z, vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW)), 0);
+// **The one place this pass turns the wire into a height**, and the reason
+// `solid_at`'s first two channels are zero rather than a rounded copy: a second
+// height a reader could reach for would still compile, still look like a height,
+// and be wrong by up to half a unit. `docs/lighting_height.md` phase 2.
+fn span_of(id: u32) -> vec2<f32> {
+    let raw = textureLoad(solid_z, vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW)), 0);
     return vec2<f32>(
-        f32(stands.x) - 128.0 + (f32(fraction.x) - SOLID_Z_ZERO) / SOLID_Z_STEPS,
-        f32(stands.y) - 128.0 + (f32(fraction.y) - SOLID_Z_ZERO) / SOLID_Z_STEPS,
+        f32(raw.x | (raw.y << 8u)) / SOLID_Z_STEPS + SOLID_Z_FLOOR,
+        f32(raw.z | (raw.w << 8u)) / SOLID_Z_STEPS + SOLID_Z_FLOOR,
     );
 }
 
@@ -697,12 +694,12 @@ fn merged_at(x: i32, y: i32) -> MergedCell {
     }
     let first_id = id_at(run.x);
     let first = solid_at(first_id);
-    let first_span = span_of(first, first_id);
+    let first_span = span_of(first_id);
     var merged = MergedCell(first_span.x, first_span.y, first.z, first.w);
     for (var i = 1u; i < run.y; i = i + 1u) {
         let id = id_at(run.x + i);
         let stands = solid_at(id);
-        let span = span_of(stands, id);
+        let span = span_of(id);
         merged = MergedCell(
             min(merged.low, span.x),
             max(merged.high, span.y),
@@ -941,7 +938,7 @@ fn cell_stopped(
         let edges = stands.w & EDGE_MASK;
         // The solid's real `z` span, fraction included — `span_of`, never the
         // texel's two channels on their own. `light::wire_span`.
-        let vertical = span_of(stands, id);
+        let vertical = span_of(id);
         let low = vertical.x;
         let high = vertical.y;
         // The exact box this one solid is, read off its own footprint plane
@@ -1095,7 +1092,7 @@ fn walk(
             if (stands.w & EDGE_MASK) != 0u {
                 continue;
             }
-            let vertical = span_of(stands, id);
+            let vertical = span_of(id);
             let stops = f32(stands.z) / 255.0 * crosses(
                 start.z,
                 finish.z,

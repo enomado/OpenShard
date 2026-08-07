@@ -249,28 +249,45 @@ phase 3, and the plan's own opening paragraph said so.
 
 How it is carried, since the answer differs from what this section sketched:
 
-- **A signed fraction around the *rounded* unit**, not a `floor` and a
-  remainder. `Occlusion::solid_bytes`' two whole-unit channels keep meaning
-  exactly what they meant, so every reader that has not been taught about the
-  new plane — `Occlusion::at`'s merged view, every test fixture that spells the
-  four bytes out — reads the same number it read before rather than one silently
-  a unit low. 254 steps and not 255, so the middle step is *exactly* zero: every
-  static in a real map stands at a whole `z`, and an odd count has no middle for
-  that answer to land on.
-- **`span_of` is the only place in `blit.wesl` that turns a solid's texel into a
-  height**, and `light::wire_span` its CPU twin. A reader that decodes
-  `stands.x` itself still compiles and still looks like a height, which is the
-  failure phase 1 hit in `plan.rs`.
+- **The whole span, sixteen bits an end, and nothing left behind.** The plane is
+  `Solid::z_bytes` — each end a `u16` in steps of a two-hundred-and-fifty-sixth
+  of a `z` unit from `Z_FLOOR`, which is exactly the `-128 ..= 127` a map's own
+  `z` lives in. `Occlusion::solid_bytes`' first two channels, which held the
+  rounded span, are **zero**.
+- **`span_of` is the only place in `blit.wesl` that turns the wire into a
+  height**, and `light::wire_span` its CPU twin. A reader that decodes a height
+  itself still compiles and still looks like a height, which is the failure
+  phase 1 hit in `plan.rs`.
 - `on_surface`, `pierced`/`pierces`, `crosses` and `box_of` take the span as a
   parameter on both sides now, so each walk supplies the one it is entitled to:
   `walk_cells_exact` the record's own `f64` corners, `walk_cells_streaming` the
   quantised one off the wire — the vertical half of the discipline
   `Solid::fraction` already stated for the horizontal one.
 - The audit the phase asked for is done: no `bottom()`/`top()` call is left on
-  either walk. What survives is the upload's byte, the cutaway, and
-  `Occlusion::at`'s merged view, and each says so in its doc comment.
-  `solid::standing`'s painter-order key was a fourth and is now the exact span —
-  two boxes half a unit apart used to tie.
+  either walk. What survives is the cutaway and `Occlusion::at`'s merged view,
+  and each says so in its doc comment. `solid::standing`'s painter-order key was
+  a third and is now the exact span — two boxes half a unit apart used to tie.
+
+**Two things this phase got wrong first, and what they cost.** Both were found
+by being asked whether the work was a workaround, which is worth writing down as
+plainly as the result:
+
+- The span shipped as **a rounded unit plus a signed fraction**, on the argument
+  that `solid_bytes`' channels had to keep meaning what they meant "for a reader
+  not taught about the new plane". There was no such reader: after the phase
+  `blit.wesl` reads a height through `span_of` and nowhere else. The
+  compatibility had nothing to be compatible with, and it bought a second
+  concept (a fraction *of* something), a second clamp, and a rounded copy of a
+  number living better elsewhere — the exact shape of a format growing a field
+  nobody dares change. Replaced by the whole span above; every oracle number in
+  the table is identical either way, so this was cost without effect.
+- The three `walk_cells_streaming_agrees_with_walk_cells_exact_*` tests were
+  **blind to what this phase introduced**. They build every fixture through
+  `Builder::add` off a `StaticTile`, so every span in them is a whole `z` — and
+  the two walks now read *different* heights for one solid on purpose, which on
+  a whole `z` are equal by construction. Mutating `wire_span` back to the
+  rounded span leaves all three green; only the fractional-`z` body added here
+  goes red. A fourth test, and the mutation is what says it earns its place.
 
 Phase 3 next.
 
@@ -297,12 +314,13 @@ Picked up while phases 1 and 2 landed; none of it blocked either.
   Its `black_box` sums `bytes` + `field_bytes` + `id_bytes` + `solid_bytes`, and
   has never included `footprint_bytes`; `solid_z_bytes` is now a second one
   missing. A cost line that names most of a thing reads as the whole of it.
-- **`plan.rs`'s elevation picture takes its own height from a rounded `top`**
-  (`Occlusion::at`'s merged `Cell`, still `i32`): a wall standing to `z 3.5` is
-  drawn in a frame four units tall, with half a unit of nothing at the top. The
-  `z` it *samples* at each pixel row is continuous since phase 1, so this is the
-  frame and not the measurement — but it is the same instrument, and the same
-  class.
+- **`plan::Wall::top` is an `i32` the caller invents**, so an elevation of a wall
+  standing to `z 3.5` is drawn in a frame four units tall with half a unit of
+  nothing at the top. Only `tests/pictures.rs` builds one today, always at a
+  whole `z`, so nothing is wrong on any picture that exists — but the field is
+  the picture's own vertical extent and there is no reason for it to be whole.
+  (An earlier draft of this entry said the value came from `Occlusion::at`'s
+  rounded `Cell`. It does not; it is a parameter.)
 - **`Occlusion::at`'s `Cell` is still whole units.** Its three readers are the
   wireframe, the plan view and `mounted_at` (which reads `edges` only), so
   nothing that decides a shadow reads it — deliberately left, and worth

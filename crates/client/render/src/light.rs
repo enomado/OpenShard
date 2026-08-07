@@ -2337,18 +2337,17 @@ fn walk_cells_exact(
 /// for which session. What is left lossy here is only the byte quantisation itself —
 /// `Solid::fraction`'s own `1/255` of a tile — which both backends share and
 /// decision 9's own parity tolerance already absorbs.
-/// The `z` span [`walk_cells_streaming`] is entitled to read: the one the wire
-/// carries, put back together out of [`crate::occlusion::Occlusion::solid_bytes`]'s
-/// two whole units and [`crate::occlusion::Occlusion::solid_z_bytes`]'s two
-/// fractions, and **not** [`crate::occlusion::Solid::low`]/`high`'s exact
-/// corners.
+/// The `z` span [`walk_cells_streaming`] is entitled to read: the one
+/// [`crate::occlusion::Occlusion::solid_z_bytes`] carries, and **not**
+/// [`crate::occlusion::Solid::low`]/`high`'s exact corners.
 ///
 /// The vertical half of the discipline [`crate::occlusion::Solid::fraction`]
 /// already states for the horizontal one: this walk exists to preview exactly
 /// what `blit.wgsl` can do, and a CPU reading full precision where the GPU reads
-/// a byte silently stops being that preview. `docs/lighting_height.md` phase 2.
+/// a quantised field silently stops being that preview.
+/// `docs/lighting_height.md` phase 2.
 fn wire_span(stands: &crate::occlusion::Solid) -> (f32, f32) {
-    crate::occlusion::Solid::span_from_bytes(stands.bottom(), stands.top(), stands.z_fraction())
+    crate::occlusion::Solid::span_from_bytes(stands.z_bytes())
 }
 
 fn walk_cells_streaming(
@@ -2940,12 +2939,10 @@ mod tests {
             !on_surface(3.4, low, high),
             "and one below the box entirely, which `bottom()`'s own rounding to 4 could not tell apart"
         );
-        // And the same span off the wire, which is what the GPU reads: one
-        // step of `Solid::Z_FRACTION_STEPS` is all this may lose.
-        let (wire_low, wire_high) = wire_span(&box_at_half);
-        let step = (1.0 / crate::occlusion::Solid::Z_FRACTION_STEPS) as f32;
-        assert!((wire_low - 3.5).abs() <= step, "{wire_low}");
-        assert!((wire_high - 6.5).abs() <= step, "{wire_high}");
+        // And the same span off the wire, which is what the GPU reads. A half
+        // is a whole number of `Solid::Z_STEPS`, so this is exact rather than
+        // near — the step being a power of two is what buys that.
+        assert_eq!(wire_span(&box_at_half), (3.5, 6.5));
     }
 
     /// [`faces`]'s own gradient: fully towards the light, fully away, and
@@ -3630,6 +3627,74 @@ mod tests {
             max_y: 110,
         });
         occlusion.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        proptest!(ProptestConfig::with_cases(8_000), |(
+            fx in 95.0_f32..105.0,
+            fy in 95.0_f32..105.0,
+            fz in 0.0_f32..20.0,
+            tx in 95.0_f32..105.0,
+            ty in 95.0_f32..105.0,
+            tz in 0.0_f32..20.0,
+        )| {
+            prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
+            let tile = (fx.floor() as i32, fy.floor() as i32);
+            let from = [fx, fy, fz];
+            let to = [tx, ty, tz];
+            let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            prop_assert!(
+                (exact - streaming).abs() < 1e-3,
+                "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
+            );
+        });
+    }
+
+    /// The same claim over a body whose `z` span is **not** a whole number,
+    /// which is the case the three tests around this one cannot see at all.
+    ///
+    /// Every fixture they build goes through `Builder::add` off a `StaticTile`,
+    /// so every span in them is a whole `z` and a half — and since
+    /// `docs/lighting_height.md` phase 2 the two walks read *different* heights
+    /// for one solid on purpose ([`walk_cells_exact`] the record's own `f64`
+    /// corners, [`walk_cells_streaming`] the quantised span off the wire, see
+    /// [`wire_span`]). On a whole `z` those two are equal by construction, so
+    /// their agreement there says nothing about the discipline that keeps them
+    /// close anywhere else: the assertion passes on a scene where the thing it
+    /// checks cannot differ.
+    ///
+    /// A base and a top on thirds, well off any step of
+    /// [`crate::occlusion::Solid::Z_STEPS`], is what makes the quantisation
+    /// actually happen — and the bar stays full numeric agreement, because
+    /// half a step of a two-hundred-and-fifty-sixth of a `z` unit is far under
+    /// what any of this can be seen through.
+    #[test]
+    fn walk_cells_streaming_agrees_with_walk_cells_exact_on_a_body_at_a_fractional_z() {
+        use crate::occlusion::Builder;
+        use proptest::prelude::*;
+
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        occlusion.add_raw(
+            100,
+            100,
+            crate::solid::Solid {
+                min: crate::camera::WorldSpot {
+                    x: 100.0,
+                    y: 100.0,
+                    z: 1.0 / 3.0,
+                },
+                max: crate::camera::WorldSpot {
+                    x: 101.0,
+                    y: 101.0,
+                    z: 20.0 - 1.0 / 3.0,
+                },
+            },
+        );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
 
         proptest!(ProptestConfig::with_cases(8_000), |(

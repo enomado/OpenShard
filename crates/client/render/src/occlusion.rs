@@ -198,22 +198,29 @@ pub const PRESENT: u8 = 0x80;
 /// See [`Occlusion::aperture_bytes`] and [`Aperture`].
 pub const HOLED: u8 = 0x40;
 
-/// The lowest whole `z` a list's one byte can name, and the highest.
+/// The lowest `z` anything on the wire can name, and the highest whole one.
 ///
-/// A map's own `z` is an `i8`, so the offset by 128 makes it fit an unsigned
-/// channel — but `z + height` is not an `i8`: a 255-tall static based at 100 has
-/// a top no channel holds, and a wall that reaches past the top of the world may
-/// as well stop there. Named rather than spelled at each of the three places
-/// that clamp — [`z_byte`], [`Solid::z_fraction`] and the apertures' own — so
-/// that a fraction is measured against the same end its whole unit was pinned
-/// to. `docs/lighting_height.md` phase 2.
+/// A map's own `z` is an `i8`, so measuring from [`Z_FLOOR`] makes it fit an
+/// unsigned field — but `z + height` is not an `i8`: a 255-tall static based at
+/// 100 has a top no field here holds, and a wall that reaches past the top of
+/// the world may as well stop there. Named rather than spelled at each place
+/// that clamps, so that a span and a hole are pinned to the same ends.
+/// `docs/lighting_height.md` phase 2.
+///
+/// [`Solid::z_bytes`] reaches `Z_CEILING + 255/256` rather than `Z_CEILING`,
+/// because it carries sixteen bits an end and not eight; the ceiling named here
+/// is the last *whole* unit, which is what the readers that round to one want.
 pub const Z_FLOOR: i32 = -128;
 
 /// See [`Z_FLOOR`].
 pub const Z_CEILING: i32 = 127;
 
-/// One whole `z` as the byte the lists carry it in: clamped to
+/// One whole `z` as the byte an [`Aperture`] carries it in: clamped to
 /// [`Z_FLOOR`]`..=`[`Z_CEILING`] and offset by 128.
+///
+/// A hole's own two ends only, since [`Occlusion::solid_z_bytes`] took the
+/// span: a hole is measured off the art as whole units, and nothing has asked
+/// it for a fraction.
 fn z_byte(z: i32) -> u8 {
     (z.clamp(Z_FLOOR, Z_CEILING) + 128) as u8
 }
@@ -791,75 +798,63 @@ impl Solid {
         ]
     }
 
-    /// Steps of the `z` fraction across the whole `-0.5 ..= 0.5` a rounding can
-    /// be out by — `blit.wesl`'s `SOLID_Z_STEPS`, and the two are one number.
+    /// Steps of a `z` unit [`Solid::z_bytes`] carries one in — `blit.wesl`'s
+    /// `SOLID_Z_STEPS`, and the two are one number.
     ///
-    /// **254 and not 255, so that the middle step is exactly zero.** Every
-    /// static in a real map stands at a whole `z`, so "no fraction at all" is
-    /// the overwhelmingly common answer and it has to survive the round trip
-    /// untouched; an odd number of steps has no middle, and the nearest byte to
-    /// zero would put every wall in the world two thousandths of a unit off its
-    /// own foundation. An even count around [`Solid::Z_FRACTION_ZERO`] is exact
-    /// at `-0.5`, at `0`, and at `+0.5` — the three values that actually occur.
-    pub const Z_FRACTION_STEPS: f64 = 254.0;
+    /// A power of two, so that a whole `z` — which is what every static off
+    /// `tiledata` stands at, and the overwhelmingly common answer — lands on a
+    /// step exactly and comes back untouched, and so does every half, quarter
+    /// and eighth a hand-authored tread is likely to be at.
+    pub const Z_STEPS: f64 = 256.0;
 
-    /// The byte that means "the rounding was exact": the middle of
-    /// [`Solid::Z_FRACTION_STEPS`]. `blit.wesl`'s `SOLID_Z_ZERO`.
-    pub const Z_FRACTION_ZERO: u8 = 127;
-
-    /// What [`Solid::bottom`] and [`Solid::top`] rounded away, as the two bytes
-    /// [`Occlusion::solid_z_bytes`] uploads: a **signed** offset from each
-    /// rounded whole unit, `-0.5 ..= 0.5`, quantised to
-    /// [`Solid::Z_FRACTION_STEPS`] and biased by [`Solid::Z_FRACTION_ZERO`].
+    /// This solid's `z` span as the four bytes [`Occlusion::solid_z_bytes`]
+    /// uploads: **each end whole**, sixteen bits of it, in steps of
+    /// `1/`[`Solid::Z_STEPS`] and offset by [`Z_FLOOR`] so an unsigned pair of
+    /// bytes can carry it — low byte first, `bottom` in the first two channels
+    /// and `top` in the second two, `Occlusion::id_bytes`' own byte order.
     ///
-    /// Signed and around the *rounded* unit rather than a `floor` and a
-    /// remainder, which is the one place this deliberately does not copy
-    /// `place::packed_height`'s own split of the same idea. The integer channel
-    /// [`Occlusion::solid_bytes`] writes keeps meaning exactly what it has
-    /// always meant, so a reader that has not been taught about this plane —
-    /// today, `Occlusion::at`'s merged view and every test fixture that spells
-    /// the four bytes out — reads the same number it read before instead of one
-    /// silently a unit low.
+    /// **One number an end, not a whole unit and a fraction beside it.** The
+    /// first cut of `docs/lighting_height.md` phase 2 split it — the rounded
+    /// unit stayed in [`Occlusion::solid_bytes`] and only a signed remainder
+    /// came here — to keep that channel meaning what it had always meant for
+    /// readers not yet taught about this plane. There were none: after the
+    /// phase, `blit.wesl` reads a solid's height through `span_of` and nowhere
+    /// else, so the compatibility being preserved had nothing to be compatible
+    /// with, and what it cost was a second concept (a fraction *of* something)
+    /// and a second clamp for every reader of either to get right.
     ///
-    /// The offset is measured against the **clamped** whole unit, so that the
-    /// two fields together say one thing: a `z` past the end of what a byte can
-    /// name is pinned at that end, half a unit of fraction included, and never
-    /// reconstructs somewhere the solid is not. That half unit falls *outward*
-    /// at both ends — a wall reaching past the top of the world comes back as
-    /// `127.5` rather than `127` — which is the direction an occluder may be
-    /// wrong in: it stops at least what it really stops.
-    ///
-    /// Two channels used and two left zero. Not four half-channels of something
-    /// else: this plane is indexed by a solid's own id exactly as
-    /// [`Occlusion::footprint_bytes`] is, and a second meaning folded into the
-    /// spare bytes would be a second thing to grow when either wants more.
-    pub fn z_fraction(&self) -> [u8; 4] {
-        let frac = |exact: f64, whole: i32| {
-            let offset = (exact - f64::from(whole.clamp(Z_FLOOR, Z_CEILING))).clamp(-0.5, 0.5);
-            (offset * Self::Z_FRACTION_STEPS).round() as i32 + i32::from(Self::Z_FRACTION_ZERO)
+    /// Sixteen bits over `Z_FLOOR..` puts the step at a two-hundred-and-fifty-
+    /// sixth of a `z` unit — a `z` unit is four screen pixels at zoom 1, so a
+    /// step is a sixty-fourth of a pixel — and the range at exactly the
+    /// `-128 ..= 127` a map's own `z` lives in, with the top end reaching
+    /// `127 + 255/256`. A span past either end is pinned there, which is the
+    /// direction an occluder may be wrong in: it stops at least what it really
+    /// stops.
+    pub fn z_bytes(&self) -> [u8; 4] {
+        let raw = |z: f64| {
+            let steps = ((z - f64::from(Z_FLOOR)) * Self::Z_STEPS).round();
+            steps.clamp(0.0, f64::from(u16::MAX)) as u16
         };
+        let (low, high) = (raw(self.space.min.z), raw(self.space.max.z));
         [
-            frac(self.space.min.z, self.bottom()) as u8,
-            frac(self.space.max.z, self.top()) as u8,
-            0,
-            0,
+            (low & 0xFF) as u8,
+            (low >> 8) as u8,
+            (high & 0xFF) as u8,
+            (high >> 8) as u8,
         ]
     }
 
-    /// The `z` span those two planes say, put back together — the Rust twin of
-    /// `blit.wesl`'s `span_of`, and what reads a solid's height on the GPU's own
-    /// terms.
+    /// The span those bytes say, read back — the Rust twin of `blit.wesl`'s
+    /// `span_of`, and the only way anything on either side turns the wire into a
+    /// height.
     ///
-    /// `bottom`/`top` are [`Occlusion::solid_bytes`]'s own two channels as the
-    /// whole units they name; `fraction` is [`Solid::z_fraction`]'s bytes. The
-    /// result is [`Solid::low`]/[`Solid::high`] to within one step of
-    /// [`Solid::Z_FRACTION_STEPS`], which is the whole of what the wire loses.
-    pub fn span_from_bytes(bottom: i32, top: i32, fraction: [u8; 4]) -> (f32, f32) {
-        let offset = |byte: u8| (f64::from(byte) - f64::from(Self::Z_FRACTION_ZERO)) / Self::Z_FRACTION_STEPS;
-        (
-            (f64::from(bottom) + offset(fraction[0])) as f32,
-            (f64::from(top) + offset(fraction[1])) as f32,
-        )
+    /// The result is [`Solid::low`]/[`Solid::high`] to within half a step of
+    /// [`Solid::Z_STEPS`], which is the whole of what the wire loses.
+    pub fn span_from_bytes(bytes: [u8; 4]) -> (f32, f32) {
+        let z = |lo: u8, hi: u8| {
+            (f64::from(u16::from(lo) | (u16::from(hi) << 8)) / Self::Z_STEPS + f64::from(Z_FLOOR)) as f32
+        };
+        (z(bytes[0], bytes[1]), z(bytes[2], bytes[3]))
     }
 
     /// The box [`Solid::box_of`] would have built if it could read a real
@@ -1437,12 +1432,19 @@ impl Occlusion {
     /// The **solids** as the texture the shader reads: `Rgba8Uint`, one texel a
     /// solid, folded into rows [`LIST_ROW`] wide and padded to a whole row.
     ///
-    /// `(bottom + 128, top + 128, opacity, PRESENT | edges)` — which is what a
-    /// cell's texel was before the list existed, moved down two levels unchanged.
-    /// The `z` offset is what makes an `i8` fit an unsigned channel, and both
-    /// ends are clamped into it: a map's `z` is an `i8`, but `z + height` is not
-    /// — a 255-tall static based at 100 has a top no channel holds, and a wall
-    /// that reaches past the top of the world may as well stop there.
+    /// `(0, 0, opacity, PRESENT | edges)`.
+    ///
+    /// **The first two channels held the span, and hold nothing now.** They were
+    /// `(bottom + 128, top + 128)`, a whole `z` a channel — what a cell's texel
+    /// was before the list existed, moved down two levels unchanged — until
+    /// `docs/lighting_height.md` phase 2 gave the span a plane of its own
+    /// ([`Occlusion::solid_z_bytes`]) with sixteen bits an end. Keeping a rounded
+    /// copy of a number that now lives somewhere else, and lives there *better*,
+    /// is how two answers to one question get built: the shader would have had a
+    /// height it could read without the plane, still compiling, still looking
+    /// like a height, and wrong by up to half a unit. Zeroed rather than
+    /// repurposed — a channel is claimed when a reader for it exists, which is
+    /// the rule [`Occlusion::footprint_bytes`] was held to for three sessions.
     ///
     /// **The box's `x` and `y` are not in *this* plane — they were withheld
     /// until a reader existed for them, and now one does.** What used to be
@@ -1471,12 +1473,7 @@ impl Occlusion {
                 Some(_) => HOLED,
                 None => 0,
             };
-            bytes.extend_from_slice(&[
-                z_byte(solid.bottom()),
-                z_byte(solid.top()),
-                solid.opacity,
-                PRESENT | holed | solid.edges,
-            ]);
+            bytes.extend_from_slice(&[0, 0, solid.opacity, PRESENT | holed | solid.edges]);
         }
         bytes.resize(rows * row * 4, 0);
         bytes
@@ -1551,37 +1548,36 @@ impl Occlusion {
         bytes
     }
 
-    /// The **heights' fractions** as the texture the shader reads: `Rgba8Uint`,
-    /// one texel a solid, indexed and folded exactly as
-    /// [`Occlusion::footprint_bytes`] and [`Occlusion::solid_bytes`] are.
+    /// The **heights** as the texture the shader reads: `Rgba8Uint`, one texel a
+    /// solid, indexed and folded exactly as [`Occlusion::footprint_bytes`] and
+    /// [`Occlusion::solid_bytes`] are.
     ///
-    /// [`Solid::z_fraction`]'s own two bytes — what [`Occlusion::solid_bytes`]'s
-    /// two whole-unit channels round away. `docs/lighting_height.md` phase 2:
-    /// the horizontal half of a solid's box has been exact to a
-    /// hundred-and-twenty-eighth of a tile since the footprint plane landed, and
-    /// the vertical half was still a whole unit — a box based at `z 3.5` was
-    /// uploaded as one spanning `4`, so the bottom half-unit of its own faces sat
-    /// *below* its own solid and every rule that asks whether a fragment is
-    /// inside the thing it is drawn from answered no.
+    /// [`Solid::z_bytes`]' own four — the whole span, sixteen bits an end, and
+    /// the only place a solid's height is on the wire at all.
+    /// `docs/lighting_height.md` phase 2: the horizontal half of a solid's box
+    /// had been exact to a two-hundred-and-fifty-fifth of a tile since the
+    /// footprint plane landed, and the vertical half was a whole unit — a box
+    /// based at `z 3.5` was uploaded as one spanning `4`, so the bottom half unit
+    /// of its own faces sat *below* its own solid and every rule that asks
+    /// whether a fragment is inside the thing it is drawn from answered no.
     ///
-    /// A third plane and not four more channels of the solid list, for the
+    /// A plane of its own and not four more channels of the solid list, for the
     /// reason [`Occlusion::footprint_bytes`] is one: the list is what the walk
     /// reads cell after cell in a loop, and widening its texel is paid for on
-    /// every solid a ray meets.
+    /// every solid a ray meets. Sixteen bits an end would not have fitted there
+    /// in any case — which is the same fact from the other side.
     ///
     /// Written every frame, like the footprints and unlike the holes: every
-    /// solid has a height, and "no fraction" is a byte
-    /// ([`Solid::Z_FRACTION_ZERO`]) rather than an absence, so there is no bit
-    /// to gate the read on the way [`HOLED`] gates `apertures`. The row's own
-    /// padding is zeros, which decodes as half a unit *low* rather than as
-    /// nothing — degenerate in the same way the apertures' padding is, and never
-    /// looked at for the same reason: no id points into it.
+    /// solid has a height, so there is nothing to gate the read on the way
+    /// [`HOLED`] gates `apertures`. The row's own padding is zeros, which decodes
+    /// as a degenerate span at [`Z_FLOOR`] — never looked at, for the reason the
+    /// apertures' padding is not: no id points into it.
     pub fn solid_z_bytes(&self) -> Vec<u8> {
         let row = LIST_ROW as usize;
         let rows = self.solids.len().div_ceil(row).max(1);
         let mut bytes = Vec::with_capacity(rows * row * 4);
         for solid in &self.solids {
-            bytes.extend_from_slice(&solid.z_fraction());
+            bytes.extend_from_slice(&solid.z_bytes());
         }
         bytes.resize(rows * row * 4, 0);
         bytes
@@ -3206,9 +3202,11 @@ mod tests {
             "and (1,1) stands nothing after them"
         );
 
-        // The list is the spans, in the index's order, with the fourth channel
-        // `PRESENT` and the edge mask rather than a bare yes: neither of these
-        // was given a face, so both are the whole tile.
+        // The list is the opacities and the kinds, in the index's order, with the
+        // fourth channel `PRESENT` and the edge mask rather than a bare yes:
+        // neither of these was given a face, so both are the whole tile. The
+        // spans are `solid_z_bytes`' since `docs/lighting_height.md` phase 2, and
+        // the first two channels here are zero.
         let whole = PRESENT | EDGE_ANY;
         let surfaces = occlusion.solid_bytes();
         assert_eq!(
@@ -3216,13 +3214,27 @@ mod tests {
             LIST_ROW as usize * 4,
             "one row, padded — the fold into a texture is `LIST_ROW` wide",
         );
-        assert_eq!(&surfaces[0..4], &[118, 138, OPAQUE, whole]);
+        assert_eq!(&surfaces[0..4], &[0, 0, OPAQUE, whole]);
+        assert_eq!(&surfaces[4..8], &[0, 0, OPAQUE, whole]);
+        assert_eq!(&surfaces[8..12], &[0, 0, 0, 0], "and nothing follows it");
+
+        // The spans themselves, in the same order and the same rows: `-10..10`,
+        // and one that reaches past the top of the world and stops there.
+        let heights = occlusion.solid_z_bytes();
+        let span = |n: usize| {
+            Solid::span_from_bytes([
+                heights[n * 4],
+                heights[n * 4 + 1],
+                heights[n * 4 + 2],
+                heights[n * 4 + 3],
+            ])
+        };
+        assert_eq!(span(0), (-10.0, 10.0));
         assert_eq!(
-            &surfaces[4..8],
-            &[248, 255, OPAQUE, whole],
+            span(1),
+            (120.0, Z_CEILING as f32 + 255.0 / 256.0),
             "reaches past the top of the world and stops there",
         );
-        assert_eq!(&surfaces[8..12], &[0, 0, 0, 0], "and nothing follows it");
 
         // A lid's mask is zero and it is still present, which is the one thing
         // `PRESENT` exists for — a fourth channel of zero has to mean nothing
@@ -3248,18 +3260,18 @@ mod tests {
         );
     }
 
-    /// The height plane beside that list: what the two whole-unit channels
-    /// rounded away, and that putting the two back together is the span the
-    /// record actually holds. `docs/lighting_height.md` phase 2.
+    /// The height plane beside that list: the span the record actually holds,
+    /// carried whole. `docs/lighting_height.md` phase 2.
     ///
-    /// The three landmark fractions are named rather than sampled, because they
-    /// are the ones that occur: **zero**, which every static off `tiledata` has
-    /// and which must survive untouched or every wall in the world moves off its
-    /// own foundation; and **±half a unit**, the two ends of what a rounding can
-    /// be out by, where a step short in either direction would put a box's own
-    /// base outside its own solid — the plan's control scene exactly.
+    /// The spans are named rather than sampled, because these are the ones that
+    /// occur: a **whole** `z`, which every static off `tiledata` stands at and
+    /// which must survive untouched or every wall in the world moves off its own
+    /// foundation; and a base on a **half**, either side of zero, which is the
+    /// plan's control scene exactly and the case a rounded upload put outside its
+    /// own solid. The ends of the range are named too — nothing on the wire may
+    /// reconstruct a span *narrower* than the record's.
     #[test]
-    fn the_height_plane_carries_what_the_whole_units_rounded_away() {
+    fn the_height_plane_carries_the_whole_span() {
         let bounds = TileBounds {
             min_x: 5,
             max_x: 5,
@@ -3279,49 +3291,41 @@ mod tests {
             },
         };
         let mut builder = Builder::new(bounds);
-        // A whole `z`, a base half a unit up, and a base half a unit up on the
-        // other side of zero — `round` goes away from zero, so `-3.5` rounds to
-        // `-4` and its fraction is the *positive* half.
         builder.add_raw(5, 5, raw(0.0, 20.0));
         builder.add_raw(5, 5, raw(3.5, 6.5));
         builder.add_raw(5, 5, raw(-3.5, -1.0));
+        // Past both ends of what the wire can name: a cellar below the floor of
+        // the world, and a spire through the top of it.
+        builder.add_raw(5, 5, raw(-400.0, 400.0));
         let occlusion = builder.finish(&Cutaway::OPEN);
 
-        let whole = occlusion.solid_bytes();
-        let fractions = occlusion.solid_z_bytes();
+        let heights = occlusion.solid_z_bytes();
         assert_eq!(
-            fractions.len(),
-            whole.len(),
+            heights.len(),
+            occlusion.solid_bytes().len(),
             "one texel a solid, folded exactly as the list it stands beside"
         );
         let span = |n: usize| {
-            Solid::span_from_bytes(
-                i32::from(whole[n * 4]) - 128,
-                i32::from(whole[n * 4 + 1]) - 128,
-                [
-                    fractions[n * 4],
-                    fractions[n * 4 + 1],
-                    fractions[n * 4 + 2],
-                    fractions[n * 4 + 3],
-                ],
-            )
+            Solid::span_from_bytes([
+                heights[n * 4],
+                heights[n * 4 + 1],
+                heights[n * 4 + 2],
+                heights[n * 4 + 3],
+            ])
         };
+        assert_eq!(span(0), (0.0, 20.0), "a whole `z` survives the wire exactly");
+        assert_eq!(span(1), (3.5, 6.5), "and so does a base half a unit up");
+        assert_eq!(span(2), (-3.5, -1.0), "and one below zero");
         assert_eq!(
-            &fractions[0..2],
-            &[Solid::Z_FRACTION_ZERO, Solid::Z_FRACTION_ZERO],
-            "a whole `z` has no fraction, and says so exactly"
-        );
-        assert_eq!(span(0), (0.0, 20.0));
-        assert_eq!(span(1), (3.5, 6.5), "a base half a unit up survives the wire");
-        assert_eq!(
-            span(2),
-            (-3.5, -1.0),
-            "and one below zero, where `round` goes the other way"
+            span(3),
+            (Z_FLOOR as f32, Z_CEILING as f32 + 255.0 / 256.0),
+            "and one past both ends stops at them, outward — an occluder may stop \
+             more than it should, never less"
         );
 
-        // And the padding past the last solid, which decodes as half a unit low
-        // rather than as nothing: degenerate on purpose, and never indexed.
-        assert_eq!(&fractions[12..16], &[0, 0, 0, 0]);
+        // The list's own two `z` channels are zero and stay zero: a rounded copy
+        // of a span that lives here in full is a second answer to one question.
+        assert_eq!(&occlusion.solid_bytes()[0..2], &[0, 0]);
     }
 
     /// The boxes are the cells, at the tiles they stand on — the claim the
