@@ -145,21 +145,102 @@ in the case where it fires for `Surface::Flat`.
 
 A fragment knows exactly which solid it belongs to. It should say so.
 
-- `Builder::add`/`add_raw` return the `SolidId` they pushed. One static can
-  push several (a body plus panels on named edges), so the caller keeps a
-  set, not a scalar — this is the part that has to be designed rather than
-  typed, and the run bookkeeping (`own_run`) is where it will show.
-- The instance rows carry it: `MeshFaceRow` and the statics pass's own row
-  gain the id, alongside the tile they already carry.
-- `exemption` becomes a comparison of ids. `on_surface` loses its identity
-  role and keeps only its geometric one, if any remains; `own_run`'s
-  heuristic and `ON_TOP` as an *identity* tolerance go away entirely.
-  `STAND_OFF` stays — it is about where a ray starts, not about who owns
+### The fixture, first — `tree` cannot show this
+
+`examples/boxes.rs`'s `tree` stacks its two boxes, so their `z` spans meet at a
+single plane and a fragment of one is inside the other's span for exactly one
+quantum of height. Once the oracles stopped lying (see `## Status`), `tree`
+reads 18 of 7008 and every one of those is `STAND_OFF`'s nudge: **this phase
+has no number to move there**. A phase measured against a scene that cannot
+show its defect is a phase that will read green whatever it does.
+
+So `OPENSHARD_BOXES_SCENE=pair` was built to show it, and does — two boxes of
+one height side by side on one tile, on the tile's own diagonal so neither
+covers the other on screen, the flame on the line through both centres and
+beyond the near one. Every fragment of either box is inside *both* spans, which
+is precisely what `exemption` reads as ownership, so the near box is exempted
+from shadowing the far box's face while standing squarely in front of it.
+Three oracles are red at once and all of them "both walks together" — no
+precision or parity work can reach any of it:
+
+| oracle, `pair` | before phase 3 |
+|---|---|
+| box 0's `east` face | 1296 / 1296 pixels |
+| box 0's `south` face | 1248 / 1248 |
+| box 0's own top | 9216 / 9216 — the `caps_this` arm, same guess |
+| box 1 (the near one) | 0, correctly |
+| ground | 147 / 254248 — the same nudge/tangent floor `tree` has |
+
+### The design, decided
+
+The three questions this section used to leave open are answered here, because
+each of them decides a format and none of them can be deferred to the typing.
+
+**1. Identity is the *thing that was added*, not the solid.** One
+`Builder::add` — one static — is one owner, and every solid it pushes (a
+corner's two panels, a stair's tread tops and risers, a body) carries that one
+owner. That is what makes "one static, several solids" a non-question: the run
+*is* the owner, and `own_run`'s bookkeeping has nothing left to approximate
+within a tile.
+
+**2. The key is the world thing, not a walk order.** An owner is
+`(tile, the static's own z, its graphic)`. Not a counter the builder hands out:
+`occlusion::bake` builds a *block's* solids once and pastes them into frames
+for as long as the atlas revision holds, so any number that depended on the
+order a frame's walk found things in would be a number from another frame. Not
+a "the n-th static of this tile" index either, tempting as it is at 8 bits —
+the two walks that would have to agree on it refuse different statics (the
+occlusion side drops `opacity == CLEAR` and anything above the draw ceiling,
+the draw side drops what the atlas has no art for), so the indices diverge
+exactly where a tile holds something invisible.
+
+**3. What rides on the wire is *which occluder of this cell*, one byte.** The
+comparison is only ever made between a fragment and a solid **on the fragment's
+own cell** — `lit_end` and `caps_this` are both `own_cell`-gated — so the id
+does not have to be unique in the frame, only in the tile, and a tile holds at
+most `MAX_SOLIDS_PER_CELL` = 255 of anything. `Occlusion::id_bytes` already
+uploads a `SolidId` as three bytes of four, so the fourth byte of a *reference*
+is where this goes: no new plane, no format wider than it is, and the value is
+read in the loop that is already reading that texel.
+
+Which leaves the join, and it is the one real cost: the pass that draws a
+static has to learn the number the grid gave it. `Occlusion::owner_at(tile, z,
+graphic) -> Option<u8>` answers it by scanning the cell (four solids, not four
+hundred), and `statics::collect`/`items::collect` stamp the answer into the
+instance row beside the tile. That means **the frame's occlusion has to be
+built before its statics are collected**, which is a reordering in
+`app::render` and not a change to either pass's logic — today the statics go
+first for no reason anyone recorded.
+
+- `Solid` carries its owner key on the CPU (three bytes, never uploaded) and
+  its per-cell number for the upload. `Builder::add_raw` takes the key from
+  its caller — a hand-built scene has no `tiledata` to derive one from, and
+  inventing one inside the builder would be a second identity.
+- `MeshFaceRow` and the statics pass's row gain the byte. A fragment with no
+  solid at all — the ground, a mobile — stamps `OWNER_NONE`, which matches
+  nothing.
+- `exemption` becomes `stands.owner == fragment.owner`. `on_surface` keeps
+  only its geometric role (does this ray's `z` lie in this solid's span, for
+  `pierces` and the lid rules); `own_run`'s heuristic and `ON_TOP`-as-identity
+  go away. `STAND_OFF` stays — it is about where a ray starts, not who owns
   what.
 
-Done when: the face oracle reads zero, `tests/lighting.rs` and
-`tests/frame.rs`'s parity suite are green, and no exemption decision
-anywhere reads a height.
+**Two things the design does not answer, deliberately.**
+
+- **`flame_end`.** The other end of the ray is a flame, not a fragment, so it
+  has no owner to compare: the arm that exempts the solid the flame is mounted
+  on stays a height test for now. It is `mounted_at`'s question rather than
+  this phase's, and worth its own entry once the fragment side is identity.
+- **A run of wall across tiles.** `own_run` also answers a *second* question —
+  a ray leaving a wall pixel along the wall grazes the neighbouring tiles'
+  panels of the same wall, which are different statics and therefore different
+  owners. That is not identity, it is a surface being cut on a tile boundary,
+  and it stays until something measures it. The `pair` fixture cannot see it
+  (one tile), so a scene that can has to come with the change that touches it.
+
+Done when: `pair` reads zero on all three of its red oracles, `tree` still
+reads 18/7008 and 226/252105, `tests/lighting.rs` and `tests/frame.rs`'s parity
+suite are green, and no exemption decision about a *fragment* reads a height.
 
 ## Order, and what gates what
 
@@ -233,6 +314,11 @@ configurations now agree instead of one being clean by luck.
 | box 1's own top | 0/9216 | 0 | 9216/9216 | **0** |
 | ground oracle | 509/57600 | 509 | 1325/57600 | 574 |
 
+*(Every face- and ground-oracle number in this table is from the old
+instrument, and most of each is the instrument rather than the engine — see
+the end of this section. The two box-top columns are unaffected: that oracle
+never projected anything.)*
+
 The integer column is the control and it does not move *at all*: at a whole `z`
 every fraction this phase adds is zero, so the run is bit-for-bit the one before
 it — which is what says the 868 points the fractional column lost were the
@@ -268,6 +354,48 @@ How it is carried, since the answer differs from what this section sketched:
   and each says so in its doc comment. `solid::standing`'s painter-order key was
   a third and is now the exact span — two boxes half a unit apart used to tie.
 
+**And then the instrument turned out to be wrong, which retired most of the
+numbers above.** The next session pointed the face oracle at what the renderer
+had actually drawn instead of at a reconstruction of it, and the residual both
+phases had been reporting mostly stopped existing. In full, because the shape
+of the mistake matters more than the arithmetic:
+
+- The face oracle gridded world points over each face and projected them to
+  pixels. Whether the pixel belonged to the face it was asking about was
+  answered by re-deriving every face's screen quad on the CPU, with a
+  point-in-quad test and a painter's-order tie-break — a reconstruction that
+  knew nothing about the ground pass. Half a pixel below a face's own base is
+  the ground, correctly shadowed by the box, and that read as the face being
+  wrongly shadowed: **212 of the 278**. Those are the "~200 points in the
+  bottom one-to-five rows of every face" this section attributes to
+  `exemption`'s guess above, twice, in two sessions' handoffs. They were the
+  instrument.
+- The oracle also asked about points the shader never lights: a pixel's
+  fragment sits at the pixel's centre, and the attachment quantises what it
+  carries. The ground oracle had known this since it was written and
+  quantised by hand; the face oracle never did.
+- What was left after both fixes was 43, and 27 of those were the *shader*
+  alone: `blit.wesl`'s `RAY_TANGENT_TOLERANCE`, a cross-implementation
+  rounding guard, was set to `1.0e-2` of a whole ray — about a screen pixel of
+  world — so every box was a pixel fatter than its geometry wherever a ray
+  grazed it. At a rounding-scale `1.0e-6` the whole parity suite is still green
+  and the two tests the tolerance was introduced for fail identically, which
+  they also did at `1.0e-2`.
+
+The reference scene's honest residual is **18 of 7008 drawn face pixels**, all
+of them `STAND_OFF`/`ON_TOP`'s deliberate nudge at a grazing corner — zeroing
+the two constants on both walks for one run reads `0/7008`. None of it is
+`exemption`. See `docs/lighting.md`'s "One scene is the reference" for the
+current table and `a4b698c`/`ccca681`/`f050c2d` for the work.
+
+The lesson is not that phases 1 and 2 were wrong — they moved `View::Height`
+from four values to forty-nine down a face, and closed two CPU-side box-top
+oracles outright, and those are real. It is that **a residual is a claim about
+a cause, and this plan twice let a plausible attribution stand as one**: the
+count moved the way the phase predicted, so the remainder was assumed to be the
+next phase's. Nothing checked which side of the comparison was out until
+something did, and then it was the side nobody had instrumented.
+
 **Two things this phase got wrong first, and what they cost.** Both were found
 by being asked whether the work was a workaround, which is worth writing down as
 plainly as the result:
@@ -289,26 +417,50 @@ plainly as the result:
   rounded span leaves all three green; only the fractional-`z` body added here
   goes red. A fourth test, and the mutation is what says it earns its place.
 
-Phase 3 next.
+Phase 3 next, and its own section now carries a decided design and a fixture
+that is red for it. The three questions this section left open when phase 2
+landed are answered there:
 
-Open questions, deliberately not pre-decided:
-
-- **One static, several solids.** A wall with two named-edge panels is
-  several solids for one sprite. Whether a fragment names a solid or a
-  *run* of them is phase 3's real design question; `own_run` exists today
-  precisely because runs, not solids, are what must not shadow themselves.
-- **Mobiles.** They are billboards with no solid at all, so phase 3's id
-  has nothing to point at for them. Today they fall out of `exemption`
-  through the same height guess as everything else; what replaces that for
-  a billboard is unanswered.
-- Whether `lighting_geometry.md`'s mesh occluder changes any of this. It
-  should not — a mesh is a different *shape* test, not a different height
-  representation — but the two tracks touch `ray_vs_solid` and should be
-  read together before phase 2 moves.
+- **One static, several solids** — the owner is the static, so its solids share
+  one, and there is no run to name.
+- **Mobiles** — a billboard has no solid, so it stamps `OWNER_NONE` and is
+  exempt from nothing. That is the honest answer and it is a *behaviour
+  change*: today a mobile standing on a walled tile is exempted from that wall
+  by the same height guess as everything else. Worth a look at a real frame
+  when it lands, not a preemptive tolerance.
+- **`lighting_geometry.md`'s mesh occluder** — read, and it changes nothing
+  here: a mesh is a different *shape* test against the same `ray_vs_solid`,
+  and identity is about which occluder a fragment came from, not what shape it
+  is. The one line of that doc which does bear on this track is its warning
+  that vertex data fits a fixed-size `Rgba8Uint` grid worse than a box's six
+  numbers — which is why phase 3's own byte goes in a plane that already
+  exists rather than in a fifth one.
 
 ## Backlog
 
-Picked up while phases 1 and 2 landed; none of it blocked either.
+Picked up while phases 1 and 2 landed and while the oracles were repaired; none
+of it blocked any of them.
+
+- **`STAND_OFF`/`ON_TOP` are the reference scene's whole residual, and nobody
+  has priced them.** Zeroing both on both walks takes `tree`'s face oracle from
+  18/7008 to 0 and its ground oracle from 226 to 137. They exist for a reason
+  that is written down and measured (a wall wore a bright stroke along its
+  floorboards without them), so this is not a proposal to remove them — it is
+  that "how far off its own surface a ray starts" is a number chosen once, in
+  units of the *attachment's* quantisation (`2/127` of a tile, `1/128` of a `z`
+  unit), and what it costs at a grazing corner has never been looked at. A
+  smaller nudge, or one scaled to the surface rather than to the format, might
+  cost nothing.
+- **The exact-tangent case is a definition, and the two sides differ.** The
+  other 137 ground pixels are rays that touch a box's corner at exactly one
+  point. `light::ray_vs_solid`'s doc says a zero-length crossing is the
+  caller's decision and then no caller decides it; `boxes.rs`'s independent
+  oracle counts it as blocked. One of the two should move, and which is a
+  question about what a hard shadow's corner should look like.
+- **`examples/two_cubes.rs` still carries the old oracle idiom.** It projects
+  world points and reads pixels without asking the `place` attachment whose
+  pixel it got — the same blindness `boxes.rs` just shed, in a tool that is
+  still used to answer the same kind of question.
 
 - **`tests/cost.rs`'s "what the upload sends" measures three planes of five.**
   Its `black_box` sums `bytes` + `field_bytes` + `id_bytes` + `solid_bytes`, and
