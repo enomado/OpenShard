@@ -89,6 +89,30 @@
 //! plus its own edges. See the plan doc's own backlog entry for where this
 //! goes next.
 //!
+//! A second oracle, next to it, sweeps the *ground* immediately beside the
+//! boxes (`OPENSHARD_BOXES_GROUND_ORACLE=0` to skip it) — the same
+//! independent slab test, this time compared against the rendered
+//! `View::Shadow` frame read back pixel for pixel, because the ground has no
+//! "own top" to ask `light::sample` about directly.
+//!
+//! A third, `docs/lighting_height.md`'s own phase 0
+//! (`OPENSHARD_BOXES_FACE_ORACLE=0` to skip it), closes the gap the first two
+//! cannot see at all: both sample a *flat* surface, where an integer height is
+//! exact by construction (a lid is at an integer `z`, the ground is at
+//! `z = 0`). The defect that doc traces lives on a *vertical* face, where
+//! height varies continuously down the wall and `pack_place` rounds it to the
+//! nearest unit — this grids each box's own rendered vertical faces (`east`
+//! and `south`; `box_mesh` never builds the other two, since an isometric
+//! camera never sees them) and reads the rendered `View::Shadow` frame back at
+//! each point's own projected pixel, the same way the ground oracle does. A
+//! sample can land on a pixel a *different* box's face owns instead — decided
+//! by the renderer's own painter's-order key (`depth::Order`, reused rather
+//! than re-derived: a screen-ownership question, no part of the shadow
+//! arithmetic under test) and a plain point-in-quad test against every
+//! rendered face's own projected corners — and a skip there is not a pass:
+//! every reported line carries sampled/compared/disagreeing, and the total
+//! compared is asserted non-trivial.
+//!
 //! ```sh
 //! OPENSHARD_FRAME_DUMP=/tmp/tree OPENSHARD_BOXES_SCENE=tree \
 //!     cargo run --release -p openshard-client-render --example boxes
@@ -102,6 +126,7 @@ use openshard_client_render::camera::{Camera, WorldSpot, Zoom, project_exact};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::depth;
+use openshard_client_render::facing::Face as WallFace;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Light, Lighting, NIGHT};
 use openshard_client_render::mesh::{Face, Mesh};
@@ -1020,5 +1045,199 @@ fn main() {
                 );
             }
         }
+    }
+
+    // The face oracle: `docs/lighting_height.md`'s own phase 0. Neither
+    // oracle above can see this bug's class — the box-top oracle samples only
+    // a box's own flat top, where an integer height is exact (a lid *is* at
+    // an integer `z`); the ground oracle samples the ground, `z = 0`,
+    // likewise exact. The defect lives on a vertical face, where height
+    // varies continuously and `pack_place` rounds it to the nearest unit —
+    // this grids each box's own rendered vertical faces (`box_mesh` only
+    // ever builds the two an isometric camera can see; the other two are
+    // permanently self-occluded and would only ever measure that), projects
+    // each point through the real camera to the pixel the renderer actually
+    // drew, and reads the rendered `View::Shadow` frame back there — checked
+    // against `segment_clear_of_box`, the same independent slab test the
+    // other two oracles already trust, no arithmetic shared with `light.rs`
+    // or `blit.wesl`.
+    //
+    // A sample point can land on a pixel a *different* box's face owns
+    // instead — `owned_by_someone_nearer` below answers that with the
+    // renderer's own painter's-order key (`depth::Order`, reused rather than
+    // re-derived: it is a screen-ownership concern, not part of the shadow
+    // arithmetic under test) and a plain point-in-quad test against every
+    // rendered face's own projected corners. A skip there is not a pass:
+    // every line below carries sampled/compared/disagreeing, and the total
+    // compared is asserted non-trivial — a detector that silently compares
+    // nothing reads exactly like a detector that found nothing.
+    if env_opt("OPENSHARD_BOXES_FACE_ORACLE").as_deref() != Some("0") {
+        let light_at = (
+            f64::from(first.tile.0) + f64::from(ldx),
+            f64::from(first.tile.1) + f64::from(ldy),
+            f64::from(light_z),
+        );
+        let box_depth: Vec<f32> = boxes
+            .iter()
+            .map(|b| {
+                depth::Order {
+                    tile: i32::from(b.tile.0) + i32::from(b.tile.1),
+                    priority_z: depth::static_priority_z(b.min.2.round() as i8, &cube_tile),
+                }
+                .to_depth(base_tile)
+            })
+            .collect();
+        let to_pixel = |at: WorldSpot| {
+            let screen = camera.to_view_exact(project_exact(at));
+            (
+                (screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5,
+                (screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5,
+            )
+        };
+
+        // Every rendered face's own screen quad, box tops included — a
+        // vertical face's own sample can land behind a *different* box's top
+        // as easily as behind its side.
+        struct ScreenFace {
+            box_index: usize,
+            corners: [(f32, f32); 4],
+            depth: f32,
+        }
+        let mut screen_faces: Vec<ScreenFace> = Vec::new();
+        for (index, b) in boxes.iter().enumerate() {
+            for face in box_mesh(b.solid()).faces() {
+                let v = face.vertices();
+                screen_faces.push(ScreenFace {
+                    box_index: index,
+                    corners: [to_pixel(v[0]), to_pixel(v[1]), to_pixel(v[2]), to_pixel(v[3])],
+                    depth: box_depth[index],
+                });
+            }
+        }
+        // Whether `p` lies inside a convex quad: the cross product of each
+        // edge with `p` keeps one sign all the way round, or `p` is outside
+        // it.
+        fn point_in_quad(corners: &[(f32, f32); 4], p: (f32, f32)) -> bool {
+            let mut sign = 0.0f32;
+            for i in 0..4 {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                let cross = (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+                if cross.abs() < 1e-6 {
+                    continue;
+                }
+                if sign == 0.0 {
+                    sign = cross.signum();
+                } else if cross.signum() != sign {
+                    return false;
+                }
+            }
+            true
+        }
+        // Whether some *other* box's face already owns pixel `p`, at this
+        // box's own depth or nearer. `LessEqual` (`renderer.rs`'s own doc on
+        // `depth_state`) means a tie goes to whichever box was pushed later,
+        // which is every box after this one in the scene's own `Vec` order.
+        let owned_by_someone_nearer = |box_index: usize, p: (f32, f32)| {
+            screen_faces.iter().any(|f| {
+                f.box_index != box_index
+                    && (f.depth < box_depth[box_index]
+                        || (f.depth == box_depth[box_index] && f.box_index > box_index))
+                    && point_in_quad(&f.corners, p)
+            })
+        };
+
+        let side = 64u32;
+        let mut total_sampled = 0usize;
+        let mut total_compared = 0usize;
+        let mut total_disagreeing = 0usize;
+        for (index, b) in boxes.iter().enumerate() {
+            for (face, label) in [(WallFace::East, "east"), (WallFace::South, "south")] {
+                let mut sampled = 0usize;
+                let mut compared = 0usize;
+                let mut disagreeing = 0usize;
+                let mut examples: Vec<String> = Vec::new();
+                for row in 0..side {
+                    for col in 0..side {
+                        let u = (f64::from(col) + 0.5) / f64::from(side);
+                        let v = (f64::from(row) + 0.5) / f64::from(side);
+                        let (x, y, z) = match face {
+                            WallFace::East => (
+                                b.max.0,
+                                b.min.1 + u * (b.max.1 - b.min.1),
+                                b.min.2 + v * (b.max.2 - b.min.2),
+                            ),
+                            WallFace::South => (
+                                b.min.0 + u * (b.max.0 - b.min.0),
+                                b.max.1,
+                                b.min.2 + v * (b.max.2 - b.min.2),
+                            ),
+                            WallFace::North | WallFace::West => {
+                                unreachable!("box_mesh only ever builds an east or south vertical face")
+                            }
+                        };
+                        sampled += 1;
+                        let (px, py) = to_pixel(WorldSpot { x, y, z });
+                        if px < 0.0 || py < 0.0 || px >= width as f32 || py >= height_px as f32 {
+                            continue;
+                        }
+                        let (pxi, pyi) = (px.round() as u32, py.round() as u32);
+                        // `round`, not the check just above, is what can land
+                        // exactly on the far edge (the ground oracle's own
+                        // comment has the full account).
+                        if pxi >= width || pyi >= height_px {
+                            continue;
+                        }
+                        if owned_by_someone_nearer(index, (px, py)) {
+                            continue;
+                        }
+                        compared += 1;
+                        let offset = ((pyi * width + pxi) * 4) as usize;
+                        let gpu_lit = shadow_pixels[offset] > 128;
+                        let independent = oracle_visible((x, y, z), light_at, &boxes, index);
+                        if independent != gpu_lit {
+                            disagreeing += 1;
+                            if examples.len() < 8 {
+                                let spot = light::Spot::face(
+                                    Vec2::new(x as f32, y as f32),
+                                    z as f32,
+                                    (i32::from(b.tile.0), i32::from(b.tile.1)),
+                                    face,
+                                );
+                                let through = light::sample(spot, &lighting)
+                                    .reaches
+                                    .first()
+                                    .map_or(0.0, |reach| if reach.within { reach.through } else { 0.0 });
+                                examples.push(format!(
+                                    "  [box {index} {label}] ({x:.3}, {y:.3}, {z:.3}): independent oracle \
+                                     says {}, rendered says {}, light::sample through={through:.3}",
+                                    if independent { "lit" } else { "shadowed" },
+                                    if gpu_lit { "lit" } else { "shadowed" },
+                                ));
+                            }
+                        }
+                    }
+                }
+                eprintln!(
+                    "face oracle, box {index}'s own {label} face: {sampled} sampled, {compared} compared, \
+                     {disagreeing} disagree ({} skipped: off-canvas or owned by a nearer face)",
+                    sampled - compared,
+                );
+                for example in &examples {
+                    eprintln!("{example}");
+                }
+                total_sampled += sampled;
+                total_compared += compared;
+                total_disagreeing += disagreeing;
+            }
+        }
+        eprintln!(
+            "face oracle vs rendered View::Shadow: {total_disagreeing}/{total_compared} compared points \
+             disagree ({total_sampled} sampled total)"
+        );
+        assert!(
+            total_compared > 100,
+            "the face oracle compared only {total_compared} of {total_sampled} sampled points — a \
+             detector that compares nothing reads exactly like a detector that found nothing"
+        );
     }
 }

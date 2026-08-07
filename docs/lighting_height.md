@@ -163,7 +163,17 @@ count in its commit message.
 
 ## Status
 
-Not started. Phase 0 first.
+Phase 0 done: the face oracle lives in `examples/boxes.rs`
+(`OPENSHARD_BOXES_FACE_ORACLE=0` to skip it), grids each box's own rendered
+`east`/`south` face, and is red on `tree` as expected — 956/16384 compared
+points disagree at the default `H1=3`, `light::sample` agreeing with the
+independent oracle at every disagreement checked by hand (`through=1.000`,
+"lit", against a rendered pixel reading "shadowed"), which places the fault
+on the GPU side, not the CPU walk. `OPENSHARD_TREE_H1=3.5` brings it down
+(691/16384) but not to zero — the residual matches the same soft-edge
+baseline the box-top oracle already reports against `walk_cells_exact`
+(~5%), so it is not read as a second bug; phase 1's own "done when" already
+expects a non-zero floor from the penumbra. Phase 1 next.
 
 Open questions, deliberately not pre-decided:
 
