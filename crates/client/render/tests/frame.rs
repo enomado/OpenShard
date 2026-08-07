@@ -986,14 +986,27 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
     }
 }
 
-/// A wall stops the light behind it, and does not stop the light on it.
+/// A wall stops the light behind it.
 ///
-/// The claim `docs/lighting.md` exists for, and both halves are the claim: a
-/// torch inside a house must not light the street, *and* the wall's own face
-/// must stay the brightest thing near the flame. The second is what no
-/// screen-space shadow can do — a wall's picture stands above the tile it
-/// occludes from, so a mask drawn over the ground behind it covers the wall as
-/// well — and it is why the lighting reads a tile per pixel at all.
+/// The claim `docs/lighting.md` exists for: a torch inside a house must not
+/// light the street. `docs/lighting.md`'s own second half of that
+/// claim — a wall's own face stays the brightest thing near the flame — is
+/// deliberately not this fixture's to make: it stands the occluder in as a
+/// *ground* quad rather than a real wall sprite ("what occludes is the grid,
+/// and a picture of a wall would only make the frame prettier", below), and
+/// a ground pixel is `Stance::Flat`, not the `Stance::Face*` a real wall's
+/// own visible surface carries. Those are exempted from a same-tile body's
+/// own shadow by a different mechanism (`own_run`'s run-of-wall check) that
+/// this fixture never exercises — `two_faces_sharing_an_edge_agree_with_
+/// light_sample`/`the_shader_and_light_sample_agree_about_which_side_a_wall_
+/// is_on` cover that half instead, on a real face. A `Flat` fragment gets no
+/// such exemption at all, by design (`light::exemption`'s own doc: a body a
+/// second, taller body stands on needs the precision), so ground standing at
+/// a whole-tile body's own base is genuinely inside that body looking out —
+/// `docs/lighting_raymarch.md`'s ground-stance entry found this fixture had
+/// been passing for the wrong reason, propped up by a land pixel that never
+/// named a stance at all and so read as `Upright`, not `Flat`, to the very
+/// check this fixture meant to exercise.
 #[test]
 fn a_wall_stops_the_light_behind_it() {
     let Some((device, queue)) = gpu() else {
@@ -1157,9 +1170,18 @@ fn a_wall_stops_the_light_behind_it() {
     let walled = read(&mut blit, occlusion.finish(&Cutaway::OPEN));
     let (wall, behind, far) = (at(&walled, 101), at(&walled, 102), at(&walled, 103));
 
+    // The ground *at* the wall's own base is genuinely inside its body looking
+    // out at the flame — see this test's own doc comment — and the query
+    // point sits at the tile's own *centre*, deep enough inside the body's
+    // whole-tile footprint that the ray crosses well past `RAY_CUTOFF`
+    // before it ever reaches open air: as dark as `behind`, not a hair off it.
     assert_eq!(
-        wall, open_wall,
-        "the wall's own face was darkened by the wall itself",
+        wall, behind,
+        "the wall's own tile did not read as fully inside its own body: {wall}, open {open_wall}, behind {behind}",
+    );
+    assert!(
+        wall < open_wall,
+        "the wall's own tile was not darkened by its own body: {wall}, open {open_wall}",
     );
     assert!(
         behind < open_behind && far < open_far,
@@ -1674,7 +1696,12 @@ fn every_pixel_names_the_tile_it_came_from() {
         Place::land(300, 400),
         "the ground beside the wall named something else",
     );
-    assert_eq!(ground_pixel[2], 128, "and another height");
+    // `128 | (STANCE_FLAT << 8)`: `ground.wgsl` now stamps its own stance
+    // alongside the height, the same way `statics.wgsl` always has — see
+    // `docs/lighting_raymarch.md`'s ground-stance entry for why a land pixel
+    // that never named one read as `Stance::Upright` to `blit.wgsl`'s own
+    // exemption logic instead.
+    assert_eq!(ground_pixel[2], 384, "and another height");
     assert_eq!(ground_pixel[3] & 3, 1, "and another kind");
     // And the ground's fraction of its tile moves with the pixel, which is what
     // the lighting reads to make a pool a gradient rather than a set of flat

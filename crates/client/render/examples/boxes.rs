@@ -178,7 +178,7 @@ fn dump(
     height: u32,
     path: &PathBuf,
     mark: Option<(i32, i32)>,
-) {
+) -> Vec<u8> {
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("readback"),
         size: u64::from(width) * u64::from(height) * 4,
@@ -215,19 +215,21 @@ fn dump(
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("waiting on our own submission");
-    let mut pixels = slice
+    let pixels = slice
         .get_mapped_range()
         .expect("the map completed above")
         .to_vec();
+    let mut marked = pixels.clone();
     if let Some(at) = mark {
-        mark_crosshair(&mut pixels, width, height, at);
+        mark_crosshair(&mut marked, width, height, at);
     }
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for pixel in pixels.chunks_exact(4) {
+    for pixel in marked.chunks_exact(4) {
         ppm.extend_from_slice(&pixel[..3]);
     }
     std::fs::write(path, ppm).expect("writing the frame");
     eprintln!("wrote {}", path.display());
+    pixels
 }
 
 /// One hand-built occluder and its visible box, together: the tile bucket
@@ -767,6 +769,7 @@ fn main() {
 
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
     let mut blit = openshard_client_render::blit::Blit::new(&device, format);
+    let mut shadow_pixels: Vec<u8> = Vec::new();
     for view in [View::Lit, View::Shadow] {
         lighting.view = view;
         let surface = device.create_texture(&wgpu::TextureDescriptor {
@@ -808,7 +811,7 @@ fn main() {
             &lighting,
         );
         queue.submit([encoder.finish()]);
-        dump(
+        let pixels = dump(
             &device,
             &queue,
             &surface,
@@ -817,5 +820,126 @@ fn main() {
             &PathBuf::from(format!("{base}_{}.ppm", view.name())),
             Some(light_mark),
         );
+        if view == View::Shadow {
+            shadow_pixels = pixels;
+        }
+    }
+
+    // A ground-plane companion to the box-top oracle above: that one only ever
+    // asks about the tops of the boxes, so it structurally cannot see the bug
+    // `docs/lighting_raymarch.md`'s backlog names ("A live CPU/GPU disagreement
+    // on `boxes.rs`'s `tree` scene") — the ground immediately beside a box's own
+    // base. This sweeps a top-down grid of *ground* points instead, projects
+    // each through the scene's own isometric camera (not an ortho view, so it
+    // reads the exact pixel the renderer itself drew), and compares the
+    // rendered `View::Shadow` pixel there against `segment_clear_of_box`, the
+    // same independent, no-shared-arithmetic oracle the box-top check already
+    // trusts. A point inside any box's own footprint is skipped — the pixel the
+    // camera finds there is the box's mesh, not the ground underneath it.
+    type Mismatch = (f64, f64, f32, (u8, u8, u8));
+    if env_opt("OPENSHARD_BOXES_GROUND_ORACLE").as_deref() != Some("0") {
+        let light_at = (
+            f64::from(first.tile.0) + f64::from(ldx),
+            f64::from(first.tile.1) + f64::from(ldy),
+            f64::from(light_z),
+        );
+        let margin = 1.5;
+        let min_x = boxes.iter().map(|b| b.min.0).fold(f64::MAX, f64::min) - margin;
+        let max_x = boxes.iter().map(|b| b.max.0).fold(f64::MIN, f64::max) + margin;
+        let min_y = boxes.iter().map(|b| b.min.1).fold(f64::MAX, f64::min) - margin;
+        let max_y = boxes.iter().map(|b| b.max.1).fold(f64::MIN, f64::max) + margin;
+        let side = 240u32;
+        let mut mismatches = 0usize;
+        let mut too_dark = 0usize;
+        let mut too_light = 0usize;
+        let mut examples_too_dark: Vec<Mismatch> = Vec::new();
+        let mut examples_too_light: Vec<Mismatch> = Vec::new();
+        for row in 0..side {
+            for col in 0..side {
+                let u = (col as f64 + 0.5) / f64::from(side);
+                let v = (row as f64 + 0.5) / f64::from(side);
+                let x = min_x + u * (max_x - min_x);
+                let y = min_y + v * (max_y - min_y);
+                if boxes
+                    .iter()
+                    .any(|b| x >= b.min.0 && x <= b.max.0 && y >= b.min.1 && y <= b.max.1)
+                {
+                    continue;
+                }
+                let screen = camera.to_view_exact(project_exact(WorldSpot { x, y, z: 0.0 }));
+                let px = (screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5;
+                let py = (screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5;
+                if px < 0.0 || py < 0.0 || px >= width as f32 || py >= height_px as f32 {
+                    continue;
+                }
+                let (pxi, pyi) = (px.round() as u32, py.round() as u32);
+                // `round`, not the `< width`/`< height_px` check just above, is
+                // what can land exactly on the far edge — a coordinate at
+                // `width - 0.3` passes the check and then rounds up to `width`.
+                if pxi >= width || pyi >= height_px {
+                    continue;
+                }
+                let offset = ((pyi * width + pxi) * 4) as usize;
+                let gpu_lit = shadow_pixels[offset] > 128;
+                // The GPU never lights the *continuous* `(x, y)` — `ground.wgsl`'s
+                // `place_of` quantises the fragment's own tile-local fraction to
+                // `SUB_TILE = 127` levels before `blit.wgsl` ever reads it back
+                // (`docs/gbuffer.md` step 7's own g-buffer format). Comparing the
+                // rendered picture against a query point that skips that
+                // quantisation compares it to a fragment the rasteriser could
+                // never actually produce — so the independent oracle and
+                // `light::sample` are both asked about the *reconstructed* point
+                // instead, the same lossy value the shader itself lights.
+                let quantise = |v: f64, tile: f64| tile + (((v - tile) * 127.0).round() / 127.0);
+                let (qx, qy) = (quantise(x, x.floor()), quantise(y, y.floor()));
+                let independent = oracle_visible((qx, qy, 0.0), light_at, &boxes, usize::MAX);
+                if independent != gpu_lit {
+                    mismatches += 1;
+                    let spot = light::Spot {
+                        at: Vec2::new(qx as f32, qy as f32),
+                        z: 0.0,
+                        tile: (qx.floor() as i32, qy.floor() as i32),
+                        surface: light::Surface::Flat,
+                    };
+                    let through = light::sample(spot, &lighting)
+                        .reaches
+                        .first()
+                        .map_or(0.0, |reach| if reach.within { reach.through } else { 0.0 });
+                    let rgb = (
+                        shadow_pixels[offset],
+                        shadow_pixels[offset + 1],
+                        shadow_pixels[offset + 2],
+                    );
+                    if gpu_lit {
+                        // Oracle says shadowed, picture says lit.
+                        too_light += 1;
+                        if examples_too_light.len() < 8 {
+                            examples_too_light.push((qx, qy, through, rgb));
+                        }
+                    } else {
+                        // Oracle says lit, picture says shadowed.
+                        too_dark += 1;
+                        if examples_too_dark.len() < 8 {
+                            examples_too_dark.push((qx, qy, through, rgb));
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "ground oracle vs rendered View::Shadow: {mismatches}/{} sampled ground points disagree \
+             ({too_dark} rendered too dark, {too_light} rendered too light)",
+            side * side
+        );
+        for (label, examples) in [
+            ("too dark", &examples_too_dark),
+            ("too light", &examples_too_light),
+        ] {
+            for (x, y, cpu_through, rgb) in examples {
+                eprintln!(
+                    "  [{label}] ({x:.3}, {y:.3}): light::sample through={cpu_through:.3}, pixel rgb={rgb:?}",
+                );
+            }
+        }
     }
 }

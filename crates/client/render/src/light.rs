@@ -1150,210 +1150,13 @@ fn pierced(stands: &crate::occlusion::Solid, px: f32, py: f32, z: f32, wide: f32
 /// at all: CPU's own `f32` rounding already lands on the generous side of
 /// the tangent for the case that mattered, so only `blit.wgsl`'s copy needed
 /// the tolerance, not this one.
-/// How far outside a body's own box a ray may pass and still read as
-/// grazing its corner rather than clearing it — the lateral counterpart to
-/// [`pierces`]'s vertical band, both standing in for the same fact: a
-/// flame is a body, not a point, so its penumbra has a width.
-///
-/// `docs/lighting_raymarch.md` session 20: [`ray_vs_solid`] is an exact,
-/// binary predicate on purpose, so a ray that clears a body's silhouette
-/// *corner* by any margin at all used to contribute nothing — a hard
-/// diagonal line where every other kind of edge in this file already grades
-/// smoothly. [`ray_vs_body`] is the fix, scoped to bodies
-/// ([`crate::occlusion::EDGE_ANY`]) alone: a lid or a panel's own straight
-/// edge already has a `t`-interval of "thinning interior crossings" for
-/// [`SOFT_CROSSING_MIN`]/`MAX` to grade through on the way out of
-/// [`ray_vs_solid`]'s exact box; a corner's closest approach is a single
-/// point, with nothing in between. Deliberately narrow — session 20's first
-/// attempt used a whole [`FLAME_SPREAD`] tile as the near-miss threshold and
-/// found every ground point near either box lit with some corner-penumbra,
-/// which is a halo, not a corner's.
-const CORNER_GRAZE: f32 = 0.2;
-
-/// How wide, in `t` (a fraction of the whole segment, not tiles), the band
-/// is that [`corner_graze_weight`] fades its own disjoint/overlapping
-/// classification across, instead of switching it on the exact line where
-/// two [`axis_window`]s stop touching. Small on purpose — this softens a
-/// classification boundary, not a physical distance, so it only needs to be
-/// wide enough that neighbouring rays sampled at ordinary screen resolution
-/// do not land on opposite sides of a still-hard line.
-const CORNER_GAP_SOFTEN: f32 = 0.02;
-
-/// A body's own crossing interval, same shape [`ray_vs_solid`] returns, but
-/// widened by [`CORNER_GRAZE`] on `x`/`y` when the exact test misses and
-/// `edges` says this is a body rather than a lid or a panel.
-///
-/// The widened interval flows through exactly the softness machinery an
-/// ordinary crossing already does — `crossed / soft` in the `EDGE_ANY` arm
-/// of [`walk_cells_exact`]/[`walk_cells_streaming`] — rather than needing a
-/// second, corner-specific formula: a ray that only just enters the widened
-/// box gets a vanishingly short `crossed`, and one rounding the corner more
-/// squarely gets a longer one, the same gradient a straight edge's own
-/// thinning sliver already produces. [`box_side`]'s own safety net still
-/// reads against the body's *real*, unwidened bounds — a widened near-miss
-/// is never within `box_side`'s `1e-3` tolerance of the real box, so it
-/// cannot also trip the "grazed corner reads as opaque" safety net meant for
-/// a genuine tangent touch on the exact geometry.
-/// The perpendicular distance, in tiles, from a point to an axis-aligned
-/// box's own footprint — `0.0` if the point already sits inside it.
-fn point_box_distance(p: [f32; 2], lo: [f32; 2], hi: [f32; 2]) -> f32 {
-    let dx = (lo[0] - p[0]).max(0.0).max(p[0] - hi[0]);
-    let dy = (lo[1] - p[1]).max(0.0).max(p[1] - hi[1]);
-    (dx * dx + dy * dy).sqrt()
-}
-
-/// A body's own crossing interval, same shape [`ray_vs_solid`] returns, plus
-/// a third number: `1.0` for an ordinary, exact hit, tapering linearly to
-/// `0.0` at [`CORNER_GRAZE`]'s own outer edge for a corner graze — the
-/// caller multiplies its opacity by this rather than trusting the widened
-/// crossing's own length alone.
-///
-/// **Why a taper and not the raw widened crossing.** A first version fed the
-/// widened box's own `entered`/`leaves` straight into the ordinary
-/// `crossed / soft` formula the way an exact hit already does, on the theory
-/// that a near-miss is just a thinner version of the same crossing. It is
-/// not: the widened box is strictly larger than the real one, so right at
-/// the real box's own edge — the instant [`ray_vs_solid`] stops returning
-/// `Some` — the widened crossing is *not* vanishingly short the way the real
-/// crossing was approaching zero just before it. The result was a jump
-/// **up** in occlusion exactly where the exact test gave out, before fading
-/// back down toward the margin's own far edge: a visible seam, not a
-/// gradient, found rendering `examples/boxes.rs`'s own `tree` scene and
-/// `tests/lighting.rs`'s `the_edge_of_a_shadow_lands_where_the_geometry_
-/// puts_it`. The taper instead scales by the crossing's own closest point's
-/// plain Euclidean distance to the *real*, unwidened box
-/// ([`point_box_distance`]) — `0` there (continuous with whatever the exact
-/// test's own tangent gives [`box_side`]'s safety net, unchanged) rising to
-/// `1` at [`CORNER_GRAZE`]'s own edge (continuous with "no candidate at
-/// all"), a straight line between two ends that already agree with their
-/// neighbours instead of a second, independent formula.
-fn ray_vs_body(
-    from: [f32; 3],
-    to: [f32; 3],
-    edges: u8,
-    space: &crate::solid::Solid,
-) -> Option<(f32, f32, f32)> {
-    if let Some((entered, leaves)) = ray_vs_solid(from, to, space) {
-        return Some((entered, leaves, 1.0));
-    }
-    if edges != crate::occlusion::EDGE_ANY {
-        return None;
-    }
-    let lo = [space.min.x as f32, space.min.y as f32];
-    let hi = [space.max.x as f32, space.max.y as f32];
-    let weight = corner_graze_weight(from, to, lo, hi);
-    if weight <= 0.0 {
-        return None;
-    }
-    let widened = crate::solid::Solid {
-        min: crate::camera::WorldSpot {
-            x: space.min.x - f64::from(CORNER_GRAZE),
-            y: space.min.y - f64::from(CORNER_GRAZE),
-            z: space.min.z,
-        },
-        max: crate::camera::WorldSpot {
-            x: space.max.x + f64::from(CORNER_GRAZE),
-            y: space.max.y + f64::from(CORNER_GRAZE),
-            z: space.max.z,
-        },
-    };
-    let (entered, leaves) = ray_vs_solid(from, to, &widened)?;
-    let middle = (entered + leaves) * 0.5;
-    let p = [
-        from[0] + (to[0] - from[0]) * middle,
-        from[1] + (to[1] - from[1]) * middle,
-    ];
-    let distance = point_box_distance(p, lo, hi);
-    let taper = (1.0 - distance / CORNER_GRAZE).clamp(0.0, 1.0) * weight;
-    Some((entered, leaves, taper))
-}
-
-/// The `t`-interval where a straight segment's own coordinate, on one axis
-/// alone, sits inside `[lo, hi]` — the single-axis half of [`ray_vs_solid`]'s
-/// own slab test, kept separate because [`is_corner_graze`] needs to ask the
-/// two axes apart rather than intersected.
-fn axis_window(from: f32, to: f32, lo: f32, hi: f32) -> Option<(f32, f32)> {
-    let delta = to - from;
-    if delta.abs() <= 1e-9 {
-        return (from >= lo && from <= hi).then_some((0.0, 1.0));
-    }
-    let (t1, t2) = ((lo - from) / delta, (hi - from) / delta);
-    let (near, far) = match t1 <= t2 {
-        true => (t1, t2),
-        false => (t2, t1),
-    };
-    let (near, far) = (near.max(0.0), far.min(1.0));
-    (near <= far).then_some((near, far))
-}
-
-/// Below this width, an [`axis_window`] is a graze of a single instant
-/// rather than a real stretch of the segment inside that axis's range —
-/// [`is_corner_graze`]'s own epsilon, not [`CORNER_GRAZE`]'s: this one
-/// guards a degenerate float tie (a query point whose ray happens to end
-/// exactly on the box's own edge, `t`-width zero), not how far outside the
-/// box a graze may sit.
-const MIN_AXIS_WINDOW: f32 = 1e-3;
-
-/// Whether a ray that misses a body's own box is rounding a **corner** of
-/// it, as opposed to running shallow alongside one of its straight faces —
-/// [`ray_vs_body`]'s gate on when a near-miss gets to become a graded
-/// crossing at all.
-///
-/// `docs/lighting_raymarch.md` session 20's own attempt found the
-/// distinction the hard way and it is kept here, though the larger attempt
-/// it was part of was reverted: a genuine corner has both axes'
-/// [`axis_window`]s real (against the box's own, **un**widened bounds) but
-/// *disjoint* in `t` — the ray's own coordinate does cross into the box's
-/// `x`-range at some point along the segment, and separately into its
-/// `y`-range, just never both at the same instant, which is what "rounding
-/// a corner" means geometrically: it is why an exact-box test still finds
-/// nothing to intersect. A ray shallow against one of the box's rows or
-/// columns instead spends a real *stretch* of the segment inside one axis's
-/// own range while only the other axis ever clears the box at all — its own
-/// window is not disjoint from the other's, it contains it — which is what
-/// the disjoint check already excludes without a separate "whole segment"
-/// case to spell out. `MIN_AXIS_WINDOW` exists only to keep the shallow-ray
-/// counter-example itself
-/// ([`a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray`], `y
-/// 99.9`) from reading as a corner: the flame in that fixture sits exactly
-/// on the wall row's own edge, so the naive `y`-axis window is real but a
-/// single instant wide (the segment's own endpoint touching the boundary),
-/// and a zero-width "stretch" is not a stretch at all.
-///
-/// How close the ray actually has to come to read as a corner at all — not
-/// asked here — is [`ray_vs_body`]'s own job: this only classifies the
-/// *shape* of a miss, and the caller's widened [`ray_vs_solid`] against
-/// [`CORNER_GRAZE`] is what still returns `None` for a true corner too far
-/// away to matter.
-///
-/// **Returns a weight, not a bool.** The disjoint/overlapping line itself is
-/// a hard edge in `t`-space — two windows a hair apart are "disjoint," the
-/// same two nudged a hair closer are "overlapping" — and a caller that
-/// switches the whole graze on and off at that line paints a visible seam
-/// of its own, found the same way the [`ray_vs_body`] taper's own seam was:
-/// rendering `examples/boxes.rs`'s `tree` scene and looking. `CORNER_GAP_
-/// SOFTEN` fades the weight from `1.0` (comfortably disjoint) to `0.0` over
-/// a small span of `t` straddling that line, so the classification itself
-/// joins the crossing-length taper in having no edge for a ray sweeping
-/// past to find.
-fn corner_graze_weight(from: [f32; 3], to: [f32; 3], lo: [f32; 2], hi: [f32; 2]) -> f32 {
-    let window = |axis: usize| {
-        axis_window(from[axis], to[axis], lo[axis], hi[axis])
-            .filter(|(near, far)| far - near > MIN_AXIS_WINDOW)
-    };
-    let (Some(wx), Some(wy)) = (window(0), window(1)) else {
-        return 0.0;
-    };
-    let gap = if wx.1 < wy.0 {
-        wy.0 - wx.1
-    } else if wy.1 < wx.0 {
-        wx.0 - wy.1
-    } else {
-        return 0.0;
-    };
-    (gap / CORNER_GAP_SOFTEN).clamp(0.0, 1.0)
-}
-
+/// Session 20/21's `CORNER_GRAZE`/`CORNER_GAP_SOFTEN`/`ray_vs_body`/
+/// `corner_graze_weight`/`axis_window`/`point_box_distance` lived here —
+/// widening a body's box near a silhouette corner and tapering the result,
+/// to fake a penumbra. Removed: a flame is a point source, and a point
+/// source casts a hard shadow everywhere, corners included — see
+/// `docs/lighting_raymarch.md`'s "hard shadows" decision. `ray_vs_solid`'s
+/// own exact hit is the whole test now, for every edge kind.
 fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Option<(f32, f32)> {
     let min = [solid.min.x as f32, solid.min.y as f32, solid.min.z as f32];
     let max = [solid.max.x as f32, solid.max.y as f32, solid.max.z as f32];
@@ -2170,47 +1973,6 @@ fn candidate_tiles(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<(i32, i32)> {
     tiles
 }
 
-/// Which side (or two, at a genuine corner) of a body's own box a point
-/// sitting on its boundary is on — [`EDGE_NORTH`](crate::occlusion::EDGE_NORTH)/
-/// [`EDGE_SOUTH`](crate::occlusion::EDGE_SOUTH)/
-/// [`EDGE_EAST`](crate::occlusion::EDGE_EAST)/
-/// [`EDGE_WEST`](crate::occlusion::EDGE_WEST), `0` for a point that is not on
-/// any edge of it.
-///
-/// The geometric replacement for a [`DdaCell`]'s `entry`/`exit`: the side a
-/// [`ray_vs_solid`] crossing point sits on is read directly off which of the
-/// **body's own** four boundaries it touches, rather than carried from a DDA
-/// step that never happened for a candidate this function reaches only
-/// through [`candidate_tiles`]'s diagonal probe.
-///
-/// `lo`/`hi` are the body's own box — [`crate::occlusion::Solid::box_of`]'s
-/// `EDGE_ANY` case, an ordinary whole-tile body — **not** always the tile's
-/// own boundary any more: a [`crate::occlusion::Builder::add_raw`] body or a
-/// climbable static's own tread is narrower than its tile, and a crossing
-/// point on *its* edge does not sit on the tile's. Comparing against the
-/// tile the way this used to would silently stop finding a corner grazed at
-/// a narrow angle the moment the body carrying it is not the whole tile —
-/// `docs/lighting_raymarch.md`'s "second bigger idea" found this the same
-/// session it landed the footprint upload that made bodies narrower than a
-/// tile a real, common case rather than a test-only one.
-fn box_side(pos: [f32; 2], lo: [f32; 2], hi: [f32; 2]) -> u8 {
-    const EPS: f32 = 1e-3;
-    let mut side = 0;
-    if (pos[0] - lo[0]).abs() < EPS {
-        side |= crate::occlusion::EDGE_WEST;
-    }
-    if (pos[0] - hi[0]).abs() < EPS {
-        side |= crate::occlusion::EDGE_EAST;
-    }
-    if (pos[1] - lo[1]).abs() < EPS {
-        side |= crate::occlusion::EDGE_NORTH;
-    }
-    if (pos[1] - hi[1]).abs() < EPS {
-        side |= crate::occlusion::EDGE_SOUTH;
-    }
-    side
-}
-
 /// [`walk_cells`], built on [`ray_vs_solid`] instead of [`dda_walk`]'s own
 /// per-cell bookkeeping — `docs/lighting_raymarch.md`'s ray-vs-Solid
 /// scoping, point 2. Same signature, same exemption/run/aperture/softness
@@ -2315,7 +2077,6 @@ fn walk_cells_exact(
         stands: &'a crate::occlusion::Solid,
         entered: f32,
         leaves: f32,
-        taper: f32,
     }
     let mut by_tile: Vec<((i32, i32), Vec<Hit<'_>>)> = Vec::new();
     let from2 = Vec2::new(from[0], from[1]);
@@ -2323,12 +2084,11 @@ fn walk_cells_exact(
     for cell in candidate_tiles(from2, to2, first) {
         let mut here = Vec::new();
         for stands in occlusion.solids_at(cell.0, cell.1) {
-            if let Some((entered, leaves, taper)) = ray_vs_body(from, to, stands.edges, &stands.space) {
+            if let Some((entered, leaves)) = ray_vs_solid(from, to, &stands.space) {
                 here.push(Hit {
                     stands,
                     entered,
                     leaves,
-                    taper,
                 });
             }
         }
@@ -2364,7 +2124,6 @@ fn walk_cells_exact(
             stands,
             entered,
             leaves,
-            taper,
         } in hits
         {
             // Same [`exemption`] `walk_cells` calls — see its own doc comment.
@@ -2376,7 +2135,7 @@ fn walk_cells_exact(
             let soft =
                 (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
             let (low, high) = (stands.bottom() as f32, stands.top() as f32);
-            let opacity = f32::from(stands.opacity) / 255.0 * taper;
+            let opacity = f32::from(stands.opacity) / 255.0;
             let tall = soft * FLAME_DEPTH;
             let by_surface = match stands.edges {
                 0 => {
@@ -2418,39 +2177,15 @@ fn walk_cells_exact(
                     let to_z = from[2] + delta[2] * tile_leaves;
                     opacity * crosses(from_z, to_z, low, high, to[2], spread)
                 }
-                EDGE_ANY => {
-                    let crossed = (leaves - entered) * ground;
-                    let travelled = opacity * (crossed / soft).clamp(0.0, 1.0);
-                    // Same safety net `walk_cells` keeps, same reason: the
-                    // length alone misses a ray clipping only a shallow
-                    // sliver of the body's corner, and the eye reads a
-                    // corner as opaque, not as "a little bit see-through"
-                    // for having been grazed at a narrow angle. Which side
-                    // the ray entered/left by is read off the exact
-                    // crossing points themselves — [`box_side`] — rather
-                    // than carried from a DDA step, since there is no DDA
-                    // step here to carry it from. `stands.space`'s own
-                    // bounds, not the tile's — `box_side`'s own doc.
-                    let stops = EDGE_ANY & !same_run;
-                    let mut stopped = travelled;
-                    let lo = [stands.space.min.x as f32, stands.space.min.y as f32];
-                    let hi = [stands.space.max.x as f32, stands.space.max.y as f32];
-                    for at in [entered, leaves] {
-                        let side = box_side([from[0] + delta[0] * at, from[1] + delta[1] * at], lo, hi);
-                        if stops & side != 0 {
-                            stopped =
-                                stopped.max(opacity * pierces(from[2] + delta[2] * at, low, high, tall));
-                        }
-                    }
-                    // See `walk_cells_streaming`'s own copy of this comment:
-                    // a graze's own entry/exit sit on the widened box, so
-                    // `box_side` above almost never fires for it.
-                    if taper < 1.0 {
-                        stopped =
-                            stopped.max(opacity * pierces(from[2] + delta[2] * middle, low, high, tall));
-                    }
-                    stopped
-                }
+                // A body is a real 3D box and `ray_vs_solid` is an exact
+                // slab test — a `Some` here already means the segment
+                // genuinely passed through it over `entered..leaves`, so
+                // occlusion is the body's own opacity outright. No
+                // length-based fade, no per-side `pierces` floor, no
+                // widened-corner graze: those existed only to fake a
+                // penumbra a point flame does not cast. See `docs/
+                // lighting_raymarch.md`'s "hard shadows" decision.
+                EDGE_ANY => opacity,
                 edges => {
                     if edges & !same_run == 0 {
                         0.0
@@ -2668,7 +2403,7 @@ fn walk_cells_streaming(
                 stands.top(),
                 stands.fraction(),
             );
-            let Some((entered, leaves, taper)) = ray_vs_body(from, to, stands.edges, &space) else {
+            let Some((entered, leaves)) = ray_vs_solid(from, to, &space) else {
                 continue;
             };
             let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, lit_by_own_tile, stands);
@@ -2679,7 +2414,7 @@ fn walk_cells_streaming(
             let soft =
                 (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
             let (low, high) = (stands.bottom() as f32, stands.top() as f32);
-            let opacity = f32::from(stands.opacity) / 255.0 * taper;
+            let opacity = f32::from(stands.opacity) / 255.0;
             let tall = soft * FLAME_DEPTH;
             let by_surface = match stands.edges {
                 0 => {
@@ -2707,37 +2442,11 @@ fn walk_cells_streaming(
                     let to_z = from[2] + delta[2] * tile_leaves;
                     opacity * crosses(from_z, to_z, low, high, to[2], spread)
                 }
-                EDGE_ANY => {
-                    let crossed = (leaves - entered) * ground;
-                    let travelled = opacity * (crossed / soft).clamp(0.0, 1.0);
-                    let stops = EDGE_ANY & !same_run;
-                    let mut stopped = travelled;
-                    // `space`'s own bounds, not the tile's — `box_side`'s own doc.
-                    let lo = [space.min.x as f32, space.min.y as f32];
-                    let hi = [space.max.x as f32, space.max.y as f32];
-                    for at in [entered, leaves] {
-                        let side = box_side([from[0] + delta[0] * at, from[1] + delta[1] * at], lo, hi);
-                        if stops & side != 0 {
-                            stopped =
-                                stopped.max(opacity * pierces(from[2] + delta[2] * at, low, high, tall));
-                        }
-                    }
-                    // A corner graze's own entry/exit sit on the *widened*
-                    // box, not the real one, so `box_side` above almost never
-                    // fires for it — the exact-hit tangent's own floor from
-                    // `pierces` would otherwise vanish right at the
-                    // exact/graze handoff (`taper` crossing `1.0`), a second
-                    // seam this doc's own session 21 found rendering
-                    // `examples/boxes.rs`'s `tree` scene, distinct from the
-                    // taper discontinuity `ray_vs_body`'s own doc already
-                    // names. `taper < 1.0` is exactly "this hit came from the
-                    // graze path," since only that path ever returns one.
-                    if taper < 1.0 {
-                        stopped =
-                            stopped.max(opacity * pierces(from[2] + delta[2] * middle, low, high, tall));
-                    }
-                    stopped
-                }
+                // Same as `walk_cells_exact`'s own copy: a `Some` from the
+                // exact `ray_vs_solid` slab test already means a genuine
+                // crossing, so occlusion is the body's own opacity. See
+                // `docs/lighting_raymarch.md`'s "hard shadows" decision.
+                EDGE_ANY => opacity,
                 edges => {
                     if edges & !same_run == 0 {
                         0.0
