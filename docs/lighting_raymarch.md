@@ -229,12 +229,60 @@ that used to be here and is now fixed — is in the archive under
   reader and a diff — rather than a bit that silently never got OR'd into a
   hand-built literal buried among several others. Closing what remains (a
   wrong-but-present `stance` argument) needs a test-time oracle per
-  producer/stance pair, not a language feature; still open, not scoped as a
-  step. `blit.wgsl`/`select.wgsl` only *read* `place` and have nothing
-  analogous to share — the asymmetry is inherent, not left undone.
-  Verified with the same three checks as the constants migration above:
-  `cargo test --workspace`/clippy/fmt clean, and both scenes' oracles
-  unchanged.
+  producer/stance pair, not a language feature. `blit.wgsl`/`select.wgsl`
+  only *read* `place` and have nothing analogous to share — the asymmetry
+  is inherent, not left undone. Verified with the same three checks as the
+  constants migration above: `cargo test --workspace`/clippy/fmt clean, and
+  both scenes' oracles unchanged.
+
+  **Handoff — the test-time oracle, not yet started.** The plumbing already
+  exists and does not need building: `tests/frame.rs`'s `render_places`
+  (line ~2113) renders ground + statics into a real `place` attachment and
+  hands back the raw `[u16; 4]` per pixel; `place::STANCE_SHIFT` is the
+  Rust-side constant a test decodes with — never a shift re-typed inline,
+  which would make the test blind to exactly the class of bug this is for
+  (`place.rs::a_place_packs_into_two_words`'s own reason to pin the number
+  once rather than trust two copies to agree). Two tests already do this
+  *directly*, and are the model to copy: `tests/frame.rs:1805-1809`
+  (`a_floor_spreads_across_its_tile_and_a_wall_stands_up_it`'s fixture,
+  mid-test) asserts a `Stance::Flat` static's own pixel decodes to
+  `Stance::Flat as u16`; `tests/frame.rs:2070-2079`
+  (`a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on`) does the
+  same for `Stance::FaceEast`/`Stance::FaceSouth`. Direct means: decode the
+  bits and compare against the constant — not "does `light::sample` also
+  predict the right shadow," which is what `a_wall_stops_the_light_behind_
+  it` (`tests/frame.rs:1010`, one of session 23's own two updated tests)
+  does instead, and which is exactly the kind of check that can pass for
+  the wrong reason twice in a row, as its own doc comment says session 23
+  found it doing.
+
+  What is missing, concretely, is coverage of the other two `pack_place`
+  callers the same direct way:
+
+  1. **`ground.wgsl`.** No test today decodes a ground pixel's own `place.z`
+     and asserts it is `Stance::Flat as u16` — session 23's own bug shipped
+     silently for exactly this reason. `render_places` already runs the
+     ground pass; a `[SpriteQuad]`-only fixture like the two above, minus
+     the statics half, is enough. This is the one to write first — it is
+     the fixture the bug actually happened in.
+  2. **`mesh_face.wgsl`.** No test decodes a mesh-face pixel's own `place.z`
+     and asserts `Stance::MeshFace as u16` (`place::STANCE_MESH_FACE`
+     region), either. `render_places` does not run the mesh-face pass at
+     all today — extending it (or a sibling helper) to also drive
+     `MeshFaceRenderer` over a scripted `MeshFaceRow` is the one piece of
+     new plumbing this needs; `renderer.rs`'s own real pass ordering is the
+     reference for how the three passes' outputs compose into one `place`
+     attachment.
+
+  `statics.wgsl`'s five real stances (`Flat`/four faces) are the widest
+  surface and the best-covered already — `Flat` and two of the four faces
+  are pinned directly as above; `FaceNorth`/`FaceWest` are not (rare in
+  practice — "five graphics out of 1197," `blit.wgsl`'s own comment on
+  `outward`), worth a third case in the same fixture rather than a new one.
+
+  Not scoped as a single step because the two producers do not share a
+  fixture shape — doing this is two small, independent additions to
+  `tests/frame.rs`, `ground.wgsl`'s first.
 
 - **Someday/maybe, not scoped as a step**: a full fixed-point world
   coordinate (tile + N bits of sub-tile resolution, no `f32`) would remove
