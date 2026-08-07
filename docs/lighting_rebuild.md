@@ -1,0 +1,297 @@
+# Lighting, rebuilt — the renderer this should have been
+
+A specification, not a repair. Everything in `docs/lighting_height.md`'s backlog
+is a compensation for missing data, and this replaces the data instead of the
+compensations.
+
+The decision it rests on is stated once, at the top, because everything else
+follows from it: **the art is albedo, and the light is ours.** UO's sprites are
+drawn with light already in them, and every workaround below exists to avoid
+arguing with that light. We stop avoiding it. The picture will not be "exactly
+like UO", and that is the accepted price.
+
+## The three roots
+
+Not ten workarounds — three decisions, each with a family growing out of it.
+
+**1. The art is pre-shaded, so a real BRDF was forbidden.** A Lambert term would
+be a second light fighting the painted one, so `light::faces` is a half-space
+instead — and a half-space is a step, and a step has to be softened, so
+`FACE_EDGE` is a band. That band is measured in *tiles along the plane's normal*
+and `z` is divided by `Z_PER_TILE = 11`, which makes one constant mean ±4 screen
+pixels across a wall and **±1.1 `z` above a lid** — more than half a stair step.
+Measured 2026-08-08: with the flame between two treads, **7059 pixels** of a
+single flight sit inside that band against `3940` of genuine penumbra, and the
+band's price peaks exactly where a flame lies in a surface's own plane —
+`0.214` of a channel per pixel, against `0.020` half a step away.
+
+**2. The `place` attachment packs a fragment's height into eight bits and a
+four-bit fraction**, so a fragment's own position is not exactly known — so a
+shadow ray must start away from where it really is. `STAND_OFF = 2/127` of a tile
+and `ON_TOP = 1/128` of a `z` unit are **numbers taken from the byte layout**,
+not from any statement about surfaces. Their price, measured with the light
+oracle: the engine is brighter than the geometry allows on the top band of a
+riser by up to **`0.51` of a channel**. And because heights cannot separate
+surfaces at that precision, a whole apparatus grew to do it by identity instead
+— `exemption`, `on_surface`, `own_run`, `mounted_at`'s height test.
+
+**3. A static is drawn twice** — as a sprite, and as a mesh over it — so their
+silhouettes differ, so the mesh is grown to hide the gap. `WIDTH_OVERLAP = 0.03`
+of a tile is a **1355-pixel border** around a single flight at `4:1`, measured by
+zeroing it; and in a scene with no sprite it buys nothing at all.
+
+## The target
+
+Deferred shading, in the ordinary sense:
+
+```
+geometry pass ──► G-buffer ──► lighting pass ──► tonemap ──► screen
+                  position      per light:        HDR → LDR
+                  normal          BRDF × falloff
+                  albedo          × shadow rays
+                  ids
+```
+
+Every quantity lives in one place, in one unit, and is *data* rather than
+something reconstructed downstream:
+
+| quantity | where it lives | unit |
+|---|---|---|
+| fragment position | G-buffer, `Rgba32Float` | tiles, `z` **in tiles** |
+| surface normal | G-buffer, `Rg16Snorm`, octahedral | unit vector |
+| albedo | G-buffer, `Rgba8UnormSrgb` | linear after decode |
+| primitive identity | G-buffer, `R32Uint` | opaque id |
+| light accumulation | offscreen, `Rgba16Float` | linear radiance |
+| screen | swapchain | tonemapped, sRGB |
+
+**One metric.** `z` is divided by `Z_PER_TILE` **once**, where the map is read,
+and never again. Nothing downstream knows that `z` was ever counted differently
+from `x`. Half of `docs/world_coordinates.md` is this line.
+
+## What goes
+
+Named, so the plan can be checked against the tree:
+
+| goes | what replaces it |
+|---|---|
+| `light::faces`, `FACE_EDGE` | `N · L` off the G-buffer normal |
+| `STAND_OFF`, `ON_TOP` | exact position + self-hit by primitive id, bias `0` |
+| `exemption`, `on_surface`, `own_run` | the same id test, once |
+| `mounted_at`, `MOUNTED_CLEARANCE` | a sconce burns where it is; geometry decides the rest |
+| `WIDTH_OVERLAP` | one silhouette — see the impostor phase |
+| `FLAME_DEPTH`, `pierces`, `crosses`'s softening, `SOFT_CROSSING_*` | an area light and N shadow rays |
+| `(1 − d)²` falloff | windowed inverse square |
+| `knee()` | a tonemap on HDR |
+| `place`'s `z + 128` · fraction · stance packing | position and normal as data |
+
+`FLAME_SPREAD`, `RAY_CUTOFF` and `MAX_WALK_STEPS` survive: a light does have a
+size, a ray does have a cutoff, and a walk does have a step budget. They stop
+being *stand-ins* for the things above.
+
+## What arrives, in detail
+
+### The G-buffer
+
+Four attachments and a depth buffer. Position as `Rgba32Float` rather than
+reconstructed from depth: the isometric projection is invertible and the
+reconstruction is exact in principle, but it is also the single thing every
+defect on the height track came from, and this plan does not re-earn that. (An
+optimisation later, gated on a test that reconstruction equals the stored
+position to `1e-5` of a tile, is welcome.)
+
+`ids` carries what `place`'s `kind` and `id` carry today, because selection,
+outlines and tooltips read them — plus a per-**primitive** index, which is the
+thing shadow rays compare.
+
+### The BRDF
+
+`albedo × N·L × light colour × intensity × attenuation × shadow`, summed over
+lights, plus `albedo × sky colour × sky visibility` for ambient.
+
+Lambert with no `1/π`, and the intensities calibrated to match: the constant is a
+convention, and putting it in would mean re-tuning every flame in the tree for a
+factor everyone then divides back out. Stated here so nobody re-derives it as a
+bug.
+
+### Attenuation
+
+Windowed inverse square — the standard form, physical near the source and
+finite at the rim:
+
+```
+let d2     = dot(L, L);              // squared distance, tiles
+let window = saturate(1 - (d2 / (radius * radius))²);
+let falloff = window * window / (d2 + 1);
+```
+
+The `+1` keeps a fragment at the flame's own position finite. `(1 − d)²` gave a
+pool with a straight-edged gradient and no physical meaning; this gives the same
+"soft pool with a hard end" the reference isometrics draw, and agrees with a path
+tracer, which the old one cannot.
+
+### Shadows
+
+A ray per light per fragment, against a uniform grid of primitives — the
+`occlusion` grid as it stands, with primitive ids added.
+
+**Self-intersection is solved by identity, not by epsilon.** `if hit.primitive ==
+origin.primitive { continue }` — the textbook answer, exact, with no tolerance
+anywhere. A ray leaving a tread *does* cross its own flight's riser when the
+geometry puts one in the way, and it *should*: that is a real occluder standing
+in a real place. Every "my own static does not shadow me" rule goes.
+
+Bias is `0`. If a grazing case ever needs one, it is `normal * k * pixel_scale`
+where `pixel_scale` is `length(fwidth(world))` — a nudge in units of *how big
+this pixel is*, which is the only honest unit for one.
+
+### Soft shadows
+
+A flame is a sphere of radius `FLAME_SPREAD`. `N` shadow rays per light towards
+stratified points on it, `N = 8` by default and `1` for a hard-shadow debug view.
+Sample positions from a per-pixel blue-noise offset so the error is high-frequency
+rather than banded. No temporal accumulation in the first pass; if `8` rays is
+too noisy or too slow, that is the moment to add it, and not before.
+
+This deletes the entire `pierces`/`crosses`-softening apparatus, whose band is
+`soft × FLAME_DEPTH` with `FLAME_DEPTH = Z_PER_TILE/4` — a penumbra sized for a
+wall's top edge three tiles away, applied to an edge a fifth of a tile away.
+
+### One silhouette: the sprite is the shape, the prism is the geometry
+
+The mesh is *narrower* than the art (`best_prism`'s score is never exactly `1.0`),
+which is why it was grown. Neither growing it nor clipping the sprite to it is
+right: the art is the artist's statement of the shape and the prism is our
+approximation of its volume.
+
+So: **draw the sprite, and get position and normal by intersecting the view ray
+with the prism analytically in the fragment shader.** Impostor rendering, the
+ordinary kind. The silhouette is the sprite's, exactly as today; the depth and
+the normal are the prism's; there is no second draw and therefore no seam and no
+overlap constant. A pixel of the sprite whose ray misses the prism takes the
+nearest point on it — the art overhangs its own volume by a pixel or two and that
+is what it means.
+
+### Billboards
+
+A mobile is a sprite with no volume, and `N·L` needs a normal. Two candidates,
+both cheap, and the phase picks by looking:
+
+- **facing the camera** — a flat billboard lit as a plane turned towards the
+  viewer. Never wrong, never interesting;
+- **inflated from the silhouette** — the signed distance field of the sprite's
+  alpha gives a gradient, and `normalize(vec3(∇sdf, k))` rounds the figure off.
+  This is what 2D games with dynamic lighting do, it is computed once per art
+  frame at load, and it makes a person standing beside a torch look like a person
+  beside a torch.
+
+Mobiles remain non-occluders. A billboard is no volume, so it casts nothing.
+
+### Colour
+
+sRGB in, linear throughout, tonemap out — the thing the current pipeline does not
+do at all, and the reason it cannot agree with any reference renderer even in
+principle. Art atlases and hue ramps are `…UnormSrgb` so the hardware decodes
+them; accumulation is `Rgba16Float`; the final pass applies exposure and an ACES
+fit.
+
+Hue tinting is untouched: it indexes a 32-entry ramp by the art's own red channel
+(`statics.wesl`'s `round(r * 31)`), and this plan never rewrites the art. What
+changes is that the ramp's colour is decoded to linear before the light
+multiplies it — which is what makes a tinted cloak in torchlight the same colour
+as a tinted cloak in daylight, only dimmer.
+
+## Phases
+
+Each is landable alone and leaves the tree working.
+
+**Phase 0 — the reference, and it must judge the same model.**
+`crates/client/pathtrace` (in flight in a parallel session) becomes the oracle,
+with a **BRDF switch**: it has to be able to compute what the engine computes, or
+the choice of model is made by the choice of instrument rather than by us.
+`synthetic_stair`'s light oracle (`write_light_reference`,
+`write_light_difference`) is the comparison harness and already reports by class.
+*Done when:* the path tracer and the engine agree on a scene with one flame and
+no occluders, to within the frame's own quantisation — which is a statement about
+falloff and colour handling alone, and is the calibration everything else rests
+on.
+
+**Phase 1 — linear and HDR.** sRGB decode, `Rgba16Float` accumulation, exposure
+and tonemap in one pass. No behaviour change intended beyond correctness of the
+maths.
+*Done when:* a mid-grey lit by two equal flames is twice as bright as one, which
+is false today; and `tests/pictures.rs` baselines are re-taken deliberately.
+
+**Phase 2 — the G-buffer.** Position, normal, ids, albedo. `place`'s packing goes;
+its readers (select, outline, tooltips, every oracle in `examples/`) move to `ids`.
+*Done when:* a `View::Normal` shows the geometry's own normals, and a test asserts
+the stored position equals the world position the mesh pass computed, exactly.
+
+**Phase 3 — the BRDF.** `N·L` replaces `faces`. `FACE_EDGE` is deleted.
+*Done when:* the light oracle's "inside FACE_EDGE" class no longer exists, and its
+residual against the path tracer is quantisation only.
+
+**Phase 4 — shadows by identity.** Primitive ids in the grid, self-hit by id,
+bias `0`. `STAND_OFF`, `ON_TOP`, `exemption`, `on_surface`, `own_run` and
+`mounted_at`'s height test are deleted.
+*Done when:* the light oracle reports zero brighter-than-geometry pixels on the
+whole flame-height sweep — the class that today reads 175 at `z 0`.
+
+**Phase 5 — area lights.** N rays to a sphere. `FLAME_DEPTH`, `pierces` and
+`crosses`'s softening are deleted.
+*Done when:* the penumbra matches the path tracer's within sampling noise, and the
+noise is measured rather than asserted away.
+
+**Phase 6 — the impostor.** Sprite silhouette, analytic prism for depth and
+normal, one draw. `WIDTH_OVERLAP` is deleted.
+*Done when:* the difference frame's "drawn by one side only" classes are zero
+except for rasteriser fill-rule dashes, against today's 1370.
+
+**Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
+*Done when:* a person standing beside a torch reads as lit from the torch's side,
+in a frame a human being has looked at.
+
+**Phase 8 — the sun.** A direction, the same BRDF, the same rays, sky visibility
+as ambient occlusion.
+
+## Accepted costs
+
+- **The picture changes.** Pre-shaded art multiplied by our light is
+  double-contrast: a face already darkened by the artist and turned away from a
+  flame goes darker than UO ever showed it. This is the decision at the top of
+  the document, and the exposure and ambient are the knobs that make it liveable.
+- **Statics without a good prism** get a rougher volume, and their impostor normal
+  is an approximation of an approximation. Visible on the odd tree and fence.
+- **Cost.** Eight shadow rays a light a pixel is more work than one, and the
+  lighting pass is already the expensive one. The phase that adds them measures
+  it; if it does not fit, the answer is fewer rays plus temporal accumulation, not
+  a return to an analytic fudge.
+
+## Open questions
+
+Written down rather than guessed at:
+
+1. **How much does exposure have to give back?** Double contrast is a global
+   effect and a global exposure may absorb most of it. Nobody has looked at a
+   real frame with `N·L` on it yet, and that is a one-evening experiment inside
+   phase 3.
+2. **Do statics need per-face albedo?** A prism's four sides sample the same
+   sprite through one projection, so a wall's two visible faces get the art's own
+   two shadings — which are pre-shaded, and which we have just decided to
+   multiply. It may look right anyway. It may need the art's shading flattened
+   per face, which is de-lighting through the back door and would need its own
+   decision.
+3. **Does the ground want normals at all?** UO's terrain is a height field with
+   per-corner heights, so it has real normals — and its art is nearly unshaded, so
+   `N·L` on it is pure gain. Probably free, worth confirming early.
+
+## Backlog
+
+Things noticed while writing this, not blocking any phase:
+
+- `docs/lighting_height.md`'s backlog does not disappear — most of its entries
+  are *deleted* by a phase here rather than fixed, and each should be marked with
+  which phase kills it rather than left reading as work.
+- The `ground < 1e-6` shortcut (both walks and the shader) is a real defect today
+  and becomes moot at phase 4; if phase 4 slips, it is worth fixing alone.
+- `examples/two_cubes.rs` still projects world points without asking whose pixel
+  it got. Phase 2 moves every other reader to `ids`; this one should go with them.
