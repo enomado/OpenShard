@@ -14,10 +14,11 @@ This plan makes height continuous end to end, and then removes the one
 place that only ever needed integers to paper over: `exemption`'s guess at
 which solid a fragment belongs to.
 
-**All three phases have landed.** Height is continuous on both sides of the
-wire, and a fragment now *says* which occluder it is a point of instead of
-having that guessed from where it is. What is left is `## Backlog`, and the one
-guess still standing on the fragment side is named at the top of it.
+**All four phases have landed.** Height is continuous on both sides of the
+wire; a fragment *says* which occluder it is a point of instead of having that
+guessed from where it is (phase 3); and it is excused from that occluder's
+surfaces only where it is genuinely a point of one of them rather than merely
+sharing an owner with it (phase 4). What is left is `## Backlog`.
 
 ## The defect this comes from
 
@@ -325,6 +326,11 @@ which is the stronger claim and the one the test was written for.
 that hides whether they worked. Each phase lands with the face oracle's
 count in its commit message.
 
+4 came after all of them and repeated the shape at its own scale: an oracle
+first, red, and only then the rule. It is also where the ordering paid for
+itself twice — the oracle took back two claims about the defect before the fix
+was written, and the fix's own measurement took back a third.
+
 ## Status
 
 Phase 0 done: the face oracle lives in `examples/boxes.rs`
@@ -515,6 +521,10 @@ section left open when phase 2 landed are answered there:
 
 ## Phase 4 — a fragment is not shadowed by the lid it stands on
 
+*(Landed. "The rule, landed — and the second defect it was hiding" below is what
+it measured; everything before that is the case as it was built, including two
+readings the oracle took back.)*
+
 Phase 3 replaced the height *guess* with identity and left one thing standing
 beside it: `exemption`'s `stands.edges != 0`, which refuses a lid **before** it
 ever compares owners. It is the last categorical carve-out in a predicate whose
@@ -688,10 +698,110 @@ run, **every tread top there already reads 0 or 2** — the honest occlusions ar
 honest today. The fix has to leave that alone, and now there is a number saying
 what "alone" is.
 
+> **That last sentence is wrong, and the fix is what found it.** Eight of the
+> run's nine tread tops read 0 or 2; flight 2's bottom tread read **510**, all
+> of them "too light". Which also means the entry below that attributes the
+> run's whole 2190 to `STAND_OFF` at riser tops is over by 512: 1678 are riser
+> tops and 512 are tread tops. This one is a mis-read *number* rather than a
+> mis-read conclusion, so it is corrected here rather than left standing — but
+> it is the same failure as the two above it, which is reading a per-face table
+> by looking at the total and the first few rows.
+
 The proportion holds across the zoom ladder — 192/1498, 747/6012, 1725/13449,
 3031/24106, all within a quarter of a point of 12.6% — so none of it is sampling.
 
-### Not yet done, and the order it goes in
+### The rule, landed — and the second defect it was hiding
+
+**Step 3 is done, and it took two predicates rather than one.** The lid half is
+this section as written. The panel half the oracle demanded the moment the lid
+half landed, and it is the same sentence one level down.
+
+`light::drawn_on` is the lid half, and it is two facts with no tolerance in
+either. The lid is a **plane** (`low == high`), which is not a special case but
+the condition that makes "a contact at the origin does not count" and "this
+primitive does not count" one sentence — a plane is crossed at a single point,
+so a ray leaving one crosses it at its own origin and nowhere else, and there is
+no later crossing an exemption could swallow. A lid with a real depth, a sloped
+roof section, is a slab a ray genuinely descends into, and it answers `false`
+for one. And the fragment is drawn at that plane's own height, asked of the
+height the *fragment* reports rather than of the ray's start: `stand_clear`'s
+`ON_TOP` is the walk's own nudge, and phase 4's whole defect is a
+hundred-and-twenty-eighth answering "which surface am I" as though it were
+"where does this ray go". `ExemptionContext` carries both heights now, and the
+field's own comment says which question each answers.
+
+The **owner gate stays**, and it is load-bearing rather than tidy. A wall's face
+pixel at exactly the `z` of the floor its wall stands on is drawn at that
+floor's height too, so the bare geometric form of the rule excuses it — and that
+is the bright stroke a house wore along its floorboards that `ON_TOP` was added
+to close. Being at a plane's height is not being a point of it; being at it
+**and owned by it** is.
+
+**Then the oracle took the next claim back.** With the lid excused, the middle
+and top treads went from 1522 and 1346 *too dark* to 3224 and 3893 *too light*.
+Both classes are the same defect wearing opposite signs, and the black tread
+tops had been hiding the second one: an `OwnerId` is per `Builder::add` and a
+flight's six solids share one, so identity alone was also excusing the **risers**
+that genuinely stand between a tread top and a flame below it. A staircase's own
+body is in the way of its own treads; that is not a surface shadowing itself.
+
+So `exemption` now asks each shape the one exact question the wire can answer
+about it — a `match` on `edges`, and every arm is two facts compared rather than
+one guessed at:
+
+| shape | is the fragment a point of it |
+|---|---|
+| lid | it is drawn at this plane's own height (`drawn_on`) |
+| body (`EDGE_ANY`) | yes — a body has no face to be a point of one of, and a fragment of one carries `Stance::Upright` for that reason |
+| panel | its own stance names the side this panel stands on (`edges & own`) |
+
+The panel arm needs no new field: `own` was already on `ExemptionContext` for
+`own_run`. It is exact because a static that pushed a named panel gave its
+fragments a face to carry — `place::Stance::of` hands a face to exactly the
+statics `occlusion::edges_of` hands a named edge — and because **a flat fragment
+names no side at all**, so a tread top is a point of no riser of its own flight.
+It also restores something phase 3 dropped without noticing: a corner is two
+panels under one owner, and a fragment of the north face is a point of the north
+one only. `docs/lighting.md` decision 23 says a corner's perpendicular panel is
+a different surface and stops the ray as it always did; between phase 3 and here,
+it did not.
+
+**Measured, against the classes the section below named rather than against a
+total:**
+
+| scene | before | after |
+|---|---|---|
+| one flight, `2.5,1.4`, tread 1's top | 1522 too dark | **2** |
+| the same, tread 2's top | 1346 (1345 too dark) | **1** |
+| the same, whole flight | 3031/24106 (2929 too dark) | **136/24106 (4 too dark)** |
+| the same, zoom notches 0/1/2 | 192 / 747 / 1725 | **17 / 34 / 76**, tread tops 0 |
+| the run, `LIGHT_Z=6` | 2337/69508 (147 dark, 2190 light) | **1834/69508 (147 dark, 1687 light)** |
+| `boxes.rs` `tree` / `pair` / `line` | 18/7008 · 0/5088 · 15/16324 | **unchanged** |
+
+All 147 of the run's honest "too dark" are unmoved, which is what the
+counter-example was for, and the probe that defines the phase still reads
+`stopped by (102, 100) owner 1, lid z 1.00..1.00 — THE FRAGMENT'S OWN OCCLUDER`:
+the same *kind* of solid the rule excuses, still stopping the ray because that
+crossing is at `t > 0`.
+
+**And one number in the section above was wrong, which the fix is what
+found.** "With the flame genuinely above the run, every tread top there already
+reads 0 or 2" — flight 2's bottom tread read **510**, all too light, and the
+backlog entry that attributes the run's whole 2190 to `STAND_OFF` at riser tops
+is over by the 512 of them that are tread tops. Re-measured: 510 → 7. The
+residual 1687 is riser tops and is `STAND_OFF`'s, unmoved in kind.
+
+The mutation is `light.rs`'s
+`a_fragment_is_shadowed_by_every_plane_of_its_own_static_but_the_one_it_is_drawn_on`
+— one flight, three rays, both walks, and each ray red under a different
+mutation: the contact at the origin, the same lid at `t > 0`, and the riser a
+flat fragment is not a point of.
+
+**What is left is the "too light" class**, 132 of the single flight's 136 and
+1687 of the run's 1834. It is `STAND_OFF`'s price at a grazing corner, it has its
+own backlog entry with a scene and a number, and it is not this phase.
+
+### How the rule was chosen, and the order it went in
 
 The instrument is in — `light::Stopper`, `light::stands_to`,
 `synthetic_stair`'s `OPENSHARD_STAIR_PROBE`, and now the face oracle. The rule
@@ -713,16 +823,22 @@ So, in order:
    from those it judged, and asserts the total non-trivial.
 2. ~~**The same oracle over the run**~~ — done. Its verdict there is better than
    "unchanged": with the flame genuinely above the run, the tread tops read 0.
-3. **Then the rule.** Done when: the single flight's **tread tops** read zero
-   with `ON_TOP` at its own value, at every zoom notch, on a flame *off* every
-   plane of the geometry; the run's tread tops stay at zero; and the mutation
-   that says so is the `t > 0` crossing rather than the count.
+3. ~~**Then the rule.**~~ — done, and the section above is what it measured.
+   Done when: the single flight's **tread tops** read zero with `ON_TOP` at its
+   own value, at every zoom notch, on a flame *off* every plane of the geometry;
+   the run's tread tops stay at zero; and the mutation that says so is the
+   `t > 0` crossing rather than the count.
 
    The target is the 2868 too-dark tread-top pixels of the single flight
    (`OPENSHARD_LIGHT_AT=2.5,1.4`), and the two classes that must **not** move
    are the 1120 seam pixels (`Prism::mesh`'s own overlap, honest) and the
    run's 2190 too-light riser tops (`STAND_OFF`, a separate backlog entry). A
    fix that took the grand total to zero would have eaten at least one of them.
+
+   **That done-when is what caught the second defect.** Written against the
+   grand total it would have read green at 3031 → 7250, since the tread tops
+   *had* stopped being too dark; written against the class it said the tread
+   tops had merely changed sign.
 
 **Where the rule should live is a design question, not a patch site.** The three
 candidates, so the next session does not re-derive them: a `t`-threshold inside
@@ -735,7 +851,14 @@ puts the fact next to the other fact, and needs "at the origin" to be a
 geometric statement rather than a tolerance. Decide it with the oracle already
 red, not before.
 
-**And the oracle is now a fourth candidate's argument.** What it does is the
+**The third is what landed**, and "at the origin" came out geometric after all:
+for a plane it is an equality between two exact quantities on the wire, and
+`ON_TOP` never enters it because the question is asked of the fragment's own
+height rather than of the ray's start. The epsilon the section feared was
+avoidable, not because a tolerance was found small enough, but because the
+question was being asked at the wrong end of the nudge.
+
+**And the oracle was a fourth candidate's argument.** What it does is the
 second option, and it needed no tolerance to do it — because it has something
 `exemption` does not: the fragment names the *plane* it is a point of, not the
 static. `Spot::owner` is an `OwnerId` per `Builder::add`, so a flight's six
@@ -749,11 +872,66 @@ of a `place` row would have to know which of its own faces it is pushing —
 which `statics::selected` and `items::outlined` cannot, and already stamp
 `OwnerId::NONE` for.
 
+**That question is still open, and the landed rule is the measurement of how
+much of it is needed.** Per-plane identity was recovered for two of the three
+shapes out of facts already on the wire — a height for a lid, a side for a panel
+— and neither is a proxy. Where it is *not* recovered is inside one shape: a
+flight's three risers all face the same way, so a fragment of one is excused
+from all three, and two coplanar lids of one static are excused together. The
+first is a real gap and the run scene's residual is where to look for it; the
+second is correct by construction, since a fragment on one of two coincident
+planes is a point of both. So the honest price of a per-solid id is now "the
+riser-to-riser case, plus whatever else a scene finds" rather than "the whole of
+phase 4" — which is a much weaker reason to pay it than it looked before.
+
 ## Backlog
 
 Picked up while phases 1 and 2 landed, while the oracles were repaired, and
-while phase 3 landed, and while phase 4's oracle was built; none of it blocked
-any of them.
+while phase 3 landed, and while phase 4's oracle was built, and while phase 4's
+rule landed; none of it blocked any of them.
+
+- **The seam is honest lighting on pixels that should not be on screen.** The
+  oracle settled that `Prism::mesh`'s `SEAM_OVERLAP` pixels are shadowed
+  correctly — they are a riser drawn inside the staircase's own body — and that
+  is a statement about the *lighting* only. What the picture shows is a one-pixel
+  **dark hairline across every lit tread**, because those riser pixels win the
+  depth test over the tread they stand on and are the ones a person sees. Being
+  right about their shade does not earn them the pixel. The overlap exists so the
+  last-submitted face wins a coincident edge outright instead of leaving it to a
+  sub-pixel tie; what wants deciding is whether the face that should win that tie
+  is the one currently winning it. `examples/synthetic_stair`'s face map
+  (`OPENSHARD_FRAME_DUMP` writes `<stem>_faces.ppm`) is where to look: the seam
+  reads as a dim hairline inside a bright band.
+
+- **`WIDTH_OVERLAP` puts a jag on the outer silhouette.** The same face map shows
+  a face poking `0.03` of a tile past its own tile on the west edge, which is a
+  one-pixel tooth on the silhouette at `4:1`. It is deliberate — the constant's
+  own doc argues it closes a leak along a riser's outer edge, where
+  `SEAM_OVERLAP` cannot reach because that edge borders no other face — so this
+  is a note that the cure is visible at the zoom the fixture runs at, not that
+  the constant is wrong. Nobody has measured the leak it closes against the tooth
+  it draws.
+
+- **The `ground < 1e-6` shortcut in both walks ignores a lid's own footprint.**
+  A ray with no horizontal run takes a shortcut past the candidate-cell loop and
+  applies `crosses` to *every* lid on the cell, with no test of whether the ray
+  is over that lid at all. The main path stopped doing that when sub-tile
+  footprints landed — `walk_cells_exact`'s own comment says a tread's top is a
+  lid narrower than its tile — and the shortcut did not follow. On a stair it
+  means a fragment standing on one tread and lit from straight above or below is
+  occluded by the *other* treads' lids, which are strips of the tile it is not
+  over. Three copies to fix (`walk_cells_exact`, `walk_cells_streaming`,
+  `blit.wesl`'s own). Found writing phase 4's mutation test, which had to slant
+  its first ray to avoid it.
+
+- **A flight's risers are still excused as a group.** Phase 4's panel arm asks
+  whether the fragment's own stance names the panel's side, which is exact and is
+  what separates a tread top from every riser — but a flight's three risers all
+  face the same way, so a fragment of one is excused from all three. A ray
+  leaving a low riser towards a flame beyond and above the *north* of the flight
+  can cross a higher riser's plane, and would be let through. This is the honest
+  remainder of the per-solid-id question in phase 4's own section, and the run
+  scene's 1687 residual is where to look for a case of it.
 
 - **`STAND_OFF` lights the top sixteenth of every riser from behind, and that is
   its price at a corner.** The backlog entry below says nobody has priced
@@ -761,10 +939,13 @@ any of them.
   A face pixel is walked from `2/127` of a tile in front of its own plane, and at
   the inner corner where a riser meets the tread above it that is about six times
   the geometric margin — enough for a ray to clear that tread's own lid outright.
-  Measured: **2190 of the run scene's 2337 disagreements**, every one of them
-  "rendered too light", banded at the top of every riser, on a flame standing
-  above and beyond. Both walks together, so it is the engine's arithmetic in both
-  implementations and not a parity gap. The shape a fix would take is the one the
+  Measured: **1678 of the run scene's 2337 disagreements** — the entry first said
+  2190, which was the whole "too light" column and included 512 tread-top pixels
+  that phase 4's rule then took to 7 — every one of them "rendered too light",
+  banded at the top of every riser, on a flame standing above and beyond. Both
+  walks together, so it is the engine's arithmetic in both implementations and
+  not a parity gap. After phase 4 it is **1687 of 1834**, and it is now the whole
+  of what that scene disagrees about. The shape a fix would take is the one the
   entry below already guesses at — a nudge scaled to the surface rather than to
   the attachment's format — and it now has a scene and a number to be judged on.
 
