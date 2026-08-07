@@ -739,17 +739,30 @@ fn write_reference(
 
 /// Where the rendered frame and [`write_reference`]'s own disagree, as a picture.
 ///
-/// Four colours and no counting. Grey is agreement, and it is deliberately dim so
-/// that anything else is the first thing an eye lands on:
+/// Five colours and a count of each. Grey is agreement, and it is deliberately
+/// dim so that anything else is the first thing an eye lands on:
 ///
 /// - **red** — the renderer lit a pixel the geometry says is shadowed;
 /// - **blue** — the renderer shadowed one the geometry says is lit;
-/// - **yellow** — only one of the two drew anything here at all, which is a
-///   disagreement about the *shape* rather than about the light. It is the class
-///   a count of "compared pixels" hides completely, because a pixel nobody
-///   compared is a pixel nobody counted.
+/// - **orange** — only the *renderer* drew anything here;
+/// - **cyan** — only the *reference* did.
+///
+/// The last two are one class of question — a disagreement about the **shape**
+/// rather than about the light — and they were one colour until the picture was
+/// looked at: an outline a couple of pixels wide runs the whole way round the
+/// silhouette on every frame of a flame-height sweep, `1458` pixels of it, which
+/// is thirty-five times the largest disagreement the counting oracle beside it
+/// ever reports. A single colour says "the two draw different shapes" and cannot
+/// say **which of them is the wider one**, and that is the only thing worth
+/// knowing about an outline. Two colours answer it by looking.
+///
+/// This is the class a count of "compared pixels" hides completely, because a
+/// pixel nobody compared is a pixel nobody counted — so this one counts, and
+/// prints what it counted beside the picture.
 fn write_difference(rendered: &[u8], reference: &[u8], width: u32, height: u32, path: &std::path::Path) {
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    let mut renderer_alone = 0usize;
+    let mut reference_alone = 0usize;
     for pixel in 0..(width * height) as usize {
         let theirs = [
             rendered[pixel * 4],
@@ -765,7 +778,14 @@ fn write_difference(rendered: &[u8], reference: &[u8], width: u32, height: u32, 
         let behind = mine == [40, 40, 64];
         let colour = match (theirs == [0, 0, 0], drew_mine) {
             (true, false) => [0, 0, 0],
-            (false, false) | (true, true) => [220, 200, 0],
+            (false, false) => {
+                renderer_alone += 1;
+                [235, 140, 0]
+            }
+            (true, true) => {
+                reference_alone += 1;
+                [0, 200, 200]
+            }
             _ if behind => [30, 30, 46],
             (false, true) => {
                 let lit = drew_theirs.lit();
@@ -781,6 +801,10 @@ fn write_difference(rendered: &[u8], reference: &[u8], width: u32, height: u32, 
     }
     std::fs::write(path, ppm).expect("writing the difference frame");
     eprintln!("wrote {}", path.display());
+    eprintln!(
+        "difference: {renderer_alone} pixels the renderer drew and the geometry does not cover, \
+         {reference_alone} the other way round"
+    );
 }
 
 /// One colour per plane of the run, over the pixels the `place` attachment says

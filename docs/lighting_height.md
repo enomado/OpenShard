@@ -962,9 +962,17 @@ rule landed; none of it blocked any of them.
   |---|---|---|---|---|---|---|---|---|---|---|
   | before | 2297 | 2291 | 2279 | 8 | 316 | 283 | 3679 | 94 | 94 | 272 |
   | after | **66** | **60** | 2279 | 8 | 316 | 283 | 3679 | 94 | 94 | 272 |
+  | with facing counted apart | 60 | 54 | **42** | 6 | 41 | 8 | **0** | 0 | 0 | 89 |
 
-  What is left of that row is the entry below: the two spikes sit at `z 1` and
-  `z 3`, which are two of this flight's own tread heights, and nowhere else.
+  The third row is the same sweep re-run after the oracle got its half-space test
+  (the entry two below), and it is why the last sentence of this one is struck
+  out. It used to read: *the two spikes sit at `z 1` and `z 3`, which are two of
+  this flight's own tread heights, and nowhere else* — and both spikes were the
+  oracle's own missing test. Every pixel of them is a tread's **top** with the
+  flame at or below its plane, which the oracle now sets aside instead of blaming
+  on the renderer. The denominator moves with the flame for the same reason:
+  `compared + behind` is `23912` at every height, and how it splits is which
+  faces the flame is in front of.
 
 - **Every oracle on this track judges a *term*, not the light, and the next one
   should judge the light.** `View::Shadow` is `through` alone — no `faces`, no
@@ -1043,16 +1051,25 @@ rule landed; none of it blocked any of them.
   geometric one — strictly behind means strictly unlit — and where the two differ
   the engine is being generous beyond geometry rather than wrong.
 
-- **A flame at exactly a surface's own height loses most of that surface's
-  shadow, and integer heights are the common case.** The sweep above makes the
-  shape of it plain: away from the geometry's own planes the engine tracks the
-  reference to within `60`–`320` pixels of 23912, and at `z 1` and `z 3` — tread
-  0's and tread 1's own tops — it jumps to 2279 and 3679. Not a gradient into the
-  degeneracy but a spike *at* it: `z 2.5` reads 283 and `z 3` reads 3679 and
-  `z 3.5` reads 94. The entry further down says both of phase 4's own flame
-  placements are degenerate and treats that as a fixture problem; this says it is
-  not only a fixture problem, because every static in the client's files stands
-  at a whole `z` and so does every torch on one.
+- ~~**A flame at exactly a surface's own height loses most of that surface's
+  shadow.**~~ 🚨 **The spikes were the oracle again, and what is left is a class
+  nobody judges.** This entry read the sweep's `z 1` → 2279 and `z 3` → 3679 as a
+  defect *at* the degeneracy, and both numbers were taken before the oracle had a
+  half-space test. Re-run with one: **42** and **0**. Every pixel of both spikes
+  was a tread's own top with the flame at or below its plane — the oracle drew
+  those lit, the engine did not, and the oracle called it the engine's fault.
+
+  What is true and is *not* a number about the renderer: at `z 1` the flame lies
+  exactly in tread 0's top plane, the oracle's `Slab::faces` is a strict `> 0.0`,
+  so all `5517` pixels of that face go to "the flame is behind this" and are
+  **not compared at all**. The engine gives that same face `faces = 0.5`, because
+  `FACE_EDGE` is a band and a flame in the plane sits at its middle. So the two
+  differ by half the light over the whole face and nothing counts it — a
+  degenerate arrangement is not a spike here, it is a **hole in the instrument**,
+  and it is the common case: every static in the client's files stands at a whole
+  `z` and so does every torch on one. This is the same hole as the `FACE_EDGE`
+  entry above, and the light-judging oracle below is what closes both, because
+  there `faces` is a factor in the answer rather than a reason to refuse it.
 
 - **A riser's shadow on the tread behind it is graded over most of that tread,
   and the picture reads it as a light in the wrong place.** Found by looking at
@@ -1111,17 +1128,37 @@ rule landed; none of it blocked any of them.
   `STAND_OFF` entry below, same corner, the other axis — and those pixels were
   always computed that way, they were just being drawn by the riser.
 
-- **`WIDTH_OVERLAP` puts a jag on the outer silhouette, and it is the one that
-  still has a cause.** The face map shows a face poking `0.03` of a tile past its
+- **`WIDTH_OVERLAP` costs `1355` pixels of silhouette, and it is not a tooth —
+  it is a border all the way round.** 🚨 The measurement the entry below asked
+  for, taken by *splitting the difference frame's yellow in two*: the class "only
+  one of the two drew anything here" was one colour, which says the two shapes
+  differ and cannot say **which is wider**. Two colours — orange for the renderer
+  alone, cyan for the reference alone — and the answer is immediate: a solid
+  orange band about two pixels wide runs the whole length of both silhouette
+  edges across the climb, on every frame of the flame-height sweep, `1458`
+  unshared pixels of which `1370` are the renderer's. It does not move with the
+  flame, because it is not about light at all.
+
+  Zeroing the constant is the control: `1370 → 15` the renderer's way and
+  `88 → 117` the other. So **`1355` pixels**, roughly a tenth of the flight's own
+  drawn area at `4:1`, are the price — and in this scene they buy nothing, since
+  what the overlap exists to hide is the seam between a mesh and the *sprite*
+  drawn under it and `synthetic_stair` draws no sprite. The remaining hundred-odd
+  are single-pixel dashes along the diagonal edges and are **not attributable**:
+  the reference's rasteriser samples pixel centres with no top-left rule, so a
+  one-pixel disagreement on a diagonal edge is two fill rules differing and not
+  the engine being wrong. Pricing the sliver it *does* hide needs a scene with a
+  sprite in it.
+
+  The face map shows the same face poking `0.03` of a tile past its
   own tile, which is a **2 px** tooth at `4:1` — measured against a build with it
   at `0.0`, the east silhouette sits at column 317 with it and 315 without. Unlike
   the retired `SEAM_OVERLAP` beside it, the edge it is about borders no other
   face: it is the fitted prism against the art's true silhouette, and those two
   genuinely differ (`best_prism`'s score is never exactly `1.0`). So the leak is
-  real and an overlap does hide it — it is still a fudge that draws a visible
-  tooth, and nobody has measured the sliver it hides against the tooth it draws.
-  The honest alternatives are to stop drawing the sprite behind a meshed static,
-  or to clip it to the mesh.
+  real and an overlap does hide it — it is still a fudge, one side of the trade
+  now has a number and the other does not. The honest alternatives are to stop
+  drawing the sprite behind a meshed static, or to clip it to the mesh.
 
 - **The `ground < 1e-6` shortcut in both walks ignores a lid's own footprint.**
   A ray with no horizontal run takes a shortcut past the candidate-cell loop and
