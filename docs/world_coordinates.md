@@ -40,22 +40,40 @@ and therefore never a plane.
 these five already has floats. What none of them has is a type that makes
 "which cell is this" answerable without arithmetic.
 
-## What this cannot fix, and must not pretend to
+## Whose rules apply here
 
-- **`world::Point` is `u16, u16, i8` and stays.** It is the protocol's position
-  and the client's: mobiles and statics stand on whole tiles because Ultima
-  Online says so. This plan is about the render and lighting side's own
-  positions, not about giving an entity a fractional home.
-- **The `place` attachment's quantum stays a quantum.** It carries a sub-tile
-  fraction to a hundred-and-twenty-seventh and a height to a sixteenth. That is
-  a wire format; `light::ON_TOP` (`1/128`) and `light::STAND_OFF` (`2/127`) are
-  sized against it and go on being sized against it. A fragment's position is
-  quantised no matter what type holds it.
-- **The occlusion grid stays indexed by whole cells.** A spatial index is
-  supposed to be discrete. What changes is who computes the index and from what.
+**Geometry and light are their own layer, and they set their own model.** This
+has to be said out loud, because the first draft of this plan did the opposite —
+it listed the protocol's `Point` and the `place` attachment's quantum as things
+the plan "cannot fix", which is importing a constraint from a layer that does not
+own the decision. Neither of them is a premise:
 
-So the win is not precision. It is that a whole class of boundary bug stops
-being writable, and that five hand-written statements of one rule become one.
+- **`world::Point` is `u16, u16, i8` at the *protocol*, and that is where it
+  ends.** It is a decode format for what the server and the client say to each
+  other. It arrives at a seam, and a seam is where it is converted, once, into
+  this layer's own position — the same discipline `docs/protocol_newtypes.md`
+  states for every other value that comes off a wire. "The client sends whole
+  tiles" is a fact about a packet, not about where a shadow's edge is, and a
+  lighting pass that reasons in the packet's units because the packet exists is a
+  lighting pass shaped by something with no opinion about light.
+- **The `place` attachment's precision is a number this layer chooses.** It is
+  not a foreign wire — it is this crate's own g-buffer, `crate::place`, designed
+  here. It carries a sub-tile fraction to a hundred-and-twenty-seventh and a
+  height to a sixteenth because `docs/lighting_height.md`'s phase 1 took the
+  spare bits that were lying around, and its own doc already prices the next step
+  ("eight would need the stance moved out of the channel entirely, into the id
+  channels — real work"). So the question is not what the format allows but what
+  the geometry needs, and the format follows. `light::ON_TOP` (`1/128`) and
+  `light::STAND_OFF` (`2/127`) are sized against that quantum today and are the
+  clearest symptom of the inversion: two nudges whose size comes from a byte
+  layout rather than from any statement about surfaces.
+- **The occlusion grid stays indexed by whole cells, and that is a choice this
+  layer makes.** A spatial index is supposed to be discrete; a coordinate is not.
+  Keeping the two apart is the whole plan.
+
+So the win is not only that a class of boundary bug stops being writable and
+that five hand-written statements of one rule become one. It is that the layer
+stops deriving its own units from other people's formats.
 
 ## The design
 
@@ -110,17 +128,40 @@ they were chasing was the instrument.
 - **Phase 3 — the walks.** `walk_cells_*` and `blit.wesl` take the pair, and
   `first`/`last`/`boundary[axis]` stop being three different opinions about
   where a cell begins.
-- **Phase 4 — delete the hand-written rules.** `Solid::footprint`'s `far`
+- **Phase 4 — the seam, once.** `world::Point` is converted where it arrives and
+  nowhere else, and no function past that seam takes a whole-tile position
+  because a packet happened to carry one. This is the phase that stops the
+  protocol's units from being this layer's units; everything above it is
+  preparation for being able to.
+- **Phase 5 — the nudges, and then the format.** `ON_TOP` and `STAND_OFF` are
+  sized against the attachment's byte layout, which is the inversion this plan is
+  about: a statement about surfaces should decide them, and the format should be
+  chosen to carry it. `docs/lighting_height.md`'s orbit measurement is the
+  fixture — the two nudges cost `654` pixels of one tread with the flame on one
+  side and `654` on the other, mirrored, so any answer has to be judged over the
+  whole orbit rather than over one placement. If the answer needs more bits than
+  `place` has, phase 1's own doc already prices moving the stance out of that
+  channel; that is a cost, not a wall.
+- **Phase 6 — delete the hand-written rules.** `Solid::footprint`'s `far`
   branch, `Spot::tile`'s doc warning, `MeshFaceVertex::tile`'s note. If any of
   them is still load-bearing at that point, the type did not do its job and the
   plan says so instead of leaving the branch in beside it.
 
 Each phase lands with `examples/synthetic_stair`'s reference frame beside the
-rendered one, because the two pictures are what caught the fifth row and a count
-is what missed it for as long as it stood.
+rendered one and with the orbit swept, because the two pictures are what caught
+the fifth row and a count is what missed it for as long as it stood — and because
+a nudge tuned to one flame position is wrong at the opposite one by construction.
 
 ## Status
 
 Not started. This document exists because the question has been asked more times
 than it has been answered, and the answer is yes — with the correction that the
-thing to move is not the coordinates.
+thing to move is not the coordinates but where the cell comes from.
+
+Its first draft got the boundary wrong in the other direction and is worth
+recording as the mistake it was: it argued that the protocol's `Point` and the
+attachment's quantum were things this plan "cannot fix", which reads as modesty
+and is actually a layer taking its units from formats that have no opinion about
+light. A packet's integer tile is an input to be converted at a seam; a g-buffer
+channel's four bits are a cost to be paid or not. Neither is a rule about
+geometry, and this layer sets the rules about geometry.
