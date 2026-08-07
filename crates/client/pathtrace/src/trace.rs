@@ -17,9 +17,58 @@ use crate::rng::Stream;
 use crate::scene::{SURFACE_BIAS, Scene, Surface};
 use crate::vector::Vec3;
 
+/// Which light model this render computes.
+///
+/// # Why a reference has a switch here at all
+///
+/// An oracle that can compute only one model **decides** the model. Ask a
+/// physical tracer whether the engine is right and every pixel of every surface
+/// turned away from a flame comes back as a disagreement — a true statement
+/// about two light models and a useless one about anybody's geometry, because
+/// it says the same thing whatever the shadow walk does. Ask it in the engine's
+/// own terms instead and what is left over is the geometry alone.
+///
+/// So the two are one render apart, and a caller that wants to know how much
+/// the choice of model is worth renders both and subtracts.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Brdf {
+    /// Lambertian: `albedo / π`, times the receiving surface's own cosine, and
+    /// nothing at all on the side the surface is not facing. Physics, and what
+    /// every mode of this crate did before there was a choice.
+    Lambert,
+    /// What the engine computes: the arriving irradiance times the albedo, with
+    /// **no cosine, no `1/π`, and no notion of a normal anywhere in it**.
+    ///
+    /// UO's art is pre-shaded — a sprite's own faces already carry the shading
+    /// an artist drew — so the shipped renderer multiplies that picture by a
+    /// light and never asks which way a surface points. Three things follow,
+    /// and all three are this variant rather than three flags, because they are
+    /// one fact: there is no normal.
+    ///
+    /// 1. No cosine and no `1/π` in the shading term.
+    /// 2. No back-face test. A box's south face with the torch to the north is
+    ///    lit, and lit exactly as brightly as its north face would be.
+    /// 3. **A surface point's own body does not occlude it.** This one is not a
+    ///    separate policy: without a normal there is no lit side, so a point on
+    ///    a body's far side would shadow itself against that same body and the
+    ///    model would have no answer anywhere. The engine states it as an
+    ///    exemption in its own walk — a fragment's own occluder does not stop
+    ///    the fragment's ray — and `docs/lighting_rebuild.md`'s phase 4
+    ///    restates it as identity: a primitive does not shadow itself.
+    ///    [`crate::scene::Scene::blocked`]'s `except` is where it lands.
+    ///
+    /// It is not energy-conserving and it is not meant to be: it is a
+    /// description of another renderer, held here so that renderer can be
+    /// checked against something that is not a copy of it. Indirect light has
+    /// no meaning under it and [`render`] refuses the combination.
+    Flat,
+}
+
 /// How hard to work, and what the world outside the scene is worth.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Settings {
+    /// Which light model to compute — physics, or the engine's own.
+    pub brdf: Brdf,
     /// Paths per pixel.
     pub samples: u32,
     /// How many times a path may bounce off a surface after the first. `0` is
@@ -43,8 +92,14 @@ impl Settings {
     /// Paired with [`crate::light::Emitter::Point`] this makes the whole tracer
     /// deterministic — [`Image::is_exact`] is what says so, and says it by
     /// asking the lights rather than by trusting this constructor.
+    ///
+    /// The model is [`Brdf::Lambert`], because a default that was the engine's
+    /// own model would be a reference agreeing with the thing it is checking by
+    /// construction. A caller comparing shadows against the engine says
+    /// `Brdf::Flat` out loud.
     pub fn degenerate() -> Self {
         Self {
+            brdf: Brdf::Lambert,
             samples: 1,
             bounces: 0,
             sky: [0.0; 3],
@@ -72,12 +127,18 @@ pub struct Seen {
 /// comparing geometry, which is the point.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Visibility {
-    /// The fraction of the **facing** part of the emitter that is
-    /// unobstructed, `0.0..=1.0`. Exactly `0.0` or `1.0` for a point emitter.
+    /// The fraction of the emitter this model would have lit the surface from
+    /// that is unobstructed, `0.0..=1.0`. Exactly `0.0` or `1.0` for a point
+    /// emitter.
     ///
-    /// Zero when nothing faces, so this alone cannot tell a surface in shadow
-    /// from one turned away — read it with the two flags below, which is why
-    /// they are here.
+    /// *This model*, and so the denominator is the model's own: under
+    /// [`Brdf::Lambert`] it is the facing part of the emitter, and under
+    /// [`Brdf::Flat`], which has no facing, it is all of the part in reach.
+    /// The numerator is the same shadow ray either way.
+    ///
+    /// Zero when nothing faces under a model that has a facing, so this alone
+    /// cannot tell a surface in shadow from one turned away — read it with the
+    /// two flags below, which is why they are here.
     pub reached: f64,
     /// Whether the emitter's falloff reaches this point at all.
     ///
@@ -95,6 +156,12 @@ pub struct Visibility {
     /// every back-facing pixel in the scene as a disagreement with any renderer
     /// that does not apply a cosine — which is a real difference between the
     /// two models, and one worth naming rather than burying in a shadow count.
+    ///
+    /// **A fact about the geometry, not about the model**, and so it is
+    /// reported the same way under [`Brdf::Flat`] — where it is false on
+    /// exactly the pixels that variant goes on to light anyway. That is what
+    /// lets one render answer both "does the engine's own model agree here"
+    /// and "which pixels does the choice of model decide".
     pub faces_light: bool,
 }
 
@@ -152,15 +219,24 @@ impl Image {
 /// One pixel's shadow-ray bookkeeping for one emitter, while it is being
 /// rendered.
 ///
-/// Three counts and not one fraction, because the three ways a pixel ends up
-/// dark are not interchangeable — see [`Visibility`], which is what these
-/// become.
+/// Four counts and not one fraction, because the ways a pixel ends up dark are
+/// not interchangeable — see [`Visibility`], which is what these become.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 struct Tally {
     /// Samples the emitter produced at all: the rest were out of its own reach.
     arrived: u32,
-    /// Of those, the ones on the lit side of the surface.
+    /// Of those, the ones on the lit side of the surface. A geometric fact,
+    /// counted the same under every [`Brdf`] — including the one that does not
+    /// act on it.
     facing: u32,
+    /// Of those, the ones this model would light the surface from: `facing`
+    /// under [`Brdf::Lambert`], `arrived` under [`Brdf::Flat`].
+    ///
+    /// Kept apart from `facing` because it is the denominator of
+    /// [`Visibility::reached`], and a fraction whose denominator is a different
+    /// question from its numerator is the quiet way a visibility oracle starts
+    /// reading over 1 — or reading 0 on every pixel a model does light.
+    considered: u32,
     /// And of those, the ones nothing stood in the way of.
     reached: u32,
 }
@@ -180,6 +256,10 @@ pub fn render(
     width: u32,
     height: u32,
 ) -> Image {
+    assert!(
+        settings.brdf != Brdf::Flat || settings.bounces == 0,
+        "a bounce off a surface with no normal is not a thing this crate can mean — see Brdf::Flat"
+    );
     let exact = settings.bounces == 0
         && lights.iter().all(|light| {
             light
@@ -218,9 +298,9 @@ pub fn render(
             for (light_index, light) in lights.iter().enumerate() {
                 let counted = tally[light_index];
                 visibility[index * lights.len() + light_index] = Visibility {
-                    reached: match counted.facing {
+                    reached: match counted.considered {
                         0 => 0.0,
-                        facing => f64::from(counted.reached) / f64::from(facing),
+                        considered => f64::from(counted.reached) / f64::from(considered),
                     },
                     // Asked of the emitter's own centre, and so a statement
                     // about the falloff alone: a sphere half in reach is a
@@ -271,6 +351,7 @@ fn walk(
         let direct = direct_light(
             scene,
             lights,
+            settings.brdf,
             hit,
             stream,
             match bounces {
@@ -314,12 +395,20 @@ fn walk(
 fn direct_light(
     scene: &Scene,
     lights: &[Light],
+    brdf: Brdf,
     hit: crate::scene::Hit,
     stream: &mut Stream,
     mut tally: Option<&mut [Tally]>,
 ) -> [f64; 3] {
     let mut arriving = [0.0; 3];
     let from = hit.at + hit.normal * SURFACE_BIAS;
+    // A model with no normal cannot tell a surface's own back from an
+    // obstruction, so under it the surface's own body is not one. See
+    // [`Brdf::Flat`], whose third point this is.
+    let except = match brdf {
+        Brdf::Lambert => None,
+        Brdf::Flat => Some(hit.surface),
+    };
     for (index, light) in lights.iter().enumerate() {
         let Some(sample) = light.sample(from, stream) else {
             continue;
@@ -328,29 +417,45 @@ fn direct_light(
         let cosine = hit.normal.dot(towards.normalized());
         if let Some(tally) = tally.as_deref_mut() {
             tally[index].arrived += 1;
+            tally[index].facing += u32::from(cosine > 0.0);
         }
-        if cosine <= 0.0 {
+        if cosine <= 0.0 && brdf == Brdf::Lambert {
             // Behind the surface. Counted separately from an obstruction: a
             // shadow ray was never a possibility here, and folding the two
             // together would report a wall's own back as being in shadow.
             continue;
         }
         if let Some(tally) = tally.as_deref_mut() {
-            tally[index].facing += 1;
+            tally[index].considered += 1;
         }
-        if scene.blocked(from, sample.at) {
+        if scene.blocked(from, sample.at, except) {
             continue;
         }
         if let Some(tally) = tally.as_deref_mut() {
             tally[index].reached += 1;
         }
-        // Lambertian: `albedo / π` times the irradiance, which is the emitter's
-        // own arriving term times this surface's cosine.
         for ((channel, albedo), incoming) in arriving.iter_mut().zip(hit.albedo).zip(sample.arriving) {
-            *channel += albedo * std::f64::consts::FRAC_1_PI * incoming * cosine;
+            *channel += albedo * incoming * shading(brdf, cosine);
         }
     }
     arriving
+}
+
+/// The model's own shading term, at a surface whose cosine against the emitter
+/// is `cosine`.
+///
+/// The one place the two models differ arithmetically, in one expression, so
+/// that "what does the engine compute" is a line of code rather than a
+/// difference spread over a function.
+fn shading(brdf: Brdf, cosine: f64) -> f64 {
+    match brdf {
+        // Lambertian: `albedo / π` times the irradiance, which is the emitter's
+        // own arriving term times this surface's cosine.
+        Brdf::Lambert => std::f64::consts::FRAC_1_PI * cosine,
+        // The engine's: the light multiplies the picture and nothing else
+        // happens to it.
+        Brdf::Flat => 1.0,
+    }
 }
 
 /// A direction around `normal`, distributed as the cosine against it.
@@ -364,7 +469,7 @@ fn cosine_hemisphere(normal: Vec3, stream: &mut Stream) -> Vec3 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Settings, cosine_hemisphere, render};
+    use super::{Brdf, Settings, cosine_hemisphere, render};
     use crate::aabb::Aabb;
     use crate::camera::Parallel;
     use crate::light::{Emitter, Falloff, Light};
@@ -556,6 +661,130 @@ mod tests {
         assert_eq!(ground.reached, 0.0, "so nothing arrives, for that reason");
     }
 
+    /// The same settings, in the model the renderer being checked actually has.
+    fn like_the_engine() -> Settings {
+        Settings {
+            brdf: Brdf::Flat,
+            ..Settings::degenerate()
+        }
+    }
+
+    #[test]
+    fn the_engine_model_lights_the_surface_the_physical_one_says_is_turned_away() {
+        // The whole reason the switch exists. The scene is the one above — a
+        // torch in the cellar, every ground pixel facing away from it — and the
+        // two models answer opposite things about it. Both answers are correct
+        // about their own model, and a reference that could only give the first
+        // would report every one of these pixels as a defect in the engine.
+        let cellar = Light {
+            at: Vec3::new(12.0, 12.0, -4.0),
+            ..torch(TORCH, Emitter::Point)
+        };
+        let render_with =
+            |settings| render(&one_box_scene(), &top_down(), &[cellar], &settings, FRAME, FRAME);
+        let flat = render_with(like_the_engine());
+        let ground = flat.visibility(LIT.0, LIT.1, 0);
+        assert!(
+            !ground.faces_light,
+            "the geometry has not changed: this surface still points away"
+        );
+        assert_eq!(
+            ground.reached, 1.0,
+            "and the engine's own model lights it anyway — including through the floor it stands \
+             on, which under this model is not an occluder of its own surface"
+        );
+        assert!(
+            pixel_at(&flat, LIT).radiance[0] > 0.0,
+            "so the pixel is not black either"
+        );
+        assert_eq!(
+            render_with(Settings::degenerate())
+                .visibility(LIT.0, LIT.1, 0)
+                .reached,
+            0.0,
+            "and physics still says nothing arrives"
+        );
+    }
+
+    #[test]
+    fn the_engine_model_still_has_shadows_and_still_has_a_torchs_own_reach() {
+        // The exemption in `Brdf::Flat` is one body's, not the scene's. An
+        // exemption that let every occluder through would pass the test above,
+        // would turn the reference into a picture with no shadows in it at all,
+        // and would agree with the engine everywhere for the worst possible
+        // reason.
+        let image = render(
+            &one_box_scene(),
+            &top_down(),
+            &[torch(TORCH, Emitter::Point)],
+            &like_the_engine(),
+            FRAME,
+            FRAME,
+        );
+        assert_eq!(
+            image.visibility(SHADOWED.0, SHADOWED.1, 0).reached,
+            0.0,
+            "the box is another body, and it still stands in the way"
+        );
+        assert_eq!(
+            image.visibility(LIT.0, LIT.1, 0).reached,
+            1.0,
+            "and open ground is open"
+        );
+    }
+
+    #[test]
+    fn the_two_models_differ_by_exactly_the_cosine_and_the_pi() {
+        // The arithmetic of the switch, on the one geometry where the cosine is
+        // exactly one: a torch straight above a patch of ground. Whatever else
+        // the two models disagree about, here they may differ by `1/π` and by
+        // nothing else, which is what makes the calibration
+        // `docs/lighting_rebuild.md`'s phase 0 asks for a statement about the
+        // falloff rather than about the shading.
+        let overhead = Light {
+            at: Vec3::new(f64::from(LIT.0) + 0.5, f64::from(LIT.1) + 0.5, 5.0),
+            ..torch(TORCH, Emitter::Point)
+        };
+        let under = |settings| {
+            let image = render(
+                &one_box_scene(),
+                &top_down(),
+                &[overhead],
+                &settings,
+                FRAME,
+                FRAME,
+            );
+            assert_eq!(image.visibility(LIT.0, LIT.1, 0).reached, 1.0, "lit either way");
+            pixel_at(&image, LIT).radiance[0]
+        };
+        let (lambert, flat) = (under(Settings::degenerate()), under(like_the_engine()));
+        assert!(lambert > 0.0, "the patch under the torch is lit");
+        assert!(
+            (flat / lambert - std::f64::consts::PI).abs() < 1e-12,
+            "the engine's model should be π times the Lambertian one here, it is {}",
+            flat / lambert
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a bounce off a surface with no normal")]
+    fn the_engine_model_refuses_to_bounce() {
+        // Not a limitation to work around: the engine has no indirect light,
+        // and a "bounce" off a surface whose model has no normal would be this
+        // crate inventing a third model and calling it the second one.
+        render(
+            &one_box_scene(),
+            &top_down(),
+            &[torch(TORCH, Emitter::Point)],
+            &Settings {
+                bounces: 1,
+                ..like_the_engine()
+            },
+            FRAME,
+            FRAME,
+        );
+    }
+
     #[test]
     fn a_wider_emitter_puts_partly_lit_pixels_where_a_point_had_a_hard_edge() {
         // The soft mode doing the one thing it exists to do. Counted rather
@@ -595,6 +824,7 @@ mod tests {
         let (scene, camera) = (one_box_scene(), top_down());
         let lights = [torch(TORCH, Emitter::Sphere { radius: 1.5 })];
         let settings = Settings {
+            brdf: Brdf::Lambert,
             samples: 16,
             bounces: 2,
             sky: [0.2; 3],
@@ -624,6 +854,7 @@ mod tests {
                     bounces,
                     sky: [0.0; 3],
                     seed: 7,
+                    ..Settings::degenerate()
                 },
                 FRAME,
                 FRAME,

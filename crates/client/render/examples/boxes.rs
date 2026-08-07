@@ -1358,6 +1358,49 @@ fn traced_surface(texel: &oracle::Drawn, face_rows: &[(usize, Stance, u32)]) -> 
     None
 }
 
+/// Whether the pixel at `(x, y)` has anything but its own answer in its eight-
+/// neighbourhood — the boundary of whatever `map` is a map of.
+///
+/// The two renderers answer about *different points*: the tracer about the world
+/// point under a pixel's centre, the shader about the fragment the rasteriser
+/// wrote, quantised to a hundred-and-twenty-eighth of a tile. Half a pixel
+/// decides the answer exactly at a boundary and nowhere else, so a disagreement
+/// on one is not a finding and a disagreement away from one cannot be explained
+/// by sub-pixel anything.
+///
+/// One function over any map, because that argument is not about *what* is being
+/// compared: it is as true of "which surface is there" along a silhouette as it
+/// is of "is this lit" along a shadow's edge, and a second copy of it for the
+/// second map would be a second place for the neighbourhood to change.
+fn on_an_edge<T: PartialEq>(map: &[Option<T>], width: u32, height: u32, x: u32, y: u32) -> bool {
+    let own = &map[(y * width + x) as usize];
+    (-1i32..=1).any(|dy| {
+        (-1i32..=1).any(|dx| {
+            let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+            if nx < 0 || ny < 0 || nx as u32 >= width || ny as u32 >= height {
+                return false;
+            }
+            &map[(ny as u32 * width + nx as u32) as usize] != own
+        })
+    })
+}
+
+/// What the frame says drew a pixel, in words, for a disagreement report.
+///
+/// Not [`traced_surface`]'s answer: this one keeps the *face* — a box's own east
+/// side and its lid are one body to the tracer and two rows to the renderer, and
+/// which of them won a pixel is the whole content of a "which surface is there"
+/// disagreement.
+fn engine_side(texel: &oracle::Drawn, face_rows: &[(usize, Stance, u32)]) -> String {
+    if texel.kind == openshard_client_render::place::Kind::Land as u32 {
+        return "the ground".to_owned();
+    }
+    match face_rows.iter().find(|(_, _, id)| *id == texel.id) {
+        Some((box_index, stance, _)) => format!("box {box_index}'s {stance:?}"),
+        None => format!("kind {} stance {} row {}", texel.kind, texel.stance, texel.id),
+    }
+}
+
 /// Render the scene a second time with [`openshard_client_pathtrace`], lay the
 /// two pictures beside each other, and count where they disagree.
 fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
@@ -1438,50 +1481,71 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         intensity: 6.0,
     };
 
-    let exact = pt_trace::render(
-        &scene,
-        &camera,
-        std::slice::from_ref(&flame),
-        &pt_trace::Settings::degenerate(),
-        width,
-        height,
-    );
-    assert!(
-        exact.is_exact(),
-        "the gate below only means anything against an exact render, and this one is an estimate"
-    );
+    // **In the engine's own light model, and then in physics.** The gate is the
+    // first: `Brdf::Flat` is the shipped renderer's model — no cosine, no `1/π`,
+    // and a fragment's own body not occluding it — so what is left over when the
+    // two pictures are subtracted is geometry alone. An oracle that could only
+    // compute the second would decide the model rather than judge it, and would
+    // report every surface turned away from the flame as a defect.
+    //
+    // The second render costs one more deterministic visibility test a pixel and
+    // buys the *size* of the choice: how many pixels the model decides, which is
+    // the number `docs/lighting_rebuild.md`'s phase 3 will move.
+    let traced = |brdf| {
+        let image = pt_trace::render(
+            &scene,
+            &camera,
+            std::slice::from_ref(&flame),
+            &pt_trace::Settings {
+                brdf,
+                ..pt_trace::Settings::degenerate()
+            },
+            width,
+            height,
+        );
+        assert!(
+            image.is_exact(),
+            "the gate below only means anything against an exact render, and this one is an estimate"
+        );
+        image
+    };
+    let exact = traced(pt_trace::Brdf::Flat);
+    let physical = traced(pt_trace::Brdf::Lambert);
 
     // Both pictures as one bit a pixel, so the comparison and the image are the
     // same data. `None` where the pixel is not one the two can be compared on.
     let mut engine_lit: Vec<Option<bool>> = vec![None; (width * height) as usize];
     let mut traced_lit: Vec<Option<bool>> = vec![None; (width * height) as usize];
-    let mut different_surface = 0usize;
+    // And what each side says is *there*, kept as maps for the same reason the
+    // lit bits are: whether a surface disagreement sits on a silhouette or in
+    // the middle of a face is a question about the pixel's neighbours, and it
+    // cannot be asked one pixel at a time.
+    let mut engine_surface: Vec<Option<pt_scene::Surface>> = vec![None; (width * height) as usize];
+    let mut traced_surfaces: Vec<Option<pt_scene::Surface>> = vec![None; (width * height) as usize];
     let mut nothing_drawn = 0usize;
-    // Pixels of a surface whose own normal points away from the flame, and how
-    // many of those the frame draws lit. Held out of the comparison and
-    // reported on their own line: whether a surface facing away from a torch is
-    // lit is a difference between the two *light models* — the tracer applies a
-    // cosine and the renderer does not — and it would otherwise land in the
-    // shadow count as thousands of geometry disagreements that are nothing of
-    // the kind.
+    // Pixels of a surface whose own normal points away from the flame, how many
+    // of those the frame draws lit, and how many of them the *choice of model*
+    // decides. All three are compared now rather than held out: the tracer is
+    // computing the engine's own model above, which has no cosine either, so a
+    // back-facing pixel is an ordinary pixel of the comparison. What it is not
+    // is a pixel both models agree on, and that is what the third count says.
     let mut back_facing = 0usize;
     let mut back_facing_lit = 0usize;
+    let mut model_decides = 0usize;
     for pixel in 0..(width * height) as usize {
-        let Some(engine_surface) = traced_surface(&drawn[pixel], face_rows) else {
+        engine_surface[pixel] = traced_surface(&drawn[pixel], face_rows);
+        traced_surfaces[pixel] = exact.pixels[pixel].seen.map(|seen| seen.surface);
+        if engine_surface[pixel].is_none() {
             nothing_drawn += 1;
             continue;
-        };
-        let Some(seen) = exact.pixels[pixel].seen else {
-            different_surface += 1;
-            continue;
-        };
-        if seen.surface != engine_surface {
+        }
+        if engine_surface[pixel] != traced_surfaces[pixel] {
             // Not a lighting disagreement, and counting it as one would file a
             // depth-sorting difference under the wrong defect entirely. The
             // isometric painter's order and a ray's own nearest hit are two
             // different answers to "what is in front", and where they differ
-            // neither picture is about the other's surface.
-            different_surface += 1;
+            // neither picture is about the other's surface. Counted below,
+            // where the neighbourhood is available to say which kind it is.
             continue;
         }
         let frame_lit = Shade::of([
@@ -1490,45 +1554,57 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
             shadow_pixels[pixel * 4 + 2],
         ])
         .lit();
-        let visibility = exact.visibility((pixel as u32) % width, (pixel as u32) / width, 0);
+        let (x, y) = ((pixel as u32) % width, (pixel as u32) / width);
+        let visibility = exact.visibility(x, y, 0);
+        let lit = |seen: pt_trace::Visibility| seen.within_reach && seen.reached > 0.5;
         if !visibility.faces_light {
             back_facing += 1;
             back_facing_lit += usize::from(frame_lit);
-            continue;
         }
+        // Asked of every pixel and not only of the back-facing ones: "the model
+        // decides exactly the pixels facing away" is the expectation, and an
+        // expectation a detector only ever measures where it already holds is
+        // not one the detector can report on.
+        model_decides += usize::from(lit(visibility) != lit(physical.visibility(x, y, 0)));
         engine_lit[pixel] = Some(frame_lit);
-        traced_lit[pixel] = Some(visibility.within_reach && visibility.reached > 0.5);
+        traced_lit[pixel] = Some(lit(visibility));
     }
 
-    // A disagreement one pixel wide along a shadow's own edge is expected and
-    // is not a finding: the two renderers light *different points* — the tracer
-    // lights the world point under a pixel's centre, and the shader lights the
-    // fragment the rasteriser wrote into the `place` attachment, quantised to a
-    // hundred-and-twenty-eighth of a tile. Half a pixel of difference decides
-    // the answer exactly at an edge and nowhere else.
-    //
-    // So a disagreement is only reported as one when neither picture has an
-    // edge running through the pixel's own neighbourhood. What is left is a
-    // disagreement in the *interior* of a lit or shadowed region, which no
-    // amount of sub-pixel disagreement can explain.
-    let on_an_edge = |map: &[Option<bool>], x: u32, y: u32| {
-        let own = map[(y * width + x) as usize];
-        (-1i32..=1).any(|dy| {
-            (-1i32..=1).any(|dx| {
-                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                if nx < 0 || ny < 0 || nx as u32 >= width || ny as u32 >= height {
-                    return false;
-                }
-                map[(ny as u32 * width + nx as u32) as usize] != own
-            })
-        })
-    };
-
     let (mut compared, mut edge, mut interior) = (0usize, 0usize, 0usize);
+    // The surface disagreements, split the same way the lit ones are: on a
+    // silhouette, where half a pixel decides which of two surfaces a ray meets,
+    // or in the interior of a face, where nothing sub-pixel can explain it.
+    // Only the second kind is a finding, and only the second kind is named.
+    let (mut silhouette, mut interior_surface) = (0usize, 0usize);
+    let mut surface_pairs: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut surface_examples: Vec<String> = Vec::new();
     let mut examples: Vec<String> = Vec::new();
     for y in 0..height {
         for x in 0..width {
             let pixel = (y * width + x) as usize;
+            if engine_surface[pixel].is_some() && engine_surface[pixel] != traced_surfaces[pixel] {
+                let rim = on_an_edge(&engine_surface, width, height, x, y)
+                    || on_an_edge(&traced_surfaces, width, height, x, y);
+                match rim {
+                    true => silhouette += 1,
+                    false => {
+                        interior_surface += 1;
+                        let what = format!(
+                            "the frame draws {}, the tracer sees {}",
+                            engine_side(&drawn[pixel], face_rows),
+                            match traced_surfaces[pixel] {
+                                Some(surface) => format!("{surface:?}"),
+                                None => "nothing at all".to_owned(),
+                            }
+                        );
+                        if surface_examples.len() < 8 {
+                            surface_examples.push(format!("  [pixel ({x}, {y})] {what}"));
+                        }
+                        *surface_pairs.entry(what).or_default() += 1;
+                    }
+                }
+                continue;
+            }
             let (Some(engine), Some(traced)) = (engine_lit[pixel], traced_lit[pixel]) else {
                 continue;
             };
@@ -1536,7 +1612,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
             if engine == traced {
                 continue;
             }
-            if on_an_edge(&traced_lit, x, y) || on_an_edge(&engine_lit, x, y) {
+            if on_an_edge(&traced_lit, width, height, x, y) || on_an_edge(&engine_lit, width, height, x, y) {
                 edge += 1;
                 continue;
             }
@@ -1558,14 +1634,23 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
     }
     eprintln!(
         "path tracer vs rendered View::Shadow: {compared} pixels compared, {interior} disagree in the \
-         interior, {edge} on an edge (expected); {different_surface} pixels the two disagree about \
-         which surface is there, {nothing_drawn} with nothing drawn"
+         interior, {edge} on an edge (expected); {} pixels the two disagree about which surface is \
+         there ({silhouette} of them on a silhouette, {interior_surface} not), {nothing_drawn} with \
+         nothing drawn",
+        silhouette + interior_surface
     );
     eprintln!(
-        "  and {back_facing} pixels of surfaces facing away from the flame, of which the frame draws \
-         {back_facing_lit} lit — not counted above: that is the cosine term the renderer has no model \
-         for, not a shadow"
+        "  compared in the engine's own light model (no cosine, no self-occlusion): {back_facing} of \
+         those pixels are surfaces facing away from the flame, the frame draws {back_facing_lit} of \
+         them lit, and the choice of model decides {model_decides} pixels of the whole comparison — \
+         that last number is what a physical `N·L` would move"
     );
+    for (pair, count) in &surface_pairs {
+        eprintln!("  [different surface, not on a silhouette] {count}: {pair}");
+    }
+    for example in &surface_examples {
+        eprintln!("{example}");
+    }
     for example in &examples {
         eprintln!("{example}");
     }
@@ -1633,6 +1718,10 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
             // back and ambient occlusion has a lit background to occlude.
             sky: [0.05, 0.06, 0.09],
             seed: 1,
+            // Physics, and not the engine's model: this picture is the one
+            // showing what the shipped model does not contain, and a cosine is
+            // most of that.
+            ..pt_trace::Settings::degenerate()
         },
         width,
         height,

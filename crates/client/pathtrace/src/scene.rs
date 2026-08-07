@@ -155,6 +155,15 @@ impl Scene {
     /// been pushed off its surface by [`SURFACE_BIAS`] already — this function
     /// cannot do it, because it does not know which surface the caller was on.
     ///
+    /// `except` names a surface that does not count as an occluder. [`None`] —
+    /// nothing is exempt — is the physical answer and what every physical mode
+    /// asks for: a body between a point and a light stops the light whether or
+    /// not the point is standing on that same body. A caller passes [`Some`]
+    /// only to compute a *model* that has no normals and therefore cannot tell
+    /// a surface's own back from an obstruction — see
+    /// [`crate::trace::Brdf::Flat`], which is the only thing in this crate that
+    /// does.
+    ///
     /// Meeting a box at a single point — a corner, a grazed edge — is *not*
     /// blocking. Zero thickness of occluder is not an occlusion, and calling it
     /// one would put a hard shadow line along every silhouette edge in the
@@ -165,7 +174,7 @@ impl Scene {
     /// between a point and itself. It arises where an emitter sample lands
     /// exactly on the surface being lit, which is a scene a caller may build
     /// and not an error.
-    pub fn blocked(&self, from: Vec3, to: Vec3) -> bool {
+    pub fn blocked(&self, from: Vec3, to: Vec3, except: Option<Surface>) -> bool {
         let segment = to - from;
         if segment == Vec3::ZERO {
             return false;
@@ -177,7 +186,9 @@ impl Scene {
         if self
             .bodies
             .iter()
-            .any(|body| stands_in_the_way(body.shape.crossing(from, segment)))
+            .enumerate()
+            .filter(|(index, _)| except != Some(Surface::Body(*index)))
+            .any(|(_, body)| stands_in_the_way(body.shape.crossing(from, segment)))
         {
             return true;
         }
@@ -186,7 +197,7 @@ impl Scene {
         // interval test above cannot be reused — a crossing of zero length is
         // exactly what a plane produces, and here it does block.
         match self.ground {
-            Some(ground) if segment.z != 0.0 => {
+            Some(ground) if segment.z != 0.0 && except != Some(Surface::Ground) => {
                 let t = (ground.z - from.z) / segment.z;
                 t > 0.0 && t < 1.0
             }
@@ -254,12 +265,56 @@ mod tests {
         let scene = one_box();
         let light = Vec3::new(0.0, -6.0, 1.0);
         assert!(
-            scene.blocked(Vec3::new(0.0, 3.0, 1.0), light),
+            scene.blocked(Vec3::new(0.0, 3.0, 1.0), light, None),
             "straight through the box"
         );
         assert!(
-            !scene.blocked(Vec3::new(4.0, 3.0, 1.0), light),
+            !scene.blocked(Vec3::new(4.0, 3.0, 1.0), light, None),
             "well to the side of it"
+        );
+    }
+
+    #[test]
+    fn an_exempt_body_does_not_occlude_and_its_neighbour_still_does() {
+        // What [`crate::trace::Brdf::Flat`] asks for, and the two halves of it
+        // that have to hold at once: the named body stops counting, and nothing
+        // else changes. An exemption that let the *whole* scene through would
+        // pass any test written against one box, and would silently turn the
+        // reference into a picture with no shadows in it at all.
+        let mut scene = one_box();
+        scene.bodies.push(Body {
+            shape: Aabb::between(Vec3::new(1.5, -0.5, 0.0), Vec3::new(2.5, 0.5, 2.0)),
+            albedo: [0.8; 3],
+        });
+        let light = Vec3::new(6.0, 0.0, 1.0);
+        // A point on the first box's own east face, with the light beyond the
+        // second box: the first body is between it and the light because the
+        // point is *on* it, and the second is between it and the light because
+        // it stands there.
+        let from = Vec3::new(0.5, 0.0, 1.0);
+        assert!(scene.blocked(from, light, None), "both bodies are in the way");
+        assert!(
+            scene.blocked(from, light, Some(Surface::Body(0))),
+            "its own body is exempt, the one standing in the way is not"
+        );
+        assert!(
+            !scene.blocked(from, light, Some(Surface::Body(1))),
+            "with the standing body exempt, only the surface's own remains"
+        );
+    }
+
+    #[test]
+    fn an_exempt_ground_plane_stops_blocking_a_light_below_it() {
+        // The same rule for the surface that is not a body. A model with no
+        // normals lights the ground from a lamp in the cellar, and a reference
+        // computing that model has to be able to say so — see
+        // [`crate::trace::Brdf::Flat`].
+        let scene = one_box();
+        let (from, cellar) = (Vec3::new(3.0, 3.0, 1.0), Vec3::new(3.0, 3.0, -5.0));
+        assert!(scene.blocked(from, cellar, None), "the floor is between them");
+        assert!(
+            !scene.blocked(from, cellar, Some(Surface::Ground)),
+            "unless it is exempt"
         );
     }
 
@@ -283,7 +338,7 @@ mod tests {
         ] {
             for bias in [1e-10, 1e-8, 1e-6, 1e-4] {
                 assert!(
-                    !scene.blocked(point + normal * bias, light),
+                    !scene.blocked(point + normal * bias, light, None),
                     "{why} shadowed itself at bias {bias}"
                 );
             }
@@ -300,7 +355,7 @@ mod tests {
         // segment touches the box's edge for its whole length without ever
         // being inside it.
         assert!(
-            !scene.blocked(Vec3::new(0.5, 3.0, 2.0), Vec3::new(0.5, -6.0, 2.0)),
+            !scene.blocked(Vec3::new(0.5, 3.0, 2.0), Vec3::new(0.5, -6.0, 2.0), None),
             "running along an edge is not passing through the body"
         );
     }
@@ -309,7 +364,7 @@ mod tests {
     fn the_floor_blocks_a_light_underneath_it() {
         let scene = one_box();
         assert!(
-            scene.blocked(Vec3::new(3.0, 3.0, 1.0), Vec3::new(3.0, 3.0, -5.0)),
+            scene.blocked(Vec3::new(3.0, 3.0, 1.0), Vec3::new(3.0, 3.0, -5.0), None),
             "the ground plane is an occluder like any other"
         );
     }
