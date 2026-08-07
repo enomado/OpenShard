@@ -610,13 +610,47 @@ of it that reads an owner is gated on `own_cell` — but a person reading the
 report was. `light::stands_to` now spells the relation out in the report rather
 than leaving two equal numbers side by side.
 
-### Not yet done
+### Not yet done, and the order it goes in
 
-The instrument is in — `light::Stopper`, and `synthetic_stair`'s
-`OPENSHARD_STAIR_PROBE`. The rule is not. Done when: the stair scene reads zero
-blocked pixels at every zoom notch with `ON_TOP` at its own value, a ray that
-descends through a lower tread is still stopped by it, and the mutation that
-says so is the descending case rather than the count.
+The instrument is in — `light::Stopper`, `light::stands_to`, and
+`synthetic_stair`'s `OPENSHARD_STAIR_PROBE`. The rule is not, **and the oracle
+comes before it.**
+
+That ordering is this plan's own phase 0 restated, and it is worth restating
+because everything above is a reason to skip it: the defect is understood, the
+cause is named, the fix is one predicate. But every number phase 4 has is a
+count of pixels this renderer drew, judged by eye against geometry worked out on
+paper. That is precisely the arrangement that let phases 1 and 2 report a
+residual for two sessions which turned out to be the instrument — and there, as
+here, the arithmetic was right and the thing nobody had instrumented was the
+side doing the judging.
+
+So, in order:
+
+1. **A face oracle for `synthetic_stair`**, the shape `examples/boxes.rs`
+   already has: grid the flight's own faces, project each point to the pixel the
+   renderer actually drew, ask the `place` attachment whose pixel it got, and
+   compare against a fresh slab test that shares no arithmetic with `light.rs`
+   or `blit.wesl`. It **counts what it compared**, not only what disagreed.
+   Red on the single flight and on the seams before anything is fixed.
+2. **The same oracle over the run**, where its verdict has to be "unchanged" —
+   the counter-example above is a scene the fix must leave alone, and only an
+   oracle can say "unchanged and still right" rather than "unchanged".
+3. **Then the rule.** Done when: the single flight reads zero at every zoom
+   notch with `ON_TOP` at its own value, the run's honest occlusions are
+   untouched, and the mutation that says so is the `t > 0` crossing rather than
+   the count.
+
+**Where the rule should live is a design question, not a patch site.** The three
+candidates, so the next session does not re-derive them: a `t`-threshold inside
+`ray_vs_solid` (cheapest, and an epsilon again — the thing being removed); a
+`skip` carried on `ExemptionContext` naming the solid the ray left from (exact,
+but the ray leaves a *surface*, and a surface is not always one solid); or
+`exemption` learning that a solid on the fragment's own cell **with the
+fragment's own owner** is exempt *at the origin only* — which is the one that
+puts the fact next to the other fact, and needs "at the origin" to be a
+geometric statement rather than a tolerance. Decide it with the oracle already
+red, not before.
 
 ## Backlog
 
