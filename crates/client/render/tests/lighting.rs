@@ -37,6 +37,29 @@ fn ambient(lighting: &Lighting, tile: (u16, u16)) -> f32 {
     lit.iter().sum::<f32>() / lit.len() as f32
 }
 
+/// How much brighter one light quantity is than another, **as a displayed
+/// value** — the domain every absolute margin in this file was authored in.
+///
+/// `docs/lighting_rebuild.md` phase 1 moved light into linear radiance, and in
+/// doing so it silently changed what every `+ 0.2` below meant. They were chosen
+/// against a picture — "distinguishably brighter than the ambient" — back when a
+/// brightness was a fraction of a *displayed* value, and a fifth of a displayed
+/// value is not a fifth of a radiance. Night's ambient is `0.019` of radiance and
+/// `0.145` of a displayed value, so a margin left in the wrong domain is a margin
+/// roughly eight times its author's intent: `a_hole_in_a_floor_lets_the_light_
+/// through` went red on `0.037` against its `0.04` while the light coming up
+/// through the hole was three times the ambient.
+///
+/// This is [`light::GROUND_AMBIENT`]'s treatment applied to the tests: the
+/// authored number stays exactly as authored, and the conversion happens where it
+/// is read. A margin is *not* converted where the claim is a ratio — twice the
+/// light is a statement about radiance and means nothing about stored bytes — so
+/// those stay in the linear domain, and say so.
+fn brighter_by(lit: f32, than: f32) -> f32 {
+    openshard_client_render::tonemap::linear_to_srgb(lit)
+        - openshard_client_render::tonemap::linear_to_srgb(than)
+}
+
 /// How bright the middle of a tile is, at a height.
 fn at(lighting: &Lighting, tile: (u16, u16), z: f32) -> f32 {
     light::sample(spot(tile, z), lighting).brightness()
@@ -111,7 +134,7 @@ fn a_shut_room_keeps_its_light_inside() {
     let lit_tile = (CENTRE.0 + 1, CENTRE.1);
     let inside = at(&lighting, lit_tile, 0.0);
     assert!(
-        inside > ambient(&lighting, lit_tile) + 0.2,
+        brighter_by(inside, ambient(&lighting, lit_tile)) > 0.2,
         "the room is not lit: {inside}{picture}"
     );
 
@@ -435,7 +458,7 @@ fn the_face_of_a_wall_is_lit_from_inside_the_room() {
     ] {
         let lit = on_the_static(&lighting, wall, z, scene::WALL, 0);
         assert!(
-            lit > ambient(&lighting, wall) + 0.1,
+            brighter_by(lit, ambient(&lighting, wall)) > 0.1,
             "the wall is dark at z {z}: {lit}{}",
             picture(&scene, &lighting),
         );
@@ -469,7 +492,7 @@ fn a_sconce_lights_the_street_and_not_the_room_behind_it() {
     let lit = at(&lighting, street, 0.0);
     let dark = at(&lighting, room, 0.0);
     assert!(
-        lit > ambient(&lighting, street) + 0.2,
+        brighter_by(lit, ambient(&lighting, street)) > 0.2,
         "the sconce lights nothing at all: {lit}{picture}",
     );
     assert!(
@@ -501,10 +524,15 @@ fn a_carried_light_lights_the_way_it_is_pointed() {
     // same distance from the flame, so the falloff is the same for both and the
     // only difference between them is the direction.
     let (ahead, behind) = ((CENTRE.0 + 2, CENTRE.1), (CENTRE.0 - 2, CENTRE.1));
+    // Two domains, on purpose. The floor below is an absolute margin, authored
+    // against a picture, and so it is read as a displayed value — `brighter_by`.
+    // The ratio is a claim about *quantities* of light: "three times as much
+    // reaches ahead as behind" is true or false of radiance and says nothing
+    // about stored bytes, so it stays linear.
     let lit = at(&lighting, ahead, 0.0) - ambient(&lighting, ahead);
     let dark = at(&lighting, behind, 0.0) - ambient(&lighting, behind);
     assert!(
-        lit > 0.2,
+        brighter_by(at(&lighting, ahead, 0.0), ambient(&lighting, ahead)) > 0.2,
         "the beam lights nothing ahead of it: {lit} over the ambient{picture}",
     );
     assert!(
@@ -528,10 +556,13 @@ fn a_carried_light_lights_the_way_it_is_pointed() {
     for z in [0.0, f32::from(scene::WALL_HEIGHT) / 2.0] {
         // Points **of** those walls, not points of the air inside their tiles —
         // see `on_the_static`, and `docs/lighting_height.md` phase 3.
-        let face = on_the_static(&lighting, front_wall, z, scene::WALL, 0) - ambient(&lighting, front_wall);
+        // The same pair of domains as above: a displayed margin for the floor, a
+        // linear ratio for the comparison.
+        let front = on_the_static(&lighting, front_wall, z, scene::WALL, 0);
+        let face = front - ambient(&lighting, front_wall);
         let back = on_the_static(&lighting, back_wall, z, scene::WALL, 0) - ambient(&lighting, back_wall);
         assert!(
-            face > 0.1,
+            brighter_by(front, ambient(&lighting, front_wall)) > 0.1,
             "the wall the beam points at is dark at z {z}: {face}{picture}",
         );
         assert!(
@@ -608,7 +639,7 @@ fn a_cellar_does_not_light_the_street_above_it() {
     // above would pass for a scene where the torch was never collected.
     let cellar = at(&lighting, CENTRE, f32::from(scene::CELLAR_DEPTH));
     assert!(
-        cellar > ambient(&lighting, CENTRE) + 0.2,
+        brighter_by(cellar, ambient(&lighting, CENTRE)) > 0.2,
         "the cellar itself is dark: {cellar}"
     );
 }
@@ -664,7 +695,7 @@ fn a_torch_does_not_light_the_storey_above_it() {
     // beside the torch, where a floor that stopped nothing would still pass.
     let downstairs = at(&lighting, scene::STOREY_SPOT, 0.0);
     assert!(
-        downstairs > ambient(&lighting, scene::STOREY_SPOT) + 0.05,
+        brighter_by(downstairs, ambient(&lighting, scene::STOREY_SPOT)) > 0.05,
         "the ground floor itself is dark, so the scene proves nothing: \
          {downstairs}{picture}"
     );
@@ -693,7 +724,7 @@ fn a_hole_in_a_floor_lets_the_light_through() {
 
     let through = at(&lighting, scene::STOREY_SPOT, scene::STOREY_Z);
     assert!(
-        through > ambient(&lighting, scene::STOREY_SPOT) + 0.04,
+        brighter_by(through, ambient(&lighting, scene::STOREY_SPOT)) > 0.04,
         "nothing comes up through the hole: {through} against the ambient's \
          {}{picture}",
         ambient(&lighting, scene::STOREY_SPOT),
@@ -768,7 +799,7 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
         for z in [10.0, f32::from(scene::WALL_HEIGHT) - 1.0] {
             let inside = face(across, z);
             assert!(
-                inside > ambient + 0.2,
+                brighter_by(inside, ambient) > 0.2,
                 "the room does not light its own wall at {across}, z {z}: \
                  {inside}{picture}",
             );
@@ -827,7 +858,7 @@ fn a_ray_does_not_slip_between_two_walls_that_touch_at_a_corner() {
     let open = (CENTRE.0 + 2, CENTRE.1 + 1);
     let lit = at(&lighting, open, 0.0);
     assert!(
-        lit > ambient(&lighting, open) + 0.1,
+        brighter_by(lit, ambient(&lighting, open)) > 0.1,
         "the torch lights nothing at all: {lit}{}",
         picture(&scene, &lighting),
     );
@@ -1205,7 +1236,7 @@ fn a_roof_makes_the_room_under_it_darker_than_the_street() {
     let room = ambient(&lighting, CENTRE);
     let street = ambient(&lighting, STREET);
     assert!(
-        street > room + 0.1,
+        brighter_by(street, room) > 0.1,
         "the room is lit as brightly as the road outside it: {room} against {street}",
     );
     // And not a hole: an unlit black rectangle is not atmosphere, it is a bug
@@ -1224,7 +1255,7 @@ fn a_roof_makes_the_room_under_it_darker_than_the_street() {
     // difference up.
     let (room, street) = (at(&lighting, CENTRE, 0.0), at(&lighting, STREET, 0.0));
     assert!(
-        street > room + 0.1,
+        brighter_by(street, room) > 0.1,
         "lit, the room is as bright as the road: {room} against {street}{}",
         picture(&house, &lighting),
     );
@@ -1693,7 +1724,7 @@ fn a_hole_in_a_wall_throws_a_fan_of_light_onto_the_ground_behind_it() {
     // field gives a tile beside a wall a different share of the night than one
     // in the open, so a bare difference of brightnesses would be measuring that
     // as much as the hole.
-    let behind_hole = at(&lighting, (cx, cy + 1), 0.0) - ambient(&lighting, (cx, cy + 1));
+    let behind_hole = brighter_by(at(&lighting, (cx, cy + 1), 0.0), ambient(&lighting, (cx, cy + 1)));
     let behind_wall = at(&lighting, (cx + 2, cy + 1), 0.0);
     let dark = ambient(&lighting, (cx + 2, cy + 1));
 
@@ -1701,9 +1732,12 @@ fn a_hole_in_a_wall_throws_a_fan_of_light_onto_the_ground_behind_it() {
         behind_hole > 0.1,
         "no fan came through the hole: {behind_hole:.3} of flame over the ambient \
          behind it, against {:.3} behind the wall two tiles along{}",
-        behind_wall - dark,
+        brighter_by(behind_wall, dark),
         picture(&scene, &lighting),
     );
+    // Linear, and deliberately not `brighter_by`: this slack is for numerical
+    // dribble in the quantity itself, not a perceptual threshold somebody chose
+    // against a picture, so it belongs in the domain the quantity is computed in.
     assert!(
         (behind_wall - dark).abs() < 0.01,
         "the wall beside the hole leaks: {behind_wall:.3} against an ambient of \
