@@ -148,6 +148,15 @@ fn main() {
 
     const DEPTH: f32 = 0.5;
     let mesh = prism.mesh(i32::from(at.x), i32::from(at.y), i32::from(at.z));
+    // The flight is **one** occluder of its tile however many treads it was cut
+    // into — one `Builder::add` is one owner (`docs/lighting_height.md` phase 3),
+    // so every face below carries this one number and no tread shadows another.
+    let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, Graphic(0x0736));
+    assert_ne!(
+        owner,
+        openshard_client_render::occlusion::OwnerId::NONE,
+        "the flight is not in the grid this tool built",
+    );
     let mut vertices: Vec<MeshFaceVertex> = Vec::new();
     let mut rows: Vec<MeshFaceRow> = Vec::new();
     for face in mesh.faces() {
@@ -155,6 +164,7 @@ fn main() {
         rows.push(MeshFaceRow {
             tile: (at.x, at.y),
             stance: Stance::of_normal(face.normal).expect("a stair's own normals are all recognized"),
+            owner: u32::from(owner.raw()),
         });
         for corner in face.fan() {
             let screen = camera.to_view_exact(project_exact(corner));

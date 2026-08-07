@@ -489,6 +489,9 @@ fn drawn(
                 // point at — see `crate::sprite::split_corners` for the real
                 // pass's version of this row, which does set it.
                 twin: 0,
+                // A diagnostic picture is never walked for shadows, so there is
+                // no occluder for a row of it to be a point of.
+                owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
             }
             .write(&mut face_rows);
             id

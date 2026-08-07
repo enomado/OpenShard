@@ -614,6 +614,17 @@ pub struct Solid {
     /// surface is built. So the surface has to carry it that far. See
     /// [`Builder::finish`].
     pub roof: bool,
+    /// The thing this is a solid **of** — see [`Owner`].
+    ///
+    /// Every solid one [`Builder::add`] pushes carries the same one, which is
+    /// what `docs/lighting_height.md` phase 3 replaces `on_surface`'s guess with:
+    /// "is this solid the one the fragment is a point of" stops being a question
+    /// about height and becomes a question a fragment and a solid each answer
+    /// from the same field.
+    ///
+    /// Never uploaded. What crosses the wire is [`OwnerId`], the number
+    /// [`Builder::finish`] gives this key within its cell.
+    pub owner: Owner,
 }
 
 impl Solid {
@@ -1071,6 +1082,110 @@ struct Span {
     count: u8,
 }
 
+/// **The thing that was added**, as the world names it — one
+/// [`Builder::add`], one of these, however many [`Solid`]s that call pushes.
+///
+/// `docs/lighting_height.md` phase 3's first decision. A corner is two panels, a
+/// flight of steps is a lid and a riser per tread, and all of them are *one*
+/// static standing at one place: a fragment drawn from that static's picture
+/// belongs to every one of its solids equally, so identity has to be the thing
+/// added and not the box it was cut into. That is also what makes "one static,
+/// several solids" a non-question — there is no run to name inside a tile.
+///
+/// **The key is the world thing and not a walk order**, and both halves of that
+/// are load-bearing:
+///
+/// - Not a counter [`Builder`] hands out. [`bake`] builds a *block's* solids
+///   once and pastes them into frame after frame for as long as the atlas
+///   revision holds, so a number that depended on the order one frame's walk
+///   found things in would be a number from another frame.
+/// - Not "the n-th static of this tile" either, tempting as it is at eight bits.
+///   The two walks that would have to agree on such an index refuse *different*
+///   statics — this side drops `opacity == CLEAR` and everything the cutaway or
+///   the draw ceiling hides, the drawing side drops whatever the atlas has no
+///   art for — so the two numberings diverge exactly where a tile holds
+///   something invisible.
+///
+/// The tile is not in here: a [`Solid`] is always one tile's
+/// ([`Builder::finish`]'s own doc), and every comparison this is made in is
+/// inside the fragment's own cell. So what is left to tell two things on one
+/// tile apart is the `z` they stand at and the graphic they are — three bytes,
+/// and never uploaded: what rides the wire is [`OwnerId`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Owner {
+    /// The `z` the static was placed at — its own, not any solid's span.
+    pub z: i8,
+    /// And its graphic, the *placed* one rather than whichever animation frame
+    /// is showing: the two walks read the same field, and an animated static
+    /// would otherwise change owner every hundred milliseconds.
+    pub graphic: Graphic,
+}
+
+impl Owner {
+    /// The owner a hand-built scene states for one [`Builder::add_raw`] box.
+    ///
+    /// There is no `tiledata` behind such a box to derive a key from, and
+    /// inventing one inside the builder would be a second identity beside this
+    /// one — so the caller says, and this is only the naming.
+    pub fn new(z: i8, graphic: Graphic) -> Self {
+        Self { z, graphic }
+    }
+}
+
+/// Which occluder **of this cell** an [`Owner`] is, in one byte: what the wire
+/// carries and what a fragment is compared against.
+///
+/// `docs/lighting_height.md` phase 3's third decision. The comparison is only
+/// ever made between a fragment and a solid on the fragment's *own* cell — every
+/// arm of `light::exemption` that asks it is gated on `own_cell` — so this has to
+/// be unique in a tile and not in a frame, and a tile holds at most
+/// [`MAX_SOLIDS_PER_CELL`] of anything. One byte, in the fourth channel of a
+/// *reference* ([`Occlusion::id_bytes`]), which a [`SolidId`] leaves free.
+///
+/// [`OwnerId::NONE`] is zero and numbering starts at one, so "this fragment is
+/// not a point of any occluder" — the ground, a mobile, a pass with no grid
+/// behind it — matches nothing rather than matching whichever solid happened to
+/// be numbered first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OwnerId(u8);
+
+impl OwnerId {
+    /// No owner at all: what the ground and a mobile stamp, and what a lookup
+    /// that found nothing answers.
+    ///
+    /// **Matches nothing, including itself**, which is why every comparison goes
+    /// through [`OwnerId::same`] rather than `==`. Two fragments that are each a
+    /// point of nothing are not a point of the same thing, and a solid is never
+    /// this.
+    pub const NONE: Self = Self(0);
+
+    /// The `n`th owner of a cell, counting from one — [`Builder::finish`]'s own
+    /// numbering, and the only thing that makes one.
+    fn nth(at: usize) -> Self {
+        Self((at + 1) as u8)
+    }
+
+    /// Whether a fragment carrying this is a point of the solid carrying `other`.
+    ///
+    /// Not `==`: [`OwnerId::NONE`] is the absence of an owner and two absences
+    /// are not a match. See that constant.
+    pub fn same(self, other: Self) -> bool {
+        self != Self::NONE && self == other
+    }
+
+    /// The byte the wire carries, for the upload and for the shader's own
+    /// comparison.
+    pub fn raw(self) -> u8 {
+        self.0
+    }
+
+    /// And back, for the one reader that gets it from outside — a test or a
+    /// tool reading an uploaded plane back.
+    pub fn from_raw(raw: u8) -> Self {
+        Self(raw)
+    }
+}
+
 /// Which solid of a frame's list, and **not** which reference of a cell.
 ///
 /// The two were one number until step 23.1 and are now two, which is the whole
@@ -1134,6 +1249,17 @@ pub struct Occlusion {
     /// Every reference in the frame, the ones of a tile contiguous. The order is
     /// the index's, which is what [`Occlusion::id_bytes`] uploads.
     ids: Vec<SolidId>,
+    /// Which occluder of its own cell each of those references is — one
+    /// [`OwnerId`] per entry of `ids`, in the same order, and the fourth channel
+    /// [`Occlusion::id_bytes`] uploads.
+    ///
+    /// Beside the references rather than beside the solids because it is a fact
+    /// about a *reference*: the number is unique within a cell, and the first
+    /// thing to reference one solid from two cells (decision 38.2's spill) gives
+    /// it a different number in each. Nothing does today — the two lists are the
+    /// same length and one solid is one cell's — which is exactly why the level
+    /// is built now rather than after something depends on it being wrong.
+    owners: Vec<OwnerId>,
     /// Every solid in the frame, in the order [`Occlusion::solid_bytes`] uploads
     /// and [`SolidId`] names.
     solids: Vec<Solid>,
@@ -1162,6 +1288,7 @@ impl Occlusion {
         },
         index: Vec::new(),
         ids: Vec::new(),
+        owners: Vec::new(),
         solids: Vec::new(),
         sky: Vec::new(),
         dropped: 0,
@@ -1212,14 +1339,69 @@ impl Occlusion {
         &self.solids[id.raw() as usize]
     }
 
+    /// Which occluder of its own cell each of that tile's references is, in the
+    /// same order [`Occlusion::ids_at`] hands them back.
+    ///
+    /// The walk reads this beside the solid, since what it compares a fragment
+    /// against is the number and not the key — see [`OwnerId`] and
+    /// `light::exemption`.
+    pub fn owners_at(&self, x: i32, y: i32) -> &[OwnerId] {
+        let Some(index) = self.index(x, y) else {
+            return &[];
+        };
+        let span = self.index[index];
+        let from = span.offset as usize;
+        &self.owners[from..from + usize::from(span.count)]
+    }
+
+    /// The solids standing on one tile, each with the [`OwnerId`] its own
+    /// reference carries — what both walks iterate.
+    ///
+    /// A tile carries one lid, or one body, or a panel per side its art named; a
+    /// caller combines them itself, and the combination is a rule rather than a
+    /// fold — see `light::walk_cells_exact`, which takes the largest and not the
+    /// product, because two panels of one wall are one wall.
+    ///
+    /// The pair and not the solid alone, because the number is a fact about the
+    /// *reference*: [`Occlusion::owners`] says why, and a caller that zipped the
+    /// two lists itself would be the second place that has to stay in step.
+    pub fn cell(&self, x: i32, y: i32) -> impl Iterator<Item = (&Solid, OwnerId)> + '_ {
+        self.ids_at(x, y)
+            .iter()
+            .zip(self.owners_at(x, y))
+            .map(|(id, owner)| (self.solid(*id), *owner))
+    }
+
     /// The solids standing on one tile, followed through their references.
     ///
-    /// What the walk reads. A tile carries one lid, or one body, or a panel per
-    /// side its art named; a caller combines them itself, and the combination is
-    /// a rule rather than a fold — see `light::walk_cells`, which takes the
-    /// largest and not the product, because two panels of one wall are one wall.
+    /// For the readers whose question is about the geometry alone — a picture of
+    /// a tile, the tallest thing in a frame. A walk wants [`Occlusion::cell`],
+    /// which carries the owner beside each one.
     pub fn solids_at(&self, x: i32, y: i32) -> impl Iterator<Item = &Solid> + '_ {
         self.ids_at(x, y).iter().map(|id| self.solid(*id))
+    }
+
+    /// Which occluder of `(x, y)` the static standing at `z` with graphic
+    /// `graphic` is — [`OwnerId::NONE`] where this frame's grid has no such
+    /// static on that tile.
+    ///
+    /// **The join `docs/lighting_height.md` phase 3 pays for**, and the one real
+    /// cost of the design: the pass that *draws* a static has to learn the number
+    /// the *grid* gave it, so a frame's occlusion has to be built before its
+    /// statics are collected. A scan of the cell and not a map — a tile holds two
+    /// or three solids, not two or three hundred — asked once per drawn static
+    /// rather than once per pixel.
+    ///
+    /// `NONE` rather than an `Option` because the answer is the same one a
+    /// fragment with no occluder behind it stamps, and every caller here would
+    /// immediately fold an `Option` into exactly that: a static the grid refused
+    /// (`opacity == CLEAR`, above the draw ceiling, hidden by the cutaway) is a
+    /// static nothing in the walk can be a point of.
+    pub fn owner_at(&self, x: i32, y: i32, z: i8, graphic: Graphic) -> OwnerId {
+        let key = Owner::new(z, graphic);
+        self.cell(x, y)
+            .find(|(solid, _)| solid.owner == key)
+            .map_or(OwnerId::NONE, |(_, owner)| owner)
     }
 
     /// What stands on one tile as one box, or `None` for open ground and for
@@ -1402,13 +1584,18 @@ impl Occlusion {
     /// The **references** as the texture the shader reads: `Rgba8Uint`, one texel
     /// a reference, folded into rows [`LIST_ROW`] wide and padded to a whole row.
     ///
-    /// `(id & 255, id >> 8, id >> 16, 0)` — a [`SolidId`] spread over three
+    /// `(id & 255, id >> 8, id >> 16, owner)` — a [`SolidId`] spread over three
     /// channels exactly as an offset is in [`Occlusion::bytes`], and for the same
-    /// reason. The fourth channel is free and stays zero: what a reference *is*
-    /// today is a name and nothing else, and a channel filled with something
-    /// plausible now would be a field the walk has to be taught to ignore. The
-    /// first thing that will want it is decision 38.2's spill, where a reference
-    /// from a neighbouring block is worth telling apart from one of a cell's own.
+    /// reason.
+    ///
+    /// **The fourth channel is [`OwnerId`]**, `docs/lighting_height.md` phase 3.
+    /// It stayed zero for as long as nothing read it — that comment's own words
+    /// were that a channel filled with something plausible would be a field the
+    /// walk has to be taught to ignore — and a reader exists now: which occluder
+    /// of this cell a solid belongs to is exactly a fact about the *reference*,
+    /// not about the solid, so it goes here and needs no plane of its own. Zero
+    /// is [`OwnerId::NONE`] and no reference ever writes it: the numbering starts
+    /// at one.
     ///
     /// A cell with no solids on it writes no texel here at all: its count is zero
     /// and its offset is never read.
@@ -1416,13 +1603,13 @@ impl Occlusion {
         let row = LIST_ROW as usize;
         let rows = self.ids.len().div_ceil(row).max(1);
         let mut bytes = Vec::with_capacity(rows * row * 4);
-        for id in &self.ids {
+        for (id, owner) in self.ids.iter().zip(&self.owners) {
             let at = id.raw();
             bytes.extend_from_slice(&[
                 (at & 0xFF) as u8,
                 ((at >> 8) & 0xFF) as u8,
                 ((at >> 16) & 0xFF) as u8,
-                0,
+                owner.raw(),
             ]);
         }
         bytes.resize(rows * row * 4, 0);
@@ -1686,6 +1873,10 @@ impl Builder {
         };
         let bottom = i32::from(z);
         let top = bottom + calc_height(tile);
+        // One `add` is one owner, and every solid below carries it — the two
+        // panels of a corner, a flight's tread tops and risers, a body. See
+        // [`Owner`], and `docs/lighting_height.md` phase 3.
+        let owner = Owner::new(z, graphic);
         // **A climbable static is a solid, and the art says which one.**
         //
         // A stair's base is two 45° runs meeting at the tile's south corner,
@@ -1739,6 +1930,7 @@ impl Builder {
                         edges: 0,
                         aperture: None,
                         roof: tile.flags.is_roof(),
+                        owner,
                     },
                 );
                 self.push(
@@ -1757,6 +1949,7 @@ impl Builder {
                         edges: opposite(edge_of(prism.up())),
                         aperture: None,
                         roof: tile.flags.is_roof(),
+                        owner,
                     },
                 );
                 risen = top_z;
@@ -1784,6 +1977,7 @@ impl Builder {
                     edges: EDGE_ANY,
                     aperture: None,
                     roof: tile.flags.is_roof(),
+                    owner,
                 },
             );
             return;
@@ -1821,6 +2015,7 @@ impl Builder {
                     edges,
                     aperture: None,
                     roof: tile.flags.is_roof(),
+                    owner,
                 },
             ),
             named => {
@@ -1847,6 +2042,7 @@ impl Builder {
                                 // is standing at one.
                                 aperture: shape.hole.map(|hole| Aperture::above(bottom, hole)),
                                 roof: tile.flags.is_roof(),
+                                owner,
                             },
                         );
                     }
@@ -1889,7 +2085,14 @@ impl Builder {
     /// AABB and it is stored as one opaque body, in the same tile bucket
     /// [`Builder::push`] already uses for every other occluder, so the walk
     /// finds it exactly the way it finds a wall.
-    pub fn add_raw(&mut self, x: u16, y: u16, space: crate::solid::Solid) {
+    ///
+    /// `owner` is stated by the caller and not derived here, which is
+    /// `docs/lighting_height.md` phase 3's own rule: there is no `tiledata`
+    /// behind such a box to read a `(z, graphic)` off, and a key the builder
+    /// invented would be a second identity beside the one every real static
+    /// already has. A scene that stands two boxes on one tile has to tell them
+    /// apart itself — see [`Owner`].
+    pub fn add_raw(&mut self, x: u16, y: u16, space: crate::solid::Solid, owner: Owner) {
         let Some(index) = self.index(i32::from(x), i32::from(y)) else {
             return;
         };
@@ -1901,6 +2104,7 @@ impl Builder {
                 edges: EDGE_ANY,
                 aperture: None,
                 roof: false,
+                owner,
             },
         );
     }
@@ -2013,9 +2217,21 @@ impl Builder {
     /// The test is [`cutaway::shows`]'s own, reconstructed from what a solid
     /// carries: [`Solid::bottom`] is the `z` the static stood at, and
     /// [`Solid::roof`] is the flag. Nothing else in the walk asks either.
+    /// # And where a cell's [`OwnerId`]s are handed out
+    ///
+    /// One per distinct [`Owner`] among the solids this cell *keeps*, counting
+    /// from one in the order they come out — so a static the cutaway hid does
+    /// not spend a number, and the numbering of a frame is a fact about that
+    /// frame's own grid. At most [`MAX_SOLIDS_PER_CELL`] solids a cell means at
+    /// most that many owners, which is exactly what a byte above zero holds.
     pub fn finish(self, cutaway: &Cutaway) -> Occlusion {
         let mut index = Vec::with_capacity(self.heads.len());
         let mut solids = Vec::with_capacity(self.arena.len());
+        let mut owners: Vec<OwnerId> = Vec::with_capacity(self.arena.len());
+        // The cell's owners in the order they were first seen — a `Vec` and a
+        // scan rather than a map, because a cell holds two or three solids and
+        // the loop is the frame's hot one.
+        let mut seen: Vec<Owner> = Vec::new();
         for head in &self.heads {
             let offset = solids.len() as u32;
             // The list is built by pushing at the front, so walking it hands back
@@ -2030,6 +2246,17 @@ impl Builder {
                 at = next;
             }
             solids[offset as usize..].reverse();
+            seen.clear();
+            for solid in &solids[offset as usize..] {
+                let at = seen
+                    .iter()
+                    .position(|owner| *owner == solid.owner)
+                    .unwrap_or_else(|| {
+                        seen.push(solid.owner);
+                        seen.len() - 1
+                    });
+                owners.push(OwnerId::nth(at));
+            }
             index.push(Span {
                 offset,
                 count: (solids.len() as u32 - offset) as u8,
@@ -2040,6 +2267,7 @@ impl Builder {
             bounds: self.bounds,
             index,
             ids,
+            owners,
             solids,
             sky: self.sky,
             dropped: self.dropped,
@@ -2228,6 +2456,11 @@ mod tests {
             edges,
             aperture: None,
             roof: false,
+            // What a static standing at `bottom` would have been given. The
+            // graphic is not a parameter because no test here is about telling
+            // two graphics apart on one tile — the tests that are go through
+            // `Builder::add`, which derives the key itself.
+            owner: Owner::new(bottom as i8, Graphic(0)),
         }
     }
 
@@ -2277,6 +2510,141 @@ mod tests {
             min_y: 100,
             max_y: 110,
         }
+    }
+
+    /// One tile's occluders are numbered from one, **one number per thing that
+    /// was added** however many solids that thing turned into — and the number
+    /// is what a drawn static can look itself up by.
+    ///
+    /// `docs/lighting_height.md` phase 3's first and third decisions together.
+    /// The corner is the case that says "per added thing" rather than "per
+    /// solid": it is one static, two panels, and a fragment of its picture is a
+    /// fragment of both — so a numbering that counted solids would make the wall
+    /// exempt from one of its own halves and not the other.
+    #[test]
+    fn a_cell_numbers_each_thing_added_once_however_many_solids_it_became() {
+        let wall = tile(TileFlags::NO_SHOOT, 20);
+        let corner = Shape {
+            facing: Some(Facing::Corner {
+                right: Face::East,
+                left: Face::South,
+            }),
+            hole: None,
+            prism: None,
+            blocks: crate::facing::Blocks::EMPTY,
+        };
+        let (lower, upper) = (Graphic(0x0006), Graphic(0x0007));
+        let mut occlusion = Builder::new(bounds());
+        // A corner standing on the ground, and a second storey of the same
+        // building above it — two things, four solids, one tile.
+        occlusion.add(100, 100, 0, lower, &wall, corner);
+        occlusion.add(100, 100, 20, upper, &wall, corner);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        assert_eq!(occlusion.ids_at(100, 100).len(), 4, "two corners are four panels");
+        let numbers: Vec<u8> = occlusion
+            .owners_at(100, 100)
+            .iter()
+            .map(|owner| owner.raw())
+            .collect();
+        assert_eq!(
+            numbers,
+            vec![1, 1, 2, 2],
+            "a corner's two panels are one owner, and the storey above it is a second",
+        );
+        // And the join, which is what a drawn static asks: the number for this
+        // `(tile, z, graphic)`, not for the n-th solid of the cell.
+        assert_eq!(occlusion.owner_at(100, 100, 0, lower).raw(), 1);
+        assert_eq!(occlusion.owner_at(100, 100, 20, upper).raw(), 2);
+        // The key is the *whole* key. A graphic at the wrong height and a height
+        // with the wrong graphic are both misses, which is what keeps the
+        // numbering from being "whatever is on this tile".
+        assert_eq!(occlusion.owner_at(100, 100, 20, lower), OwnerId::NONE);
+        assert_eq!(occlusion.owner_at(100, 100, 0, upper), OwnerId::NONE);
+        assert_eq!(
+            occlusion.owner_at(101, 100, 0, lower),
+            OwnerId::NONE,
+            "and a tile the static does not stand on",
+        );
+    }
+
+    /// The numbering rides in the fourth channel of a **reference**, which is
+    /// the one [`Occlusion::id_bytes`] left free until this had a reader.
+    ///
+    /// Pinned against the shader's own `id_at`, which reads that channel and
+    /// which no Rust compiler checks. Zero would decode as [`OwnerId::NONE`] and
+    /// exempt every fragment from nothing, which is a picture where every wall
+    /// shadows its own face — the failure this format is the fix for, arriving
+    /// as a silently-unwritten byte.
+    #[test]
+    fn the_reference_plane_carries_the_owner_beside_the_solid_it_names() {
+        let wall = tile(TileFlags::NO_SHOOT, 20);
+        let mut occlusion = Builder::new(bounds());
+        occlusion.add(100, 100, 0, Graphic(0x0006), &wall, Shape::UNREAD);
+        occlusion.add(100, 100, 0, Graphic(0x0007), &wall, Shape::UNREAD);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        let bytes = occlusion.id_bytes();
+        let owners: Vec<u8> = (0..occlusion.ids_at(100, 100).len())
+            .map(|n| bytes[n * 4 + 3])
+            .collect();
+        assert_eq!(owners, vec![1, 2], "two bodies on one tile, two numbers");
+        for (n, id) in occlusion.ids_at(100, 100).iter().enumerate() {
+            assert_eq!(
+                u32::from(bytes[n * 4])
+                    | u32::from(bytes[n * 4 + 1]) << 8
+                    | u32::from(bytes[n * 4 + 2]) << 16,
+                id.raw(),
+                "the owner byte displaced part of the id it stands beside",
+            );
+        }
+    }
+
+    /// A flight of steps is **one** occluder of its tile, however many treads
+    /// the art was fitted into.
+    ///
+    /// The case `docs/lighting_height.md` phase 3's own "one static, several
+    /// solids" is about, and the one where a per-solid numbering would be
+    /// visibly wrong rather than merely arguable: a tread's own top would be a
+    /// different occluder from the riser under it, so a fragment of the flight
+    /// would be shadowed by the rest of the flight it is part of.
+    #[test]
+    fn a_flight_of_steps_is_one_owner_and_not_one_per_tread() {
+        let stair = tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 10);
+        let prism = crate::facing::Prism::new(Face::North, &[3, 3, 3]).expect("three treads");
+        let mut occlusion = Builder::new(bounds());
+        occlusion.add(100, 100, 0, Graphic(0x0736), &stair, Shape::solid(prism));
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        assert_eq!(
+            occlusion.ids_at(100, 100).len(),
+            6,
+            "three treads are a lid and a riser each",
+        );
+        assert!(
+            occlusion.owners_at(100, 100).iter().all(|owner| owner.raw() == 1),
+            "the flight's own faces are not one occluder: {:?}",
+            occlusion.owners_at(100, 100),
+        );
+    }
+
+    /// [`OwnerId::NONE`] matches nothing, **including another `NONE`**.
+    ///
+    /// The property the whole exemption rests on: the ground, a mobile and a
+    /// static the grid refused all stamp it, and two of them meeting must not
+    /// read as one thing meeting itself. Stated here because `==` on the newtype
+    /// would answer the other way and still compile.
+    #[test]
+    fn no_owner_is_not_the_same_owner_as_no_owner() {
+        assert!(!OwnerId::NONE.same(OwnerId::NONE));
+        assert!(!OwnerId::nth(0).same(OwnerId::NONE));
+        assert!(!OwnerId::NONE.same(OwnerId::nth(0)));
+        assert!(OwnerId::nth(0).same(OwnerId::nth(0)));
+        assert!(!OwnerId::nth(0).same(OwnerId::nth(1)));
+        // And the numbering never produces it, which is what makes the above a
+        // fact about the grid rather than about the constant alone.
+        assert_ne!(OwnerId::nth(0), OwnerId::NONE);
+        assert_eq!(OwnerId::nth(0).raw(), 1, "the first owner of a cell is one");
     }
 
     /// The rule, said in every direction that matters. A wall stops light; a
@@ -2787,6 +3155,7 @@ mod tests {
             edges: opposite(edge_of(Face::West)),
             aperture: None,
             roof: false,
+            owner: Owner::new(1, Graphic(0)),
         };
         assert_eq!(
             riser.footprint(),
@@ -3291,12 +3660,15 @@ mod tests {
             },
         };
         let mut builder = Builder::new(bounds);
-        builder.add_raw(5, 5, raw(0.0, 20.0));
-        builder.add_raw(5, 5, raw(3.5, 6.5));
-        builder.add_raw(5, 5, raw(-3.5, -1.0));
+        // Four distinct owners, so the four boxes are four occluders of the cell
+        // rather than one repeated — `add_raw` states the key, since a hand-built
+        // box has no `tiledata` to derive one from.
+        builder.add_raw(5, 5, raw(0.0, 20.0), Owner::new(0, Graphic(1)));
+        builder.add_raw(5, 5, raw(3.5, 6.5), Owner::new(3, Graphic(2)));
+        builder.add_raw(5, 5, raw(-3.5, -1.0), Owner::new(-4, Graphic(3)));
         // Past both ends of what the wire can name: a cellar below the floor of
         // the world, and a spire through the top of it.
-        builder.add_raw(5, 5, raw(-400.0, 400.0));
+        builder.add_raw(5, 5, raw(-400.0, 400.0), Owner::new(-128, Graphic(4)));
         let occlusion = builder.finish(&Cutaway::OPEN);
 
         let heights = occlusion.solid_z_bytes();

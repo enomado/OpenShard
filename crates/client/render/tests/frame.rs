@@ -1244,6 +1244,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
     let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
     let mut sprites = SpriteRenderer::new(
@@ -1359,6 +1360,7 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
     let land = LandAtlas::pack([]).expect("nothing always fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -1468,6 +1470,7 @@ fn a_full_hue_replaces_the_pixel_by_its_red_channel_regardless_of_its_own_colour
         hue,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     };
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1660,6 +1663,7 @@ fn every_pixel_names_the_tile_it_came_from() {
         hue: 0,
         place: Place::of_static(Point::new(301, 400, 15)),
         twin: 0,
+        owner: 0,
     }];
 
     let places = render_places(
@@ -1782,6 +1786,7 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         hue: 0,
         place,
         twin: 0,
+        owner: 0,
     };
     // The fraction of a tile a place holds, as the shaders pack it: seven bits
     // each, above the two the kind takes.
@@ -2001,6 +2006,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
             ..Place::of_static(at)
         },
         twin: 0,
+        owner: 0,
     };
     let places = render_places(
         &device,
@@ -2153,6 +2159,7 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
                 ..Place::of_static(at)
             },
             twin: 0,
+            owner: 0,
         }],
         &[],
         &[],
@@ -2255,6 +2262,7 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
     let rows = [MeshFaceRow {
         tile: (300, 400),
         stance: Stance::FaceEast,
+        owner: 0,
     }];
 
     let places = render_places(
@@ -2441,6 +2449,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -2553,6 +2562,7 @@ fn at_one_depth_the_later_pass_wins() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -2934,6 +2944,7 @@ fn a_magnified_sprite_translates_texel_for_texel() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
 
     let mut shifted = camera;
@@ -3018,6 +3029,7 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
         &StaticAnimations::default(),
         &static_atlas,
         &Cutaway::OPEN,
+        &openshard_client_render::occlusion::Occlusion::EMPTY,
     )
     .quads;
     assert!(
@@ -3109,6 +3121,7 @@ fn dump_a_frame_of_britain() {
         &StaticAnimations::default(),
         &static_atlas,
         &Cutaway::OPEN,
+        &openshard_client_render::occlusion::Occlusion::EMPTY,
     )
     .quads;
 
@@ -3244,6 +3257,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
 
     let (frame_width, frame_height) = (128u32, 128u32);
@@ -3453,6 +3467,7 @@ fn a_ring_is_drawn_around_a_silhouette_and_not_over_it() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
 
     let (width, height) = (128, 128);
@@ -3532,6 +3547,7 @@ fn two_touching_silhouettes_are_ringed_separately() {
             hue: 0,
             place: Place::NOWHERE,
             twin: 0,
+            owner: 0,
         })
         .collect();
 
@@ -3602,6 +3618,7 @@ fn a_glow_reaches_past_the_ring_and_fades_with_distance() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
 
     let (width, height) = (128, 128);
@@ -3676,6 +3693,7 @@ fn a_minified_ring_keeps_every_side() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     }];
 
     let (width, height) = (128, 128);
@@ -3762,6 +3780,7 @@ fn dump_a_glowing_sprite() {
         hue: 0,
         place: Place::NOWHERE,
         twin: 0,
+        owner: 0,
     };
     let backdrop = quad(BACKDROP, 16.0, 16.0, 96.0, 0.9);
     let item = quad(ITEM, 54.0, 54.0, 20.0, 0.5);
@@ -3869,6 +3888,7 @@ fn parity_frame(
                 // never a second half to point at — see
                 // `crate::sprite::split_corners` for the real pass's row.
                 twin: 0,
+                owner: 0,
             }
             .write(&mut face_rows);
             id
@@ -4832,7 +4852,6 @@ fn the_light_view_keeps_a_pools_shape_where_it_is_brightest() {
     // point. Every step inwards must be brighter than the last — under a clamp
     // the last two tiles' worth of it were one number.
     let middle = height / 2;
-    let mut steps = 0;
     for px in 1..width / 2 {
         let before = i32::from(frame.pixel(px - 1, middle)[0]);
         let after = i32::from(frame.pixel(px, middle)[0]);
@@ -4840,16 +4859,37 @@ fn the_light_view_keeps_a_pools_shape_where_it_is_brightest() {
             after >= before,
             "at ({px}, {middle}) the row towards the flame darkens: {before} then {after}",
         );
-        if after > before {
-            steps += 1;
-        }
     }
     // And it is a ramp rather than a couple of terraces: a curve that clipped
     // would still pass the test above, which is the trap the first version fell
-    // into. Half the pixels of the row rising is what a gradient looks like.
-    assert!(
-        steps > (width / 4) as usize,
-        "only {steps} of the row towards the flame rise"
+    // into. So **every** step of the row that is actually inside the room rises,
+    // which is a stronger claim than the "more than a quarter of the whole row"
+    // this used to make — and it has to be stated over that stretch rather than
+    // over the whole row, because the row starts outside the house.
+    //
+    // The fixture's leftmost two tiles are the ground outside the ring and the
+    // ring's own wall tile, and both are flat dark. That the *wall* stretch is
+    // flat is `docs/lighting_height.md` phase 3: this fixture's pixels are
+    // `Surface::Upright` points of no occluder at all, so they are exempt from
+    // nothing, and a point standing inside the room's own wall body is behind it.
+    // The old count happened to include those eight pixels because the height
+    // guess exempted them from the wall they stand in — which is the guess this
+    // phase removed, and a bar that counted them was measuring the guess.
+    let inside = (4 - u32::from(openshard_client_render::scene::ROOM_HALF) + 1) * PARITY_TILE;
+    let mut steps = 0;
+    for px in inside..width / 2 {
+        let before = i32::from(frame.pixel(px - 1, middle)[0]);
+        let after = i32::from(frame.pixel(px, middle)[0]);
+        assert!(
+            after > before,
+            "at ({px}, {middle}) the row inside the room does not rise: {before} then {after}",
+        );
+        steps += 1;
+    }
+    assert_eq!(
+        steps,
+        (width / 2 - inside) as usize,
+        "the sweep inside the room compared nothing like the stretch it claims to",
     );
     // Nothing saturates, anywhere. A tone map that reached white would be a
     // clamp again for whatever is brighter than the thing that reached it.
@@ -4989,6 +5029,7 @@ fn assert_single_face_parity(
     let rows: Vec<MeshFaceRow> = vec![MeshFaceRow {
         tile,
         stance: Stance::Flat,
+        owner: 0,
     }];
     // `corner_screen[k]` is `corners[k]`'s own screen position — what a
     // bilinear read-back over `(u, v)` below needs to land on the same pixel
@@ -5418,10 +5459,12 @@ fn assert_two_face_edge_parity(
         MeshFaceRow {
             tile: west,
             stance: Stance::Flat,
+            owner: 0,
         },
         MeshFaceRow {
             tile: east,
             stance: Stance::Flat,
+            owner: 0,
         },
     ];
     let mut corner_screen = [[Vec2::new(0.0, 0.0); 4]; 2];

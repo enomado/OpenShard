@@ -333,6 +333,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         &animations,
         &static_atlas,
         &Cutaway::OPEN,
+        &openshard_client_render::occlusion::Occlusion::EMPTY,
     )
     .quads;
     // `docs/gbuffer.md` step 2: the id width has to be sized against a real

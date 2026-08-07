@@ -160,6 +160,11 @@ pub struct StaticGeometry {
     pub mesh_rows: Vec<MeshFaceRow>,
 }
 
+/// `occlusion` is **this frame's own grid**, and it has to have been built
+/// already: what each row carries beside its picture is the number that grid gave
+/// the static it draws ([`crate::occlusion::Occlusion::owner_at`]), which is the
+/// join `docs/lighting_height.md` phase 3 pays for. A frame that collected its
+/// statics first would be stamping numbers from the frame before it.
 pub fn collect(
     map: &Map,
     camera: &Camera,
@@ -167,6 +172,7 @@ pub fn collect(
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
+    occlusion: &crate::occlusion::Occlusion,
 ) -> StaticGeometry {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
@@ -190,9 +196,21 @@ pub fn collect(
         if !on_screen(camera, placed.at, &placed.sprite) {
             return;
         }
-        let quad = quad_of(at, &placed, base, u32::from(item.hue));
+        // The *placed* graphic and not `placed.showing`: the grid keyed its
+        // owner off the same one, and an animated static would otherwise change
+        // owner every hundred milliseconds. See `occlusion::Owner`.
+        let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, Graphic(item.tile));
+        let quad = quad_of(at, &placed, base, u32::from(item.hue), owner);
         if let Some(prism) = &placed.prism {
-            push_mesh(&mut mesh_vertices, &mut mesh_rows, camera, at, prism, quad.depth);
+            push_mesh(
+                &mut mesh_vertices,
+                &mut mesh_rows,
+                camera,
+                at,
+                prism,
+                quad.depth,
+                owner,
+            );
         }
         quads.push((placed.order, quad));
     });
@@ -224,6 +242,10 @@ pub fn collect(
 /// correction for a placement that came from the server's own list rather
 /// than the map's — [`Placed::prism`] is set by [`place`] either way, and a
 /// second copy of this loop would be a second place the two could disagree.
+///
+/// `owner` is the enclosing static's own, and every face of the flight gets it —
+/// one `Builder::add` is one owner however many solids it pushed, which is
+/// `docs/lighting_height.md` phase 3's first decision seen from the drawing side.
 pub(crate) fn push_mesh(
     vertices: &mut Vec<MeshFaceVertex>,
     rows: &mut Vec<MeshFaceRow>,
@@ -231,6 +253,7 @@ pub(crate) fn push_mesh(
     at: Point,
     prism: &crate::facing::Prism,
     depth: f32,
+    owner: crate::occlusion::OwnerId,
 ) {
     let mesh = prism.mesh(i32::from(at.x), i32::from(at.y), i32::from(at.z));
     for face in mesh.faces() {
@@ -239,6 +262,7 @@ pub(crate) fn push_mesh(
             tile: (at.x, at.y),
             stance: crate::place::Stance::of_normal(face.normal)
                 .expect("Prism::mesh only ever produces normals Stance::of_normal recognizes"),
+            owner: u32::from(owner.raw()),
         });
         for corner in face.fan() {
             let screen = camera.to_view_exact(crate::camera::project_exact(corner));
@@ -338,7 +362,19 @@ pub(crate) fn place(
 /// `hue` is a parameter rather than read off anything here because the same
 /// placement is drawn in three hues: the thing's own, the highlight ramp, and —
 /// for a silhouette, where the colour is never read — whatever the caller had.
-pub(crate) fn quad_of(at: Point, placed: &Placed, base: i32, hue: u32) -> SpriteQuad {
+///
+/// `owner` is which occluder of `at`'s tile this static is in the frame's own
+/// occlusion grid — [`crate::occlusion::Occlusion::owner_at`], and
+/// [`SpriteQuad::owner`] for what reads it.
+/// [`OwnerId::NONE`](crate::occlusion::OwnerId::NONE) from the passes that draw
+/// a picture nothing is lit from: a silhouette, a selection mask.
+pub(crate) fn quad_of(
+    at: Point,
+    placed: &Placed,
+    base: i32,
+    hue: u32,
+    owner: crate::occlusion::OwnerId,
+) -> SpriteQuad {
     SpriteQuad {
         rect: Rect {
             x: placed.at.x,
@@ -357,6 +393,7 @@ pub(crate) fn quad_of(at: Point, placed: &Placed, base: i32, hue: u32) -> Sprite
         // this row's final index among a frame's other corners is known —
         // not here, where it is not.
         twin: 0,
+        owner: u32::from(owner.raw()),
     }
 }
 
@@ -449,7 +486,13 @@ pub fn selected(
                 cutaway,
             )?;
             match on_screen(camera, placed.at, &placed.sprite) {
-                true => Some(quad_of(picked.at, &placed, base, 0)),
+                true => Some(quad_of(
+                    picked.at,
+                    &placed,
+                    base,
+                    0,
+                    crate::occlusion::OwnerId::NONE,
+                )),
                 false => None,
             }
         })
@@ -766,7 +809,16 @@ mod tests {
             hue: 0,
         });
         let animations = StaticAnimations::default();
-        let drawn = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN).quads;
+        let drawn = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway::OPEN,
+            &crate::occlusion::Occlusion::EMPTY,
+        )
+        .quads;
         assert_eq!(drawn.len(), 1);
         let picked = PickedStatic {
             at: Point::new(101, 99, 5),
@@ -896,15 +948,31 @@ mod tests {
         // Ten seconds, which is longer than the slowest cycle in the file. The
         // count of quads must not move: a graphic that was shown and not packed
         // is a sprite that silently stops being drawn.
-        let first = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN)
-            .quads
-            .len();
+        let first = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway::OPEN,
+            &crate::occlusion::Occlusion::EMPTY,
+        )
+        .quads
+        .len();
         assert!(first > 300, "only {first} statics on screen");
         for step in 1..=100 {
             animations.advance(FRAME_STEP);
-            let now = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN)
-                .quads
-                .len();
+            let now = collect(
+                &map,
+                &camera,
+                &tiledata,
+                &animations,
+                &atlas,
+                &Cutaway::OPEN,
+                &crate::occlusion::Occlusion::EMPTY,
+            )
+            .quads
+            .len();
             assert_eq!(
                 now, first,
                 "a static vanished {step} steps in: shown but never packed"
@@ -973,9 +1041,17 @@ mod tests {
         let animations = StaticAnimations::default();
         let wanted = visible_graphics(&map, &camera, &animations);
         let atlas = StaticAtlas::build(&art, wanted).expect("a screen of statics fits");
-        let open = collect(&map, &camera, &tiledata, &animations, &atlas, &Cutaway::OPEN)
-            .quads
-            .len();
+        let open = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway::OPEN,
+            &crate::occlusion::Occlusion::EMPTY,
+        )
+        .quads
+        .len();
 
         // A tile in this quarter of Britain that is under something. Found
         // rather than named, for the reason `cutaway`'s own map test searches:
@@ -988,9 +1064,17 @@ mod tests {
                 (cutaway != Cutaway::OPEN).then_some(cutaway)
             })
             .expect("something in Britain is under a roof");
-        let cut = collect(&map, &camera, &tiledata, &animations, &atlas, &indoors)
-            .quads
-            .len();
+        let cut = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &indoors,
+            &crate::occlusion::Occlusion::EMPTY,
+        )
+        .quads
+        .len();
 
         assert!(cut < open, "the cutaway removed nothing: {cut} of {open}");
         assert!(cut > 0, "the cutaway removed the whole town");
@@ -1033,6 +1117,7 @@ mod tests {
             &StaticAnimations::default(),
             &atlas,
             &Cutaway::OPEN,
+            &crate::occlusion::Occlusion::EMPTY,
         )
         .quads;
         assert!(quads.len() > 500, "only {} statics on screen", quads.len());
@@ -1077,7 +1162,15 @@ mod tests {
         let at = Point::new(100, 100, 0);
         let mut vertices = Vec::new();
         let mut rows = Vec::new();
-        push_mesh(&mut vertices, &mut rows, &camera, at, &prism, 0.0);
+        push_mesh(
+            &mut vertices,
+            &mut rows,
+            &camera,
+            at,
+            &prism,
+            0.0,
+            crate::occlusion::OwnerId::NONE,
+        );
 
         assert!(!vertices.is_empty(), "a three-tread stair has faces to draw");
         for vertex in &vertices {

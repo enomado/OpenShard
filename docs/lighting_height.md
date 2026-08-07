@@ -14,6 +14,11 @@ This plan makes height continuous end to end, and then removes the one
 place that only ever needed integers to paper over: `exemption`'s guess at
 which solid a fragment belongs to.
 
+**All three phases have landed.** Height is continuous on both sides of the
+wire, and a fragment now *says* which occluder it is a point of instead of
+having that guessed from where it is. What is left is `## Backlog`, and the one
+guess still standing on the fragment side is named at the top of it.
+
 ## The defect this comes from
 
 `examples/boxes.rs`'s `tree` scene draws a closed dark patch **inside** the
@@ -242,6 +247,77 @@ Done when: `pair` reads zero on all three of its red oracles, `tree` still
 reads 18/7008 and 226/252105, `tests/lighting.rs` and `tests/frame.rs`'s parity
 suite are green, and no exemption decision about a *fragment* reads a height.
 
+### Landed, and what it measured
+
+Every line of that bar is met, and the numbers are one measurement apart from
+the ones above — same tool, same defaults, same instrument:
+
+| oracle | before | after |
+|---|---|---|
+| `pair`, box 0's `east` face | 1296 / 1296 | **0 / 1296** |
+| `pair`, box 0's `south` face | 1248 / 1248 | **0 / 1248** |
+| `pair`, box 0's own top | 9216 / 9216 | **0 / 9216** |
+| `pair`, ground | 147 / 254248 | 147 — unmoved, the tangent floor |
+| `tree`, face oracle | 18 / 7008 | 18 / 7008 — unmoved |
+| `tree`, ground oracle | 226 / 252105 | 226 / 252105 — unmoved |
+
+The two `tree` columns are the control and they do not move at all: this phase
+changes *which* solid a fragment is exempt from, and on a scene where the answer
+was already right there is nothing for it to change. What moved is the scene
+built to have a wrong answer.
+
+**The bar the numbers rest on is a mutation, not a margin.** Putting `lit_end`
+back to `on_surface(ctx.spot_z, low, high)` on *both* walks reads
+1296/1296, 1248/1248 and 9216/9216 again — the recorded pre-phase numbers
+exactly — and turns `light.rs`'s own
+`a_fragment_is_exempt_from_its_own_solid_and_from_a_twin_of_it_beside_it` red
+while leaving its first assertion green. A phase whose fixture cannot be made
+red again is a phase measured against nothing.
+
+How it is carried, where that differs from the design above:
+
+- **`Owner` and `OwnerId` are two types**, and keeping them apart is what the
+  design's decisions 2 and 3 are when written down: `Owner` is the world key
+  (`z` and the placed graphic, three bytes, never uploaded) and `OwnerId` is
+  which occluder of *this cell* that key is (one byte, the fourth channel of a
+  reference). `Occlusion::owner_at` is the join between them and the one thing
+  the drawing side calls.
+- **The numbering lives beside the references, not beside the solids.**
+  `Occlusion::owners` is one `OwnerId` per entry of `ids`, because the number is
+  a fact about a reference: the first thing to reference one solid from two
+  cells (decision 38.2's spill) gives it a different number in each. Nothing
+  does today, which is exactly why the level was built now.
+- **`OwnerId::NONE` matches nothing, including itself**, so every comparison
+  goes through `OwnerId::same` rather than `==`. Two fragments that are each a
+  point of nothing are not a point of the same thing, and the ground, a mobile
+  and any static the grid refused all stamp it.
+- **`Surface::shadowed_by_own_tile` is gone, and it was already vacuous.** The
+  `lit_end` arm it masked also required the surface *not* to be `Flat`, and that
+  function answers `0` for every surface that is not `Flat` — so the conjunct
+  was true for every solid that ever reached it, and the real restriction was
+  the `caps_this` arm beside it. Identity replaces both. The shader lost the
+  per-cell loop that gathered the tile-wide union of sides with it.
+- **`own_run` stays**, and it is now the only exemption that reads a height. It
+  answers a *second* question — a ray leaving a wall pixel along the wall grazes
+  the neighbouring tiles' panels of the same wall — which identity cannot answer
+  at all, since those are different statics and therefore different owners. See
+  the backlog.
+- **The reordering is in `app::render` and in `examples/isolated_scene.rs`**,
+  both for the same reason and both stated at the seam: a frame's occlusion is
+  built before its statics are collected, so a drawn row carries the number this
+  frame's grid gave it rather than the one before it.
+
+**One test moved and it is worth saying why**, because the reason is the
+behaviour change and not the test.
+`frame.rs`'s `the_light_view_keeps_a_pools_shape_where_it_is_brightest` counted
+how many pixels of a row across the room rise towards the flame, and wanted more
+than a quarter of the whole row. Eight of the pixels it was counting are on the
+room's own wall tile, and the parity fixture's pixels are `Surface::Upright`
+points of no occluder — so they are now honestly behind the wall body they stand
+in, where the height guess used to exempt them from it. The bar was measuring
+the guess. It now asks that **every** step of the row *inside the room* rises,
+which is the stronger claim and the one the test was written for.
+
 ## Order, and what gates what
 
 0 gates everything. 1 and 2 are independent of each other and both precede
@@ -417,9 +493,10 @@ plainly as the result:
   rounded span leaves all three green; only the fractional-`z` body added here
   goes red. A fourth test, and the mutation is what says it earns its place.
 
-Phase 3 next, and its own section now carries a decided design and a fixture
-that is red for it. The three questions this section left open when phase 2
-landed are answered there:
+Phase 3 done: `exemption` asks which occluder a fragment is a point of instead
+of guessing it from a height, and the fixture built to be red for it reads zero.
+The table and the account are in its own section above; the three questions this
+section left open when phase 2 landed are answered there:
 
 - **One static, several solids** — the owner is the static, so its solids share
   one, and there is no run to name.
@@ -438,8 +515,46 @@ landed are answered there:
 
 ## Backlog
 
-Picked up while phases 1 and 2 landed and while the oracles were repaired; none
-of it blocked any of them.
+Picked up while phases 1 and 2 landed, while the oracles were repaired, and
+while phase 3 landed; none of it blocked any of them.
+
+- **`own_run` is the last exemption that reads a height, and the question it
+  stands in for has no scene.** A ray leaving a wall pixel *along* the wall
+  grazes the neighbouring tiles' panels of the same wall — different statics,
+  therefore different owners, so identity cannot answer it and `own_run`'s
+  same-row/same-column mask gated on `on_surface` is what still does. The
+  `pair` fixture is one tile and cannot see it; a scene that can (a run of wall
+  across three tiles, a lamp standing near it, the face oracle pointed at the
+  seams) has to come with whatever touches it. Until then this is a known
+  guess sitting where a measurement belongs, and it is the *only* one left on
+  the fragment side.
+- **`flame_end` is still a height test, and it is `mounted_at`'s question.** The
+  far end of a ray is a flame, not a fragment, so there is no owner to compare —
+  the arm that exempts the solid a sconce is mounted on asks `on_surface(to_z,
+  ...)`. Deliberate and stated in phase 3's design; worth its own entry now that
+  the fragment side is identity, because it is the one place a *second* thing at
+  the flame's height is exempted for no reason but sharing it.
+- **A mobile standing on a walled tile is now shadowed by that wall**, where the
+  height guess used to exempt it. It is the honest answer — a billboard is no
+  occluder, so it is a point of nothing and exempt from nothing — and it is a
+  *behaviour change on a real frame* that no test here can be the judge of. Look
+  at a lit room with somebody standing against its wall; if it reads wrong, the
+  question is what a mobile's own footprint is, not what tolerance to add.
+- **`Occlusion::owner_at` is a linear scan, once per drawn static.** Two or
+  three solids a cell, so it is nothing today — but it is a scan inside the
+  per-static loop of two collectors, and the first tile that holds a hundred
+  solids pays for it once per static on it. Named rather than fixed: the shape
+  that would replace it (a map keyed by `Owner`, built once at `finish`) costs
+  an allocation a frame on the side of this pass that is already thirteen times
+  the GPU.
+- **`statics::selected` and `items::outlined` stamp `OwnerId::NONE`**, which is
+  correct exactly because the select and outline passes do not light anything.
+  Nothing says so at the type level: a row is a row, and the day one of those
+  masks is fed through the blit it will draw a static that shadows its own face,
+  silently. The rows are the *same placement* as the drawn ones by design —
+  `statics::quad_of` is shared — so the owner could be shared too; it is not,
+  because those callers have no grid in hand and giving them one to satisfy a
+  field they never read is the wrong trade until something reads it.
 
 - **`STAND_OFF`/`ON_TOP` are the reference scene's whole residual, and nobody
   has priced them.** Zeroing both on both walks takes `tree`'s face oracle from

@@ -657,6 +657,23 @@ report** — read it before reading anything else. Ask the scene a question by
 overriding a knob for that run; overriding a *default* silently retires every
 number above, so don't.
 
+**A second scene, for the one thing `tree` cannot show.**
+`OPENSHARD_BOXES_SCENE=pair` stands two boxes of one height *side by side* on
+one tile, on the tile's own diagonal, with the flame on the line through both
+centres and beyond the near one. Where `tree`'s two boxes meet at a plane, these
+two span the same heights outright — so every fragment of either is inside both
+spans, which is exactly what "is this solid the one the fragment is drawn from"
+used to be answered from. It is `lighting_height.md` phase 3's own fixture and
+it was fully red before that phase:
+
+| oracle, `pair` | before phase 3 | now |
+|---|---|---|
+| box 0's `east` face | 1296 / 1296 | **0** |
+| box 0's `south` face | 1248 / 1248 | **0** |
+| box 0's own top | 9216 / 9216 | **0** |
+| box 1 (the near one) | 0 | 0 |
+| ground | 147 / 254248 | 147 — the same tangent floor `tree` has |
+
 What is left is two named things, and **neither is `exemption`**, which these
 numbers were read as meaning for two sessions — see `lighting_height.md`'s own
 account of how that happened. Both are measured, not argued: setting

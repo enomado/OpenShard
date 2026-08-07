@@ -726,6 +726,7 @@ mod tests {
             edges: super::super::EDGE_ANY,
             aperture: None,
             roof: false,
+            owner: super::super::Owner::new(0, openshard_protocol::wire::Graphic(0)),
         }
     }
 

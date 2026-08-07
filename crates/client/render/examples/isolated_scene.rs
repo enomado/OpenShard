@@ -277,6 +277,10 @@ fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
         let spot = light::Spot {
             at: Vec2::new(sx, sy),
             z,
+            // A point in the world rather than a fragment of one of its statics:
+            // this tool walks a segment through the scene, so it is a point of no
+            // occluder and exempt from none. See `light::Spot::owner`.
+            owner: openshard_client_render::occlusion::OwnerId::NONE,
             // `floor()`, deliberately: this tool exists to bisect exactly the
             // ambiguity `Spot::tile` closes for a real caller
             // (`docs/lighting_raymarch.md` step 2), so the profile has to keep
@@ -335,6 +339,11 @@ fn face_light(
             z: z as f32,
             tile: (x.floor() as i32, y.floor() as i32),
             surface,
+            // The wireframe's own face colours: a probe of a *place*, not of a
+            // drawn fragment, so it names no owner and is exempt from nothing —
+            // which is what makes the picture show every solid's real effect,
+            // including the one being coloured.
+            owner: openshard_client_render::occlusion::OwnerId::NONE,
         };
         let multiplier = light::sample(spot, lighting).multiplier;
         [
@@ -595,6 +604,22 @@ fn main() {
     let animations = StaticAnimations::default();
     let needed = items::needed_graphics(&items, &animations);
     let static_atlas = StaticAtlas::build(&art, needed).expect("the scene's own items fit");
+    // **The grid before the pictures**, which is `docs/lighting_height.md` phase
+    // 3's own ordering and the same one `app::render` keeps: what a drawn row
+    // carries beside its picture is the number this grid gave the static it
+    // draws, so a tool that collected its items first would stamp numbers from a
+    // grid that did not exist yet.
+    let mut lighting = light::collect(
+        &synthetic,
+        &items,
+        &camera,
+        &tiledata,
+        &Cutaway::OPEN,
+        light::NIGHT.flattened(),
+        0.0,
+        Some(&static_atlas),
+        None,
+    );
     let openshard_client_render::statics::StaticGeometry {
         quads: item_quads,
         mesh_vertices,
@@ -607,6 +632,7 @@ fn main() {
         &static_atlas,
         &Cutaway::OPEN,
         None,
+        &lighting.occlusion,
     );
 
     let format = openshard_client_render::blit::WORLD_FORMAT;
@@ -668,17 +694,6 @@ fn main() {
     });
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let mut lighting = light::collect(
-        &synthetic,
-        &items,
-        &camera,
-        &tiledata,
-        &Cutaway::OPEN,
-        light::NIGHT.flattened(),
-        0.0,
-        Some(&static_atlas),
-        None,
-    );
     eprintln!(
         "{} items, {} flames, {} standing cells",
         items.len(),

@@ -109,6 +109,15 @@ pub fn needed_graphics(items: &[GroundItem], animations: &StaticAnimations) -> B
 /// callers read the same field. Before this, a climbable *item* fell through to
 /// the flat corner-stance reading forever, with no honest mesh pass ever built
 /// for it: this function threw `placed.prism` away.
+///
+/// `occlusion` is this frame's own grid, already built — see
+/// [`crate::statics::collect`], which takes it for the same reason and states it.
+// Eight, and every one of them is a different source this frame reads: the list,
+// the camera, two tables, the atlas, the cutaway, the pick, the grid. There is no
+// pair among them that belongs in one struct — [`crate::statics::collect`] takes
+// the same seven off the map instead of off a list — so a grouping here would be
+// a bag named after the argument count rather than after anything.
+#[allow(clippy::too_many_arguments)]
 pub fn collect(
     items: &[GroundItem],
     camera: &Camera,
@@ -117,6 +126,7 @@ pub fn collect(
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
     highlight: Option<usize>,
+    occlusion: &crate::occlusion::Occlusion,
 ) -> crate::statics::StaticGeometry {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
@@ -140,7 +150,13 @@ pub fn collect(
             true => u32::from(HIGHLIGHT_HUE.0),
             false => u32::from(item.hue.0),
         };
-        let quad = quad_of(item.at, &placed, base, hue);
+        let owner = occlusion.owner_at(
+            i32::from(item.at.x),
+            i32::from(item.at.y),
+            item.at.z,
+            item.graphic,
+        );
+        let quad = quad_of(item.at, &placed, base, hue, owner);
         if let Some(prism) = &placed.prism {
             crate::statics::push_mesh(
                 &mut mesh_vertices,
@@ -149,6 +165,7 @@ pub fn collect(
                 item.at,
                 prism,
                 quad.depth,
+                owner,
             );
         }
         quads.push((order, quad));
@@ -199,7 +216,13 @@ pub fn outlined(
         .and_then(|(item, _)| {
             let placed = place(item, camera, tiledata, animations, atlas, cutaway)?;
             match on_screen(camera, placed.at, &placed.sprite) {
-                true => Some(quad_of(item.at, &placed, base, u32::from(item.hue.0))),
+                true => Some(quad_of(
+                    item.at,
+                    &placed,
+                    base,
+                    u32::from(item.hue.0),
+                    crate::occlusion::OwnerId::NONE,
+                )),
                 false => None,
             }
         })
@@ -338,6 +361,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             None,
+            &crate::occlusion::Occlusion::EMPTY,
         );
         assert_eq!(quads.quads.len(), 1);
         let sprite = atlas.sprite(graphic).expect("packed");
@@ -371,6 +395,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             None,
+            &crate::occlusion::Occlusion::EMPTY,
         );
         let table = collect(
             &[at(10)],
@@ -380,6 +405,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             None,
+            &crate::occlusion::Occlusion::EMPTY,
         );
         assert_eq!(
             table.quads[0].rect.y,
@@ -408,6 +434,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             None,
+            &crate::occlusion::Occlusion::EMPTY,
         );
         assert!(quads.quads.is_empty());
     }
@@ -435,6 +462,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             None,
+            &crate::occlusion::Occlusion::EMPTY,
         );
         assert_eq!(quads.quads.len(), 2);
         assert!(
@@ -564,6 +592,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             Some(1),
+            &crate::occlusion::Occlusion::EMPTY,
         );
         assert_eq!(quads.quads.len(), 2);
         // The pass sorts back to front, so the nearer one — index 1, a tile

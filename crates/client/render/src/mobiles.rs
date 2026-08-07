@@ -435,6 +435,11 @@ fn push_quads(
             hue: u32::from(hue.unwrap_or(mobile.hue).0),
             place: crate::place::Place::of_mobile(mobile.at),
             twin: 0,
+            // A billboard is no occluder, so it is exempt from nothing — a
+            // creature standing on a walled tile is genuinely in that wall's
+            // shadow. `docs/lighting_height.md` phase 3, and the one behaviour
+            // change it makes on a real frame.
+            owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
         },
     ));
 
@@ -456,6 +461,7 @@ fn push_quads(
                 // head under it is, and it has no tile of its own.
                 place: crate::place::Place::of_mobile(mobile.at),
                 twin: 0,
+                owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
             },
         ));
     }

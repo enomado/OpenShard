@@ -469,6 +469,7 @@ pub fn collect(pictures: &[Picture], atlas: &GumpAtlas) -> Vec<SpriteQuad> {
                     // A gump stands on no tile and is never lit.
                     place: crate::place::Place::NOWHERE,
                     twin: 0,
+                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
                 });
                 x += art_width;
             }

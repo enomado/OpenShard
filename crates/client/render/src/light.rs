@@ -1240,19 +1240,60 @@ fn own_run(own: u8, cell: (i32, i32), first: (i32, i32)) -> u8 {
     own & line
 }
 
+/// The end of a ray that is a *surface*: which way it looks, which occluder of
+/// its own tile it is a point of, and which tile that is.
+///
+/// Three facts that only ever travel together — every walk here folds all three
+/// into one [`ExemptionContext`] and reads none of them apart — and that must
+/// agree: a `surface` off one fragment with an `owner` off another is a
+/// combination nothing in the world produces and every walk would answer for.
+/// [`Spot`] is the same three beside a position; a walk takes the position
+/// separately because [`stand_clear`] has already moved it.
+#[derive(Clone, Copy)]
+struct LitEnd {
+    surface: Surface,
+    owner: crate::occlusion::OwnerId,
+    tile: (i32, i32),
+}
+
+impl LitEnd {
+    /// The lit end a [`Spot`] is.
+    fn of(spot: Spot) -> Self {
+        Self {
+            surface: spot.surface,
+            owner: spot.owner,
+            tile: spot.tile,
+        }
+    }
+
+    /// A point of nothing on `tile`, looking nowhere in particular — what a
+    /// test that is about the geometry alone means.
+    #[cfg(test)]
+    fn nowhere(tile: (i32, i32)) -> Self {
+        Self {
+            surface: Surface::Flat,
+            owner: crate::occlusion::OwnerId::NONE,
+            tile,
+        }
+    }
+}
+
 /// Ray-level facts [`exemption`] needs that do not change per candidate tile
-/// or per solid — built once, before [`walk_cells`]/[`walk_cells_exact`]'s
+/// or per solid — built once, before [`walk_cells_exact`]/[`walk_cells_streaming`]'s
 /// own loop starts, rather than threaded through it argument by argument.
 ///
-/// `spot_z` is the ray's own start `z`, after [`stand_clear`]'s nudge — the
-/// value both walks already call `on_surface`/`caps_this` with; `to_z` is
-/// the far end's, used only for `flame_end`.
+/// `owner` is the lit end's own — which occluder of `first` the fragment is a
+/// point of, or [`crate::occlusion::OwnerId::NONE`] for a point of none. `spot_z`
+/// is the ray's own start `z`, after [`stand_clear`]'s nudge, and `to_z` is the
+/// far end's; both are heights, and after `docs/lighting_height.md` phase 3 the
+/// only things left that read them are the two questions identity cannot answer
+/// — see [`exemption`].
 struct ExemptionContext {
     first: (i32, i32),
     last: (i32, i32),
     skip_last: bool,
     own: u8,
-    surface: Surface,
+    owner: crate::occlusion::OwnerId,
     spot_z: f32,
     to_z: f32,
 }
@@ -1260,9 +1301,8 @@ struct ExemptionContext {
 /// Which of this tile's own sides are exempt because [`own_run`] says so, and
 /// whether `stands` itself is exempt from occluding this ray at all.
 struct Exemption {
-    /// A surface does not shadow itself: see [`walk_cells`]'s own
-    /// `lit_end`/`flame_end`/`caps_this` comments for the three cases this
-    /// covers.
+    /// A surface does not shadow itself: see [`exemption`]'s own `lit_end` and
+    /// `flame_end` for the two cases this covers.
     exempt: bool,
     /// [`own_run`]'s answer for this solid — needed by the caller even when
     /// `exempt` is `false`, since a run does not shadow itself panel by
@@ -1270,20 +1310,51 @@ struct Exemption {
     same_run: u8,
 }
 
-/// The `lit_end`/`flame_end`/`caps_this`/`same_run` decision [`walk_cells`]
-/// and [`walk_cells_exact`] each computed inline, word for word the same in
-/// both, before this was pulled out from underneath them.
+/// Whether one solid is exempt from shadowing this ray, and what of a run of
+/// wall on its cell is.
 ///
 /// `low`/`high` are the solid's own `z` span, the walk's to choose — see
-/// [`on_surface`]. Every question here is a question about height, so this is
-/// the whole of what `docs/lighting_height.md` phase 2 changes on this side: an
-/// occluder rounded to a whole unit made "is this fragment inside the thing it
-/// is drawn from" answerable half a unit away from where the thing actually is.
+/// [`on_surface`] — and `owner` is which occluder of its cell this solid is,
+/// off the reference the walk followed to reach it.
+///
+/// # A fragment says which solid it is a point of, rather than being guessed at
+///
+/// `docs/lighting_height.md` phase 3. `lit_end` used to ask whether the
+/// fragment's own height fell inside this solid's span, and take that for "this
+/// is the solid the fragment is drawn from". It is a proxy and it fails in both
+/// directions:
+///
+/// - Two things **stacked** on one tile meet at a single plane, and no precision
+///   separates the lower one's top from the upper one's base — phases 1 and 2
+///   shrank that ambiguity to a quantum of height without removing it, because
+///   it is structural.
+/// - Two things **side by side** on one tile span the same heights outright, so
+///   every fragment of either is inside both spans, and each was exempted from
+///   being shadowed by the other while standing squarely in front of it. That is
+///   `examples/boxes.rs`'s `pair` scene, three oracles fully red.
+///
+/// Now the two sides carry the same fact and it is compared:
+/// [`crate::occlusion::OwnerId`], unique within a tile, stamped into a solid's
+/// own reference by [`crate::occlusion::Builder::finish`] and into the drawn
+/// fragment's instance row by the pass that drew it.
+/// [`crate::occlusion::OwnerId::same`] and not `==`, since a point of nothing is
+/// not a point of the same nothing another solid is.
+///
+/// # What still reads a height, and why each is not identity's question
+///
+/// - **`flame_end`.** The far end of the ray is a flame, not a fragment, so
+///   there is no owner to compare — a mounted flame stands on a solid nothing
+///   drew. That is [`mounted_at`]'s question rather than this one's.
+/// - **`same_run`.** A ray leaving a wall pixel *along* the wall grazes the
+///   neighbouring tiles' panels, which are different statics and therefore
+///   different owners. That is not identity at all, it is one surface cut on a
+///   tile boundary, and [`own_run`] is what stands in for it until a scene that
+///   can show it exists — `pair` is one tile and cannot.
 fn exemption(
     ctx: &ExemptionContext,
     cell: (i32, i32),
-    lit_by_own_tile: u8,
     stands: &crate::occlusion::Solid,
+    owner: crate::occlusion::OwnerId,
     low: f32,
     high: f32,
 ) -> Exemption {
@@ -1292,29 +1363,18 @@ fn exemption(
         true => own_run(ctx.own, cell, ctx.first),
         false => 0,
     };
-    let lit_end = own_cell && on_surface(ctx.spot_z, low, high);
+    // The whole of "this surface is one I am a point of": the solid stands on my
+    // own cell, and it is the occluder of that cell I was drawn from. No height
+    // on either side of it — which is what the two counts in
+    // `docs/lighting_height.md`'s phase 3 table are the measurement of.
+    let lit_end = own_cell && ctx.owner.same(owner);
     let flame_end = ctx.skip_last && cell == ctx.last && on_surface(ctx.to_z, low, high);
-    let caps_this = ctx.surface == Surface::Flat && lit_end && ctx.spot_z >= high - ON_TOP;
-    // `lit_end`'s own edges-mask path is `caps_this` with the precision taken
-    // back out, and a [`Surface::Flat`] fragment needs the precision:
-    // `Surface::shadowed_by_own_tile` answers `0` for a tile whose sides are
-    // `EDGE_ANY` (a body stands there) whatever solid is asked, which turns
-    // `stands.edges & lit_by_own_tile == 0` vacuously true for *every* solid
-    // sharing the fragment's own cell — not only the one the fragment
-    // actually rests on. One body is what every scene `tiledata` can build
-    // ever put there, so nothing measured the difference before a second,
-    // independent body could stand on the first one's own top
-    // (`examples/boxes.rs`'s `tree` scene, `occlusion::Builder::add_raw`) and
-    // exposed it: the lower box's own top exempted the *taller* box standing
-    // on it from ever shadowing it, because both shared the one tile
-    // `on_surface`'s bottom-to-top span reads as "the fragment's own". A
-    // `Surface::Face`/`Upright` fragment has no such ambiguity to lose — it is
-    // its own solid's side, at any height along it, which is exactly what the
-    // edges mask is for — so the restriction is `Flat` alone.
-    let exempt = stands.edges != 0
-        && ((lit_end && ctx.surface != Surface::Flat && stands.edges & lit_by_own_tile == 0)
-            || flame_end
-            || caps_this);
+    // A lid is still never exempt, and that is geometry rather than identity: a
+    // ray travels *through* a lid's plane, so a floor between the fragment and
+    // the flame is in the way whoever laid it — including the fragment's own
+    // static, whose tread top is a lid the ray leaves from above. `stand_clear`'s
+    // `ON_TOP` is what keeps that crossing from counting, not this.
+    let exempt = stands.edges != 0 && (lit_end || flame_end);
     Exemption { exempt, same_run }
 }
 
@@ -1346,6 +1406,22 @@ pub struct Spot {
     /// `statics.wgsl` has resolved a corner to the face of the half the fragment
     /// is on. See [`Surface`].
     pub surface: Surface,
+    /// **Which occluder of its own tile this point is a point of**, or
+    /// [`crate::occlusion::OwnerId::NONE`] for a point of none — the ground, a
+    /// mobile, a fixture with no grid behind it.
+    ///
+    /// `docs/lighting_height.md` phase 3, and the whole of what replaced
+    /// `on_surface`'s guess: "is this solid the one I am drawn from" used to be
+    /// answered by asking whether this point's height fell inside the solid's
+    /// span, which two things stacked on one tile answer identically and two
+    /// things side by side on one tile answer wrongly for every pixel. A fragment
+    /// knows exactly which solid it belongs to, and this is it saying so.
+    ///
+    /// Unique within the tile and not within the frame, which is all the
+    /// comparison needs: every arm of [`exemption`] that reads it is gated on the
+    /// solid being on this point's own cell. See
+    /// [`crate::occlusion::Occlusion::owner_at`] for where a caller gets one.
+    pub owner: crate::occlusion::OwnerId,
 }
 
 impl Spot {
@@ -1355,12 +1431,17 @@ impl Spot {
     /// The neutral answer, and what every caller that predates surfaces means:
     /// nothing is known about which way it looks, so every flame that reaches it
     /// lights it. See [`Spot::flat`] and [`Spot::face`] for the two that do know.
+    ///
+    /// Owned by nothing until [`Spot::owned_by`] says otherwise — the honest
+    /// default for the callers that have no grid in hand, and the answer a mobile
+    /// and the ground keep.
     pub fn at(at: Vec2, z: f32, tile: (i32, i32)) -> Self {
         Self {
             at,
             z,
             tile,
             surface: Surface::Upright,
+            owner: crate::occlusion::OwnerId::NONE,
         }
     }
 
@@ -1372,7 +1453,20 @@ impl Spot {
             z,
             tile,
             surface: Surface::Flat,
+            owner: crate::occlusion::OwnerId::NONE,
         }
+    }
+
+    /// The same point, said to be a point of one particular occluder of its own
+    /// tile.
+    ///
+    /// A builder rather than a fourth argument on each of the three constructors:
+    /// the surface and the owner are separate facts (a lid's top and a face of
+    /// the same static are one owner and two surfaces), and most callers here —
+    /// a test about falloff, a probe over open ground — have no occluder to name
+    /// and mean [`crate::occlusion::OwnerId::NONE`] exactly.
+    pub fn owned_by(self, owner: crate::occlusion::OwnerId) -> Self {
+        Self { owner, ..self }
     }
 
     /// A point of one of a tile's four vertical faces.
@@ -1382,6 +1476,7 @@ impl Spot {
             z,
             tile,
             surface: Surface::Face(face),
+            owner: crate::occlusion::OwnerId::NONE,
         }
     }
 }
@@ -1441,33 +1536,19 @@ impl Surface {
             _ => None,
         }
     }
-
-    /// What this surface's own tile may shadow it with.
-    ///
-    /// **Neither end of a ray is shadowed by the tile it is on** was the rule, and
-    /// it is a rule about a *tile* where every other rule here is now about a
-    /// surface. What it is really saying is that a surface does not shadow
-    /// itself: a wall's face lies *on* the panel it is the face of, so the panel
-    /// cannot be between it and anything; a tree's pixels are inside its own tile.
-    ///
-    /// A **floor** pixel on the same tile is not ambiguous in that way at all. It
-    /// is the ground, it is inside the room, and a ray from it to a lamp in the
-    /// street crosses the panel its own tile stands on — so the corner tile's own
-    /// square of floor came out fully lit against a dark room. Which is the seam
-    /// on the ground the corner report ended with.
-    ///
-    /// Only a **named** panel, though: a mask of all four is "it stands up and the
-    /// art would not say", which is every tree, post and barrel, and testing those
-    /// would put a dark square under each of them out of a fallback rather than
-    /// out of a measurement. An unread graphic keeps today's behaviour exactly,
-    /// which is the direction this file takes at every one of these forks.
-    fn shadowed_by_own_tile(self, edges: u8) -> u8 {
-        match self {
-            Self::Flat if edges != crate::occlusion::EDGE_ANY => edges,
-            _ => 0,
-        }
-    }
 }
+
+// **`Surface::shadowed_by_own_tile` lived here**, and `docs/lighting_height.md`
+// phase 3 is what retired it. It answered "which of a tile's own sides may
+// shadow a pixel standing on it" — `edges` for a `Flat` pixel on a tile with
+// named panels, zero for everything else — and `exemption` masked its `lit_end`
+// arm with it. That arm also required the surface *not* to be `Flat`, so the mask
+// it was anded with was zero for every surface that reached it: the conjunct was
+// vacuously true, always, and the real restriction was `caps_this` beside it.
+// Identity answers both without a tile-wide union: a floor pixel is a point of
+// the floor, not of the wall beside it, so the wall shadows it — which is what
+// this function was for — and a face pixel is a point of its own panel and of no
+// other on the tile, which the mask could not have said.
 
 /// How wide the band is, in tiles, over which a flame passing behind a face
 /// stops lighting it. `blit.wgsl`'s `FACE_EDGE`, and the two are one number.
@@ -1790,7 +1871,7 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(i32, i
     ];
     // No tile to exempt at the far end, and a point source: the sun subtends half
     // a degree, so its penumbra is the narrowest the walk draws.
-    walk_cells_streaming(from, to, spot.surface, spot.tile, false, 0.0, occlusion)
+    walk_cells_streaming(from, to, LitEnd::of(spot), false, 0.0, occlusion)
 }
 
 /// The ray from a spot to a flame: [`walk_cells_streaming`] with a flame's two
@@ -1803,8 +1884,7 @@ fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<(i32, 
     walk_cells_streaming(
         [spot.at.x, spot.at.y, spot.z],
         [light.at.x, light.at.y, light.z],
-        spot.surface,
-        spot.tile,
+        LitEnd::of(spot),
         true,
         FLAME_SPREAD,
         occlusion,
@@ -2062,14 +2142,13 @@ fn candidate_tiles(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<(i32, i32)> {
 fn walk_cells_exact(
     from: [f32; 3],
     to: [f32; 3],
-    surface: Surface,
-    tile: (i32, i32),
+    lit: LitEnd,
     skip_last: bool,
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<(i32, i32)>) {
-    let (from, to) = stand_clear(from, to, surface);
-    let first = tile;
+    let (from, to) = stand_clear(from, to, lit.surface);
+    let first = lit.tile;
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
@@ -2089,7 +2168,7 @@ fn walk_cells_exact(
         };
     }
     let last = (to[0].floor() as i32, to[1].floor() as i32);
-    let own = match surface.face() {
+    let own = match lit.surface.face() {
         Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
         None => 0,
     };
@@ -2098,13 +2177,17 @@ fn walk_cells_exact(
         last,
         skip_last,
         own,
-        surface,
+        owner: lit.owner,
         spot_z: from[2],
         to_z: to[2],
     };
 
     struct Hit<'a> {
         stands: &'a crate::occlusion::Solid,
+        /// Which occluder of `cell` this solid is — off the reference the walk
+        /// followed to it, not off the solid, since that is where the number
+        /// lives. See [`crate::occlusion::OwnerId`].
+        owner: crate::occlusion::OwnerId,
         entered: f32,
         leaves: f32,
     }
@@ -2113,10 +2196,11 @@ fn walk_cells_exact(
     let to2 = Vec2::new(to[0], to[1]);
     for cell in candidate_tiles(from2, to2, first) {
         let mut here = Vec::new();
-        for stands in occlusion.solids_at(cell.0, cell.1) {
+        for (stands, owner) in occlusion.cell(cell.0, cell.1) {
             if let Some((entered, leaves)) = ray_vs_solid(from, to, &stands.space) {
                 here.push(Hit {
                     stands,
+                    owner,
                     entered,
                     leaves,
                 });
@@ -2138,20 +2222,10 @@ fn walk_cells_exact(
 
     let mut through = 1.0;
     for (cell, hits) in by_tile {
-        let own_cell = cell == first;
-        let sides = match own_cell {
-            false => 0,
-            true => occlusion
-                .solids_at(cell.0, cell.1)
-                .fold(0, |mask, s| mask | s.edges),
-        };
-        let lit_by_own_tile = match own_cell {
-            false => 0,
-            true => surface.shadowed_by_own_tile(sides),
-        };
         let mut stopped: f32 = 0.0;
         for Hit {
             stands,
+            owner,
             entered,
             leaves,
         } in hits
@@ -2162,9 +2236,8 @@ fn walk_cells_exact(
             // iteration. `walk_cells_streaming`'s own copy is the quantised one
             // on purpose; see its doc comment.
             let (low, high) = (stands.low(), stands.high());
-            // Same [`exemption`] `walk_cells` calls — see its own doc comment.
-            let Exemption { exempt, same_run } =
-                exemption(&exemption_ctx, cell, lit_by_own_tile, stands, low, high);
+            // Same [`exemption`] `walk_cells_streaming` calls — see its own doc.
+            let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, stands, owner, low, high);
             if exempt {
                 continue;
             }
@@ -2353,14 +2426,13 @@ fn wire_span(stands: &crate::occlusion::Solid) -> (f32, f32) {
 fn walk_cells_streaming(
     from: [f32; 3],
     to: [f32; 3],
-    surface: Surface,
-    tile: (i32, i32),
+    lit: LitEnd,
     skip_last: bool,
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<(i32, i32)>) {
-    let (from, to) = stand_clear(from, to, surface);
-    let first = tile;
+    let (from, to) = stand_clear(from, to, lit.surface);
+    let first = lit.tile;
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
@@ -2386,7 +2458,7 @@ fn walk_cells_streaming(
         };
     }
     let last = (to[0].floor() as i32, to[1].floor() as i32);
-    let own = match surface.face() {
+    let own = match lit.surface.face() {
         Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
         None => 0,
     };
@@ -2395,7 +2467,7 @@ fn walk_cells_streaming(
         last,
         skip_last,
         own,
-        surface,
+        owner: lit.owner,
         spot_z: from[2],
         to_z: to[2],
     };
@@ -2428,19 +2500,8 @@ fn walk_cells_streaming(
     // caller likes — the enumeration below is what has to visit each
     // relevant cell exactly once, not this.
     let apply = |cell: (i32, i32), through: &mut f32| {
-        let own_cell = cell == first;
-        let sides = match own_cell {
-            false => 0,
-            true => occlusion
-                .solids_at(cell.0, cell.1)
-                .fold(0, |mask, s| mask | s.edges),
-        };
-        let lit_by_own_tile = match own_cell {
-            false => 0,
-            true => surface.shadowed_by_own_tile(sides),
-        };
         let mut stopped: f32 = 0.0;
-        for stands in occlusion.solids_at(cell.0, cell.1) {
+        for (stands, owner) in occlusion.cell(cell.0, cell.1) {
             // The wire's own span, quantised exactly as the upload quantises
             // it — the vertical half of the same discipline `stands.fraction()`
             // below is the horizontal half of. See [`wire_span`].
@@ -2450,8 +2511,7 @@ fn walk_cells_streaming(
             let Some((entered, leaves)) = ray_vs_solid(from, to, &space) else {
                 continue;
             };
-            let Exemption { exempt, same_run } =
-                exemption(&exemption_ctx, cell, lit_by_own_tile, stands, low, high);
+            let Exemption { exempt, same_run } = exemption(&exemption_ctx, cell, stands, owner, low, high);
             if exempt {
                 continue;
             }
@@ -2573,8 +2633,7 @@ fn walk_exact(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<
     walk_cells_exact(
         [spot.at.x, spot.at.y, spot.z],
         [light.at.x, light.at.y, light.z],
-        spot.surface,
-        spot.tile,
+        LitEnd::of(spot),
         true,
         FLAME_SPREAD,
         occlusion,
@@ -2606,7 +2665,7 @@ fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<(
         from[1] + step[1] * tiles,
         from[2] + step[2] * tiles,
     ];
-    walk_cells_exact(from, to, spot.surface, spot.tile, false, 0.0, occlusion)
+    walk_cells_exact(from, to, LitEnd::of(spot), false, 0.0, occlusion)
 }
 
 /// How wide the flame in a hand throws its light: the full angle, in degrees.
@@ -2750,6 +2809,7 @@ mod tests {
             edges,
             aperture: None,
             roof: false,
+            owner: crate::occlusion::Owner::new(bottom as i8, openshard_protocol::wire::Graphic(0)),
         }
     }
 
@@ -2928,6 +2988,7 @@ mod tests {
             edges: crate::occlusion::EDGE_ANY,
             aperture: None,
             roof: false,
+            owner: crate::occlusion::Owner::new(3, openshard_protocol::wire::Graphic(0)),
         };
         let (low, high) = (box_at_half.low(), box_at_half.high());
         assert_eq!((low, high), (3.5, 6.5));
@@ -2943,6 +3004,80 @@ mod tests {
         // is a whole number of `Solid::Z_STEPS`, so this is exact rather than
         // near — the step being a power of two is what buys that.
         assert_eq!(wire_span(&box_at_half), (3.5, 6.5));
+    }
+
+    /// A fragment is exempt from **the occluder it is a point of**, and from no
+    /// other on its own cell — even one whose span is exactly the same.
+    ///
+    /// `docs/lighting_height.md` phase 3, stated at the function the phase is
+    /// about. The two solids here are deliberately identical in every geometric
+    /// fact `on_surface` could have read: same tile, same span, same kind. That
+    /// is what the old test could not tell apart in either direction, and it is
+    /// not a corner case — it is two things standing side by side on one tile,
+    /// which `examples/boxes.rs`'s `pair` scene draws and which read
+    /// 1296/1296, 1248/1248 and 9216/9216 fully wrong before this.
+    ///
+    /// Mutating `lit_end` back to `on_surface(ctx.spot_z, low, high)` turns the
+    /// second assertion red and leaves the first green, which is what says the
+    /// two are one property and not a restatement of the same one.
+    #[test]
+    fn a_fragment_is_exempt_from_its_own_solid_and_from_a_twin_of_it_beside_it() {
+        let mine = test_solid(0, 20, crate::occlusion::EDGE_ANY);
+        let theirs = test_solid(0, 20, crate::occlusion::EDGE_ANY);
+        assert_eq!(
+            (mine.low(), mine.high()),
+            (theirs.low(), theirs.high()),
+            "the scene is only a test of identity while the two spans are equal",
+        );
+        let (first, elsewhere) = ((100, 100), (101, 100));
+        let (ours, other) = (
+            crate::occlusion::OwnerId::from_raw(1),
+            crate::occlusion::OwnerId::from_raw(2),
+        );
+        let ctx = ExemptionContext {
+            first,
+            last: (105, 100),
+            skip_last: true,
+            own: 0,
+            owner: ours,
+            // Halfway up both spans, so a height test would answer "mine" for
+            // either of them.
+            spot_z: 10.0,
+            to_z: 10.0,
+        };
+        let exempt = |cell, owner| exemption(&ctx, cell, &mine, owner, mine.low(), mine.high()).exempt;
+        assert!(
+            exempt(first, ours),
+            "a fragment is shadowed by the thing it is drawn from"
+        );
+        assert!(
+            !exempt(first, other),
+            "the thing beside it, at the same height, is not the thing it is drawn from",
+        );
+        // And the gate that was always there stays: identity is asked only about
+        // the fragment's own cell, which is what lets one byte a tile be enough.
+        assert!(
+            !exempt(elsewhere, ours),
+            "a solid on another tile is never `lit_end`"
+        );
+        // A fragment of nothing — the ground, a mobile — is exempt from nothing,
+        // including from another point of nothing.
+        let none = ExemptionContext {
+            owner: crate::occlusion::OwnerId::NONE,
+            ..ctx
+        };
+        assert!(
+            !exemption(
+                &none,
+                first,
+                &mine,
+                crate::occlusion::OwnerId::NONE,
+                mine.low(),
+                mine.high(),
+            )
+            .exempt,
+            "two absences of an owner read as one owner",
+        );
     }
 
     /// [`faces`]'s own gradient: fully towards the light, fully away, and
@@ -3495,7 +3630,7 @@ mod tests {
         let from = [101.26917_f32, 99.877884, 4.255842];
         let to = [100.57816_f32, 100.689926, 0.0];
         let tile = (from[0].floor() as i32, from[1].floor() as i32);
-        let new = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
+        let new = walk_cells_exact(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion);
         assert!(
             new.0 < 0.5,
             "a ray crossing the first tread's own lid should not read as more than half open: \
@@ -3561,7 +3696,7 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let new = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion);
+            let new = walk_cells_exact(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion);
             prop_assert!((0.0..=1.0).contains(&new.0), "from {from:?} to {to:?}: through {}", new.0);
         });
     }
@@ -3595,9 +3730,10 @@ mod tests {
         for y in [99.9_f32, 100.1, 100.2, 100.3, 101.0] {
             let tile = (102, y.floor() as i32);
             let from = [102.5_f32, y, 10.0];
-            let exact = walk_cells_exact(from, flame, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let exact =
+                walk_cells_exact(from, flame, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
             let streaming =
-                walk_cells_streaming(from, flame, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+                walk_cells_streaming(from, flame, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
             assert!(
                 (exact - streaming).abs() < 1e-4,
                 "y {y}: walk_cells_exact through {exact} disagrees with walk_cells_streaming through {streaming}",
@@ -3641,8 +3777,8 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
@@ -3694,6 +3830,7 @@ mod tests {
                     z: 20.0 - 1.0 / 3.0,
                 },
             },
+            crate::occlusion::Owner::new(0, openshard_protocol::wire::Graphic(1)),
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
 
@@ -3740,8 +3877,8 @@ mod tests {
             };
             prop_assume!(hits_with(-quantum) == hits_with(quantum));
 
-            let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
@@ -3797,8 +3934,8 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
@@ -3894,8 +4031,8 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
@@ -3975,7 +4112,7 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), true, FLAME_SPREAD, &occlusion).0;
             prop_assert!((0.0..=1.0).contains(&streaming), "from {from:?} to {to:?}: through {streaming}");
         });
     }

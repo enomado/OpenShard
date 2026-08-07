@@ -82,6 +82,7 @@ pub fn collect(labels: &[Label<'_>], atlas: &FontAtlas) -> Vec<SpriteQuad> {
                     // in the street: no place, and so never dimmed by night.
                     place: crate::place::Place::NOWHERE,
                     twin: 0,
+                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
                 });
             }
             x += i32::from(sprite.width);
@@ -129,6 +130,7 @@ pub fn collect_ttf(labels: &[Label<'_>], atlas: &TtfAtlas) -> Vec<SpriteQuad> {
                     hue: u32::from(label.hue.0),
                     place: crate::place::Place::NOWHERE,
                     twin: 0,
+                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
                 });
             }
             x += i32::from(glyph.advance);

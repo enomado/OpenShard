@@ -109,6 +109,7 @@ fn face_rows() -> Vec<u8> {
         hue: 0,
         place: Place::land(SELECTED.0, SELECTED.1),
         twin: 0,
+        owner: 0,
     }
     .write(&mut bytes);
     bytes

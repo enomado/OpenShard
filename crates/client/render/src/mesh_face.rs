@@ -25,21 +25,35 @@ pub struct MeshFaceRow {
     /// This face's real stance — never [`Stance::MeshFace`] itself, which is
     /// only ever the attachment's own routing sentinel, not a row's content.
     pub stance: Stance,
+    /// Which occluder of `tile` the static this face belongs to is, or
+    /// [`OwnerId::NONE`](crate::occlusion::OwnerId::NONE) for one this frame's
+    /// grid has no solid for.
+    ///
+    /// `docs/lighting_height.md` phase 3, and the mesh half of
+    /// [`SpriteQuad::owner`](crate::sprite::SpriteQuad::owner) — see that field
+    /// for what `blit.wgsl` asks it. A flight of steps is where the phase's own
+    /// first decision shows: its treads are a lid and a riser each, several
+    /// solids from one `Builder::add`, and every one of its faces carries the one
+    /// owner that call gave them all.
+    pub owner: u32,
 }
 
 impl MeshFaceRow {
     /// Bytes one row occupies in `blit.wgsl`'s `mesh_instances` storage
-    /// buffer: two `u32`s, unlike [`SpriteQuad::STRIDE`](crate::sprite::SpriteQuad::STRIDE)'s
+    /// buffer: three `u32`s, unlike [`SpriteQuad::STRIDE`](crate::sprite::SpriteQuad::STRIDE)'s
     /// padded 64 — this buffer is never bound as a vertex attribute, only
     /// read as storage, so there is no vertex-buffer stride to match and
-    /// WGSL's own natural, unpadded struct size is what both sides use.
-    pub const STRIDE: u64 = 8;
+    /// WGSL's own natural, unpadded struct size is what both sides use. A
+    /// struct of scalars aligns to four bytes, so three of them is twelve and
+    /// nothing is rounded up.
+    pub const STRIDE: u64 = 12;
 
     /// Append this row to a storage buffer's upload bytes.
     pub fn write(&self, out: &mut Vec<u8>) {
         let tile = u32::from(self.tile.0) | u32::from(self.tile.1) << 16;
         out.extend_from_slice(&tile.to_le_bytes());
         out.extend_from_slice(&(self.stance as u32).to_le_bytes());
+        out.extend_from_slice(&self.owner.to_le_bytes());
     }
 }
 
@@ -130,6 +144,7 @@ mod tests {
         let row = MeshFaceRow {
             tile: (0x1234, 0x5678),
             stance: Stance::FaceWest,
+            owner: 3,
         };
         let mut out = Vec::new();
         row.write(&mut out);
@@ -140,6 +155,7 @@ mod tests {
             "y in the high half, x in the low"
         );
         assert_eq!(&out[4..8], &(Stance::FaceWest as u32).to_le_bytes());
+        assert_eq!(&out[8..12], &3u32.to_le_bytes(), "the owner");
     }
 
     /// The vertex layout is a contract with `mesh_face.wgsl`'s `vs_main`.

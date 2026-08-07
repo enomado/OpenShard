@@ -58,14 +58,36 @@ pub struct SpriteQuad {
     /// resolves which face's `Stance` a pixel gets. Every other row — a wall,
     /// a floor, a mobile — never reads this field.
     pub twin: u32,
+    /// **Which occluder of its own tile the thing drawn here is**, or
+    /// [`OwnerId::NONE`](crate::occlusion::OwnerId::NONE) for one that is no
+    /// occluder at all.
+    ///
+    /// `docs/lighting_height.md` phase 3, and the join it pays for: the grid
+    /// numbers a cell's occluders, and the pass that draws one has to learn the
+    /// number the grid gave it — [`crate::occlusion::Occlusion::owner_at`]. What
+    /// `blit.wgsl` does with it is ask, for every solid a ray meets on this
+    /// fragment's own cell, whether it is the one the fragment is a point of;
+    /// before this it guessed, by asking whether the fragment's own height fell
+    /// inside the solid's span.
+    ///
+    /// A mobile stamps `NONE` and is exempt from nothing — a billboard is no
+    /// occluder, and a creature standing on a walled tile is genuinely in that
+    /// wall's shadow. So does a static this frame's grid refused (no opacity,
+    /// above the draw ceiling, hidden by the cutaway): what the walk cannot
+    /// find, a fragment cannot be a point of.
+    ///
+    /// A `u32` and not a `u8` because this is the instance buffer's own layout
+    /// and its unit is a word — the `.raw()` belongs at this boundary, the way
+    /// `hue`'s does.
+    pub owner: u32,
 }
 
 impl SpriteQuad {
     /// Bytes one quad occupies in the instance buffer.
     ///
-    /// Nine floats and four `u32`s — position, size, region, depth, hue, the
-    /// two words of [`crate::place::Place`], and `twin` — is 52 bytes on its
-    /// own, but the stride is 64: `blit.wgsl`'s `FaceInstance` mirrors this
+    /// Nine floats and five `u32`s — position, size, region, depth, hue, the
+    /// two words of [`crate::place::Place`], `twin` and `owner` — is 56 bytes on
+    /// its own, but the stride is 64: `blit.wgsl`'s `FaceInstance` mirrors this
     /// struct field for field to read it a second time as storage
     /// (`docs/gbuffer.md` step 3), and WGSL's storage-buffer layout rounds a
     /// struct's size up to its own alignment — 16 bytes here, from the two
@@ -116,9 +138,10 @@ impl SpriteQuad {
             out.extend_from_slice(&word.to_le_bytes());
         }
         out.extend_from_slice(&self.twin.to_le_bytes());
+        out.extend_from_slice(&self.owner.to_le_bytes());
         // See `STRIDE`'s own doc: `blit.wgsl`'s mirror of this struct rounds
         // up to 64 bytes on its own, so this has to as well.
-        out.extend_from_slice(&[0u8; 12]);
+        out.extend_from_slice(&[0u8; 8]);
     }
 }
 
@@ -197,6 +220,7 @@ mod tests {
             hue: 0x8021,
             place: crate::place::Place::of_static(openshard_protocol::world::Point::new(7, 9, -2)),
             twin: 0xABCD,
+            owner: 5,
         };
         let mut out = Vec::new();
         quad.write(&mut out);
@@ -209,7 +233,8 @@ mod tests {
         assert_eq!(&out[32..36], &0.75f32.to_le_bytes(), "depth");
         assert_eq!(&out[36..40], &0x8021u32.to_le_bytes(), "hue");
         assert_eq!(&out[48..52], &0xABCDu32.to_le_bytes(), "twin");
-        assert_eq!(&out[52..64], &[0u8; 12], "padding out to the 64-byte stride");
+        assert_eq!(&out[52..56], &5u32.to_le_bytes(), "owner");
+        assert_eq!(&out[56..64], &[0u8; 8], "padding out to the 64-byte stride");
     }
 
     /// A corner gets a shadow row its twin points at; a plain wall gets none.
@@ -236,6 +261,7 @@ mod tests {
                 ..crate::place::Place::of_static(at)
             },
             twin: 0,
+            owner: 0,
         };
         let corner = SpriteQuad {
             place: crate::place::Place {

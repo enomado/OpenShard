@@ -498,11 +498,23 @@ fn main() {
     for (tile, solid) in [(a, solid_a.space), (b, solid_b.space)] {
         let mesh = box_mesh(solid);
         let d = depth_of(tile);
+        // Which occluder of its own tile this cube is, off the grid built above —
+        // the same `(z, graphic)` the two `Builder::add` calls keyed on. Without
+        // it every face of a cube would be a point of nothing and the cube would
+        // shadow itself; `docs/lighting_height.md` phase 3, and `owner_at` is the
+        // join it pays for.
+        let owner = occlusion.owner_at(i32::from(tile.x), i32::from(tile.y), tile.z, Graphic(1));
+        assert_ne!(
+            owner,
+            openshard_client_render::occlusion::OwnerId::NONE,
+            "the cube at {tile:?} is not in the grid this tool built",
+        );
         for face in mesh.faces() {
             let id = rows.len() as u32;
             rows.push(MeshFaceRow {
                 tile: (tile.x, tile.y),
                 stance: Stance::of_normal(face.normal).expect("a prism face's own axis-aligned normal"),
+                owner: u32::from(owner.raw()),
             });
             for corner in face.fan() {
                 let screen = camera.to_view_exact(project_exact(corner));

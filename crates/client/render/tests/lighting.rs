@@ -43,12 +43,48 @@ fn at(lighting: &Lighting, tile: (u16, u16), z: f32) -> f32 {
 }
 
 /// The middle of a tile, at a height.
+///
+/// A point of **no occluder** — see [`on_the_static`] for the probe that is a
+/// point of one. That is the honest default here: most of these probes are the
+/// air or the floor of a room, and a point in the open is a point of nothing.
 fn spot(tile: (u16, u16), z: f32) -> Spot {
     Spot::at(
         Vec2::new(f32::from(tile.0) + 0.5, f32::from(tile.1) + 0.5),
         z,
         (i32::from(tile.0), i32::from(tile.1)),
     )
+}
+
+/// How bright a point **of the static standing on `tile`** is, at a height —
+/// what a pixel of that static's own picture would come out at.
+///
+/// The distinction [`at`] cannot make and `docs/lighting_height.md` phase 3 is
+/// about. A wall's face lies *on* the panel it is the face of, so the wall must
+/// not shadow it — and until that phase the rule that said so was "a point is
+/// never shadowed by its own *tile*", which a point of the air standing in the
+/// same tile got for free. Now it is the *thing*: a fragment carries which
+/// occluder of its cell it was drawn from, and only that one is exempt.
+///
+/// `graphic` and `z_at` are the static's own, the pair
+/// [`occlusion::Occlusion::owner_at`] keys on — the same two the scene placed it
+/// with, not the height the probe is taken at.
+fn on_the_static(
+    lighting: &Lighting,
+    tile: (u16, u16),
+    z: f32,
+    graphic: openshard_protocol::wire::Graphic,
+    z_at: i8,
+) -> f32 {
+    let owner = lighting
+        .occlusion
+        .owner_at(i32::from(tile.0), i32::from(tile.1), z_at, graphic);
+    assert_ne!(
+        owner,
+        occlusion::OwnerId::NONE,
+        "no {graphic:?} at {tile:?} in this scene's grid — the probe would be \
+         asking about a point of nothing, which is a different question",
+    );
+    light::sample(spot(tile, z).owned_by(owner), lighting).brightness()
 }
 
 /// The room, drawn, for the message a failing assertion carries.
@@ -380,7 +416,11 @@ fn a_pane_of_glass_dims_light_where_a_wall_stops_it() {
 /// The bug the world-coordinate pass was written against: in screen space the
 /// wall's own sprite stands over the ground it shadows, so the face turned
 /// towards the flame was the darkest thing in the picture. Here the wall's
-/// pixels carry the wall's tile, and its own tile never shadows it.
+/// pixels carry the wall's tile — and, since `docs/lighting_height.md` phase 3,
+/// which occluder of that tile they are pixels *of*, which is what says the wall
+/// does not shadow its own face. Probed through [`on_the_static`] for exactly
+/// that reason: a point of the air in the same tile is a different question and
+/// gets a different answer.
 #[test]
 fn the_face_of_a_wall_is_lit_from_inside_the_room() {
     let scene = scene::room();
@@ -393,7 +433,7 @@ fn the_face_of_a_wall_is_lit_from_inside_the_room() {
         f32::from(scene::WALL_HEIGHT) / 2.0,
         f32::from(scene::WALL_HEIGHT),
     ] {
-        let lit = at(&lighting, wall, z);
+        let lit = on_the_static(&lighting, wall, z, scene::WALL, 0);
         assert!(
             lit > ambient(&lighting, wall) + 0.1,
             "the wall is dark at z {z}: {lit}{}",
@@ -486,8 +526,10 @@ fn a_carried_light_lights_the_way_it_is_pointed() {
         (CENTRE.0 - scene::ROOM_HALF, CENTRE.1),
     );
     for z in [0.0, f32::from(scene::WALL_HEIGHT) / 2.0] {
-        let face = at(&lighting, front_wall, z) - ambient(&lighting, front_wall);
-        let back = at(&lighting, back_wall, z) - ambient(&lighting, back_wall);
+        // Points **of** those walls, not points of the air inside their tiles —
+        // see `on_the_static`, and `docs/lighting_height.md` phase 3.
+        let face = on_the_static(&lighting, front_wall, z, scene::WALL, 0) - ambient(&lighting, front_wall);
+        let back = on_the_static(&lighting, back_wall, z, scene::WALL, 0) - ambient(&lighting, back_wall);
         assert!(
             face > 0.1,
             "the wall the beam points at is dark at z {z}: {face}{picture}",

@@ -4384,6 +4384,68 @@ impl App {
         }
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // **The frame's occluders are built before its pictures are collected**,
+        // and that ordering is `docs/lighting_height.md` phase 3's one real cost.
+        // A static's drawn row now carries the number this grid gave it
+        // (`occlusion::Occlusion::owner_at`), so that a fragment of it can say
+        // which occluder it is a point of instead of having that guessed from its
+        // height; collecting the pictures first would stamp numbers off the grid
+        // of the frame before. Nothing else about either step changed — the
+        // statics used to go first for no reason anyone recorded.
+        //
+        // The lights come from the same camera, cutaway and item list the passes
+        // below draw from, so a torch that was not drawn casts nothing and a
+        // torch that was is lighting the pixels it is standing in rather than the
+        // pixels it stood in last frame.
+        // Three skies and not two: night, a daylight with a sun in it, and the
+        // plain daylight that is the identity — the frame the blit has always
+        // copied through untouched. The middle one is a key today; see
+        // `App::sunlit`.
+        let sky = match (self.night, self.sunlit) {
+            (true, _) => Some(light::NIGHT),
+            (false, true) => Some(light::SKYLIGHT),
+            // Daylight, where the pass is a copy and no grid is built at all —
+            // unless the solids view is on, and then the grid *is* the subject.
+            // `Ambient::DAY` flattened is the identity, so the picture under the
+            // boxes is the same daylight frame it was; what it buys is that the
+            // list drawn is the one the shader would walk, out of the same bake,
+            // rather than a second walk of the map made for the view. See
+            // `docs/lighting.md` step 23.0.
+            (false, false) => self.show_solids.then_some(light::Ambient::DAY),
+        };
+        // And whether a tile's share of it depends on what stands over the tile.
+        // Off by default: see `App::sky_field`, and `light::Ambient::flattened`
+        // for why the flat one is the baseline rather than a lesser version.
+        let sky = match self.sky_field {
+            true => sky,
+            false => sky.map(light::Ambient::flattened),
+        };
+        let mut lighting = match sky {
+            Some(ambient) => light::collect(
+                &self.map,
+                &self.items,
+                &camera,
+                &self.tiledata,
+                &cutaway,
+                ambient,
+                self.flame_clock.as_secs_f32(),
+                // The pictures, which is where an occluder's *facing* comes from:
+                // a wall stops a ray only where the ray crosses the side the wall
+                // stands on, and only the art says which side that is. The same
+                // atlas the statics pass is about to draw from, so the grid and
+                // the picture cannot be about two different sets of sprites.
+                Some(&window.atlases.statics),
+                // And the blocks of that grid built for earlier frames. A camera
+                // that has moved a tile wants the same five hundred and fifty
+                // blocks it wanted last frame bar a handful — see
+                // `occlusion::bake`, and `StaticAtlas::revision` for what makes
+                // this let go when the atlas learns something new about a
+                // graphic.
+                Some(&mut self.occlusion_bake),
+            ),
+            None => Lighting::NONE,
+        };
+
         let quads = ground::collect(
             &self.map,
             &camera,
@@ -4402,6 +4464,7 @@ impl App {
             &self.tile_animations,
             &window.atlases.statics,
             &cutaway,
+            &lighting.occlusion,
         );
         // Through the same pass as the map's statics, because they are the same
         // atlas: one draw call binds one texture, and what covers what is the
@@ -4448,6 +4511,7 @@ impl App {
             &window.atlases.statics,
             &cutaway,
             hued,
+            &lighting.occlusion,
         );
         let static_quads = {
             let mut quads = static_quads;
@@ -4652,58 +4716,9 @@ impl App {
         // minified it is where the shrinking happens, which is why the zoom is
         // still what picks the sampler.
         //
-        // The lights are collected here, from the same camera, cutaway and item
-        // list the passes above drew from — so a torch that was not drawn casts
-        // nothing, and a torch that was is lighting the pixels it is standing
-        // in rather than the pixels it stood in last frame.
-        // Three skies and not two: night, a daylight with a sun in it, and the
-        // plain daylight that is the identity — the frame the blit has always
-        // copied through untouched. The middle one is a key today; see
-        // `App::sunlit`.
-        let sky = match (self.night, self.sunlit) {
-            (true, _) => Some(light::NIGHT),
-            (false, true) => Some(light::SKYLIGHT),
-            // Daylight, where the pass is a copy and no grid is built at all —
-            // unless the solids view is on, and then the grid *is* the subject.
-            // `Ambient::DAY` flattened is the identity, so the picture under the
-            // boxes is the same daylight frame it was; what it buys is that the
-            // list drawn is the one the shader would walk, out of the same bake,
-            // rather than a second walk of the map made for the view. See
-            // `docs/lighting.md` step 23.0.
-            (false, false) => self.show_solids.then_some(light::Ambient::DAY),
-        };
-        // And whether a tile's share of it depends on what stands over the tile.
-        // Off by default: see `App::sky_field`, and `light::Ambient::flattened`
-        // for why the flat one is the baseline rather than a lesser version.
-        let sky = match self.sky_field {
-            true => sky,
-            false => sky.map(light::Ambient::flattened),
-        };
-        let mut lighting = match sky {
-            Some(ambient) => light::collect(
-                &self.map,
-                &self.items,
-                &camera,
-                &self.tiledata,
-                &cutaway,
-                ambient,
-                self.flame_clock.as_secs_f32(),
-                // The pictures, which is where an occluder's *facing* comes from:
-                // a wall stops a ray only where the ray crosses the side the wall
-                // stands on, and only the art says which side that is. The same
-                // atlas the statics pass is about to draw from, so the grid and
-                // the picture cannot be about two different sets of sprites.
-                Some(&window.atlases.statics),
-                // And the blocks of that grid built for earlier frames. A camera
-                // that has moved a tile wants the same five hundred and fifty
-                // blocks it wanted last frame bar a handful — see
-                // `occlusion::bake`, and `StaticAtlas::revision` for what makes
-                // this let go when the atlas learns something new about a
-                // graphic.
-                Some(&mut self.occlusion_bake),
-            ),
-            None => Lighting::NONE,
-        };
+        // The lights themselves were collected at the top of the frame, before
+        // the pictures — see the comment there for why the order is that way
+        // round now.
         // The sun is a property of the sky and not of the tiles, so it is set
         // here rather than inside the walk — and never at night, where a second
         // source lighting every roof would undo the whole point of the dark.

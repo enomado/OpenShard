@@ -162,6 +162,10 @@ const VIEW_FLAMES: u32 = 10u;
 // still has to be declared: this struct's size is what WGSL uses to stride
 // through the buffer, and a struct narrower than `SpriteQuad::STRIDE` reads
 // every row past the first at the wrong offset.
+// `owner` (`docs/lighting_height.md` phase 3) *is* read here, unlike `twin`:
+// which occluder of its own tile the thing drawn on a pixel is, so that
+// `cell_stopped` can ask whether a solid it meets is the one the fragment is a
+// point of instead of guessing from its height. `crate::sprite::SpriteQuad`.
 struct FaceInstance {
     rect: vec4<f32>,
     region: vec4<f32>,
@@ -169,6 +173,7 @@ struct FaceInstance {
     hue: u32,
     place: vec2<u32>,
     twin: u32,
+    owner: u32,
 };
 
 @group(0) @binding(9) var<storage, read> face_instances: array<FaceInstance>;
@@ -181,6 +186,7 @@ struct FaceInstance {
 struct MeshFaceInstance {
     tile: u32,
     stance: u32,
+    owner: u32,
 };
 
 @group(0) @binding(11) var<storage, read> mesh_instances: array<MeshFaceInstance>;
@@ -242,6 +248,12 @@ struct GroundInstance {
 // whole unit, so a box based at `z 3.5` arrived here spanning `4` and the bottom
 // half unit of its own faces sat below its own solid.
 @group(0) @binding(14) var solid_z: texture_2d<u32>;
+
+// No occluder at all — `occlusion::OwnerId::NONE`, and what the ground, a mobile
+// and anything the grid refused stamp. Zero and matching nothing, which is why
+// the numbering `Builder::finish` hands out starts at one: two fragments that are
+// each a point of nothing are not a point of the same thing.
+const OWNER_NONE: u32 = 0u;
 
 // Steps of a `z` unit that plane carries one in, and where it counts from.
 //
@@ -629,16 +641,19 @@ fn solids_at(x: i32, y: i32) -> vec2<u32> {
     return vec2<u32>(span.x | (span.y << 8u) | (span.z << 16u), span.w);
 }
 
-// Which solid a cell's `n`th reference names — `occlusion::SolidId`, spread over
-// three channels exactly as the index's offset is.
+// Which solid a cell's `n`th reference names, and **which occluder of that cell
+// it is** — `occlusion::SolidId` spread over three channels exactly as the
+// index's offset is, and `occlusion::OwnerId` in the fourth.
 //
 // The one fetch step 23.1 added to the hot loop, and it is a fetch rather than
 // arithmetic because a reference is a fact about the world's geometry: the run a
-// cell holds is contiguous, what it points at need not be.
-fn id_at(reference: u32) -> u32 {
+// cell holds is contiguous, what it points at need not be. The owner rides in the
+// same texel for the same reason — it is a fact about the *reference*, and the
+// loop is already reading this word.
+fn id_at(reference: u32) -> vec2<u32> {
     let at = vec2<i32>(i32(reference % LIST_ROW), i32(reference / LIST_ROW));
     let id = textureLoad(solid_ids, at, 0);
-    return id.x | (id.y << 8u) | (id.z << 16u);
+    return vec2<u32>(id.x | (id.y << 8u) | (id.z << 16u), id.w);
 }
 
 // One solid of the list: (0, 0, opacity, PRESENT | HOLED | edges).
@@ -707,12 +722,12 @@ fn merged_at(x: i32, y: i32) -> MergedCell {
     if run.y == 0u {
         return MergedCell(0.0, 0.0, 0u, 0u);
     }
-    let first_id = id_at(run.x);
+    let first_id = id_at(run.x).x;
     let first = solid_at(first_id);
     let first_span = span_of(first_id);
     var merged = MergedCell(first_span.x, first_span.y, first.z, first.w);
     for (var i = 1u; i < run.y; i = i + 1u) {
-        let id = id_at(run.x + i);
+        let id = id_at(run.x + i).x;
         let stands = solid_at(id);
         let span = span_of(id);
         merged = MergedCell(
@@ -909,6 +924,7 @@ fn cell_stopped(
     first: vec2<i32>,
     last: vec2<i32>,
     own: u32,
+    owner: u32,
     stance: u32,
     skip_last: bool,
     spread: f32,
@@ -920,28 +936,22 @@ fn cell_stopped(
     let own_cell = cell.x == first.x && cell.y == first.y;
     let span = solids_at(cell.x, cell.y);
     let lit = start;
-    // The union of the sides the tile's surfaces stand on. A *tile's* answer
-    // and deliberately so: what a pixel is exempted from below is the tile it
-    // is on and not one surface of it. Only on the ray's own cell, which is
-    // the only place it is read.
-    var sides = 0u;
-    if own_cell {
-        for (var k = 0u; k < span.y; k = k + 1u) {
-            sides = sides | (solid_at(id_at(span.x + k)).w & EDGE_MASK);
-        }
-    }
-    // Which of this tile's sides may shadow the pixel that is on it: all of
-    // them where the pixel is a flat one on a walled tile, none anywhere
-    // else. See `light::Surface::shadowed_by_own_tile`.
-    let own_shadows = stance == STANCE_FLAT && sides != 0u && sides != EDGE_MASK;
-    let admitted = select(0u, sides, own_shadows);
+    // **The tile-wide union of sides used to be gathered here**, in a loop of
+    // its own over every solid of the ray's own cell, and `light::Surface::
+    // shadowed_by_own_tile` turned it into a mask the exemption below was anded
+    // with. `docs/lighting_height.md` phase 3 retired both: that mask was zero
+    // for every surface that reached the test (the arm also required the stance
+    // *not* to be flat, and the mask was only ever non-zero for a flat one), and
+    // what a fragment is a point of is now a number it carries rather than
+    // anything derived from its tile. One fetch loop a cell less, besides.
 
     // What the *cell* stops is the **largest** of what its surfaces stop,
     // and not the product: two panels on one tile are the two faces of one
     // corner, and a ray crossing both has gone through one thing once.
     var stopped = 0.0;
     for (var k = 0u; k < span.y; k = k + 1u) {
-        let id = id_at(span.x + k);
+        let reference = id_at(span.x + k);
+        let id = reference.x;
         let stands = solid_at(id);
         let edges = stands.w & EDGE_MASK;
         // The solid's real `z` span, fraction included — `span_of`, never the
@@ -958,18 +968,16 @@ fn cell_stopped(
         if !hit.hit {
             continue;
         }
-        // Same `lit_end`/`flame_end`/`caps_this`/`same_run` decision the old
-        // walk computed inline — see its own comments, unchanged in shape,
-        // just asked once per solid instead of once per cell.
+        // Same `lit_end`/`flame_end`/`same_run` decision `light::exemption`
+        // makes — see its own doc comment for the whole of why `lit_end` is an
+        // identity now and not a height. `OWNER_NONE` matches nothing, so a
+        // fragment that is a point of no occluder (the ground, a mobile) is
+        // exempt from none of them; `light::occlusion::OwnerId::same`.
         let same_run = select(0u, own_run(own, cell, first), on_surface(lit.z, low, high));
-        let lit_end = own_cell && on_surface(lit.z, low, high);
+        let lit_end = own_cell && owner != OWNER_NONE && owner == reference.y;
         let flame_end =
             skip_last && cell.x == last.x && cell.y == last.y && on_surface(finish.z, low, high);
-        let caps_this = stance == STANCE_FLAT && lit_end && lit.z >= high - ON_TOP;
-        if edges != 0u
-            && ((lit_end && stance != STANCE_FLAT && (edges & admitted) == 0u)
-                || flame_end
-                || caps_this) {
+        if edges != 0u && (lit_end || flame_end) {
             continue;
         }
         // How soft this crossing's own edge is: the penumbra a source of
@@ -1048,6 +1056,7 @@ fn walk(
     raw_finish: vec3<f32>,
     tile: vec2<f32>,
     stance: u32,
+    owner: u32,
     skip_last: bool,
     spread: f32,
 ) -> f32 {
@@ -1094,7 +1103,7 @@ fn walk(
         let straight = solids_at(first.x, first.y);
         var stopped = 0.0;
         for (var i = 0u; i < straight.y; i = i + 1u) {
-            let id = id_at(straight.x + i);
+            let id = id_at(straight.x + i).x;
             let stands = solid_at(id);
             if (stands.w & EDGE_MASK) != 0u {
                 continue;
@@ -1155,7 +1164,7 @@ fn walk(
     var cell = first;
     for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let stopped = cell_stopped(
-            cell, first, last, own, stance, skip_last, spread, start, finish, delta, ground,
+            cell, first, last, own, owner, stance, skip_last, spread, start, finish, delta, ground,
         );
         through = through * (1.0 - stopped);
         if through <= 0.004 {
@@ -1194,7 +1203,7 @@ fn walk(
             out_by_x,
         );
         let probe_stopped = cell_stopped(
-            probe, first, last, own, stance, skip_last, spread, start, finish, delta, ground,
+            probe, first, last, own, owner, stance, skip_last, spread, start, finish, delta, ground,
         );
         through = through * (1.0 - probe_stopped);
         if through <= 0.004 {
@@ -1267,7 +1276,7 @@ const MAX_SUN_TILES: f32 = 32.0;
 // `walk` draws. The fragment's own tile is skipped there as it is for a flame,
 // which is what lights a wall on the side the sun is on instead of shadowing it
 // with itself.
-fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32) -> f32 {
+fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32, owner: u32) -> f32 {
     let horizontal = length(lighting.sun.xy);
     if horizontal < 1.0e-6 {
         // Straight overhead: nothing but the fragment's own tile is in the way,
@@ -1289,7 +1298,7 @@ fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32) -> f32 {
         // which arrives here as a ceiling below every fragment there is.
         return 1.0;
     }
-    return walk(at, at + step * tiles, tile, stance, false, 0.0);
+    return walk(at, at + step * tiles, tile, stance, owner, false, 0.0);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -1499,6 +1508,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var stance = (place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK;
     let id = place.x | (place.y << 16u);
     var tile = vec2<f32>(0.0);
+    // And which occluder of that tile this fragment is a point of — the row's
+    // own, off the same fetch the tile comes from, `docs/lighting_height.md`
+    // phase 3. Land keeps `OWNER_NONE`: the ground is no occluder, so it is
+    // exempt from none of them, which is what it always was in effect.
+    var owner = OWNER_NONE;
     if kind == KIND_LAND {
         tile = vec2<f32>(
             f32(ground_instances[id].place0 & 0xFFFFu),
@@ -1512,12 +1526,19 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         let row = mesh_instances[id];
         tile = vec2<f32>(f32(row.tile & 0xFFFFu), f32(row.tile >> 16u));
         stance = row.stance;
+        owner = row.owner;
     } else {
         var row_place: vec2<u32>;
         if kind == KIND_STATIC {
             row_place = face_instances[id].place;
+            owner = face_instances[id].owner;
         } else {
             row_place = mobile_instances[id].place;
+            // A mobile's row stamps `OWNER_NONE` on the CPU side
+            // (`mobiles::collect`), so this reads it rather than assuming it —
+            // one place decides what a billboard is a point of, and it is the
+            // one that builds the row.
+            owner = mobile_instances[id].owner;
         }
         tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
     }
@@ -1613,7 +1634,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // The flame's own tile is exempt, and a flame is a body a tile wide:
         // `walk`'s two parameters, and the only two things that make this ray
         // different from the sun's.
-        let through = walk(at, vec3<f32>(to.x, to.y, to.z), tile, stance, true, FLAME_SPREAD);
+        let through = walk(at, vec3<f32>(to.x, to.y, to.z), tile, stance, owner, true, FLAME_SPREAD);
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
         // from open ground nothing reaches. That difference is the one the whole
@@ -1640,7 +1661,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // falloff, only whether anything stands between this pixel and the sky.
     var sun_through = 0.0;
     if lighting.sun_color.w > 0.0 {
-        sun_through = sunlight(at, tile, stance);
+        sun_through = sunlight(at, tile, stance, owner);
         lit = lit + lighting.sun_color.rgb * (lighting.sun_color.w * sun_through);
     }
 
