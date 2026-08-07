@@ -21,14 +21,17 @@
 //! not two `facing::Prism`s) are built from that same [`BoxSpec`], so the
 //! two can never disagree the way `two_cubes.rs`'s session 13 bug did.
 //!
-//! - `OPENSHARD_BOXES_SCENE=tree|line` — which scene to build. Default
+//! - `OPENSHARD_BOXES_SCENE=tree|pair|line` — which scene to build. Default
 //!   `tree`: two boxes on one tile, the lower a half-tile footprint, the
 //!   upper a third-tile footprint standing directly on top of it — small on
 //!   purpose, to see whether a shape that narrow still throws a shadow with
-//!   the outline its own silhouette suggests. `line` is `two_cubes.rs`'s own
-//!   default shape (two whole-tile boxes, offset `1,0` — due east, a
-//!   straight line rather than a diagonal) at a shorter height, built here
-//!   only so both scenes go through one tool with one set of knobs.
+//!   the outline its own silhouette suggests. `pair` puts two boxes of one
+//!   height *side by side* on one tile with the flame beyond the second, which
+//!   is `docs/lighting_height.md` phase 3's own fixture: see [`scene_pair`].
+//!   `line` is `two_cubes.rs`'s own default shape (two whole-tile boxes,
+//!   offset `1,0` — due east, a straight line rather than a diagonal) at a
+//!   shorter height, built here only so both scenes go through one tool with
+//!   one set of knobs.
 //! - `OPENSHARD_SCENE_ZOOM=n` — notches of `Zoom::scale_up`, from `Zoom::ONE`.
 //!   Default `3` for both scenes, which is **the top of the ladder**:
 //!   `camera::LADDER` has three rungs above 1:1 and `scale_up` stops at the
@@ -443,6 +446,47 @@ fn scene_tree() -> Vec<BoxSpec> {
     ]
 }
 
+/// Two boxes **side by side on one tile, spanning the same heights**, with the
+/// flame beyond the second along the line through both.
+///
+/// The scene `docs/lighting_height.md`'s phase 3 is measured against, and it
+/// exists because the `tree` scene cannot show that phase's defect at all:
+/// `tree` stacks its boxes, so the two `z` spans meet at a single plane and a
+/// fragment of one is inside the other's span for exactly one quantum of
+/// height. Here every fragment of either box's faces is inside *both* spans,
+/// which is what `exemption` reads as "this solid is the one the fragment is a
+/// point of" — so the second box, standing squarely between the first and the
+/// flame, is exempted from shadowing the very face it covers. `on_surface`
+/// answers a question about height and is asked a question about identity;
+/// this is the scene where the two answers differ for every pixel rather than
+/// for a band.
+///
+/// The two are set on the tile's own diagonal so that neither covers the other
+/// on screen — they share a tile and therefore a `depth::Order`, and a tie
+/// there goes to whichever was pushed later, which would leave the first box's
+/// own east face with almost no pixels for an oracle to sweep.
+fn scene_pair() -> Vec<BoxSpec> {
+    let (tx, ty) = (100u16, 100u16);
+    let w: f64 = env_or("OPENSHARD_PAIR_W", "0.3").parse().expect("a number");
+    let h: f64 = env_or("OPENSHARD_PAIR_H", "3").parse().expect("a number");
+    let (x0, y0) = (f64::from(tx), f64::from(ty));
+    vec![
+        // The far one, north-west along the tile's diagonal: the face under
+        // test is its own `east`.
+        BoxSpec {
+            tile: (tx, ty),
+            min: (x0 + 0.05, y0 + 0.65, 0.0),
+            max: (x0 + 0.05 + w, y0 + 0.65 + w, h),
+        },
+        // And the near one, south-east, standing between it and the flame.
+        BoxSpec {
+            tile: (tx, ty),
+            min: (x0 + 0.65, y0 + 0.05, 0.0),
+            max: (x0 + 0.65 + w, y0 + 0.05 + w, h),
+        },
+    ]
+}
+
 /// Two whole-tile boxes in a straight line due east — `two_cubes.rs`'s own
 /// default shape (`OPENSHARD_CUBE_OFFSET`'s default `1,1`) offset `1,0`
 /// instead, at a shorter height than that tool's own default `11`.
@@ -676,8 +720,9 @@ fn main() {
     let scene_name = env_or("OPENSHARD_BOXES_SCENE", "tree");
     let boxes = match scene_name.as_str() {
         "tree" => scene_tree(),
+        "pair" => scene_pair(),
         "line" => scene_line(),
-        other => panic!("unknown OPENSHARD_BOXES_SCENE {other:?}, wanted tree or line"),
+        other => panic!("unknown OPENSHARD_BOXES_SCENE {other:?}, wanted tree, pair or line"),
     };
     eprintln!("scene {scene_name:?}: {} boxes", boxes.len());
     for (i, b) in boxes.iter().enumerate() {
@@ -881,6 +926,13 @@ fn main() {
     // ambient below is deliberate — see `light.rs`'s own doc).
     let (default_ldx, default_ldy, default_z, default_radius) = match scene_name.as_str() {
         "tree" => (1.5, -1.0, "6", "6"),
+        // `pair`'s flame is not picked to look good, it is picked to make one
+        // question sharp: it stands on the line through both boxes' own
+        // centres, beyond the near one, at half their height. So every ray from
+        // the far box's `east` face to it runs nearly level and squarely
+        // through the near box, and any pixel of that face the frame draws lit
+        // is a pixel the near box was exempted from shadowing.
+        "pair" => (2.0, -1.0, "1.5", "6"),
         _ => (2.5, -1.5, "6", "8"),
     };
     let (ldx, ldy) = env_opt("OPENSHARD_LIGHT_AT")
