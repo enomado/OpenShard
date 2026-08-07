@@ -299,8 +299,10 @@ OPENSHARD_BOXES_PATHTRACE_EMITTER=0.5 OPENSHARD_BOXES_PATHTRACE_EXPOSURE=3.0 \
 ```
 
 Writes `<path>_pathtrace_full.ppm`. `_EMITTER` is the emitter's radius in tiles
-(`0` is not a point — use the degenerate mode for that), `_EXPOSURE` is a plain
-linear multiplier before the sRGB curve.
+and **`0` is the point emitter** — hard shadows with the cosine, the bounces and
+the sky still in, which is the one picture neither mode had: degenerate mode is a
+bit a pixel, and full mode was always soft. `_EXPOSURE` is a plain linear
+multiplier before the sRGB curve.
 
 ## Status
 

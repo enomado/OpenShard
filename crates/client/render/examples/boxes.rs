@@ -1359,18 +1359,37 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
     if samples == 0 {
         return;
     }
+    // `0` is the point emitter, not a sphere of no radius. The two draw the same
+    // sample — `Light::sample`'s own `Sphere` branch spreads by `radius * √u`,
+    // which is the centre when the radius is nought — but only one of them
+    // *says* so: `exact_in_samples` reports `Some(1)` for a point and `None` for
+    // any sphere, and that is what `Image::is_exact` reads. A knob whose zero
+    // produces an exact picture the image itself calls inexact is a knob that
+    // has to be spelled, and this is where the spelling belongs: the tracer's
+    // own enum already has both shapes.
+    //
+    // What it buys is the one picture neither mode had — hard shadows *with* a
+    // cosine, bounced light and a sky. Degenerate mode is a bit per pixel and
+    // full mode was always soft, so "which of these edges is the penumbra"
+    // could only be answered by rendering the same frame at two radii.
+    let radius: f64 = env_or("OPENSHARD_BOXES_PATHTRACE_EMITTER", "0.35")
+        .parse()
+        .expect("a number");
     let soft = pt_light::Light {
-        emitter: pt_light::Emitter::Sphere {
-            radius: env_or("OPENSHARD_BOXES_PATHTRACE_EMITTER", "0.35")
-                .parse()
-                .expect("a number"),
+        emitter: match radius {
+            0.0 => pt_light::Emitter::Point,
+            radius => pt_light::Emitter::Sphere { radius },
         },
         ..mirror.flame
     };
     let bounces: u32 = env_or("OPENSHARD_BOXES_PATHTRACE_BOUNCES", "2")
         .parse()
         .expect("a number");
-    eprintln!("path tracer, full mode: {samples} samples, {bounces} bounces — this takes a while");
+    let emitter = match soft.emitter {
+        pt_light::Emitter::Point => "a point emitter, hard shadows".to_string(),
+        pt_light::Emitter::Sphere { radius } => format!("a sphere of {radius} tiles"),
+    };
+    eprintln!("path tracer, full mode: {samples} samples, {bounces} bounces, {emitter} — this takes a while");
     let full = pt_trace::render(
         &mirror.scene,
         &mirror.camera,
