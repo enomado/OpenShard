@@ -34,11 +34,11 @@
 //!   This line used to say that the default "leaves the far tread in its own
 //!   riser's shadow", citing `Surface::shadowed_by_own_tile` and decision 32 —
 //!   a function `docs/lighting_height.md` phase 3 deleted as vacuous. What the
-//!   default actually shows is phase 4's defect: the far tread is stopped by
-//!   **its own top lid**, the plane it is drawn on, and the seams down every
-//!   tread/riser join are the same thing at the foot of a riser. A fixture
-//!   whose own comment expects the bug is a fixture nobody reads as red, so
-//!   this says what it is instead.
+//!   default actually shows is the two shapes phase 4 is about: the far tread
+//!   comes out black, and every tread/riser join wears a hard hairline. A
+//!   fixture whose own comment expects a bug is a fixture nobody reads as red,
+//!   so this says what it is instead — and the oracle below is what says which
+//!   of the two, if either, is the renderer being wrong.
 //! - `OPENSHARD_LIGHT_Z` / `OPENSHARD_LIGHT_RADIUS` — default `2` and `6`.
 //! - `OPENSHARD_FRAME_VIEW=n` — an index into `debug::View::ALL`; `7` is
 //!   `Shadow`. Default `0`, `Lit` — mostly uninformative here, since this
@@ -53,32 +53,85 @@
 //!   the flight's own owner, so it is the same question a drawn fragment asks;
 //!   the report names which solid stopped the ray, which is what tells "my own
 //!   riser shadowed me" from "my own tread's lid did".
+//! - `OPENSHARD_STAIR_ORACLE=0` — skip the face oracle below.
 //!
 //! The picture gets one more mark that is not the shader's own output: a lime
 //! crosshair on a black backing plate at the flame's own projected position,
 //! because "is the light behind the stair or in front of it" is faster to
 //! answer by looking than by reading `OPENSHARD_LIGHT_AT` back.
 //!
+//! # The face oracle
+//!
+//! `docs/lighting_height.md` phase 4, step 1, and it is deliberately built
+//! **before** the fix it is meant to judge. Everything known about that defect
+//! is a reason to skip this — the shapes are visible, the cause is named, the
+//! fix is one predicate — and every number the phase has is a count of pixels
+//! this renderer drew, judged by eye against geometry worked out on paper.
+//! That is exactly the arrangement that let phases 1 and 2 report a residual
+//! for two sessions which turned out to be the instrument.
+//!
+//! The shape is `examples/boxes.rs`'s own, and the two share it
+//! (`examples/oracle/mod.rs`): sweep **every pixel the rendered `place`
+//! attachment says a flight's own face drew** — the renderer's answer to whose
+//! pixel it is, not a reconstruction of it — read that fragment's own world
+//! position back out of the same attachment, ask an independent slab test about
+//! *that* point, and lay the answer against the rendered `View::Shadow` pixel.
+//! No arithmetic on the oracle's side is shared with `light.rs` or `blit.wesl`.
+//!
+//! What is new here, and what phase 4 needs, is **which occluder the fragment is
+//! excused from**. `boxes.rs` drops the whole box a sampled point rests on,
+//! which for a staircase would be the rule phase 4 must not adopt: a fragment of
+//! a riser really is shadowed by its own flight's tread when the flame stands
+//! above and beyond the stair, and "my own static never shadows me" would light
+//! it. A flight is one static, one owner and **six planes**, and a fragment is a
+//! point of exactly one of them — the face the renderer drew it from. So the
+//! oracle drops that one plane and counts every other, its own flight's
+//! included. That is phase 4's rule with no epsilon in it: a ray leaving a plane
+//! crosses that plane at its own origin and nowhere else, so "a contact at the
+//! origin does not count" and "this primitive does not count" are one sentence
+//! for a plane.
+//!
+//! The oracle's own geometry is **re-derived** from the tread profile rather
+//! than read off the grid — a check that asked the scene for the scene's own
+//! statement of itself would be checking nothing — and then **gated** against
+//! the grid and against the drawn mesh, plane for plane, so a divergence
+//! between the two derivations is a named panic rather than a drift this tool
+//! reports as the renderer's fault.
+//!
+//! Every line carries the pixels compared as well as the disagreements, the
+//! total is asserted non-trivial, and the pixels no flame reaches at all are
+//! counted apart rather than folded in: a fragment outside every pool is dark
+//! because of a radius, and a visibility oracle has no opinion about radii.
+//!
 //! ```sh
 //! OPENSHARD_FRAME_VIEW=7 OPENSHARD_FRAME_DUMP=/tmp/stair.ppm \
 //!     cargo run --release -p openshard-client-render --example synthetic_stair
 //! ```
 
+mod oracle;
+
 use std::path::PathBuf;
 
 use openshard_client_render::blit::{Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, Zoom, project_exact};
+use openshard_client_render::camera::{Camera, WorldSpot, Zoom, project_exact};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::facing::{Face, Prism};
-use openshard_client_render::light::{Light, Lighting};
+use openshard_client_render::geometry::Vec2;
+use openshard_client_render::light::{self, Light, Lighting, Surface};
 use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
-use openshard_client_render::occlusion::{Builder, Shape};
-use openshard_client_render::place::Stance;
+use openshard_client_render::occlusion::{Builder, Occlusion, OwnerId, Shape};
+use openshard_client_render::place::{Kind, Stance};
 use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, Target};
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+use oracle::{Shade, dump, read_place, segment_clear_of_box};
+
+/// The graphic every flight of the run is built from — a real climbable
+/// staircase's own number, and the key [`Occlusion::owner_at`] joins on.
+const STAIR: Graphic = Graphic(0x0736);
 
 fn env_opt(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -121,6 +174,299 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
 
+/// The side a climber approaches a riser from: the face opposite the one the
+/// flight climbs towards.
+///
+/// Four pairs, stated here for the third time in this crate —
+/// `occlusion::opposite` is the same table and is private, and `Prism::mesh`
+/// says it a third way, as the negated [`Face::outward`] it hands a riser for a
+/// normal. Which is the point rather than an accident: an oracle that borrowed
+/// the engine's copy would agree with the engine by construction. The gate in
+/// [`gate_against_mesh`] is what keeps this one honest.
+fn descends_towards(up: Face) -> Face {
+    match up {
+        Face::North => Face::South,
+        Face::South => Face::North,
+        Face::East => Face::West,
+        Face::West => Face::East,
+    }
+}
+
+/// Which axis a flight climbs along: `true` for `y`, which is what a north or
+/// south climb runs on.
+fn climbs_along_y(up: Face) -> bool {
+    matches!(up, Face::North | Face::South)
+}
+
+/// Which of a tread's two planes a [`Slab`] is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Part {
+    /// The tread's own top: a lid, flat at the tread's own height, covering the
+    /// strip of the run that tread spans.
+    Top,
+    /// The rise between this tread and the one before it — or the flight's own
+    /// base, for the first: a panel, degenerate on the climb axis, spanning that
+    /// rise in `z`.
+    Riser,
+}
+
+/// One plane of one flight: the occluder [`Builder::add`] pushes for it and the
+/// mesh face [`Prism::mesh`] draws for it, which are the same plane.
+///
+/// Both of those are the engine's; this is the oracle's own statement of it,
+/// re-derived from the tread profile and gated against both.
+struct Slab {
+    /// Which flight of the run, indexing `flights`.
+    flight: usize,
+    /// Which tread of that flight, in climb order.
+    tread: usize,
+    part: Part,
+    min: (f64, f64, f64),
+    max: (f64, f64, f64),
+}
+
+impl Slab {
+    /// Where along this face's own varying axis a point of it sits, `0.0` at the
+    /// low end and `1.0` at the high one, saturating outside.
+    ///
+    /// A riser varies up `z` and a tread's top varies along the climb, and the
+    /// two are the axes a defect would band in. Fragments legitimately fall
+    /// outside: `Prism::mesh` grows every riser past the treads it meets so the
+    /// rasteriser cannot leave a hairline between two coincident edges, and
+    /// those pixels are real pixels of this face drawn beyond its own plane's
+    /// span — which is why this saturates rather than asserting.
+    fn along(&self, point: (f64, f64, f64), up: Face) -> f64 {
+        let (value, low, high) = match self.part {
+            Part::Riser => (point.2, self.min.2, self.max.2),
+            Part::Top if climbs_along_y(up) => (point.1, self.min.1, self.max.1),
+            Part::Top => (point.0, self.min.0, self.max.0),
+        };
+        match high > low {
+            true => ((value - low) / (high - low)).clamp(0.0, 1.0),
+            false => 0.0,
+        }
+    }
+
+    /// What this face is, for a report: `flight 1 tread 2's riser`.
+    fn label(&self) -> String {
+        let part = match self.part {
+            Part::Top => "top",
+            Part::Riser => "riser",
+        };
+        format!("flight {} tread {}'s {part}", self.flight, self.tread)
+    }
+}
+
+/// The tile-relative footprint of one climb-axis span, `lo..=hi` of the run
+/// counted from the low side towards `up`.
+///
+/// [`Prism::footprint`](openshard_client_render::facing::Prism) re-derived, and
+/// not because it is `pub(crate)`: it is the arithmetic the occlusion grid and
+/// the drawn mesh already **share**, so an oracle that called it would be
+/// checking the scene against the scene's own statement of itself. What keeps a
+/// re-derivation from becoming a second, quietly different formula is
+/// [`gate_against_grid`], which asserts every plane built here against the solid
+/// the grid really pushed.
+fn strip(x: f64, y: f64, up: Face, lo: f64, hi: f64) -> (f64, f64, f64, f64) {
+    match up {
+        Face::North => (x, x + 1.0, y + 1.0 - hi, y + 1.0 - lo),
+        Face::South => (x, x + 1.0, y + lo, y + hi),
+        Face::West => (x + 1.0 - hi, x + 1.0 - lo, y, y + 1.0),
+        Face::East => (x + lo, x + hi, y, y + 1.0),
+    }
+}
+
+/// Every plane one flight standing at `stands` is, in the order `Builder::add`
+/// pushes them and `Prism::mesh` draws them: a top and then a riser, per tread,
+/// in climb order.
+///
+/// The shared order is what lets a `place` attachment's own row number name a
+/// plane — see [`gate_against_mesh`], which asserts it rather than assuming it.
+fn flight_slabs(flight: usize, stands: Point, up: Face, treads: &[u8]) -> Vec<Slab> {
+    let count = treads.len();
+    let (x, y) = (f64::from(stands.x), f64::from(stands.y));
+    let base = f64::from(stands.z);
+    let mut slabs = Vec::with_capacity(count * 2);
+    let mut risen = base;
+    for (tread, &height) in treads.iter().enumerate() {
+        let top = base + f64::from(height);
+        let (lo, hi) = (tread as f64 / count as f64, (tread + 1) as f64 / count as f64);
+        let (min_x, max_x, min_y, max_y) = strip(x, y, up, lo, hi);
+        slabs.push(Slab {
+            flight,
+            tread,
+            part: Part::Top,
+            min: (min_x, min_y, top),
+            max: (max_x, max_y, top),
+        });
+        let (min_x, max_x, min_y, max_y) = strip(x, y, up, lo, lo);
+        slabs.push(Slab {
+            flight,
+            tread,
+            part: Part::Riser,
+            min: (min_x, min_y, risen),
+            max: (max_x, max_y, top),
+        });
+        risen = top;
+    }
+    slabs
+}
+
+/// That the planes this file derived are the planes the occlusion grid holds —
+/// same count, same order, same corners, same kind.
+///
+/// The gate the re-derivation in [`strip`] is worth having: two statements of
+/// one geometry either agree, in which case the oracle is asking about the scene
+/// the renderer lit, or they do not, in which case every count below is about a
+/// scene nobody built. A drift that is a panic here is a drift that cannot be
+/// read as the renderer being wrong.
+fn gate_against_grid(slabs: &[Slab], flights: &[Point], occlusion: &Occlusion) {
+    let mut at = 0usize;
+    for (flight, stands) in flights.iter().enumerate() {
+        let solids: Vec<_> = occlusion
+            .solids_at(i32::from(stands.x), i32::from(stands.y))
+            .collect();
+        let mine: Vec<&Slab> = slabs.iter().filter(|slab| slab.flight == flight).collect();
+        assert_eq!(
+            solids.len(),
+            mine.len(),
+            "flight {flight} at ({}, {}): the grid holds {} solids and this oracle derived {} planes",
+            stands.x,
+            stands.y,
+            solids.len(),
+            mine.len(),
+        );
+        for (slab, solid) in mine.iter().zip(&solids) {
+            let corners = [
+                (slab.min.0, solid.space.min.x),
+                (slab.max.0, solid.space.max.x),
+                (slab.min.1, solid.space.min.y),
+                (slab.max.1, solid.space.max.y),
+                (slab.min.2, solid.space.min.z),
+                (slab.max.2, solid.space.max.z),
+            ];
+            for (mine, theirs) in corners {
+                assert!(
+                    (mine - theirs).abs() < 1e-12,
+                    "{}: this oracle says {mine}, the grid's own solid says {theirs}",
+                    slab.label(),
+                );
+            }
+            // A lid names no side and a riser names exactly one — the shape of a
+            // solid rather than its position, and the half of the pairing corner
+            // equality cannot check: two coincident planes of different kinds
+            // occupy the same corners.
+            let named = solid.edges != 0;
+            assert_eq!(
+                named,
+                slab.part == Part::Riser,
+                "{}: the grid's own solid has edges {:#06b}",
+                slab.label(),
+                solid.edges,
+            );
+        }
+        at += mine.len();
+    }
+    assert_eq!(at, slabs.len(), "a flight's planes went uncompared");
+}
+
+/// That mesh row `id` draws plane `slabs[id]`, which is what lets the `place`
+/// attachment's own row number name the plane a pixel is a point of.
+///
+/// Checked rather than assumed, and against the two things the mesh states
+/// independently: the face's own **normal**, which says top or riser and which
+/// way a riser looks, and the coordinate of the plane the face **is**.
+///
+/// That coordinate is the one thing `Prism::mesh`'s two overlaps leave alone. It
+/// grows every riser past the treads it meets in `z` and widens every face
+/// across the tile, both to keep the rasteriser from leaving a hairline where
+/// two faces share an edge — so a mesh face is not the same *rectangle* as its
+/// occluder and comparing every corner would be comparing the overlap. The
+/// degenerate axis is exact: a top is at its tread's own height and a riser is
+/// at its own boundary along the climb.
+fn gate_against_mesh(slab: &Slab, face: &openshard_client_render::mesh::Face, up: Face) {
+    let stance = Stance::of_normal(face.normal).expect("a stair's own normals are all recognized");
+    let (want, plane, of_corner): (Stance, f64, fn(&WorldSpot) -> f64) = match slab.part {
+        Part::Top => (Stance::Flat, slab.min.2, |corner| corner.z),
+        Part::Riser if climbs_along_y(up) => {
+            (Stance::face(descends_towards(up)), slab.min.1, |corner| corner.y)
+        }
+        Part::Riser => (Stance::face(descends_towards(up)), slab.min.0, |corner| corner.x),
+    };
+    assert_eq!(stance, want, "{}: the mesh drew a {stance:?}", slab.label());
+    for corner in face.vertices() {
+        assert!(
+            (of_corner(corner) - plane).abs() < 1e-12,
+            "{}: the mesh's own corner sits at {}, this oracle's plane at {plane}",
+            slab.label(),
+            of_corner(corner),
+        );
+    }
+}
+
+/// Whether the flame can see `point` at all, geometrically: every plane of every
+/// flight but `own`, tested by [`segment_clear_of_box`].
+///
+/// `own` is the one plane the fragment **is** a point of — the face the renderer
+/// drew this pixel from, named by the `place` attachment rather than guessed at.
+/// Dropping exactly that one is `docs/lighting_height.md` phase 4's rule with no
+/// epsilon in it: a ray leaving a plane crosses that plane at its own origin and
+/// nowhere else, so "a contact at the origin does not count" and "this primitive
+/// does not count" are the same sentence for a plane.
+///
+/// Every *other* plane counts, its own flight's included, and that is not a
+/// detail — it is the counter-example the fix must not break. A ray leaving the
+/// front of a bottom step, heading up and away from a flame standing above and
+/// beyond the staircase, crosses that same step's own top well away from where
+/// it started; a staircase's own body is genuinely in the way, and a rule
+/// phrased as "a fragment is never shadowed by its own static" would light it.
+fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), slabs: &[Slab], own: usize) -> bool {
+    slabs
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| *at != own)
+        .all(|(_, slab)| segment_clear_of_box(point, light, slab.min, slab.max))
+}
+
+/// Runs of adjacent non-empty bands, as `(first, past_the_last, points)`.
+///
+/// A defect that is one band prints as one entry and one spread over a face
+/// prints as many, which is the distinction worth reading at a glance and the
+/// one a total cannot carry: `docs/lighting_height.md` phase 1's own residual
+/// was not spread over its face at all, it was a band.
+fn runs_of(bands: &[usize]) -> Vec<(usize, usize, usize)> {
+    let mut runs = Vec::new();
+    let mut band = 0usize;
+    while band < bands.len() {
+        if bands[band] == 0 {
+            band += 1;
+            continue;
+        }
+        let start = band;
+        let mut points = 0usize;
+        while band < bands.len() && bands[band] > 0 {
+            points += bands[band];
+            band += 1;
+        }
+        runs.push((start, band, points));
+    }
+    runs
+}
+
+/// `/tmp/stair.ppm` and `shadow` to `/tmp/stair_shadow.ppm` — a second view
+/// beside the one that was asked for, rather than over it.
+fn beside(path: &std::path::Path, what: &str) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    let mut named = path.to_path_buf();
+    named.set_file_name(match path.extension() {
+        Some(extension) => format!("{stem}_{what}.{}", extension.to_string_lossy()),
+        None => format!("{stem}_{what}"),
+    });
+    named
+}
+
 fn main() {
     let (device, queue) = gpu().expect("an adapter");
 
@@ -156,14 +502,7 @@ fn main() {
     };
     let mut builder = Builder::new(bounds);
     for stands in &flights {
-        builder.add(
-            stands.x,
-            stands.y,
-            stands.z,
-            Graphic(0x0736),
-            &stair,
-            Shape::solid(prism),
-        );
+        builder.add(stands.x, stands.y, stands.z, STAIR, &stair, Shape::solid(prism));
     }
     let occlusion = builder.finish(&Cutaway::OPEN);
 
@@ -184,6 +523,35 @@ fn main() {
         }
     }
 
+    // The oracle's own statement of the same geometry, derived from the profile
+    // and immediately held against the grid's. See [`Slab`] and [`strip`].
+    let slabs: Vec<Slab> = flights
+        .iter()
+        .enumerate()
+        .flat_map(|(flight, stands)| flight_slabs(flight, *stands, up, &treads))
+        .collect();
+    gate_against_grid(&slabs, &flights, &occlusion);
+
+    // A flight is **one** occluder of its tile however many treads it was cut
+    // into — one `Builder::add` is one owner (`docs/lighting_height.md` phase
+    // 3), so every face of it carries this one number and no tread of it
+    // shadows another. Each flight of a run gets its **own**, which is the
+    // whole point of building the run: neighbours are not each other's.
+    let owners: Vec<OwnerId> = flights
+        .iter()
+        .map(|stands| {
+            let owner = occlusion.owner_at(i32::from(stands.x), i32::from(stands.y), stands.z, STAIR);
+            assert_ne!(
+                owner,
+                OwnerId::NONE,
+                "the flight at ({}, {}) is not in the grid this tool built",
+                stands.x,
+                stands.y,
+            );
+            owner
+        })
+        .collect();
+
     let (width, height): (u32, u32) = (512, 512);
     let zoom_notches: u32 = env_or("OPENSHARD_SCENE_ZOOM", "3").parse().expect("a number");
     // On the middle of the run, so a run of three is not half off the frame.
@@ -197,32 +565,20 @@ fn main() {
     const DEPTH: f32 = 0.5;
     let mut vertices: Vec<MeshFaceVertex> = Vec::new();
     let mut rows: Vec<MeshFaceRow> = Vec::new();
-    for stands in &flights {
+    for (flight, stands) in flights.iter().enumerate() {
         let mesh = prism.mesh(i32::from(stands.x), i32::from(stands.y), i32::from(stands.z));
-        // A flight is **one** occluder of its tile however many treads it was cut
-        // into — one `Builder::add` is one owner (`docs/lighting_height.md` phase
-        // 3), so every face of it carries this one number and no tread of it
-        // shadows another. Each flight of a run gets its **own**, which is the
-        // whole point of building the run: neighbours are not each other's.
-        let owner = occlusion.owner_at(
-            i32::from(stands.x),
-            i32::from(stands.y),
-            stands.z,
-            Graphic(0x0736),
-        );
-        assert_ne!(
-            owner,
-            openshard_client_render::occlusion::OwnerId::NONE,
-            "the flight at ({}, {}) is not in the grid this tool built",
-            stands.x,
-            stands.y,
-        );
         for face in mesh.faces() {
+            // Row `id` draws plane `slabs[id]`: the two lists are built by one
+            // pass over the same flights in the same order, and this is where
+            // that is checked instead of trusted. Everything the oracle below
+            // does rests on it — the `place` attachment names a row, and a row
+            // has to name a plane for "whose pixel is this" to have an answer.
             let id = rows.len() as u32;
+            gate_against_mesh(&slabs[rows.len()], face, up);
             rows.push(MeshFaceRow {
                 tile: (stands.x, stands.y),
                 stance: Stance::of_normal(face.normal).expect("a stair's own normals are all recognized"),
-                owner: u32::from(owner.raw()),
+                owner: u32::from(owners[flight].raw()),
             });
             for corner in face.fan() {
                 let screen = camera.to_view_exact(project_exact(corner));
@@ -252,8 +608,12 @@ fn main() {
             maxy = maxy.max(c.screen.y);
         }
         eprintln!(
-            "face {id}: tile ({}, {}), owner {}, stance {:?}, screen x {minx:.1}..{maxx:.1}, y {miny:.1}..{maxy:.1}",
-            row.tile.0, row.tile.1, row.owner, row.stance,
+            "face {id}: {}, tile ({}, {}), owner {}, stance {:?}, screen x {minx:.1}..{maxx:.1}, y {miny:.1}..{maxy:.1}",
+            slabs[id].label(),
+            row.tile.0,
+            row.tile.1,
+            row.owner,
+            row.stance,
         );
     }
 
@@ -282,6 +642,12 @@ fn main() {
     mesh_pass.render(&device, &queue, &mut encoder, target, &vertices, &rows);
     queue.submit([encoder.finish()]);
 
+    // What the world passes left on each pixel: the renderer's own answer to
+    // "whose pixel is this, and where in the world is its fragment". Read once,
+    // here, because the blit below neither writes it nor changes it however
+    // many views are dumped.
+    let drawn = read_place(&device, &queue, &place, width, height);
+
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("surface"),
         size: wgpu::Extent3d {
@@ -303,10 +669,13 @@ fn main() {
     let light_z: f32 = env_or("OPENSHARD_LIGHT_Z", "2").parse().expect("a number");
     let light_radius: f32 = env_or("OPENSHARD_LIGHT_RADIUS", "6").parse().expect("a number");
     eprintln!("light: at ({ldx:+}, {ldy:+}) of the tile, z {light_z}, radius {light_radius}");
-    let lighting = Lighting {
+    let selected = View::ALL[env_or("OPENSHARD_FRAME_VIEW", "0")
+        .parse::<usize>()
+        .expect("an index")];
+    let mut lighting = Lighting {
         ambient: openshard_client_render::light::NIGHT,
         lights: vec![Light {
-            at: openshard_client_render::geometry::Vec2::new(f32::from(at.x) + ldx, f32::from(at.y) + ldy),
+            at: Vec2::new(f32::from(at.x) + ldx, f32::from(at.y) + ldy),
             z: light_z,
             radius: light_radius,
             color: [1.0, 1.0, 1.0],
@@ -315,9 +684,7 @@ fn main() {
         }],
         occlusion,
         sun: None,
-        view: View::ALL[env_or("OPENSHARD_FRAME_VIEW", "0")
-            .parse::<usize>()
-            .expect("an index")],
+        view: selected,
     };
     // The CPU twin of a pixel, on demand. A picture says a fragment came out
     // black; this says *what* took its ray, by name — and after
@@ -336,9 +703,9 @@ fn main() {
             };
             let (px, py, pz) = (number("x"), number("y"), number("z"));
             let surface = match fields.next().map(str::trim) {
-                Some("flat") | None => openshard_client_render::light::Surface::Flat,
-                Some("upright") => openshard_client_render::light::Surface::Upright,
-                Some(other) => openshard_client_render::light::Surface::Face(parse_face(other)),
+                Some("flat") | None => Surface::Flat,
+                Some("upright") => Surface::Upright,
+                Some(other) => Surface::Face(parse_face(other)),
             };
             // The tile under the point, and *that* tile's owner. A drawn
             // fragment gets its owner from the tile its own static stands on, so
@@ -347,9 +714,9 @@ fn main() {
             // `floor` picks, which is a real ambiguity — so the tile and the
             // owner are both printed rather than assumed.
             let tile = (px.floor() as i32, py.floor() as i32);
-            let owner = lighting.occlusion.owner_at(tile.0, tile.1, at.z, Graphic(0x0736));
-            let spot = openshard_client_render::light::Spot {
-                at: openshard_client_render::geometry::Vec2::new(px, py),
+            let owner = lighting.occlusion.owner_at(tile.0, tile.1, at.z, STAIR);
+            let spot = light::Spot {
+                at: Vec2::new(px, py),
                 z: pz,
                 tile,
                 surface,
@@ -360,84 +727,16 @@ fn main() {
                 tile.0,
                 tile.1,
                 owner.raw(),
-                openshard_client_render::light::sample(spot, &lighting),
+                light::sample(spot, &lighting),
             );
         }
     }
 
-    let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
-    let dummy_ground_instances = openshard_client_render::blit::dummy_ground_instances(&device);
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    blit.render(
-        &device,
-        &queue,
-        &mut encoder,
-        openshard_client_render::blit::Frame {
-            target: &surface_view,
-            world: &world_view,
-            place: &place_view,
-            face_instances: &dummy_instances,
-            mobile_instances: &dummy_instances,
-            mesh_instances: mesh_pass.rows_buffer(),
-            ground_instances: &dummy_ground_instances,
-            zoom: Zoom::ONE,
-            rect: ViewportRect {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            },
-        },
-        &lighting,
-    );
-    queue.submit([encoder.finish()]);
-
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback"),
-        size: u64::from(width) * u64::from(height) * 4,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &surface,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        result.expect("mapping a buffer this example just wrote");
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("waiting on our own submission");
-    let mut pixels = slice
-        .get_mapped_range()
-        .expect("the map completed above")
-        .to_vec();
-
-    // Where the flame itself projects to, marked directly on the picture: a
-    // number in a log line does not answer "is the light behind the stair or
-    // in front of it" nearly as fast as a mark on the frame does.
+    // Where the flame itself projects to, marked directly on every picture this
+    // tool writes: a number in a log line does not answer "is the light behind
+    // the stair or in front of it" nearly as fast as a mark on the frame does.
     let projection = camera.projection();
-    let light_screen = camera.to_view_exact(project_exact(openshard_client_render::camera::WorldSpot {
+    let light_screen = camera.to_view_exact(project_exact(WorldSpot {
         x: f64::from(at.x) + f64::from(ldx),
         y: f64::from(at.y) + f64::from(ldy),
         z: f64::from(light_z),
@@ -447,46 +746,214 @@ fn main() {
         (light_screen.y - projection.origin.y) * projection.scale + height as f32 * 0.5,
     );
     eprintln!("light pixel: {light_pixel:?}");
-    let (lpx, lpy) = (light_pixel.0.round() as i32, light_pixel.1.round() as i32);
-    let mut mark = |dx: i32, dy: i32, colour: [u8; 3]| {
-        let (px, py) = (lpx + dx, lpy + dy);
-        if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
-            return;
-        }
-        let at_pixel = ((py as u32 * width + px as u32) * 4) as usize;
-        pixels[at_pixel] = colour[0];
-        pixels[at_pixel + 1] = colour[1];
-        pixels[at_pixel + 2] = colour[2];
-        pixels[at_pixel + 3] = 255;
-    };
-    // A big lime crosshair on a black backing plate — thick enough (a 41-pixel
-    // arm on a 512-pixel frame) to find at a glance, and the black backing is
-    // what keeps it visible crossing a already-white wall pixel, not just a
-    // black one.
-    for dy in -20..=20i32 {
-        for dx in -20..=20i32 {
-            if dx.abs() > 2 && dy.abs() > 2 {
-                continue;
-            }
-            mark(dx, dy, [0, 0, 0]);
-        }
+    let light_mark = (light_pixel.0.round() as i32, light_pixel.1.round() as i32);
+
+    let dumped = env_opt("OPENSHARD_FRAME_DUMP")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("synthetic_stair.ppm"));
+    let oracle_on = env_opt("OPENSHARD_STAIR_ORACLE").as_deref() != Some("0");
+    // The view that was asked for, and `Shadow` besides when the oracle needs
+    // it — the oracle reads that frame back pixel for pixel, so leaving it out
+    // would silently disarm the one check here that does not depend on anybody
+    // looking at a picture.
+    let mut views = vec![selected];
+    if oracle_on && selected != View::Shadow {
+        views.push(View::Shadow);
     }
-    for dy in -18..=18i32 {
-        for dx in -18..=18i32 {
-            if dx.abs() > 1 && dy.abs() > 1 {
-                continue;
-            }
-            mark(dx, dy, [80, 255, 0]);
+    let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
+    let dummy_ground_instances = openshard_client_render::blit::dummy_ground_instances(&device);
+    let mut shadow_pixels: Vec<u8> = Vec::new();
+    for view in views {
+        lighting.view = view;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        blit.render(
+            &device,
+            &queue,
+            &mut encoder,
+            openshard_client_render::blit::Frame {
+                target: &surface_view,
+                world: &world_view,
+                place: &place_view,
+                face_instances: &dummy_instances,
+                mobile_instances: &dummy_instances,
+                mesh_instances: mesh_pass.rows_buffer(),
+                ground_instances: &dummy_ground_instances,
+                zoom: Zoom::ONE,
+                rect: ViewportRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+            },
+            &lighting,
+        );
+        queue.submit([encoder.finish()]);
+        let path = match view == selected {
+            true => dumped.clone(),
+            false => beside(&dumped, view.name()),
+        };
+        let pixels = dump(&device, &queue, &surface, width, height, &path, Some(light_mark));
+        if view == View::Shadow {
+            shadow_pixels = pixels;
         }
     }
 
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for pixel in pixels.chunks_exact(4) {
-        ppm.extend_from_slice(&pixel[..3]);
+    if !oracle_on {
+        return;
     }
-    let path = env_opt("OPENSHARD_FRAME_DUMP")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("synthetic_stair.ppm"));
-    std::fs::write(&path, ppm).expect("writing the frame");
-    eprintln!("wrote {}", path.display());
+
+    // The face oracle. See this module's own doc for what it is and why it
+    // comes before the fix rather than after it.
+    let flame = (
+        f64::from(at.x) + f64::from(ldx),
+        f64::from(at.y) + f64::from(ldy),
+        f64::from(light_z),
+    );
+    // How many bands to report a face's disagreements in, up its own varying
+    // axis. Not a sampling grid — the sweep is exhaustive over the face's own
+    // pixels — only the resolution the "where" line reads at.
+    let bands = 32usize;
+    let riser_face = descends_towards(up);
+    let mut total_compared = 0usize;
+    // Split by **sign**, because the two shapes this scene shows are opposite
+    // signs on opposite faces and a single total cannot tell them apart: a
+    // tread's top rendered darker than the geometry allows is phase 4's own lid,
+    // and a riser's own top band rendered lighter is what `STAND_OFF` costs at
+    // the corner where that riser meets the tread above it.
+    let mut total_too_dark = 0usize;
+    let mut total_too_light = 0usize;
+    let mut total_unreached = 0usize;
+    for (id, slab) in slabs.iter().enumerate() {
+        let mut compared = 0usize;
+        let mut unreached = 0usize;
+        let mut too_dark = 0usize;
+        let mut too_light = 0usize;
+        // And which of the two walks is out, on every disagreement.
+        // `light::sample` is the CPU's own preview of exactly what the shader
+        // does (`docs/lighting.md` decision 9 holds the two to each other), so a
+        // disagreement where it sides with the independent oracle is the
+        // *shader* alone being out — a parity gap — and one where it sides with
+        // the rendered pixel is the engine's own arithmetic being out, in both
+        // implementations at once. Those are opposite next steps, and a count
+        // that does not tell them apart names neither.
+        let mut shader_alone = 0usize;
+        let mut engine_together = 0usize;
+        let mut disagreeing_bands = vec![0usize; bands];
+        let mut examples: Vec<String> = Vec::new();
+        for (pixel, texel) in drawn.iter().enumerate() {
+            // Whose pixel this is, as the renderer wrote it. A mesh face's row
+            // is addressed through the `MeshFace` sentinel — `place::Stance`'s
+            // own doc — so all three of kind, sentinel and row have to be this
+            // face's.
+            if texel.kind != Kind::Static as u32
+                || texel.stance != Stance::MeshFace as u32
+                || texel.id != id as u32
+            {
+                continue;
+            }
+            // The fragment's own world position, off the attachment: the tile
+            // from the row this pixel names, the rest from the texel. This is
+            // the point the shader lit, quantisation and all.
+            let row = &rows[texel.id as usize];
+            let point = (
+                f64::from(row.tile.0) + texel.sub.0,
+                f64::from(row.tile.1) + texel.sub.1,
+                texel.z,
+            );
+            let shade = Shade::of([
+                shadow_pixels[pixel * 4],
+                shadow_pixels[pixel * 4 + 1],
+                shadow_pixels[pixel * 4 + 2],
+            ]);
+            // A fragment outside every pool is dark because of a radius, and
+            // this oracle answers about geometry alone. Counted, so that a face
+            // that fell out of reach cannot read as a face that agreed.
+            if shade == Shade::Unreached {
+                unreached += 1;
+                continue;
+            }
+            compared += 1;
+            let rendered_lit = shade.lit();
+            let independent = oracle_visible(point, flame, &slabs, id);
+            if independent == rendered_lit {
+                continue;
+            }
+            let band = (slab.along(point, up) * bands as f64) as usize;
+            disagreeing_bands[band.min(bands - 1)] += 1;
+            let surface = match slab.part {
+                Part::Top => Surface::Flat,
+                Part::Riser => Surface::Face(riser_face),
+            };
+            let spot = light::Spot {
+                at: Vec2::new(point.0 as f32, point.1 as f32),
+                z: point.2 as f32,
+                tile: (i32::from(row.tile.0), i32::from(row.tile.1)),
+                surface,
+                owner: owners[slab.flight],
+            };
+            let sampled = light::sample(spot, &lighting);
+            let through = sampled
+                .reaches
+                .first()
+                .map_or(0.0, |reach| if reach.within { reach.through } else { 0.0 });
+            match (through > 0.5) == independent {
+                true => shader_alone += 1,
+                false => engine_together += 1,
+            }
+            match rendered_lit {
+                true => too_light += 1,
+                false => too_dark += 1,
+            }
+            if examples.len() < 2 {
+                // `Sample`'s own report and not a re-derivation of it: it names
+                // the solid that stopped the ray and how that solid stands to
+                // this fragment, which is the pair phase 4's instrument exists
+                // to print and the pair a reader gets wrong from two equal owner
+                // numbers side by side.
+                examples.push(format!(
+                    "  [{}] independent oracle says {}, rendered says {}\n    {sampled}",
+                    slab.label(),
+                    if independent { "lit" } else { "shadowed" },
+                    if rendered_lit { "lit" } else { "shadowed" },
+                ));
+            }
+        }
+        let disagreeing = too_dark + too_light;
+        eprintln!(
+            "face oracle, {}: {compared} pixels compared, {disagreeing} disagree \
+             ({too_dark} rendered too dark, {too_light} too light; {shader_alone} the shader alone, \
+             {engine_together} both walks together), {unreached} out of every pool",
+            slab.label(),
+        );
+        if disagreeing > 0 {
+            let axis = match slab.part {
+                Part::Riser => "z",
+                Part::Top => "the climb",
+            };
+            let runs: Vec<String> = runs_of(&disagreeing_bands)
+                .into_iter()
+                .map(|(start, end, points)| format!("bands {start}..{end} ({points} pixels)"))
+                .collect();
+            eprintln!("  where, up {axis}: {}", runs.join(", "));
+        }
+        for example in &examples {
+            eprintln!("{example}");
+        }
+        total_compared += compared;
+        total_too_dark += too_dark;
+        total_too_light += too_light;
+        total_unreached += unreached;
+    }
+    eprintln!(
+        "face oracle vs rendered View::Shadow: {}/{total_compared} drawn face pixels disagree \
+         ({total_too_dark} rendered too dark, {total_too_light} too light; {total_unreached} more out \
+         of every pool, not compared)",
+        total_too_dark + total_too_light,
+    );
+    assert!(
+        total_compared > 100,
+        "the face oracle compared only {total_compared} pixels of the flight's own faces — a detector \
+         that compares nothing reads exactly like a detector that found nothing"
+    );
 }

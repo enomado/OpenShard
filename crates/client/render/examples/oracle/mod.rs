@@ -188,9 +188,23 @@ impl Shade {
 /// **Degenerate boxes are the ordinary case here, not an edge case.** A tread's
 /// top is a plane (`min.z == max.z`) and a riser is a plane on the climb axis,
 /// which is what `occlusion::Builder::add` pushes for a climbable static. The
-/// slab arithmetic already answers for them: a plane's two slab bounds coincide,
-/// so `t0 == t1` at the crossing and the interval is empty only if that crossing
-/// falls outside the segment or outside another axis's span.
+/// slab arithmetic already answers for them where the ray meets the plane at an
+/// angle: a plane's two slab bounds coincide, so `t0 == t1` at the crossing and
+/// the interval is empty only if that crossing falls outside the segment or
+/// outside another axis's span.
+///
+/// **A ray running *along* a plane is the case it does not answer for**, and it
+/// is not exotic: a flame at exactly a tread's own height puts every ray from
+/// that tread level, in the plane of every other tread at the same height. The
+/// slab loop's parallel-axis arm asks "is the origin inside this pair of
+/// bounds", which for a plane is "is the ray in it" — and answers `false`,
+/// leaving the two remaining axes to decide, so a ray that travels the whole
+/// length of a plane without ever passing through it is reported as blocked by
+/// it. A plane is **crossed**, never travelled through; `light.rs`'s `crosses`
+/// is strict for the same reason and says so in the same words. On a box with
+/// extent on every axis this arm is untouched — being inside a real pair of
+/// bounds is not a crossing question at all — so this is a statement about
+/// degenerate boxes only.
 pub fn segment_clear_of_box(
     from: (f64, f64, f64),
     to: (f64, f64, f64),
@@ -205,7 +219,7 @@ pub fn segment_clear_of_box(
         (from.2, d.2, min.2, max.2),
     ] {
         if d.abs() < 1e-12 {
-            if o < lo || o > hi {
+            if o < lo || o > hi || lo == hi {
                 return true;
             }
             continue;
