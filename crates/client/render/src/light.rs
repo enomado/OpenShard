@@ -1722,6 +1722,26 @@ impl Sample {
     }
 }
 
+/// How a [`Stopper`] stands to the fragment it stopped, in words.
+///
+/// **The sentence a reader gets wrong otherwise**, and the report is where they
+/// get it wrong rather than the engine: an [`crate::occlusion::OwnerId`] is a
+/// number *within a cell*, so a fragment of owner 1 stopped by "owner 1" on a
+/// **different** cell has not been stopped by itself — those are two unrelated
+/// statics that happen to be their own cells' first. [`exemption`] is not fooled,
+/// because every arm of it that reads an owner is gated on `own_cell`; a person
+/// reading two equal numbers side by side is, and this session did.
+///
+/// So the comparison lives here, where both halves are in hand, instead of in
+/// [`Stopper`]'s own `Display`, which knows the solid and not the fragment.
+fn stands_to(spot: Spot, stopper: Stopper) -> &'static str {
+    match stopper.cell == spot.tile {
+        false => "another cell, whose owner numbers mean nothing here",
+        true if spot.owner.same(stopper.owner) => "THE FRAGMENT'S OWN OCCLUDER",
+        true => "another occluder of the fragment's own cell",
+    }
+}
+
 impl std::fmt::Display for Sample {
     /// The report: the spot, what it came out at, and a line per flame saying
     /// what happened to it.
@@ -1745,7 +1765,9 @@ impl std::fmt::Display for Sample {
             // tile is behind a wall or behind the character.
             match (reach.within, reach.stopped_by) {
                 (false, _) => writeln!(f, ", outside its radius")?,
-                (true, Some(stopper)) => writeln!(f, ", stopped by {stopper}")?,
+                (true, Some(stopper)) => {
+                    writeln!(f, ", stopped by {stopper} — {}", stands_to(self.spot, stopper))?
+                }
                 (true, None) => writeln!(
                     f,
                     ", through {:.2}, beam {:.2}, adds {:.3}",
@@ -1757,7 +1779,11 @@ impl std::fmt::Display for Sample {
         }
         if let Some(sun) = self.sun {
             match sun.stopped_by {
-                Some(stopper) => writeln!(f, "  sun: in shadow of {stopper}")?,
+                Some(stopper) => writeln!(
+                    f,
+                    "  sun: in shadow of {stopper} — {}",
+                    stands_to(self.spot, stopper)
+                )?,
                 None => writeln!(
                     f,
                     "  sun: through {:.2}, adds {:.3}",

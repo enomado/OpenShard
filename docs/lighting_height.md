@@ -579,6 +579,37 @@ What the rule does **not** answer, and must not be stretched to: `own_run` (the
 neighbouring tile's panel is a different static, so a different owner) and
 `flame_end` (a flame has no owner at all). Both stay their own questions.
 
+### The case the fix must not break, and it is measured
+
+`OPENSHARD_STAIR_RUN=3` with the flame **above and beyond** the run
+(`OPENSHARD_LIGHT_Z=5 OPENSHARD_LIGHT_AT=5.0,0.5`) turns the far end of a wide
+staircase black, and it looks exactly like the defect above. It is not. Probed:
+
+| face of the far flight | stopped by |
+|---|---|
+| riser 1, `z 0.5` | `(100, 100) owner 1, lid z 1.00..1.00` — **the fragment's own occluder** |
+| riser 2, `z 2.0` | `(101, 100) owner 1, lid z 3.00..3.00` — another cell |
+| tread 1's top, `z 1.0` | `(102, 100) owner 1, lid z 3.00..3.00` — another cell |
+
+The first row is a fragment stopped by a lid of its own static and it is
+**honest**: the ray leaves the bottom step's front face heading up and north, and
+crosses that step's own top *well away from where it started*. A lamp standing
+above and beyond a staircase genuinely cannot see the front of its bottom step —
+the staircase's own body is in the way. The rule as stated keeps it blocked,
+because the crossing is at `t > 0`; a fix phrased as "a fragment is never stopped
+by its own static" would light it, and would be wrong.
+
+So the mutation that says phase 4 works is this scene going **unchanged** while
+the single flight's seams go to zero. A count alone cannot tell the two apart.
+
+**And an instrument trap, found by falling into it.** Rows two and three above
+read "owner 1" against a fragment that is also owner 1, which invites exactly
+one conclusion and it is false: an `OwnerId` is a number *within a cell*, so two
+cells' number ones are unrelated statics. `exemption` is not fooled — every arm
+of it that reads an owner is gated on `own_cell` — but a person reading the
+report was. `light::stands_to` now spells the relation out in the report rather
+than leaving two equal numbers side by side.
+
 ### Not yet done
 
 The instrument is in — `light::Stopper`, and `synthetic_stair`'s
