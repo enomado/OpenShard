@@ -905,6 +905,24 @@ Picked up while phases 1 and 2 landed, while the oracles were repaired, and
 while phase 3 landed, and while phase 4's oracle was built, and while phase 4's
 rule landed; none of it blocked any of them.
 
+- **A riser's shadow on the tread behind it is graded over most of that tread,
+  and the picture reads it as a light in the wrong place.** Found by looking at
+  `synthetic_stair`'s reference frame beside the rendered one: the two put the
+  shadow in the *same region*, and where the reference has an edge the engine has
+  a gradient several pixels wide. The arithmetic, so it is a number rather than an
+  impression: a panel's crossing is graded by `pierces` over a band
+  `tall = soft * FLAME_DEPTH` in `z`, `soft` is `clamp(spread * middle / (1 -
+  middle), 0.05, 0.7)` and `FLAME_DEPTH` is `Z_PER_TILE / 4` = `2.75` `z`, so an
+  occluder close to the fragment — which is what a flight's own riser always is —
+  gives a band of `0.14` to `0.69` `z`. A riser is two `z` tall, so the softest
+  case grades a third of the face, and a tread top is seen nearly edge-on, which
+  spreads that band across most of its drawn width. Every number in it is
+  deliberate (`FLAME_DEPTH`'s own doc measures it against a wall in Britain);
+  what nobody has asked is whether a penumbra sized for a wall's top edge, three
+  or four tiles from the flame, is the right size for an edge a fifth of a tile
+  away. The reference frame is now the way to judge it — it draws the hard shadow
+  the same geometry casts, so the two pictures are the question stated.
+
 - ~~**The seam is honest lighting on pixels that should not be on screen.**~~
   **Done — `SEAM_OVERLAP` is gone.** The oracle settled that its pixels were
   *shadowed* correctly — they are a riser drawn inside the staircase's own body
