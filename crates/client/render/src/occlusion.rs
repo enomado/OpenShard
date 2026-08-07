@@ -794,12 +794,40 @@ impl Solid {
     /// parity gap decision 9's suite would have to grow a new tolerance for.
     ///
     /// A solid is always one tile's (`Builder::finish`'s own doc: "nothing
-    /// the builder holds is referenced twice"), so the tile to measure the
-    /// fraction against is unambiguous — `space.min`'s own floor, not a tile
-    /// carried separately.
+    /// the builder holds is referenced twice"), but **which** tile is not
+    /// always `space.min`'s own floor, and reading it as one put a whole class
+    /// of occluder on the wrong side of its cell.
+    ///
+    /// A box with extent on an axis is unambiguous: its `min` is inside its own
+    /// tile, so flooring names that tile. A box that is a *plane* on that axis
+    /// is not — a plane at a whole coordinate is the boundary **between** two
+    /// tiles, and `floor` always picks the far one. That is exactly what a
+    /// climbable's first riser is: `Solid::tread_riser_box_of`'s plane for the
+    /// tread at the low end of the climb sits on its tile's own far edge, so a
+    /// north-climbing flight on `(100, 100)` has a riser at `y == 101.0` —
+    /// floored to tile `101`, measured as fraction `0`, and rebuilt by
+    /// [`Solid::box_from_footprint`] at `y == 100.0`. **A tile's width away, on
+    /// the opposite side of its own cell**, which is where
+    /// `light::walk_cells_streaming` and the shader both looked for it. The
+    /// front face of every bottom step shadowed nothing, and nothing said so:
+    /// `light::walk_cells_exact` reads `space` and was right all along, so the
+    /// two walks disagreed on a scene no parity test covers — the agreement
+    /// proptests build panels with [`box_of`](Solid::box_of), whose slab is
+    /// [`PANEL_THICKNESS`] deep and therefore never degenerate.
+    ///
+    /// [`Solid::footprint`] already had to decide this and states the rule:
+    /// a degenerate axis at a whole coordinate belongs to the tile *below* it
+    /// when the solid's own `edges` name that axis's high side. One concept,
+    /// and now one spelling of it in both places rather than a fix in one.
     pub fn fraction(&self) -> [u8; 4] {
-        let tile_x = self.space.min.x.floor();
-        let tile_y = self.space.min.y.floor();
+        // Which tile an axis's span is measured from — `Solid::footprint`'s own
+        // `far` rule, and see this function's doc for the class it closes.
+        let tile = |min: f64, max: f64, far: bool| match max > min {
+            false if far && min.fract() == 0.0 => min.floor() - 1.0,
+            _ => min.floor(),
+        };
+        let tile_x = tile(self.space.min.x, self.space.max.x, self.edges & EDGE_EAST != 0);
+        let tile_y = tile(self.space.min.y, self.space.max.y, self.edges & EDGE_SOUTH != 0);
         let frac = |value: f64, tile: f64| (((value - tile).clamp(0.0, 1.0)) * 255.0).round() as u8;
         [
             frac(self.space.min.x, tile_x),
@@ -2998,6 +3026,66 @@ mod tests {
             Shape::faced(Facing::One(Face::South)),
         );
         assert!(!solid.finish(&Cutaway::OPEN).any_aperture());
+    }
+
+    /// **Every solid the builder makes comes back off its own wire where it
+    /// was put** — [`Solid::fraction`] out, [`Solid::box_from_footprint`] back,
+    /// against the cell the grid really holds it on.
+    ///
+    /// A round trip and not a spot check, because the class this closes is one
+    /// nothing else looks at. `light::walk_cells_exact` reads `space` directly
+    /// and is right whatever the bytes say; `light::walk_cells_streaming` and
+    /// the shader read only these bytes, and the two walks' agreement proptests
+    /// build their panels with [`Solid::box_of`], whose slab is
+    /// [`PANEL_THICKNESS`] deep — never a plane, so never able to pose the
+    /// question at all. What can is a climbable: `Solid::tread_riser_box_of`
+    /// makes a plane, and the first riser's plane sits on its own tile's *far*
+    /// edge, at a whole coordinate that `floor` reads as the next tile along.
+    ///
+    /// All four climb directions, because two of them (`North`'s `y + 1`,
+    /// `West`'s `x + 1`) put that plane on the far edge and two put it on the
+    /// near one, and a rule that fixed the far case by moving every plane would
+    /// break the near one silently.
+    #[test]
+    fn every_solid_comes_back_off_the_wire_on_the_cell_it_was_put_on() {
+        use crate::facing::{Face, Prism};
+
+        let stair = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE),
+            height: 20,
+            ..StaticTile::default()
+        };
+        for up in [Face::North, Face::East, Face::South, Face::West] {
+            let prism = Prism::new(up, &[1, 3, 5]).expect("three treads");
+            let mut builder = Builder::new(bounds());
+            builder.add(100, 100, 0, Graphic(0x0736), &stair, Shape::solid(prism));
+            let occlusion = builder.finish(&Cutaway::OPEN);
+            let solids: Vec<&Solid> = occlusion.solids_at(100, 100).collect();
+            assert_eq!(
+                solids.len(),
+                6,
+                "{up:?}: three treads is three tops and three risers"
+            );
+            for solid in solids {
+                let (low, high) = (solid.low(), solid.high());
+                let wire = Solid::box_from_footprint(100, 100, low, high, solid.fraction());
+                for (mine, theirs, axis) in [
+                    (solid.space.min.x, wire.min.x, "min.x"),
+                    (solid.space.max.x, wire.max.x, "max.x"),
+                    (solid.space.min.y, wire.min.y, "min.y"),
+                    (solid.space.max.y, wire.max.y, "max.y"),
+                ] {
+                    assert!(
+                        (mine - theirs).abs() < 1.0 / 255.0,
+                        "{up:?}: a solid with edges {:#06b} at {:?}..{:?} came back with {axis} \
+                         {theirs} instead of {mine}",
+                        solid.edges,
+                        solid.space.min,
+                        solid.space.max,
+                    );
+                }
+            }
+        }
     }
 
     /// Stairs count as half their height, the way every other reader of this

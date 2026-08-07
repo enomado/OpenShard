@@ -905,6 +905,58 @@ Picked up while phases 1 and 2 landed, while the oracles were repaired, and
 while phase 3 landed, and while phase 4's oracle was built, and while phase 4's
 rule landed; none of it blocked any of them.
 
+- ✅ **A flight's bottom riser was on the wrong side of its own tile, on the
+  wire.** Found by asking the picture a question a count cannot be asked: *sweep
+  the flame's height and watch the shadow move.* Five renders at `z 0..4` beside
+  five reference frames, and the engine's shadow stopped matching below `z 1` —
+  the bottom step's own front face shadowing nothing at all, 2295 pixels of one
+  flight.
+
+  `Solid::fraction` measured a solid's footprint from `space.min.floor()`. That
+  is right for a box with extent, whose `min` is inside its own tile, and wrong
+  for a **plane**: a plane at a whole coordinate is the boundary *between* two
+  tiles and `floor` always picks the far one. A climbable's first riser is
+  exactly that — `tread_riser_box_of`'s plane for the tread at the low end of the
+  climb sits on its tile's own far edge — so a north-climbing flight on
+  `(100, 100)` had a riser at `y == 101.0` measured as fraction `0` of tile `101`
+  and rebuilt by `box_from_footprint` at `y == 100.0`: a tile's width away, on
+  the opposite side of its own cell.
+
+  `Solid::footprint` already had to decide this and states the rule — a
+  degenerate axis at a whole coordinate belongs to the tile below when the
+  solid's own `edges` name that axis's high side — and `fraction` was written
+  without it. Both spell it once now.
+
+  **Nothing could have caught it.** `walk_cells_exact` reads `space` and was
+  right all along; only `walk_cells_streaming` and the shader read these bytes,
+  and the two walks' agreement proptests build their panels with `Solid::box_of`,
+  whose slab is `PANEL_THICKNESS` deep and therefore never a plane — the fixtures
+  could not pose the question. The gate is now a round trip over every solid a
+  climbable makes, all four climb directions, in `occlusion.rs`'s
+  `every_solid_comes_back_off_the_wire_on_the_cell_it_was_put_on`; mutating the
+  rule back to a bare `floor` turns it red by name.
+
+  Measured across the sweep, single flight, disagreements out of 23912:
+
+  | flame `z` | 0 | 0.5 | 1 | 1.5 | 2 | 2.5 | 3 | 3.5 | 4 | 4.5 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | before | 2297 | 2291 | 2279 | 8 | 316 | 283 | 3679 | 94 | 94 | 272 |
+  | after | **66** | **60** | 2279 | 8 | 316 | 283 | 3679 | 94 | 94 | 272 |
+
+  What is left of that row is the entry below: the two spikes sit at `z 1` and
+  `z 3`, which are two of this flight's own tread heights, and nowhere else.
+
+- **A flame at exactly a surface's own height loses most of that surface's
+  shadow, and integer heights are the common case.** The sweep above makes the
+  shape of it plain: away from the geometry's own planes the engine tracks the
+  reference to within `60`–`320` pixels of 23912, and at `z 1` and `z 3` — tread
+  0's and tread 1's own tops — it jumps to 2279 and 3679. Not a gradient into the
+  degeneracy but a spike *at* it: `z 2.5` reads 283 and `z 3` reads 3679 and
+  `z 3.5` reads 94. The entry further down says both of phase 4's own flame
+  placements are degenerate and treats that as a fixture problem; this says it is
+  not only a fixture problem, because every static in the client's files stands
+  at a whole `z` and so does every torch on one.
+
 - **A riser's shadow on the tread behind it is graded over most of that tread,
   and the picture reads it as a light in the wrong place.** Found by looking at
   `synthetic_stair`'s reference frame beside the rendered one: the two put the
