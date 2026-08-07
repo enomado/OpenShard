@@ -760,6 +760,11 @@ struct RayBox {
     hit: bool,
     entered: f32,
     leaves: f32,
+    // `1.0` for an ordinary, exact hit; tapered toward `0.0` for a
+    // `ray_vs_body` corner graze — `light::ray_vs_body`'s own third number,
+    // see its doc for why this exists instead of feeding the widened
+    // crossing straight into the ordinary softness formula.
+    taper: f32,
 };
 
 // `tolerance` is `RAY_TANGENT_TOLERANCE` at `walk`'s own cell and `0.0` at
@@ -771,7 +776,7 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
     let delta = ray_to - ray_from;
     if abs(delta.x) <= 1.0e-9 {
         if ray_from.x < lo.x || ray_from.x > hi.x {
-            return RayBox(false, 0.0, 0.0);
+            return RayBox(false, 0.0, 0.0, 1.0);
         }
     } else {
         let t1 = (lo.x - ray_from.x) / delta.x;
@@ -784,12 +789,12 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
         // other opens, and CPU and GPU are not guaranteed to agree which
         // side of that razor-thin gap is real for the identical segment.
         if entered > leaves + tolerance {
-            return RayBox(false, 0.0, 0.0);
+            return RayBox(false, 0.0, 0.0, 1.0);
         }
     }
     if abs(delta.y) <= 1.0e-9 {
         if ray_from.y < lo.y || ray_from.y > hi.y {
-            return RayBox(false, 0.0, 0.0);
+            return RayBox(false, 0.0, 0.0, 1.0);
         }
     } else {
         let t1 = (lo.y - ray_from.y) / delta.y;
@@ -797,12 +802,12 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
         entered = max(entered, min(t1, t2));
         leaves = min(leaves, max(t1, t2));
         if entered > leaves + tolerance {
-            return RayBox(false, 0.0, 0.0);
+            return RayBox(false, 0.0, 0.0, 1.0);
         }
     }
     if abs(delta.z) <= 1.0e-9 {
         if ray_from.z < lo.z || ray_from.z > hi.z {
-            return RayBox(false, 0.0, 0.0);
+            return RayBox(false, 0.0, 0.0, 1.0);
         }
     } else {
         let t1 = (lo.z - ray_from.z) / delta.z;
@@ -810,10 +815,124 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
         entered = max(entered, min(t1, t2));
         leaves = min(leaves, max(t1, t2));
         if entered > leaves + tolerance {
-            return RayBox(false, 0.0, 0.0);
+            return RayBox(false, 0.0, 0.0, 1.0);
         }
     }
-    return RayBox(true, entered, max(entered, leaves));
+    return RayBox(true, entered, max(entered, leaves), 1.0);
+}
+
+// How far outside a body's own box a ray may pass and still read as grazing
+// its corner rather than clearing it — `light::CORNER_GRAZE`, and the two
+// are one number: `docs/lighting_raymarch.md` session 20/21's fix has to
+// land on both sides of decision 9's own parity gate or it does not count
+// as landed at all (see `light::ray_vs_body`'s own doc for the shape of the
+// fix; this file mirrors it, not re-derives it).
+const CORNER_GRAZE: f32 = 0.2;
+
+// `light::MIN_AXIS_WINDOW`: below this width, an `axis_window` is a single
+// instant, not a real stretch of the segment inside that axis's own range —
+// guards the degenerate tie `a_wall_level_with_the_flame_is_not_skipped_
+// by_a_shallow_ray` pins, not how far outside the box a graze may sit.
+const MIN_AXIS_WINDOW: f32 = 1.0e-3;
+
+// `light::CORNER_GAP_SOFTEN`: how wide, in `t`, `corner_graze_weight` fades
+// its own disjoint/overlapping classification across, instead of switching
+// it on the exact line where two `AxisWindow`s stop touching.
+const CORNER_GAP_SOFTEN: f32 = 0.02;
+
+// `light::axis_window`: the `t`-interval where a straight segment's own
+// coordinate, on one axis alone, sits inside `[lo, hi]`.
+struct AxisWindow {
+    hit: bool,
+    near: f32,
+    far: f32,
+};
+
+fn axis_window(coord_from: f32, coord_to: f32, lo: f32, hi: f32) -> AxisWindow {
+    let delta = coord_to - coord_from;
+    if abs(delta) <= 1.0e-9 {
+        if coord_from >= lo && coord_from <= hi {
+            return AxisWindow(true, 0.0, 1.0);
+        }
+        return AxisWindow(false, 0.0, 0.0);
+    }
+    let t1 = (lo - coord_from) / delta;
+    let t2 = (hi - coord_from) / delta;
+    let near = clamp(min(t1, t2), 0.0, 1.0);
+    let far = clamp(max(t1, t2), 0.0, 1.0);
+    if near > far {
+        return AxisWindow(false, 0.0, 0.0);
+    }
+    return AxisWindow(true, near, far);
+}
+
+// `light::corner_graze_weight`: whether a ray that misses a body's own box is
+// rounding a **corner** of it, as opposed to running shallow alongside one
+// of its straight faces — a genuine corner has both axes' real (unwidened)
+// windows non-empty but disjoint in `t`; a shallow ray along one of the
+// box's rows or columns has one axis's window contain the other's instead.
+// Returns a weight, not a bool — faded across `CORNER_GAP_SOFTEN` rather
+// than switched at the disjoint/overlapping line itself, see
+// `light::corner_graze_weight`'s own doc for why. This is the same formula,
+// not a second derivation of it.
+fn corner_graze_weight(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec2<f32>, hi: vec2<f32>) -> f32 {
+    let wx = axis_window(ray_from.x, ray_to.x, lo.x, hi.x);
+    let wy = axis_window(ray_from.y, ray_to.y, lo.y, hi.y);
+    if !wx.hit || !wy.hit || wx.far - wx.near <= MIN_AXIS_WINDOW || wy.far - wy.near <= MIN_AXIS_WINDOW {
+        return 0.0;
+    }
+    var gap = 0.0;
+    if wx.far < wy.near {
+        gap = wy.near - wx.far;
+    } else if wy.far < wx.near {
+        gap = wx.near - wy.far;
+    } else {
+        return 0.0;
+    }
+    return clamp(gap / CORNER_GAP_SOFTEN, 0.0, 1.0);
+}
+
+// `light::point_box_distance`: the perpendicular distance, in tiles, from a
+// point to an axis-aligned box's own footprint — `0.0` if the point already
+// sits inside it.
+fn point_box_distance(p: vec2<f32>, lo: vec2<f32>, hi: vec2<f32>) -> f32 {
+    let dx = max(max(lo.x - p.x, 0.0), p.x - hi.x);
+    let dy = max(max(lo.y - p.y, 0.0), p.y - hi.y);
+    return sqrt(dx * dx + dy * dy);
+}
+
+// `light::ray_vs_body`: a body's own crossing interval, widened by
+// `CORNER_GRAZE` on `x`/`y` when the exact test misses and `is_corner_graze`
+// says the miss is a corner rather than a shallow face. Only ever called
+// where `edges == EDGE_MASK` — a lid or a panel's own straight edge already
+// grades through the ordinary sliver-thinning `ray_vs_solid` gives it on
+// the way out, see `light::ray_vs_body`'s own doc for why bodies alone need
+// this second test, and for why the result carries a `taper` rather than
+// feeding straight into the ordinary `crossed / soft` formula.
+fn ray_vs_body(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>, tolerance: f32) -> RayBox {
+    let exact = ray_vs_solid(ray_from, ray_to, lo, hi, tolerance);
+    if exact.hit {
+        return exact;
+    }
+    let weight = corner_graze_weight(ray_from, ray_to, lo.xy, hi.xy);
+    if weight <= 0.0 {
+        return exact;
+    }
+    let widened = ray_vs_solid(
+        ray_from,
+        ray_to,
+        vec3<f32>(lo.x - CORNER_GRAZE, lo.y - CORNER_GRAZE, lo.z),
+        vec3<f32>(hi.x + CORNER_GRAZE, hi.y + CORNER_GRAZE, hi.z),
+        tolerance,
+    );
+    if !widened.hit {
+        return widened;
+    }
+    let middle = (widened.entered + widened.leaves) * 0.5;
+    let p = ray_from.xy + (ray_to.xy - ray_from.xy) * middle;
+    let distance = point_box_distance(p, lo.xy, hi.xy);
+    let taper = clamp(1.0 - distance / CORNER_GRAZE, 0.0, 1.0) * weight;
+    return RayBox(true, widened.entered, widened.leaves, taper);
 }
 
 // Which side (or two, at a genuine corner) of a body's own box a point
@@ -913,7 +1032,12 @@ fn cell_stopped(
         // this ray crosses it in — `light::ray_vs_solid`, replacing the
         // DDA's own per-*cell* `entered`/`leaves` with a per-*solid* one.
         let bx = box_of(cell, low, high, footprint_at(id));
-        let hit = ray_vs_solid(start, finish, bx.lo, bx.hi, tolerance);
+        var hit = RayBox(false, 0.0, 0.0, 1.0);
+        if edges == EDGE_MASK {
+            hit = ray_vs_body(start, finish, bx.lo, bx.hi, tolerance);
+        } else {
+            hit = ray_vs_solid(start, finish, bx.lo, bx.hi, tolerance);
+        }
         if !hit.hit {
             continue;
         }
@@ -940,7 +1064,7 @@ fn cell_stopped(
             SOFT_CROSSING_MIN,
             SOFT_CROSSING_MAX,
         );
-        let opacity = f32(stands.z) / 255.0;
+        let opacity = f32(stands.z) / 255.0 * hit.taper;
         let tall = soft * FLAME_DEPTH;
         var by_surface = 0.0;
         if edges == 0u {
@@ -999,6 +1123,15 @@ fn cell_stopped(
             let leave_point = vec2<f32>(start.x + delta.x * hit.leaves, start.y + delta.y * hit.leaves);
             if (stops & box_side(leave_point, box_lo, box_hi)) != 0u {
                 body_stopped = max(body_stopped, opacity * pierces(start.z + delta.z * hit.leaves, low, high, tall));
+            }
+            // `light::walk_cells_streaming`'s own copy of this comment: a
+            // graze's own entry/exit sit on the widened box, so `box_side`
+            // above almost never fires for it, and the exact-hit tangent's
+            // own `pierces` floor would otherwise vanish right at the
+            // exact/graze handoff. `hit.taper < 1.0` is exactly "this hit
+            // came from the graze path."
+            if hit.taper < 1.0 {
+                body_stopped = max(body_stopped, opacity * pierces(start.z + delta.z * middle, low, high, tall));
             }
             by_surface = body_stopped;
         } else {

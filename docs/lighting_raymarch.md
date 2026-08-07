@@ -27,12 +27,20 @@ as a side effect of Track B's own footprint-upload landing.** Track B's
 point 4 cutover landed session 16; its one open parity gap was triaged and
 closed as an accepted limitation in session 17; the backlog's "second bigger
 idea" (the GPU footprint upload) and a `box_side` bug found alongside it
-both landed session 19. **What is open now is new, found at the very end of
-session 19, and lives only in the Backlog below**: a body's own base meets
-the ground with no shadow at all — read that entry (search "the ground
-immediately beside a body's own base") before starting, it has the repro,
-what is already ruled out, and the unfinished next step (a ground-point
-oracle, not more hand arithmetic).
+both landed session 19. **What was open — a body's silhouette corner casting
+no penumbra at all — was found at the end of session 19, root-caused in
+session 20, and landed session 21** (`## Handoff log`, Session 21 entry):
+candidate (a) (widen `ray_vs_solid` itself, scoped to bodies alone, rather
+than a second distance-based formula) is what actually worked, once two
+follow-on seams it opened were closed in the same session — a discontinuity
+at the real-box/graze handoff, and a hard edge in the graze classification
+itself. Landed in both `light.rs` and `blit.wgsl`, full `cargo test
+--workspace` and `cargo clippy --workspace --all-targets` clean, verified
+against a rendered picture (`examples/boxes.rs`'s `tree` scene) as well as
+the numeric suites. Read Session 21's own entry before touching this area
+again — it has the shape that worked, the two seams and their fixes, and
+what is still only approximately right (`CORNER_GRAZE`/`CORNER_GAP_SOFTEN`
+are tuned by eye, not derived).
 
 **Track A — the tile-boundary bug (steps 1-5 below).** Steps 1-4 are done
 and committed. Step 5 — the still-unexplained white line over empty
@@ -1316,6 +1324,353 @@ there is one.
 One entry per session, newest first. What changed, what was learned, what the
 next session should read before touching anything. Append, do not rewrite —
 a wrong turn kept and marked wrong is worth more than a tidied history.
+
+### Session 21 — candidate (a) landed: a body's silhouette corner has a real penumbra now, on both CPU and GPU, after two follow-on seams found rendering a picture rather than trusting the numeric suites alone
+
+Picked up session 20's own "next session starts" pointer directly: try
+candidate (a) — widen `ray_vs_solid` itself for a body ([`EDGE_ANY`]) when
+the exact test misses, rather than a second, distance-based softness formula
+grafted on afterwards. Re-derived session 20's own repro first (the `tree`
+scene's ground heatmap around box 0's south-west corner) to confirm the gap
+still reproduced before touching anything, then implemented.
+
+**The shape that worked, in the end: three functions, not one.** A single
+`ray_vs_body(from, to, edges, space)` replaces every call to `ray_vs_solid`
+that could be looking at a body — `walk_cells_exact`'s candidate-gathering
+loop and `walk_cells_streaming`'s own `apply` closure, both call sites, CPU
+side; `cell_stopped`'s own `hit` on the GPU. It tries the exact test first
+and returns that unchanged whenever it hits — a lid or a panel's own
+straight edge never reaches the new code at all, `edges != EDGE_ANY` is
+checked before anything else. On a miss, for a body only:
+
+1. **`corner_graze_weight`** (`light.rs`, WGSL mirror in `blit.wgsl`)
+   classifies the *shape* of the miss using the box's own real, unwidened
+   bounds: a genuine corner has both axes' `axis_window`s (the `t`-interval
+   where the ray's own coordinate alone sits inside that axis's range) real
+   but *disjoint* — the ray comes near the box's `x`-range and, separately,
+   its `y`-range, never both at the same instant. A ray shallow against one
+   of the box's rows or columns — session 6's `corner_tie` bug, in a new
+   formula, and exactly the shape
+   `a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray` already
+   pins — has one axis's window contain the other's instead, and reads as
+   "not a corner." `MIN_AXIS_WINDOW` exists only for that fixture's own
+   degenerate case: the flame sits exactly on the wall row's own edge, so
+   the naive window is real but a single instant wide, and a zero-width
+   "stretch" is not a stretch.
+2. On a real corner, `ray_vs_body` retests against the same box widened by
+   `CORNER_GRAZE` (`0.2` tiles) on `x`/`y` only. A hit there is a genuine,
+   if thin, crossing the existing `crossed / soft` machinery already knows
+   how to grade — no new softness formula, the same one every other edge in
+   this file already uses.
+
+**First seam: the widened crossing's own length is not continuous with the
+exact test's at the handoff.** Fed straight into `crossed / soft` the way an
+exact hit already is, the *first* working version closed session 20's own
+repro (a real gradient where the heatmap used to jump `9` to `0`) but
+rendering `examples/boxes.rs`'s `tree` scene showed a visible seam: right
+where the exact test stops returning `Some`, the widened box's own crossing
+is not vanishingly short the way the real one was approaching zero just
+before it — it jumps *up*, then fades back down toward the margin's far
+edge. Not a halo (session 20's own first failure mode, ruled out already by
+`CORNER_GRAZE`'s own narrow width) but a second, subtler non-monotonic
+bump. Found by rendering, not by the test suite — `frame.rs`'s 45-scene
+parity suite and `tests/lighting.rs`'s 37 stayed green with this version,
+because none of them happen to sweep a query point across exactly this
+handoff at a resolution that would catch a few-pixel-wide dip.
+
+**Fixed with a `taper`, the third number `ray_vs_body`/`RayBox` now
+carries.** `1.0` for an ordinary exact hit; for a graze, the ray's own
+closest-approach point's plain Euclidean distance to the *real* box
+(`point_box_distance`) linearly interpolated from `1.0` at distance `0`
+(continuous with whatever the exact test's own tangent already gives) down
+to `0.0` at `CORNER_GRAZE`'s own outer edge (continuous with "no candidate
+at all"). The caller multiplies opacity by it rather than trusting the
+widened crossing's raw length. Re-rendered: the bump is gone, a single
+smooth gradient from the real box's edge out to the margin.
+
+**Second seam, found the same way immediately after: `box_side`'s own
+"grazed corner reads as opaque" safety net never fires for a graze at
+all.** It reads whether the crossing's own entry/exit points sit on the
+*real* box's edge, within `1e-3` tiles — true very often for an exact
+tangent hit (which is why the exact-hit path's own floor near a corner is
+`pierces(z)`, not the vanishing `crossed`-length term alone) and essentially
+never true for a graze's entry/exit, which sit on the *widened* box,
+`CORNER_GRAZE` tiles further out. So the exact side's own floor disappears
+right at the handoff a second, independent way — not from the taper this
+time, from a floor that silently stopped applying. Fixed the same shape as
+`box_side`'s own safety net, without needing `box_side` itself: whenever a
+hit came from the graze path (`taper < 1.0`, since only that path ever
+returns one), also take `pierces` at the crossing's own midpoint as a floor.
+Re-rendered again: no further seam found sweeping the `tree` scene by eye at
+a `OPENSHARD_SCENE_ZOOM=11` crop.
+
+**Third seam, cosmetic rather than a discontinuity: `corner_graze_weight`
+itself is a bool wearing an `f32`'s clothes.** The disjoint/overlapping line
+its own two `axis_window`s cross is exactly as hard a switch as the very
+first `is_corner_graze` this session started with, just one step removed
+from the visible occlusion value — two rays a hair apart on opposite sides
+of that line get graze weight `1.0` and `0.0` respectively, which shows as a
+faint dotted seam along a body's own silhouette at the angle where the
+classification itself flips. Softened by fading the weight across a small
+band of `t` (`CORNER_GAP_SOFTEN`, `0.02`) straddling the disjoint/overlap
+line, rather than switching on it — the same "a hard classification line is
+itself a seam" lesson the taper already taught, applied one level up.
+
+**A fourth apparent seam, checked and ruled out rather than chased: it
+predates every change this session made.** A faint dotted line remained
+along the top of box 0's own shadow silhouette after all three fixes above.
+Rendered the same crop against `git stash`'s own unmodified `light.rs`/
+`blit.wgsl` — same dotted line, same place, box 1 removed from the scene
+entirely to rule out any interaction with it. Not this session's doing;
+some other artefact (a ground-quad seam or a quantisation step is the
+likely shape, not investigated further) that the old, harder-edged shadow
+happened to hide and the new, softer one does not. Logged so a future
+session does not re-open this track chasing it.
+
+**Verified, not assumed.** Full `cargo test --workspace` (all 350+45+37+…
+tests across `openshard-client-render`), `cargo clippy --workspace
+--all-targets`, and `cargo fmt --all -- --check` all clean with the real
+files — including `frame.rs`'s own decision-9 CPU/GPU parity suite (45
+tests, both `light.rs`'s `ray_vs_body` and `blit.wgsl`'s own mirror agree
+byte for byte across every scene) and the two `tests/lighting.rs` fixtures
+the first attempt (the taper's own predecessor) broke:
+`the_edge_of_a_shadow_lands_where_the_geometry_puts_it` and
+`a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle`. Every
+intermediate seam above was found by rendering `examples/boxes.rs`'s `tree`
+scene and looking — the numeric suites alone would not have caught either
+of the first two, and did not, until a fixture was written or fuzzed onto
+each afterward is a fair description of what is *not* yet done (see below).
+
+**What is still open, named rather than assumed closed.**
+
+- **No permanent regression test pins the taper or the weight-softening
+  directly** — both were verified by rendering and reverting by hand
+  (`git stash`), the discipline this doc's own earlier sessions used before
+  a fixture existed, not after. A future session wanting to guard against
+  either seam recurring needs a query-point sweep across a known corner's
+  own handoff and gap-softening band, asserting monotonicity rather than
+  eyeballing a picture each time.
+- **`CORNER_GRAZE` (`0.2` tiles) and `CORNER_GAP_SOFTEN` (`0.02` in `t`) are
+  both tuned by rendering one scene and looking, not derived from a light's
+  own physical size.** `Light::radius` already exists and is unrelated to
+  either constant — session 20's own third candidate question (is a razor
+  corner shadow wrong at all, or does giving flames a nonzero radius the
+  render already has a field for make this whole track unnecessary) was not
+  revisited this session.
+- **The pre-existing dotted-line artefact above is real and unexplained,**
+  just confirmed not to be this session's own regression.
+
+`git diff` before this entry was written: `crates/client/render/src/light.rs`
+(`ray_vs_body`, `axis_window`, `corner_graze_weight`, `point_box_distance`,
+`CORNER_GRAZE`, `CORNER_GAP_SOFTEN`, and the `EDGE_ANY` branches of both
+walks), `crates/client/render/src/blit.wgsl` (the same shape, WGSL's own
+`RayBox` gaining a fourth field), `tests/lighting.proptest-regressions`
+(two new shrunk cases proptest recorded and kept, from the taper's own
+broken predecessor — harmless extra coverage now that both are fixed).
+
+### Session 20 — the ground-shadow gap root-caused: not a bug in any one formula, a missing feature — a body's silhouette corner has no penumbra at all
+
+Picked up session 19's own "next session starts" pointer: a body's own base
+meets the ground with no shadow at all, confirmed reproducing with `box_side`
+fixed and the vacuous-self-exemption hypothesis already ruled out by hand.
+Built the ground-point oracle session 19 asked for rather than reasoning
+further by hand — a `#[ignore]`d scratch test in `light.rs`'s own `mod tests`
+(not kept; see below), reusing `boxes.rs`'s exact `tree` scene geometry (two
+stacked sub-tile boxes on tile `(100, 100)`, default light at `(101.5, 99.0,
+6)`) and gridding `light::sample` over the ground plane (`z 0`) around box 0's
+south-west corner as a plain ASCII heatmap, `0`–`9`.
+
+**The heatmap has no gradient anywhere — every sampled point is exactly `0`
+or exactly `9`, the boundary between them one hard diagonal line.** Zoomed
+in on one row (`y 100.35`) at `0.0005`-tile steps across the boundary: `through`
+reads `1.00000` at `x 100.15186`, `0.00000` at `x 100.15237` — a genuine
+mathematical discontinuity, not a display artefact of the heatmap's own
+resolution. Compare against the same scratch harness pointed at a plain
+overhead light and a *straight* face's shadow instead of a corner's (light
+directly north of the box, sweeping away from its south face): that boundary
+softens smoothly over about 1.5 tiles, `through` climbing `0.0 → 0.22 → 0.46 →
+1.0` — the `soft`/`pierces` machinery works exactly as designed there. The
+defect is specific to a **corner**, not to shadows in general.
+
+**Root cause: `ray_vs_solid` is a binary geometric predicate — `Some` (the ray
+touches the box, however tangentially) or `None` (it doesn't) — and nothing
+downstream of `None` has any softening left to apply.** `walk_cells_exact`'s
+`EDGE_ANY` branch (`light.rs:2214`-`2238`) only computes `stopped` for a
+`Hit` that `ray_vs_solid` actually produced; a candidate tile whose ray
+misses the box's slab test by any margin, however small, never becomes a
+`Hit` at all and contributes nothing to `through`. For an ordinary straight
+edge this never shows: a ray sweeping across a face's shadow boundary
+crosses from a substantial interior crossing (soft ratio well inside
+`SOFT_CROSSING_MIN..MAX`) down through ever-thinner slivers before it
+finally exits the box's slab test, and `box_side`'s pierces-safety-net
+(`light.rs:2231`-`2237`) catches the last, thinnest ones — the same
+"a grazed corner reads as opaque" rule this doc's own step 4/session 19
+entries already argue for. **A silhouette *corner* is different: the ray's
+closest approach to the box happens at a single point in space, not along a
+length of edge, so there is no interval of "thinning interior crossings" for
+`box_side` to catch on the way out — the transition from `Some` (the ray
+still grazes the corner, `box_side` fires, fully opaque) to `None` (the ray
+has cleared the corner, `stopped = 0`) is a single float comparison flipping,
+with no ray configuration in between where the crossing is real but small.**
+The straight-edge case has a whole `t`-interval of "small but real" for the
+existing softness ratios to grade through; the corner case has none — this is
+what `pierces`'s own doc comment already names as the vertical half of the
+penumbra ("a flame is a body rather than a point, so a ray grazing the top of
+a wall is dimmed rather than switched") never got a *lateral*, at-a-corner
+counterpart. `FLAME_SPREAD`/`soft` soften a crossing's own edges once inside
+the box; nothing softens the box's own silhouette edge at a corner, because
+nothing represents "the ray passed near, but outside, the box" at all —
+`ray_vs_solid` was built (`docs/lighting_raymarch.md`'s own ray-vs-Solid
+scoping, point 1) to answer that question *exactly*, on purpose, and exactness
+is precisely what leaves no room for a physically-sized light source's own
+corner penumbra.
+
+**Why this only surfaced after session 19's footprint upload, not before.**
+Before it, every body's own occlusion box (`box_of`) was the *whole tile*
+regardless of the static's real footprint — a corner of a whole-tile box sits
+at a tile's own corner, where the neighbouring tile's own occluders (a real
+scene is rarely one isolated body in open air) usually still stood between a
+grazing ray and full light, papering over the missing corner-penumbra by
+accident. A sub-tile body's real corner sits in open space with nothing else
+nearby to catch what `ray_vs_solid` alone cannot soften, which is exactly
+`boxes.rs`'s `tree` scene (and, presumably, a real climbable static's own
+narrow footprint) and not `two_cubes.rs`'s whole-tile boxes.
+
+**Not fixed this session — the shape of a fix is a design decision, not a
+formula correction, and is left for the next session to pick rather than
+guessed at under this entry.** Candidate shapes, named so they are not
+re-derived from scratch:
+- Widen `ray_vs_solid`'s own box by a `PANEL_THICKNESS`-like margin before
+  the slab test, `pierces`/`inside`-style, so a near-miss becomes a thin real
+  crossing the existing `soft`/`box_side` machinery already knows how to
+  grade — cheapest to try, but the doc's own `ray_vs_solid` comment already
+  records that widening this primitive generally, even scoped to one caller,
+  was tried for a different reason (the point-4 CPU/GPU tie) and reverted for
+  breaking agreement with `walk_cells_streaming`'s narrower candidate set on
+  ordinary geometry — needs the same fault-injection discipline to rule that
+  out again here, not an assumption that this margin is small enough to be
+  safe where the earlier one was not.
+- A dedicated corner-distance term: when `ray_vs_solid` reads `None`, measure
+  the ray's own closest approach to the box (a segment-vs-box nearest-distance,
+  not a slab test) and fall back to a softness term shaped like `inside`'s,
+  scaled by `FLAME_SPREAD`. Keeps `ray_vs_solid` itself exact (nothing here
+  needs re-litigating point 1's own scoping) at the cost of a second geometric
+  primitive to write, test and keep in sync between `light.rs` and
+  `blit.wgsl`.
+- Question worth asking before either: is a razor corner shadow actually
+  wrong, or does it only read as wrong at this scene's zoom/scale — a real
+  torch's own light radius (`Light::radius`, unrelated to `FLAME_SPREAD`) is
+  already a knob nothing here has varied; worth checking whether the
+  ground-point oracle's own disagreement (against `boxes.rs`'s `oracle_visible`,
+  a genuinely point-source slab test) actually says "0 vs 9" is *correct* for
+  a point light and the fix is instead giving flames a nonzero radius the
+  render already has a field for.
+
+The scratch harness (`#[ignore]`d test in `light.rs`'s `mod tests`, an ASCII
+heatmap plus a fine zoom) was not kept, per this doc's own convention for
+throwaway probes — this entry is the repro, so the next session does not
+have to re-derive it from a screenshot: `boxes.rs`'s `tree` scene geometry,
+default light, `Occlusion::Builder::add_raw` for both boxes, `light::sample`
+gridded over `z 0` around box 0's own south-west corner. `cargo check
+--workspace --all-targets` clean with the scratch code reverted
+(`git checkout -- crates/client/render/src/light.rs`) before this entry was
+written.
+
+**A fix was attempted the same session, candidate (b) above — and reverted,
+not landed, after two real regressions it took fault injection rather than
+reasoning to find.** Logged in full because each failure narrows what a real
+fix has to get right, the same discipline this doc has used on every other
+attempt.
+
+- **First cut: `segment_distance_to_box` (a ternary search — distance to a
+  convex box composed with an affine segment parametrisation is itself
+  convex, hence unimodal in `t`) plus `corner_pierces`, a linear falloff
+  applied whenever `ray_vs_solid` missed and the miss distance was under
+  `spread`.** Wired into both `walk_cells_exact` and `walk_cells_streaming`'s
+  `EDGE_ANY` branches, mirrored in `blit.wgsl`'s `cell_stopped`. Closed the
+  session's own repro cleanly (a real graded penumbra where the heatmap used
+  to jump straight from `9` to `0`) — and, rendered on `boxes.rs`'s own
+  `tree` scene, darkened *every* sampled ground point in the whole 40×70
+  grid, none reading fully lit any more. `spread` is `FLAME_SPREAD`, a whole
+  tile — every point within a tile of *either* box picked up some
+  corner-penumbra, which is not a corner's penumbra at all, it is a halo.
+  **Fixed by grading the band the same way an ordinary crossing's own edge
+  already is**: `band = (spread * t / (1 - t)).clamp(SOFT_CROSSING_MIN,
+  SOFT_CROSSING_MAX)`, evaluated at the near-miss's own closest-approach `t`,
+  in place of the flat `spread`. Re-rendered: a real, narrow gradient at the
+  corner, nothing elsewhere — the shape this doc's Session 20 opening
+  expected.
+- **Second regression, found by the full test suite rather than the new
+  scene alone: `tests/lighting.rs`'s `opening_a_door_spills_light_onto_the_
+  ground_outside` and `tests/frame.rs`'s parity suite both failed.** A ray
+  straight out of an open doorway, which should read `through 1.0`
+  (`stopped_by: None`), read `0.83` instead — some *unrelated* neighbouring
+  wall body, nowhere near the doorway's own shadow, was contributing a
+  corner-penumbra term it had no business contributing. **Root cause: a near
+  point on a segment being a box's own closest point does not mean the ray
+  is rounding that box's corner** — a ray running parallel to a wall's own
+  face, well outside its footprint the whole way, has that face's *own*
+  coordinate clamped for a whole stretch of `t` (the squared-distance
+  function is flat there, not merely small), and a ternary search searching
+  a flat stretch lands wherever float rounding happens to put it — including,
+  in this exact case, close enough to the flat stretch's own edge to read as
+  "clamped on both axes," which is what this fix's own gate asked. It is a
+  face's own near-miss misread as a corner's.
+- **Fixed the same way as the first regression, by asking a sharper question
+  instead of retuning a threshold**: `axis_window` (`from + (to - from) * t`
+  inside `lo..hi`, as a `t`-interval, `None` if never) computed independently
+  for `x` and `y`, then `is_corner_miss` asks whether the two windows ever
+  overlap. A genuine corner has both windows non-empty (the ray does, at some
+  point, come inside the box's own range on each axis alone) but never at the
+  same `t` — that is what "the ray rounds the corner" means geometrically. A
+  straight face's near-miss has one axis's window covering the *whole*
+  segment (never leaves that axis's range at all), which this test correctly
+  reads as "not a corner." Landed in both CPU walks and `blit.wgsl`
+  (`is_corner_miss`'s own WGSL twin — one naming collision found immediately,
+  `from` is a reserved WGSL keyword, fixed by renaming the parameter, not
+  worth its own bullet but logged so it is not re-discovered). Re-ran the
+  open-doorway test and the full `tests/frame.rs` parity suite: both green.
+- **Third regression, found by the full suite again once the first two were
+  fixed: `tests/lighting.rs`'s `the_edge_of_a_shadow_lands_where_the_geometry_
+  puts_it` failed, and this is the one that stopped the session rather than
+  getting its own fix.** That test's whole point is exactly this doc's own
+  founding complaint from Track A: a shadow's soft edge must land a
+  *fraction* of a tile past a boundary, never exactly on one — `west <
+  doorway && doorway - west < 0.5`. With the corner fix applied, the sweep
+  approaching the doorway from outside now shows a real gradient a few
+  hundredths of a tile before the boundary (`0.008` at `x 99.93` climbing to
+  `0.379` at `x 99.99` — the fix's own corner softening, genuinely present
+  and genuinely smooth) and then jumps straight to `1.0` exactly *at* `x
+  100.0`, the tile's own edge — so the point where `through` first crosses
+  `0.5` (this test's own definition of the shadow's edge) sits precisely on
+  the boundary rather than short of it, failing the one assertion this whole
+  track exists to keep passing.
+- **Not root-caused to the same depth as the first two — the strong suspect,
+  named so the next session does not have to re-derive it, is the fix's own
+  scope: near-miss softening is only ever computed for a solid on a cell the
+  walk's own enumeration visits (`candidate_tiles` in `walk_cells_exact`, the
+  stepped DDA cells in `walk_cells_streaming`), and that enumeration is
+  itself keyed by tile.** Once the query point's own tile changes — crossing
+  `x 100.0` from the wall's tile into the doorway's own — the near wall body
+  may simply stop being a candidate at all, and the softness this fix adds
+  disappears in the same step, recreating a hard edge at the tile boundary by
+  a different route than the one this whole doc has spent nineteen sessions
+  closing. If true, a real fix needs the near-miss candidate set to not be
+  keyed to "which tile does the walk visit" at all, which is a shape closer
+  to candidate (a) above (widen the box test itself, so a near solid is a
+  *candidate* rather than found and graded after the fact) than to this
+  session's (b) — worth trying (a) properly next, with the fault-injection
+  discipline every fix in this doc now uses, rather than assuming it was
+  correctly ruled out by the one attempt logged much earlier in this doc for
+  a different reason (the point-4 CPU/GPU tie).
+- **Reverted rather than landed half-fixed**: `git checkout --
+  crates/client/render/src/light.rs crates/client/render/src/blit.wgsl
+  crates/client/render/tests/lighting.proptest-regressions`. `cargo check
+  --workspace --all-targets` clean after the revert. The two regressions this
+  attempt found and the mechanism behind the third are real progress even
+  unlanded — the next attempt starts knowing two shapes of "correct-looking
+  but wrong" a plausible fix produces, and a concrete architectural suspect
+  for the third.
 
 ### Session 19 — the GPU footprint upload landed (the backlog's "second bigger idea"), `box_side` fixed alongside it, and a new ground-shadow gap found and left open
 
