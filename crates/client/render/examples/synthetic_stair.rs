@@ -103,6 +103,33 @@
 //! counted apart rather than folded in: a fragment outside every pool is dark
 //! because of a radius, and a visibility oracle has no opinion about radii.
 //!
+//! # And the same oracle as a picture
+//!
+//! **A count cannot describe a shape.** "316 pixels disagree, banded at 31..32"
+//! is a true sentence about a frame and it does not say whether the shadow has
+//! the right outline, whether an edge is straight, or whether a step is lit from
+//! the side the flame is on. Those are the questions a person actually asks of a
+//! render, and the answer to every one of them is a picture.
+//!
+//! So [`write_reference`] draws the scene **again**, from the geometry: this
+//! file's own polygons, rasterised here, lit by [`oracle_visible`]'s own slab
+//! test, one hard shadow from a point. Nothing of the renderer is borrowed but
+//! the camera, so the two frames land on the same pixels and can be laid over
+//! each other. [`write_difference`] is that overlay, in four colours — grey for
+//! agreement, red and blue for the two ways of disagreeing about light, and
+//! **yellow for a pixel only one of the two drew at all**, which is a
+//! disagreement about the *shape* and the class every count here is blind to by
+//! construction: a pixel nobody compared is a pixel nobody counted.
+//!
+//! Both are written beside whatever `OPENSHARD_FRAME_DUMP` names, as
+//! `<stem>_reference.ppm` and `<stem>_difference.ppm`, along with
+//! `<stem>_faces.ppm`'s map of which plane drew what.
+//!
+//! The reference is a **point** source and the engine's flame has a size, so a
+//! band of grey along every shadow edge is the two disagreeing about softness
+//! rather than about geometry. That is why they are written side by side instead
+//! of subtracted into a score.
+//!
 //! ```sh
 //! OPENSHARD_FRAME_VIEW=7 OPENSHARD_FRAME_DUMP=/tmp/stair.ppm \
 //!     cargo run --release -p openshard-client-render --example synthetic_stair
@@ -266,6 +293,32 @@ impl Slab {
             Part::Riser => (point.2, self.min.2, self.max.2),
             Part::Top if climbs_along_y(up) => (point.1, self.min.1, self.max.1),
             Part::Top => (point.0, self.min.0, self.max.0),
+        }
+    }
+
+    /// This plane's four corners, in the ring order
+    /// [`Prism::mesh`](openshard_client_render::facing::Prism) pushes them.
+    ///
+    /// A [`Slab`] is stored as a box because that is what a slab test wants; a
+    /// *rasteriser* wants a polygon, and for a degenerate box the two are the
+    /// same four points said differently. The ring is the mesh's own so that the
+    /// reference picture and the rendered one triangulate the same quad the same
+    /// way — a fan of `0,1,2 / 0,2,3` splits a quad along one of its two
+    /// diagonals, and the two choices differ by a pixel at the corners.
+    fn quad(&self) -> [(f64, f64, f64); 4] {
+        match self.part {
+            Part::Top => [
+                (self.min.0, self.min.1, self.min.2),
+                (self.max.0, self.min.1, self.min.2),
+                (self.max.0, self.max.1, self.min.2),
+                (self.min.0, self.max.1, self.min.2),
+            ],
+            Part::Riser => [
+                (self.min.0, self.min.1, self.max.2),
+                (self.max.0, self.max.1, self.max.2),
+                (self.max.0, self.max.1, self.min.2),
+                (self.min.0, self.min.1, self.min.2),
+            ],
         }
     }
 
@@ -487,6 +540,185 @@ fn beside(path: &std::path::Path, what: &str) -> PathBuf {
         None => format!("{stem}_{what}"),
     });
     named
+}
+
+/// What [`write_reference`]'s own rasteriser decided about one pixel: which
+/// plane covers it, and where in the world that pixel's own fragment sits.
+///
+/// The pair travels together and is never read apart — a plane without the point
+/// on it cannot be shaded, and a point without the plane it belongs to cannot be
+/// excused from the right one.
+#[derive(Clone, Copy)]
+struct Covered {
+    /// Which of `slabs` won this pixel.
+    plane: usize,
+    /// The pixel centre's own world position, interpolated across the covering
+    /// triangle. The projection is affine and a plane is planar, so this is
+    /// exact rather than approximate — the same property `MeshFaceVertex::world`
+    /// rests on.
+    at: (f64, f64, f64),
+}
+
+/// **The scene rendered a second time, from the geometry alone** — the oracle as
+/// a *picture* rather than as a count.
+///
+/// Every other check in this file reduces the frame to numbers: so many pixels
+/// compared, so many disagreeing, banded so. A number cannot say *what the wrong
+/// thing looks like*, and a wrong shape is the thing an eye reads instantly and a
+/// counter cannot describe at all — "the shadow on this riser has a staircase
+/// edge" is not a quantity. So this draws the answer.
+///
+/// Nothing of the renderer is used but the **camera**, deliberately: the two
+/// pictures have to land on the same pixels to be laid over each other, and where
+/// a fragment projects is not what any of this is about. Everything else is this
+/// file's own — [`Slab::quad`]'s polygons rasterised here, the world position of a
+/// covered pixel interpolated here, and the shadow decided by
+/// [`oracle_visible`]'s independent slab test.
+///
+/// It is a **point** light and a hard shadow: no penumbra, no falloff, no soft
+/// crossing. That is a difference from the engine's picture rather than a defect
+/// in either, and it is the reason the two are written side by side instead of
+/// subtracted — a band of grey along every shadow edge is the engine's flame
+/// having a size, and a *shape* that differs is not.
+///
+/// Painter order, later face wins, which is `Prism::mesh`'s own submission order
+/// and what the mesh pass's `LessEqual` depth does with one depth per static.
+fn write_reference(
+    slabs: &[Slab],
+    camera: &Camera,
+    flame: (f64, f64, f64),
+    radius: f64,
+    width: u32,
+    height: u32,
+    path: &std::path::Path,
+) -> Vec<u8> {
+    let projection = camera.projection();
+    let to_pixel = |corner: (f64, f64, f64)| {
+        let screen = camera.to_view_exact(project_exact(WorldSpot {
+            x: corner.0,
+            y: corner.1,
+            z: corner.2,
+        }));
+        (
+            f64::from((screen.x - projection.origin.x) * projection.scale) + f64::from(width) * 0.5,
+            f64::from((screen.y - projection.origin.y) * projection.scale) + f64::from(height) * 0.5,
+        )
+    };
+    // Which plane covers each pixel, and where in the world that pixel's own
+    // fragment sits. `None` is background — this scene draws nothing else.
+    let mut covered: Vec<Option<Covered>> = vec![None; (width * height) as usize];
+    for (id, slab) in slabs.iter().enumerate() {
+        let world = slab.quad();
+        let screen: Vec<(f64, f64)> = world.iter().map(|corner| to_pixel(*corner)).collect();
+        for triangle in [[0usize, 1, 2], [0, 2, 3]] {
+            let (a, b, c) = (screen[triangle[0]], screen[triangle[1]], screen[triangle[2]]);
+            let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+            if area.abs() < 1e-12 {
+                // Edge-on: a riser seen exactly along its own plane covers no
+                // pixel, which is a real answer and not a case to rescue.
+                continue;
+            }
+            let low_x = a.0.min(b.0).min(c.0).floor().max(0.0) as u32;
+            let low_y = a.1.min(b.1).min(c.1).floor().max(0.0) as u32;
+            let high_x = (a.0.max(b.0).max(c.0).ceil() as i64).clamp(0, i64::from(width)) as u32;
+            let high_y = (a.1.max(b.1).max(c.1).ceil() as i64).clamp(0, i64::from(height)) as u32;
+            for y in low_y..high_y {
+                for x in low_x..high_x {
+                    // The pixel's own centre, which is where the rasteriser
+                    // samples and therefore where the fragment the engine lit is.
+                    let (px, py) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                    let w0 = ((b.0 - a.0) * (py - a.1) - (b.1 - a.1) * (px - a.0)) / area;
+                    let w1 = ((px - a.0) * (c.1 - a.1) - (py - a.1) * (c.0 - a.0)) / area;
+                    if w0 < 0.0 || w1 < 0.0 || w0 + w1 > 1.0 {
+                        continue;
+                    }
+                    // The projection is affine and the face is planar, so the
+                    // world position interpolates linearly — the same property
+                    // `MeshFaceVertex::world` rests on.
+                    let (u, v) = (w1, w0);
+                    let corner = |at: usize| world[triangle[at]];
+                    let (p, q, r) = (corner(0), corner(1), corner(2));
+                    let point = (
+                        p.0 + (q.0 - p.0) * u + (r.0 - p.0) * v,
+                        p.1 + (q.1 - p.1) * u + (r.1 - p.1) * v,
+                        p.2 + (q.2 - p.2) * u + (r.2 - p.2) * v,
+                    );
+                    covered[(y * width + x) as usize] = Some(Covered { plane: id, at: point });
+                }
+            }
+        }
+    }
+
+    let z_per_tile = f64::from(openshard_client_render::light::Z_PER_TILE);
+    let mut shade = vec![0u8; (width * height * 3) as usize];
+    for (pixel, drawn) in covered.iter().enumerate() {
+        let colour = match drawn {
+            None => [0, 0, 0],
+            Some(Covered { plane, at: point }) => {
+                let offset = (
+                    flame.0 - point.0,
+                    flame.1 - point.1,
+                    (flame.2 - point.2) / z_per_tile,
+                );
+                let distance = (offset.0 * offset.0 + offset.1 * offset.1 + offset.2 * offset.2).sqrt();
+                match (distance >= radius, oracle_visible(*point, flame, slabs, *plane)) {
+                    // The same three answers `Shade` decodes, in the same
+                    // colours `blit.wesl` writes them, so the two pictures can
+                    // be read against each other without a legend.
+                    (true, _) => [0, 0, 89],
+                    (false, true) => [255, 255, 255],
+                    (false, false) => [51, 0, 0],
+                }
+            }
+        };
+        shade[pixel * 3..pixel * 3 + 3].copy_from_slice(&colour);
+    }
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    ppm.extend_from_slice(&shade);
+    std::fs::write(path, ppm).expect("writing the reference frame");
+    eprintln!("wrote {}", path.display());
+    shade
+}
+
+/// Where the rendered frame and [`write_reference`]'s own disagree, as a picture.
+///
+/// Four colours and no counting. Grey is agreement, and it is deliberately dim so
+/// that anything else is the first thing an eye lands on:
+///
+/// - **red** — the renderer lit a pixel the geometry says is shadowed;
+/// - **blue** — the renderer shadowed one the geometry says is lit;
+/// - **yellow** — only one of the two drew anything here at all, which is a
+///   disagreement about the *shape* rather than about the light. It is the class
+///   a count of "compared pixels" hides completely, because a pixel nobody
+///   compared is a pixel nobody counted.
+fn write_difference(rendered: &[u8], reference: &[u8], width: u32, height: u32, path: &std::path::Path) {
+    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    for pixel in 0..(width * height) as usize {
+        let theirs = [
+            rendered[pixel * 4],
+            rendered[pixel * 4 + 1],
+            rendered[pixel * 4 + 2],
+        ];
+        let mine = &reference[pixel * 3..pixel * 3 + 3];
+        let drew_theirs = Shade::of(theirs);
+        let drew_mine = mine != [0, 0, 0];
+        let colour = match (theirs == [0, 0, 0], drew_mine) {
+            (true, false) => [0, 0, 0],
+            (false, false) | (true, true) => [220, 200, 0],
+            (false, true) => {
+                let lit = drew_theirs.lit();
+                let should = mine == [255, 255, 255];
+                match (lit, should) {
+                    (true, false) => [230, 40, 40],
+                    (false, true) => [60, 120, 230],
+                    _ => [40, 40, 40],
+                }
+            }
+        };
+        ppm.extend_from_slice(&colour);
+    }
+    std::fs::write(path, ppm).expect("writing the difference frame");
+    eprintln!("wrote {}", path.display());
 }
 
 /// One colour per plane of the run, over the pixels the `place` attachment says
@@ -884,13 +1116,33 @@ fn main() {
         return;
     }
 
-    // The face oracle. See this module's own doc for what it is and why it
-    // comes before the fix rather than after it.
     let flame = (
         f64::from(at.x) + f64::from(ldx),
         f64::from(at.y) + f64::from(ldy),
         f64::from(light_z),
     );
+    // The scene drawn again from the geometry, and where the two pictures differ
+    // — see `write_reference`, and the module header's own note about why a count
+    // cannot describe a shape.
+    let reference = write_reference(
+        &slabs,
+        &camera,
+        flame,
+        f64::from(light_radius),
+        width,
+        height,
+        &beside(&dumped, "reference"),
+    );
+    write_difference(
+        &shadow_pixels,
+        &reference,
+        width,
+        height,
+        &beside(&dumped, "difference"),
+    );
+
+    // The face oracle. See this module's own doc for what it is and why it
+    // comes before the fix rather than after it.
     // How many bands to report a face's disagreements in, up its own varying
     // axis. Not a sampling grid — the sweep is exhaustive over the face's own
     // pixels — only the resolution the "where" line reads at.
