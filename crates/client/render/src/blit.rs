@@ -365,7 +365,8 @@ impl Blit {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blit"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("blit.wgsl").into()),
+            // `src/shaders/blit.wesl`, compiled to plain WGSL by `build.rs`.
+            source: wgpu::ShaderSource::Wgsl(include_str!(concat!(env!("OUT_DIR"), "/blit.wgsl")).into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

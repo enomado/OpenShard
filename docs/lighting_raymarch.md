@@ -144,10 +144,12 @@ that used to be here and is now fixed — is in the archive under
   — the ground oracle runs by default and prints both counts plus example
   points on stderr.
 
-- **The `place` attachment's packing was a hand-maintained contract —
-  session 23's bug was an instance of a class, not a one-off — and a fix for
-  the class has landed for one of its five files, with the rest tracked
-  below.** `kind`/`stance`/`z` are packed into `place` by three independent
+- **Half closed — the `place` attachment's packing was a hand-maintained
+  contract, session 23's bug was an instance of a class, and the
+  *value-drift* half of that class has landed a fix across all five of its
+  files. The *omission* half — session 23's own failure mode — has not, and
+  is not scoped as a step below.** `kind`/`stance`/`z` are packed into
+  `place` by three independent
   WGSL producers (`statics.wgsl`, `ground.wgsl`, `mesh_face.wgsl`), each
   with its own copy of the shift/mask constants (WGSL modules cannot share
   Rust `const`s), read back by two more (`blit.wgsl`, `select.wgsl`). Only
@@ -171,29 +173,47 @@ that used to be here and is now fixed — is in the archive under
   superset of WGSL that still compiles down to plain WGSL, so both targets
   are untouched.
 
-  **Landed:** `ground.wgsl` migrated to `src/shaders/ground.wesl`, importing
-  the format's constants from a new shared `src/shaders/place_format.wesl`
-  rather than declaring its own copy. `crates/client/render/build.rs`
-  compiles it at build time (the crate's first build-dependency — `wesl =
-  "0.4"`, MSRV 1.87, no nightly toolchain needed, see the crate's own
-  `Cargo.toml` comment for why the trade was worth it here and not for
-  `data/doors.json`); `renderer.rs` loads the compiled output via
-  `include_str!(concat!(env!("OUT_DIR"), "/ground.wgsl"))` in place of the
-  old `include_str!("ground.wgsl")`. One thing the migration surfaced:
-  `wesl-rs`'s parser is stricter than naga's about mixing `<<` and `|`
-  without parens (WGSL's own grammar requires them) — `ground.wgsl`'s `sub`
-  line needed them added; naga had been accepting it unparenthesized.
-  Verified: `cargo test --workspace`/clippy/fmt clean, and the `tree`
-  scene's ground oracle (below) reads identically before and after the
-  migration (confirmed by stashing it and rerunning) — the pilot changed
-  nothing about what gets drawn, only where the constants live.
+  **Landed, all five:** `ground.wgsl`, `statics.wgsl`, `mesh_face.wgsl`,
+  `select.wgsl` and `blit.wgsl` (~1500 lines, the biggest, done last) each
+  moved to `src/shaders/*.wesl`, importing the format's constants — `KIND_*`,
+  `SUB_TILE`/`SUB_TILE_MASK`, `PLACE_STANCE_SHIFT`/`PLACE_STANCE_MASK`/
+  `PLACE_Z_MASK`, `STANCE_FLAT`/`STANCE_FACE_*`/`STANCE_CORNER`/
+  `STANCE_MESH_FACE` — from one shared `src/shaders/place_format.wesl`
+  instead of each declaring its own copy. What each file still declares
+  locally is only what was never duplicated in the first place —
+  `statics.wgsl`'s own `STANCE_SHIFT`/`STANCE_MASK` (a different word: the
+  *instance* input's stance bits, shift 16, not the attachment's own shift
+  8) stayed put on purpose, see its own comment. `crates/client/render/
+  build.rs` compiles all five at build time (the crate's first
+  build-dependency — `wesl = "0.4"`, MSRV 1.87, no nightly toolchain needed,
+  see the crate's own `Cargo.toml` comment for why the trade was worth it
+  here and not for `data/doors.json`); each of `renderer.rs`/`blit.rs`/
+  `select.rs` loads its compiled output via
+  `include_str!(concat!(env!("OUT_DIR"), "/<name>.wgsl"))` in place of the
+  old `include_str!("<name>.wgsl")`. `blit.wesl` and `select.wesl` were
+  copied byte-for-byte and edited only at the two const blocks, verified by
+  diffing the migrated file against the original — the 1500-line body of
+  `blit.wgsl`'s raymarch was never retyped by hand.
 
-  **Not done — next steps, in the same shape as this one:** `statics.wgsl`,
-  `mesh_face.wgsl`, `blit.wgsl`, `select.wgsl` still carry their own copies
-  of the format's constants and are not yet on `place_format.wesl`. Doing
-  them is the same recipe as `ground.wgsl` above, file by file; `blit.wgsl`
-  is the biggest (~1500 lines) and worth doing last, once the pattern is
-  routine on the smaller three.
+  One thing the pilot surfaced, true for all five: `wesl-rs`'s parser is
+  stricter than naga's about mixing `<<` and `|` without parens (WGSL's own
+  grammar requires them) — `ground.wgsl`'s `sub` line needed them added;
+  naga had been accepting it unparenthesized. The other four already
+  parenthesized every mixed expression and needed no such fix.
+
+  Verified, after all five: `cargo test --workspace`/clippy/fmt clean, and
+  both the `tree` and `line` scenes' box-top and ground oracles (below) read
+  identically before and after the full migration — confirmed by stashing
+  it and rerunning against the original `.wgsl` files. The migration changed
+  nothing about what gets drawn, only where the constants live: what it
+  closes is the *value* drifting between files — five copies of
+  `PLACE_STANCE_SHIFT` silently disagreeing, or a new `Stance` value added
+  to one file's copy and not another's. It does **not** close session 23's
+  own failure mode: a producer that never reads a shared constant at all —
+  never stamps the bit — compiles clean either way, WESL or plain WGSL,
+  because that is an omission in the logic, not a wrong value. Closing that
+  half would need the test-time or compile-time check the earlier draft of
+  this entry proposed and did not build; still open, not scoped as a step.
 
 - **Someday/maybe, not scoped as a step**: a full fixed-point world
   coordinate (tile + N bits of sub-tile resolution, no `f32`) would remove

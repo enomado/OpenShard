@@ -205,7 +205,8 @@ impl Select {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("select"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("select.wgsl").into()),
+            // `src/shaders/select.wesl`, compiled to plain WGSL by `build.rs`.
+            source: wgpu::ShaderSource::Wgsl(include_str!(concat!(env!("OUT_DIR"), "/select.wgsl")).into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

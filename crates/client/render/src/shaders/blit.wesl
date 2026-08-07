@@ -11,6 +11,13 @@
 // from, so nothing decided from a screen position can tell the lit face of a
 // wall from the shadow behind it. `docs/lighting.md` is the argument.
 
+import package::place_format::{
+    KIND_MASK, KIND_NOTHING, KIND_LAND, KIND_STATIC, KIND_MOBILE,
+    SUB_TILE_MASK, SUB_TILE, PLACE_STANCE_SHIFT, PLACE_STANCE_MASK,
+    PLACE_Z_MASK, STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
+    STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
+};
+
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -139,20 +146,9 @@ const VIEW_FLAMES: u32 = 10u;
 
 // The fourth channel of the place attachment: the kind in the low two bits,
 // then seven bits of tile-local `x` and seven of tile-local `y`. The world
-// passes pack it; `crate::place` documents it.
-const KIND_MASK: u32 = 3u;
-const SUB_TILE_MASK: u32 = 127u;
-const SUB_TILE: f32 = 127.0;
-
-// `crate::place::Kind::Nothing`: no world pixel here. The Rust side pins the
-// number in a test; this is the only other place it appears.
-const KIND_NOTHING: u32 = 0u;
-// `crate::place::Kind`'s other three values — unlike `Nothing` these are
-// tested for below, since a static and a mobile decode `place.x`/`place.y`
-// as an id rather than a tile and the ground still decodes them directly.
-const KIND_LAND: u32 = 1u;
-const KIND_STATIC: u32 = 2u;
-const KIND_MOBILE: u32 = 3u;
+// passes pack it; `crate::place` documents it. `KIND_MASK`/`SUB_TILE_MASK`/
+// `SUB_TILE`/`KIND_NOTHING`/`KIND_LAND`/`KIND_STATIC`/`KIND_MOBILE` are the
+// import above, `place_format.wesl`.
 
 // The statics and mobiles passes' own `SpriteQuad`, laid out exactly as
 // `sprite.rs`'s `SpriteQuad::write` puts it on the GPU — this is that same
@@ -245,20 +241,13 @@ struct GroundInstance {
 // faceless surface has no direction to be lit from, and a **corner** never
 // arrives here at all — `statics.wgsl` has already resolved it to the face of the
 // half the fragment was drawn on, because a corner's two surfaces are two halves
-// of one picture and one pixel is on one of them.
-const PLACE_STANCE_SHIFT: u32 = 8u;
-const PLACE_STANCE_MASK: u32 = 15u;
-const PLACE_Z_MASK: u32 = 255u;
-// `crate::place::Stance::MeshFace` — not a real stance, a routing sentinel
-// the mesh-face pass writes instead of one of the five below. Read before
-// `outward` ever sees it: the branch above replaces it with the row's own
-// real stance first.
-const STANCE_MESH_FACE: u32 = 10u;
-const STANCE_FLAT: u32 = 1u;
-const STANCE_FACE_NORTH: u32 = 2u;
-const STANCE_FACE_EAST: u32 = 3u;
-const STANCE_FACE_SOUTH: u32 = 4u;
-const STANCE_FACE_WEST: u32 = 5u;
+// of one picture and one pixel is on one of them. `PLACE_STANCE_SHIFT`/
+// `PLACE_STANCE_MASK`/`PLACE_Z_MASK`/`STANCE_MESH_FACE`/`STANCE_FLAT`/
+// `STANCE_FACE_NORTH`/`STANCE_FACE_EAST`/`STANCE_FACE_SOUTH`/`STANCE_FACE_WEST`
+// are the import above, `place_format.wesl`. `STANCE_MESH_FACE` is not a real
+// stance, a routing sentinel the mesh-face pass writes instead of one of the
+// four faces — read before `outward` ever sees it: the branch above replaces
+// it with the row's own real stance first.
 
 // Which way a face looks, in tiles. Zero for everything that has no face.
 //

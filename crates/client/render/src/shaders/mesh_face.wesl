@@ -12,6 +12,8 @@
 // improve on what the billboard sprite already wrote — never disagree with
 // it (`docs/gbuffer.md` decision 4).
 
+import package::place_format::{KIND_STATIC, STANCE_MESH_FACE, PLACE_STANCE_SHIFT, SUB_TILE};
+
 struct Viewport {
     // Real pixels per virtual pixel — see `ground.wgsl`, which documents the
     // same three fields at length; every world pass reads them identically.
@@ -71,18 +73,8 @@ fn vs_main(
     return out;
 }
 
-// `crate::place::Kind::Static` — a mesh face is a static's face.
-const KIND_STATIC: u32 = 2u;
-// `crate::place::Stance::MeshFace` — the routing sentinel `blit.wgsl` reads
-// to look this fragment's id up in `mesh_instances` instead of
-// `face_instances`. The two must agree; there is a test on the Rust side
-// pinning the number, which is the only thing that can be compared against
-// text a Rust compiler never reads.
-const STANCE_MESH_FACE: u32 = 10u;
-const PLACE_STANCE_SHIFT: u32 = 8u;
 // A hundred-and-twenty-seventh of a tile — `crate::place`'s own fraction
 // unit, the same one `statics.wgsl` packs into the attachment's low bits.
-const SUB_TILE: f32 = 127.0;
 const INSIDE: f32 = 126.0 / 127.0;
 
 struct FragmentOut {

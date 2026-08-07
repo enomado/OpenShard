@@ -32,6 +32,8 @@
 // flat static is a floor, a rug or a road — `Stance::Flat`, which is the client's
 // own `Background` bit — and it is what is visibly *the ground here*.
 
+import package::place_format::{KIND_MASK, KIND_LAND, KIND_STATIC, PLACE_STANCE_SHIFT, PLACE_STANCE_MASK, STANCE_FLAT};
+
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -122,19 +124,6 @@ struct Selection {
 // What the mask holds where nothing was drawn.
 const EMPTY: u32 = 0u;
 
-// `crate::place::Kind`, in the low two bits of the attachment's fourth channel.
-// The same numbers `blit.wgsl` has, and pinned on the Rust side in
-// `place::tests::the_kinds_are_the_numbers_the_shader_has`.
-const KIND_MASK: u32 = 3u;
-const KIND_LAND: u32 = 1u;
-const KIND_STATIC: u32 = 2u;
-
-// `crate::place::Stance`, above the height in the third channel — the same shift
-// `statics.wgsl` writes it at and `blit.wgsl` reads it at.
-const STANCE_SHIFT: u32 = 8u;
-const STANCE_MASK: u32 = 15u;
-const STANCE_FLAT: u32 = 1u;
-
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let size = vec2<i32>(selection.shape.xy);
@@ -153,7 +142,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     } else if selection.tile.z != 0u {
         let place = textureLoad(place_of, at, 0);
         let kind = place.w & KIND_MASK;
-        let stance = (place.z >> STANCE_SHIFT) & STANCE_MASK;
+        let stance = (place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK;
         let ground = kind == KIND_LAND || (kind == KIND_STATIC && stance == STANCE_FLAT);
         // The **tile** itself, never `place.x`/`place.y` directly: every kind's
         // pixel carries an id into its own instance buffer there, not a tile —

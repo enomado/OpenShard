@@ -14,6 +14,11 @@
 // because it is one ordering shared with the ground pass, and a second copy of
 // the formula is a second chance to disagree with it — see `crate::depth`.
 
+import package::place_format::{
+    KIND_MASK, SUB_TILE, PLACE_STANCE_SHIFT, STANCE_FLAT, STANCE_FACE_NORTH,
+    STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST, STANCE_CORNER,
+};
+
 struct Viewport {
     // The target's size in *real* pixels — see `ground.wgsl`, which documents
     // the same three fields at length; this pass reads them identically and
@@ -81,14 +86,6 @@ struct VertexOut {
 // rectangles somebody else placed in it.
 const Z_STEP: f32 = 4.0;
 
-// The fourth channel of the place attachment: the kind in the low two bits, then
-// seven bits of tile-local `x` and seven of tile-local `y`. See `crate::place`
-// and `blit.wgsl`, which take the same word apart. The channel is full, so the
-// kind is masked out of the instance's word before the fraction is laid over it
-// — the stance rides in that word too and has done its work by then.
-const KIND_MASK: u32 = 3u;
-const SUB_TILE: f32 = 127.0;
-
 // The largest fraction that still names *this* tile.
 //
 // `blit.wgsl` finds a fragment's cell with `floor(tile + fraction)`, so a
@@ -121,28 +118,14 @@ const HALF_TILE_WIDTH: f32 = TILE_WIDTH * 0.5;
 // centre is, since that edge stands on the diamond's bottom vertex.
 const HALF_TILE_HEIGHT: f32 = 22.0;
 
-// `crate::place::Stance`, in the four bits `Place::packed` writes it to. The
-// numbers are pinned on the Rust side; nothing but a person reading both files
-// can check that these agree with them.
+// `crate::place::Stance`, in the four bits `Place::packed` writes it to — the
+// *instance* word's own bits, a different word from the attachment's own
+// `PLACE_STANCE_SHIFT` (imported above): the third channel there is a `z + 128`
+// in the low eight bits of a `u16`, and the eight above it were spare. The
+// numbers here are pinned on the Rust side; nothing but a person reading both
+// files can check that these agree with them.
 const STANCE_SHIFT: u32 = 16u;
 const STANCE_MASK: u32 = 15u;
-// And where it rides in the *attachment*, which is a different word: the third
-// channel is a `z + 128` in the low eight bits of a `u16`, and the eight above it
-// were spare. `blit.wgsl` reads it back with the same shift, and
-// `crate::place::STANCE_SHIFT` states it once in Rust.
-const PLACE_STANCE_SHIFT: u32 = 8u;
-const STANCE_UPRIGHT: u32 = 0u;
-const STANCE_FLAT: u32 = 1u;
-const STANCE_FACE_NORTH: u32 = 2u;
-const STANCE_FACE_EAST: u32 = 3u;
-const STANCE_FACE_SOUTH: u32 = 4u;
-const STANCE_FACE_WEST: u32 = 5u;
-// The first of the four corner stances, which are two faces in one number: the
-// right half's face is `STANCE_FACE_NORTH + (offset >> 1)` and the left half's is
-// `STANCE_FACE_SOUTH + (offset & 1)`. Laid out for that arithmetic on purpose —
-// see `crate::place::Stance::CornerNorthSouth`, where the same two lines are
-// pinned in a test.
-const STANCE_CORNER: u32 = 6u;
 
 // What one fragment of a world pass writes: the picture, and where in the world
 // it came from.

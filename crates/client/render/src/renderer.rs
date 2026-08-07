@@ -758,7 +758,8 @@ impl SpriteRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("statics"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("statics.wgsl").into()),
+            // `src/shaders/statics.wesl`, compiled to plain WGSL by `build.rs`.
+            source: wgpu::ShaderSource::Wgsl(include_str!(concat!(env!("OUT_DIR"), "/statics.wgsl")).into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1300,7 +1301,10 @@ impl MeshFaceRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("mesh face"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("mesh_face.wgsl").into()),
+            // `src/shaders/mesh_face.wesl`, compiled to plain WGSL by `build.rs`.
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!(concat!(env!("OUT_DIR"), "/mesh_face.wgsl")).into(),
+            ),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
