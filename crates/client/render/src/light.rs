@@ -3709,6 +3709,37 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
+            // **Not every ray can carry this claim, and which cannot is
+            // decidable rather than a matter of taste.** The two walks read
+            // spans that differ by up to half a step of
+            // [`crate::occlusion::Solid::Z_STEPS`] — on purpose, that is the
+            // whole subject of this test — and a body's own answer is binary,
+            // so wherever the ray's hit is *decided* inside that half step the
+            // two must differ by everything rather than by a rounding. The
+            // first case proptest found here was exactly that: a ray grazing
+            // the box's own bottom-front corner, missing the record's own
+            // `1/3` base by three thousandths of `t` and catching the wire's
+            // `85/256` one, which is a thousandth of a `z` unit lower.
+            //
+            // So the guard is the question itself: run the ray against the
+            // solid's box with the span pulled a whole quantum in and pushed a
+            // whole quantum out, and skip the case when those two disagree
+            // about hitting it at all. What is left is every ray whose hit or
+            // miss survives the quantisation, and *those* must agree
+            // numerically. A tolerance on the input is not a tolerance on the
+            // output, and this test asserted the second while meaning the
+            // first.
+            let solid = occlusion.solids_at(100, 100).next().expect("the fixture's own body");
+            let (near, far) = stand_clear(from, to, Surface::Flat);
+            let quantum = (1.0 / crate::occlusion::Solid::Z_STEPS) as f32;
+            let hits_with = |grown: f32| {
+                let mut space = solid.space;
+                space.min.z -= f64::from(grown);
+                space.max.z += f64::from(grown);
+                ray_vs_solid(near, far, &space).is_some()
+            };
+            prop_assume!(hits_with(-quantum) == hits_with(quantum));
+
             let exact = walk_cells_exact(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
             let streaming = walk_cells_streaming(from, to, Surface::Flat, tile, true, FLAME_SPREAD, &occlusion).0;
             prop_assert!(

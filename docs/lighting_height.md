@@ -451,6 +451,17 @@ of it blocked any of them.
   unit), and what it costs at a grazing corner has never been looked at. A
   smaller nudge, or one scaled to the surface rather than to the format, might
   cost nothing.
+- **The wire's span rounds to nearest, so a solid can be a hair *shorter* than
+  it is.** `Solid::z_bytes` rounds each end to the closest step, so
+  `walk_cells_streaming`'s box can be smaller than the record's on either end —
+  and a smaller occluder is a shadow with a hole in it, which is the one
+  direction of error the rest of this pass takes care to avoid (`z_bytes`'s own
+  clamp says so in words: "it stops at least what it really stops"). Rounding
+  *outward* instead — floor the base, ceil the top — costs one more step of
+  span and buys a one-sided property: the wire box always contains the exact
+  one, so `walk_cells_streaming` can never let through what `walk_cells_exact`
+  stops. That is a stronger claim than the numeric agreement the parity tests
+  assert today, and a cheaper one to hold at a tangent.
 - **The exact-tangent case is a definition, and the two sides differ.** The
   other 137 ground pixels are rays that touch a box's corner at exactly one
   point. `light::ray_vs_solid`'s doc says a zero-length crossing is the
