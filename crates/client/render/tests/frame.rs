@@ -1662,7 +1662,18 @@ fn every_pixel_names_the_tile_it_came_from() {
         twin: 0,
     }];
 
-    let places = render_places(&device, &queue, &land, &texmaps, &ground, &statics, &wall, 128);
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &ground,
+        &statics,
+        &wall,
+        &[],
+        &[],
+        128,
+    );
 
     // A pixel of the wall: an id naming the one static this frame drew — its
     // own tile is `docs/gbuffer.md` step 3's `instances[id]` row now, not a
@@ -1774,6 +1785,8 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         &[],
         &statics,
         &[quad(Place::of_floor(at))],
+        &[],
+        &[],
         128,
     );
     // The middle of the sprite is the middle of the tile, and the four
@@ -1816,6 +1829,8 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         &[],
         &statics,
         &[quad(Place::of_static(at))],
+        &[],
+        &[],
         128,
     );
     // A wall claims the middle of its tile at every pixel, and deliberately: what
@@ -1845,6 +1860,71 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     assert!(
         places.at(62, 62)[2] > places.at(62, 72)[2],
         "a wall is not taller further up its picture",
+    );
+}
+
+/// A ground pixel decodes to `Stance::Flat`, read the same direct way the two
+/// sibling tests above read a floor static's and a corner's.
+///
+/// `every_pixel_names_the_tile_it_came_from` already pins a land pixel's third
+/// channel to the literal `384` — which is `128 | (STANCE_FLAT << 8)`, but
+/// nothing at that call site says so, so a reader (or a future stance value
+/// shifting the packing) cannot tell height and stance apart in it without doing
+/// the arithmetic by hand. `docs/lighting_raymarch.md`'s backlog calls this out
+/// by name: the fixture where session 23's bug — `ground.wgsl` never stamping a
+/// stance at all — shipped unnoticed, because no test decoded the stance bits on
+/// their own and compared them against the enum. This is that test, using the
+/// same `place::STANCE_SHIFT` decode as `a_floor_spreads_across_its_tile_and_a_
+/// wall_stands_up_it`.
+#[test]
+fn a_ground_pixel_carries_its_own_stance() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const GRAPHIC: Graphic = Graphic(1);
+    let green = Color16(0b0_00000_11111_00000);
+
+    let side = usize::from(LAND_TILE_SIZE);
+    let land = LandAtlas::pack([(
+        GRAPHIC,
+        Image::new(LAND_TILE_SIZE, LAND_TILE_SIZE, vec![green; side * side]),
+    )])
+    .expect("one sprite fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([]).expect("nothing always fits");
+    let region = land.region(GRAPHIC).expect("packed");
+
+    let ground = [GroundQuad {
+        x: 64.0,
+        y: 64.0,
+        corners: [0.0; 4],
+        region,
+        texmap: None,
+        depth: 0.6,
+        place: Place::land(300, 400),
+    }];
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &ground,
+        &statics,
+        &[],
+        &[],
+        &[],
+        128,
+    );
+
+    let stance = |x: u32, y: u32| {
+        let place = places.at(x, y);
+        assert_eq!(place[3] & 3, 1, "nothing was drawn at ({x}, {y})");
+        place[2] >> openshard_client_render::place::STANCE_SHIFT
+    };
+    assert_eq!(
+        stance(64, 64),
+        openshard_client_render::place::Stance::Flat as u16,
+        "a ground pixel does not carry its stance",
     );
 }
 
@@ -1914,6 +1994,8 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
         &[],
         &statics,
         &[quad(tile(300), 0.0, 0.0), quad(tile(301), 22.0, 22.0)],
+        &[],
+        &[],
         256,
     );
 
@@ -2056,6 +2138,8 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
             },
             twin: 0,
         }],
+        &[],
+        &[],
         256,
     );
 
@@ -2107,8 +2191,80 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
     assert_eq!(id(middle - 4, row), 1, "the left half is not its shadow row");
 }
 
-/// Draw ground and one sprite and read back the *place* attachment rather than
-/// the picture. `size * 8` must be a multiple of 256, as every readback here.
+/// A mesh-face fragment's own `place.z` carries the routing sentinel,
+/// `Stance::MeshFace`, decoded the same direct way as the two sibling tests
+/// above — not the real face this fragment stands on, which
+/// `MeshFaceRow::stance` carries instead, read back through `blit.wgsl`'s
+/// `mesh_instances` storage buffer, a different consumer than this
+/// attachment.
+///
+/// `docs/lighting_raymarch.md`'s backlog names this the second of two
+/// producers with no direct pixel-decode coverage, and the one that needed
+/// real plumbing: unlike ground and statics, `render_places` never drove the
+/// mesh-face pass before this — it does now, wired in right after the statics
+/// pass, the same order `crates/client/app/src/lib.rs`'s real frame runs it
+/// in.
+#[test]
+fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
+    use openshard_client_render::place::Stance;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([]).expect("nothing always fits");
+
+    // One flat quad, two triangles, standing over a tile at height 15 — the
+    // exact position within the tile is not what this test is about, only
+    // that a fragment lands and carries the sentinel.
+    let tile = [300.0, 400.0];
+    let world = [tile[0] + 0.5, tile[1] + 0.5, 15.0];
+    let corner = |x: f32, y: f32| MeshFaceVertex {
+        screen: Vec2::new(x, y),
+        world,
+        depth: 0.4,
+        id: 0,
+        tile,
+    };
+    let vertices = [
+        corner(54.0, 54.0),
+        corner(74.0, 54.0),
+        corner(74.0, 74.0),
+        corner(54.0, 54.0),
+        corner(74.0, 74.0),
+        corner(54.0, 74.0),
+    ];
+    let rows = [MeshFaceRow {
+        tile: (300, 400),
+        stance: Stance::FaceEast,
+    }];
+
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &[],
+        &vertices,
+        &rows,
+        128,
+    );
+    let place = places.at(64, 64);
+    assert_eq!(place[3] & 3, 2, "nothing was drawn at (64, 64)");
+    assert_eq!(
+        place[2] >> openshard_client_render::place::STANCE_SHIFT,
+        Stance::MeshFace as u16,
+        "a mesh-face pixel does not carry the mesh-face sentinel",
+    );
+}
+
+/// Draw ground, statics and any mesh faces standing on them, and read back the
+/// *place* attachment rather than the picture. `size * 8` must be a multiple
+/// of 256, as every readback here.
 #[allow(clippy::too_many_arguments)]
 fn render_places(
     device: &wgpu::Device,
@@ -2118,6 +2274,8 @@ fn render_places(
     quads: &[GroundQuad],
     static_atlas: &StaticAtlas,
     static_quads: &[SpriteQuad],
+    mesh_vertices: &[openshard_client_render::mesh_face::MeshFaceVertex],
+    mesh_rows: &[openshard_client_render::mesh_face::MeshFaceRow],
     size: u32,
 ) -> Places {
     assert_eq!(size * 8 % 256, 0, "a row copy has to be 256-byte aligned");
@@ -2139,6 +2297,7 @@ fn render_places(
 
     let mut ground_pass = GroundRenderer::new(device, queue, format, atlas, texmaps);
     let mut sprite_pass = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), &hue_ramp);
+    let mut mesh_pass = renderer::MeshFaceRenderer::new(device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target::whole(&world_view, &depth_view, &place_view, size, size);
     ground_pass.render(device, queue, &mut encoder, target, quads);
@@ -2154,6 +2313,10 @@ fn render_places(
         &instances.rows,
         Some(instances.drawn),
     );
+    // Right after statics, into the same static's own pixels — the real
+    // renderer's own order (`docs/gbuffer.md` step 4c), so depth and place
+    // only ever tie or improve on what the billboard sprite just wrote.
+    mesh_pass.render(device, queue, &mut encoder, target, mesh_vertices, mesh_rows);
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &place,

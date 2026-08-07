@@ -256,33 +256,46 @@ that used to be here and is now fixed — is in the archive under
   the wrong reason twice in a row, as its own doc comment says session 23
   found it doing.
 
-  What is missing, concretely, is coverage of the other two `pack_place`
-  callers the same direct way:
+  **Both landed, session 24.** `tests/frame.rs` now has direct pixel-decode
+  coverage for both remaining `pack_place` callers:
 
-  1. **`ground.wgsl`.** No test today decodes a ground pixel's own `place.z`
-     and asserts it is `Stance::Flat as u16` — session 23's own bug shipped
-     silently for exactly this reason. `render_places` already runs the
-     ground pass; a `[SpriteQuad]`-only fixture like the two above, minus
-     the statics half, is enough. This is the one to write first — it is
-     the fixture the bug actually happened in.
-  2. **`mesh_face.wgsl`.** No test decodes a mesh-face pixel's own `place.z`
-     and asserts `Stance::MeshFace as u16` (`place::STANCE_MESH_FACE`
-     region), either. `render_places` does not run the mesh-face pass at
-     all today — extending it (or a sibling helper) to also drive
-     `MeshFaceRenderer` over a scripted `MeshFaceRow` is the one piece of
-     new plumbing this needs; `renderer.rs`'s own real pass ordering is the
-     reference for how the three passes' outputs compose into one `place`
-     attachment.
+  1. **`ground.wgsl` — `a_ground_pixel_carries_its_own_stance`.** A
+     `[GroundQuad]`-only fixture (empty statics, no new plumbing —
+     `render_places` already ran the ground pass), decoding a ground pixel's
+     `place.z` through `place::STANCE_SHIFT` and comparing against
+     `Stance::Flat` by name, the way `every_pixel_names_the_tile_it_came_
+     from`'s own `ground_pixel[2] == 384` never did — that assertion is
+     still true and still there, but `384` is `128 | (STANCE_FLAT << 8)`
+     folded together with no reader able to tell the two apart without
+     doing the arithmetic. Verified to actually catch session 23's bug
+     shape: flipping `ground.wgsl`'s `pack_place` call from `STANCE_FLAT` to
+     `STANCE_UPRIGHT` and rerunning turns this test red (`left: 0, right:
+     1`); reverted after confirming (`git diff` on the shader came back
+     empty).
+  2. **`mesh_face.wgsl` — `a_mesh_face_pixel_carries_the_mesh_face_
+     sentinel`.** Needed the one piece of new plumbing this entry
+     predicted: `render_places` (`tests/frame.rs`) now takes
+     `mesh_vertices`/`mesh_rows` and drives `MeshFaceRenderer` right after
+     the statics pass, the same order `crates/client/app/src/lib.rs`'s real
+     frame runs it in — all six existing callers updated to pass `&[],
+     &[]`. The new test builds one flat two-triangle quad by hand (no
+     `crate::mesh::Face::fan` fixture needed) and asserts the fragment's
+     `place.z` stance decodes to `Stance::MeshFace as u16` — the routing
+     sentinel this pass always writes, not the real face
+     (`MeshFaceRow::stance`), which lives in a separate storage buffer
+     `blit.wgsl` reads, not this attachment. Verified the same way: flipping
+     `mesh_face.wgsl`'s `pack_place` call to `STANCE_UPRIGHT` turned it red
+     (`left: 0, right: 10`), reverted clean.
 
   `statics.wgsl`'s five real stances (`Flat`/four faces) are the widest
   surface and the best-covered already — `Flat` and two of the four faces
   are pinned directly as above; `FaceNorth`/`FaceWest` are not (rare in
   practice — "five graphics out of 1197," `blit.wgsl`'s own comment on
-  `outward`), worth a third case in the same fixture rather than a new one.
+  `outward`), worth a third case in the same fixture rather than a new one
+  if this is ever revisited — not scoped as a step, no bug has pointed at it.
 
-  Not scoped as a single step because the two producers do not share a
-  fixture shape — doing this is two small, independent additions to
-  `tests/frame.rs`, `ground.wgsl`'s first.
+  Verified: `cargo test --workspace`/clippy/fmt clean, `cargo check
+  --workspace --all-targets` clean.
 
 - **Someday/maybe, not scoped as a step**: a full fixed-point world
   coordinate (tile + N bits of sub-tile resolution, no `f32`) would remove
