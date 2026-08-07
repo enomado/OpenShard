@@ -236,3 +236,29 @@ Open questions, deliberately not pre-decided:
   should not — a mesh is a different *shape* test, not a different height
   representation — but the two tracks touch `ray_vs_solid` and should be
   read together before phase 2 moves.
+
+## Backlog
+
+Picked up while phase 1 landed; none of it blocked the phase.
+
+- **Two hand-copies of the third channel are left**, and both are correct
+  today only by accident: `tests/select.rs`'s `place_texel` and
+  `tests/frame.rs`'s parity-fixture builder each fold `(z + 128) | stance <<
+  STANCE_SHIFT` themselves, and each happens to pass an integer `z`, so the
+  fraction they never write is zero. `place::packed_height` is what they
+  should go through. A third copy — `plan.rs`'s elevation picture — was the
+  one that *did* bite: an instrument with its own copy of the format rounded
+  the height and drew, in the diagnostic meant to show a wall's face, the
+  very treads this plan is about.
+- **The face oracle's projection idiom is now stated five times** in
+  `examples/boxes.rs` (box-top oracle, ground oracle, the main mesh dump, the
+  face oracle, and its `ScreenFace` corners): `camera.to_view_exact(
+  project_exact(..))` with `projection.origin`/`.scale` applied by hand. One
+  named function, once.
+- **`mesh::Face` and `facing::Face` collide by name** inside one crate, and
+  `boxes.rs` aliases one of them (`as WallFace`) to say which it means. Not
+  phase 1's business, but the next file that needs both will pay it again.
+- **The `owned_by_someone_nearer` tie-break has never executed.** Its
+  `f.depth == box_depth[i] && f.box_index > i` arm needs two faces at equal
+  depth with overlapping silhouettes, and no scene here produces that. It has
+  been read against `renderer.rs`'s `LessEqual` and nothing more.
