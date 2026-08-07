@@ -17,7 +17,7 @@ else about Sphere. Gameplay content lives in a second repository, the
 | [`docs/client.md`](docs/client.md) | Our own client, milestone by milestone. |
 | [`docs/client_versions.md`](docs/client_versions.md) | Which clients exist and which are played. |
 | [`docs/development.md`](docs/development.md) | The environment: commands, toolchain, `target/`, MSRV. |
-| **Living plans** — [`camera.md`](docs/camera.md), [`connection_state.md`](docs/connection_state.md), [`shutdown.md`](docs/shutdown.md), [`outline.md`](docs/outline.md), [`lighting.md`](docs/lighting.md), [`lighting_world.md`](docs/lighting_world.md), [`lighting_raymarch.md`](docs/lighting_raymarch.md), [`lighting_geometry.md`](docs/lighting_geometry.md), [`gbuffer.md`](docs/gbuffer.md), [`protocol_newtypes.md`](docs/protocol_newtypes.md), [`protocol_rewrite.md`](docs/protocol_rewrite.md) | Multi-session refactors, each with a backlog of what's left undone — that backlog is where the next session starts. |
+| **Living plans** — [`camera.md`](docs/camera.md), [`connection_state.md`](docs/connection_state.md), [`shutdown.md`](docs/shutdown.md), [`outline.md`](docs/outline.md), [`lighting.md`](docs/lighting.md), [`lighting_world.md`](docs/lighting_world.md), [`lighting_raymarch.md`](docs/lighting_raymarch.md), [`lighting_geometry.md`](docs/lighting_geometry.md), [`lighting_height.md`](docs/lighting_height.md), [`gbuffer.md`](docs/gbuffer.md), [`protocol_newtypes.md`](docs/protocol_newtypes.md), [`protocol_rewrite.md`](docs/protocol_rewrite.md) | Multi-session refactors, each with a backlog of what's left undone — that backlog is where the next session starts. |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | What lands and how: branch, PR, review, merge commit, commit messages. |
 
 ## Working on this
