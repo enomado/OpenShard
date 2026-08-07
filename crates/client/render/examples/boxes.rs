@@ -140,6 +140,36 @@
 //! siding with the rendered pixel means the engine's own arithmetic in both
 //! implementations at once. Those are opposite next steps.
 //!
+//! # The reference tracer
+//!
+//! A fourth check, and the only one that is not a point query: the whole scene
+//! rendered again by `openshard-client-pathtrace`, a Monte Carlo path tracer
+//! with no dependency on this crate and **no notion of a tile anywhere in it**.
+//! The three oracles above are independent *arithmetic* answering one question
+//! at a time about a point somebody chose; this is an independent *renderer*,
+//! and a defect that can only be stated in the shadow walk's own vocabulary —
+//! cells, boundaries, stances, exemptions — cannot be reproduced in it by
+//! construction rather than by coverage. It is also a third party: where
+//! `light::sample` and `blit.wesl` disagree, both are copies of one formula and
+//! neither can arbitrate.
+//!
+//! It runs by default (`OPENSHARD_BOXES_PATHTRACE=0` to skip) in the
+//! *degenerate* mode — a point emitter, one path a pixel, no bounces — where
+//! the estimator collapses to one deterministic visibility test and the two
+//! pictures must agree. `<path>_pathtrace.ppm` is the frame's own shadow
+//! decision beside the tracer's, grey where a pixel was not compared. A pixel
+//! is compared only where both agree which surface is there, the surface faces
+//! the flame, and neither picture has a shadow edge in its own eight-
+//! neighbourhood — the three splits, and why each is not a shadow, are in
+//! `docs/lighting_reference.md`.
+//!
+//! `OPENSHARD_BOXES_PATHTRACE_SAMPLES=n` (with `_BOUNCES`, `_EMITTER`,
+//! `_EXPOSURE`) additionally renders the *full* mode to
+//! `<path>_pathtrace_full.ppm`: a spherical emitter, a cosine term, indirect
+//! light, ambient occlusion. That one is compared against nothing on purpose —
+//! none of what it adds exists in the renderer, so every pixel would
+//! "disagree". It is there to be looked at.
+//!
 //! ```sh
 //! OPENSHARD_FRAME_DUMP=/tmp/tree OPENSHARD_BOXES_SCENE=tree \
 //!     cargo run --release -p openshard-client-render --example boxes
@@ -164,6 +194,17 @@ use openshard_client_render::occlusion::{Builder, Owner, OwnerId};
 use openshard_client_render::place::Stance;
 use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, Target};
 use openshard_client_render::solid::Solid;
+// The reference tracer, under short names because this file's own `light`,
+// `Light` and `camera` are already the renderer's. Aliased at the import and
+// never re-exported: `pt_light::Light` says which crate's light it is at every
+// use, which in a file whose whole subject is comparing two of them is the
+// distinction that matters most.
+use openshard_client_pathtrace::aabb as pt_aabb;
+use openshard_client_pathtrace::camera as pt_camera;
+use openshard_client_pathtrace::light as pt_light;
+use openshard_client_pathtrace::scene as pt_scene;
+use openshard_client_pathtrace::trace as pt_trace;
+use openshard_client_pathtrace::vector as pt_vector;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::tiledata::{StaticTile, TileFlags};
 use oracle::{Shade, dump, read_place, segment_clear_of_box};
@@ -581,6 +622,23 @@ fn main() {
     }
     camera.zoom_about((width / 2) as i32, (height_px / 2) as i32, zoom);
 
+    let projection = camera.projection();
+    // Where a world position lands in this frame, in real pixels — stated once.
+    //
+    // Three places below need it (a face's own screen ring, the flame's
+    // crosshair, and the reference tracer's camera) and each used to spell it
+    // out again. Three copies of one composition is the shape that drifts, and
+    // here it would drift in the worst possible direction: the tracer's whole
+    // claim is that it looks at the same scene through the same camera, and a
+    // fourth hand-written copy of this is exactly how it would quietly stop.
+    let to_pixel = |at: WorldSpot| -> (f64, f64) {
+        let screen = camera.to_view_exact(project_exact(at));
+        (
+            f64::from((screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5),
+            f64::from((screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5),
+        )
+    };
+
     let base_tile = depth::base_for(centre_x, centre_y);
     let mut rows: Vec<MeshFaceRow> = Vec::new();
     let mut vertices: Vec<MeshFaceVertex> = Vec::new();
@@ -628,17 +686,17 @@ fn main() {
     // is exactly the arithmetic-instead-of-looking `two_cubes.rs`'s own
     // session 13 lesson warns about. Same conversion `light_pixel` below uses.
     {
-        let projection = camera.projection();
-        let to_pixel = |v: &MeshFaceVertex| {
-            (
-                (v.screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5,
-                (v.screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5,
-            )
+        let vertex_pixel = |v: &MeshFaceVertex| {
+            to_pixel(WorldSpot {
+                x: f64::from(v.world[0]),
+                y: f64::from(v.world[1]),
+                z: f64::from(v.world[2]),
+            })
         };
         for (id, row) in rows.iter().enumerate() {
-            let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            let (mut minx, mut maxx, mut miny, mut maxy) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
             for corner in vertices.iter().filter(|v| v.id == id as u32) {
-                let (px, py) = to_pixel(corner);
+                let (px, py) = vertex_pixel(corner);
                 minx = minx.min(px);
                 maxx = maxx.max(px);
                 miny = miny.min(py);
@@ -653,7 +711,7 @@ fn main() {
                 .iter()
                 .filter(|v| v.id == id as u32)
                 .map(|v| {
-                    let (px, py) = to_pixel(v);
+                    let (px, py) = vertex_pixel(v);
                     format!("({px:.1},{py:.1})")
                 })
                 .collect();
@@ -758,16 +816,19 @@ fn main() {
         sun: None,
         view: View::Lit,
     };
-    let projection = camera.projection();
-    let light_screen = camera.to_view_exact(project_exact(WorldSpot {
+    // Where the flame itself is, in the one place every consumer of it reads:
+    // the crosshair on the dumped frames, the two visibility oracles, and the
+    // reference tracer's own emitter all take their light from here.
+    let light_at = WorldSpot {
         x: f64::from(first.tile.0) + f64::from(ldx),
         y: f64::from(first.tile.1) + f64::from(ldy),
         z: f64::from(light_z),
-    }));
-    let light_pixel = (
-        (light_screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5,
-        (light_screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5,
-    );
+    };
+    // The same place as three plain numbers, which is what the oracles below
+    // take. One definition, so a scene knob can never move the flame for the
+    // picture and not for what checks it.
+    let light_point = (light_at.x, light_at.y, light_at.z);
+    let light_pixel = to_pixel(light_at);
     let light_mark = (light_pixel.0.round() as i32, light_pixel.1.round() as i32);
     eprintln!("light pixel: {light_mark:?}");
 
@@ -779,11 +840,6 @@ fn main() {
     // here is a real defect, not a rendering nuance, because nothing about
     // either side depends on how a pixel projects to the screen.
     if env_opt("OPENSHARD_BOXES_ORACLE").as_deref() != Some("0") {
-        let light_at = (
-            f64::from(first.tile.0) + f64::from(ldx),
-            f64::from(first.tile.1) + f64::from(ldy),
-            f64::from(light_z),
-        );
         for (index, b) in boxes.iter().enumerate() {
             let side = 96u32;
             let z = b.max.2;
@@ -792,7 +848,7 @@ fn main() {
                     side,
                     (b.min.0, b.min.1),
                     (b.max.0, b.max.1),
-                    |x, y| match oracle_visible((x, y, z), light_at, &boxes, index) {
+                    |x, y| match oracle_visible((x, y, z), light_point, &boxes, index) {
                         true => 1.0,
                         false => 0.0,
                     },
@@ -962,11 +1018,6 @@ fn main() {
     // says which walk is out on every disagreement.
     type Mismatch = (f64, f64, f32, (u8, u8, u8));
     if env_opt("OPENSHARD_BOXES_GROUND_ORACLE").as_deref() != Some("0") {
-        let light_at = (
-            f64::from(first.tile.0) + f64::from(ldx),
-            f64::from(first.tile.1) + f64::from(ldy),
-            f64::from(light_z),
-        );
         let mut sampled = 0usize;
         let mut mismatches = 0usize;
         let mut too_dark = 0usize;
@@ -1004,7 +1055,7 @@ fn main() {
                 shadow_pixels[offset + 2],
             ])
             .lit();
-            let independent = oracle_visible((x, y, z), light_at, &boxes, usize::MAX);
+            let independent = oracle_visible((x, y, z), light_point, &boxes, usize::MAX);
             if independent != gpu_lit {
                 mismatches += 1;
                 // The ground is no occluder, so it owns nothing and is exempt
@@ -1103,11 +1154,6 @@ fn main() {
     // detector that silently compares nothing reads exactly like a detector
     // that found nothing.
     if env_opt("OPENSHARD_BOXES_FACE_ORACLE").as_deref() != Some("0") {
-        let light_at = (
-            f64::from(first.tile.0) + f64::from(ldx),
-            f64::from(first.tile.1) + f64::from(ldy),
-            f64::from(light_z),
-        );
         // How many bands to report a face's disagreements in, up its own
         // height. Not a sampling grid any more — the sweep is exhaustive over
         // the face's pixels — only the resolution the "where" line reads at.
@@ -1175,7 +1221,7 @@ fn main() {
                         shadow_pixels[pixel * 4 + 2],
                     ])
                     .lit();
-                    let independent = oracle_visible((x, y, z), light_at, &boxes, index);
+                    let independent = oracle_visible((x, y, z), light_point, &boxes, index);
                     if independent != gpu_lit {
                         disagreeing += 1;
                         let up = ((z - b.min.2) / (b.max.2 - b.min.2) * bands as f64) as usize;
@@ -1253,4 +1299,391 @@ fn main() {
              detector that compares nothing reads exactly like a detector that found nothing"
         );
     }
+
+    // The reference tracer: the same scene rendered again, by something with no
+    // idea what a tile is. See this module's own "# The reference tracer".
+    if env_opt("OPENSHARD_BOXES_PATHTRACE").as_deref() != Some("0") {
+        pathtrace_comparison(PathtraceInputs {
+            boxes: &boxes,
+            light_at,
+            light_radius: f64::from(light_radius),
+            to_pixel: &to_pixel,
+            width,
+            height: height_px,
+            drawn: &drawn,
+            shadow_pixels: &shadow_pixels,
+            face_rows: &face_rows,
+            base: &base,
+        });
+    }
+}
+
+/// Everything [`pathtrace_comparison`] needs, in one struct because a function
+/// of ten positional arguments is a function whose call site nobody can read.
+struct PathtraceInputs<'a> {
+    boxes: &'a [BoxSpec],
+    light_at: WorldSpot,
+    light_radius: f64,
+    /// The frame's own world-to-pixel map — the *renderer's*, handed over as a
+    /// black box for [`Parallel::measure`] to recover. This is the one thing the
+    /// tracer takes from this crate, and taking it as values rather than as a
+    /// formula is what stops the reference camera from drifting into being
+    /// nobody's camera.
+    to_pixel: &'a dyn Fn(WorldSpot) -> (f64, f64),
+    width: u32,
+    height: u32,
+    drawn: &'a [oracle::Drawn],
+    shadow_pixels: &'a [u8],
+    face_rows: &'a [(usize, Stance, u32)],
+    base: &'a str,
+}
+
+/// Which surface of the tracer's own scene the renderer says drew a pixel.
+///
+/// [`None`] where the two have no common vocabulary for it — the cleared
+/// background, or a stance the tracer's scene has no counterpart for. A pixel
+/// with no answer here is not compared, and is counted as not compared.
+fn traced_surface(texel: &oracle::Drawn, face_rows: &[(usize, Stance, u32)]) -> Option<pt_scene::Surface> {
+    if texel.kind == openshard_client_render::place::Kind::Land as u32 {
+        return Some(pt_scene::Surface::Ground);
+    }
+    if texel.kind == openshard_client_render::place::Kind::Static as u32
+        && texel.stance == Stance::MeshFace as u32
+    {
+        return face_rows
+            .iter()
+            .find(|(_, _, id)| *id == texel.id)
+            .map(|(box_index, _, _)| pt_scene::Surface::Body(*box_index));
+    }
+    None
+}
+
+/// Render the scene a second time with [`openshard_client_pathtrace`], lay the
+/// two pictures beside each other, and count where they disagree.
+fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
+    let PathtraceInputs {
+        boxes,
+        light_at,
+        light_radius,
+        to_pixel,
+        width,
+        height,
+        drawn,
+        shadow_pixels,
+        face_rows,
+        base,
+    } = inputs;
+
+    // **The metric.** The tracer's world is isotropic and this one is not: a
+    // step of one in `x` is a tile and a step of one in `z` is a tile's
+    // eleventh (`light::Z_PER_TILE`, which the renderer states and uses for
+    // exactly this reason — its own falloff needs all three axes in one unit).
+    // Read from the engine's constant rather than written down again: a second
+    // copy of it here would be a reference measuring a differently-shaped world.
+    //
+    // Visibility alone would survive getting this wrong — it is invariant under
+    // any affine change of coordinates — which is precisely why it has to be
+    // right anyway: the soft-shadow and bounce modes are not, and a scale error
+    // would show up there as a plausible-looking picture rather than as a
+    // failure.
+    let z_per_tile = f64::from(light::Z_PER_TILE);
+    let isotropic = |x: f64, y: f64, z: f64| pt_vector::Vec3::new(x, y, z / z_per_tile);
+
+    let scene = pt_scene::Scene {
+        bodies: boxes
+            .iter()
+            .map(|b| pt_scene::Body {
+                shape: pt_aabb::Aabb::between(
+                    isotropic(b.min.0, b.min.1, b.min.2),
+                    isotropic(b.max.0, b.max.1, b.max.2),
+                ),
+                albedo: [0.72, 0.70, 0.66],
+            })
+            .collect(),
+        ground: Some(pt_scene::Ground {
+            z: 0.0,
+            albedo: [0.42, 0.44, 0.40],
+        }),
+    };
+
+    // The camera, measured through the renderer's own projection. `about` sits
+    // in the scene and the span is wide, both for precision: the map narrows to
+    // `f32` at world-pixel magnitudes in the thousands, so a central difference
+    // over a wide baseline is what keeps that noise out of the recovered
+    // columns. The tolerance is a hundredth of a pixel — far under anything
+    // visible, far over the noise.
+    let camera = pt_camera::Parallel::measure(
+        |at| {
+            to_pixel(WorldSpot {
+                x: at.x,
+                y: at.y,
+                z: at.z * z_per_tile,
+            })
+        },
+        isotropic(light_at.x, light_at.y, 0.0),
+        32.0,
+        1e-2,
+    );
+
+    let flame = pt_light::Light {
+        at: isotropic(light_at.x, light_at.y, light_at.z),
+        emitter: pt_light::Emitter::Point,
+        // The renderer's own windowed curve and its own radius, so "outside the
+        // torch's reach" means the same thing on both sides of the comparison.
+        // A physical inverse square here would darken the far half of the frame
+        // and every one of those pixels would read as a disagreement about
+        // geometry, which is not what any of them would be about.
+        falloff: pt_light::Falloff::Windowed { reach: light_radius },
+        colour: [1.0, 1.0, 1.0],
+        intensity: 6.0,
+    };
+
+    let exact = pt_trace::render(
+        &scene,
+        &camera,
+        std::slice::from_ref(&flame),
+        &pt_trace::Settings::degenerate(),
+        width,
+        height,
+    );
+    assert!(
+        exact.is_exact(),
+        "the gate below only means anything against an exact render, and this one is an estimate"
+    );
+
+    // Both pictures as one bit a pixel, so the comparison and the image are the
+    // same data. `None` where the pixel is not one the two can be compared on.
+    let mut engine_lit: Vec<Option<bool>> = vec![None; (width * height) as usize];
+    let mut traced_lit: Vec<Option<bool>> = vec![None; (width * height) as usize];
+    let mut different_surface = 0usize;
+    let mut nothing_drawn = 0usize;
+    // Pixels of a surface whose own normal points away from the flame, and how
+    // many of those the frame draws lit. Held out of the comparison and
+    // reported on their own line: whether a surface facing away from a torch is
+    // lit is a difference between the two *light models* — the tracer applies a
+    // cosine and the renderer does not — and it would otherwise land in the
+    // shadow count as thousands of geometry disagreements that are nothing of
+    // the kind.
+    let mut back_facing = 0usize;
+    let mut back_facing_lit = 0usize;
+    for pixel in 0..(width * height) as usize {
+        let Some(engine_surface) = traced_surface(&drawn[pixel], face_rows) else {
+            nothing_drawn += 1;
+            continue;
+        };
+        let Some(seen) = exact.pixels[pixel].seen else {
+            different_surface += 1;
+            continue;
+        };
+        if seen.surface != engine_surface {
+            // Not a lighting disagreement, and counting it as one would file a
+            // depth-sorting difference under the wrong defect entirely. The
+            // isometric painter's order and a ray's own nearest hit are two
+            // different answers to "what is in front", and where they differ
+            // neither picture is about the other's surface.
+            different_surface += 1;
+            continue;
+        }
+        let frame_lit = Shade::of([
+            shadow_pixels[pixel * 4],
+            shadow_pixels[pixel * 4 + 1],
+            shadow_pixels[pixel * 4 + 2],
+        ])
+        .lit();
+        let visibility = exact.visibility((pixel as u32) % width, (pixel as u32) / width, 0);
+        if !visibility.faces_light {
+            back_facing += 1;
+            back_facing_lit += usize::from(frame_lit);
+            continue;
+        }
+        engine_lit[pixel] = Some(frame_lit);
+        traced_lit[pixel] = Some(visibility.within_reach && visibility.reached > 0.5);
+    }
+
+    // A disagreement one pixel wide along a shadow's own edge is expected and
+    // is not a finding: the two renderers light *different points* — the tracer
+    // lights the world point under a pixel's centre, and the shader lights the
+    // fragment the rasteriser wrote into the `place` attachment, quantised to a
+    // hundred-and-twenty-eighth of a tile. Half a pixel of difference decides
+    // the answer exactly at an edge and nowhere else.
+    //
+    // So a disagreement is only reported as one when neither picture has an
+    // edge running through the pixel's own neighbourhood. What is left is a
+    // disagreement in the *interior* of a lit or shadowed region, which no
+    // amount of sub-pixel disagreement can explain.
+    let on_an_edge = |map: &[Option<bool>], x: u32, y: u32| {
+        let own = map[(y * width + x) as usize];
+        (-1i32..=1).any(|dy| {
+            (-1i32..=1).any(|dx| {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                if nx < 0 || ny < 0 || nx as u32 >= width || ny as u32 >= height {
+                    return false;
+                }
+                map[(ny as u32 * width + nx as u32) as usize] != own
+            })
+        })
+    };
+
+    let (mut compared, mut edge, mut interior) = (0usize, 0usize, 0usize);
+    let mut examples: Vec<String> = Vec::new();
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = (y * width + x) as usize;
+            let (Some(engine), Some(traced)) = (engine_lit[pixel], traced_lit[pixel]) else {
+                continue;
+            };
+            compared += 1;
+            if engine == traced {
+                continue;
+            }
+            if on_an_edge(&traced_lit, x, y) || on_an_edge(&engine_lit, x, y) {
+                edge += 1;
+                continue;
+            }
+            interior += 1;
+            if examples.len() < 8 {
+                let seen = exact.pixels[pixel].seen.expect("compared, so it was seen");
+                examples.push(format!(
+                    "  [pixel ({x}, {y})] {:?} at ({:.3}, {:.3}, {:.3} tiles): the tracer says {}, \
+                     the frame says {}",
+                    seen.surface,
+                    seen.at.x,
+                    seen.at.y,
+                    seen.at.z,
+                    if traced { "lit" } else { "shadowed" },
+                    if engine { "lit" } else { "shadowed" },
+                ));
+            }
+        }
+    }
+    eprintln!(
+        "path tracer vs rendered View::Shadow: {compared} pixels compared, {interior} disagree in the \
+         interior, {edge} on an edge (expected); {different_surface} pixels the two disagree about \
+         which surface is there, {nothing_drawn} with nothing drawn"
+    );
+    eprintln!(
+        "  and {back_facing} pixels of surfaces facing away from the flame, of which the frame draws \
+         {back_facing_lit} lit — not counted above: that is the cosine term the renderer has no model \
+         for, not a shadow"
+    );
+    for example in &examples {
+        eprintln!("{example}");
+    }
+    assert!(
+        compared > 1000,
+        "the path tracer compared only {compared} pixels against the frame — a detector that \
+         compares nothing reads exactly like a detector that found nothing"
+    );
+
+    // The picture: the frame's own shadow decision, the tracer's, and where
+    // they differ. Same three-strip shape the box-top oracle already writes, so
+    // the two read the same way.
+    let strip = |map: &[Option<bool>]| {
+        let mut pixels = vec![0u8; (width * height * 3) as usize];
+        for (pixel, lit) in map.iter().enumerate() {
+            // Grey for a pixel nobody compared, so a large grey field reads as
+            // "this was not measured" rather than as a shadow.
+            let value = match lit {
+                Some(true) => 255u8,
+                Some(false) => 0,
+                None => 96,
+            };
+            pixels[pixel * 3..pixel * 3 + 3].fill(value);
+        }
+        pixels
+    };
+    write_strips(
+        std::path::Path::new(&format!("{base}_pathtrace.ppm")),
+        width,
+        height,
+        &[&strip(&engine_lit), &strip(&traced_lit)],
+    );
+
+    // And the full mode, on request: a real Monte Carlo render of the same
+    // scene, with a spherical emitter, a cosine term and bounced light. It is
+    // deliberately not compared against anything — none of what it adds exists
+    // in the renderer, so every pixel would "disagree". It is here to be looked
+    // at.
+    let samples: u32 = env_or("OPENSHARD_BOXES_PATHTRACE_SAMPLES", "0")
+        .parse()
+        .expect("a number");
+    if samples == 0 {
+        return;
+    }
+    let soft = pt_light::Light {
+        emitter: pt_light::Emitter::Sphere {
+            radius: env_or("OPENSHARD_BOXES_PATHTRACE_EMITTER", "0.35")
+                .parse()
+                .expect("a number"),
+        },
+        ..flame
+    };
+    let bounces: u32 = env_or("OPENSHARD_BOXES_PATHTRACE_BOUNCES", "2")
+        .parse()
+        .expect("a number");
+    eprintln!("path tracer, full mode: {samples} samples, {bounces} bounces — this takes a while");
+    let full = pt_trace::render(
+        &scene,
+        &camera,
+        &[soft],
+        &pt_trace::Settings {
+            samples,
+            bounces,
+            // A dim sky, so a bounce that escapes the scene brings something
+            // back and ambient occlusion has a lit background to occlude.
+            sky: [0.05, 0.06, 0.09],
+            seed: 1,
+        },
+        width,
+        height,
+    );
+    let exposure: f64 = env_or("OPENSHARD_BOXES_PATHTRACE_EXPOSURE", "1.0")
+        .parse()
+        .expect("a number");
+    let mut pixels = vec![0u8; (width * height * 3) as usize];
+    for (pixel, traced) in full.pixels.iter().enumerate() {
+        for channel in 0..3 {
+            // Linear radiance to something a viewer shows: exposure, then the
+            // sRGB transfer curve. No tone curve beyond that — a filmic one
+            // would make the picture prettier and its shadows less readable,
+            // and readable shadows are the whole errand.
+            let linear = (traced.radiance[channel] * exposure).clamp(0.0, 1.0);
+            let encoded = match linear <= 0.003_130_8 {
+                true => linear * 12.92,
+                false => 1.055 * linear.powf(1.0 / 2.4) - 0.055,
+            };
+            pixels[pixel * 3 + channel] = (encoded * 255.0).round() as u8;
+        }
+    }
+    write_strips(
+        std::path::Path::new(&format!("{base}_pathtrace_full.ppm")),
+        width,
+        height,
+        &[&pixels],
+    );
+}
+
+/// Write one or more equally sized RGB images side by side as a single PPM,
+/// separated by a thin grey rule.
+///
+/// The comparison and the picture want to be one file: two files at the same
+/// scale still need a person to align them, and the thing being read here is a
+/// difference of a few pixels in the position of an edge.
+fn write_strips(path: &std::path::Path, width: u32, height: u32, strips: &[&[u8]]) {
+    let gap = 2u32;
+    let total = width * strips.len() as u32 + gap * (strips.len() as u32 - 1);
+    let mut ppm = format!("P6\n{total} {height}\n255\n").into_bytes();
+    for row in 0..height {
+        for (index, strip) in strips.iter().enumerate() {
+            let start = (row * width * 3) as usize;
+            ppm.extend_from_slice(&strip[start..start + (width * 3) as usize]);
+            if index + 1 < strips.len() {
+                for _ in 0..gap {
+                    ppm.extend_from_slice(&[64, 64, 64]);
+                }
+            }
+        }
+    }
+    std::fs::write(path, ppm).expect("writing the comparison");
+    eprintln!("wrote {}", path.display());
 }

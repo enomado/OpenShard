@@ -171,6 +171,16 @@ tests both branches of every exact tie rather than committing to one,
 making the outcome order-independent by construction (real structural
 work, its own session).
 
+## The reference path tracer
+
+Everything in this file is about holding two implementations of *one* walk to
+each other. [`lighting_reference.md`](lighting_reference.md) is the other half:
+a third renderer that shares no arithmetic and has no notion of a tile, so it
+can arbitrate where the two copies here disagree. Its degenerate mode reads
+**zero interior disagreements** against the rendered frame on all three of
+`boxes.rs`'s scenes, which bounds what is left of the two open residuals below
+— whatever they are, they live inside one pixel of a shadow's own edge.
+
 ## The ground-occlusion oracle
 
 `examples/boxes.rs` runs two independent visibility oracles against the

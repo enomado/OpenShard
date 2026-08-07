@@ -2966,9 +2966,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openshard-client-pathtrace"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "openshard-client-render"
 version = "0.0.1"
 dependencies = [
+ "openshard-client-pathtrace",
  "openshard-movement",
  "openshard-protocol",
  "openshard-uofiles",

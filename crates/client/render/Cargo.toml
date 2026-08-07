@@ -54,3 +54,8 @@ wesl = "0.4"
 [dev-dependencies]
 pollster = "0.4.0"
 proptest.workspace = true
+# The reference path tracer `examples/boxes.rs` lays beside the rendered frame.
+# A dev-dependency and never a real one: it is a third opinion about a scene
+# this crate drew, and the direction of the arrow is what keeps it one — that
+# crate cannot see this one, so it cannot accidentally share an answer with it.
+openshard-client-pathtrace.workspace = true
