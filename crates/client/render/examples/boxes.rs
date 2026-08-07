@@ -145,6 +145,8 @@
 //!     cargo run --release -p openshard-client-render --example boxes
 //! ```
 
+mod oracle;
+
 use std::path::PathBuf;
 
 use openshard_client_render::atlas::{LandAtlas, TexmapAtlas};
@@ -164,6 +166,7 @@ use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, 
 use openshard_client_render::solid::Solid;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+use oracle::{Shade, dump, read_place, segment_clear_of_box};
 
 fn env_opt(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -188,208 +191,6 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
-}
-
-/// A lime crosshair on a black backing plate — copied from
-/// `examples/synthetic_stair.rs`'s own marker.
-fn mark_crosshair(pixels: &mut [u8], width: u32, height: u32, at: (i32, i32)) {
-    let mut mark = |dx: i32, dy: i32, colour: [u8; 3]| {
-        let (px, py) = (at.0 + dx, at.1 + dy);
-        if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
-            return;
-        }
-        let offset = ((py as u32 * width + px as u32) * 4) as usize;
-        pixels[offset] = colour[0];
-        pixels[offset + 1] = colour[1];
-        pixels[offset + 2] = colour[2];
-        pixels[offset + 3] = 255;
-    };
-    for dy in -20..=20i32 {
-        for dx in -20..=20i32 {
-            if dx.abs() > 2 && dy.abs() > 2 {
-                continue;
-            }
-            mark(dx, dy, [0, 0, 0]);
-        }
-    }
-    for dy in -18..=18i32 {
-        for dx in -18..=18i32 {
-            if dx.abs() > 1 && dy.abs() > 1 {
-                continue;
-            }
-            mark(dx, dy, [80, 255, 0]);
-        }
-    }
-}
-
-/// One texel of the `place` attachment, decoded: **who drew this pixel**.
-///
-/// The renderer's own answer to a question every oracle in this tool has to
-/// ask and used to answer by reconstructing the picture on the CPU — which
-/// surface owns the pixel a world point projects to. A sample point is a point
-/// of a *surface*, and the pixel under it belongs to whatever the depth test
-/// left there: the ground behind a box, a nearer box's face, or the face being
-/// sampled. Comparing a rendered pixel that some other surface drew against an
-/// oracle's answer about this one is not a measurement of anything.
-///
-/// See [`openshard_client_render::place`] for the format.
-/// It also carries **where in the world the fragment itself is**, which is not
-/// the world point that projected onto it: the pixel's own fragment sits at the
-/// pixel's centre, and the attachment quantises what it carries — a
-/// hundred-and-twenty-seventh of a tile across, a sixteenth of a `z` unit up.
-/// That is the point the shader lit, so it is the point an oracle has to ask
-/// about; anything else compares the picture against a fragment the rasteriser
-/// could not produce.
-#[derive(Clone, Copy, PartialEq, Debug)]
-struct Drawn {
-    /// [`openshard_client_render::place::Kind`]'s own two bits.
-    kind: u32,
-    /// The stance, which for a mesh face is the [`Stance::MeshFace`] routing
-    /// sentinel rather than the face's real one.
-    stance: u32,
-    /// The instance row this fragment's picture came from — a `MeshFaceRow`
-    /// for a mesh face, a ground quad for land.
-    id: u32,
-    /// Where in its tile the fragment is, both axes, `0.0..1.0`. The tile
-    /// itself is not here — it is in the instance row `id` names.
-    sub: (f64, f64),
-    /// And how high, in the map's own `z` units.
-    z: f64,
-}
-
-/// The `place` attachment read back, one [`Drawn`] a pixel, row-major.
-///
-/// `Rgba16Uint`, eight bytes a texel — `place::texture` asks for `COPY_SRC`
-/// exactly so this is possible, and its own doc says so.
-fn read_place(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    place: &wgpu::Texture,
-    width: u32,
-    height: u32,
-) -> Vec<Drawn> {
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("place readback"),
-        size: u64::from(width) * u64::from(height) * 8,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: place,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 8),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        result.expect("mapping a buffer this example just wrote")
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("waiting on our own submission");
-    let bytes = slice
-        .get_mapped_range()
-        .expect("the map completed above")
-        .to_vec();
-    bytes
-        .chunks_exact(8)
-        .map(|texel| {
-            let channel = |i: usize| u32::from(u16::from_le_bytes([texel[i * 2], texel[i * 2 + 1]]));
-            Drawn {
-                kind: channel(3) & 3,
-                stance: (channel(2) >> openshard_client_render::place::STANCE_SHIFT) & 15,
-                id: channel(0) | (channel(1) << 16),
-                sub: (
-                    f64::from((channel(3) >> 2) & 127) / 127.0,
-                    f64::from((channel(3) >> 9) & 127) / 127.0,
-                ),
-                // Through `place::unpacked_height` and not `& 0xFF`: the whole
-                // units alone still look like a height and quietly put every
-                // fragment of a vertical face back on the staircase
-                // `docs/lighting_height.md` phase 1 removed.
-                z: f64::from(openshard_client_render::place::unpacked_height(channel(2) as u16)),
-            }
-        })
-        .collect()
-}
-
-fn dump(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    surface: &wgpu::Texture,
-    width: u32,
-    height: u32,
-    path: &PathBuf,
-    mark: Option<(i32, i32)>,
-) -> Vec<u8> {
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback"),
-        size: u64::from(width) * u64::from(height) * 4,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: surface,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        result.expect("mapping a buffer this example just wrote")
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("waiting on our own submission");
-    let pixels = slice
-        .get_mapped_range()
-        .expect("the map completed above")
-        .to_vec();
-    let mut marked = pixels.clone();
-    if let Some(at) = mark {
-        mark_crosshair(&mut marked, width, height, at);
-    }
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for pixel in marked.chunks_exact(4) {
-        ppm.extend_from_slice(&pixel[..3]);
-    }
-    std::fs::write(path, ppm).expect("writing the frame");
-    eprintln!("wrote {}", path.display());
-    pixels
 }
 
 /// One hand-built occluder and its visible box, together: the tile bucket
@@ -612,45 +413,6 @@ fn box_mesh(solid: Solid) -> Mesh {
         .expect("a 4-corner ring"),
     );
     mesh
-}
-
-/// A point-light-vs-axis-aligned-box visibility test, the textbook slab
-/// method, written fresh here rather than calling the engine's own private
-/// `light::ray_vs_solid` — reusing the thing under test to check the thing
-/// under test would only prove the two agree with each other, not that
-/// either is right. `true` when the open segment `from..to` (both ends
-/// excluded by a small margin, so touching the box's own surface at either
-/// end does not count as a hit) never enters `min..max`.
-fn segment_clear_of_box(
-    from: (f64, f64, f64),
-    to: (f64, f64, f64),
-    min: (f64, f64, f64),
-    max: (f64, f64, f64),
-) -> bool {
-    let d = (to.0 - from.0, to.1 - from.1, to.2 - from.2);
-    let (mut t0, mut t1): (f64, f64) = (1e-4, 1.0 - 1e-4);
-    for (o, d, lo, hi) in [
-        (from.0, d.0, min.0, max.0),
-        (from.1, d.1, min.1, max.1),
-        (from.2, d.2, min.2, max.2),
-    ] {
-        if d.abs() < 1e-12 {
-            if o < lo || o > hi {
-                return true;
-            }
-            continue;
-        }
-        let (mut near, mut far) = ((lo - o) / d, (hi - o) / d);
-        if near > far {
-            std::mem::swap(&mut near, &mut far);
-        }
-        t0 = t0.max(near);
-        t1 = t1.min(far);
-        if t0 > t1 {
-            return true;
-        }
-    }
-    false
 }
 
 /// Whether `point` can see `light` at all, geometrically — every box but
@@ -1231,7 +993,17 @@ fn main() {
             );
             sampled += 1;
             let offset = pixel * 4;
-            let gpu_lit = shadow_pixels[offset] > 128;
+            // `Shade::lit` is the same half-channel test this line has always
+            // been, decoded rather than thresholded. It answers `false` for a
+            // fragment outside every pool as well as for a shadowed one, which
+            // is the conflation `Shade` exists to make visible — see this
+            // tool's own backlog entry in `docs/lighting_height.md`.
+            let gpu_lit = Shade::of([
+                shadow_pixels[offset],
+                shadow_pixels[offset + 1],
+                shadow_pixels[offset + 2],
+            ])
+            .lit();
             let independent = oracle_visible((x, y, z), light_at, &boxes, usize::MAX);
             if independent != gpu_lit {
                 mismatches += 1;
@@ -1397,7 +1169,12 @@ fn main() {
                         texel.z,
                     );
                     sampled += 1;
-                    let gpu_lit = shadow_pixels[pixel * 4] > 128;
+                    let gpu_lit = Shade::of([
+                        shadow_pixels[pixel * 4],
+                        shadow_pixels[pixel * 4 + 1],
+                        shadow_pixels[pixel * 4 + 2],
+                    ])
+                    .lit();
                     let independent = oracle_visible((x, y, z), light_at, &boxes, index);
                     if independent != gpu_lit {
                         disagreeing += 1;
