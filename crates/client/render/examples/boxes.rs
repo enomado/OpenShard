@@ -611,6 +611,49 @@ fn main() {
         }
     }
     eprintln!("{} mesh faces, {} vertices", rows.len(), vertices.len());
+    // Where each face lands in *pixels*, not in the view space `screen` above
+    // is in: "what is this patch in the picture" is a question about pixels,
+    // and answering it by re-deriving the projection by hand outside the tool
+    // is exactly the arithmetic-instead-of-looking `two_cubes.rs`'s own
+    // session 13 lesson warns about. Same conversion `light_pixel` below uses.
+    {
+        let projection = camera.projection();
+        let to_pixel = |v: &MeshFaceVertex| {
+            (
+                (v.screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5,
+                (v.screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5,
+            )
+        };
+        for (id, row) in rows.iter().enumerate() {
+            let (mut minx, mut maxx, mut miny, mut maxy) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+            for corner in vertices.iter().filter(|v| v.id == id as u32) {
+                let (px, py) = to_pixel(corner);
+                minx = minx.min(px);
+                maxx = maxx.max(px);
+                miny = miny.min(py);
+                maxy = maxy.max(py);
+            }
+            // The corners themselves and not only the box around them: which
+            // face owns a given patch of the picture is a question a bounding
+            // box cannot answer here, because all six of these overlap on
+            // screen — the upper box's own south face sits inside the lower
+            // box's own south face's box.
+            let ring: Vec<String> = vertices
+                .iter()
+                .filter(|v| v.id == id as u32)
+                .map(|v| {
+                    let (px, py) = to_pixel(v);
+                    format!("({px:.1},{py:.1})")
+                })
+                .collect();
+            eprintln!(
+                "face {id}: tile {:?}, stance {:?}, pixels x {minx:.1}..{maxx:.1}, y {miny:.1}..{maxy:.1}, ring {}",
+                row.tile,
+                row.stance,
+                ring.join(" "),
+            );
+        }
+    }
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let base = env_opt("OPENSHARD_FRAME_DUMP").unwrap_or_else(|| "boxes".to_string());
@@ -769,8 +812,44 @@ fn main() {
 
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
     let mut blit = openshard_client_render::blit::Blit::new(&device, format);
+    // Which `debug::View`s to dump, by `View::name()`. `View::Shadow` is
+    // appended whether or not it was asked for: the ground oracle below reads
+    // the rendered shadow frame back, so dropping it would silently disarm the
+    // one check in this tool that does not depend on anyone looking at a
+    // picture.
+    let mut views: Vec<View> = env_or("OPENSHARD_BOXES_VIEWS", "lit,shadow")
+        .split(',')
+        .map(|name| {
+            let name = name.trim();
+            [
+                View::Lit,
+                View::Place,
+                View::Kind,
+                View::Height,
+                View::Occluders,
+                View::Light,
+                View::Shadow,
+                View::Reach,
+                View::Sun,
+                View::Sky,
+                View::Flames,
+            ]
+            .into_iter()
+            .find(|view| view.name() == name)
+            .unwrap_or_else(|| panic!("unknown OPENSHARD_BOXES_VIEWS entry {name:?}"))
+        })
+        .collect();
+    if !views.contains(&View::Shadow) {
+        views.push(View::Shadow);
+    }
+
     let mut shadow_pixels: Vec<u8> = Vec::new();
-    for view in [View::Lit, View::Shadow] {
+    // `View::Lit` and `View::Shadow` answer "does it look right" and "what did
+    // the walk say"; when a patch in either one is unaccounted for, the
+    // question is which surface owns those pixels at all, and that is
+    // `View::Kind`/`View::Height`/`View::Place`'s own job (`debug.rs`'s doc on
+    // each). Naming them by hand beats dumping all eleven every run.
+    for view in views {
         lighting.view = view;
         let surface = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("surface"),

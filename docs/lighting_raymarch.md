@@ -301,6 +301,33 @@ Open:
   at a box's own silhouette corner. Plausibly the same phenomenon as the
   corner-tie gap above, landing in a different scene — not yet confirmed;
   the two residual shapes have not been directly compared.
+- **A sub-tile body shadows as if it filled its tile — visible as a hole in
+  a lit face.** `Occlusion::solid_bytes` (`occlusion.rs:1341`) uploads four
+  bytes a solid — `(bottom, top, opacity, edges)` — and no `x`/`y` at all,
+  so `shaders/blit.wesl`'s walk cannot tell a third-of-a-tile body from a
+  whole-tile one. `examples/boxes.rs`'s `tree` scene shows what that costs:
+  a closed dark patch sitting *inside* the lower box's own south face,
+  below the joint and below the top edge, lit above it and lit below it.
+  A ray leaving a point of that face passes north of the narrow upper box
+  in `x`/`y`, but inside the one cell they share it climbs into the upper
+  box's `z` span, and the span is all the shader is given, so it counts as
+  a hit. The lit band *above* the patch is the second half: there the
+  fragment's own height is inside the upper solid's span, `on_surface`
+  reads it as the fragment's own surface, and `exemption` (`light.rs:1247`)
+  drops that solid altogether. Confirmed by construction, not by eye —
+  `OPENSHARD_TREE_H1=3.5` moves the joint off an integer `z`, which is
+  where `Solid::bottom`/`top` (`occlusion.rs:601`) round it to, and the
+  whole face comes back clean. Every real static's footprint is implied by
+  its tile plus its edges, which is why four bytes were ever enough; a body
+  narrower than its tile is the shape `Builder::add_raw` made possible and
+  nothing on the wire describes. Fixing it means widening what a solid
+  uploads (or splitting a narrow body into edge panels), not touching the
+  walk.
+- **`examples/boxes.rs`'s own module doc still describes `walk_cells`**,
+  which no longer exists — including the `light.rs:2269` line number and
+  the `walk_cells_exact` comparison the `OPENSHARD_BOXES_ORACLE_EXACT`
+  knob ran. The knob and the prose need re-reading against
+  `walk_cells_streaming`.
 - **A true fixed-point world coordinate** (tile + N bits of sub-tile
   resolution, no `f32`) would remove float-epsilon boundary bugs at the
   source rather than by carrying a tile explicitly around each one. Buys
