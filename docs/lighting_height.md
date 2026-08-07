@@ -946,6 +946,34 @@ rule landed; none of it blocked any of them.
   What is left of that row is the entry below: the two spikes sit at `z 1` and
   `z 3`, which are two of this flight's own tread heights, and nowhere else.
 
+- **The residual at a tread/riser join is one defect with a sign, and the sign
+  is which side of the riser the flame is on.** Found by orbiting the flame
+  around the flight — eight positions on a circle of `2.5` tiles at `z 2.5`,
+  which is a question no single scene can be asked and no count at one angle can
+  answer:
+
+  | flame | E | SE | S | SW | W | NW | N | NE |
+  |---|---|---|---|---|---|---|---|---|
+  | disagreeing | 41 | 550 | 841 | 541 | 42 | 449 | 748 | 455 |
+  | sign | mixed | too light | too light | too light | mixed | too dark | too dark | too dark |
+
+  In front of the flight it under-shadows, behind it it over-shadows, and along
+  the ridge it is right to within forty pixels. The per-face breakdown is the
+  proof that it is *one* defect rather than two: with the flame due south, tread
+  1's top disagrees over bands **28..32** — the end where it meets the riser
+  above it — by **654** pixels; with the flame due north, the same face disagrees
+  over bands **0..4** — the end where it meets the riser below it — by **654**
+  pixels. Same count, mirrored band. Tread 2's riser and tread 0's riser pair off
+  the same way at 94 and 94.
+
+  It is the nudges, and now their price has a shape rather than a scalar:
+  `STAND_OFF` walks a face pixel `2/127` of a tile *in front of its own plane*
+  and `ON_TOP` lifts every ray `1/128` of a `z`, so at the corner where a tread
+  meets a riser the ray starts on one side of a surface it should be crossing —
+  and which side depends on where the flame stands. A fix has to be judged on the
+  whole orbit and not on one placement, because a nudge tuned to make the south
+  case right makes the north case worse by construction.
+
 - **A flame at exactly a surface's own height loses most of that surface's
   shadow, and integer heights are the common case.** The sweep above makes the
   shape of it plain: away from the geometry's own planes the engine tracks the
