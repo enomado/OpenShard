@@ -41,6 +41,16 @@ wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl"] 
 [lints]
 workspace = true
 
+# Compiles `src/shaders/*.wesl` — a shared, `import`-able module for the
+# `place` attachment's bit format (`docs/lighting_raymarch.md`'s backlog) —
+# into plain WGSL at build time. This crate's first build-dependency: under
+# plain WGSL each shader module is its own compilation unit with no
+# `#include`, so the format was five hand-copied `const` blocks, one per
+# shader, free to drift silently — session 23's ground-shadow bug was
+# exactly that (`ground.wgsl` never copied the bit `STANCE_FLAT` lives at).
+[build-dependencies]
+wesl = "0.4"
+
 [dev-dependencies]
 pollster = "0.4.0"
 proptest.workspace = true

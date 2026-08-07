@@ -117,23 +117,83 @@ that used to be here and is now fixed — is in the archive under
 - **Open, session 23 — a smaller residual left by the session-22 gap's fix,
   not yet confirmed to be one bug or a second one.** After `ground.wgsl`'s
   stance fix landed, `examples/boxes.rs`'s new ground oracle
-  (`OPENSHARD_BOXES_GROUND_ORACLE`) still finds 159 disagreeing points in the
-  `tree` scene and 692 in the `line` scene (whole-tile boxes, so not a
-  sub-tile-footprint story) — in both scenes sitting right at a box's own
-  silhouette *corner*, where `light::sample` still predicts occlusion the
-  rendered picture misses. Session 22's own hard-shadow decision removed all
-  corner softening, so this reads like the CPU/GPU near-tangent divergence
-  this doc's point 1 above already tracks (an exact tile-corner tie, two
+  (`OPENSHARD_BOXES_GROUND_ORACLE`) still finds disagreeing points in the
+  `tree` scene — in both scenes sitting right at a box's own silhouette
+  *corner*, where `light::sample` still predicts occlusion the rendered
+  picture misses. Session 22's own hard-shadow decision removed all corner
+  softening, so this reads like the CPU/GPU near-tangent divergence this
+  doc's point 1 above already tracks (an exact tile-corner tie, two
   independent `1/abs(delta)` divisions rounding differently) — plausible,
   **not verified**: nobody has checked whether the `tree` and `line` residuals
   are the *same* shape yet. First move: rerun the ground oracle scoped tight
   to one box's own corner in each scene and compare; if they match, this is
   point 1 wearing a different scene, not a new item.
 
+  **Count correction, found by the WESL migration below, unrelated to it:**
+  this entry's own session 23 measurement (`## Current status`) says 159
+  (`tree`)/692 (`line`); the `tree` scene now reads 527 (368 "too dark" + 159
+  "too light") — confirmed identical on the pre-migration code by `git
+  stash`ing the WESL change and rerunning, so the migration did not cause
+  it. Something between session 23's own measurement and now moved the
+  count; not diagnosed here — the 159 "too light" half matches session 23's
+  own figure exactly, so whatever changed only added the 368 "too dark"
+  half, and that is a second thread, not this one.
+
   Reproduce: `OPENSHARD_BOXES_SCENE=tree cargo run --release -p
   openshard-client-render --example boxes` (or `OPENSHARD_BOXES_SCENE=line`)
   — the ground oracle runs by default and prints both counts plus example
   points on stderr.
+
+- **The `place` attachment's packing was a hand-maintained contract —
+  session 23's bug was an instance of a class, not a one-off — and a fix for
+  the class has landed for one of its five files, with the rest tracked
+  below.** `kind`/`stance`/`z` are packed into `place` by three independent
+  WGSL producers (`statics.wgsl`, `ground.wgsl`, `mesh_face.wgsl`), each
+  with its own copy of the shift/mask constants (WGSL modules cannot share
+  Rust `const`s), read back by two more (`blit.wgsl`, `select.wgsl`). Only
+  one pinning test exists (`place.rs::a_place_packs_into_two_words`), and it
+  only covers the Rust `Place` struct that backs `statics.wgsl`'s path —
+  `ground.wgsl` and `mesh_face.wgsl` packed their bits directly, untested.
+  Session 23's bug (a producer that forgot to stamp `stance`, decoding as a
+  meaningful-but-wrong default, `Stance::Upright`) is what that gap looks
+  like when it fires; the same shape was live for any future producer or any
+  new `Stance`/`Kind` value.
+
+  **Language survey, decided:** `rust-gpu` (real Rust compiled to SPIR-V)
+  was considered and rejected — this crate targets `wasm32`/WebGL2 as well
+  as native (`Cargo.toml`'s own header, and `docs/client.md`'s "the browser
+  is a target, so it constrains the design now"), and no browser shader
+  input is SPIR-V: WebGL2 never was, and WebGPU's own spec settled on WGSL
+  as its one input language, full stop, not a transitional one. `rust-gpu`
+  would have meant two parallel shader implementations, worse than the
+  duplication it was meant to fix. **[WESL](https://wesl-lang.dev/)**
+  (`wesl-rs`, the `wesl` crate) was chosen instead: an `import`-carrying
+  superset of WGSL that still compiles down to plain WGSL, so both targets
+  are untouched.
+
+  **Landed:** `ground.wgsl` migrated to `src/shaders/ground.wesl`, importing
+  the format's constants from a new shared `src/shaders/place_format.wesl`
+  rather than declaring its own copy. `crates/client/render/build.rs`
+  compiles it at build time (the crate's first build-dependency — `wesl =
+  "0.4"`, MSRV 1.87, no nightly toolchain needed, see the crate's own
+  `Cargo.toml` comment for why the trade was worth it here and not for
+  `data/doors.json`); `renderer.rs` loads the compiled output via
+  `include_str!(concat!(env!("OUT_DIR"), "/ground.wgsl"))` in place of the
+  old `include_str!("ground.wgsl")`. One thing the migration surfaced:
+  `wesl-rs`'s parser is stricter than naga's about mixing `<<` and `|`
+  without parens (WGSL's own grammar requires them) — `ground.wgsl`'s `sub`
+  line needed them added; naga had been accepting it unparenthesized.
+  Verified: `cargo test --workspace`/clippy/fmt clean, and the `tree`
+  scene's ground oracle (below) reads identically before and after the
+  migration (confirmed by stashing it and rerunning) — the pilot changed
+  nothing about what gets drawn, only where the constants live.
+
+  **Not done — next steps, in the same shape as this one:** `statics.wgsl`,
+  `mesh_face.wgsl`, `blit.wgsl`, `select.wgsl` still carry their own copies
+  of the format's constants and are not yet on `place_format.wesl`. Doing
+  them is the same recipe as `ground.wgsl` above, file by file; `blit.wgsl`
+  is the biggest (~1500 lines) and worth doing last, once the pattern is
+  routine on the smaller three.
 
 - **Someday/maybe, not scoped as a step**: a full fixed-point world
   coordinate (tile + N bits of sub-tile resolution, no `f32`) would remove

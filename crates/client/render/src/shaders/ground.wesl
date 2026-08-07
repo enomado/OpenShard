@@ -33,6 +33,8 @@
 // draws it flat, which leaves gaps against its stretched neighbours; ours stays
 // watertight and is textured approximately. See docs/client.md.
 
+import package::place_format::{KIND_LAND, PLACE_STANCE_SHIFT, STANCE_FLAT, SUB_TILE};
+
 struct Viewport {
     // The target's size in *real* pixels — the display's, which at a
     // magnification above 1 is not the world's own. Only the last two lines of
@@ -82,35 +84,6 @@ struct VertexOut {
     // it were the valley floor.
     @location(5) place_z: f32,
 };
-
-// What a pixel of the ground is, in `crate::place::Kind`'s numbering. The Rust
-// side pins these values in a test; nothing else can compare the two.
-const KIND_LAND: u32 = 1u;
-
-// How the fourth channel is packed: the kind in the low two bits, then seven
-// bits of tile-local `x` and seven of tile-local `y`. `crate::place` documents
-// it and `blit.wgsl` takes it apart; the three have to agree and only a person
-// reading them can check that.
-const SUB_TILE: f32 = 127.0;
-
-// Where `place.z`'s own stance bits sit, and land's value among them —
-// `statics.wgsl`'s own constants, copied rather than shared because each
-// pass's shader module is its own compilation unit. `blit.wgsl`'s `walk`
-// reads this back as `stance`, and its exemption logic (`cell_stopped`)
-// branches on `stance != STANCE_FLAT` to tell a wall-mounted pixel (which
-// may stand exempt on the surface it is bolted to) apart from an ordinary
-// flat one (which may not) — a land fragment that never stamps a stance
-// here decodes as `0`, `crate::place::Stance::Upright`'s own value, and
-// `!= STANCE_FLAT` all the same, wrongly earning the exemption meant only
-// for the mounted case. Found via `examples/boxes.rs`'s `tree` scene
-// (`docs/lighting_raymarch.md`): a ground pixel sharing its own tile with an
-// opaque body, at the body's own base (`on_surface(0.0, body)` is true for
-// any body starting at `z 0`), read as fully lit with no shadow at all.
-// `blit.wgsl`'s own `fs_main` zeroes the face normal back out for
-// `KIND_LAND` right after decoding it, so this does not also turn on the
-// half-space `faces()` gate ground never had — see its own comment.
-const PLACE_STANCE_SHIFT: u32 = 8u;
-const STANCE_FLAT: u32 = 1u;
 
 // What one fragment of a world pass writes: the picture, and where in the world
 // it came from.
@@ -220,7 +193,7 @@ fn vs_main(
 fn place_of(in: VertexOut) -> vec4<u32> {
     let z = u32(clamp(round(in.place_z), -128.0, 127.0) + 128.0) | (STANCE_FLAT << PLACE_STANCE_SHIFT);
     let local = clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0));
-    let sub = u32(round(local.x * SUB_TILE)) << 2u | u32(round(local.y * SUB_TILE)) << 9u;
+    let sub = (u32(round(local.x * SUB_TILE)) << 2u) | (u32(round(local.y * SUB_TILE)) << 9u);
     return vec4<u32>(in.id & 0xFFFFu, in.id >> 16u, z, KIND_LAND | sub);
 }
 

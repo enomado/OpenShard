@@ -24,6 +24,14 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=data");
+    println!("cargo:rerun-if-changed=src/shaders");
+
+    // `ground.wgsl`'s pilot for `docs/lighting_raymarch.md`'s backlog item on
+    // the `place` format: compiled here rather than checked in, so
+    // `src/shaders/place_format.wesl` stays the one place its constants are
+    // written. `include_str!(concat!(env!("OUT_DIR"), ...))` in `renderer.rs`
+    // is the other half.
+    wesl::Wesl::new("src/shaders").build_artifact(&"package::ground".parse().unwrap(), "ground");
 
     let path = Path::new("data").join("doors.json");
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));

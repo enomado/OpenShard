@@ -313,7 +313,10 @@ impl GroundRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("ground"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("ground.wgsl").into()),
+            // `src/shaders/ground.wesl`, compiled to plain WGSL by `build.rs`
+            // — the pilot for `docs/lighting_raymarch.md`'s shared `place`
+            // format module.
+            source: wgpu::ShaderSource::Wgsl(include_str!(concat!(env!("OUT_DIR"), "/ground.wgsl")).into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
