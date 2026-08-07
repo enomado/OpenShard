@@ -1080,21 +1080,28 @@ fn main() {
     // asks about the tops of the boxes, so it structurally cannot see the bug
     // `docs/lighting_raymarch.md`'s backlog names ("A live CPU/GPU disagreement
     // on `boxes.rs`'s `tree` scene") — the ground immediately beside a box's own
-    // base. This sweeps a top-down grid of *ground* points instead, projects
-    // each through the scene's own isometric camera (not an ortho view, so it
-    // reads the exact pixel the renderer itself drew), and compares the
-    // rendered `View::Shadow` pixel there against `segment_clear_of_box`, the
-    // same independent, no-shared-arithmetic oracle the box-top check already
-    // trusts.
+    // base.
     //
-    // **Standing outside every box's footprint is not enough to be looking at
-    // the ground.** A box's picture *rises* out of its footprint, so the ground
-    // for a tile or two north of one is drawn over by that box's own faces —
-    // and this used to read those pixels as though they were the ground's,
-    // which is what the bulk of its own "rendered too dark" points were. The
-    // rendered `place` attachment says who drew each pixel (`drawn`, and the
-    // face oracle's own note), so a point whose pixel is not land is skipped
-    // and counted as skipped.
+    // Same shape as the face oracle below, and for the same two reasons: it
+    // sweeps **every pixel the rendered `place` attachment says the ground
+    // drew**, and asks about **that fragment's own world position**, read back
+    // out of the same attachment. Both replaced guesses that cost it most of
+    // its own reported disagreements:
+    //
+    // - Standing outside every box's footprint is not enough to be looking at
+    //   the ground. A box's picture *rises* out of its footprint, so the ground
+    //   behind one is drawn over by that box's own faces, and reading those
+    //   pixels as the ground's was the bulk of its "rendered too dark" points.
+    // - The GPU never lights the point a top-down grid names: `ground.wgsl`
+    //   quantises a fragment's tile-local fraction to `SUB_TILE = 127` levels,
+    //   and the fragment under a pixel sits at the pixel's own centre, which is
+    //   up to half a pixel from wherever a sampled world point projected. This
+    //   used to repeat the quantisation by hand on its own `(x, y)` — which is
+    //   the right idea applied to the wrong point.
+    //
+    // The independent answer is `segment_clear_of_box`, the same no-shared-
+    // arithmetic slab test the box-top check already trusts, and `light::sample`
+    // says which walk is out on every disagreement.
     type Mismatch = (f64, f64, f32, (u8, u8, u8));
     if env_opt("OPENSHARD_BOXES_GROUND_ORACLE").as_deref() != Some("0") {
         let light_at = (
@@ -1102,103 +1109,79 @@ fn main() {
             f64::from(first.tile.1) + f64::from(ldy),
             f64::from(light_z),
         );
-        let margin = 1.5;
-        let min_x = boxes.iter().map(|b| b.min.0).fold(f64::MAX, f64::min) - margin;
-        let max_x = boxes.iter().map(|b| b.max.0).fold(f64::MIN, f64::max) + margin;
-        let min_y = boxes.iter().map(|b| b.min.1).fold(f64::MAX, f64::min) - margin;
-        let max_y = boxes.iter().map(|b| b.max.1).fold(f64::MIN, f64::max) + margin;
-        let side = 240u32;
         let mut sampled = 0usize;
-        let mut compared = 0usize;
-        let mut drawn_by_another = 0usize;
         let mut mismatches = 0usize;
         let mut too_dark = 0usize;
         let mut too_light = 0usize;
+        let mut shader_alone = 0usize;
+        let mut engine_together = 0usize;
         let mut examples_too_dark: Vec<Mismatch> = Vec::new();
         let mut examples_too_light: Vec<Mismatch> = Vec::new();
-        for row in 0..side {
-            for col in 0..side {
-                let u = (col as f64 + 0.5) / f64::from(side);
-                let v = (row as f64 + 0.5) / f64::from(side);
-                let x = min_x + u * (max_x - min_x);
-                let y = min_y + v * (max_y - min_y);
-                sampled += 1;
-                let screen = camera.to_view_exact(project_exact(WorldSpot { x, y, z: 0.0 }));
-                let px = (screen.x - projection.origin.x) * projection.scale + width as f32 * 0.5;
-                let py = (screen.y - projection.origin.y) * projection.scale + height_px as f32 * 0.5;
-                if px < 0.0 || py < 0.0 || px >= width as f32 || py >= height_px as f32 {
-                    continue;
+        for (pixel, texel) in drawn.iter().enumerate() {
+            if texel.kind != openshard_client_render::place::Kind::Land as u32 {
+                continue;
+            }
+            // The fragment's own point: the tile off the ground quad this pixel
+            // names, the fraction and the height off the texel. A hillside's
+            // pixels each carry their own interpolated height, which is why the
+            // `z` is read rather than assumed — this scene's floor is flat, and
+            // a scene whose floor is not would otherwise be asked about the
+            // wrong plane.
+            let tile = ground_quads[texel.id as usize].place;
+            let (x, y, z) = (
+                f64::from(tile.x) + texel.sub.0,
+                f64::from(tile.y) + texel.sub.1,
+                texel.z,
+            );
+            sampled += 1;
+            let offset = pixel * 4;
+            let gpu_lit = shadow_pixels[offset] > 128;
+            let independent = oracle_visible((x, y, z), light_at, &boxes, usize::MAX);
+            if independent != gpu_lit {
+                mismatches += 1;
+                let spot = light::Spot {
+                    at: Vec2::new(x as f32, y as f32),
+                    z: z as f32,
+                    tile: (f64::from(tile.x) as i32, f64::from(tile.y) as i32),
+                    surface: light::Surface::Flat,
+                };
+                let through = light::sample(spot, &lighting)
+                    .reaches
+                    .first()
+                    .map_or(0.0, |reach| if reach.within { reach.through } else { 0.0 });
+                match (through > 0.5) == independent {
+                    true => shader_alone += 1,
+                    false => engine_together += 1,
                 }
-                let (pxi, pyi) = (px.round() as u32, py.round() as u32);
-                // `round`, not the `< width`/`< height_px` check just above, is
-                // what can land exactly on the far edge — a coordinate at
-                // `width - 0.3` passes the check and then rounds up to `width`.
-                if pxi >= width || pyi >= height_px {
-                    continue;
-                }
-                if drawn[(pyi * width + pxi) as usize].kind
-                    != openshard_client_render::place::Kind::Land as u32
-                {
-                    drawn_by_another += 1;
-                    continue;
-                }
-                compared += 1;
-                let offset = ((pyi * width + pxi) * 4) as usize;
-                let gpu_lit = shadow_pixels[offset] > 128;
-                // The GPU never lights the *continuous* `(x, y)` — `ground.wgsl`'s
-                // `place_of` quantises the fragment's own tile-local fraction to
-                // `SUB_TILE = 127` levels before `blit.wgsl` ever reads it back
-                // (`docs/gbuffer.md` step 7's own g-buffer format). Comparing the
-                // rendered picture against a query point that skips that
-                // quantisation compares it to a fragment the rasteriser could
-                // never actually produce — so the independent oracle and
-                // `light::sample` are both asked about the *reconstructed* point
-                // instead, the same lossy value the shader itself lights.
-                let quantise = |v: f64, tile: f64| tile + (((v - tile) * 127.0).round() / 127.0);
-                let (qx, qy) = (quantise(x, x.floor()), quantise(y, y.floor()));
-                let independent = oracle_visible((qx, qy, 0.0), light_at, &boxes, usize::MAX);
-                if independent != gpu_lit {
-                    mismatches += 1;
-                    let spot = light::Spot {
-                        at: Vec2::new(qx as f32, qy as f32),
-                        z: 0.0,
-                        tile: (qx.floor() as i32, qy.floor() as i32),
-                        surface: light::Surface::Flat,
-                    };
-                    let through = light::sample(spot, &lighting)
-                        .reaches
-                        .first()
-                        .map_or(0.0, |reach| if reach.within { reach.through } else { 0.0 });
-                    let rgb = (
-                        shadow_pixels[offset],
-                        shadow_pixels[offset + 1],
-                        shadow_pixels[offset + 2],
-                    );
-                    if gpu_lit {
-                        // Oracle says shadowed, picture says lit.
-                        too_light += 1;
-                        if examples_too_light.len() < 8 {
-                            examples_too_light.push((qx, qy, through, rgb));
-                        }
-                    } else {
-                        // Oracle says lit, picture says shadowed.
-                        too_dark += 1;
-                        if examples_too_dark.len() < 8 {
-                            examples_too_dark.push((qx, qy, through, rgb));
-                        }
+                let rgb = (
+                    shadow_pixels[offset],
+                    shadow_pixels[offset + 1],
+                    shadow_pixels[offset + 2],
+                );
+                if gpu_lit {
+                    // Oracle says shadowed, picture says lit.
+                    too_light += 1;
+                    if examples_too_light.len() < 8 {
+                        examples_too_light.push((x, y, through, rgb));
+                    }
+                } else {
+                    // Oracle says lit, picture says shadowed.
+                    too_dark += 1;
+                    if examples_too_dark.len() < 8 {
+                        examples_too_dark.push((x, y, through, rgb));
                     }
                 }
             }
         }
         eprintln!(
-            "ground oracle vs rendered View::Shadow: {mismatches}/{compared} compared ground points \
-             disagree ({too_dark} rendered too dark, {too_light} rendered too light); {sampled} sampled, \
-             {drawn_by_another} skipped as another surface's pixel"
+            "ground oracle vs rendered View::Shadow: {mismatches}/{sampled} drawn ground pixels disagree \
+             ({too_dark} rendered too dark, {too_light} rendered too light; {shader_alone} the shader \
+             alone, {engine_together} both walks together)"
         );
         assert!(
-            compared > 100,
-            "the ground oracle compared only {compared} of {sampled} sampled points — a detector that \
-             compares nothing reads exactly like a detector that found nothing"
+            sampled > 100,
+            "the ground oracle found only {sampled} pixels of ground — a detector that compares nothing \
+             reads exactly like a detector that found nothing"
         );
         for (label, examples) in [
             ("too dark", &examples_too_dark),
@@ -1296,8 +1279,7 @@ fn main() {
                 // it is one band, which is a shape the count could never have
                 // shown.
                 let mut disagreeing_bands = vec![0usize; bands];
-                for pixel in 0..(width * height_px) as usize {
-                    let texel = drawn[pixel];
+                for (pixel, texel) in drawn.iter().enumerate() {
                     // Whose pixel this is, as the renderer wrote it. A mesh
                     // face's row is addressed through the `MeshFace` sentinel
                     // — `place::Stance::MeshFace`'s own doc — so all three of

@@ -635,6 +635,58 @@ no-client-files rule: it is more precise than a real house, since a test
 can say exactly *which* cell should have stopped a given ray, and a failing
 test can print the room rather than a coordinate.
 
+**One scene is the reference, and its numbers are the baseline.**
+`examples/boxes.rs`'s `tree` — two boxes on one tile, the lower a half-tile
+footprint, the upper a third-tile footprint standing on the lower's own lid —
+at *its own defaults* (`H1=3 H2=3 W1=0.5 W2=0.33333`, the top of the zoom
+ladder, the flame up and to the boxes' `+x` side) is the scene this workspace
+looks at lighting through. It is the smallest scene that states all three
+things a whole-tile box cannot: a footprint narrower than the tile bucket that
+owns it, one solid standing on another's lid, and a vertical face whose height
+varies continuously down it. Its four oracles at those defaults report
+
+| oracle | disagreeing / drawn pixels |
+|---|---|
+| face (both boxes, `east` + `south`) | 18 / 7008 |
+| ground | 226 / 252105 |
+| box 0's own top | 0 / 9216 |
+| box 1's own top | 0 / 9216 |
+
+**A run that reports different numbers with no intended cause is a regression
+report** — read it before reading anything else. Ask the scene a question by
+overriding a knob for that run; overriding a *default* silently retires every
+number above, so don't.
+
+What is left is two named things, and **neither is `exemption`**, which these
+numbers were read as meaning for two sessions — see `lighting_height.md`'s own
+account of how that happened. Both are measured, not argued: setting
+`STAND_OFF` and `ON_TOP` to zero on *both* walks for one run is what separates
+them.
+
+- **The stand-off nudge, at a grazing corner.** Every one of the face oracle's
+  18 (`0/7008` with the nudge zeroed) and 89 of the ground's. A ray is walked
+  from a fifty-eighth of a tile in front of the plane its fragment is drawn on
+  and a hundred-and-twenty-eighth of a `z` unit above whatever it lies on —
+  decision 26's own pair, without which a wall wears a bright stroke along its
+  floorboards. Where the ray then grazes a corner, that nudge is the whole
+  answer, and the engine is honestly answering about a point a hair from the
+  one the independent oracle asks about.
+- **An exact tangent at a box's own corner.** The remaining 137 ground pixels,
+  a diagonal line along the shadow's own corner: the ray touches the box at
+  exactly one point, `t` in and `t` out equal, and whether a zero-length
+  crossing blocks is a definition rather than a fact — `light::ray_vs_solid`'s
+  own doc comment says as much and leaves it to the caller. The oracle counts
+  it as blocked and the walk does not.
+
+**Both were buried under an instrument that was wrong by an order of
+magnitude**, and the record of that is worth as much as the numbers. The face
+oracle reported 278 and the ground oracle 509 at their old sampling; 212 of the
+first were pixels *other surfaces* drew, read as the face's own, and most of
+the rest of both were a shader tolerance sized a hundredth of a ray rather than
+a rounding. See `a4b698c` and `ccca681` — and note that neither error was
+visible as anything but a plausible number until the oracles were asked what
+they had actually compared.
+
 **CPU/GPU parity is enforced, not assumed.** `light::sample`
 (`crates/client/render/src/light.rs`) is the shader's ray walk re-implemented
 on the CPU, returning the *reasons* a shader alone cannot produce (which
