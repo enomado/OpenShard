@@ -343,6 +343,36 @@ pub struct Frame<'a> {
     pub face_rows: &'a [(usize, Stance, u32)],
 }
 
+/// Why a pixel is or is not in the comparison — one value per pixel, and the
+/// thing a picture of the two masks cannot say.
+///
+/// **A mask drawn as lit / shadowed / grey conflates three of these into the
+/// grey**, and only one of them is ever a defect. That cost a session: a field of
+/// grey slabs across a flight of steps was read as a lighting fault and argued
+/// about, while the counts printed beside it already said `0 with nothing drawn`
+/// and `0 not on a silhouette`. The slabs were [`Self::Silhouette`] and
+/// [`Self::InteriorSurface`] — a paint-order defect in the scene, not in the walk
+/// — and what identified them was laying them over the rendered frame by hand.
+/// [`Verdict::strips`] is that by construction instead.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Judged {
+    /// The two agree what surface is there, so the comparison had an opinion
+    /// about the light on it. Everything the gate asserts about is one of these.
+    Compared,
+    /// The frame drew something the tracer has no counterpart for — the cleared
+    /// background, or a stance outside the two renderers' common vocabulary.
+    /// Never a finding: there is nothing here for either side to be wrong about.
+    NothingDrawn,
+    /// The two disagree *which* surface is there, within a pixel of a boundary in
+    /// either picture. Half a pixel decides which of two surfaces a ray meets, so
+    /// this is expected and is not about light at all.
+    Silhouette,
+    /// And the same disagreement away from any boundary, which nothing sub-pixel
+    /// explains. **The one value here that is a defect** — an isometric painter's
+    /// order differing from a ray's own nearest hit, in the middle of a face.
+    InteriorSurface,
+}
+
 /// Every count the comparison produces, and the two maps it produced them from.
 ///
 /// One struct rather than a printed line, because two callers want different
@@ -382,6 +412,9 @@ pub struct Verdict {
     /// are the same data.
     pub engine_lit: Vec<Option<bool>>,
     pub traced_lit: Vec<Option<bool>>,
+    /// Why each pixel is in the comparison or is not — the counts above, kept per
+    /// pixel so a picture can say which of them a region is. See [`Judged`].
+    pub judged: Vec<Judged>,
     /// A handful of each kind of disagreement, in words, for a person.
     pub examples: Vec<String>,
     pub surface_examples: Vec<String>,
@@ -421,7 +454,72 @@ impl Verdict {
         }
         out
     }
+
+    /// The whole verdict as four pictures of the same size, for
+    /// [`openshard_client_render::png::write_strips`].
+    ///
+    /// **Here rather than at the two call sites for the same reason [`compare`]
+    /// is**: the tool a person points at a scene and the gate that runs under
+    /// `cargo test` had a copy each, identical to the line, and the picture is
+    /// how this track is steered. Two copies is how the gate ends up drawing a
+    /// rule the tool no longer draws.
+    ///
+    /// 1. **The frame's own decision** — white lit, black shadowed, grey a pixel
+    ///    nobody compared, so a grey field reads as "not measured" rather than as
+    ///    a shadow.
+    /// 2. **The tracer's**, the same way.
+    /// 3. **Where they differ** — red where the frame lit a pixel the tracer
+    ///    shadowed, blue the other way round. Two opposite defects (a ray that
+    ///    missed an occluder, and one that hit something that is not there), so
+    ///    one colour would say a pixel is wrong without saying which way.
+    ///    Everything the comparison did not judge stays black, so anything lit
+    ///    here is something to explain.
+    /// 4. **And why the grey of the first two is grey**, which is the strip that
+    ///    exists because its absence cost a session — see [`Judged`]. Black is a
+    ///    compared pixel, grey is nothing drawn, teal is a silhouette, and **red
+    ///    is the only one that is a defect**.
+    pub fn strips(&self) -> Vec<Vec<u8>> {
+        let mask = |map: &[Option<bool>]| {
+            let mut pixels = vec![0u8; map.len() * 3];
+            for (pixel, lit) in map.iter().enumerate() {
+                let value = match lit {
+                    Some(true) => 255u8,
+                    Some(false) => 0,
+                    None => NOT_COMPARED,
+                };
+                pixels[pixel * 3..pixel * 3 + 3].fill(value);
+            }
+            pixels
+        };
+
+        let mut difference = vec![0u8; self.engine_lit.len() * 3];
+        for (pixel, (ours, theirs)) in self.engine_lit.iter().zip(&self.traced_lit).enumerate() {
+            match (ours, theirs) {
+                (Some(true), Some(false)) => difference[pixel * 3] = 255,
+                (Some(false), Some(true)) => difference[pixel * 3 + 2] = 255,
+                _ => {}
+            }
+        }
+
+        let mut why = vec![0u8; self.judged.len() * 3];
+        for (pixel, judged) in self.judged.iter().enumerate() {
+            let colour = match judged {
+                Judged::Compared => [0, 0, 0],
+                Judged::NothingDrawn => [NOT_COMPARED; 3],
+                Judged::Silhouette => [0, 128, 128],
+                Judged::InteriorSurface => [255, 0, 0],
+            };
+            why[pixel * 3..pixel * 3 + 3].copy_from_slice(&colour);
+        }
+
+        vec![mask(&self.engine_lit), mask(&self.traced_lit), difference, why]
+    }
 }
+
+/// The grey a pixel nobody compared is drawn as, in both masks and in the
+/// reasons strip — one constant so that "this is the same grey" is true rather
+/// than nearly true.
+const NOT_COMPARED: u8 = 96;
 
 /// What a penumbra comparison found, and what the reference's own noise was
 /// while it found it.
@@ -700,6 +798,11 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
         nothing_drawn: 0,
         engine_lit: Vec::new(),
         traced_lit: Vec::new(),
+        // `NothingDrawn` is the fallthrough and the loop below names every other
+        // case, so a pixel keeps this exactly when the frame drew nothing the
+        // tracer has a word for — which is the same condition the count above is
+        // taken on, one loop earlier.
+        judged: vec![Judged::NothingDrawn; (width * height) as usize],
         examples: Vec::new(),
         surface_examples: Vec::new(),
     };
@@ -744,9 +847,13 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
                 let rim = on_an_edge(&engine_surface, width, height, x, y)
                     || on_an_edge(&traced_surfaces, width, height, x, y);
                 match rim {
-                    true => verdict.silhouette += 1,
+                    true => {
+                        verdict.silhouette += 1;
+                        verdict.judged[pixel] = Judged::Silhouette;
+                    }
                     false => {
                         verdict.interior_surface += 1;
+                        verdict.judged[pixel] = Judged::InteriorSurface;
                         let what = format!(
                             "the frame draws {}, the tracer sees {}",
                             engine_side(&drawn[pixel], face_rows),
@@ -769,6 +876,7 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
                 continue;
             };
             verdict.compared += 1;
+            verdict.judged[pixel] = Judged::Compared;
             if engine == traced {
                 continue;
             }

@@ -1594,61 +1594,18 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         eprint!("{}", soft.report(allowed));
     }
 
-    // The picture: the frame's own shadow decision, the tracer's, and where
-    // they differ. Same three-strip shape the box-top oracle already writes, so
-    // the two read the same way.
-    let strip = |map: &[Option<bool>]| {
-        let mut pixels = vec![0u8; (width * height * 3) as usize];
-        for (pixel, lit) in map.iter().enumerate() {
-            // Grey for a pixel nobody compared, so a large grey field reads as
-            // "this was not measured" rather than as a shadow.
-            let value = match lit {
-                Some(true) => 255u8,
-                Some(false) => 0,
-                None => 96,
-            };
-            pixels[pixel * 3..pixel * 3 + 3].fill(value);
-        }
-        pixels
-    };
-
-    // And a third strip that says where to look, because the first two do not.
-    // Two 512-pixel shadow masks side by side hide a disagreement of a few
-    // hundred pixels perfectly well — the eye reads both as "a box with a
-    // shadow" — so the difference is drawn rather than left to be found.
-    //
-    // Red where the engine lit a pixel the tracer shadowed, blue where it
-    // shadowed one the tracer lit: the two are opposite defects (a ray that
-    // missed an occluder, and one that hit something that is not there) and a
-    // single colour would say a pixel is wrong without saying which way.
-    // Everything the comparison did not judge stays black, so a lit patch of
-    // this strip is always something to explain.
-    let mut difference = vec![0u8; (width * height * 3) as usize];
-    for (pixel, (ours, theirs)) in verdict
-        .engine_lit
-        .iter()
-        .zip(verdict.traced_lit.iter())
-        .enumerate()
-    {
-        let (Some(ours), Some(theirs)) = (ours, theirs) else {
-            continue;
-        };
-        match (ours, theirs) {
-            (true, false) => difference[pixel * 3] = 255,
-            (false, true) => difference[pixel * 3 + 2] = 255,
-            _ => {}
-        }
-    }
-
+    // The picture: the frame's own shadow decision, the tracer's, where they
+    // differ, and why the pixels nobody compared were not compared. What each
+    // strip means is `Verdict::strips`'s own doc — shared with `tests/traced.rs`
+    // for the same reason the judging is, and the fourth strip is there because
+    // its absence cost a session.
+    let strips = verdict.strips();
+    let strips: Vec<&[u8]> = strips.iter().map(Vec::as_slice).collect();
     write_strips(
         std::path::Path::new(&format!("{base}_pathtrace.png")),
         width,
         height,
-        &[
-            &strip(&verdict.engine_lit),
-            &strip(&verdict.traced_lit),
-            &difference,
-        ],
+        &strips,
     );
 
     // **The two shaded pictures, side by side.** `docs/lighting_rebuild.md`'s

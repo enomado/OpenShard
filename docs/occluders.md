@@ -409,6 +409,40 @@ list in two shapes; D8's argument covers it and S1 left it deliberately, because
 a hole is read behind a bit test and moving it buys nothing until something else
 touches it. It should go with the reference list in S5.
 
+**Grey in a dumped mask meant three different things, and that cost a session —
+fixed.** The two mask strips drew `None` as one grey level, and `None` is
+"nothing drawn here", "the two disagree which surface is there, on a silhouette"
+and "…and not on one" — the last of which is the only one that is a defect. A
+field of grey slabs across the run of flights was carried into a second session
+as evidence of a lighting fault, while the counts printed beside it already said
+`0 with nothing drawn` and `0 not on a silhouette`. What settled it in one pass
+was **laying the grey over the lit render**: the slabs fell exactly on the risers
+below the tread in front — the paint-order defect this scene's own doc records,
+not a walk defect.
+
+So the dump has a **fourth strip** now, `Verdict::strips`'s own: black compared,
+grey nothing drawn, teal a silhouette, **red the one that is a defect**. Built
+where the judging is, so the tool and the gate draw one rule rather than two —
+they had a copy of the three-strip code each, identical to the line. Checked by
+injection rather than believed: putting the flights back in climb order paints
+7,016 red pixels in exactly the shape that was argued about, with 2,179 teal
+around them, and the histogram matches the printed counts term for term.
+
+**A dumped picture carries no mark of the code that made it.** The same grey
+slabs survived as evidence because the file predated the fix and nothing about it
+said so — the name even carried `_fixed`, meaning a corrected *crop*, not a
+corrected scene. A dump is the instrument this track is steered by, so it should
+stamp what it is: the verdict's own counts, at least, written beside the pixels
+they describe.
+
+**A composite of strips cannot be cut by dividing its width.**
+`png::write_strips` puts a `RULE_WIDTH` ruler between strips, so a three-strip
+image of 512-pixel panels is 1540 wide and `w / 3` is 513. Cutting that way
+shifts every strip after the first by a pixel per ruler, and a one-pixel shift
+between two renders reads exactly like a camera that is off. It was reported as
+"a systematic 3 px offset" once; there is no offset. Slice at
+`k * (SIDE + RULE)`.
+
 **A hole's own `z` is still quantised**, to whole units offset by 128
 (`occlusion::z_byte`), and it is now the only quantised number left in the pass.
 No defect: a hole is measured off the art as whole units, so there is nothing

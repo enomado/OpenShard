@@ -645,59 +645,23 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
 /// until now that picture was only reachable by running the tool on the tool's
 /// own scene.
 ///
-/// Left, the frame's own decision; middle, the tracer's; right, where they
-/// differ — **red** where the frame lit a pixel the tracer shadowed, **blue**
-/// the other way round. Two opposite defects (a ray that missed an occluder, and
-/// one that hit something that is not there), so one colour would say a pixel is
-/// wrong without saying which way. Grey in the masks is a pixel nobody compared,
-/// so a grey field reads as "not measured" rather than as a shadow; black in the
-/// difference strip is agreement, so anything lit there is something to explain.
+/// The four strips are [`oracle::pathtrace::Verdict::strips`]'s, and what each
+/// of them means is stated there — including the fourth, which says *why* a grey
+/// pixel of the first two is grey. This function is the file and the env var
+/// around it and nothing else: the tool has the same dump, and a second copy of
+/// what the colours mean is how the gate ends up drawing a rule the tool no
+/// longer draws.
 fn dump_masks(verdict: &oracle::pathtrace::Verdict, name: &str) {
     let Some(dir) = std::env::var_os("OPENSHARD_TRACED_DUMP") else {
         return;
     };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).expect("the dump directory");
-    let strip = |map: &[Option<bool>]| {
-        let mut pixels = vec![0u8; (SIDE * SIDE * 3) as usize];
-        for (pixel, lit) in map.iter().enumerate() {
-            let value = match lit {
-                Some(true) => 255u8,
-                Some(false) => 0,
-                None => 96,
-            };
-            pixels[pixel * 3..pixel * 3 + 3].fill(value);
-        }
-        pixels
-    };
-    let mut difference = vec![0u8; (SIDE * SIDE * 3) as usize];
-    for (pixel, (ours, theirs)) in verdict
-        .engine_lit
-        .iter()
-        .zip(verdict.traced_lit.iter())
-        .enumerate()
-    {
-        let (Some(ours), Some(theirs)) = (ours, theirs) else {
-            continue;
-        };
-        match (ours, theirs) {
-            (true, false) => difference[pixel * 3] = 255,
-            (false, true) => difference[pixel * 3 + 2] = 255,
-            _ => {}
-        }
-    }
+    let strips = verdict.strips();
+    let strips: Vec<&[u8]> = strips.iter().map(Vec::as_slice).collect();
     let path = dir.join(format!("{}_pathtrace.png", name.replace(' ', "_")));
-    openshard_client_render::png::write_strips(
-        &path,
-        SIDE,
-        SIDE,
-        &[
-            &strip(&verdict.engine_lit),
-            &strip(&verdict.traced_lit),
-            &difference,
-        ],
-    )
-    .expect("writing the mask comparison");
+    openshard_client_render::png::write_strips(&path, SIDE, SIDE, &strips)
+        .expect("writing the mask comparison");
     eprintln!("wrote {}", path.display());
 }
 
