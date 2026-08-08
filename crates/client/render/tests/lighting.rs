@@ -1897,16 +1897,15 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
     let grid = grid.finish(&Cutaway::OPEN);
 
     // The same fixture and the same reading as
-    // `light::tests::a_treads_top_is_not_shadowed_by_its_own_riser`: the
-    // tallest tread's own top, lit from the east, unshadowed by the riser it
-    // caps. That test only ever reads the tile's *middle* in `y`; this one
-    // extends the same claim to the tile's own far `y` edge — a whole
+    // `light::tests::a_treads_top_is_not_shadowed_by_the_tread_it_is_the_top_of`:
+    // the tallest tread's own top, lit from the east, unshadowed by the solid it
+    // is a surface of. That test only ever reads the tile's *middle* in `y`;
+    // this one extends the same claim to the tile's own far `y` edge — a whole
     // number — which is exactly the coordinate shape the real defect had.
     let (id, top) = grid
         .cell(100, 100)
-        .filter(|(_, solid)| solid.edges == 0)
         .max_by_key(|(_, solid)| solid.top())
-        .expect("the climb built three tops");
+        .expect("the climb built three treads");
     let mid_x = ((top.space.min.x + top.space.max.x) / 2.0) as f32;
     let edge_y = top.space.max.y as f32;
     let z = top.top() as f32;

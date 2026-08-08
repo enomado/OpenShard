@@ -2396,7 +2396,18 @@ fn walk_cells_exact(
         let mut stopped: f32 = 0.0;
         let mut worst: Option<Stopper> = None;
         for (id, stands) in occlusion.cell(first.0, first.1) {
-            if stands.edges != 0 {
+            // **A lid or a body, not a panel.** A vertical ray is stopped by
+            // anything it is inside the footprint of and whose span it crosses,
+            // and both of those shapes are one; a *panel* is a plane, and a
+            // vertical ray lying in a wall's own plane is the graze `same_run`
+            // exists for on the main path and has no answer here.
+            //
+            // This read `edges != 0` — lids alone — until a fitted climbable's
+            // treads became bodies (`occlusion::Builder::add`'s climbable
+            // branch), which is what exposed it: the gap was already there for
+            // every body in the world, so a ray straight up out of a tree's box
+            // left it unstopped.
+            if stands.edges != 0 && stands.edges != crate::occlusion::EDGE_ANY {
                 continue;
             }
             // And only the lids this ray is actually **under**. A tread's top is
@@ -2742,7 +2753,18 @@ fn walk_cells_streaming(
         let mut stopped: f32 = 0.0;
         let mut worst: Option<Stopper> = None;
         for (id, stands) in occlusion.cell(first.0, first.1) {
-            if stands.edges != 0 {
+            // **A lid or a body, not a panel.** A vertical ray is stopped by
+            // anything it is inside the footprint of and whose span it crosses,
+            // and both of those shapes are one; a *panel* is a plane, and a
+            // vertical ray lying in a wall's own plane is the graze `same_run`
+            // exists for on the main path and has no answer here.
+            //
+            // This read `edges != 0` — lids alone — until a fitted climbable's
+            // treads became bodies (`occlusion::Builder::add`'s climbable
+            // branch), which is what exposed it: the gap was already there for
+            // every body in the world, so a ray straight up out of a tree's box
+            // left it unstopped.
+            if stands.edges != 0 && stands.edges != crate::occlusion::EDGE_ANY {
                 continue;
             }
             let (low, high) = wire_span(stands);
@@ -3691,20 +3713,24 @@ mod tests {
         assert!(lighting.lights.is_empty());
     }
 
-    /// **A tread's own top must not be shadowed by the riser it caps.**
+    /// **A tread's own top must not be shadowed by the tread it is the top of.**
     ///
-    /// `occlusion::Builder::add`'s climbable branch gives a tread's top the
-    /// `Stance::Flat` normal, which is the same one a room's floor gets, and
-    /// [`Surface::shadowed_by_own_tile`] was written for that floor: "a floor
-    /// pixel on a wall tile is inside the room, and the ray from it to a lamp in
-    /// the street crosses the panel its own tile stands on." A tread's top sits
-    /// at the exact height its own riser stops at — `top_z == riser.top()` — so
-    /// the same rule reads it as a floor the riser walls in, even though the
-    /// riser has nothing standing *above* that height to be between the pixel
-    /// and anything. Found looking at a real staircase render: every tread top
-    /// read dark towards its own riser regardless of where the torch stood.
+    /// Found looking at a real staircase render: every tread top read dark
+    /// towards its own rise regardless of where the torch stood. The rule that
+    /// did it was [`Surface::shadowed_by_own_tile`], written for a room's
+    /// floor — "a floor pixel on a wall tile is inside the room, and the ray
+    /// from it to a lamp in the street crosses the panel its own tile stands
+    /// on" — and a tread's top carries the same flat normal a floor does, so a
+    /// surface of the tread's own body read as a wall standing between it and
+    /// the light.
+    ///
+    /// It named a *riser* while a tread was two solids, a lid and a plane; a
+    /// tread is one body now (`occlusion::Builder::add`'s climbable branch) and
+    /// the claim survived that change **unedited**, which is worth recording:
+    /// what it is about is identity — a fragment is not shadowed by the solid it
+    /// is a point of — and identity does not care how the shape was cut.
     #[test]
-    fn a_treads_top_is_not_shadowed_by_its_own_riser() {
+    fn a_treads_top_is_not_shadowed_by_the_tread_it_is_the_top_of() {
         use crate::facing::Prism;
         use crate::occlusion::{Builder, Shape};
 
@@ -3729,9 +3755,8 @@ mod tests {
         // which is what phase 4 compares — see `Spot::part_of`.
         let (id, top) = occlusion
             .cell(100, 100)
-            .filter(|(_, solid)| solid.edges == 0)
             .max_by_key(|(_, solid)| solid.top())
-            .expect("the climb built three tops");
+            .expect("the climb built three treads");
         let at = Vec2::new(
             ((top.space.min.x + top.space.max.x) / 2.0) as f32,
             ((top.space.min.y + top.space.max.y) / 2.0) as f32,
@@ -3836,10 +3861,11 @@ mod tests {
             height: 20,
             ..StaticTile::default()
         };
-        // North, so the treads divide the tile up `y`: tread 0 over
-        // `100.667..101` capped at `z 1`, tread 1 over `100.333..100.667` at
-        // `z 3`, tread 2 over `100..100.333` at `z 5`, and a riser standing on
-        // each strip's own low edge.
+        // North, so the treads divide the tile up `y`: tread 0 is the body over
+        // `100.667..101` standing from the ground to `z 1`, tread 1 over
+        // `100.333..100.667` to `z 3`, tread 2 over `100..100.333` to `z 5`.
+        // Three solids, one a tread — see `occlusion::Builder::add`'s climbable
+        // branch for why they are bodies and not a lid and a riser each.
         let prism = Prism::new(Face::North, &[1, 3, 5]).expect("three treads");
         let mut occlusion = Builder::new(crate::camera::TileBounds {
             min_x: 95,
@@ -3850,8 +3876,8 @@ mod tests {
         let graphic = Graphic(0x0736);
         occlusion.add(100, 100, 0, graphic, &stair, Shape::solid(prism));
         let occlusion = occlusion.finish(&Cutaway::OPEN);
-        // The flight's six solids by name, in `Builder::add`'s own push order:
-        // a top then a riser per tread, climbing. See [`crate::occlusion::Part`].
+        // The flight's three solids by name, in `Builder::add`'s own push
+        // order: one a tread, climbing. See [`crate::occlusion::Part`].
         let part = |at: usize| {
             occlusion
                 .id_of(
@@ -3860,9 +3886,9 @@ mod tests {
                     crate::occlusion::Owner::new(0, graphic),
                     crate::occlusion::Part::nth(at),
                 )
-                .expect("the flight's own six solids")
+                .expect("the flight's own three solids")
         };
-        let (tread_0_riser, tread_1_top, tread_2_top) = (part(1), part(2), part(4));
+        let (tread_0, tread_2) = (part(0), part(2));
 
         let walked = |spot: Spot, at: Vec2, z: f32| {
             let lighting = Lighting {
@@ -3887,9 +3913,9 @@ mod tests {
         };
 
         // 1. Off the top tread's own top, down past the flight. Nothing else is
-        //    under it: the two lower treads' lids are strips of `y` this ray is
-        //    never over, and every riser stands on a `y` it never reaches.
-        let on_top = Spot::flat(Vec2::new(100.5, 100.15), 5.0, (100, 100)).part_of(tread_2_top);
+        //    under it: the two lower treads are strips of `y` this ray is never
+        //    over.
+        let on_top = Spot::flat(Vec2::new(100.5, 100.15), 5.0, (100, 100)).part_of(tread_2);
         let (streaming, exact) = walked(on_top, Vec2::new(100.6, 100.25), -5.0);
         assert!(
             streaming > 0.99 && exact > 0.99,
@@ -3897,26 +3923,30 @@ mod tests {
              streaming {streaming}, exact {exact}",
         );
 
-        // 2. The counter-example, and the same lid at `t > 0`: off the bottom
-        //    riser's own face, east and up, crossing tread 0's own top a fifth of
-        //    the way along and well inside its strip.
-        let on_riser =
-            Spot::face(Vec2::new(100.5, 100.99), 0.5, (100, 100), Face::South).part_of(tread_0_riser);
-        let (streaming, exact) = walked(on_riser, Vec2::new(103.0, 100.5), 5.0);
+        // 2. The counter-example, and the same static at `t > 0`: off the front
+        //    of the bottom tread — the flight's own south face — towards a lamp
+        //    hanging over the middle of the flight. The ray leaves its own solid
+        //    at once and walks straight into the next tread up, which is a
+        //    different solid of the same static.
+        let on_front = Spot::face(Vec2::new(100.5, 101.0), 0.5, (100, 100), Face::South).part_of(tread_0);
+        let (streaming, exact) = walked(on_front, Vec2::new(101.0, 100.5), 2.0);
         assert!(
             streaming < 0.5 && exact < 0.5,
-            "the flight's own body is between this riser and a lamp above and beyond it: \
+            "the tread above is a different solid and stands between this face and the lamp: \
              streaming {streaming}, exact {exact}",
         );
 
-        // 3. The part half: off the middle tread's top, south and down, straight
-        //    into the riser that tread stands against. Same static, same owner,
-        //    a different solid.
-        let on_middle = Spot::flat(Vec2::new(100.5, 100.4), 3.0, (100, 100)).part_of(tread_1_top);
-        let (streaming, exact) = walked(on_middle, Vec2::new(100.5, 101.5), 1.0);
+        // 3. And the same claim from the other side of the flight: a fragment on
+        //    the bottom tread's own top, lit from level with it to the north, is
+        //    shadowed by the two treads climbing away from it. This is what a
+        //    staircase does — you cannot see the low step from behind the high
+        //    one — and it is the case a single body for the whole flight, or a
+        //    tread excused from its neighbours, would both get wrong.
+        let on_bottom = Spot::flat(Vec2::new(100.5, 100.8), 1.0, (100, 100)).part_of(tread_0);
+        let (streaming, exact) = walked(on_bottom, Vec2::new(100.5, 99.0), 1.0);
         assert!(
             streaming < 0.5 && exact < 0.5,
-            "a riser of the fragment's own flight is a different solid, so it stops the ray: \
+            "a tread of the fragment's own flight is a different solid, so it stops the ray: \
              streaming {streaming}, exact {exact}",
         );
     }
@@ -3932,10 +3962,10 @@ mod tests {
     /// main path stopped doing that when sub-tile footprints landed; the
     /// shortcut did not follow.
     ///
-    /// A flight is exactly where that shows: its three treads are three lids on
-    /// one tile, each a *strip* of it, and no point is over more than one of
+    /// A flight is exactly where that shows: its three treads are three bodies
+    /// on one tile, each a *strip* of it, and no point is over more than one of
     /// them. So a fragment on a tread lit from straight above or below was
-    /// shadowed by the other two treads — surfaces standing over a part of the
+    /// shadowed by the other two treads — solids standing over a part of the
     /// tile it is nowhere near.
     ///
     /// Both directions, because they fail through different lids: from the top
@@ -3944,10 +3974,11 @@ mod tests {
     /// lids are above it and the ray runs up past them. A fix that gated only
     /// one end would leave the other reading as a real occlusion.
     ///
-    /// Its own tread's lid is not what is being asserted away: that one is
-    /// excused by identity, which is the test above's subject. Every riser is
-    /// excused here by having an `edges` at all — the shortcut has never looked
-    /// at panels, and a panel stands beside a vertical ray rather than across it.
+    /// Its own tread is not what is being asserted away: that one is excused by
+    /// identity, which is the test above's subject. What *is* asserted is the
+    /// footprint gate, and it carries more weight than it used to: the shortcut
+    /// looks at bodies now as well as lids (see its own comment), so a tread it
+    /// is not over is a solid it would otherwise stop on outright.
     #[test]
     fn a_vertical_ray_is_not_stopped_by_lids_it_is_not_over() {
         use crate::facing::Prism;
@@ -3979,9 +4010,9 @@ mod tests {
                     crate::occlusion::Owner::new(0, graphic),
                     crate::occlusion::Part::nth(at),
                 )
-                .expect("the flight's own six solids")
+                .expect("the flight's own three solids")
         };
-        let (tread_0_top, tread_2_top) = (part(0), part(4));
+        let (tread_0, tread_2) = (part(0), part(2));
 
         let walked = |spot: Spot, at: Vec2, z: f32| {
             let lighting = Lighting {
@@ -4008,7 +4039,7 @@ mod tests {
         // fragment, so the ray's horizontal run is zero by construction rather
         // than by a tolerance — `Spot::flat` carries no outward normal, so
         // `stand_clear` lifts it in `z` alone and cannot nudge it off the line.
-        let on_top = Spot::flat(Vec2::new(100.5, 100.15), 5.0, (100, 100)).part_of(tread_2_top);
+        let on_top = Spot::flat(Vec2::new(100.5, 100.15), 5.0, (100, 100)).part_of(tread_2);
         let (streaming, exact) = walked(on_top, Vec2::new(100.5, 100.15), -5.0);
         assert!(
             streaming > 0.99 && exact > 0.99,
@@ -4018,7 +4049,7 @@ mod tests {
 
         // And straight up off the bottom tread, where the two lids in question
         // are the ones *above* the fragment.
-        let on_bottom = Spot::flat(Vec2::new(100.5, 100.8), 1.0, (100, 100)).part_of(tread_0_top);
+        let on_bottom = Spot::flat(Vec2::new(100.5, 100.8), 1.0, (100, 100)).part_of(tread_0);
         let (streaming, exact) = walked(on_bottom, Vec2::new(100.5, 100.8), 15.0);
         assert!(
             streaming > 0.99 && exact > 0.99,
@@ -4148,12 +4179,12 @@ mod tests {
 
     /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over the
     /// three-tread climbable stair
-    /// [`a_treads_top_is_not_shadowed_by_its_own_riser`] uses. This is the
-    /// scene that found a real bug in [`walk_cells_exact`], not just
-    /// another `walk_cells` gap: a lid is flat in `z`
-    /// (`Solid::box_of`'s `min.z == max.z`) and a riser is flat in the
-    /// climb axis (`Solid::tread_riser_box_of`'s own doc comment: "a
-    /// plane, not a strip") — [`ray_vs_solid`]'s slab method correctly
+    /// [`a_treads_top_is_not_shadowed_by_the_tread_it_is_the_top_of`] uses.
+    /// This is the scene that found a real bug in [`walk_cells_exact`], not
+    /// just another `walk_cells` gap: a lid is flat in `z`
+    /// (`Solid::box_of`'s `min.z == max.z`), and a flight's treads were two
+    /// such degenerate boxes each until they became bodies — [`ray_vs_solid`]'s
+    /// slab method correctly
     /// collapses `entered` and `leaves` to the exact same instant on
     /// either one, since a degenerate-thickness box is genuinely crossed
     /// at one point in `t`, not over an interval. [`crosses`] was never

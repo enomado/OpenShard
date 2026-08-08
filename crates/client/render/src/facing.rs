@@ -1047,40 +1047,29 @@ pub struct Prism {
 // measurement and is a different edge with a different cause — the fitted prism
 // against the art's true silhouette, bordering no other face at all.
 
-/// How far [`Prism::mesh`] grows every face's own *width* — the tile-crossing
-/// edge [`Prism::footprint`] never moves with `lo`/`hi` — past the tile's own
-/// unit square.
-///
-/// Measuring the actual leak this reproduction shows (`docs/lighting.md`
-/// again) found the longest runs of it were not at a tread/riser tie at all:
-/// a whole riser's own side, its full height, one screen column wide — the
-/// *outer* silhouette, because that edge borders no other face to overlap with,
-/// only the fitted box's own edge against the art's true silhouette
-/// (`best_prism`'s score is never exactly `1.0` — `PRISM_FITS`'s own doc has the
-/// numbers). The same fraction-of-a-pixel this file already reasons in.
-///
-/// **This is the one that has a cause a real overlap can answer**, and the
-/// sentence above is what says so: the retired `SEAM_OVERLAP` beside it was
-/// aimed at the tread/riser tie, which borders another face and is watertight
-/// without help. Here there is nothing on the other side of the edge but the
-/// sprite, and the two silhouettes genuinely differ. It is still a fudge — it
-/// draws a two-pixel tooth at `4:1` — and nobody has measured the sliver it
-/// hides against the tooth it draws; see `docs/lighting_height.md`'s backlog.
-const WIDTH_OVERLAP: f64 = 0.03;
-
-/// Grows a footprint's own tile-crossing edge by [`WIDTH_OVERLAP`] — the pair
-/// [`Prism::footprint`] holds at the tile's unit square regardless of `lo`/
-/// `hi`, which for [`Face::North`]/[`Face::South`] is `x` and for
-/// [`Face::East`]/[`Face::West`] is `y`. The `lo`/`hi` pair is left exactly as
-/// `footprint` returned it: that edge is the tread/riser tie, built from
-/// arithmetic both sides share and watertight because of it, and widening it
-/// here would just move the tie rather than close anything.
-fn widen_footprint(up: Face, min_x: f64, max_x: f64, min_y: f64, max_y: f64) -> (f64, f64, f64, f64) {
-    match up {
-        Face::North | Face::South => (min_x - WIDTH_OVERLAP, max_x + WIDTH_OVERLAP, min_y, max_y),
-        Face::East | Face::West => (min_x, max_x, min_y - WIDTH_OVERLAP, max_y + WIDTH_OVERLAP),
-    }
-}
+// **`WIDTH_OVERLAP` lived here**, `0.03` of a tile, and every face
+// [`Prism::mesh`] built was grown by it on the axis crossing the climb. It was
+// there because the fitted prism is narrower than the art — `best_prism`'s
+// score is never exactly `1.0` — so the mesh drawn over a sprite left a hairline
+// of the sprite's own flat shading along the outer silhouette, an edge bordering
+// no other face at all.
+//
+// **Removed, and the reason is a rule rather than a measurement**:
+// `docs/style.md`'s *No fudge constants*. Two representations of one shape
+// disagreed and a constant in a unit unrelated to either was tuned until the
+// disagreement stopped showing — so it could not be right at another zoom, on
+// another sprite, or in a scene with no sprite at all, where it bought nothing
+// and still drew its tooth. What it cost while it stood: a 1355-pixel border
+// around a single flight at `4:1`, a two-pixel tooth on every step, and a
+// sliver it hid that nobody ever measured against it.
+//
+// What replaced it is the disagreement having nowhere left to happen.
+// `docs/lighting_rebuild.md` phase 6 draws a static **once**, as its own sprite,
+// and finds the geometry under each pixel by meeting the view ray with that
+// static's own boxes ([`crate::impostor`]) — so there is no second silhouette to
+// differ from the first, and a pixel of art that overhangs its own volume is
+// answered by `Meeting::outside`, a measured distance a test can bound, instead
+// of by a border.
 
 impl Prism {
     /// A prism from a profile, or `None` if the profile is empty or longer than
@@ -1237,7 +1226,6 @@ impl Prism {
             let hi = (index + 1) as f64 / count as f64;
 
             let (min_x, max_x, min_y, max_y) = Self::footprint(f64::from(x), f64::from(y), self.up, lo, hi);
-            let (min_x, max_x, min_y, max_y) = widen_footprint(self.up, min_x, max_x, min_y, max_y);
             let z = f64::from(top_z);
             let top = [
                 WorldSpot {
@@ -1266,7 +1254,6 @@ impl Prism {
             mesh.push(MeshFace::new(&top, [0.0, 0.0, 1.0]).unwrap());
 
             let (min_x, max_x, min_y, max_y) = Self::footprint(f64::from(x), f64::from(y), self.up, lo, lo);
-            let (min_x, max_x, min_y, max_y) = widen_footprint(self.up, min_x, max_x, min_y, max_y);
             // Exactly the two treads' own heights. See this method's own doc for
             // why an overlap here is not what closes the seam.
             let riser_top = f64::from(top_z);
@@ -2571,26 +2558,29 @@ mod tests {
         }
     }
 
-    /// [`WIDTH_OVERLAP`]'s own doc: every face [`Prism::mesh`] builds is grown
-    /// a hairline past the tile-crossing edge [`Prism::footprint`] holds at
-    /// the unit square regardless of `lo`/`hi`, so a picture whose true art
-    /// silhouette overruns the fitted box by less than a pixel still has
-    /// something drawn under it. West's climb axis is `x` (this test's own
-    /// fixture below pins that), so the grown edge is `y`.
+    /// **A face is its own tile's, exactly** — the claim that replaced
+    /// `WIDTH_OVERLAP`'s. Every face `Prism::mesh` builds used to be grown a
+    /// hairline past the tile-crossing edge `Prism::footprint` holds at the unit
+    /// square, so that a picture whose true art silhouette overruns the fitted
+    /// box still had something drawn under it. `docs/style.md`'s *No fudge
+    /// constants* is why that is gone; see the note where the constant stood.
+    ///
+    /// `==` and not a tolerance: `footprint` returns the tile's own integers on
+    /// the crossing axis and nothing multiplies them, so a hair either way would
+    /// be a constant that had come back.
     #[test]
-    fn a_treads_top_is_grown_past_its_own_tile_edge() {
+    fn a_treads_top_is_exactly_its_own_tile_wide() {
         let prism = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
         let mesh = prism.mesh(100, 100, 0);
-        let top = &mesh.faces()[0];
-        let ys: Vec<f64> = top.vertices().iter().map(|v| v.y).collect();
-        assert!(
-            ys.contains(&(100.0 - WIDTH_OVERLAP)),
-            "the near edge should overrun the tile by WIDTH_OVERLAP: {ys:?}"
-        );
-        assert!(
-            ys.contains(&(101.0 + WIDTH_OVERLAP)),
-            "the far edge should overrun the tile by WIDTH_OVERLAP: {ys:?}"
-        );
+        // West's climb axis is `x` (the fixture below pins that), so the edge
+        // that used to be grown is `y`.
+        for face in mesh.faces() {
+            let ys: Vec<f64> = face.vertices().iter().map(|v| v.y).collect();
+            assert!(
+                ys.iter().all(|y| *y == 100.0 || *y == 101.0),
+                "a face reached past its own tile: {ys:?}"
+            );
+        }
     }
 
     /// [`Prism::footprint`] pinned at the same fixture

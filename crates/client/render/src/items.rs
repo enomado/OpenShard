@@ -161,8 +161,7 @@ pub fn collect(
         // This item's own boxes, the same way `statics::collect` builds a map
         // static's — phase 6, and an item on the ground is a static that came
         // from the server's list rather than the map's.
-        let volumes =
-            crate::statics::push_volumes(&mut boxes, item.at, placed.prism.as_ref(), key, occlusion);
+        let volumes = crate::statics::push_volumes(&mut boxes, item.at, key, occlusion);
         let quad = quad_of(item.at, &placed, base, hue, owner, volumes);
         if let Some(prism) = &placed.prism {
             crate::statics::push_mesh(

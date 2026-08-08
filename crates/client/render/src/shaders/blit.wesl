@@ -1167,16 +1167,24 @@ fn walk(
         // that one cell is between the two ends of the ray, and a vertical ray is
         // the case a floor is most obviously in the way of. A torch on the ground
         // floor and the plank directly over it were the shortcut's own
-        // counterexample. Only lids, for the reason both ends exempt everything
-        // else: a panel stands beside a vertical ray rather than across it, and a
-        // body is a solid one of the ends is standing in. `light::walk_cells`.
+        // counterexample.
+        //
+        // **A lid or a body, not a panel**, and `light::walk_cells`'s own copy of
+        // this says why: a vertical ray is stopped by anything it is inside the
+        // footprint of and whose span it crosses, and both of those shapes are
+        // one. A panel is a plane, and a vertical ray lying in a wall's own plane
+        // is the graze `same_run` exists for on the main path and has no answer
+        // here. Lids alone until a fitted climbable's treads became bodies, which
+        // is what exposed a gap that was already there for every body in the
+        // world: a ray straight up out of a tree's box left it unstopped.
         let straight = solids_at(first.x, first.y);
         var stopped = 0.0;
         for (var i = 0u; i < straight.y; i = i + 1u) {
             let reference = id_at(straight.x + i);
             let id = reference.x;
             let stands = solid_at(id);
-            if (stands.w & EDGE_MASK) != 0u {
+            let sides = stands.w & EDGE_MASK;
+            if sides != 0u && sides != EDGE_MASK {
                 continue;
             }
             let vertical = span_of(id);

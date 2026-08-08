@@ -213,7 +213,7 @@ pub fn collect(
         // The boxes this static's own pixels will be met against — phase 6, and
         // built in the same walk as everything else about this static for
         // `for_each_static_in`'s own reason.
-        let volumes = push_volumes(&mut boxes, at, placed.prism.as_ref(), key, occlusion);
+        let volumes = push_volumes(&mut boxes, at, key, occlusion);
         let quad = quad_of(at, &placed, base, u32::from(item.hue), owner, volumes);
         if let Some(prism) = &placed.prism {
             push_mesh(
@@ -259,20 +259,19 @@ pub fn collect(
 /// thing `facing::WIDTH_OVERLAP` grows a mesh to cover — only a pixel of *this*
 /// static that fell some measured distance outside *this* static's volume.
 ///
-/// Two shapes, and which one a static gets is the same question
-/// [`crate::occlusion::Builder::add`] asks:
+/// **The grid's own boxes, verbatim, whatever the static is.** There is no
+/// second shape to build here and no join to keep honest: a wall's panel, a
+/// floor's lid, a body's tile and — since the lid-and-riser split was retired —
+/// a flight's treads are all already volumes, and the name each carries is the
+/// [`crate::occlusion::SolidId`] the shadow walk compares against.
 ///
-/// - **a fitted climbable** is one box a tread, the tread's own strip from the
-///   static's base up to the tread's height. Not the grid's own two surfaces per
-///   tread — see [`crate::impostor::Volume`] for why a decomposition built for a
-///   shadow ray does not enclose anything a view ray can land on. The join to
-///   the grid is by [`crate::occlusion::Part`]: the `n`th tread's lid is part
-///   `2n`, because `Builder::add` pushes a lid and then a riser per tread, in
-///   climb order, walking the same `treads()` this does.
-/// - **everything else** is the grid's own boxes, verbatim — a wall's panel or
-///   two, a floor's lid, a body's tile. There is nothing to rebuild: those
-///   already are volumes, and a second statement of one is exactly what this
-///   phase exists to remove.
+/// This rebuilt a climbable's volume from its own [`crate::facing::Prism`] for
+/// exactly one commit, joining back to the grid by
+/// [`crate::occlusion::Part`]. That was a compensation for the grid holding
+/// *surfaces* where a view ray needs a volume — which is the thing
+/// `docs/style.md`'s *No fudge constants* says to fix in the geometry rather
+/// than work around, and [`crate::occlusion::Builder::add`]'s climbable branch
+/// is where it was fixed instead.
 ///
 /// An empty range is the honest answer for a static this frame's grid holds
 /// nothing for — refused for opacity, above the draw ceiling, hidden by the
@@ -282,53 +281,24 @@ pub fn collect(
 pub(crate) fn push_volumes(
     out: &mut Vec<crate::impostor::Volume>,
     at: Point,
-    prism: Option<&crate::facing::Prism>,
     owner: crate::occlusion::Owner,
     occlusion: &crate::occlusion::Occlusion,
 ) -> crate::impostor::Range {
     let offset = out.len() as u32;
-    let (x, y) = (i32::from(at.x), i32::from(at.y));
-    match prism {
-        Some(prism) => {
-            let treads = prism.treads();
-            let count = treads.len();
-            for (index, &height) in treads.iter().enumerate() {
-                let lo = index as f64 / count as f64;
-                let hi = (index + 1) as f64 / count as f64;
-                // **`Prism::footprint` and not `Prism::mesh`'s widened copy of
-                // it.** The strip is the tile-relative extent of the tread and
-                // nothing grows it: growing it is what the deleted border did,
-                // and there is no second silhouette left for it to reach.
-                let (min_x, max_x, min_y, max_y) =
-                    crate::facing::Prism::footprint(f64::from(x), f64::from(y), prism.up(), lo, hi);
-                let solid = occlusion
-                    .pieces_of(x, y, owner)
-                    .find(|(_, solid)| solid.part == crate::occlusion::Part::nth(index * 2))
-                    .map(|(id, _)| id);
-                out.push(crate::impostor::Volume {
-                    lo: [min_x as f32, min_y as f32, f32::from(at.z)],
-                    hi: [max_x as f32, max_y as f32, f32::from(at.z) + f32::from(height)],
-                    solid: crate::occlusion::SolidId::word(solid),
-                });
-            }
-        }
-        None => {
-            for (id, solid) in occlusion.pieces_of(x, y, owner) {
-                out.push(crate::impostor::Volume {
-                    lo: [
-                        solid.space.min.x as f32,
-                        solid.space.min.y as f32,
-                        solid.space.min.z as f32,
-                    ],
-                    hi: [
-                        solid.space.max.x as f32,
-                        solid.space.max.y as f32,
-                        solid.space.max.z as f32,
-                    ],
-                    solid: crate::occlusion::SolidId::word(Some(id)),
-                });
-            }
-        }
+    for (id, solid) in occlusion.pieces_of(i32::from(at.x), i32::from(at.y), owner) {
+        out.push(crate::impostor::Volume {
+            lo: [
+                solid.space.min.x as f32,
+                solid.space.min.y as f32,
+                solid.space.min.z as f32,
+            ],
+            hi: [
+                solid.space.max.x as f32,
+                solid.space.max.y as f32,
+                solid.space.max.z as f32,
+            ],
+            solid: crate::occlusion::SolidId::word(Some(id)),
+        });
     }
     crate::impostor::Range {
         offset,
@@ -391,11 +361,18 @@ pub(crate) fn push_mesh(
     let mesh = prism.mesh(i32::from(at.x), i32::from(at.y), i32::from(at.z));
     for (part, face) in mesh.faces().iter().enumerate() {
         let id = rows.len() as u32;
+        // **Two drawn faces a tread, one solid a tread** — `Prism::mesh` emits a
+        // top and then the rise below it for each, and the grid now stands up
+        // one body for the whole tread, so the join divides. It was `part`
+        // itself while the grid held the same lid-and-riser pair this draws;
+        // see `Builder::add`'s climbable branch for why that split went, and
+        // `occlusion::tests::a_flight_draws_its_own_solids_in_the_grid_s_own_
+        // order` for the containment that holds the two together now.
         let solid = occlusion.id_of(
             i32::from(at.x),
             i32::from(at.y),
             owner,
-            crate::occlusion::Part::nth(part),
+            crate::occlusion::Part::nth(part / 2),
         );
         rows.push(MeshFaceRow {
             tile: (at.x, at.y),
@@ -1385,10 +1362,11 @@ mod tests {
         )
     }
 
-    /// A flight's volumes are one box a tread, and each names the solid the
-    /// grid stood up for that tread.
+    /// A flight stands as one box a tread, each a real volume from the static's
+    /// own base to that tread's height — and the impostor's list is the grid's,
+    /// copied rather than rebuilt.
     #[test]
-    fn a_flight_stands_as_one_box_a_tread_and_names_the_grid_s_own_lids() {
+    fn a_flight_stands_as_one_volume_a_tread() {
         let (prism, tile) = flight();
         let graphic = Graphic(0x0736);
         let mut builder = crate::occlusion::Builder::new(grid_bounds());
@@ -1407,108 +1385,46 @@ mod tests {
         let owner = crate::occlusion::Owner::new(0, graphic);
 
         let mut boxes = Vec::new();
-        let range = push_volumes(
-            &mut boxes,
-            Point::new(100, 100, 0),
-            Some(&prism),
-            owner,
-            &occlusion,
+        let range = push_volumes(&mut boxes, Point::new(100, 100, 0), owner, &occlusion);
+        assert_eq!(
+            range,
+            crate::impostor::Range { offset: 0, count: 3 },
+            "three treads, three solids, three boxes"
         );
-        assert_eq!(range, crate::impostor::Range { offset: 0, count: 3 });
 
-        // Climbing north, so tread 0 is the *southern* third and the strips walk
-        // up the screen — `Prism::footprint`'s own arithmetic, which this shares
-        // with the grid rather than restating.
-        for (index, expected) in [
-            ([100.0, 100.0 + 2.0 / 3.0, 0.0], [101.0, 101.0, 1.0]),
-            ([100.0, 100.0 + 1.0 / 3.0, 0.0], [101.0, 100.0 + 2.0 / 3.0, 3.0]),
-            ([100.0, 100.0, 0.0], [101.0, 100.0 + 1.0 / 3.0, 5.0]),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let volume = boxes[index];
-            for axis in 0..3 {
-                assert!(
-                    (volume.lo[axis] - expected.0[axis]).abs() < 1e-5
-                        && (volume.hi[axis] - expected.1[axis]).abs() < 1e-5,
-                    "tread {index} axis {axis}: {volume:?} against {expected:?}"
-                );
-            }
-            // And the name is the grid's own, joined by `Part` — the `n`th
-            // tread's lid is part `2n` because `Builder::add` pushes a lid and
-            // then a riser per tread, walking the same profile this does.
-            let lid = occlusion
-                .id_of(100, 100, owner, crate::occlusion::Part::nth(index * 2))
-                .expect("the grid stood a lid up for every tread");
-            assert_eq!(
-                volume.solid,
-                crate::occlusion::SolidId::word(Some(lid)),
-                "tread {index} should name its own lid"
-            );
+        // Every box is the space of the solid it names — the whole claim of the
+        // function now that there is one shape rather than two.
+        for volume in &boxes {
+            let solid = occlusion.solid(crate::occlusion::SolidId::new(volume.solid));
+            assert_eq!(volume.lo[0], solid.space.min.x as f32);
+            assert_eq!(volume.lo[1], solid.space.min.y as f32);
+            assert_eq!(volume.lo[2], solid.space.min.z as f32);
+            assert_eq!(volume.hi[1], solid.space.max.y as f32);
+            assert_eq!(volume.hi[2], solid.space.max.z as f32);
         }
-    }
 
-    /// And no box is grown past its own tile — the whole point of the phase.
-    #[test]
-    fn a_volume_never_reaches_past_the_tile_its_static_stands_on() {
-        let (prism, tile) = flight();
-        let graphic = Graphic(0x0736);
-        let mut builder = crate::occlusion::Builder::new(grid_bounds());
-        builder.add(
-            100,
-            100,
-            0,
-            graphic,
-            &tile,
-            crate::occlusion::Shape {
-                prism: Some(prism),
-                ..crate::occlusion::Shape::UNREAD
-            },
+        // And they are volumes rather than the surfaces the grid used to hold:
+        // every one stands from the static's own base up to its tread's height,
+        // and the three heights are the profile.
+        assert!(
+            boxes.iter().all(|volume| volume.lo[2] == 0.0),
+            "a tread that does not reach the ground is a surface, not a volume: {boxes:?}"
         );
-        let occlusion = builder.finish(&Cutaway::OPEN);
+        let mut tops: Vec<f32> = boxes.iter().map(|volume| volume.hi[2]).collect();
+        tops.sort_by(f32::total_cmp);
+        assert_eq!(tops, [1.0, 3.0, 5.0], "the profile, as three solid heights");
 
-        let mut boxes = Vec::new();
-        push_volumes(
-            &mut boxes,
-            Point::new(100, 100, 0),
-            Some(&prism),
-            crate::occlusion::Owner::new(0, graphic),
-            &occlusion,
-        );
-
-        // Exactly, not nearly: `facing::WIDTH_OVERLAP` grows every face
-        // `Prism::mesh` builds by three hundredths of a tile on the axis that
-        // crosses the climb, and the same flight through this function is
-        // inside its own unit square on both. The gate is `==` on the tile
-        // bound rather than a tolerance because there is nothing here that
-        // could round — `Prism::footprint` returns the tile's own integers on
-        // that axis.
+        // And none of them reaches past the tile the static stands on. `==` on
+        // the axis crossing the climb, where `Prism::footprint` returns the
+        // tile's own integers untouched: a hair either way would be
+        // `WIDTH_OVERLAP` come back.
         for volume in &boxes {
             assert_eq!(
                 (volume.lo[0], volume.hi[0]),
                 (100.0, 101.0),
                 "a box reached past its tile across the climb: {volume:?}"
             );
-            assert!(
-                volume.lo[1] >= 100.0 && volume.hi[1] <= 101.0,
-                "a box reached past its tile along the climb: {volume:?}"
-            );
         }
-
-        // And the mesh pass's own faces of the same flight *do* reach past it,
-        // which is what says this test measures the difference rather than a
-        // property both share.
-        let widened = prism
-            .mesh(100, 100, 0)
-            .faces()
-            .iter()
-            .flat_map(|face| face.vertices().to_vec())
-            .any(|corner| corner.x < 100.0 || corner.x > 101.0);
-        assert!(
-            widened,
-            "the mesh this replaces should still be the grown one, or this test proves nothing"
-        );
     }
 
     /// A wall is not rebuilt at all: its volume is the grid's own box.
@@ -1527,7 +1443,7 @@ mod tests {
         let owner = crate::occlusion::Owner::new(0, graphic);
 
         let mut boxes = Vec::new();
-        let range = push_volumes(&mut boxes, Point::new(100, 100, 0), None, owner, &occlusion);
+        let range = push_volumes(&mut boxes, Point::new(100, 100, 0), owner, &occlusion);
 
         let grid: Vec<_> = occlusion.pieces_of(100, 100, owner).collect();
         assert_eq!(range.count as usize, grid.len());
@@ -1548,7 +1464,6 @@ mod tests {
         let range = push_volumes(
             &mut boxes,
             Point::new(100, 100, 0),
-            None,
             crate::occlusion::Owner::new(0, Graphic(0x0006)),
             &occlusion,
         );
