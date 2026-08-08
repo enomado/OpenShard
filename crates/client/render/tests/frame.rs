@@ -4857,6 +4857,124 @@ fn parity_frame(
     read_back(device, queue, &surface)
 }
 
+/// **The shader reads a primitive's own corners, at a fraction of a tile no
+/// byte could name** — `docs/occluders.md`'s S1 gate, the shader's third of it.
+///
+/// `light::a_primitive_at_no_fraction_a_byte_could_name_reads_the_same_three_ways`
+/// is the same fixture put to the two CPU walks and to a brute-force oracle over
+/// every primitive; this is the same box, on the GPU, and the coordinates are
+/// stated here the same way for the same reason — half a step off the `1/255`
+/// grid a footprint used to be quantised on, which is the point that grid is
+/// maximally wrong about.
+///
+/// **The sun and not a flame, and that is what makes the claim resolvable at
+/// all.** A flame is a sphere and a fragment casts eight rays at it, so the
+/// bundle spreads by `FLAME_RADIUS * t` at the crossing — a twentieth of a tile
+/// for any ordinary geometry, forty times the half-step this fixture is aiming
+/// inside. The sun is one exact ray in one direction, so a hair either side of a
+/// face is a hair either side of the answer. Due east and level: `y` and `z` stay
+/// what the fragment's own are for the whole run, so which side of the box's
+/// north face the ray passes is the only thing deciding it.
+///
+/// Two frames, differing in [`Fixture::drift`] alone and by a thousandth of a
+/// tile: the fragment a half-thousandth **inside** the box's north face is
+/// shadowed and the one a half-thousandth **outside** it is not. Put the byte
+/// quantisation back on the wire and the face moves nearly two thousandths
+/// further in — past both — so both frames come out sunlit and the pair stops
+/// being a pair.
+#[test]
+fn the_shader_reads_a_primitive_at_no_fraction_a_byte_could_name() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+
+    // The same construction as the CPU gate's, and the same numbers: half a step
+    // off the byte grid across, half a step off the sixteen-bit grid up.
+    let across = |units: f64| (units + 0.5) / 255.0;
+    let up = |steps: f64| (steps + 0.5) / 256.0 - 128.0;
+    let (cx, cy) = openshard_client_render::scene::CENTRE;
+    // Thin across the sun's own run, which keeps the ray inside the box for a
+    // fiftieth of a tile: nothing about this test depends on that, and it is
+    // what makes the fixture readable as "a slab standing in the way" rather
+    // than as a tile that happens to be narrowed.
+    let (min_x, max_x) = (f64::from(cx) + across(30.0), f64::from(cx) + across(35.0));
+    let (min_y, max_y) = (f64::from(cy) + across(74.0), f64::from(cy) + across(200.0));
+    let (min_z, max_z) = (up(33_049.0), up(35_000.0));
+
+    let mut builder = Builder::new(TileBounds {
+        min_x: i32::from(cx) - 10,
+        max_x: i32::from(cx) + 10,
+        min_y: i32::from(cy) - 10,
+        max_y: i32::from(cy) + 10,
+    });
+    builder.add_raw(
+        cx,
+        cy,
+        openshard_client_render::solid::Solid {
+            min: openshard_client_render::camera::WorldSpot {
+                x: min_x,
+                y: min_y,
+                z: min_z,
+            },
+            max: openshard_client_render::camera::WorldSpot {
+                x: max_x,
+                y: max_y,
+                z: max_z,
+            },
+        },
+        openshard_client_render::occlusion::Owner::new(0, Graphic(1)),
+    );
+    let occlusion = builder.finish(&Cutaway::OPEN);
+
+    // The pixel: the tile west of the box's, so the fragment's own tile is not
+    // the one the sun's walk exempts. `px % PARITY_TILE == 0` puts its sub-tile
+    // fraction at zero, so the drift below *is* its position within the tile.
+    const AT: (u32, u32) = (24, 32);
+    let (tile_x, tile_y, sub_x, sub_y) = parity_place(AT.0, AT.1);
+    assert_eq!(
+        (tile_x + 1, tile_y, sub_x, sub_y),
+        (cx, cy, 0.0, 0.0),
+        "the fragment has to sit on the tile west of the box, at its own corner",
+    );
+
+    // A twentieth of the old wire's own half step across a tile: inside the
+    // blind spot a byte leaves, and nowhere near an `f32`'s own out here at a
+    // hundred tiles.
+    const OFF: f64 = 0.0005;
+    // Due east and level: the ray keeps the fragment's `y` and `z` for its whole
+    // run, so the box's north face is the only thing that can decide it.
+    let sun = openshard_client_render::light::Sun::towards(1.0, 0.0, 0.0, [1.0, 1.0, 1.0], 3.0);
+
+    let read = |offset: f64| {
+        let lighting = Lighting {
+            ambient: openshard_client_render::light::NIGHT,
+            lights: Vec::new(),
+            occlusion: occlusion.clone(),
+            sun: Some(sun),
+            view: View::default(),
+        };
+        let fixture = Fixture {
+            surface: Surface::Upright,
+            // Inside the box's own span, which runs from just over 1 to just
+            // under 9: a ray level with the fragment crosses it in `z`.
+            z: 4,
+            owner: OwnerId::NONE,
+            drift: (0.5, (min_y - f64::from(cy) + offset) as f32),
+        };
+        let frame = parity_frame(&device, &queue, &lighting, 64, 64, fixture);
+        i32::from(frame.pixel(AT.0, AT.1)[0])
+    };
+
+    let inside = read(OFF);
+    let outside = read(-OFF);
+    assert!(
+        outside > inside + 40,
+        "the fragment a half-thousandth of a tile north of the box's own face reads \
+         {outside} in the sun, and the one a half-thousandth inside it reads {inside}: \
+         the shader is not reading the face where the record puts it",
+    );
+}
+
 /// **A vertical ray on the GPU is stopped only by lids it is actually under.**
 ///
 /// `light::a_vertical_ray_is_not_stopped_by_lids_it_is_not_over` is the same

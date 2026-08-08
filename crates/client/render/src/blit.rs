@@ -129,44 +129,35 @@ pub struct Blit {
     /// a solid is a shape the world holds rather than a tile's property, so the
     /// same box can be referenced by every cell it stands over.
     ids: wgpu::Texture,
-    /// The solids those references name — one texel a solid, folded the same way.
-    /// See [`Occlusion::solid_bytes`](crate::occlusion::Occlusion::solid_bytes).
+    /// The primitives those references name — one struct a solid, indexed
+    /// outright. See
+    /// [`Occlusion::primitive_bytes`](crate::occlusion::Occlusion::primitive_bytes).
     ///
-    /// Not a storage buffer, and that is decision 30.5 rather than a preference:
-    /// the ceiling here is WebGL2, which has neither compute nor storage
-    /// buffers, so a list the shader can index has to be a texture read with
-    /// `textureLoad`.
+    /// **A storage buffer, and that is `docs/occluders.md`'s D8 replacing
+    /// decision 30.5.** Three textures stood here — the solids, their
+    /// footprints and their `z` spans, three encodings of one box indexed by one
+    /// number — because the ceiling was WebGL2, which has neither compute nor
+    /// storage buffers, so a list the shader could index had to be a texture
+    /// read with `textureLoad`. Phase 6a settled the ceiling as WebGPU.
     ///
-    /// Its *width* is fixed and its height grows with the frame, which is the
-    /// opposite of the two planes above: they are the camera's rectangle and
-    /// this is a list whose length is what the camera happens to be looking at.
-    solids: wgpu::Texture,
-    /// The hole in each of those solids, one texel a solid and in the same
+    /// Grown when the frame holds more primitives than it has room for, on its
+    /// own terms and not the camera's: the two planes above are the camera's
+    /// rectangle, and this is a list whose length is what the camera happens to
+    /// be looking at.
+    primitives: wgpu::Buffer,
+    /// The hole in each of those primitives, one texel a solid and in the
+    /// [`Occlusion::primitive_bytes`](crate::occlusion::Occlusion::primitive_bytes)
     /// order — see
     /// [`Occlusion::aperture_bytes`](crate::occlusion::Occlusion::aperture_bytes).
     ///
-    /// Grown with [`Blit::solids`] and never on its own, because the two are
-    /// indexed by one number. **Written only when something in the frame has a
-    /// hole**: the solid's own `HOLED` bit is what makes the shader read this
-    /// at all, so a frame with no window in it neither lays these bytes out nor
-    /// sends them, which is every frame of a real map until step 16 lands.
+    /// Still a texture, and still a plane beside the list rather than four more
+    /// fields of it: `Occlusion::aperture_bytes` argues why, and the argument is
+    /// about how often a hole is read rather than about what a texture can hold.
+    /// **Written only when something in the frame has a hole**: the primitive's
+    /// own `HOLED` bit is what makes the shader read this at all, so a frame
+    /// with no window in it neither lays these bytes out nor sends them, which
+    /// is every frame of a real map until step 16 lands.
     apertures: wgpu::Texture,
-    /// One solid's own horizontal footprint, one texel a solid and in the same
-    /// order — see
-    /// [`Occlusion::footprint_bytes`](crate::occlusion::Occlusion::footprint_bytes).
-    ///
-    /// Grown with [`Blit::solids`] and never on its own, the same reason
-    /// [`Blit::apertures`] is — but written every frame regardless, unlike
-    /// apertures: every solid has a footprint, where almost none has a hole.
-    footprints: wgpu::Texture,
-    /// And what its two whole-unit `z` channels rounded away, one texel a solid
-    /// and in the same order — see
-    /// [`Occlusion::solid_z_bytes`](crate::occlusion::Occlusion::solid_z_bytes).
-    ///
-    /// Grown and written on exactly [`Blit::footprints`]'s terms, and for the
-    /// same reason: it is the other half of one solid's own box, and the two
-    /// halves must never be indexed by a number only one of them holds.
-    solid_z: wgpu::Texture,
 }
 
 impl Blit {
@@ -256,16 +247,18 @@ impl Blit {
                     },
                     count: None,
                 },
-                // And the solids the grid indexes into — the list of decision
-                // 30, and one of the three that are not pictures of the camera's
-                // rectangle.
+                // And the primitives the grid indexes into — the list of
+                // decision 30, and one of the three that are not pictures of the
+                // camera's rectangle. A storage buffer since
+                // `docs/occluders.md`'s D8; read-only, the same as 9 through 12
+                // below.
                 wgpu::BindGroupLayoutEntry {
                     binding: 6,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -345,38 +338,12 @@ impl Blit {
                     },
                     count: None,
                 },
-                // A solid's own horizontal footprint, indexed by the same
-                // number as 6 and 7 above — `docs/lighting_raymarch.md`'s
-                // "second bigger idea": the reader `box_of` used to have no
-                // channel to read, arrived.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 13,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                // And the vertical half of the same box: what 6's two whole-unit
-                // `z` channels rounded away. `docs/lighting_height.md` phase 2.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 14,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
                 // Where each pixel's fragment is — the G-buffer's second plane,
                 // `crate::gbuffer::POSITION_FORMAT`. Unfilterable, and not
                 // because `Rgba32Float` happens to be: a filtered position is
                 // a point on neither of the two surfaces it was averaged from.
                 wgpu::BindGroupLayoutEntry {
-                    binding: 15,
+                    binding: 13,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -393,7 +360,7 @@ impl Blit {
                 // normal and the ground's behind it points into the seam
                 // between them.
                 wgpu::BindGroupLayoutEntry {
-                    binding: 16,
+                    binding: 14,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
@@ -479,10 +446,10 @@ impl Blit {
             // One row, which is a list of no solids: the grid above says every
             // tile stands nothing, so nothing indexes into it.
             ids: grid_texture(device, "solid ids", crate::occlusion::LIST_ROW, 1),
-            solids: grid_texture(device, "solids", crate::occlusion::LIST_ROW, 1),
             apertures: grid_texture(device, "apertures", crate::occlusion::LIST_ROW, 1),
-            footprints: grid_texture(device, "footprints", crate::occlusion::LIST_ROW, 1),
-            solid_z: grid_texture(device, "solid z", crate::occlusion::LIST_ROW, 1),
+            // And room for one primitive nothing points at, for the same
+            // reason: a buffer of no size is not a thing wgpu will bind.
+            primitives: primitive_buffer(device, 1),
         }
     }
 
@@ -561,9 +528,7 @@ impl Blit {
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self.solids.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
+                    resource: self.primitives.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,
@@ -597,24 +562,10 @@ impl Blit {
                 },
                 wgpu::BindGroupEntry {
                     binding: 13,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self
-                            .footprints
-                            .create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 14,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self.solid_z.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 15,
                     resource: wgpu::BindingResource::TextureView(&gbuffer.position),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 16,
+                    binding: 14,
                     resource: wgpu::BindingResource::TextureView(&gbuffer.normal),
                 },
             ],
@@ -794,6 +745,21 @@ fn grid_texture(device: &wgpu::Device, label: &str, width: u32, height: u32) -> 
     })
 }
 
+/// Room for `count` primitives — [`Blit::primitives`], and the one place the
+/// buffer's size is [`crate::occlusion::PRIMITIVE_BYTES`] times a count.
+///
+/// At least one, because a buffer of no size is not a thing wgpu will bind and
+/// a frame with no occluder in it still binds this. Nothing points at that one
+/// primitive: what says a tile stands nothing is its own count in the index.
+fn primitive_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("primitives"),
+        size: (count.max(1) * crate::occlusion::PRIMITIVE_BYTES) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 /// One zeroed row, standing in for [`Frame::face_instances`] or
 /// [`Frame::mobile_instances`] when a caller has no real one to bind —
 /// ground-only fixtures, and [`crate::plan`]'s synthetic picture, which by its
@@ -890,25 +856,23 @@ impl Blit {
         write(&self.occluders, &occluders);
         write(&self.field, &lighting.occlusion.field_bytes());
 
-        // And the lists the grid indexes into. Their heights are the frame's own
+        // And the lists the grid indexes into. Their lengths are the frame's own
         // counts and not the camera's rectangle, so they are grown on their own
-        // terms: a camera that has not moved keeps the same rows, and walking into
-        // a city grows them. Both `id_bytes` and `solid_bytes` pad to a whole row,
-        // which is what makes the upload's `bytes_per_row` exact.
+        // terms: a camera that has not moved keeps the same rows, and walking
+        // into a city grows them. `id_bytes` and `aperture_bytes` pad to a whole
+        // row, which is what makes the upload's `bytes_per_row` exact.
         let row = crate::occlusion::LIST_ROW;
-        let bytes = lighting.occlusion.solid_bytes();
-        let rows = (bytes.len() / (row as usize * 4)) as u32;
-        if self.solids.height() != rows {
-            // The four planes are indexed by one number, so they are grown
-            // together and never apart — a hole, footprint or height-fraction
-            // texel at an index the solid texture holds and one of these does
-            // not would read as no hole, or the whole tile, or half a unit low,
-            // which is the one direction this cannot be allowed to be wrong in
-            // silently.
-            self.solids = grid_texture(device, "solids", row, rows);
+        let primitives = lighting.occlusion.primitive_bytes();
+        // Grown and never shrunk, and never grown *below* what it holds: the
+        // hole plane is indexed by the same number as this buffer, so an
+        // aperture texel at an index the buffer does not reach would be a hole
+        // read off a primitive that is not there.
+        let rows = lighting.occlusion.list_rows();
+        if self.apertures.height() != rows {
             self.apertures = grid_texture(device, "apertures", row, rows);
-            self.footprints = grid_texture(device, "footprints", row, rows);
-            self.solid_z = grid_texture(device, "solid z", row, rows);
+        }
+        if (self.primitives.size() as usize) < primitives.len() {
+            self.primitives = primitive_buffer(device, lighting.occlusion.solid_count());
         }
         // The references are their own height: equal to the solids' until
         // something is shared, and *not* assumed equal, because the day the two
@@ -941,17 +905,13 @@ impl Blit {
             );
         };
         list(&self.ids, &references);
-        list(&self.solids, &bytes);
-        // Every frame, unlike the holes below: every solid has a footprint —
-        // an ordinary lid or body is the whole tile, `(0, 255, 0, 255)` — so
-        // there is no bit to gate this read on the way `HOLED` gates that one.
-        list(&self.footprints, &lighting.occlusion.footprint_bytes());
-        // And the other half of the same box, on the same terms: a solid's
-        // height has a fraction, and "none" is a byte rather than an absence.
-        list(&self.solid_z, &lighting.occlusion.solid_z_bytes());
+        // And the primitives, every frame: the whole of a solid's geometry is
+        // in these bytes now, so there is nothing here that can be written on
+        // one frame and read on another.
+        queue.write_buffer(&self.primitives, 0, &primitives);
         // And the holes, only where there are any. What makes skipping this safe
         // rather than a stale read is the `HOLED` bit: it is written into the
-        // surface plane above, on this frame, and the shader reads a hole only
+        // primitive above, on this frame, and the shader reads a hole only
         // where it is set — so a frame with no window in it leaves whatever these
         // texels held and nothing looks at them.
         if lighting.occlusion.any_aperture() {

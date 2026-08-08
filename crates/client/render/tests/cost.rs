@@ -507,7 +507,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             built.occlusion.bytes().len()
                 + grid.field_bytes().len()
                 + grid.id_bytes().len()
-                + grid.solid_bytes().len(),
+                + grid.primitive_bytes().len(),
         );
         cpu_bytes = cpu_bytes.min(start.elapsed());
     }

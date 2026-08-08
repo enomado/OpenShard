@@ -58,7 +58,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // this one for a reason of its own — a position filtered against its
 // neighbour's is a point on neither surface, floating in the air between a
 // wall and the ground behind it.
-@group(0) @binding(15) var position_of: texture_2d<f32>;
+@group(0) @binding(13) var position_of: texture_2d<f32>;
 // And which way its surface looks: one octahedral word, or a word with no
 // facing bit for a surface with no known one — `crate::gbuffer::NORMAL_FORMAT`,
 // and `normal_format.wesl` is the layout. Never sampled — an integer texture has
@@ -72,7 +72,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // and the lighting was recovering a rounded copy of it from four bits at the
 // far end of a `u16`. `docs/lighting_rebuild.md` phase 2, the same move the
 // position plane is.
-@group(0) @binding(16) var normal_of: texture_2d<u32>;
+@group(0) @binding(14) var normal_of: texture_2d<u32>;
 // Where each tile's references are, one texel a tile over the rectangle in
 // `lighting.grid`: (offset & 255, offset >> 8, offset >> 16, count). The index
 // of `docs/lighting.md`'s decision 30 — a count of zero is open ground, and
@@ -84,13 +84,30 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // `docs/lighting_world.md` for why this is a second plane rather than four more
 // channels of the cell above.
 @group(0) @binding(5) var field: texture_2d<u32>;
-// And the solids themselves, one texel each, folded into rows `LIST_ROW`
-// wide: (z_bottom + 128, z_top + 128, opacity, PRESENT | HOLED | edges). A
-// texture and not a storage buffer because the ceiling is WebGL2 — decision 30.5.
+// And the primitives themselves — one struct each, indexed by a `SolidId`
+// outright. `crate::occlusion::Occlusion::primitive_bytes`.
 //
-// The box's `x` and `y` are not in *this* plane — binding 13 below is where
-// they arrived, once a reader existed for them.
-@group(0) @binding(6) var solids: texture_2d<u32>;
+// **A storage buffer and not three textures**, `docs/occluders.md`'s D8. What
+// stood here was `solids` (opacity and flags), `footprints` (a fraction of a
+// tile, a byte an axis) and `solid_z` (sixteen bits an end), three planes
+// indexed by one number and each a different encoding of one box — because
+// decision 30.5's ceiling was WebGL2, where a list a shader can index has to be
+// a texture. Phase 6a settled the ceiling as WebGPU, this file already reads
+// eleven storage buffers, and a primitive is a struct.
+//
+// **Its two corners are absolute world coordinates**, D1: no cell is their base
+// and there is no fraction of one anywhere in this pass. A box wider than a
+// tile, one standing between two, and one a thousandth of a tile deep are the
+// same six numbers.
+struct Primitive {
+    lo: vec3<f32>,
+    // PRESENT | HOLED | edges, in the padding a `vec3<f32>` leaves behind.
+    flags: u32,
+    hi: vec3<f32>,
+    opacity: u32,
+};
+
+@group(0) @binding(6) var<storage, read> primitives: array<Primitive>;
 // The hole in each of those solids, indexed by the same number:
 // (near, far, z_bottom + 128, z_top + 128) — `occlusion::Aperture`. A plane
 // beside the list rather than four more channels of it, because the list is what
@@ -264,20 +281,6 @@ struct GroundInstance {
 };
 
 @group(0) @binding(12) var<storage, read> ground_instances: array<GroundInstance>;
-// One solid's own horizontal footprint, indexed and folded exactly as
-// `solids`/`apertures` are: (min.x, max.x, min.y, max.y), a fraction of the
-// tile it stands on quantised to a byte — `occlusion::Solid::fraction`.
-// `docs/lighting_raymarch.md`'s "second bigger idea": the reader `box_of`
-// used to have no channel to read, arrived.
-@group(0) @binding(13) var footprints: texture_2d<u32>;
-// And a solid's own `z` span, indexed and folded the same way: sixteen bits an
-// end, low byte first, in steps of `1/SOLID_Z_STEPS` from `SOLID_Z_FLOOR` —
-// `occlusion::Solid::z_bytes`, and **the only place a solid's height is on the
-// wire**. `docs/lighting_height.md` phase 2: the horizontal half of a solid's
-// box had been exact since `footprints` landed, and the vertical half was a
-// whole unit, so a box based at `z 3.5` arrived here spanning `4` and the bottom
-// half unit of its own faces sat below its own solid.
-@group(0) @binding(14) var solid_z: texture_2d<u32>;
 
 // No occluder at all — `occlusion::OwnerId::NONE`, and what the ground, a mobile
 // and anything the grid refused stamp. Zero and matching nothing, which is why
@@ -298,14 +301,6 @@ const OWNER_NONE: u32 = 0u;
 // and this is strictly greater than all of them. `docs/lighting_rebuild.md`
 // phase 4.
 const SOLID_NOBODY: u32 = 0xFFFFFFFFu;
-
-// Steps of a `z` unit that plane carries one in, and where it counts from.
-//
-// `occlusion::Solid::Z_STEPS` and `occlusion::Z_FLOOR`, and nothing but a person
-// can compare the two pairs. A power of two, so a whole `z` — what every static
-// off `tiledata` stands at — lands on a step exactly.
-const SOLID_Z_STEPS: f32 = 256.0;
-const SOLID_Z_FLOOR: f32 = -128.0;
 
 // The stance rides in the id word above the kind — `ids_stance`, and
 // `statics.wgsl` writes it. **It is no longer read here for a normal**:
@@ -498,10 +493,10 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
 // at phase 4. What the exemptions are asked, one surface at a time — see `walk`,
 // and `light::on_surface`.
 //
-// `low`/`high` are `span_of`'s pair and not the texel's own two channels: this
-// is a question about whether a fragment is a point *of* the solid, and half a
-// unit of rounding is the difference between a face's bottom row belonging to
-// the box it is drawn on and standing under it.
+// `low`/`high` are the primitive's own `lo.z`/`hi.z`: this is a question about
+// whether a fragment is a point *of* the solid, and half a unit of rounding is
+// the difference between a face's bottom row belonging to the box it is drawn on
+// and standing under it.
 fn on_surface(z: f32, low: f32, high: f32) -> bool {
     return z >= low && z <= high;
 }
@@ -561,11 +556,11 @@ fn hole(texel: vec4<u32>, v: f32, z: f32) -> f32 {
 // against the box `low`/`high` were the `z` bounds of, at that crossing's own
 // midpoint, so `cross.z` was inside the span by construction and the band was the
 // whole of what the call added. `light::pierced`.
-fn pierced(stands: vec4<u32>, id: u32, cross: vec3<f32>) -> f32 {
-    if (stands.w & HOLED) == 0u {
+fn pierced(stands: Primitive, id: u32, cross: vec3<f32>) -> f32 {
+    if (stands.flags & HOLED) == 0u {
         return 1.0;
     }
-    let v = run_v(stands.w & EDGE_MASK, cross.x, cross.y);
+    let v = run_v(stands.flags & EDGE_MASK, cross.x, cross.y);
     return 1.0 - hole(aperture_at(id), v, cross.z);
 }
 
@@ -667,14 +662,15 @@ fn id_at(reference: u32) -> vec2<u32> {
     return vec2<u32>(id.x | (id.y << 8u) | (id.z << 16u), id.w);
 }
 
-// One solid of the list: (0, 0, opacity, PRESENT | HOLED | edges).
+// One primitive of the list: its own two corners, its flags and its opacity.
 //
-// The first two channels held `(z_bottom + 128, z_top + 128)` until
-// `docs/lighting_height.md` phase 2 gave the span sixteen bits an end in
-// `solid_z`; they are zero now rather than a rounded copy of it. See `span_of`.
-fn solid_at(id: u32) -> vec4<u32> {
-    let at = vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW));
-    return textureLoad(solids, at, 0);
+// An array index and no folding at all, where this used to be a `textureLoad`
+// into a row `LIST_ROW` wide — the whole of what `docs/occluders.md`'s D8 buys
+// on the read side. **The box is here and nowhere else**: there is no second
+// plane to fetch for a height and none for a footprint, so a solid's geometry
+// arrives in one read and cannot be half-read.
+fn solid_at(id: u32) -> Primitive {
+    return primitives[id];
 }
 
 // And its hole: (near, far, z_bottom + 128, z_top + 128). The same id and the
@@ -683,29 +679,6 @@ fn solid_at(id: u32) -> vec4<u32> {
 fn aperture_at(id: u32) -> vec4<u32> {
     let at = vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW));
     return textureLoad(apertures, at, 0);
-}
-
-// And its footprint: (min.x, max.x, min.y, max.y), read every time rather
-// than gated the way `aperture_at` is — every solid has one, where almost
-// none has a hole.
-fn footprint_at(id: u32) -> vec4<u32> {
-    let at = vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW));
-    return textureLoad(footprints, at, 0);
-}
-
-// The `z` span one solid occupies, off `solid_z`'s own four bytes.
-//
-// `light::wire_span`, and `occlusion::Solid::span_from_bytes` is the arithmetic.
-// **The one place this pass turns the wire into a height**, and the reason
-// `solid_at`'s first two channels are zero rather than a rounded copy: a second
-// height a reader could reach for would still compile, still look like a height,
-// and be wrong by up to half a unit. `docs/lighting_height.md` phase 2.
-fn span_of(id: u32) -> vec2<f32> {
-    let raw = textureLoad(solid_z, vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW)), 0);
-    return vec2<f32>(
-        f32(raw.x | (raw.y << 8u)) / SOLID_Z_STEPS + SOLID_Z_FLOOR,
-        f32(raw.z | (raw.w << 8u)) / SOLID_Z_STEPS + SOLID_Z_FLOOR,
-    );
 }
 
 // **Which solid of the grid a *sprite* fragment is a point of**, or
@@ -751,7 +724,7 @@ fn own_solid(tile: vec2<i32>, owner: u32, own: u32) -> u32 {
         if reference.y != owner {
             continue;
         }
-        let edges = solid_at(reference.x).w & EDGE_MASK;
+        let edges = solid_at(reference.x).flags & EDGE_MASK;
         if own != 0u {
             if (edges & own) != 0u {
                 return reference.x;
@@ -773,11 +746,11 @@ fn own_solid(tile: vec2<i32>, owner: u32, own: u32) -> u32 {
 // grid rather than a step of the walk. The walk stopped asking it when the list
 // arrived, so nothing in the hot loop pays for this.
 //
-// The span comes out of `span_of` like every other height in this pass, and not
-// as the two raw channels this used to hand back. Its one reader is a
-// *diagnostic* picture, which is exactly where phase 1 was bitten: `plan.rs`'s
-// elevation view kept its own copy of a format, rounded the height, and drew the
-// staircase the plan was about into the instrument meant to show it.
+// The span is the primitive's own `lo.z`/`hi.z` and not a rounded copy of it.
+// Its one reader is a *diagnostic* picture, which is exactly where phase 1 was
+// bitten: `plan.rs`'s elevation view kept its own copy of a format, rounded the
+// height, and drew the staircase the plan was about into the instrument meant to
+// show it.
 struct MergedCell {
     low: f32,
     high: f32,
@@ -790,19 +763,15 @@ fn merged_at(x: i32, y: i32) -> MergedCell {
     if run.y == 0u {
         return MergedCell(0.0, 0.0, 0u, 0u);
     }
-    let first_id = id_at(run.x).x;
-    let first = solid_at(first_id);
-    let first_span = span_of(first_id);
-    var merged = MergedCell(first_span.x, first_span.y, first.z, first.w);
+    let first = solid_at(id_at(run.x).x);
+    var merged = MergedCell(first.lo.z, first.hi.z, first.opacity, first.flags);
     for (var i = 1u; i < run.y; i = i + 1u) {
-        let id = id_at(run.x + i).x;
-        let stands = solid_at(id);
-        let span = span_of(id);
+        let stands = solid_at(id_at(run.x + i).x);
         merged = MergedCell(
-            min(merged.low, span.x),
-            max(merged.high, span.y),
-            max(merged.opacity, stands.z),
-            merged.edges | stands.w,
+            min(merged.low, stands.lo.z),
+            max(merged.high, stands.hi.z),
+            max(merged.opacity, stands.opacity),
+            merged.edges | stands.flags,
         );
     }
     return merged;
@@ -865,34 +834,13 @@ fn sky_at(x: i32, y: i32) -> f32 {
 // top of a wall is dimmed rather than switched. That is what keeps a cellar's
 // wall out of the street above it, without a step where the two meet.
 
-// The box one occluder standing on `cell` is — `light::occlusion::Solid::
-// box_from_footprint`, its own WGSL mirror. Used to be reconstructed from
-// only `(cell, bottom, top, edges)`, guessing whole-tile-or-panel-strip and
-// blind to a body narrower than its tile; `footprint` is `footprint_at`'s own
-// four bytes, `occlusion::Solid::fraction`'s quantised `(min.x, max.x, min.y,
-// max.y)`, so this is now a direct read rather than a guess — bit-for-bit
-// what `Solid::fraction` measured off the real `space` at upload time, lossy
-// only by that one shared quantisation step. `docs/lighting_raymarch.md`'s
-// "second bigger idea".
-struct SolidBox {
-    lo: vec3<f32>,
-    hi: vec3<f32>,
-};
-
-fn box_of(cell: vec2<i32>, bottom: f32, top: f32, footprint: vec4<u32>) -> SolidBox {
-    let lo = vec3<f32>(
-        f32(cell.x) + f32(footprint.x) / 255.0,
-        f32(cell.y) + f32(footprint.z) / 255.0,
-        bottom,
-    );
-    let hi = vec3<f32>(
-        f32(cell.x) + f32(footprint.y) / 255.0,
-        f32(cell.y) + f32(footprint.w) / 255.0,
-        top,
-    );
-    return SolidBox(lo, hi);
-}
-
+// **A box is no longer built here at all.** `box_of` stood in this place and
+// reconstructed one from `(cell, bottom, top, footprint)` — a tile plus a
+// fraction of it across and sixteen bits an end up — because that is all the
+// wire carried. `docs/occluders.md`'s D1 took the reconstruction away with the
+// quantisation: `solid_at(id).lo`/`.hi` are the primitive's own corners in
+// absolute world coordinates, so what used to be a function is now two fields.
+//
 // Whether a point stands over a solid's own horizontal footprint —
 // `light::over_footprint`, and `ray_vs_solid`'s parallel-axis branch on the two
 // horizontal axes alone, both ends inclusive as they are there.
@@ -905,8 +853,8 @@ fn box_of(cell: vec2<i32>, bottom: f32, top: f32, footprint: vec4<u32>) -> Solid
 // gone through nothing. That was a softness until phase 5 and is a strictness
 // now, and the split it forces is the same one. The Rust twin's doc comment
 // states it too.
-fn over_footprint(at: vec3<f32>, bx: SolidBox) -> bool {
-    return at.x >= bx.lo.x && at.x <= bx.hi.x && at.y >= bx.lo.y && at.y <= bx.hi.y;
+fn over_footprint(at: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> bool {
+    return at.x >= lo.x && at.x <= hi.x && at.y >= lo.y && at.y <= hi.y;
 }
 
 // Where a straight segment enters and leaves an axis-aligned box, as a
@@ -1038,18 +986,16 @@ fn cell_stopped(
         let reference = id_at(span.x + k);
         let id = reference.x;
         let stands = solid_at(id);
-        let edges = stands.w & EDGE_MASK;
-        // The solid's real `z` span, fraction included — `span_of`, never the
-        // texel's two channels on their own. `light::wire_span`.
-        let vertical = span_of(id);
-        let low = vertical.x;
-        let high = vertical.y;
-        // The exact box this one solid is, read off its own footprint plane
-        // rather than reconstructed from `edges`, and the exact interval
-        // this ray crosses it in — `light::ray_vs_solid`, replacing the
-        // DDA's own per-*cell* `entered`/`leaves` with a per-*solid* one.
-        let bx = box_of(cell, low, high, footprint_at(id));
-        let hit = ray_vs_solid(start, finish, bx.lo, bx.hi);
+        let edges = stands.flags & EDGE_MASK;
+        // The solid's own `z` span — the primitive's two corners, which is
+        // where every height in this pass comes from. `light::wire_span`.
+        let low = stands.lo.z;
+        let high = stands.hi.z;
+        // And the exact interval this ray crosses the primitive's own box in —
+        // `light::ray_vs_solid`, replacing the DDA's own per-*cell*
+        // `entered`/`leaves` with a per-*solid* one. The box is read, not
+        // rebuilt: `docs/occluders.md`'s D1.
+        let hit = ray_vs_solid(start, finish, stands.lo, stands.hi);
         if !hit.hit {
             continue;
         }
@@ -1085,7 +1031,7 @@ fn cell_stopped(
         // computed from, until phase 5 took the width away; a panel still needs
         // the *point*, to ask whether the ray went through a window.
         let middle = (hit.entered + hit.leaves) * 0.5;
-        let opacity = f32(stands.z) / 255.0;
+        let opacity = f32(stands.opacity) / 255.0;
         var by_surface = 0.0;
         if edges == 0u {
             // A **lid** — a floor, a rug, a plank. What crosses it is asked
@@ -1094,7 +1040,7 @@ fn cell_stopped(
             // flat in `z` and would only ever catch the instant the ray is
             // exactly at its height), not over `hit`'s own thin interval.
             // `crosses` does the actual plane test on the `z` that gives it.
-            // `bx.lo`/`bx.hi`'s own `x`/`y`, not the whole cell — a tread's
+            // The primitive's own `x`/`y`, not the whole cell — a tread's
             // own top is a lid narrower than its tile, and asking a wider
             // box than the lid actually is would read a ray grazing the
             // tile's corner past the tread's real edge as "crossed through"
@@ -1102,8 +1048,8 @@ fn cell_stopped(
             let unbounded = ray_vs_solid(
                 start,
                 finish,
-                vec3<f32>(bx.lo.x, bx.lo.y, -1.0e6),
-                vec3<f32>(bx.hi.x, bx.hi.y, 1.0e6),
+                vec3<f32>(stands.lo.x, stands.lo.y, -1.0e6),
+                vec3<f32>(stands.hi.x, stands.hi.y, 1.0e6),
             );
             var tile_entered = hit.entered;
             var tile_leaves = hit.leaves;
@@ -1200,20 +1146,19 @@ fn walk(
             let reference = id_at(straight.x + i);
             let id = reference.x;
             let stands = solid_at(id);
-            let sides = stands.w & EDGE_MASK;
+            let sides = stands.flags & EDGE_MASK;
             if sides != 0u && sides != EDGE_MASK {
                 continue;
             }
-            let vertical = span_of(id);
             // And only the lids this ray is actually **under**. A tread's top is
             // a lid narrower than its tile; the walk below this shortcut has
             // asked it since sub-tile footprints landed and this shortcut did
             // not follow, so a flight's three treads shadowed one another from
             // straight above and below. `docs/lighting_height.md`'s backlog, and
             // `light::walk_cells_streaming`'s own copy of the same gate — the
-            // box is the wire's on both axes, for the same reason `span_of`'s
-            // height is.
-            if !over_footprint(start, box_of(first, vertical.x, vertical.y, footprint_at(id))) {
+            // primitive's own box on both axes, the same one the walk below
+            // reads.
+            if !over_footprint(start, stands.lo, stands.hi) {
                 continue;
             }
             // Phase 4's rule, here too — `light::walk_cells_streaming`'s own copy
@@ -1223,7 +1168,7 @@ fn walk(
             if mine == id {
                 continue;
             }
-            let stops = f32(stands.z) / 255.0 * crosses(start.z, finish.z, vertical.x, vertical.y);
+            let stops = f32(stands.opacity) / 255.0 * crosses(start.z, finish.z, stands.lo.z, stands.hi.z);
             stopped = max(stopped, stops);
         }
         return max(0.0, 1.0 - stopped);

@@ -2737,33 +2737,29 @@ fn walk_cells_exact(
 /// already priced in.
 ///
 /// **What "exactly" is limited to, and why that limit is deliberate and not
-/// a shortcut.** Every solid tested here is reconstructed from `(tile,
-/// bottom, top, fraction)` via [`crate::occlusion::Solid::box_from_footprint`]
-/// rather than read off [`crate::occlusion::Solid::space`] the way
-/// [`walk_cells_exact`] does — because `blit.wgsl` reads exactly that same
-/// quantised-to-a-byte fraction, not `space`'s own `f64`s, and this function
-/// exists to be a faithful preview of what the shader does, not a better
-/// version of it. `docs/lighting_raymarch.md`'s "second bigger idea" (session
-/// 14) is what closed the gap this comment used to describe: `Builder::
-/// add_raw`'s sub-tile boxes and a climbable static's own treads/risers used
-/// to be the one shape neither this function nor `blit.wgsl` could tell apart
-/// from a whole tile, because the four-byte upload had no `x`/`y` channel at
-/// all. `Occlusion::footprint_bytes` is that channel, landed once a reader
-/// existed on both sides — see `docs/lighting_raymarch.md`'s own Handoff log
-/// for which session. What is left lossy here is only the byte quantisation itself —
-/// `Solid::fraction`'s own `1/255` of a tile — which both backends share and
-/// decision 9's own parity tolerance already absorbs.
-/// The `z` span [`walk_cells_streaming`] is entitled to read: the one
-/// [`crate::occlusion::Occlusion::solid_z_bytes`] carries, and **not**
-/// [`crate::occlusion::Solid::low`]/`high`'s exact corners.
+/// a shortcut.** Every solid tested here is read off
+/// [`crate::occlusion::Solid::wire_box`] rather than off
+/// [`crate::occlusion::Solid::space`] the way [`walk_cells_exact`] does,
+/// because `blit.wgsl` reads exactly those numbers and this function exists to
+/// be a faithful preview of what the shader does, not a better version of it.
 ///
-/// The vertical half of the discipline [`crate::occlusion::Solid::fraction`]
-/// already states for the horizontal one: this walk exists to preview exactly
-/// what `blit.wgsl` can do, and a CPU reading full precision where the GPU reads
-/// a quantised field silently stops being that preview.
-/// `docs/lighting_height.md` phase 2.
+/// **What that costs is now an `f32` rounding and nothing else** —
+/// `docs/occluders.md`'s S1. It used to be a quantisation: a solid was
+/// reconstructed from `(tile, bottom, top, fraction)`, four bytes of
+/// two-hundred-and-fifty-fifths of a tile across and sixteen bits an end up,
+/// because the upload folded every primitive back onto a cell. This walk
+/// mirrored that fold on purpose, which is why the two CPU walks read different
+/// heights for one solid *by design*; with the fold gone the difference
+/// collapses to the last bits of a float, which decision 9's own parity
+/// tolerance absorbs and which is what D10 says the gap between record and wire
+/// is for — measuring, not hiding.
+///
+/// The `z` span [`walk_cells_streaming`] is entitled to read is that same box's,
+/// and **not** [`crate::occlusion::Solid::low`]/`high`'s own corners: the
+/// vertical half of one discipline, said in one place.
 fn wire_span(stands: &crate::occlusion::Solid) -> (f32, f32) {
-    crate::occlusion::Solid::span_from_bytes(stands.z_bytes())
+    let wire = stands.wire_box();
+    (wire.min.z as f32, wire.max.z as f32)
 }
 
 fn walk_cells_streaming(
@@ -2784,14 +2780,13 @@ fn walk_cells_streaming(
         // only a lid on the one cell can stand between the ends — and only one
         // this ray is under, which is the footprint gate below.
         //
-        // Both halves of the box are the **wire's**, not `space`'s, because this
-        // walk is the preview of what the GPU reads: [`wire_span`] for the
-        // height, since a lid at a fractional `z` is quantised to a byte on the
-        // way up, and [`crate::occlusion::Solid::box_from_footprint`] for the
-        // horizontal extent, which is quantised the same way. The main path
-        // below reconstructs exactly this pair for exactly this reason; a
-        // shortcut that read `space` directly would be a second, finer answer to
-        // a question the shader cannot ask that precisely.
+        // The box is the **wire's**, not `space`'s, because this walk is the
+        // preview of what the GPU reads —
+        // [`crate::occlusion::Solid::wire_box`], all six coordinates through
+        // one function. The main path below reads exactly the same box for
+        // exactly this reason; a shortcut that read `space` directly would be a
+        // second, finer answer to a question the shader cannot ask that
+        // precisely.
         let mut stopped: f32 = 0.0;
         let mut worst: Option<Stopper> = None;
         for (id, stands) in occlusion.cell(first.0, first.1) {
@@ -2810,8 +2805,7 @@ fn walk_cells_streaming(
                 continue;
             }
             let (low, high) = wire_span(stands);
-            let space =
-                crate::occlusion::Solid::box_from_footprint(first.0, first.1, low, high, stands.fraction());
+            let space = stands.wire_box();
             if !over_footprint(from, &space) {
                 continue;
             }
@@ -2874,12 +2868,11 @@ fn walk_cells_streaming(
         let mut stopped: f32 = 0.0;
         let mut worst: Option<Stopper> = None;
         for (id, stands) in occlusion.cell(cell.0, cell.1) {
-            // The wire's own span, quantised exactly as the upload quantises
-            // it — the vertical half of the same discipline `stands.fraction()`
-            // below is the horizontal half of. See [`wire_span`].
+            // The wire's own box, rounded exactly as the upload rounds it —
+            // all six coordinates, absolute, with no cell in them. See
+            // [`wire_span`], which is this box's `z` and the same function.
             let (low, high) = wire_span(stands);
-            let space =
-                crate::occlusion::Solid::box_from_footprint(cell.0, cell.1, low, high, stands.fraction());
+            let space = stands.wire_box();
             let Some((entered, leaves)) = ray_vs_solid(from, to, &space) else {
                 continue;
             };
@@ -4476,6 +4469,165 @@ mod tests {
         });
     }
 
+    /// **The brute-force oracle: [`ray_vs_solid`] against every primitive in
+    /// the grid, with no cell in it anywhere.** `docs/occluders.md`'s
+    /// § *The oracle*.
+    ///
+    /// Not either walk with the traversal taken out — it shares no traversal
+    /// with either, which is the whole of what makes it non-circular. Where
+    /// `tests/lighting.rs`'s `brute_force_blocked` marches fixed steps and asks
+    /// `solids_at` which solids a *tile* holds, this asks the list itself; the
+    /// two are different dumbnesses and both are worth having, which is what
+    /// that section says.
+    ///
+    /// Binary, because what S1's fixture asks is whether a ray met a box at all
+    /// and a coordinate the wire moved flips exactly that. The touch rule is
+    /// the walks' own — a ray that meets a solid only at the point it starts
+    /// from has not gone through it.
+    ///
+    /// Reads [`crate::occlusion::Solid::wire_box`], which is what the streaming
+    /// walk and the shader are entitled to; [`walk_cells_exact`] reads the
+    /// record, and the fixture below is where those two are asked to be the
+    /// same box.
+    fn met_by_brute_force(from: [f32; 3], to: [f32; 3], occlusion: &Occlusion) -> bool {
+        (0..occlusion.solid_count()).any(|at| {
+            let solid = occlusion.solid(crate::occlusion::SolidId::new(at as u32));
+            match ray_vs_solid(from, to, &solid.wire_box()) {
+                Some((entered, leaves)) => entered != 0.0 || leaves != 0.0,
+                None => false,
+            }
+        })
+    }
+
+    /// **A primitive whose corners are at no fraction of a tile a byte could
+    /// name, read the same by both walks and by the brute-force oracle** —
+    /// `docs/occluders.md`'s S1 gate, and the blindness that step is also
+    /// fixing: no scene in the tree had such a shape before this one.
+    ///
+    /// **The coordinates are chosen, not sampled.** The wire used to carry a
+    /// primitive as a cell and four bytes of `1/255` of it across, plus sixteen
+    /// bits of `1/256` of a `z` unit up; the point such a grid is *maximally*
+    /// wrong about is exactly half a step off it, so every face of this box sits
+    /// there. That is the fixture stating the defect rather than hoping to trip
+    /// over it — a box on thirds would be within a thousandth of the old wire's
+    /// answer and this test would pass with the quantisation put back.
+    ///
+    /// **The rays are aimed at the faces and run parallel to them**, half a
+    /// thousandth of a tile to either side. That offset is under the old wire's
+    /// own half step (`1/510` of a tile, `1/512` of a `z` unit) and far over an
+    /// `f32`'s last bits out here at a hundred tiles, so each pair straddles the
+    /// record's own face and nothing else: the ray a hair inside a `min` face is
+    /// outside the byte grid's, and the ray a hair outside a `max` face is
+    /// inside it. Both directions, because a rounding that moved every face the
+    /// same way would be caught by only one of them.
+    ///
+    /// Parallel and not grazing: a ray that crosses a face at an angle is inside
+    /// the box for a hair's length of its path, which is a question about a
+    /// sampler's step size. A ray *along* the face is inside for its whole
+    /// length or for none of it, and that is a claim about where the face is.
+    ///
+    /// The box stays inside its own tile, which is deliberate: a primitive wider
+    /// than a tile is expressible on the wire now and the *grid* still lists it
+    /// on one cell only, so a ray that never enters that cell would miss it.
+    /// That is D3's own argument for the hierarchy and S3's to answer — see this
+    /// plan's backlog. What is under test here is the wire.
+    #[test]
+    fn a_primitive_at_no_fraction_a_byte_could_name_reads_the_same_three_ways() {
+        use crate::occlusion::Builder;
+
+        // Half a step off the byte grid a footprint used to be measured on, and
+        // off the sixteen-bit grid a span used to be measured on. `units` is
+        // which step, so the fixture reads as "between step 30 and step 31".
+        let across = |units: f64| (units + 0.5) / 255.0;
+        let up = |steps: f64| (steps + 0.5) / 256.0 - 128.0;
+        let (min_x, max_x) = (100.0 + across(30.0), 100.0 + across(220.0));
+        let (min_y, max_y) = (100.0 + across(74.0), 100.0 + across(200.0));
+        let (min_z, max_z) = (up(33_049.0), up(35_000.0));
+
+        let mut builder = Builder::new(crate::camera::TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        builder.add_raw(
+            100,
+            100,
+            crate::solid::Solid {
+                min: crate::camera::WorldSpot {
+                    x: min_x,
+                    y: min_y,
+                    z: min_z,
+                },
+                max: crate::camera::WorldSpot {
+                    x: max_x,
+                    y: max_y,
+                    z: max_z,
+                },
+            },
+            crate::occlusion::Owner::new(0, openshard_protocol::wire::Graphic(1)),
+        );
+        let occlusion = builder.finish(&Cutaway::OPEN);
+
+        // A twentieth of the old wire's own half step: inside its blind spot and
+        // nowhere near an `f32`'s.
+        const OFF: f64 = 0.0005;
+        let mid_x = (min_x + max_x) * 0.5;
+        let mid_z = (min_z + max_z) * 0.5;
+        // `(name, from, to, met)` — a ray along one axis, at a coordinate a hair
+        // to one side of one face, and whether the record says it meets the box.
+        let along_y = |x: f64, z: f64| ([x as f32, 97.0, z as f32], [x as f32, 103.0, z as f32]);
+        let along_x = |y: f64, z: f64| ([97.0, y as f32, z as f32], [103.0, y as f32, z as f32]);
+        let mut rays = Vec::new();
+        for (face, offset) in [(min_x, OFF), (min_x, -OFF), (max_x, -OFF), (max_x, OFF)] {
+            let (from, to) = along_y(face + offset, mid_z);
+            rays.push((format!("x = {:.6}", face + offset), from, to));
+        }
+        for (face, offset) in [(min_y, OFF), (min_y, -OFF), (max_y, -OFF), (max_y, OFF)] {
+            let (from, to) = along_x(face + offset, mid_z);
+            rays.push((format!("y = {:.6}", face + offset), from, to));
+        }
+        for (face, offset) in [(min_z, OFF), (min_z, -OFF), (max_z, -OFF), (max_z, OFF)] {
+            let (from, to) = along_y(mid_x, face + offset);
+            rays.push((format!("z = {:.6}", face + offset), from, to));
+        }
+
+        let mut met = 0;
+        for (name, from, to) in &rays {
+            let lit = LitEnd::nowhere((from[0].floor() as i32, from[1].floor() as i32));
+            let truth = met_by_brute_force(*from, *to, &occlusion);
+            met += usize::from(truth);
+            // An opaque body: meeting it takes the whole ray, and missing it
+            // takes none. So the two walks' own `through` is the same binary the
+            // oracle answers in, and no tolerance is needed to compare them.
+            for (walk, through) in [
+                (
+                    "walk_cells_streaming",
+                    walk_cells_streaming(*from, *to, lit, &occlusion).0,
+                ),
+                (
+                    "walk_cells_exact",
+                    walk_cells_exact(*from, *to, lit, &occlusion).0,
+                ),
+            ] {
+                assert_eq!(
+                    through == 0.0,
+                    truth,
+                    "{walk} on the ray at {name}: it says {}, brute force over every \
+                     primitive says {}",
+                    if through == 0.0 { "blocked" } else { "open" },
+                    if truth { "blocked" } else { "open" },
+                );
+            }
+        }
+        // Six of the twelve are inside by construction — one a face — and a
+        // fixture where every ray missed would be green for any wire at all.
+        assert_eq!(
+            met, 6,
+            "six of the twelve rays are inside the box the record states; {met} were",
+        );
+    }
+
     /// A ray that starts a hair past its own tile's edge is stopped by the wall
     /// standing in the cell it has drifted into.
     ///
@@ -4540,20 +4692,22 @@ mod tests {
     /// which is the case the three tests around this one cannot see at all.
     ///
     /// Every fixture they build goes through `Builder::add` off a `StaticTile`,
-    /// so every span in them is a whole `z` and a half — and since
-    /// `docs/lighting_height.md` phase 2 the two walks read *different* heights
-    /// for one solid on purpose ([`walk_cells_exact`] the record's own `f64`
-    /// corners, [`walk_cells_streaming`] the quantised span off the wire, see
+    /// so every span in them is a whole `z` and a half — and the two walks read
+    /// *different* boxes for one solid on purpose ([`walk_cells_exact`] the
+    /// record's own `f64` corners, [`walk_cells_streaming`] the wire's, see
     /// [`wire_span`]). On a whole `z` those two are equal by construction, so
     /// their agreement there says nothing about the discipline that keeps them
     /// close anywhere else: the assertion passes on a scene where the thing it
     /// checks cannot differ.
     ///
-    /// A base and a top on thirds, well off any step of
-    /// [`crate::occlusion::Solid::Z_STEPS`], is what makes the quantisation
-    /// actually happen — and the bar stays full numeric agreement, because
-    /// half a step of a two-hundred-and-fifty-sixth of a `z` unit is far under
-    /// what any of this can be seen through.
+    /// A base and a top on thirds is what makes the wire's rounding actually
+    /// happen — and the bar stays full numeric agreement, because the last bits
+    /// of an `f32` are far under what any of this can be seen through. It was a
+    /// quantisation to a two-hundred-and-fifty-sixth of a `z` unit until
+    /// `docs/occluders.md`'s S1, and this test kept working across that change
+    /// because it never named the size of the gap — only that there is one. See
+    /// [`a_primitive_at_no_fraction_a_byte_could_name_reads_the_same_three_ways`]
+    /// for the fixture that names it.
     #[test]
     fn walk_cells_streaming_agrees_with_walk_cells_exact_on_a_body_at_a_fractional_z() {
         use crate::occlusion::Builder;
@@ -4598,36 +4752,55 @@ mod tests {
             let to = [tx, ty, tz];
             // **Not every ray can carry this claim, and which cannot is
             // decidable rather than a matter of taste.** The two walks read
-            // spans that differ by up to half a step of
-            // [`crate::occlusion::Solid::Z_STEPS`] — on purpose, that is the
-            // whole subject of this test — and a body's own answer is binary,
-            // so wherever the ray's hit is *decided* inside that half step the
-            // two must differ by everything rather than by a rounding. The
-            // first case proptest found here was exactly that: a ray grazing
-            // the box's own bottom-front corner, missing the record's own
-            // `1/3` base by three thousandths of `t` and catching the wire's
-            // `85/256` one, which is a thousandth of a `z` unit lower.
+            // boxes that differ by the wire's own `f32` rounding — on purpose,
+            // that is the whole subject of this test — and a body's own answer
+            // is binary, so wherever the ray's hit is *decided* inside that gap
+            // the two must differ by everything rather than by a rounding. The
+            // first case proptest found here was exactly that, back when the
+            // gap was a quantisation rather than a rounding: a ray grazing the
+            // box's own bottom-front corner, missing the record's own `1/3`
+            // base and catching the wire's, a thousandth of a `z` unit lower.
             //
             // So the guard is the question itself: run the ray against the
-            // solid's box with the span pulled a whole quantum in and pushed a
-            // whole quantum out, and skip the case when those two disagree
-            // about hitting it at all. What is left is every ray whose hit or
-            // miss survives the quantisation, and *those* must agree
-            // numerically. A tolerance on the input is not a tolerance on the
-            // output, and this test asserted the second while meaning the
-            // first.
+            // solid's own record grown by that gap and shrunk by it, and skip
+            // the case when those two disagree about hitting it at all. What is
+            // left is every ray whose hit or miss survives the rounding, and
+            // *those* must agree numerically. A tolerance on the input is not a
+            // tolerance on the output, and this test asserted the second while
+            // meaning the first.
+            //
+            // **The gap is measured off this very box rather than named as a
+            // constant** — `docs/occluders.md`'s S1 took the quantisation away,
+            // and what is left has no fixed size: a coordinate an `f32` holds
+            // exactly (which is every whole `z` and every half, and therefore
+            // most of the world) has a gap of nothing, and the guard skips
+            // nothing for it.
             let solid = occlusion.solids_at(100, 100).next().expect("the fixture's own body");
             // The ray as the walks see it, which since phase 4 is the ray as
             // given: `stand_clear` stood here and the bias is zero now.
             let (near, far) = (from, to);
-            let quantum = (1.0 / crate::occlusion::Solid::Z_STEPS) as f32;
-            let hits_with = |grown: f32| {
+            let wire = solid.wire_box();
+            let slack = [
+                solid.space.min.x - wire.min.x,
+                solid.space.min.y - wire.min.y,
+                solid.space.min.z - wire.min.z,
+                solid.space.max.x - wire.max.x,
+                solid.space.max.y - wire.max.y,
+                solid.space.max.z - wire.max.z,
+            ]
+            .into_iter()
+            .fold(0.0_f64, |worst, gap| worst.max(gap.abs()));
+            let hits_with = |grown: f64| {
                 let mut space = solid.space;
-                space.min.z -= f64::from(grown);
-                space.max.z += f64::from(grown);
+                space.min.x -= grown;
+                space.min.y -= grown;
+                space.min.z -= grown;
+                space.max.x += grown;
+                space.max.y += grown;
+                space.max.z += grown;
                 ray_vs_solid(near, far, &space).is_some()
             };
-            prop_assume!(hits_with(-quantum) == hits_with(quantum));
+            prop_assume!(hits_with(-slack) == hits_with(slack));
 
             let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), &occlusion).0;
             let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), &occlusion).0;

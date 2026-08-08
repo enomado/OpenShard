@@ -105,6 +105,14 @@
 //! plus its own edges. See the plan doc's own backlog entry for where this
 //! goes next.
 //!
+//! **That last paragraph is the state of session 14 and no longer the tree's.**
+//! `Occlusion::solid_bytes` is gone: a primitive is one struct in a storage
+//! buffer with its own six absolute coordinates
+//! (`Occlusion::primitive_bytes`), so the shader reads a body's `x`/`y` outright
+//! and `walk_cells`'s own arm reads the same box. `docs/occluders.md`'s S1. The
+//! account above is kept because it is how the gap was *found*, which is the one
+//! thing a later reader cannot re-derive.
+//!
 //! A second oracle, next to it, sweeps the *ground* immediately beside the
 //! boxes (`OPENSHARD_BOXES_GROUND_ORACLE=0` to skip it) — the same
 //! independent slab test, this time compared against the rendered

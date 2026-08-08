@@ -201,17 +201,21 @@ pub const DRAWN_LID_THICKNESS: f64 = 2.0;
 /// [`DRAWN_LID_THICKNESS`], so a floor and the tile under it stop telling the
 /// same story. A body and a panel are already boxes and pass through untouched.
 ///
-/// The `z` is clamped into an `i8` the way the upload clamps it
-/// ([`Occlusion::solid_bytes`](crate::occlusion::Occlusion::solid_bytes)), so
-/// that the box is drawn where the **shader** believes it is rather than where
-/// the map says. That is the whole point of a view of the grid, and it is why
-/// the clamp is not the caller's to remember.
+/// **The `z` is no longer clamped into an `i8`, because the wire no longer is.**
+/// It used to be, and for a good reason — a view of the grid draws where the
+/// *shader* believes a box is rather than where the map says, and the upload
+/// pinned a span to `Z_FLOOR ..= Z_CEILING`. `docs/occluders.md`'s S1 took that
+/// pin away: a primitive carries its own `f32`, so a spire through the top of
+/// the world is on the wire at its own height, and a view that went on clamping
+/// would be the one thing an instrument may not be — a picture of somewhere the
+/// renderer is not.
+///
+/// The rounding the wire *does* still cost is
+/// [`Solid::wire_box`](crate::occlusion::Solid::wire_box)'s, and it is under a
+/// pixel by a wide margin at every `z` a map has; this draws the record.
 pub fn drawn(solid: &crate::occlusion::Solid) -> Solid {
     let space = solid.space;
-    let height = |z: f64| z.clamp(f64::from(i8::MIN), f64::from(i8::MAX));
-    let (mut min, mut max) = (space.min, space.max);
-    min.z = height(min.z);
-    max.z = height(max.z);
+    let (mut min, max) = (space.min, space.max);
     if solid.edges == 0 {
         // A lid — a floor, a roof, a plank. A slab hanging under the height it
         // lies at: the surface a ray is stopped by is the top one, so the

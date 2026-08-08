@@ -1130,14 +1130,17 @@ and `ray_vs_solid` is an exact slab test in world coordinates with no tile
 anywhere in it. What is left is five places where a cell is load-bearing, and
 each is nameable:
 
-- **A primitive's own coordinates are stored relative to its tile.**
-  `occlusion::Solid::box_from_footprint` reconstructs a box as
-  `tile + byte/255` on each of four sides, so a primitive **cannot express a
-  shape wider than one tile**, and its corners are quantised to a
-  two-hundred-and-fifty-fifth of one. That is the deepest of the five: it is why
+- **A primitive's own coordinates are stored relative to its tile.** ✅ **Done —
+  `docs/occluders.md`'s S1.** `occlusion::Solid::box_from_footprint` reconstructed
+  a box as `tile + byte/255` on each of four sides, so a primitive **could not
+  express a shape wider than one tile**, and its corners were quantised to a
+  two-hundred-and-fifty-fifth of one. That was the deepest of the five: it is why
   a wall run is N boxes and a storey's floor is one box a tile, and therefore why
   the silhouette of either is a staircase at tile granularity in any view that
-  reads the geometry.
+  reads the geometry. A primitive now carries its own six `f32` in a storage
+  buffer (`Occlusion::primitive_bytes`, `blit.wesl`'s `Primitive`), and
+  `Solid::wire_box` is the whole of what the wire costs. **The four rules below
+  are still standing** — the ceiling is lifted, the merge that needs it is S3.
 - **`starting_cell`** — bookkeeping about which cell a ray begins in, and this
   document's own backlog already says it is a repair rather than a
   construction. With no cell in the answer there is nothing for it to arbitrate.

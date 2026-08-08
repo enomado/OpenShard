@@ -225,16 +225,56 @@ beside an exact one.
 Each is landable alone and leaves the tree working. A session starts at the first
 one whose gate is not green.
 
-**S1 — absolute coordinates on the wire.** D1. The reconstruction and the
-quantisation go; a primitive carries its own six numbers. `walk_cells_streaming`
-stops previewing a quantisation that no longer exists, which collapses the
-documented difference between the two CPU walks. **The ceiling that a primitive
-is a tile's is lifted here**, and nothing can merge before it is.
+**S1 — absolute coordinates on the wire.** D1. ✅ **Landed.** The reconstruction
+and the quantisation are gone; a primitive carries its own six numbers.
+`walk_cells_streaming` no longer previews a quantisation that does not exist,
+which collapses the documented difference between the two CPU walks to an `f32`
+rounding. **The ceiling that a primitive is a tile's is lifted here**, and
+nothing can merge before it is.
 
-*Gate:* a fixture whose primitive is deliberately **not** tile-aligned — no
-scene in the tree has one today, and that is the blindness this step is also
-fixing — and the two walks and the shader all equal the brute-force oracle on it.
-Fault injection: re-introduce the `/255` rounding on one side alone.
+What it took, so a reader does not have to diff for it:
+
+- `Solid::fraction`, `Solid::z_bytes`, `Solid::span_from_bytes`,
+  `Solid::box_from_footprint` and `Solid::Z_STEPS` are deleted, and
+  `Solid::wire_box` — the record's six corners through `f32` — replaces the lot.
+  It is the **only** place the wire's rounding is stated, so the upload and the
+  walk that previews it cannot disagree.
+- `Occlusion::solid_bytes`, `footprint_bytes` and `solid_z_bytes` — three
+  planes, three encodings of one box — become `Occlusion::primitive_bytes`: one
+  32-byte struct a primitive, `(lo.xyz, flags, hi.xyz, opacity)`, in a **storage
+  buffer**. That is D8 arriving with D1 rather than after it: an absolute
+  coordinate does not fit in a channel of an `Rgba8Uint` texel, so the two were
+  one change.
+- `blit.wesl` loses `box_of`, `footprint_at`, `span_of`, `SolidBox` and the
+  `SOLID_Z_STEPS`/`SOLID_Z_FLOOR` pair. `solid_at(id)` is an array index and
+  returns the whole primitive; a box is two fields rather than a reconstruction.
+  Bindings 13 and 14 are freed and the G-buffer's two planes move down into them.
+- `Z_FLOOR`/`Z_CEILING` no longer bound a *span* — a spire through the top of the
+  world reaches its own height on the wire now. They are the `Aperture`'s alone,
+  which makes a hole's two whole-unit ends the last quantised number in the pass.
+- `solid::drawn` stops clamping a drawn box's `z` into an `i8`. It did that to
+  draw where the *shader* believed a box was rather than where the map said, and
+  with the pin gone from the wire the clamp had become the one thing an
+  instrument may not be — a picture of somewhere the renderer is not. **Nothing
+  in the suite went red when it was removed**, which is the honest state of that
+  view: the rule was never gated.
+
+*Gate, as built:* `light::a_primitive_at_no_fraction_a_byte_could_name_reads_the_
+same_three_ways` — a box whose every face sits **half a step** off the byte grid
+the old wire measured on, which is the point that grid is maximally wrong about,
+with twelve rays aimed parallel to its faces a half-thousandth of a tile to
+either side. Both CPU walks and a brute-force oracle over every primitive (no
+cells, no traversal shared with either walk) must give one answer to each.
+`frame.rs`'s `the_shader_reads_a_primitive_at_no_fraction_a_byte_could_name` is
+the shader's third of it, on **the sun** rather than a flame: eight rays at a
+sphere spread by `FLAME_RADIUS * t` at the crossing, forty times the half step
+being aimed inside, so a flame cannot resolve this fixture at all and a single
+directional ray can.
+
+*Fault injection, run:* the `/255` rounding put back in `Solid::wire_box` turns
+the CPU gate red (the exact walk against the oracle, on the first ray);
+put back in `Occlusion::primitive_bytes` alone — the wire and nowhere else — it
+turns the shader gate red, both frames sunlit where one must be shadowed.
 
 **S2 — the detector, before the fix.** § *The detector*, built and read. Its
 first number on a real place is recorded here, in this document, as the thing S3
@@ -339,4 +379,38 @@ Named so that a later session does not adopt them by accident:
 Findings from this track that do not block a step. Kept here so the plan can be
 read as work.
 
-*(Empty at the time of writing — S1 has not started.)*
+**A cell lists a primitive once, and D1 has just made that a hole S3 will fall
+into.** `Builder::push` puts a solid in exactly the cell it was added on;
+`Solid::footprint` — which answers *which tiles a box touches* and whose own doc
+says "the day a box is wider, this is where the extra tiles come from" — has one
+caller, and it is `bake`'s. Nothing before S1 could build a box reaching past its
+own tile, so nothing noticed. **S3's merge is exactly the thing that builds
+one**, and the moment it does, the grid stops being a superset: a ray that
+crosses the overhang without ever entering the registration cell is answered
+"open" by both walks *and* by `tests/lighting.rs`'s `brute_force_blocked`, which
+is cell-based too and would agree with the defect. This is D3's own argument
+arriving early, and S3 has to answer it before it merges anything — either by
+listing a merged primitive in every cell it spans, or by taking the hierarchy
+first. It is why S1's own gate keeps its fixture inside one tile: the wire is
+what that step is about, and a straddling box would have failed it for a reason
+S1 does not own.
+
+**And listing one primitive from two cells double-counts it.** The walk
+multiplies `1 - stopped` cell after cell, and the per-cell `max` groups only
+*within* a cell — so a solid a ray meets on two of its cells is applied twice.
+Opaque either way, wrong for anything translucent (a pane, a `PANE` opacity of
+51). Whichever way the item above is answered, this is the second half of it, and
+D5's deletion of the per-cell `max` is where it lands.
+
+**The apertures are the last texture indexed by a `SolidId`.** The primitives are
+a storage buffer now and the holes beside them are still `Rgba8Uint` folded into
+`LIST_ROW` rows, with `Occlusion::list_rows` existing for that plane alone. One
+list in two shapes; D8's argument covers it and S1 left it deliberately, because
+a hole is read behind a bit test and moving it buys nothing until something else
+touches it. It should go with the reference list in S5.
+
+**A hole's own `z` is still quantised**, to whole units offset by 128
+(`occlusion::z_byte`), and it is now the only quantised number left in the pass.
+No defect: a hole is measured off the art as whole units, so there is nothing
+below the step to lose. Written down because "everything here is exact except
+this" is the sort of fact a later reader should find stated rather than discover.
