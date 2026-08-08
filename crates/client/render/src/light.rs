@@ -1300,6 +1300,110 @@ fn same_run(own: u8, cell: (i32, i32), first: (i32, i32), spot_z: f32, low: f32,
     own & line
 }
 
+/// Which axis the plane a lit surface lies in runs across, and which end of a box
+/// that plane is: `true` for a box's `max` corner, `false` for its `min`.
+///
+/// [`None`] for [`Surface::Upright`], and that absence is the honest one: a
+/// billboard, a tree, a static whose art named no side — nothing about it says
+/// which way it looks, so it has no plane to be a point of. See
+/// [`on_the_lit_surface`] for what that costs and what answers for it instead.
+fn lit_plane(surface: Surface) -> Option<(usize, bool)> {
+    match surface {
+        Surface::Upright => None,
+        // A lid looks up, and its box is flat in `z`: both corners are the plane.
+        Surface::Flat => Some((2, true)),
+        Surface::Face(face) => {
+            let [x, y] = face.outward();
+            match x != 0.0 {
+                true => Some((0, x > 0.0)),
+                false => Some((1, y > 0.0)),
+            }
+        }
+    }
+}
+
+/// **`docs/occluders.md`'s D2, and the whole of the surface exemption**: whether
+/// `candidate` is part of the very surface the lit end is a point of, and so must
+/// not shadow it.
+///
+/// The rule, and it is a theorem rather than a tolerance:
+///
+/// > Skip a candidate exactly when its extent along the fragment's own normal axis
+/// > **ends on the fragment's own plane, from behind it** — `max` on that axis for
+/// > an outward `+`, `min` for an outward `−`.
+///
+/// A box is axis-aligned, so each of its faces sits at its own extreme on that
+/// axis, and a candidate whose extreme *is* the plane therefore lies wholly inside
+/// the closed half-space behind it. A ray with `d·N > 0` leaves that half-space at
+/// `t = 0+` and never returns, so **the set this discards is empty of real
+/// crossings** — which is exactly the difference between this and a bias. At
+/// `d·N = 0` the ray lies in the plane, which is the graze the whole exemption
+/// exists for and a set of measure zero besides.
+///
+/// **`d·N < 0` is not exempt, and the ray's direction is a parameter because of
+/// it.** The plan's own statement of D2 left the direction out, on the argument
+/// that a flame behind a surface has `N·L = 0` and so cannot light it either way.
+/// That is true of the shaded frame and false of the *shadow term*, which the
+/// reference path tracer compares directly, with no cosine in the model on either
+/// side — and it said so at once: 4,017 interior pixels of `line_scene`, every one
+/// a `y = 101` face of the west box with the flame at `y = 98.5` behind it, drawn
+/// lit where the tracer had them shadowed by the east box the exemption had just
+/// discarded. The box really is behind the plane and the ray really does go in
+/// there. So the precondition the proof states is the precondition the code tests,
+/// and what was a remark about `N·L` is a comparison of two signs.
+///
+/// **The plane comes from the fragment's own solid, not from its position.** Both
+/// are the same number — `traced.rs`'s
+/// `a_face_fragments_own_plane_is_the_primitives_own_number` measured 39,930
+/// fragments and found not one off its own face's plane — and taking it from the
+/// box means both sides of this comparison are read out of the same list, in the
+/// same precision, so the equality is exact by construction rather than by a
+/// rasteriser's good behaviour. It costs nothing: the row a fragment carries
+/// already names its solid.
+///
+/// What it replaces, and each of these is a rule that stood in for it: the walk's
+/// own `lit.solid == Some(id)` wherever the surface names a side (a solid's own
+/// extreme trivially equals itself), and [`same_run`] entirely — a run of wall is
+/// N statics whose panels share one plane, which is what that function's cell
+/// arithmetic and height gate were approximating. It does **not** replace identity
+/// for [`Surface::Upright`], which has no plane at all: a tree's sprite is excused
+/// from its own box by name and by nothing else.
+///
+/// Both boxes must be read from **one** source — `space` in [`walk_cells_exact`],
+/// [`crate::occlusion::Solid::wire_box`] in [`walk_cells_streaming`] and the shader
+/// — for the same reason those walks each read one box for their geometry: two
+/// precisions in one comparison is two surfaces.
+fn on_the_lit_surface(
+    surface: Surface,
+    own: &crate::solid::Solid,
+    candidate: &crate::solid::Solid,
+    // The ray, as `to - from`. Only its sign along the surface's own axis is read,
+    // so the mixed units of a delta — tiles across, `z` units up — cannot matter.
+    delta: [f32; 3],
+) -> bool {
+    let Some((axis, outward)) = lit_plane(surface) else {
+        return false;
+    };
+    // The ray has to be *leaving* the plane. `>= 0` and not `> 0`: a ray lying in
+    // the plane is the graze this exists for.
+    let along = match outward {
+        true => delta[axis],
+        false => -delta[axis],
+    };
+    if along < 0.0 {
+        return false;
+    }
+    let coordinate = |corner: crate::camera::WorldSpot| match axis {
+        0 => corner.x,
+        1 => corner.y,
+        _ => corner.z,
+    };
+    match outward {
+        true => coordinate(candidate.max) == coordinate(own.max),
+        false => coordinate(candidate.min) == coordinate(own.min),
+    }
+}
+
 /// The end of a ray that is a *surface*: which way it looks, which solid of the
 /// grid it is a point of, and which tile it stands on.
 ///
@@ -2447,6 +2551,12 @@ fn walk_cells_exact(
     // see [`starting_cell`] for the measurement that made the difference
     // visible.
     let first = starting_cell(from, lit.tile);
+    // The box the lit end is a point of, which is where its own plane comes from —
+    // `space` and not `wire_box`, this walk's own discipline, and see
+    // [`on_the_lit_surface`] for why both sides of that comparison have to come out
+    // of one source. `None` for a fragment of no occluder: the ground and a mobile
+    // are points of nothing and are exempt from nothing.
+    let own_box = lit.solid.map(|id| occlusion.solid(id).space);
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
@@ -2486,6 +2596,17 @@ fn walk_cells_exact(
             // going straight up or down off a tread is exactly the ray whose only
             // contact with that tread's own top is the point it started at.
             if lit.solid == Some(id) {
+                continue;
+            }
+            // And D2's, which subsumes the line above wherever the surface names a
+            // side: a lid abutting this one at exactly this one's own height is the
+            // same floor, and a straight-up ray off a tread is the case where that
+            // matters most — every neighbouring tread of one landing tops out on
+            // the plane the fragment stands on.
+            if own_box
+                .as_ref()
+                .is_some_and(|own| on_the_lit_surface(lit.surface, own, &stands.space, delta))
+            {
                 continue;
             }
             let by_surface = f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high);
@@ -2574,6 +2695,20 @@ fn walk_cells_exact(
             // `None == None`: a fragment that is a point of no occluder is exempt
             // from nothing.
             if lit.solid == Some(id) {
+                continue;
+            }
+            // **And a surface does not shadow itself when it is cut into more than
+            // one primitive**, which is the whole of D2 — `docs/occluders.md`'s S3.
+            // A neighbouring box whose extent along this fragment's own normal ends
+            // exactly on this fragment's plane lies wholly behind that plane, so
+            // there is nothing there for the ray to cross. This is what `same_run`
+            // stood in for below and could only state for a *panel* on the same row
+            // or column: a body got no exemption at all, which is the seam this step
+            // cures.
+            if own_box
+                .as_ref()
+                .is_some_and(|own| on_the_lit_surface(lit.surface, own, &stands.space, delta))
+            {
                 continue;
             }
             // **A ray that only touches a solid at the point it starts from has
@@ -2797,6 +2932,10 @@ fn walk_cells_streaming(
     // see [`starting_cell`] for the measurement that made the difference
     // visible.
     let first = starting_cell(from, lit.tile);
+    // The box the lit end is a point of — **the wire's**, like every other box this
+    // walk reads, so that the plane comparison D2 makes is the one the shader makes.
+    // See [`on_the_lit_surface`].
+    let own_box = lit.solid.map(|id| occlusion.solid(id).wire_box());
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
@@ -2835,6 +2974,15 @@ fn walk_cells_streaming(
             }
             // Phase 4's rule — [`walk_cells_exact`]'s own copy of this says why.
             if lit.solid == Some(id) {
+                continue;
+            }
+            // And D2's, for the reason [`walk_cells_exact`]'s copy of this in its
+            // own vertical shortcut gives: a landing's neighbouring treads top out
+            // on the plane a fragment of one of them stands on.
+            if own_box
+                .as_ref()
+                .is_some_and(|own| on_the_lit_surface(lit.surface, own, &space, delta))
+            {
                 continue;
             }
             let by_surface = f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high);
@@ -2902,6 +3050,16 @@ fn walk_cells_streaming(
             };
             // The same one comparison [`walk_cells_exact`] makes — see it.
             if lit.solid == Some(id) {
+                continue;
+            }
+            // And the same surface exemption, D2 — [`on_the_lit_surface`], and
+            // `walk_cells_exact`'s copy of this call says what it replaces. Both
+            // boxes are the wire's here, which is what makes this walk and the
+            // shader ask one question rather than two that agree.
+            if own_box
+                .as_ref()
+                .is_some_and(|own| on_the_lit_surface(lit.surface, own, &space, delta))
+            {
                 continue;
             }
             // And the same one touch rule; `walk_cells_exact`'s copy states it at

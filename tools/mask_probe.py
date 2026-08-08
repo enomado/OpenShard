@@ -160,12 +160,19 @@ def seams(argv):
             step = 0
             if shaded is not None:
                 step = abs(max(shaded[x, y]) - max(shaded[x + 1, y]))
-            found.setdefault((here, next_along), []).append(step)
+            found.setdefault((here, next_along), []).append((step, x, y))
     if not found:
         print("no seam of two flights has the shadow decision flip across it")
         return
-    for pair, steps in sorted(found.items()):
-        line = f"bodies {pair[0]}|{pair[1]}: {len(steps)} pixels where the shadow flips across the seam"
+    for pair, hits in sorted(found.items()):
+        steps = [step for step, _, _ in hits]
+        # One pixel of the run, so a reader can go straight to
+        # `OPENSHARD_TRACED_PROBE=x,y` and get the world point. A census that
+        # reports a count and no location cannot be followed up, which cost a
+        # session once.
+        _, at_x, at_y = hits[0]
+        line = f"bodies {pair[0]}|{pair[1]}: {len(hits)} pixels where the shadow flips across the seam"
+        line += f", the first at ({at_x}, {at_y})"
         if shaded is not None:
             line += f"; in the shaded frame the step is at most {max(steps)}, mean {sum(steps) / len(steps):.1f} of 255"
         print(line)

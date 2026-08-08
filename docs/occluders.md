@@ -477,12 +477,45 @@ moves.
 how many pairs it examined, and its synthetic twin runs under `cargo test` on a
 scene with a known seam.
 
-**S3 — the surface exemption. 🚩 This is the step that cures the seam.** D2a, and
-nothing else: no geometry is built, moved or merged. The walk's
-`mine == reference.x` becomes the half-space predicate — a candidate is skipped
-when its extent along the fragment's own normal axis ends at the fragment's own
-plane, on the fragment's back side. Both walks and the shader, one rule, stated
-once the way `Solid::wire_box` is.
+**S3 — the surface exemption. ✅ Landed 2026-08-09.** D2a, and nothing else: no
+geometry is built, moved or merged. `light::on_the_lit_surface` and its twin in
+`blit.wesl` are the half-space predicate — a candidate is skipped when its extent
+along the fragment's own normal axis ends at the fragment's own plane, from behind
+it. Both CPU walks and the shader, one rule, stated once the way `Solid::wire_box`
+is, at four call sites and two.
+
+**Three things the step learned, each by a gate going red rather than by argument.**
+
+*The theorem's precondition is load-bearing, and D2 as written left it out.* The
+proof says `d·N > 0` — the ray must be *leaving* the plane — and dismisses `d·N < 0`
+with "the flame is behind the surface, `N·L` is already zero". That is true of the
+shaded frame and **false of the shadow term**, which the reference path tracer
+compares directly with no cosine on either side. It said so immediately: 4,017
+interior pixels of `line_scene`, every one a `y = 101` face of the west box with the
+flame at `y = 98.5` behind it, drawn lit where the tracer had them shadowed by the
+east box the exemption had just discarded. So the ray's direction is a parameter and
+the precondition is a comparison of two signs. `d·N = 0` stays exempt: a ray lying
+in the plane is the graze the whole rule exists for.
+
+*The plane comes from the fragment's own **solid**, not from its position.* Both are
+the same number — measured below — but reading it off the box puts both sides of the
+comparison in one list and one precision, so the equality is exact by construction
+rather than by a rasteriser's good behaviour. It costs nothing: the row a fragment
+carries already names its solid.
+
+*It does not eat `same_run`, and S4 may not delete that on this step's licence.*
+D2's list of what it subsumes was right about `mine == reference.x` wherever a
+stance names a side, and right about the cell arithmetic — but `same_run` is
+*broader* than the theorem: it exempts a neighbouring panel of the run whatever the
+ray's direction, including rays that dip **behind** the surface's plane, which the
+theorem cannot license and the tracer will not allow. A flame is a sphere, so a lamp
+standing level with a wall puts half its rays either side of that wall's plane; the
+half going behind genuinely crosses the neighbouring panel. What removes those is the
+*merge*, S3b — one primitive per surface leaves nothing to cross — not this step. See
+§ *Backlog*.
+
+Identity also survives for `Surface::Upright`, which has no plane at all: a tree's
+sprite is excused from its own box by name and by nothing else.
 
 What the step must settle, and it was the only open question in it: **where the
 fragment's plane comes from.** Reading it off the interpolated position plane and
@@ -516,43 +549,92 @@ on some pixels of a seam and not others.
 Each is a command, an artefact and a figure, so acceptance does not rest on
 anybody's description of a picture.
 
-1. **The seam census on the run of flights goes to zero.**
+Each is a command, an artefact and a figure, so acceptance does not rest on
+anybody's description of a picture. **All six are run below, and two of them turned
+out to be asking for the wrong thing** — recorded as found rather than quietly
+restated.
+
+1. 🔁 **The seam census. Asked for zero; zero was never the right target, and the
+   census cannot be the gate.**
    ```sh
    OPENSHARD_TRACED_DUMP=target/traced/s3 cargo test --release -p openshard-client-render \
      --test traced -- the_frame_and_the_path_tracer_agree_about_a_run_of_flights --nocapture
-   ./tools/mask_probe.py seams target/traced/s3/run_of_flights_pathtrace.png
+   ./tools/mask_probe.py seams crates/client/render/target/traced/s3/run_of_flights_pathtrace.png
    ```
-   **Before: 123 pixels** where the shadow decision flips across a join of two
-   flights (26 + 12 + 6 + 44 + 30 + 5 by body pair). **After: none, and the tool
-   says so in words.**
+   **Before 123 pixels** (26 + 12 + 6 + 44 + 30 + 5 by body pair), **after 87**
+   (12 + 14 + 6 + 24 + 25 + 6) — and one pair went *up*, which is the first clue
+   that the number is not a defect count: removing an occlusion on one side of a
+   join creates a flip where both sides used to be shadowed.
 
-2. **The wall run, lit along itself, has no acne.** The fixture
-   `scene::wall_run_lit_from_along_it` exists and no tool draws it — drawing it is
-   part of this step. This is the configuration a cosine cannot hide, so this is
-   the picture that says the cure is real rather than lucky: **before** it must
-   show the seam, **after** it must be clean, and both go in the dump.
+   The census pairs pixels by **which body drew them**, because that is all a dumped
+   mask carries; it does not know which *face*. Probed, the first survivor is
+   `(299, 218)`: box 0's `FaceSouth` at `(100.992, 100.333, 4.917)` shadowed, beside
+   box 3's `Flat` at `(101.008, 100.333, 5.000)` lit. A **riser** beside a **landing
+   top** — two surfaces, two normals, a real geometric edge, and the decision is
+   supposed to flip there. So a flip across a join has three causes a picture cannot
+   separate: a piece of a surface shadowing that surface (the defect), another
+   surface's shadow boundary crossing the seam column (legitimate — four of them
+   here, and the tracer draws each in the same place), and the walk inventing an edge
+   (which `interior == 0` already rules out). The reference tracer cannot arbitrate
+   the first against the second either: it holds the same nine boxes, so it
+   reproduces a self-shadow as faithfully as a real shadow.
 
-3. **The brute-force oracle stays equal.** The exemption's whole claim is that it
+   **What tells them apart is which solid stopped the ray**, and only the walk can
+   say. So the gate is `lighting.rs`'s
+   `a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces`: nine
+   treads, both walks, forty fragments across each tread's own lid, and no solid of a
+   fragment's own landing may be the one `Stopper` names. The Python census stays an
+   instrument and now prints a pixel of each run, so a reading can be followed up
+   with `OPENSHARD_TRACED_PROBE`.
+
+2. 🔁 **The wall run lit along itself. Already drawn, already green — and it is a
+   run of *panels*, so it could not have shown this.**
+   `scene::wall_run_lit_from_along_it` *is* drawn by a tool:
+   `pictures.rs`'s `a_wall_lit_from_one_end_has_no_dark_stroke_at_its_seam` renders
+   its elevation, marks the seams and asserts monotonicity along the run. It passes
+   today and passed before this step, because a panel run's seam is what `same_run`
+   already covers. The uncovered defect was on a **body**, where there was no
+   exemption at all — so the fixture that shows it is a run of bodies, which is what
+   the gate in point 1 builds. A "before" picture of the panel scene would have shown
+   nothing and proved nothing.
+
+3. ✅ **The brute-force oracle stays equal.** The exemption's whole claim is that it
    discards no true occlusion, and the oracle is the non-circular check of exactly
-   that — no cells, no traversal shared with either walk. Any ray where the walk
-   now says "open" and brute force says "blocked" is the theorem being wrong.
+   that. Green, both fuzz tests and both grid sweeps.
 
-   ✅ **It is equal again** — the precondition is met. The pinned corner graze was
-   the *oracle's* defect, not either walk's, it was resolved by deciding which side
-   was right rather than by widening the fuzzer's carve-out, and the seed stays
-   pinned and green. See § *The oracle*'s "no cells" rule and § *Backlog*.
+   The pinned corner graze that blocked this point was the *oracle's* own defect,
+   resolved by deciding which side was right rather than by widening the fuzzer's
+   carve-out; the seed stays pinned and passes. See § *The oracle*'s "no cells" rule.
 
-4. **The path tracer stays at `interior == 0`.** Both gates, both scenes.
+   ⚠ **And the oracle cannot see this step at all**, which is worth knowing before
+   leaning on it: its fixtures light a `Spot::flat` that is a point of *no* solid, so
+   `own_box` is `None` and the exemption never fires. It is a check that S3 broke
+   nothing, not evidence that S3 works.
 
-5. **Fault injection, both directions.** Neutralising the exemption must turn the
-   three tests phase 4 found red *red again* — the self-shadow rule is widened
-   here, not weakened. And widening it past the theorem (skipping any candidate
-   whose face merely *touches* the plane, without the side test) must turn the
-   oracle red, since that one does discard true occlusions.
+4. ✅ **The path tracer stays at `interior == 0`.** Both gates, both scenes —
+   261,682 pixels compared on the run of flights, 0 interior, 11 on an edge. It is
+   also what caught the missing precondition, at 4,017 pixels.
 
-6. **No new constant.** `git diff` shows no tolerance, no epsilon, no widened box.
-   If the plane had to come from the instance row, that is a *removed* number and
-   not an added one.
+5. ✅ **Fault injection, both directions, both run.**
+   - *Neutralised* (`on_the_lit_surface` returns `false` outright): the landing gate
+     reports **480 of 720** fragments shadowed by a piece of their own landing, on
+     both walks. The three tests phase 4 found stay red under *their* injection —
+     identity is untouched here.
+   - *Widened past the theorem* (a candidate skipped when it merely **touches** the
+     plane, from either side): `a_room_lights_its_own_wall_and_not_the_storey_over_it`
+     goes red. A real occlusion discarded, which is what that injection is for.
+
+   And one injection that came free: while the fixture in point 1 was written with
+   the flame *above* a landing it passed **with the exemption neutralised** — a
+   vacuous gate, because a ray leaving a lid upward touches the neighbouring piece
+   only at `t = 0` and the zero-length touch rule already answers it. The flame had
+   to go **into** the surface's own plane for the exemption to be the only thing that
+   can excuse the crossing. A gate that passes under injection is not a gate, and
+   this one nearly shipped as one.
+
+6. ✅ **No new constant.** No tolerance, no epsilon, no widened box: the diff adds a
+   plane comparison, a sign comparison and a table of five stances. The plane did not
+   have to come from the instance row, so nothing was added there either.
 
 **S3b — the merge, and it is last.** D2b. Contiguous neighbours that are the same
 surface become one primitive at build time, after `occlusion::boxes_of` and inside
@@ -576,8 +658,13 @@ moment one exists — see the backlog's first entry, which is this step's own
 precondition and not a nuisance.
 
 **S4 — delete the cell rules.** D5, in this order and each behind its own
-measurement: `same_run` (licensed by S3, which replaces what it stands in for —
-and no longer waiting on a merge), the per-cell `max` (there is no cell to group
+measurement: `same_run` (🔴 **not licensed by S3 after all, and it waits on the
+merge again** — S3 landed and measured that the exemption is *narrower* than this
+function, which excuses a neighbouring panel of the run for rays that dip behind the
+surface's plane as well as for rays leaving it. The theorem cannot license those and
+the path tracer will not allow them, so what retires `same_run` is S3b's merge: with
+one primitive per surface there is no neighbour to excuse. See S3's own list of what
+it learned), the per-cell `max` (there is no cell to group
 by; the corner double-count it existed for outlives the merge's departure to S3b,
 so this one carries its own measurement rather than inheriting one), the vertical
 shortcut (a hierarchy has no reason for a special case, and
@@ -654,6 +741,23 @@ Named so that a later session does not adopt them by accident:
 Findings from this track that do not block a step. Kept here so the plan can be
 read as work.
 
+🚩 **The merge inherits the seam, and what it inherits is a sphere's own half.**
+S3 cures a surface shadowing itself for every ray *leaving* that surface, which is
+what its theorem licenses. What it cannot touch: a flame is a sphere, so a lamp
+standing level with a wall — or in a landing's own plane — puts half of its eight
+rays on the far side of that plane, and those rays genuinely cross the neighbouring
+primitive of the same surface. The reference tracer, handed the same primitives,
+agrees that they do. `same_run` papers over exactly this for a panel run by exempting
+the neighbour whatever the ray's direction, and there is no equivalent for a body —
+which is why the run of flights still reports **87** census pixels after S3 where it
+reported 123, most of them this.
+
+Only the merge answers it, and it answers it completely: one primitive per surface
+means the ray that dips behind the plane starts *inside its own solid*, which
+identity has always excused. So S3b is not an optimisation that happens to help a
+seam — it is the other half of the cure, and the plan's own ordering (the merge last,
+after S5) should be read knowing that the seam is not fully closed until it lands.
+
 ✅ **The pinned corner graze: the walks were right and the oracle was wrong —
 closed 2026-08-09.** `lighting.proptest-regressions`' newest line, found by a
 fresh seed, red for a day. Nothing in the session that found it touched
@@ -711,6 +815,17 @@ unexplained, 0 grazed` — the two walks no longer disagree anywhere, so the
 arbiter is a standby that never runs. Its correctness rests on its twin in
 `lighting.rs`, which the fuzzers do exercise. Worth knowing before trusting it as
 a gate: it is not one today.
+
+**A gate whose fixture puts the flame in the wrong place passes under injection.**
+The landing gate S3 built passed *with the exemption neutralised* while its flame
+stood above the landing rather than in its plane: a ray leaving a lid upward touches
+the neighbouring piece only at `t = 0`, which the zero-length touch rule already
+answers, so the fixture never reached the rule it was written for. It was caught by
+running the injection, which is the only thing that can catch it — a green gate and a
+vacuous gate are the same output. Worth stating as a habit rather than as an
+incident: **every new gate on this track gets its injection run in the same
+session**, and the flame's position relative to a surface's own plane is the
+parameter that decides which rule a fixture is even asking about.
 
 **A cell lists a primitive once, and D1 has just made that a hole S3b will fall
 into.** `Builder::push` puts a solid in exactly the cell it was added on;

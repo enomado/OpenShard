@@ -2663,6 +2663,183 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
     });
 }
 
+/// **A landing cut into three primitives is not shadowed by its own pieces** —
+/// `docs/occluders.md`'s S3, and the claim D2 makes, asserted where it can be
+/// asserted exactly: on the solid the walk *blames*.
+///
+/// The scene is `traced.rs`'s `stair_scene` in miniature — three flights side by
+/// side, each tile divided into thirds along `y`, each tread a body from `z 0` to
+/// its own height, so the three flights' treads abut exactly across `x = 101` and
+/// `x = 102`. Three tiles of one landing at `z 5`, three of one at `z 3`, three of
+/// one at `z 1`, and every one of those landings is three primitives that share a
+/// whole face with a neighbour of a *different static*.
+///
+/// **Why this and not the pixel census.** `tools/mask_probe.py seams` counts
+/// shadow-decision flips across a join in a dumped mask, and a flip there has three
+/// possible causes that a picture cannot tell apart: a piece of the surface
+/// shadowing the surface (the defect), a *different* surface's shadow boundary
+/// happening to cross the seam column (legitimate — and measured, four of them on
+/// that scene, the reference tracer drawing the same boundary in the same place),
+/// and the walk inventing an edge (which `interior == 0` already rules out). The
+/// reference tracer cannot arbitrate the first against the second either: it is
+/// handed the same nine boxes, so it reproduces a self-shadow as faithfully as a
+/// real one. What tells them apart is **which solid stopped the ray**, and only the
+/// walk can say — [`light::Stopper`]'s own `solid`, which is exactly the name the
+/// exemption compares.
+///
+/// So: for a fragment of a landing, with the flame above it, no solid of that same
+/// landing may be the one blamed. Both walks, since the exemption is one rule in
+/// three spellings and this is two of them.
+#[test]
+fn a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces() {
+    use openshard_client_render::occlusion::{Builder, Owner, Part};
+    use openshard_protocol::wire::Graphic;
+
+    let third = 1.0 / 3.0;
+    let mut grid = Builder::new(openshard_client_render::camera::TileBounds {
+        min_x: 95,
+        max_x: 107,
+        min_y: 95,
+        max_y: 106,
+    });
+    // Which solid each (flight, storey) is, so a blamed id can be recognised as a
+    // piece of the fragment's own landing rather than guessed at from a height.
+    let mut pieces = Vec::new();
+    for flight in 0..3_i32 {
+        for storey in 0..3_usize {
+            let height = 1.0 + 2.0 * storey as f64;
+            // Tread `storey` covers the strip `2 - storey` thirds from the tile's
+            // own near edge — `Prism::new(North, &[1, 3, 5])`'s profile, and
+            // `traced.rs`'s `stair_scene` box for box.
+            let near = 100.0 + (2 - storey) as f64 * third;
+            let tile = (100 + flight, 100);
+            let owner = Owner::new(0, Graphic(0x0100 + storey as u16));
+            grid.add_raw(
+                tile.0 as u16,
+                tile.1 as u16,
+                openshard_client_render::solid::Solid {
+                    min: openshard_client_render::camera::WorldSpot {
+                        x: 100.0 + f64::from(flight),
+                        y: near,
+                        z: 0.0,
+                    },
+                    max: openshard_client_render::camera::WorldSpot {
+                        x: 101.0 + f64::from(flight),
+                        y: near + third,
+                        z: height,
+                    },
+                },
+                owner,
+            );
+            pieces.push((flight, storey, tile, owner, near, height));
+        }
+    }
+    let occlusion = grid.finish(&Cutaway::OPEN);
+    let named: Vec<_> = pieces
+        .iter()
+        .map(|(flight, storey, tile, owner, near, height)| {
+            let id = occlusion
+                .id_of(tile.0, tile.1, *owner, Part::ONLY)
+                .expect("every tread this test built is in the grid it just built");
+            (*flight, *storey, id, *near, *height)
+        })
+        .collect();
+
+    // **The flame stands in the landing's own plane, off the east end of the run**,
+    // and that is the fixture rather than an arrangement chosen for looks. A flame
+    // *above* a landing sends every ray up out of the neighbouring piece's box at
+    // `t = 0`, which the zero-length touch rule already answers — measured: this
+    // test passed with the exemption neutralised while the flame was overhead, which
+    // is what a vacuous gate looks like. A flame **in** the plane sends the ray
+    // *along* the surface, so it crosses the neighbouring piece over its whole
+    // width, and nothing but the exemption can excuse that. It is `scene::wall_run_
+    // lit_from_along_it`'s arrangement said about a body instead of a panel, and it
+    // is the one the seam was reported from.
+    //
+    // A ray in the plane is `d·N = 0`, which the theorem includes on purpose. What
+    // it costs is that `N·L` is zero too, so this fixture is invisible in a *shaded*
+    // frame — which is exactly why the assertion below reads the solid the walk
+    // blames rather than a brightness.
+    let mut blamed = Vec::new();
+    let mut examined = 0_usize;
+    for (flight, storey, id, near, height) in &named {
+        let light = light::Light {
+            at: Vec2::new(104.5, (near + third * 0.5) as f32),
+            z: *height as f32,
+            radius: 30.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        };
+        let lighting = Lighting {
+            ambient: light::NIGHT,
+            lights: vec![light],
+            occlusion: occlusion.clone(),
+            sun: None,
+            view: debug::View::default(),
+            // **A point flame, and the reason is the theorem's own precondition.**
+            // At the shipped radius the flame is a sphere standing *in* the plane,
+            // so half of it lies below: those rays cross the neighbouring piece for
+            // its whole width and are genuinely blocked by it, which no exemption
+            // may discard. Measured — that is exactly what this fixture reported
+            // when it was first written with a sphere, on both walks. A flame whose
+            // sphere straddles a surface's own plane is **S3b's** case, the merge,
+            // and § *Backlog* of `docs/occluders.md` carries it. At radius zero
+            // every ray is the one ray lying in the plane, which is D2's own.
+            flame_radius: 0.0,
+        };
+        // Across the tread's own lid, right up to the seam its flight shares with
+        // the next: the last hundredth of a tile is where the crossing point of a
+        // ray leaving the surface lands in the neighbour's box.
+        for step in 0..40 {
+            let x = 100.0 + f64::from(*flight) + f64::from(step) / 40.0;
+            let at = Vec2::new(x as f32, (near + third * 0.5) as f32);
+            let tile = (100 + flight, 100);
+            let spot = Spot::flat(at, *height as f32, tile);
+            let spot = openshard_client_render::light::Spot {
+                solid: Some(*id),
+                ..spot
+            };
+            for (name, sample) in [
+                ("walk_cells", light::sample(spot, &lighting)),
+                ("walk_cells_exact", light::sample_exact(spot, &lighting)),
+            ] {
+                let Some(reach) = sample.reaches.iter().find(|reach| reach.within) else {
+                    continue;
+                };
+                examined += 1;
+                let Some(stopper) = reach.stopped_by else {
+                    continue;
+                };
+                // A piece of this fragment's **own** landing: the same storey, and
+                // therefore the same continuous surface at the same height.
+                let culprit = named.iter().find(|(_, _, other, _, _)| *other == stopper.solid);
+                if let Some((other_flight, other_storey, _, _, _)) = culprit {
+                    if other_storey == storey {
+                        blamed.push(format!(
+                            "{name}: flight {flight}'s storey {storey} at ({:.4}, {:.4}, {height}) \
+                             is shadowed by flight {other_flight}'s piece of the same landing — \
+                             {stopper}",
+                            at.x, at.y,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        examined > 400,
+        "only {examined} fragments were walked: nine treads, two walks, forty points each",
+    );
+    assert!(
+        blamed.is_empty(),
+        "{} of {examined} fragments of a landing are shadowed by a piece of that same landing:\n{}",
+        blamed.len(),
+        blamed.iter().take(10).cloned().collect::<Vec<_>>().join("\n"),
+    );
+}
+
 /// The corner graze a fuzz seed found on 2026-08-09, and **who was right**,
 /// decided by an exact test rather than by either disputant.
 ///

@@ -817,6 +817,28 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
     );
 }
 
+// **The seam census is not a gate, and that is a measurement rather than a
+// preference.** A pixel-level census over a dumped mask — `tools/mask_probe.py
+// seams`, and a Rust twin of it stood here for an afternoon — counts shadow
+// decisions that flip across a join of two flights, and a flip there has three
+// causes a picture cannot tell apart:
+//
+//   1. a piece of a surface shadowing that surface, which is the defect;
+//   2. a *different* surface's shadow boundary happening to cross the seam column
+//      — measured, four of them on this scene, and the reference tracer draws the
+//      same boundary in the same place, so the geometry really does have an edge
+//      there;
+//   3. the walk inventing an edge, which `interior == 0` above already rules out.
+//
+// The tracer cannot arbitrate 1 against 2 either: it is handed the same nine boxes,
+// so it reproduces a surface shadowing itself as faithfully as a real shadow. What
+// tells them apart is **which solid stopped the ray**, which only the walk can say
+// — so the gate for D2 is `lighting.rs`'s
+// `a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces`, on
+// `light::Stopper`'s own `solid`. The Python census keeps its place as an
+// instrument, and it now prints a pixel of each run so that a reading can be
+// followed up with `OPENSHARD_TRACED_PROBE`.
+
 /// **A face fragment's own plane is the primitive's own number, bit for bit** —
 /// the one thing `docs/occluders.md`'s S3 said it had to measure before it could
 /// be written.

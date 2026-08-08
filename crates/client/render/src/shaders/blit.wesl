@@ -14,7 +14,7 @@
 import package::place_format::{
     KIND_NOTHING, KIND_LAND, KIND_STATIC,
     ids_kind, ids_stance, ids_id,
-    STANCE_MESH_FACE, STANCE_FACE_NORTH,
+    STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
     STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
 };
 
@@ -603,6 +603,26 @@ fn own_side(stance: u32) -> u32 {
     }
 }
 
+// Which axis the plane a stance lies in runs across (0 `x`, 1 `y`, 2 `z`), and
+// which end of a box that plane is — `.y` of `1.0` for the box's `hi` corner,
+// `-1.0` for its `lo`. `.x` is `-1.0` for a stance that has no plane at all,
+// which is `STANCE_UPRIGHT`: a tree, a billboard, a static whose art named no
+// side. `light::lit_plane`, and the same absence.
+fn lit_plane(stance: u32) -> vec2<f32> {
+    switch stance {
+        // A lid looks up, and its box is flat in `z`: both corners are the plane.
+        case STANCE_FLAT: { return vec2<f32>(2.0, 1.0); }
+        case STANCE_FACE_NORTH: { return vec2<f32>(1.0, -1.0); }
+        case STANCE_FACE_SOUTH: { return vec2<f32>(1.0, 1.0); }
+        case STANCE_FACE_WEST: { return vec2<f32>(0.0, -1.0); }
+        case STANCE_FACE_EAST: { return vec2<f32>(0.0, 1.0); }
+        default: { return vec2<f32>(-1.0, 0.0); }
+    }
+}
+
+// `on_the_lit_surface` is the other half of this and lives below `solid_at`,
+// which it reads.
+
 // The cell a walk actually starts in: the tile its caller carries, unless the
 // start point is **strictly outside** that tile. `light::starting_cell`, and the
 // two are one rule — see it for what the carried tile is for, why a point past
@@ -741,6 +761,48 @@ fn own_solid(tile: vec2<i32>, owner: u32, own: u32) -> u32 {
         }
     }
     return SOLID_NOBODY;
+}
+
+// **`docs/occluders.md`'s D2**: whether a candidate box is part of the very
+// surface the lit fragment is a point of, and so must not shadow it.
+//
+// `light::on_the_lit_surface` states the theorem at length and this is its twin,
+// one rule in two spellings with no compiler between them. In short: a candidate
+// whose extent along the fragment's own normal axis *ends* on the fragment's own
+// plane lies wholly in the closed half-space behind that plane, so a ray leaving
+// the surface has nothing there to cross — the discarded set is empty of real
+// crossings, which is what makes this a theorem and not a bias.
+//
+// The plane comes from the box the fragment is a point of (`mine`) and not from
+// its interpolated position: the two are the same number — measured, 39,930
+// fragments, `traced.rs`'s `a_face_fragments_own_plane_is_the_primitives_own_
+// number` — and reading it from the list puts both sides of the comparison in one
+// precision, so the equality is exact by construction.
+//
+// `delta` is the ray, and it is here because the theorem's precondition is
+// `d·N >= 0`: the ray has to be *leaving* the plane. A flame behind the surface
+// sends the ray into the half-space the candidate really occupies, and the
+// reference tracer reads this walk's answer with no cosine to hide it — 4,017
+// interior pixels of `line_scene`, the hour this rule went in without the sign
+// test. `light::on_the_lit_surface` has the measurement.
+fn on_the_lit_surface(stance: u32, mine: u32, lo: vec3<f32>, hi: vec3<f32>, delta: vec3<f32>) -> bool {
+    if mine == SOLID_NOBODY {
+        return false;
+    }
+    let plane = lit_plane(stance);
+    if plane.x < 0.0 {
+        return false;
+    }
+    let axis = u32(plane.x);
+    let own = solid_at(mine);
+    // `>= 0` and not `> 0`: a ray lying in the plane is the graze this exists for.
+    if delta[axis] * plane.y < 0.0 {
+        return false;
+    }
+    if plane.y > 0.0 {
+        return hi[axis] == own.hi[axis];
+    }
+    return lo[axis] == own.lo[axis];
 }
 
 // One tile's surfaces as one box: the union of the spans, the largest opacity
@@ -1016,6 +1078,16 @@ fn cell_stopped(
         if mine == reference.x {
             continue;
         }
+        // **And a surface does not shadow itself when it is cut into more than one
+        // primitive** — `docs/occluders.md`'s D2, this step's whole subject. The
+        // rule above answers for the fragment's own box and could never answer for
+        // the box abutting it, which is a different primitive of the same wall,
+        // floor or landing. `same_run` below stood in for it and only for a *panel*
+        // on the same row or column; a **body** got no exemption at all, which is
+        // the seam this cures.
+        if on_the_lit_surface(stance, mine, stands.lo, stands.hi, delta) {
+            continue;
+        }
         // **A ray that only touches a solid at the point it starts from has not
         // gone through it** — `light::walk_cells_exact`'s own copy states the
         // argument at length, and it is `crosses`'s strictness said about a box
@@ -1171,6 +1243,13 @@ fn walk(
             // going straight up or down off a tread is exactly the ray whose only
             // contact with that tread's own top is the point it started at.
             if mine == id {
+                continue;
+            }
+            // And D2's, for the same reason `light::walk_cells_streaming`'s copy of
+            // this in its own shortcut gives: the neighbouring treads of one landing
+            // top out on the very plane a fragment of one of them stands on, and a
+            // ray going straight up crosses none of them.
+            if on_the_lit_surface(stance, mine, stands.lo, stands.hi, delta) {
                 continue;
             }
             let stops = f32(stands.opacity) / 255.0 * crosses(start.z, finish.z, stands.lo.z, stands.hi.z);
