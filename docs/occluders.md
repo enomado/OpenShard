@@ -46,6 +46,16 @@ the storage. Three consequences, each already seen in a frame:
    per-cell `max` exists because two panels of one corner are two boxes of one
    wall. Four rules, all standing in for a shape that is not stated.
 
+   **And for a *body* not even that** — a correction to this list, measured after
+   it was written. `same_run` is a run of **panels** along a row or column; the
+   walk's `edges == EDGE_MASK` branch never asks it. A climbable's treads are
+   declared as bodies (`occlusion.rs`'s own test: *"a tread is a body: a stair is
+   solid"*), so a flight of steps has **no surface exemption of any kind** —
+   only `mine == reference.x`, one primitive. So point 2 is not merely papered
+   over here, it is bare, and § *The flight seams* is what it looks like on a
+   frame. It also weakens D5's own order: `same_run` cannot be load-bearing for a
+   shape that never reaches it.
+
 Measured, on one real place at 4:1, before any of this: 474 fragments stood
 strictly outside their own carried tile and **324 of them leaked a fully lit
 pixel into a shadow**; the narrow leaks over one building's floors numbered 303.
