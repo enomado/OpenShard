@@ -10,6 +10,13 @@ drawn with light already in them, and every workaround below exists to avoid
 arguing with that light. We stop avoiding it. The picture will not be "exactly
 like UO", and that is the accepted price.
 
+Stated once more in the form it was decided, because the difference is what makes
+this a specification rather than another compensation: **the sprites are treated
+as though they were already de-lit — perfectly clean albedo — and this renderer
+is the ordinary one every other renderer is.** No invention of ours stands
+between a sprite and a light. Where that assumption is false, it is false in the
+picture, not in the code.
+
 ## The three roots
 
 Not ten workarounds — three decisions, each with a family growing out of it.
@@ -156,17 +163,25 @@ thing shadow rays compare.
 `albedo × N·L × light colour × intensity × attenuation × shadow`, summed over
 lights, plus `albedo × sky colour × sky visibility` for ambient.
 
-**The formula is already there and its argument is wrong**, which is worth
-knowing before phase 3 rewrites it. `light::faces` is
-`clamp(along / FACE_EDGE + 0.5)`, and that shape — `N·L × k + 0.5` — is
-*wrapped diffuse*, the ordinary stylised BRDF. What is passed to it is not a
-cosine: `along` is `dot(normal, toward)` with `toward` left unnormalised, so it
-is a **distance**. That single missing normalisation is where the two scales come
-from, and it means phase 3 is smaller than it looks: normalise the argument, and
-the band becomes angular and identical for every surface; set the width to `2.0`
-and it *is* half-Lambert. The full `N·L` is then one more step, and the width is a
-knob between "hard half-space, as today" and "Lambert", which is exactly the
-dial between keeping the pre-shaded look and replacing it.
+**The art is clean albedo by decree, and there is no dial.** The pre-shading in
+the sprites is not compensated for, not softened against and not measured — it is
+declared to be albedo, and every surface is lit by the same textbook Lambert any
+other renderer would use. No stylised wrap, no half-space, no width knob between
+the two, and no term anywhere whose job is to argue with the artist.
+
+That knob was in this document until the decision, and it is worth recording what
+it was so it is not reinvented: `light::faces` is
+`clamp(along / FACE_EDGE + 0.5)`, and that shape — `N·L × k + 0.5` — is *wrapped
+diffuse*, the ordinary stylised BRDF, so a width of `2.0` would have made it
+half-Lambert and the width a dial between "pre-shaded look" and "Lambert". Gone.
+
+**What survives from that reading is a diagnosis, and it says phase 3 is smaller
+than it looks.** What `faces` is passed is not a cosine: `along` is
+`dot(normal, toward)` with `toward` left **unnormalised**, so today's argument is
+a *distance*. That single missing normalisation is where root 1's two scales come
+from — one constant meaning ±4 screen pixels across a wall and ±1.1 `z` above a
+lid. Phase 3 normalises the argument and takes the full `N·L`; it does not have a
+band to retune, because there is no band.
 
 Lambert with no `1/π`, and the intensities calibrated to match: the constant is a
 convention, and putting it in would mean re-tuning every flame in the tree for a
@@ -501,10 +516,13 @@ as ambient occlusion.
 
 ## Accepted costs
 
-- **The picture changes.** Pre-shaded art multiplied by our light is
-  double-contrast: a face already darkened by the artist and turned away from a
-  flame goes darker than UO ever showed it. This is the decision at the top of
-  the document, and the exposure and ambient are the knobs that make it liveable.
+- **The picture changes, and nothing in the renderer compensates.** Pre-shaded art
+  multiplied by our light is double-contrast: a face already darkened by the
+  artist and turned away from a flame goes darker than UO ever showed it. Exposure
+  and ambient are ordinary exposure and ordinary ambient and they are all there
+  is — neither is tuned *against* the art. If a scene still reads wrong, the
+  answers are content (a shard ships better art) or de-lighting as a project of
+  its own, and never a term in the BRDF.
 - **Statics without a good prism** get a rougher volume, and their impostor normal
   is an approximation of an approximation. Visible on the odd tree and fence.
 - **Cost.** Eight shadow rays a light a pixel is more work than one, and the
@@ -520,12 +538,12 @@ Written down rather than guessed at:
    effect and a global exposure may absorb most of it. Nobody has looked at a
    real frame with `N·L` on it yet, and that is a one-evening experiment inside
    phase 3.
-2. **Do statics need per-face albedo?** A prism's four sides sample the same
-   sprite through one projection, so a wall's two visible faces get the art's own
-   two shadings — which are pre-shaded, and which we have just decided to
-   multiply. It may look right anyway. It may need the art's shading flattened
-   per face, which is de-lighting through the back door and would need its own
-   decision.
+2. ~~**Do statics need per-face albedo?**~~ **Closed by the decree.** A prism's
+   four sides sample the same sprite through one projection, so a wall's two
+   visible faces carry the art's own two shadings and we multiply both. Flattening
+   them per face would be de-lighting through the back door, and the answer is the
+   same as to de-lighting itself: not in this renderer. Whatever the sprite says
+   is albedo.
 3. **Does the ground want normals at all?** UO's terrain is a height field with
    per-corner heights, so it has real normals — and its art is nearly unshaded, so
    `N·L` on it is pure gain. Probably free, worth confirming early.
