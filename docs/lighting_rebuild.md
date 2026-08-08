@@ -1095,8 +1095,8 @@ pixel of a silhouette belonging to neither side, which is the phase's own claim
 by construction and is now a claim somebody has checked with their eyes.
 `View::Normal` over the same place is what it was — every fragment carries a
 facing, a wall reads as a green face, a red end cap and a blue top. And it
-found one defect, which is its own backlog entry below: **a flame's own sprite
-is black.**
+found **two** defects, each its own backlog entry below: a flame's own sprite is
+black, and a roof leaks a line of light along every tile boundary.
 
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
@@ -1261,6 +1261,35 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
+- 🚩 **A shadowed roof leaks a one-pixel line of full light along every tile
+  boundary, and it is the walk's cell hazard rather than any of the rules that
+  look like it.** Seen on the lit frame above: a stepped run of roof statics
+  standing in the lamp's shadow, drawn across by thin stair-stepped lines that
+  read *fully visible* in `View::Shadow`. Four fault injections say what it is
+  **not**, and each left the frame unchanged pixel for pixel: `same_run`
+  neutralised, the identity compare forced `false`, the origin-touch rule
+  (`entered == 0 && leaves == 0`) forced `false`, and `RAY_TANGENT_TOLERANCE`
+  widened ten thousandfold from `1e-6` to `1e-2` (198 one-pixel runs became
+  192). Three measurements say what it **is**. The runs are **one pixel wide at
+  1:1, at 2:1 and at 4:1** — a feature of measure zero in the world, since a
+  world-space stripe doubles with each notch. They stand **inside one facing
+  with the same facing either side** — 365 of some 600 runs are `+z | +z | +z`
+  off the normal plane, so they are not a step's own edge, which would butt
+  against a change of facing. And against `View::Place`'s checkerboard, which is
+  drawn from the tile, **303 of 305 of them straddle a tile change** and two do
+  not. So: a fragment standing exactly on a tile boundary belongs to two cells,
+  the walk's `first` is the one the instance carries, and the occluder in the
+  other one is never tested. That is `docs/lighting_raymarch.md`'s tile-boundary
+  hazard — a known gap, recorded there as a corner-tie two pixels wide on a
+  synthetic stair, and worth **one stripe per roof tile** on a real place.
+  **It cannot be right**: visibility is continuous except at an occluder's own
+  silhouette, and a line of full light between two blocked neighbours is a
+  discontinuity no geometry produces. What it is not is a tolerance — that was
+  measured above and moved six pixels. What would answer it is the walk testing
+  every cell a boundary fragment is a point of, which is a statement about the
+  walk's first step rather than about a razor. Its natural home is the
+  `walk_cells_*` unit test the backlog already wants for the origin-touch rule:
+  a fragment on a shared edge, two cells, one occluder.
 - 🚩 **An emitter is black in its own light, and every free-standing one taller
   than `FLAME_LIFT` is.** Found by looking at a lit frame after phase 6c — the
   one instrument *How this is judged* names — and reproduced at one item and
