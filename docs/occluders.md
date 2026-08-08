@@ -477,6 +477,12 @@ anybody's description of a picture.
    that — no cells, no traversal shared with either walk. Any ray where the walk
    now says "open" and brute force says "blocked" is the theorem being wrong.
 
+   🔴 **It is not equal today**, and that is this step's precondition rather than
+   its result — see § *Backlog*'s pinned corner graze. Acceptance cannot read
+   "the oracle stayed equal" over a comparison that is already red; the case has
+   to be resolved first, and it has to be resolved by deciding **which side is
+   right**, not by widening the fuzzer's carve-out.
+
 4. **The path tracer stays at `interior == 0`.** Both gates, both scenes.
 
 5. **Fault injection, both directions.** Neutralising the exemption must turn the
@@ -588,6 +594,33 @@ Named so that a later session does not adopt them by accident:
 
 Findings from this track that do not block a step. Kept here so the plan can be
 read as work.
+
+🔴 **A pinned corner graze where both walks and the brute-force oracle
+disagree** — `lighting.proptest-regressions`' newest line, found by a fresh seed
+on 2026-08-09 and pinned by proptest, so **the suite is red until it is
+resolved**. Nothing in that session touched `crates/*/src`; the case was always
+there and no seed had reached it.
+
+```
+spot  (104.6041, 100.9463,  2.00) tile (104, 100)
+light ( 93.1834, 101.0253, 13.69) tile ( 93, 101)
+walk_cells says blocked, the brute-force oracle says open
+```
+
+One whole-tile body at `(100, 100)`, `z` 0..20. The segment crosses the wall's
+column while its `y` runs 100.971 → 100.978 — **three hundredths of a tile from
+the corner at `(101, 101)`**, which is the region the sibling grid test excludes
+by construction and this fuzzer aims at on purpose.
+
+What is measured, and what is not. Measured: **both** walks fail on it, the
+streaming one and the exact one, identically — so it is not the DDA's stepping
+but something the two share. The oracle's own step is `0.0002` of a tile, so
+"the sampler walked over a thin clip" needs the clip to be shorter than that,
+which is checkable and unchecked. Not measured, and the first thing to settle:
+**which side is right.** The oracle blocks only when *all eight* flame points are
+blocked, so a single grazing ray of the eight decides it — the answer is an
+analytic segment-versus-box test on those eight points, and neither side of this
+disagreement is it.
 
 **A cell lists a primitive once, and D1 has just made that a hole S3b will fall
 into.** `Builder::push` puts a solid in exactly the cell it was added on;
