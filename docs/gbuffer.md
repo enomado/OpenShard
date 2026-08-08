@@ -23,6 +23,15 @@ reasoning behind every choice below — arguments, alternatives considered,
 measurements, and the session-by-session work that built it — is in
 [`gbuffer_archive.md`](gbuffer_archive.md).
 
+> **It is no longer the only plane.** `docs/lighting_rebuild.md` phase 2 added a
+> position plane beside it — `Rgba32Float`, `(x, y, z, 1)`, written by all three
+> world passes and read by `blit.wesl` in place of the `tile + fraction` and
+> `unpack_place_z` reconstruction described below.
+> `crates/client/render/src/gbuffer.rs` owns the set and is where a plane is
+> added. What this document describes is still exactly what the `place`
+> attachment holds; what has changed is that the *height* and the *sub-tile
+> fraction* in it are no longer what the lighting reads.
+
 ## The place attachment's format
 
 The attachment is `Rgba16Uint`, four `u16` channels

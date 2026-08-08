@@ -59,6 +59,17 @@
 //!
 //! A fragment a sprite discarded writes nothing here either, so what this holds
 //! is what is *visible*, which is the question lighting asks.
+//!
+//! # What still reads it
+//!
+//! **Not the height, and not the fraction.** `docs/lighting_rebuild.md` phase 2
+//! put a position plane beside this one ([`crate::gbuffer`]), and `blit.wgsl`
+//! reads a fragment's own `(x, y, z)` off that instead of rebuilding it from the
+//! two fields below. Both are still *written*, by every producer, and both are
+//! still what a pixel-decode test reads — they go when the id plane arrives and
+//! the last reader of the kind and the stance moves with it. Until then this is
+//! a format with a shrinking set of consumers rather than a retired one, and the
+//! paragraphs above are the record of why each field is shaped as it is.
 
 /// What kind of thing wrote a pixel, or [`Place::NOWHERE`]'s zero for "nothing
 /// did".
@@ -461,6 +472,15 @@ pub fn packed_height(z: f32, stance: Stance) -> u16 {
 pub fn unpacked_height(channel: u16) -> f32 {
     f32::from(channel & 0xFF) - 128.0 + f32::from((channel >> Z_FRAC_SHIFT) & Z_FRAC_MASK) / Z_FRAC_STEPS
 }
+
+/// Steps of the tile-local fraction in one tile, on each axis: seven bits of
+/// them, in the fourth channel above the kind.
+///
+/// `place_format.wesl`'s `SUB_TILE`, and the Rust side of it exists for the
+/// hand-written producers — [`crate::gbuffer::Fragment`] is the one that spells
+/// the packing now, and it needs the number by name rather than as a `127.0`
+/// nobody can grep for.
+pub const SUB_TILE: f32 = 127.0;
 
 /// The format of the attachment. See this module's header.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Uint;

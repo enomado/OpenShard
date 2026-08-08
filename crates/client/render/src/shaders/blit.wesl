@@ -13,8 +13,8 @@
 
 import package::place_format::{
     KIND_MASK, KIND_NOTHING, KIND_LAND, KIND_STATIC, KIND_MOBILE,
-    SUB_TILE_MASK, SUB_TILE, PLACE_STANCE_SHIFT, PLACE_STANCE_MASK,
-    unpack_place_z, STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
+    PLACE_STANCE_SHIFT, PLACE_STANCE_MASK,
+    STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
     STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
 };
 
@@ -47,6 +47,12 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // place averaged with its neighbour would name a third tile nothing was drawn
 // on.
 @group(0) @binding(3) var place_of: texture_2d<u32>;
+// And where that pixel's fragment actually is: `(x, y, z, 1)` in world
+// coordinates, `crate::gbuffer::POSITION_FORMAT`. Never sampled either, and
+// this one for a reason of its own — a position filtered against its
+// neighbour's is a point on neither surface, floating in the air between a
+// wall and the ground behind it.
+@group(0) @binding(15) var position_of: texture_2d<f32>;
 // Where each tile's references are, one texel a tile over the rectangle in
 // `lighting.grid`: (offset & 255, offset >> 8, offset >> 16, count). The index
 // of `docs/lighting.md`'s decision 30 — a count of zero is open ground, and
@@ -148,9 +154,11 @@ const VIEW_FLAMES: u32 = 10u;
 
 // The fourth channel of the place attachment: the kind in the low two bits,
 // then seven bits of tile-local `x` and seven of tile-local `y`. The world
-// passes pack it; `crate::place` documents it. `KIND_MASK`/`SUB_TILE_MASK`/
-// `SUB_TILE`/`KIND_NOTHING`/`KIND_LAND`/`KIND_STATIC`/`KIND_MOBILE` are the
-// import above, `place_format.wesl`.
+// passes pack it; `crate::place` documents it. **The fraction is no longer
+// read here** — `position_of` carries the point itself — and what is left of
+// this channel for this pass is the kind. `KIND_MASK`/`KIND_NOTHING`/
+// `KIND_LAND`/`KIND_STATIC`/`KIND_MOBILE` are the import above,
+// `place_format.wesl`.
 
 // The statics and mobiles passes' own `SpriteQuad`, laid out exactly as
 // `sprite.rs`'s `SpriteQuad::write` puts it on the GPU — this is that same
@@ -1552,25 +1560,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         return color;
     }
 
-    // Where in the world this pixel is: a tile, and the fraction of it this
-    // fragment sits at. The fraction is what makes a pool a gradient rather
-    // than a set of flat tiles with a step at every edge — true of the ground
-    // and equally true of a static's own face, which is why `statics.wgsl`
-    // computes one for a wall's run and a floor's spread alike (see its own
-    // comment: without it a row of wall tiles would light as separate flat
-    // panels instead of one continuous surface across the seam). It is packed
-    // identically for every kind, in the same bits, and decoded once here.
-    //
-    // The **tile itself** is not: `docs/gbuffer.md` step 3 moved it to a
-    // per-kind instance buffer for a static or a mobile, and step 7 did the
-    // same for the ground — the fragment's own picture used to repeat it into
-    // every pixel it covers, and `place.x`/`place.y` carry an id into the
-    // right buffer instead.
+    // Which *tile* this pixel's picture came from is still an id into a
+    // per-kind instance buffer — `docs/gbuffer.md` step 3 for a static or a
+    // mobile, step 7 for the ground — because the tile is what the shadow walk
+    // starts its cell stepping from, and a whole number a pass knew exactly is
+    // not something to recover by flooring anything.
     let kind = place.w & KIND_MASK;
-    let sub = vec2<f32>(
-        f32((place.w >> 2u) & SUB_TILE_MASK) / SUB_TILE,
-        f32((place.w >> 9u) & SUB_TILE_MASK) / SUB_TILE,
-    );
     // Read before the id lookup below, not after: a mesh face's sentinel
     // (`STANCE_MESH_FACE`) decides *which* buffer the id addresses, and the
     // real stance a mesh face's normal names lives in that buffer's own row,
@@ -1613,13 +1608,20 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         }
         tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
     }
-    // The height is the channel's two fields together — whole units and the
-    // sixteenths above them, `docs/lighting_height.md` phase 1. Through
-    // `unpack_place_z` rather than by hand: reading only the low eight bits
-    // still compiles, still draws, and quietly puts every fragment of a
-    // vertical face back on the staircase of one-unit treads the fraction
-    // exists to remove.
-    let at = vec3<f32>(tile.x + sub.x, tile.y + sub.y, unpack_place_z(place.z));
+    // And where the fragment itself is — read, not rebuilt. This used to be
+    // `tile + fraction` with the fraction taken out of the place attachment's
+    // fourth channel in hundred-and-twenty-sevenths, and a height taken out of
+    // its third as eight whole units plus four bits of sixteenths. Every one of
+    // the three was exact in the pass that computed it; `docs/lighting_rebuild.md`
+    // phase 2 is the decision to carry the number instead of the fields, and its
+    // second root — "a fragment's own position is not exactly known, so a shadow
+    // ray must start away from where it really is" — is the bill that packing ran
+    // up.
+    let at = textureLoad(position_of, texel, 0).xyz;
+    // Where in its tile that leaves it. Nothing computes the fraction any more;
+    // this is the difference between two things already known, and only the
+    // diagnostics below read it.
+    let sub = at.xy - tile;
     // And which way the surface drawn here looks, where it is a wall's face. Zero
     // for the ground, for a mobile and for anything standing up whose art would
     // not name an edge — none of those has a side to be lit from.

@@ -1370,8 +1370,8 @@ fn main() {
     let format = openshard_client_render::blit::WORLD_FORMAT;
     let world = openshard_client_render::blit::world_texture(&device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(&device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, width, height);
+    let gbuffer_views = gbuffer.views();
     let depth_tex = renderer::depth_texture(&device, width, height);
     let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -1381,7 +1381,7 @@ fn main() {
     let mut mesh_pass = MeshFaceRenderer::new(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target {
-        place: &place_view,
+        gbuffer: &gbuffer_views,
         view: &world_view,
         depth: &depth_view,
         width,
@@ -1396,7 +1396,7 @@ fn main() {
     // "whose pixel is this, and where in the world is its fragment". Read once,
     // here, because the blit below neither writes it nor changes it however
     // many views are dumped.
-    let drawn = read_place(&device, &queue, &place, width, height);
+    let drawn = read_place(&device, &queue, gbuffer.place(), width, height);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("surface"),
@@ -1533,7 +1533,7 @@ fn main() {
             openshard_client_render::blit::Frame {
                 target: &surface_view,
                 world: &world_view,
-                place: &place_view,
+                gbuffer: &gbuffer_views,
                 face_instances: &dummy_instances,
                 mobile_instances: &dummy_instances,
                 mesh_instances: mesh_pass.rows_buffer(),

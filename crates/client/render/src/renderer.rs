@@ -62,13 +62,14 @@ pub struct Target<'a> {
     /// buffer would be back to "everything drawn later wins", which puts every
     /// wall in front of every hill.
     pub depth: &'a wgpu::TextureView,
-    /// Where every pass writes which tile its pixels came from.
+    /// Where every pass writes what it drew, beside the picture: which tile the
+    /// pixel came from, and where in the world its fragment is.
     ///
     /// Shared for the same reason the depth buffer is, and filled by the same
     /// draws: it is one answer per pixel about one frame, and a pass that wrote
     /// its own would leave the lighting reading the ground's tile under a wall's
-    /// picture. See [`crate::place`].
-    pub place: &'a wgpu::TextureView,
+    /// picture. See [`crate::gbuffer`].
+    pub gbuffer: &'a crate::gbuffer::Views,
     /// Its width in real pixels.
     pub width: u32,
     /// Its height in real pixels.
@@ -93,14 +94,14 @@ impl<'a> Target<'a> {
     pub fn whole(
         view: &'a wgpu::TextureView,
         depth: &'a wgpu::TextureView,
-        place: &'a wgpu::TextureView,
+        gbuffer: &'a crate::gbuffer::Views,
         width: u32,
         height: u32,
     ) -> Self {
         Self {
             view,
             depth,
-            place,
+            gbuffer,
             width,
             height,
             projection: Projection::one_to_one(width, height),
@@ -146,6 +147,16 @@ pub fn depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 /// flagstone lying on it, and the flagstone gives way to the body standing on
 /// the flagstone. Under `Less` every one of those ties resolved backwards, and
 /// silently: the depths were right and the first writer kept the pixel.
+pub(crate) fn depth_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: DEPTH_FORMAT,
+        depth_write_enabled: Some(true),
+        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    }
+}
+
 /// The second colour target every world pass writes: which tile a pixel is.
 ///
 /// Shared by the ground and the sprite pipelines because it is one attachment
@@ -158,15 +169,17 @@ pub(crate) const PLACE_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
     write_mask: wgpu::ColorWrites::ALL,
 };
 
-pub(crate) fn depth_state() -> wgpu::DepthStencilState {
-    wgpu::DepthStencilState {
-        format: DEPTH_FORMAT,
-        depth_write_enabled: Some(true),
-        depth_compare: Some(wgpu::CompareFunction::LessEqual),
-        stencil: wgpu::StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
-    }
-}
+/// The third: where in the world that pixel's fragment is — see
+/// [`crate::gbuffer::POSITION_FORMAT`].
+///
+/// No blending here either, and for a stronger reason than the place plane's:
+/// two positions averaged is a point on neither surface, floating in the air
+/// between them.
+pub(crate) const POSITION_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
+    format: crate::gbuffer::POSITION_FORMAT,
+    blend: None,
+    write_mask: wgpu::ColorWrites::ALL,
+};
 
 /// Draws ground.
 #[derive(Debug)]
@@ -387,6 +400,18 @@ impl GroundRenderer {
                                 offset: 56,
                                 shader_location: 5,
                             },
+                            // And the first of `Place::packed`'s two words —
+                            // the tile, `x | y << 16`. Declared as an attribute
+                            // rather than fetched back out of the storage
+                            // binding the way `blit.wgsl` does it: this pass
+                            // needs it to write a fragment's world position,
+                            // which is per pixel, and a per-instance value the
+                            // vertex stage already has costs nothing to carry.
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 60,
+                                shader_location: 6,
+                            },
                         ],
                     }),
                 ],
@@ -403,8 +428,10 @@ impl GroundRenderer {
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
-                    // And the same fragments say where in the world they are.
+                    // And the same fragments say where in the world they are —
+                    // which tile, and the exact point.
                     Some(PLACE_TARGET),
+                    Some(POSITION_TARGET),
                 ],
             }),
             primitive: wgpu::PrimitiveState {
@@ -533,11 +560,20 @@ impl GroundRenderer {
                 // reason the depth buffer is: this is the frame's first pass,
                 // and what it leaves is what the passes after it load.
                 Some(wgpu::RenderPassColorAttachment {
-                    view: target.place,
+                    view: &target.gbuffer.place,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(crate::place::CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.position,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::gbuffer::POSITION_CLEAR),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -851,8 +887,10 @@ impl SpriteRenderer {
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
-                    // And the same fragments say where in the world they are.
+                    // And the same fragments say where in the world they are —
+                    // which tile, and the exact point.
                     Some(PLACE_TARGET),
+                    Some(POSITION_TARGET),
                 ],
             }),
             primitive: wgpu::PrimitiveState {
@@ -1101,7 +1139,16 @@ impl SpriteRenderer {
                 // Loaded, not cleared: the ground pass wrote the tiles under
                 // these sprites, and a wall keeps only the pixels it drew.
                 Some(wgpu::RenderPassColorAttachment {
-                    view: target.place,
+                    view: &target.gbuffer.place,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.position,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1360,7 +1407,7 @@ impl MeshFaceRenderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(PLACE_TARGET)],
+                targets: &[Some(PLACE_TARGET), Some(POSITION_TARGET)],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1457,18 +1504,29 @@ impl MeshFaceRenderer {
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("mesh face"),
-            // No colour target at all: `target.view` already carries the
-            // billboard sprite's own picture, and this pass has nothing to
-            // add to it — only `target.place` and the shared depth buffer.
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target.place,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+            // No picture at all: `target.view` already carries the billboard
+            // sprite's own, and this pass has nothing to add to it — only the
+            // G-buffer's own planes and the shared depth buffer.
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.place,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.position,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: target.depth,
                 depth_ops: Some(wgpu::Operations {

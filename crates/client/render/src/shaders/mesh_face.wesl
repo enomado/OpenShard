@@ -79,6 +79,11 @@ const INSIDE: f32 = 126.0 / 127.0;
 
 struct FragmentOut {
     @location(0) place: vec4<u32>,
+    // And where that fragment is, unpacked and unquantised — `crate::gbuffer`.
+    // This pass is the one producer that had it exactly all along: `in.world`
+    // is the rasteriser's own interpolation of three real corners, which is
+    // why the phase's test picks a mesh face to compare against.
+    @location(1) position: vec4<f32>,
 };
 
 @fragment
@@ -98,5 +103,13 @@ fn fs_main(in: VertexOut) -> FragmentOut {
 
     var out: FragmentOut;
     out.place = pack_place(in.id, in.world.z, STANCE_MESH_FACE, KIND_STATIC, sub);
+    // The same point, as the number rather than as three fields of a `u16`
+    // each. Built from `in.tile + sub` and not from `in.world` directly,
+    // though the two differ only on a face's own outermost edge: the clamp is
+    // what keeps the point inside the tile `place` names, and a reader that
+    // floors this to find a cell would otherwise be handed the neighbour's on
+    // exactly the fragments `INSIDE` exists for. Removing it is phase 4's,
+    // where the cell stops being a separate fact from the position.
+    out.position = vec4<f32>(in.tile + sub, in.world.z, 1.0);
     return out;
 }

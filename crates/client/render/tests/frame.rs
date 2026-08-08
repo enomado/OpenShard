@@ -215,8 +215,8 @@ fn render_both(
     // would not be testing the thing that makes them agree.
     let depth = renderer::depth_texture(device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, width, height);
+    let gbuffer_views = gbuffer.views();
 
     // None of these frames ask for a hue — every quad built below carries
     // `hue: 0` — so an empty ramp is a real texture the shader can bind rather
@@ -231,7 +231,7 @@ fn render_both(
     let mut people = SpriteRenderer::new(device, queue, format, mobiles.0, &hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target {
-        place: &place_view,
+        gbuffer: &gbuffer_views,
         view: &view,
         depth: &depth_view,
         width,
@@ -698,8 +698,8 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(&device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(&device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, width, height);
+    let gbuffer_views = gbuffer.views();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut ground_pass = GroundRenderer::new(&device, &queue, format, &atlas, &texmaps);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -707,7 +707,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
         &device,
         &queue,
         &mut encoder,
-        Target::whole(&world_view, &depth_view, &place_view, width, height),
+        Target::whole(&world_view, &depth_view, &gbuffer_views, width, height),
         &quads,
     );
     queue.submit([encoder.finish()]);
@@ -742,7 +742,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
-            place: &place_view,
+            gbuffer: &gbuffer_views,
             // Ground only: nothing here ever indexes either static/mobile
             // buffer, but the ground quads drawn above are real, so their id
             // has to resolve through the real buffer and not a dummy.
@@ -819,8 +819,8 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(&device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(&device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, width, height);
+    let gbuffer_views = gbuffer.views();
 
     // A flat grey field: one land graphic whose art is a single value, drawn
     // over the whole frame. Mid-grey and not white, so that "brighter" is
@@ -861,7 +861,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         &device,
         &queue,
         &mut encoder,
-        Target::whole(&world_view, &depth_view, &place_view, width, height),
+        Target::whole(&world_view, &depth_view, &gbuffer_views, width, height),
         &quads,
     );
     queue.submit([encoder.finish()]);
@@ -930,7 +930,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
-            place: &place_view,
+            gbuffer: &gbuffer_views,
             // Ground only, and the ground quads drawn above are real, so
             // their id has to resolve through the real buffer.
             face_instances: &dummy_instances,
@@ -1053,8 +1053,8 @@ fn a_wall_stops_the_light_behind_it() {
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(&device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(&device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, width, height);
+    let gbuffer_views = gbuffer.views();
 
     // Four tiles of one row, drawn as four flat squares side by side: the flame
     // stands on the first, the wall is on the second, and the two after it are
@@ -1093,7 +1093,7 @@ fn a_wall_stops_the_light_behind_it() {
         &device,
         &queue,
         &mut encoder,
-        Target::whole(&world_view, &depth_view, &place_view, width, height),
+        Target::whole(&world_view, &depth_view, &gbuffer_views, width, height),
         &quads,
     );
     queue.submit([encoder.finish()]);
@@ -1151,7 +1151,7 @@ fn a_wall_stops_the_light_behind_it() {
             openshard_client_render::blit::Frame {
                 target: &surface_view,
                 world: &world_view,
-                place: &place_view,
+                gbuffer: &gbuffer_views,
                 // Ground only, and the ground quads drawn above are real, so
                 // their id has to resolve through the real buffer.
                 face_instances: &dummy_instances,
@@ -1261,8 +1261,8 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(&device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(&device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, width, height);
+    let gbuffer_views = gbuffer.views();
 
     // A sprite made here rather than read from a client, and one real quad: a
     // pass handed nothing returns before it binds its pipeline, which is the
@@ -1298,7 +1298,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         &device,
         &queue,
         &mut encoder,
-        Target::whole(&world_view, &depth_view, &place_view, width, height),
+        Target::whole(&world_view, &depth_view, &gbuffer_views, width, height),
         &quads,
         None,
     );
@@ -1337,7 +1337,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
-            place: &place_view,
+            gbuffer: &gbuffer_views,
             face_instances: sprites.instances_buffer(),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
@@ -1601,13 +1601,13 @@ fn render_hued(
     });
     let depth = renderer::depth_texture(device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, width, height);
+    let gbuffer_views = gbuffer.views();
 
     let mut ground = GroundRenderer::new(device, queue, format, land, texmaps);
     let mut statics = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target_view = Target::whole(&view, &depth_view, &place_view, width, height);
+    let target_view = Target::whole(&view, &depth_view, &gbuffer_views, width, height);
     ground.render(device, queue, &mut encoder, target_view, &[]);
     statics.render(device, queue, &mut encoder, target_view, quads, None);
     encoder.copy_texture_to_buffer(
@@ -2325,9 +2325,91 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
     );
 }
 
+/// A mesh face's fragment says where it is, to the float.
+///
+/// `docs/lighting_rebuild.md` phase 2's own "done when", and the mesh pass is
+/// the producer to ask it of: its vertices carry their true world positions
+/// (`MeshFaceVertex::world`) and the rasteriser interpolates them, so the
+/// number the pass has is the number the geometry has — there is no projection
+/// to invert and nothing to reconstruct. What this pins is that the number
+/// *survives*: the same fragment's place attachment holds `z` to a sixteenth of
+/// a unit and its tile fraction to a hundred-and-twenty-seventh, and every
+/// constant on the height track exists because the lighting read those instead
+/// of this.
+///
+/// The quad is flat and one point over one tile, so every fragment of it has
+/// the same position and any pixel inside the shape answers — no clamp is in
+/// play, since the point is the tile's middle and not its edge.
+#[test]
+fn a_mesh_face_pixel_carries_its_exact_world_position() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
+    use openshard_client_render::place::Stance;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([]).expect("nothing always fits");
+
+    // A height with a fraction the place attachment cannot hold: `15.1` is not
+    // a multiple of a sixteenth, and neither fraction of the tile is a multiple
+    // of a hundred-and-twenty-seventh. That is the point — a test at `15.0` and
+    // `0.5` would pass through the old packing untouched and prove nothing.
+    let tile = [300.0, 400.0];
+    let world = [tile[0] + 0.3, tile[1] + 0.7, 15.1];
+    let corner = |x: f32, y: f32| MeshFaceVertex {
+        screen: Vec2::new(x, y),
+        world,
+        depth: 0.4,
+        id: 0,
+        tile,
+    };
+    let vertices = [
+        corner(54.0, 54.0),
+        corner(74.0, 54.0),
+        corner(74.0, 74.0),
+        corner(54.0, 54.0),
+        corner(74.0, 74.0),
+        corner(54.0, 74.0),
+    ];
+    let rows = [MeshFaceRow {
+        tile: (300, 400),
+        stance: Stance::Flat,
+        owner: 0,
+    }];
+
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &[],
+        &vertices,
+        &rows,
+        128,
+    );
+    assert_eq!(places.at(64, 64)[3] & 3, 2, "nothing was drawn at (64, 64)");
+    assert_eq!(
+        places.position_at(64, 64),
+        [world[0], world[1], world[2], 1.0],
+        "a mesh face's fragment does not carry the position the pass computed",
+    );
+    // And what the old fields say about the same fragment, so that the two are
+    // compared rather than merely both present: the packing is off by up to a
+    // thirty-second of a `z` unit and a two-hundred-and-fifty-fourth of a tile,
+    // which is the quantisation this plane removes.
+    let place = places.at(64, 64);
+    let packed_z = openshard_client_render::place::unpacked_height(place[2]);
+    assert_ne!(packed_z, world[2], "the packed height happened to be exact");
+    assert!((packed_z - world[2]).abs() <= 0.5 / 16.0);
+}
+
 /// Draw ground, statics and any mesh faces standing on them, and read back the
-/// *place* attachment rather than the picture. `size * 8` must be a multiple
-/// of 256, as every readback here.
+/// *place* attachment and the position plane beside it. `size * 8` must be a
+/// multiple of 256, as every readback here.
 #[allow(clippy::too_many_arguments)]
 fn render_places(
     device: &wgpu::Device,
@@ -2347,8 +2429,8 @@ fn render_places(
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(device, size, size);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(device, size, size);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, size, size);
+    let gbuffer_views = gbuffer.views();
     let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
 
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -2357,12 +2439,18 @@ fn render_places(
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
+    let position_readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("positions"),
+        size: u64::from(size) * u64::from(size) * 16,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
 
     let mut ground_pass = GroundRenderer::new(device, queue, format, atlas, texmaps);
     let mut sprite_pass = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), &hue_ramp);
     let mut mesh_pass = renderer::MeshFaceRenderer::new(device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target = Target::whole(&world_view, &depth_view, &place_view, size, size);
+    let target = Target::whole(&world_view, &depth_view, &gbuffer_views, size, size);
     ground_pass.render(device, queue, &mut encoder, target, quads);
     // A corner static's two faces get their own id here too, the same as the
     // real pass — see `sprite::split_corners`'s own doc and
@@ -2380,48 +2468,64 @@ fn render_places(
     // renderer's own order (`docs/gbuffer.md` step 4c), so depth and place
     // only ever tie or improve on what the billboard sprite just wrote.
     mesh_pass.render(device, queue, &mut encoder, target, mesh_vertices, mesh_rows);
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &place,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size * 8),
-                rows_per_image: Some(size),
+    let mut copy = |texture: &wgpu::Texture, buffer: &wgpu::Buffer, stride: u32| {
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
             },
-        },
-        wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-    );
+            wgpu::TexelCopyBufferInfo {
+                buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * stride),
+                    rows_per_image: Some(size),
+                },
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+        );
+    };
+    copy(gbuffer.place(), &readback, 8);
+    copy(gbuffer.position(), &position_readback, 16);
     queue.submit([encoder.finish()]);
 
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        result.expect("mapping a buffer this test just wrote");
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("waiting on our own submission");
-    let bytes = slice
-        .get_mapped_range()
-        .expect("the map completed above")
-        .to_vec();
-    readback.unmap();
-    Places { width: size, bytes }
+    let read = |buffer: &wgpu::Buffer| {
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |result| {
+            result.expect("mapping a buffer this test just wrote");
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("waiting on our own submission");
+        let bytes = slice
+            .get_mapped_range()
+            .expect("the map completed above")
+            .to_vec();
+        buffer.unmap();
+        bytes
+    };
+    Places {
+        width: size,
+        bytes: read(&readback),
+        positions: read(&position_readback),
+    }
 }
 
 /// The place attachment read back: four `u16` channels a texel.
 struct Places {
     width: u32,
     bytes: Vec<u8>,
+    /// The position plane over the same pixels — read back with the place one
+    /// and never apart from it, because the two are one frame's answer and a
+    /// fixture that copied them from different draws would compare a fragment
+    /// against a different fragment.
+    positions: Vec<u8>,
 }
 
 impl Places {
@@ -2432,6 +2536,23 @@ impl Places {
         for (channel, slot) in out.iter_mut().enumerate() {
             let at = start + channel * 2;
             *slot = u16::from_le_bytes([self.bytes[at], self.bytes[at + 1]]);
+        }
+        out
+    }
+
+    /// `(x, y, z, 1)` at one pixel — [`openshard_client_render::gbuffer`]'s
+    /// position plane, the number itself rather than the fields above.
+    fn position_at(&self, x: u32, y: u32) -> [f32; 4] {
+        let start = ((y * self.width + x) * 16) as usize;
+        let mut out = [0f32; 4];
+        for (channel, slot) in out.iter_mut().enumerate() {
+            let at = start + channel * 4;
+            *slot = f32::from_le_bytes([
+                self.positions[at],
+                self.positions[at + 1],
+                self.positions[at + 2],
+                self.positions[at + 3],
+            ]);
         }
         out
     }
@@ -3318,8 +3439,8 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(&device, frame_width, frame_height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(&device, frame_width, frame_height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, frame_width, frame_height);
+    let gbuffer_views = gbuffer.views();
     // The ground pass clears; the sprite pass loads what it left. Given nothing
     // to draw, it is the clear on its own.
     let land = LandAtlas::pack([]).expect("nothing always fits");
@@ -3327,7 +3448,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     let mut ground = GroundRenderer::new(&device, &queue, format, &land, &texmaps);
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    let target_view = Target::whole(&view, &depth_view, &place_view, frame_width, frame_height);
+    let target_view = Target::whole(&view, &depth_view, &gbuffer_views, frame_width, frame_height);
     ground.render(&device, &queue, &mut encoder, target_view, &[]);
     statics.render(&device, &queue, &mut encoder, target_view, &quads, None);
     queue.submit([encoder.finish()]);
@@ -3382,13 +3503,13 @@ fn render_outlined(
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let depth = renderer::depth_texture(device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, width, height);
+    let gbuffer_views = gbuffer.views();
     let mask = outline::mask_texture(device, width, height);
     let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
     let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
 
-    let target = Target::whole(&world_view, &depth_view, &place_view, width, height);
+    let target = Target::whole(&world_view, &depth_view, &gbuffer_views, width, height);
     let empty_land = LandAtlas::pack([]).expect("nothing always fits");
     let empty_texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
     // The ground pass with nothing in it, purely to clear the world image: it is
@@ -3439,7 +3560,7 @@ fn render_outlined(
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
-            place: &place_view,
+            gbuffer: &gbuffer_views,
             face_instances: sprites.instances_buffer(),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
@@ -3928,8 +4049,8 @@ fn parity_frame(
     let Fixture { surface, z, owner } = fixture;
     let world = openshard_client_render::blit::world_texture(device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, width, height);
+    let gbuffer_views = gbuffer.views();
 
     // Neither `Kind::Static` nor `Kind::Land` pixels carry their own `x`/`y`
     // in the attachment any more — `docs/gbuffer.md` step 3 moved a static's
@@ -4000,16 +4121,13 @@ fn parity_frame(
     };
 
     let mut texels: Vec<u16> = Vec::with_capacity((width * height * 4) as usize);
+    let mut positions: Vec<f32> = Vec::with_capacity((width * height * 4) as usize);
     for py in 0..height {
         for px in 0..width {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
-            // `(id, z + 128 | stance, kind | sub)` either way now — an id
-            // into `ground_rows` for the ground, into `face_rows` for a
-            // static's face: the packing `crate::place` documents and
-            // `blit.wgsl` takes apart. Land at
-            // `z = 0` — the ground of the room — unless the fixture is about a
-            // wall's face, in which case every pixel is a static standing on
-            // that face.
+            // Land at `z = 0` — the ground of the room — unless the fixture is
+            // about a wall's face, in which case every pixel is a static
+            // standing on that face.
             //
             // The stance is what the facing test reads, and a fixture without one
             // would leave the whole of that test uncompared: `light::sample` would
@@ -4018,55 +4136,76 @@ fn parity_frame(
                 // Land with no stance: what every fixture that predates surfaces
                 // is, and a billboard's answer — nothing is known about which way
                 // it looks, so every flame that reaches it lights it.
-                Surface::Upright => (1u16, openshard_client_render::place::Stance::Upright as u16),
+                Surface::Upright => (
+                    openshard_client_render::place::Kind::Land,
+                    openshard_client_render::place::Stance::Upright,
+                ),
                 // A floor, a rug, the top of a wall: it looks up, and that is the
                 // fixture decision 27 needed. Without one the shader could return
                 // any normal at all for a flat pixel and every parity test here
                 // would still pass.
                 Surface::Flat => (
-                    openshard_client_render::place::Kind::Static as u16,
-                    openshard_client_render::place::Stance::Flat as u16,
+                    openshard_client_render::place::Kind::Static,
+                    openshard_client_render::place::Stance::Flat,
                 ),
                 Surface::Face(face) => (
-                    openshard_client_render::place::Kind::Static as u16,
-                    openshard_client_render::place::Stance::face(face) as u16,
+                    openshard_client_render::place::Kind::Static,
+                    openshard_client_render::place::Stance::face(face),
                 ),
             };
-            let height = (i32::from(z) + 128) as u16 | stance << openshard_client_render::place::STANCE_SHIFT;
-            // A static's or a mobile's *tile* comes from the row now — only
-            // that moved. The fraction is still this fragment's own, packed
-            // exactly as the ground's, in every case: see `blit.wgsl`'s own
-            // comment for why a wall's face needs one too.
-            let (word0, word1) = if kind == openshard_client_render::place::Kind::Static as u16 {
-                let id = id_of(x, y);
-                ((id & 0xFFFF) as u16, (id >> 16) as u16)
-            } else {
-                let id = ground_id_of(x, y);
-                ((id & 0xFFFF) as u16, (id >> 16) as u16)
+            // Both planes off one statement about the fragment — see
+            // `openshard_client_render::gbuffer::Fragment`, which is the format
+            // itself and not this fixture's reading of it.
+            let fragment = openshard_client_render::gbuffer::Fragment {
+                tile: (x, y),
+                sub: (
+                    f32::from(sub_x) / openshard_client_render::place::SUB_TILE,
+                    f32::from(sub_y) / openshard_client_render::place::SUB_TILE,
+                ),
+                z: f32::from(z),
+                kind,
+                stance,
             };
-            texels.extend_from_slice(&[word0, word1, height, kind | sub_x << 2 | sub_y << 9]);
+            // A static's or a mobile's *tile* comes from the row now — only
+            // that moved, and only in the place plane: the id goes over the two
+            // words the tile occupies there, and the position plane keeps
+            // saying where the fragment is.
+            let id = match kind {
+                openshard_client_render::place::Kind::Static => id_of(x, y),
+                _ => ground_id_of(x, y),
+            };
+            let mut place = fragment.place();
+            place[0] = (id & 0xFFFF) as u16;
+            place[1] = (id >> 16) as u16;
+            texels.extend_from_slice(&place);
+            positions.extend_from_slice(&fragment.position());
         }
     }
+    let upload = |texture: &wgpu::Texture, bytes: &[u8], stride: u32| {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * stride),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    };
     let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &place,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &bytes,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 8),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
+    upload(gbuffer.place(), &bytes, 8);
+    let bytes: Vec<u8> = positions.iter().flat_map(|value| value.to_le_bytes()).collect();
+    upload(gbuffer.position(), &bytes, 16);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("surface"),
@@ -4146,7 +4285,7 @@ fn parity_frame(
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
-            place: &place_view,
+            gbuffer: &gbuffer_views,
             face_instances: face_instances.as_ref().unwrap_or(&dummy_instances),
             // No mobile pixels in this fixture: the dummy stands in for it.
             mobile_instances: &dummy_instances,

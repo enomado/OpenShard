@@ -216,8 +216,8 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let world = openshard_client_render::blit::world_texture(&device, SIDE, SIDE);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
-    let place_tex = openshard_client_render::place::texture(&device, SIDE, SIDE);
-    let place_view = place_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, SIDE, SIDE);
+    let gbuffer_views = gbuffer.views();
     let depth_tex = renderer::depth_texture(&device, SIDE, SIDE);
     let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -244,7 +244,7 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
     let mut mesh_pass = MeshFaceRenderer::new(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target {
-        place: &place_view,
+        gbuffer: &gbuffer_views,
         view: &world_view,
         depth: &depth_view,
         width: SIDE,
@@ -257,7 +257,7 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
 
     // What the world passes left on each pixel: which surface owns it, and where
     // in the world that surface's own fragment is.
-    let drawn = oracle::read_place(&device, &queue, &place_tex, SIDE, SIDE);
+    let drawn = oracle::read_place(&device, &queue, gbuffer.place(), SIDE, SIDE);
 
     let at = flame();
     let lighting = Lighting {
@@ -300,7 +300,7 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         openshard_client_render::blit::Frame {
             target: &surface_view,
             world: &world_view,
-            place: &place_view,
+            gbuffer: &gbuffer_views,
             face_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
             mesh_instances: mesh_pass.rows_buffer(),

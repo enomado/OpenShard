@@ -132,6 +132,10 @@ const STANCE_MASK: u32 = 15u;
 struct FragmentOut {
     @location(0) color: vec4<f32>,
     @location(1) place: vec4<u32>,
+    // And where in the world that fragment is, unpacked — `crate::gbuffer`.
+    // The same three numbers `place` carries as an id into a row, a seven-bit
+    // fraction and a `z` in sixteenths, before any of that quantisation.
+    @location(2) position: vec4<f32>,
 };
 
 @vertex
@@ -352,5 +356,11 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // exist to vary. Only the id replaces `x`/`y`; everything else here is
     // unchanged from before this pass had one.
     out.place = pack_place(id, z, stance, (in.place.y >> 8u) & KIND_MASK, sub);
+    // And the same fragment as a point. The tile comes off the instance's own
+    // first word — the one `blit.wgsl` fetches back out of `face_instances[id]`
+    // — so this is what that pass reconstructs, computed where the two halves
+    // are still both exact instead of after each has been through a field.
+    let tile = vec2<f32>(f32(in.place.x & 0xFFFFu), f32(in.place.x >> 16u));
+    out.position = vec4<f32>(tile + sub, z, 1.0);
     return out;
 }

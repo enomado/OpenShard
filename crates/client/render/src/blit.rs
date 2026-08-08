@@ -60,10 +60,11 @@ pub struct Frame<'a> {
     pub target: &'a wgpu::TextureView,
     /// The world image it comes from.
     pub world: &'a wgpu::TextureView,
-    /// Which tile each of that image's pixels came from — see [`crate::place`].
-    /// What the lighting is computed against, and the reason this pass can tell
-    /// a wall's lit face from the shadow behind it.
-    pub place: &'a wgpu::TextureView,
+    /// What the world passes wrote about each of that image's pixels beside the
+    /// picture — see [`crate::gbuffer`]. What the lighting is computed against,
+    /// and the reason this pass can tell a wall's lit face from the shadow
+    /// behind it.
+    pub gbuffer: &'a crate::gbuffer::Views,
     /// The statics pass's own instance buffer, bound a second time as storage
     /// so a static's fragment can read `instances[id]` back instead of
     /// carrying its `(x, y, z)` on every pixel of its own picture — see
@@ -370,6 +371,20 @@ impl Blit {
                     },
                     count: None,
                 },
+                // Where each pixel's fragment is — the G-buffer's second plane,
+                // `crate::gbuffer::POSITION_FORMAT`. Unfilterable, and not
+                // because `Rgba32Float` happens to be: a filtered position is
+                // a point on neither of the two surfaces it was averaged from.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -475,7 +490,7 @@ impl Blit {
         let Frame {
             target,
             world,
-            place,
+            gbuffer,
             face_instances,
             mobile_instances,
             mesh_instances,
@@ -511,7 +526,7 @@ impl Blit {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(place),
+                    resource: wgpu::BindingResource::TextureView(&gbuffer.place),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -576,6 +591,10 @@ impl Blit {
                     resource: wgpu::BindingResource::TextureView(
                         &self.solid_z.create_view(&wgpu::TextureViewDescriptor::default()),
                     ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: wgpu::BindingResource::TextureView(&gbuffer.position),
                 },
             ],
         });

@@ -189,7 +189,7 @@ fn measure(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     world: &wgpu::TextureView,
-    place: &wgpu::TextureView,
+    gbuffer: &openshard_client_render::gbuffer::Views,
     face_instances: &wgpu::Buffer,
     mobile_instances: &wgpu::Buffer,
     mesh_instances: &wgpu::Buffer,
@@ -202,7 +202,7 @@ fn measure(
     let frame = openshard_client_render::blit::Frame {
         target: surface,
         world,
-        place,
+        gbuffer,
         face_instances,
         mobile_instances,
         mesh_instances,
@@ -369,8 +369,8 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     let format = openshard_client_render::blit::WORLD_FORMAT;
     let world = openshard_client_render::blit::world_texture(&device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = openshard_client_render::place::texture(&device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, width, height);
+    let gbuffer_views = gbuffer.views();
     let depth = renderer::depth_texture(&device, width, height);
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
     let hue_ramp = HueRamp::build(&Hues::load(dir.join("hues.mul")).expect("hues.mul"));
@@ -379,7 +379,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     let mut statics_pass = SpriteRenderer::new(&device, &queue, format, static_atlas.pixels(), &hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target {
-        place: &place_view,
+        gbuffer: &gbuffer_views,
         view: &world_view,
         depth: &depth_view,
         width,
@@ -536,7 +536,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
                 &device,
                 &queue,
                 &world_view,
-                &place_view,
+                &gbuffer_views,
                 statics_pass.instances_buffer(),
                 &dummy_instances,
                 &dummy_mesh_instances,
@@ -560,7 +560,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             openshard_client_render::blit::Frame {
                 target: &surface_view,
                 world: &world_view,
-                place: &place_view,
+                gbuffer: &gbuffer_views,
                 face_instances: statics_pass.instances_buffer(),
                 mobile_instances: &dummy_instances,
                 mesh_instances: &dummy_mesh_instances,

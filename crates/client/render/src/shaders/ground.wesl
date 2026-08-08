@@ -83,6 +83,11 @@ struct VertexOut {
     // has to reach. Taking the tile's base instead would light a hilltop as if
     // it were the valley floor.
     @location(5) place_z: f32,
+    // This tile's own `(x, y)`, flat across the instance — the same two numbers
+    // `blit.wgsl` fetches back out of `ground_instances[id].place0`, carried
+    // here because a fragment's *world position* is this plus `local`, and that
+    // is per pixel. See `FragmentOut::position`.
+    @location(7) @interpolate(flat) tile: vec2<f32>,
 };
 
 // What one fragment of a world pass writes: the picture, and where in the world
@@ -90,6 +95,9 @@ struct VertexOut {
 struct FragmentOut {
     @location(0) color: vec4<f32>,
     @location(1) place: vec4<u32>,
+    // The same fragment as a point rather than as an id, a fraction and a
+    // height in three fields of two `u16`s — `crate::gbuffer`.
+    @location(2) position: vec4<f32>,
 };
 
 @vertex
@@ -110,6 +118,10 @@ fn vs_main(
     // statics included. Computed on the CPU — see `crate::depth` — because it
     // is one ordering shared by two passes and neither may derive its own.
     @location(5) depth: f32,
+    // Per instance: `crate::place::Place::packed`'s first word, the tile as
+    // `x | y << 16`. The second word is not declared — nothing in this pass
+    // reads a ground quad's `z`, kind or stance.
+    @location(6) place0: u32,
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOut {
     let half = viewport.tile * 0.5;
@@ -177,6 +189,7 @@ fn vs_main(
         (offset.x + offset.y) / f32(viewport.tile.x) + 0.5,
         (offset.y - offset.x) / f32(viewport.tile.x) + 0.5,
     );
+    out.tile = vec2<f32>(f32(place0 & 0xFFFFu), f32(place0 >> 16u));
     return out;
 }
 
@@ -198,6 +211,12 @@ fn place_of(in: VertexOut) -> vec4<u32> {
 fn fs_main(in: VertexOut) -> FragmentOut {
     var out: FragmentOut;
     out.place = place_of(in);
+    // The same place as a point. Clamped to the tile exactly as `pack_place`
+    // clamps the fraction it packs, and for the same reason: a flat tile's quad
+    // is the sprite's 44x44 square, whose corners lie outside the diamond, and
+    // a fragment there — one the alpha cut below has not reached yet — would
+    // otherwise name a neighbour nothing was drawn on.
+    out.position = vec4<f32>(in.tile + clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0)), in.place_z, 1.0);
 
     // A slope with a texture of its own takes it, and nothing else about the
     // tile changes: the shape is still the diamond its four corners make.

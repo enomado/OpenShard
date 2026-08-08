@@ -126,6 +126,7 @@ use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::follow::{Gaze, Rig};
+use openshard_client_render::gbuffer::Gbuffer;
 // `gump_art` and not `gump`: this crate has a module of that name — the egui
 // half of the same window — and the two are deliberately not merged. One
 // draws the art, the other answers the buttons.
@@ -139,7 +140,6 @@ use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::occlusion;
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::paperdoll;
-use openshard_client_render::place;
 use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, SpriteRenderer, Target};
 use openshard_client_render::select::{self, Select, Selection};
 use openshard_client_render::solids::{self, SolidsRenderer};
@@ -919,12 +919,13 @@ struct Screen {
     /// [`Screen::world`]: it has to be exactly the size of the image it is
     /// tested against.
     depth: wgpu::Texture,
-    /// Which tile each world pixel came from, written by the same three passes
-    /// and read by the blit to light the frame in world coordinates — see
-    /// `openshard_client_render::place`. Recreated with [`Screen::world`] for
-    /// the reason [`Screen::depth`] is: it is an attachment of the same passes
+    /// What the same three passes wrote about each world pixel beside the
+    /// picture — which tile it came from, and where its fragment is — read by
+    /// the blit to light the frame in world coordinates. See
+    /// `openshard_client_render::gbuffer`. Recreated with [`Screen::world`] for
+    /// the reason [`Screen::depth`] is: these are attachments of the same passes
     /// and must be exactly that image's size.
-    place: wgpu::Texture,
+    gbuffer: Gbuffer,
     /// The pass that draws the mobiles, which is the statics pass again with
     /// another atlas bound: a sprite is a sprite, and the two differ only in
     /// where the quad goes.
@@ -3821,7 +3822,7 @@ impl App {
             self.control.camera().render_width(),
             self.control.camera().render_height(),
         );
-        let place = place::texture(
+        let gbuffer = Gbuffer::new(
             &device,
             self.control.camera().render_width(),
             self.control.camera().render_height(),
@@ -3862,7 +3863,7 @@ impl App {
             world,
             blit,
             depth,
-            place,
+            gbuffer,
             mobile_pass,
             mesh_pass,
             atlases,
@@ -4378,9 +4379,9 @@ impl App {
             // one size.
             window.outline_mask = outline::mask_texture(&window.device, render_width, render_height);
             window.select_mask = outline::mask_texture(&window.device, render_width, render_height);
-            // And the place channel, which is an attachment of those same
-            // passes and is read texel for texel against that image.
-            window.place = place::texture(&window.device, render_width, render_height);
+            // And the G-buffer, whose planes are attachments of those same
+            // passes and are read texel for texel against that image.
+            window.gbuffer = Gbuffer::new(&window.device, render_width, render_height);
         }
         let world_view = window.world.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -4597,11 +4598,11 @@ impl App {
             text::collect(&labels, &self.font_atlas)
         };
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
-        let place_view = window.place.create_view(&wgpu::TextureViewDescriptor::default());
+        let gbuffer_views = window.gbuffer.views();
         let target = Target {
             view: &world_view,
             depth: &depth_view,
-            place: &place_view,
+            gbuffer: &gbuffer_views,
             width: render_width,
             height: render_height,
             projection: camera.projection(),
@@ -4773,7 +4774,7 @@ impl App {
                 blit::Frame {
                     target: &view,
                     world: &world_view,
-                    place: &place_view,
+                    gbuffer: &gbuffer_views,
                     face_instances: window.statics.instances_buffer(),
                     mobile_instances: window.mobile_pass.instances_buffer(),
                     mesh_instances: window.mesh_pass.rows_buffer(),
@@ -4829,7 +4830,7 @@ impl App {
                 select::Frame {
                     target: &view,
                     mask: &select_view,
-                    place: &place_view,
+                    place: &gbuffer_views.place,
                     face_instances: window.statics.instances_buffer(),
                     ground_instances: window.renderer.instances_buffer(),
                     size: (render_width, render_height),

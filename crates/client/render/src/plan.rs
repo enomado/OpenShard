@@ -283,13 +283,17 @@ pub fn draw(
     // attachment a world pass *would* have written for a floor covering
     // everything.
     let pixels = drawn(device, queue, lighting, view, width, height, |px, py| {
-        let tile_x = bounds.min_x + (px / scale) as i32;
-        let tile_y = bounds.min_y + (py / scale) as i32;
-        let sub_x = (px % scale) * 127 / scale;
-        let sub_y = (py % scale) * 127 / scale;
-        [
-            tile_x as u16,
-            tile_y as u16,
+        crate::gbuffer::Fragment {
+            tile: (
+                (bounds.min_x + (px / scale) as i32) as u16,
+                (bounds.min_y + (py / scale) as i32) as u16,
+            ),
+            sub: (
+                (px % scale) as f32 / scale as f32,
+                (py % scale) as f32 / scale as f32,
+            ),
+            z: 0.0,
+            kind: crate::place::Kind::Land,
             // A floor **says** it is one, in the stance above the height. It said
             // `Upright` while this comment said "flat ground" — which cost
             // nothing while a stance was only read for a wall's facing, and
@@ -297,9 +301,8 @@ pub fn draw(
             // and its tile's panels got the right to shadow it. An instrument
             // that does not write what the world pass writes answers about
             // itself. Decisions 27 and 28.
-            crate::place::packed_height(0.0, crate::place::Stance::Flat),
-            1 | (sub_x as u16) << 2 | (sub_y as u16) << 9,
-        ]
+            stance: crate::place::Stance::Flat,
+        }
     });
     Picture {
         bounds,
@@ -365,19 +368,20 @@ pub fn elevation(
             Face::South => crate::place::Stance::FaceSouth,
             Face::West => crate::place::Stance::FaceWest,
         };
-        [
-            tile_x,
-            tile_y,
-            // Through `packed_height`, which keeps the height's fraction: this
-            // picture's whole vertical axis *is* height down a face, so a
-            // packing that rounded it to whole units — as this line did, with
-            // its own copy of the format — drew the one-unit treads
-            // `docs/lighting_height.md` is about, in the instrument meant to
-            // show them. An instrument that does not write what the world pass
-            // writes answers about itself.
-            crate::place::packed_height(z, stance),
-            2 | ((sub_x * 127.0) as u16) << 2 | ((sub_y * 127.0) as u16) << 9,
-        ]
+        // Through [`crate::gbuffer::Fragment`], which keeps the height's
+        // fraction and the tile's: this picture's whole vertical axis *is*
+        // height down a face, so a packing that rounded it to whole units — as
+        // this closure did, with its own copy of the format — drew the one-unit
+        // treads `docs/lighting_height.md` is about, in the instrument meant to
+        // show them. An instrument that does not write what the world pass
+        // writes answers about itself.
+        crate::gbuffer::Fragment {
+            tile: (tile_x, tile_y),
+            sub: (sub_x, sub_y),
+            z,
+            kind: crate::place::Kind::Static,
+            stance,
+        }
     });
     Picture {
         // The run, as a rectangle one tile deep: `Picture::tile` is meaningless
@@ -431,21 +435,25 @@ fn drawn(
     view: View,
     width: u32,
     height: u32,
-    place_of: impl Fn(u32, u32) -> [u16; 4],
+    place_of: impl Fn(u32, u32) -> crate::gbuffer::Fragment,
 ) -> Vec<u8> {
     let world = crate::blit::world_texture(device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
-    let place = crate::place::texture(device, width, height);
-    let place_view = place.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = crate::gbuffer::Gbuffer::new(device, width, height);
+    let views = gbuffer.views();
 
-    // The place attachment the caller describes, texel by texel: `crate::place`'s
-    // packing, written here rather than built through `Place` because there is no
-    // quad and no instance — this is what a world pass *would* have written for
-    // the surface being asked about.
+    // The G-buffer the caller describes, texel by texel — both planes, through
+    // [`crate::gbuffer::Fragment`] rather than packed here, so that this
+    // instrument writes what a world pass writes and not a second reading of
+    // the format. There is no quad and no instance: this *is* what a pass would
+    // have left for the surface being asked about.
     let mut texels: Vec<u16> = Vec::with_capacity((width * height * 4) as usize);
+    let mut positions: Vec<f32> = Vec::with_capacity((width * height * 4) as usize);
     for py in 0..height {
         for px in 0..width {
-            texels.extend_from_slice(&place_of(px, py));
+            let fragment = place_of(px, py);
+            texels.extend_from_slice(&fragment.place());
+            positions.extend_from_slice(&fragment.position());
         }
     }
     // `Kind::Static` pixels — [`elevation`]'s, never [`draw`]'s — no longer
@@ -528,26 +536,31 @@ fn drawn(
         texel[1] = (id >> 16) as u16;
     }
 
+    let upload = |texture: &wgpu::Texture, bytes: &[u8], stride: u32| {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * stride),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    };
     let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &place,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &bytes,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 8),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
+    upload(gbuffer.place(), &bytes, 8);
+    let bytes: Vec<u8> = positions.iter().flat_map(|value| value.to_le_bytes()).collect();
+    upload(gbuffer.position(), &bytes, 16);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("plan"),
@@ -628,7 +641,7 @@ fn drawn(
         crate::blit::Frame {
             target: &surface_view,
             world: &world_view,
-            place: &place_view,
+            gbuffer: &views,
             face_instances: face_instances.as_ref().unwrap_or(&dummy_instances),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,

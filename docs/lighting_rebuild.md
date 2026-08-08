@@ -317,6 +317,31 @@ its readers (select, outline, tooltips, every oracle in `examples/`) move to `id
 *Done when:* a `View::Normal` shows the geometry's own normals, and a test asserts
 the stored position equals the world position the mesh pass computed, exactly.
 
+*Position landed.* `crates/client/render/src/gbuffer.rs` is the set — a `Gbuffer`
+owning the planes and a `Views` lending them, so the two still to come are one
+edit each and not thirty. The plane is `Rgba32Float`, written by all three world
+passes and read by `blit.wesl` as `at`; `unpack_place_z`, the seven-bit fraction
+decode and the whole `tile + sub` reconstruction are gone from that shader.
+`a_mesh_face_pixel_carries_its_exact_world_position` is the phase's own "done
+when", half of it: the mesh pass is the producer whose vertices carry true world
+positions, and the test picks a point at `15.1` above a tile at `0.3, 0.7` —
+a height no sixteenth and a fraction no hundred-and-twenty-seventh can hold — so
+that it fails if anything on the path quantises. It asserts the packed height
+beside it, to compare the two rather than merely have both.
+
+Three things it deliberately did not do. **`z` stays in `z` units:** the
+occlusion grid, every solid's span and the whole walk are stated in them, and a
+G-buffer that alone counted in tiles would be a second metric rather than one.
+**The tile stays a row lookup:** it is what the walk starts cell stepping from,
+and `floor`ing a position back into it is the class of bug `walk`'s own comment
+records. **The position is clamped into its tile** exactly where `pack_place`
+clamps the fraction, so this step changed precision and nothing else; the clamp
+goes at phase 4, where the cell stops being a fact separate from the position.
+
+Left: the normal plane and `View::Normal`, the id plane, albedo for a mesh face
+(which has none — phase 6), and `place`'s own retirement once nothing reads its
+fraction, height or stance.
+
 **Phase 3 — the BRDF.** `N·L` replaces `faces`. `FACE_EDGE` is deleted.
 *Done when:* the light oracle's "inside FACE_EDGE" class no longer exists, and its
 residual against the path tracer is quantisation only.
@@ -518,7 +543,12 @@ Things noticed while writing this, not blocking any phase:
   sixth in `frame.rs`, each restating the same `Prism::new(Face::North, &[1, 3,
   5])` and the same tile bounds. It is the scene every stair defect is found on
   and it should be one constructor.
-- `renderer.rs`'s `depth_state()` has lost its doc comment: `PLACE_TARGET` was
-  inserted between the comment and the function, so the whole explanation of the
-  depth test and its `LessEqual` tie-break now reads as documentation of the place
-  attachment, and the function itself has none.
+- ~~`renderer.rs`'s `depth_state()` has lost its doc comment: `PLACE_TARGET` was
+  inserted between the comment and the function.~~ **Fixed.** The constant moved
+  below the function it had been spliced into, and both have their own doc again.
+- ~~Hand-copies of the third channel.~~ **Fixed for the hand-written producers.**
+  `gbuffer::Fragment` is what a G-buffer texel *is* — tile, sub, `z`, kind,
+  stance — and `place()`/`position()` are the only two spellings of the packing
+  outside the shaders. `plan.rs`'s two closures and `frame.rs`'s `parity_frame`
+  went through it; they had three copies of the fraction's `<< 2`/`<< 9` between
+  them, and the second plane would have made that six.
