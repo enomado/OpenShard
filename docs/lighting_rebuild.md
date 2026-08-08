@@ -1100,6 +1100,64 @@ black, and a shadowed floor leaked a line of light along every tile boundary —
 that second one is **fixed**, and it was 6c's own arrival, since the position
 that contradicts its instance's tile is what the impostor started writing.
 
+**Phase 6e — the grid stops being a rule.** The tile is the *map's* unit and it
+has no business in the answer. Light is `∫ visibility × BRDF × falloff`,
+visibility is "does this segment meet any primitive", and a primitive is a box
+in the world — none of those three sentences contains a tile. The grid exists so
+that a ray need not be tested against a city, which is a **broad phase**: it is
+allowed to decide *which primitives to ask about* and forbidden to change what
+the answer is.
+
+*Most of the pass is already there*, which is what makes this a phase rather
+than a rewrite. Positions are world floats (phase 2), normals are world vectors
+(phase 2), the cosine and the windowed inverse square are pure functions of two
+points, the flame is a sphere and its eight samples are points on it (phase 5),
+and `ray_vs_solid` is an exact slab test in world coordinates with no tile
+anywhere in it. What is left is five places where a cell is load-bearing, and
+each is nameable:
+
+- **A primitive's own coordinates are stored relative to its tile.**
+  `occlusion::Solid::box_from_footprint` reconstructs a box as
+  `tile + byte/255` on each of four sides, so a primitive **cannot express a
+  shape wider than one tile**, and its corners are quantised to a
+  two-hundred-and-fifty-fifth of one. That is the deepest of the five: it is why
+  a wall run is N boxes and a storey's floor is one box a tile, and therefore why
+  the silhouette of either is a staircase at tile granularity in any view that
+  reads the geometry.
+- **`starting_cell`** — bookkeeping about which cell a ray begins in, and this
+  document's own backlog already says it is a repair rather than a
+  construction. With no cell in the answer there is nothing for it to arbitrate.
+- **`same_run`** — a rule stated in cells outright (`cell.x == first.x`).
+- **The vertical shortcut** — `solids_at(first)` and nothing else, an
+  optimisation that has twice had to grow a footprint gate to stop being a
+  *different* answer.
+- **The per-cell `max`** — `stopped = max(stopped, by_surface)` once per cell,
+  so that "two panels of one corner are two faces of one wall, crossed once".
+  That is a statement about *overlapping boxes for one physical surface*, and it
+  is spelled as a statement about a cell.
+
+*The order matters, and the first step is not in this list.* Merging coplanar
+neighbours into one primitive is the **prerequisite**, not a tidy-up: it is what
+makes `same_run` and the per-cell `max` unnecessary rather than deleted and
+hoped for — a run of wall that is one solid has no second face to double-count
+and no sibling to be excused from. Phase 4 measured that identity alone cannot
+retire `same_run` for exactly this reason. So: widen a primitive's coordinates
+off the tile, merge, then delete the four rules, in that order.
+
+*Done when:* a walk's answer is a function of the primitives and the segment
+alone — gated by equality against brute force over **every** primitive in the
+scene, which is the one non-circular oracle shape this tree already has — and
+`first`, `starting_cell`, `same_run`, the vertical shortcut and the per-cell
+`max` are gone from both walks and from `blit.wesl`.
+
+*What this is not.* It is not about seams between sprites: the grid never had
+anything to do with the picture, and phase 6c already made a fragment's shape a
+property of its own instance. And it is not a promise about cost — the broad
+phase's shape (the same tile index, kept as a candidate list that no rule reads,
+against a real bounding-volume hierarchy) is the one decision here that is a
+trade rather than a derivation, and `tests/cost.rs` cannot price either today,
+since it builds its frame against `Occlusion::EMPTY`.
+
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
 in a frame a human being has looked at.
