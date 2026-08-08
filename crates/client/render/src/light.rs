@@ -776,7 +776,24 @@ pub fn collect(
 ///
 /// The fifth used to be spelt `FACE_EDGE`, and the number is kept at what that
 /// made it on purpose: phase 3 moved the picture through the shading term and
-/// through nothing else. Phase 4 deletes this constant outright.
+/// through nothing else.
+///
+/// **`docs/lighting_rebuild.md` phase 4 was to have deleted this and does not**,
+/// and the reason is the paragraph above rather than a reluctance: what the plan's
+/// "a sconce burns where it is" would mean in practice is a flame at its tile's
+/// *centre*, which is behind the plane of the face it is bolted to, where the
+/// cosine is zero along the whole face — so every wall carrying a sconce would
+/// come out black from top to bottom however bright the flame. This is not a
+/// compensation for a missing rule; it is the client's reading of where a
+/// wall-mounted static actually hangs, and the map says only which tile. What
+/// phase 4 did delete is the *height test* that stood beside it — see the note
+/// where `exemption` lived.
+///
+/// Neutralising [`mounted_at`] turns `a_sconce_lights_the_street_and_not_the_room_
+/// behind_it` and `light_runs_along_a_wall_and_stops_across_it` red, which is how
+/// that was settled rather than argued. What would retire it honestly is the
+/// *art*: a sconce's sprite shows it standing out from the wall, and nothing
+/// measures that.
 ///
 /// The consequence worth stating: it lands on the *next* tile, so the wall it is
 /// mounted on stops being the flame's own cell and starts being an ordinary

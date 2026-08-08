@@ -33,7 +33,8 @@ penumbra, and the band's price peaks exactly where a flame lies in a surface's o
 plane — `0.214` of a channel per pixel, against `0.020` half a step away.
 
 **2. The `place` attachment packed a fragment's height into eight bits and a
-four-bit fraction** *(retired at phase 2 — the constants it justified are not)*,
+four-bit fraction** *(retired at phase 2; the constants it justified went at
+phase 4)*,
 so a fragment's own position was not exactly known — so a
 shadow ray must start away from where it really is. `STAND_OFF = 2/127` of a tile
 and `ON_TOP = 1/128` of a `z` unit are **numbers taken from the byte layout**,
@@ -41,7 +42,9 @@ not from any statement about surfaces. Their price, measured with the light
 oracle: the engine is brighter than the geometry allows on the top band of a
 riser by up to **`0.51` of a channel**. And because heights cannot separate
 surfaces at that precision, a whole apparatus grew to do it by identity instead
-— `exemption`, `on_surface`, `own_run`, `mounted_at`'s height test.
+— `exemption`, `on_surface`, `own_run`, `mounted_at`'s height test. Phase 4 took
+the bias to zero and dissolved `exemption`; two of that apparatus survived it and
+the phase's own account says which, and why each was kept by a measurement.
 
 **3. A static is drawn twice** — as a sprite, and as a mesh over it — so their
 silhouettes differ, so the mesh is grown to hide the gap. `WIDTH_OVERLAP = 0.03`
@@ -83,9 +86,9 @@ Named, so the plan can be checked against the tree:
 | goes | what replaces it |
 |---|---|
 | ~~`light::faces`, `FACE_EDGE`~~ **gone, phase 3** | `light::lit_from`, `max(N · L, 0)` off the G-buffer normal |
-| `STAND_OFF`, `ON_TOP` | exact position + self-hit by primitive id, bias `0` |
-| `exemption`, `on_surface`, `own_run` | the same id test, once |
-| `mounted_at`, `MOUNTED_CLEARANCE` | a sconce burns where it is; geometry decides the rest |
+| ~~`STAND_OFF`, `ON_TOP`~~ **gone, phase 4** | exact position + self-hit by primitive id, bias `0` |
+| ~~`exemption`~~ **gone, phase 4**; `on_surface` and `own_run` **stay, measured** | the same id test, once — inline, in both walks. The other two are `same_run`, which is a *different* claim: see phase 4 |
+| ~~`mounted_at`'s height test~~ **gone, phase 4**; `mounted_at` and `MOUNTED_CLEARANCE` **stay, measured** | a sconce burns where it hangs, which the map does not say and the art does — see phase 4 |
 | `WIDTH_OVERLAP` | one silhouette — see the impostor phase |
 | `FLAME_DEPTH`, `pierces`, `crosses`'s softening, `SOFT_CROSSING_*` | an area light and N shadow rays |
 | `(1 − d)²` falloff | windowed inverse square |
@@ -401,7 +404,9 @@ G-buffer that alone counted in tiles would be a second metric rather than one.
 and `floor`ing a position back into it is the class of bug `walk`'s own comment
 records. **The position is clamped into its tile** exactly where `pack_place`
 clamps the fraction, so this step changed precision and nothing else; the clamp
-goes at phase 4, where the cell stops being a fact separate from the position.
+went at phase 4 — not because the cell stopped being a separate fact, which it
+has not, but because nothing floors that position and eight thousandths of a tile
+of error in a ray's origin is the largest thing left once the bias is zero.
 
 *Normal landed.* The plane, `View::Normal`, and — the thing worth saying first —
 **a normal is written by the pass that knows it now, not derived by the pass that
@@ -500,7 +505,8 @@ phase follows from that division: the term stops being a distance in tiles, so i
 stops needing a width to be measured against, so `FACE_EDGE` has nothing left to
 be. `MOUNTED_CLEARANCE` was `0.5 + FACE_EDGE` and is a plain `0.7` — the same
 number on purpose, so that phase 3 moved the picture through the shading term and
-through nothing else, and phase 4 deletes it anyway.
+through nothing else. **Phase 4 did not delete it** — see that phase for the
+measurement that kept it.
 
 *The reference had to be asked a different question, and that is what says the
 term is right.* `Brdf::Flat` is a description of the engine **before** this phase
@@ -566,10 +572,114 @@ nothing here should: exposure and ambient are ordinary exposure and ordinary
 ambient, and neither has been touched yet.
 
 **Phase 4 — shadows by identity.** Primitive ids in the grid, self-hit by id,
-bias `0`. `STAND_OFF`, `ON_TOP`, `exemption`, `on_surface`, `own_run` and
-`mounted_at`'s height test are deleted.
-*Done when:* the light oracle reports zero brighter-than-geometry pixels on the
-whole flame-height sweep — the class that today reads 175 at `z 0`.
+bias `0`. *Done when:* the light oracle reports zero brighter-than-geometry
+pixels on the whole flame-height sweep. **Done.** The sweep read
+`31 / 15 / 13 / 0 / 0 / 0 / 0` at flame heights `0..6` when the phase started and
+reads **zero at every one of them**, worst channel `0.000`. (The `175 at z 0`
+this line used to quote was measured before phase 3; the cosine had already taken
+most of it.)
+
+*The rule is one comparison, and every arm of the apparatus it replaced was a
+proxy for a name a fragment did not have.*
+
+```
+if hit.primitive == origin.primitive { continue }
+```
+
+Three readings in order, because each failure says what the next had to be. **A
+height inside a span** — two things stacked on one tile meet at a single plane, so
+no precision separates them, and two side by side span the same heights outright,
+so each was excused from the other while standing squarely in front of it
+(`examples/boxes.rs`'s `pair`, three oracles fully red). **An `OwnerId`** — the
+*static*, `lighting_height.md`'s own phase 3, right for a wall and one level too
+coarse for a flight: one `Builder::add` pushes a lid and a panel per tread, all
+wearing one owner, so a tread was excused from the riser that genuinely stands
+between it and the flame, and the height came back as `drawn_on` to patch it.
+**A `SolidId`** — the primitive itself. A flight's treads shadow each other
+because they are different solids, which is what different solids do.
+
+*What the fragment carries it in, and the split is the part worth keeping.* A
+mesh face is one primitive by construction, so `MeshFaceRow` carries its
+`SolidId` outright; the join is `occlusion::Part`, the `n`th solid one
+`Builder::add` pushed, and the `n`th face of `Prism::mesh` is that solid because
+both walk the same treads from `treads()` and `up()`.
+`a_flight_draws_its_own_solids_in_the_grid_s_own_order` holds that against the
+geometry for all four climb directions rather than leaving it as two loops that
+agree. A **sprite** instance is not one primitive — a corner is two panels and one
+picture, and only a fragment's own stance says which — so `blit.wesl`'s
+`own_solid` narrows the instance's owner by that stance, once per fragment. It is
+exact for everything but a fitted climbable, whose pixels the mesh pass draws.
+
+*The bias is zero, and the two constants had already lost both of their reasons.*
+`STAND_OFF` was `2/127` of a tile and `ON_TOP` `1/128` of a `z` — numbers off the
+retired attachment's byte layout. One thing they bought was a ray not starting
+inside the surface it was drawn on, which is identity's job. The other was a face
+pixel walked from *in front of* its plane, because the attachment placed it
+behind one and because a crossing could be found on the wrong cell; phase 2's
+exact position and `lighting_raymarch.md`'s per-solid `ray_vs_solid` removed both.
+`mesh_face.wesl`'s `INSIDE` clamp on the position it writes went with them — eight
+thousandths of a tile of error in the ray's origin on exactly a flight's outer
+corner, which is where every stair defect is found.
+
+*Three of the plan's deletions did not happen, and each was settled by injecting
+the fault rather than by reading the code.*
+
+- **`own_run` stays**, as `same_run` with its height gate folded in. Identity
+  cannot answer it: a run of wall is *N different statics* cut on tile
+  boundaries, so the panel next along the run is a different solid however
+  exactly a fragment names its own. Neutralised, `light_runs_along_a_wall_and_
+  stops_across_it` and `the_two_faces_of_a_corner_are_lit_from_the_side_each_
+  looks_at` go red. Restricting it to *neighbouring* cells — leaving the
+  fragment's own cell to identity, which reads like the tidier rule — turns the
+  same two red. What retires it is the grid merging a run of coplanar panels into
+  one solid: `lighting_geometry.md`'s question, not this phase's.
+- **`on_surface` stays** as that gate's own test, and is exact now: its `ON_TOP`
+  tolerance was the nudge handed back, and both went together.
+- **`mounted_at` and `MOUNTED_CLEARANCE` stay.** "A sconce burns where it is"
+  means, in practice, a flame at its tile's *centre* — behind the plane of the
+  face it is bolted to, where the cosine is zero along the whole face, so every
+  wall carrying one would come out black top to bottom. It is not a compensation
+  for a missing rule but the client's reading of where a wall-mounted static
+  hangs, which the map does not say. Neutralised, `a_sconce_lights_the_street_
+  and_not_the_room_behind_it` and the wall-run test go red. What would retire it
+  honestly is the *art*: the sprite shows the sconce standing out from the wall,
+  and nothing measures that.
+
+*What the phase's own text meant by "`mounted_at`'s height test" is `flame_end`*,
+and that **is** deleted: `skip_last && cell == last && on_surface(to_z, …)`
+excused a panel on the cell a flame *ends* in. `mounted_at` moving the flame onto
+the next tile is what made it unnecessary — neutralised, the suite stayed green
+and the oracle stayed at zero on every flame height. `skip_last`, both walks'
+`last`, `ExemptionContext` and `Exemption` went with it. What it covered and
+nothing now does: a flame standing inside a whole-tile body, a lantern in a
+tree's box — which is a wrong box rather than a rule the walk owes it.
+
+*And the identity compare itself was fault-injected*, because nothing else would
+have said whether it is load-bearing. Forced to `false`, three tests go red: the
+flight fixture, `the_face_of_a_wall_is_lit_from_inside_the_room` and
+`a_carried_light_lights_the_way_it_is_pointed`. The last two are also the only
+place the `None` half of it is measured — a flat fragment's own solid is a lid,
+and `crosses`'s strictness already answers a ray leaving a plane exactly; a face
+fragment's own solid is a panel, and `same_run` masks its own cell's side
+whatever the fragment carries.
+
+*Three world claims were re-taken, and the rule from *How this is judged* held —
+each was a judgement about the scene.* Two were the same graze: **a flame exactly
+level with a tread**, whose riser stops at exactly the tread's height, so the ray
+runs along the riser's top edge and a flame of real depth is half cut by it —
+`0.5`, exactly, where the nudge had made it `1.0`. Both flames are `FLAME_LIFT`
+above the tread now, which is where a torch burns. The third is **the floor
+line**: a wall pixel at exactly a storey's floor height, which now names the wall
+it is a point of instead of leaning on two constants to be lifted above the
+boards. Above the line it is dark a sixteenth of a `z` up; *at* the line it is a
+graze, recorded as a range rather than dropped — one mathematical plane, not the
+four screen pixels the original defect was.
+
+*What it cost, measured:* 88 pixels of a tread's outer corner read shadowed where
+the face oracle's point-source geometry says lit — the same coplanar-edge graze,
+at the line where a tread's lid meets its riser's plane. Both walks agree about
+them; it is the engine's area light against a point source, and phase 5 is where
+those become comparable. Against 473 "rendered too light" before the phase.
 
 **Phase 5 — area lights.** N rays to a sphere. `FLAME_DEPTH`, `pierces` and
 `crosses`'s softening are deleted.
@@ -658,8 +768,9 @@ may not still matter:
 | backlog entry | fate |
 |---|---|
 | ~~`FACE_EDGE`'s two scales; the flame at a surface's own height~~ | **done, phase 3** — there is no band, and a flame in a surface's own plane is a cosine of zero rather than a half |
-| `STAND_OFF`/`ON_TOP` at a grazing corner; the `ON_TOP` twin | **phase 4** — there is no nudge |
-| risers excused as a group; `own_run`; `flame_end`'s height test; a mobile shadowed by its own wall | **phase 4** — identity answers all four |
+| `STAND_OFF`/`ON_TOP` at a grazing corner; the `ON_TOP` twin | **done, phase 4** — there is no nudge |
+| risers excused as a group; `flame_end`'s height test; a mobile shadowed by its own wall | **done, phase 4** — identity answers all three |
+| `own_run` | **survives phase 4, measured** — a run of wall is N statics, which no identity merges. `lighting_geometry.md`'s, when a run becomes one solid |
 | the `ground < 1e-6` shortcut ignoring a lid's footprint | **fixed** — it was worth fixing alone, and was |
 | `WIDTH_OVERLAP`'s border | **phase 6** |
 | the riser penumbra graded over a third of a face | **phase 5** |
@@ -751,12 +862,56 @@ Things noticed while writing this, not blocking any phase:
   the GPU wrote a zero there and the CPU wrote `(0, 0, 1)`. It is a new, smaller
   disagreement with a name, and what closes it is a `Surface` that can carry a
   measured vector rather than choose between four.
+- **Nothing on the GPU side tests the shader's own identity compare.** Forced to
+  `false`, `tests/frame.rs` stays green from end to end while three tests in
+  `light.rs` and `tests/lighting.rs` go red — so the rule the *shipped* walk uses
+  is covered only through its CPU twin, which the phase's own commits also
+  rewrote. What the one frame test in that shape reaches instead is `crosses`'s
+  strictness: its fragment is flat and its own solid is a lid.
+- **`parity_frame`'s `Fixture` names an owner, and the shader compares a solid.**
+  Every pixel it writes is a sprite, so `own_solid` narrows that owner by the
+  pixel's stance — and for a *flight* that narrowing is ambiguous by construction,
+  three lids and one flat stance. `the_shader_does_not_stop_a_vertical_ray_with_a_
+  lid_it_is_not_under` passes because the grid's reference order happens to put
+  the bottom tread first, which is written down at the field and nowhere else. The
+  honest fix is for the fixture to write a **mesh** row, which is what the real
+  pipeline draws a flight through and what can carry a `SolidId` outright; it is
+  a third row table in a function that already has two, which is why it was not
+  done in the phase that found it.
+- **`statics.wesl` still clamps a face fragment to `INSIDE`, and the mesh pass no
+  longer does.** Phase 4 removed the clamp from `mesh_face.wesl`'s position and
+  left the sprite pass's, so an *east* or *south* face pixel still sits a
+  hundred-and-twenty-seventh of a tile behind its own panel's outer plane — inside
+  its own slab — while a north or west one sits exactly on it. Identity makes that
+  harmless for the panel itself and it is not harmless in principle: it is eight
+  thousandths of a tile of error in the ray's origin, on the two sides of every
+  wall in the world, and the asymmetry between the four is the part that will not
+  be guessable later. The `sub` it feeds also decides that fragment's *height*, so
+  moving it moves a face's `z` by a fortieth of a unit.
+- **Two scans a drawn static now, where there was one.** `statics::collect` asks
+  `Occlusion::owner_at` for the quad and `Occlusion::id_of` per mesh face, and
+  both are linear scans of the cell — see `owner_at`'s own note about the join
+  this design pays for. A static with a six-face mesh scans its cell seven times.
+  Nothing measures it as a cost yet; `tests/cost.rs` is where it would show.
+- **A run of wall wants to be one solid, and until it is, `same_run` stands in.**
+  Phase 4 measured that identity cannot retire it — the panel next along a run is
+  a different static — which makes "merge coplanar panels of a run into one solid"
+  the thing that *would*, and moves it from a tidiness idea to a named
+  prerequisite. `lighting_geometry.md`'s question, with a reason attached now.
+- **A sconce's own art says how far it stands out from its wall, and nothing reads
+  it.** `MOUNTED_CLEARANCE` is `0.7` of a tile because half a tile reaches the
+  plane and a fifth clears it; the sprite shows the real overhang and
+  `crate::facing` already measures silhouettes for a living. That is what retires
+  the constant honestly, and phase 4 found that deleting it without a replacement
+  blacks out every wall carrying one.
 - **A slope's normal now nudges its own shadow ray sideways.** `walk`'s `ahead`
   spends the normal's `x` and `y` on `STAND_OFF`, and until phase 3 a ground
   fragment's was zero on both. A hillside's is not, so a slope's ray starts a
   fiftieth of a tile out along the hill. That is more nearly right than not
   nudging at all — it is the direction out of the surface — but it is a behaviour
-  nobody asked for arriving through a constant phase 4 deletes.
+  nobody asked for arriving through a constant phase 4 deletes. **Closed at
+  phase 4**: there is no `STAND_OFF` and no nudge of any kind, so a slope's ray
+  starts where the slope is.
 - **Two scenes moved because a flame stood in a surface's own plane, and the
   shape of that is worth keeping.** `z: 0.0` in a hand-built `Light` read as "a
   fire on the ground" for as long as the shading term was a half-space, which
