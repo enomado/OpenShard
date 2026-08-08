@@ -624,6 +624,11 @@ fn main() {
         quads: item_quads,
         mesh_vertices,
         mesh_rows,
+        // The impostor's boxes — `docs/lighting_rebuild.md` phase 6 — which
+        // nothing uploads until the statics pass declares the attribute that
+        // reads them. Named rather than skipped with `..` so that this scene
+        // fails to compile the day it should be passing them on.
+        boxes: _,
     } = items::collect(
         &items,
         &camera,

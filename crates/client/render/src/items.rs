@@ -133,6 +133,7 @@ pub fn collect(
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
     let mut mesh_vertices = Vec::new();
     let mut mesh_rows = Vec::new();
+    let mut boxes = Vec::new();
 
     for (index, item) in items.iter().enumerate() {
         let Some(placed) = place(item, camera, tiledata, animations, atlas, cutaway) else {
@@ -157,7 +158,12 @@ pub fn collect(
             item.at.z,
             item.graphic,
         );
-        let quad = quad_of(item.at, &placed, base, hue, owner);
+        // This item's own boxes, the same way `statics::collect` builds a map
+        // static's — phase 6, and an item on the ground is a static that came
+        // from the server's list rather than the map's.
+        let volumes =
+            crate::statics::push_volumes(&mut boxes, item.at, placed.prism.as_ref(), key, occlusion);
+        let quad = quad_of(item.at, &placed, base, hue, owner, volumes);
         if let Some(prism) = &placed.prism {
             crate::statics::push_mesh(
                 crate::statics::MeshSink {
@@ -185,6 +191,7 @@ pub fn collect(
         quads: quads.into_iter().map(|(_, quad)| quad).collect(),
         mesh_vertices,
         mesh_rows,
+        boxes,
     }
 }
 
@@ -226,6 +233,10 @@ pub fn outlined(
                     base,
                     u32::from(item.hue.0),
                     crate::occlusion::OwnerId::NONE,
+                    // A silhouette is a mask and its colour is never read, so
+                    // it is lit by nothing and needs no geometry under it —
+                    // the same reason it stamps `OwnerId::NONE` beside this.
+                    crate::impostor::Range::default(),
                 )),
                 false => None,
             }

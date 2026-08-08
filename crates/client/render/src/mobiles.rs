@@ -440,6 +440,7 @@ fn push_quads(
             // shadow. `docs/lighting_height.md` phase 3, and the one behaviour
             // change it makes on a real frame.
             owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+            volumes: crate::impostor::Range::default(),
         },
     ));
 
@@ -462,6 +463,7 @@ fn push_quads(
                 place: crate::place::Place::of_mobile(mobile.at),
                 twin: 0,
                 owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                volumes: crate::impostor::Range::default(),
             },
         ));
     }

@@ -4468,6 +4468,10 @@ impl App {
             quads: static_quads,
             mut mesh_vertices,
             mut mesh_rows,
+            // `docs/lighting_rebuild.md` phase 6's boxes. Named rather than
+            // skipped with `..` so that this call site fails to compile the day
+            // the statics pass starts reading them.
+            boxes: _,
         } = statics::collect(
             &self.map,
             &camera,
@@ -4514,6 +4518,7 @@ impl App {
             quads: item_quads,
             mesh_vertices: item_mesh_vertices,
             mesh_rows: item_mesh_rows,
+            boxes: _,
         } = items::collect(
             &self.items,
             &camera,

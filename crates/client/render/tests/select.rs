@@ -88,6 +88,7 @@ fn face_rows() -> Vec<u8> {
         place: Place::land(SELECTED.0, SELECTED.1),
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }
     .write(&mut bytes);
     bytes

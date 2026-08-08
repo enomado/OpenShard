@@ -89,6 +89,59 @@ pub fn ray_from(tile: (i32, i32), base: f32, across: f32, down: f32) -> [f32; 3]
     ]
 }
 
+/// Which run of a frame's [`Volume`] list belongs to one drawn static.
+///
+/// The association `docs/lighting_rebuild.md` phase 6 rests on: a fragment is
+/// met against *these* boxes and no others, so one static's geometry cannot
+/// reach a neighbour's picture. A range and not a list per instance because the
+/// instance buffer is a flat row of words and this is two of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Range {
+    /// Where this static's boxes start in the frame's list.
+    pub offset: u32,
+    /// How many it has. Zero for a static this frame's grid holds nothing for,
+    /// which is a real answer and not a missing one — see
+    /// `statics::push_volumes`.
+    pub count: u32,
+}
+
+/// One box a static stands as, with the frame's own name for it.
+///
+/// **A volume, and for a fitted climbable that is not the same thing as the
+/// grid's own solids.** `occlusion::Builder::add` decomposes a flight into
+/// *surfaces* — a lid per tread, degenerate in `z`, and a riser per tread,
+/// degenerate on the climb axis — whose union encloses nothing. That is right
+/// for a shadow ray, which only ever asks what it crossed, and useless for a
+/// view ray, which has to land on something for every pixel the art drew. For a
+/// flight climbing *away* from the camera those surfaces do happen to cover the
+/// visible side; for one climbing *towards* it every riser faces away and is
+/// hidden behind its own tread, and the grid holds nothing at all where the art
+/// draws the whole front of the staircase. So the volume here is one box a
+/// tread — its strip, from the static's own base up to that tread's height —
+/// and the grid is joined to rather than read from. Making the grid hold the
+/// volume is `docs/lighting_geometry.md`'s question.
+///
+/// Everything that is not a fitted climbable *is* one of the grid's own boxes,
+/// unchanged: a wall's panel, a floor's lid, a body's tile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Volume {
+    /// The low corner, in world units.
+    pub lo: [f32; 3],
+    /// And the high one.
+    pub hi: [f32; 3],
+    /// Which solid of this frame's grid a fragment of this box is a point of —
+    /// `occlusion::SolidId::word`, so `SolidId::NOBODY` where the grid has none
+    /// (a static the cutaway hid, or one past the draw ceiling).
+    ///
+    /// **One name a box, and for a tread that name is its own lid rather than
+    /// its riser.** A fragment standing on the riser needs no name of its own:
+    /// it lies exactly in that riser's plane, so a ray leaving it touches the
+    /// riser at `t = 0` and nowhere else, which is precisely what phase 5's
+    /// origin-touch rule already excuses. Carrying a second id a box would be a
+    /// second answer to a question one rule has already closed.
+    pub solid: u32,
+}
+
 /// Where the view ray meets one box, and which of its faces that is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Meeting {

@@ -158,6 +158,14 @@ pub struct StaticGeometry {
     /// One row per face represented in `mesh_vertices`, addressed by a
     /// vertex's own `id`.
     pub mesh_rows: Vec<MeshFaceRow>,
+    /// Every box every drawn static stands as, each quad naming its own run of
+    /// them through [`SpriteQuad::volumes`] —
+    /// `docs/lighting_rebuild.md` phase 6.
+    ///
+    /// One flat list for the frame rather than a list per static, because it
+    /// becomes one storage buffer: a range into it is two words on a row the
+    /// instance buffer was already padding out to.
+    pub boxes: Vec<crate::impostor::Volume>,
 }
 
 /// `occlusion` is **this frame's own grid**, and it has to have been built
@@ -179,6 +187,7 @@ pub fn collect(
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
     let mut mesh_vertices = Vec::new();
     let mut mesh_rows = Vec::new();
+    let mut boxes = Vec::new();
 
     for_each_static_in(map, camera.visible_tiles(), |item| {
         let at = Point::new(item.x, item.y, item.z);
@@ -201,7 +210,11 @@ pub fn collect(
         // owner every hundred milliseconds. See `occlusion::Owner`.
         let key = crate::occlusion::Owner::new(at.z, Graphic(item.tile));
         let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, Graphic(item.tile));
-        let quad = quad_of(at, &placed, base, u32::from(item.hue), owner);
+        // The boxes this static's own pixels will be met against — phase 6, and
+        // built in the same walk as everything else about this static for
+        // `for_each_static_in`'s own reason.
+        let volumes = push_volumes(&mut boxes, at, placed.prism.as_ref(), key, occlusion);
+        let quad = quad_of(at, &placed, base, u32::from(item.hue), owner, volumes);
         if let Some(prism) = &placed.prism {
             push_mesh(
                 MeshSink {
@@ -231,6 +244,95 @@ pub fn collect(
         quads: quads.into_iter().map(|(_, quad)| quad).collect(),
         mesh_vertices,
         mesh_rows,
+        boxes,
+    }
+}
+
+/// The boxes one drawn static stands as, appended to `out`, and the range they
+/// occupy in it.
+///
+/// `docs/lighting_rebuild.md` phase 6's own join, and the reason a fragment can
+/// be met against geometry without a second draw: every sprite instance carries
+/// a range of [`crate::impostor::Volume`]s that are **its own**, so the shader
+/// meeting a view ray with them cannot reach a neighbour's shape. Where two
+/// silhouettes disagree there is therefore no pixel belonging to neither — the
+/// thing `facing::WIDTH_OVERLAP` grows a mesh to cover — only a pixel of *this*
+/// static that fell some measured distance outside *this* static's volume.
+///
+/// Two shapes, and which one a static gets is the same question
+/// [`crate::occlusion::Builder::add`] asks:
+///
+/// - **a fitted climbable** is one box a tread, the tread's own strip from the
+///   static's base up to the tread's height. Not the grid's own two surfaces per
+///   tread — see [`crate::impostor::Volume`] for why a decomposition built for a
+///   shadow ray does not enclose anything a view ray can land on. The join to
+///   the grid is by [`crate::occlusion::Part`]: the `n`th tread's lid is part
+///   `2n`, because `Builder::add` pushes a lid and then a riser per tread, in
+///   climb order, walking the same `treads()` this does.
+/// - **everything else** is the grid's own boxes, verbatim — a wall's panel or
+///   two, a floor's lid, a body's tile. There is nothing to rebuild: those
+///   already are volumes, and a second statement of one is exactly what this
+///   phase exists to remove.
+///
+/// An empty range is the honest answer for a static this frame's grid holds
+/// nothing for — refused for opacity, above the draw ceiling, hidden by the
+/// cutaway. The shader has no box to meet and writes the ray's own point at the
+/// static's base with no facing, which is what [`crate::place::Stance::Upright`]
+/// has always meant: a picture whose shape nothing measured.
+pub(crate) fn push_volumes(
+    out: &mut Vec<crate::impostor::Volume>,
+    at: Point,
+    prism: Option<&crate::facing::Prism>,
+    owner: crate::occlusion::Owner,
+    occlusion: &crate::occlusion::Occlusion,
+) -> crate::impostor::Range {
+    let offset = out.len() as u32;
+    let (x, y) = (i32::from(at.x), i32::from(at.y));
+    match prism {
+        Some(prism) => {
+            let treads = prism.treads();
+            let count = treads.len();
+            for (index, &height) in treads.iter().enumerate() {
+                let lo = index as f64 / count as f64;
+                let hi = (index + 1) as f64 / count as f64;
+                // **`Prism::footprint` and not `Prism::mesh`'s widened copy of
+                // it.** The strip is the tile-relative extent of the tread and
+                // nothing grows it: growing it is what the deleted border did,
+                // and there is no second silhouette left for it to reach.
+                let (min_x, max_x, min_y, max_y) =
+                    crate::facing::Prism::footprint(f64::from(x), f64::from(y), prism.up(), lo, hi);
+                let solid = occlusion
+                    .pieces_of(x, y, owner)
+                    .find(|(_, solid)| solid.part == crate::occlusion::Part::nth(index * 2))
+                    .map(|(id, _)| id);
+                out.push(crate::impostor::Volume {
+                    lo: [min_x as f32, min_y as f32, f32::from(at.z)],
+                    hi: [max_x as f32, max_y as f32, f32::from(at.z) + f32::from(height)],
+                    solid: crate::occlusion::SolidId::word(solid),
+                });
+            }
+        }
+        None => {
+            for (id, solid) in occlusion.pieces_of(x, y, owner) {
+                out.push(crate::impostor::Volume {
+                    lo: [
+                        solid.space.min.x as f32,
+                        solid.space.min.y as f32,
+                        solid.space.min.z as f32,
+                    ],
+                    hi: [
+                        solid.space.max.x as f32,
+                        solid.space.max.y as f32,
+                        solid.space.max.z as f32,
+                    ],
+                    solid: crate::occlusion::SolidId::word(Some(id)),
+                });
+            }
+        }
+    }
+    crate::impostor::Range {
+        offset,
+        count: out.len() as u32 - offset,
     }
 }
 
@@ -416,6 +518,7 @@ pub(crate) fn quad_of(
     base: i32,
     hue: u32,
     owner: crate::occlusion::OwnerId,
+    volumes: crate::impostor::Range,
 ) -> SpriteQuad {
     SpriteQuad {
         rect: Rect {
@@ -436,6 +539,7 @@ pub(crate) fn quad_of(
         // not here, where it is not.
         twin: 0,
         owner: u32::from(owner.raw()),
+        volumes,
     }
 }
 
@@ -534,6 +638,9 @@ pub fn selected(
                     base,
                     0,
                     crate::occlusion::OwnerId::NONE,
+                    // A silhouette's pixels are a mask — nothing lights them,
+                    // so nothing has to say where in the world they are.
+                    crate::impostor::Range::default(),
                 )),
                 false => None,
             }
@@ -589,6 +696,16 @@ mod tests {
     /// standing on it. Statics are placed by the tests that want them.
     fn field() -> Map {
         Map::from_blocks(16, 16, |_, _| LandCell { tile: 3, z: 0 })
+    }
+
+    /// The rectangle every occlusion fixture below stands in.
+    fn grid_bounds() -> crate::camera::TileBounds {
+        crate::camera::TileBounds {
+            min_x: 98,
+            max_x: 104,
+            min_y: 98,
+            max_y: 104,
+        }
     }
 
     /// An atlas holding one graphic, drawn solid at a known size.
@@ -1239,5 +1356,203 @@ mod tests {
             max_offset >= 1.0 - 1e-6,
             "expected some corner at or past the tile's far edge (offset >= 1.0), got {max_offset}",
         );
+    }
+
+    /// A tiledata entry with the flags and height a test wants —
+    /// `occlusion::tests::tile`'s own shape, which cannot be shared across two
+    /// test modules and is two lines.
+    fn static_tile(flags: u64, height: u8) -> openshard_uofiles::tiledata::StaticTile {
+        openshard_uofiles::tiledata::StaticTile {
+            flags: openshard_uofiles::tiledata::TileFlags::new(flags),
+            height,
+            ..openshard_uofiles::tiledata::StaticTile::default()
+        }
+    }
+
+    /// A three-tread flight climbing north on tile `(100, 100)`, standing at
+    /// `z = 0` — the scene every stair defect in this crate is found on, and the
+    /// one `docs/lighting_rebuild.md`'s backlog wants turned into a constructor.
+    fn flight() -> (crate::facing::Prism, openshard_uofiles::tiledata::StaticTile) {
+        (
+            crate::facing::Prism::new(crate::facing::Face::North, &[1, 3, 5])
+                .expect("three treads is a legal profile"),
+            static_tile(
+                openshard_uofiles::tiledata::TileFlags::CLIMBABLE
+                    | openshard_uofiles::tiledata::TileFlags::BLOCK
+                    | openshard_uofiles::tiledata::TileFlags::NO_SHOOT,
+                5,
+            ),
+        )
+    }
+
+    /// A flight's volumes are one box a tread, and each names the solid the
+    /// grid stood up for that tread.
+    #[test]
+    fn a_flight_stands_as_one_box_a_tread_and_names_the_grid_s_own_lids() {
+        let (prism, tile) = flight();
+        let graphic = Graphic(0x0736);
+        let mut builder = crate::occlusion::Builder::new(grid_bounds());
+        builder.add(
+            100,
+            100,
+            0,
+            graphic,
+            &tile,
+            crate::occlusion::Shape {
+                prism: Some(prism),
+                ..crate::occlusion::Shape::UNREAD
+            },
+        );
+        let occlusion = builder.finish(&Cutaway::OPEN);
+        let owner = crate::occlusion::Owner::new(0, graphic);
+
+        let mut boxes = Vec::new();
+        let range = push_volumes(
+            &mut boxes,
+            Point::new(100, 100, 0),
+            Some(&prism),
+            owner,
+            &occlusion,
+        );
+        assert_eq!(range, crate::impostor::Range { offset: 0, count: 3 });
+
+        // Climbing north, so tread 0 is the *southern* third and the strips walk
+        // up the screen — `Prism::footprint`'s own arithmetic, which this shares
+        // with the grid rather than restating.
+        for (index, expected) in [
+            ([100.0, 100.0 + 2.0 / 3.0, 0.0], [101.0, 101.0, 1.0]),
+            ([100.0, 100.0 + 1.0 / 3.0, 0.0], [101.0, 100.0 + 2.0 / 3.0, 3.0]),
+            ([100.0, 100.0, 0.0], [101.0, 100.0 + 1.0 / 3.0, 5.0]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let volume = boxes[index];
+            for axis in 0..3 {
+                assert!(
+                    (volume.lo[axis] - expected.0[axis]).abs() < 1e-5
+                        && (volume.hi[axis] - expected.1[axis]).abs() < 1e-5,
+                    "tread {index} axis {axis}: {volume:?} against {expected:?}"
+                );
+            }
+            // And the name is the grid's own, joined by `Part` — the `n`th
+            // tread's lid is part `2n` because `Builder::add` pushes a lid and
+            // then a riser per tread, walking the same profile this does.
+            let lid = occlusion
+                .id_of(100, 100, owner, crate::occlusion::Part::nth(index * 2))
+                .expect("the grid stood a lid up for every tread");
+            assert_eq!(
+                volume.solid,
+                crate::occlusion::SolidId::word(Some(lid)),
+                "tread {index} should name its own lid"
+            );
+        }
+    }
+
+    /// And no box is grown past its own tile — the whole point of the phase.
+    #[test]
+    fn a_volume_never_reaches_past_the_tile_its_static_stands_on() {
+        let (prism, tile) = flight();
+        let graphic = Graphic(0x0736);
+        let mut builder = crate::occlusion::Builder::new(grid_bounds());
+        builder.add(
+            100,
+            100,
+            0,
+            graphic,
+            &tile,
+            crate::occlusion::Shape {
+                prism: Some(prism),
+                ..crate::occlusion::Shape::UNREAD
+            },
+        );
+        let occlusion = builder.finish(&Cutaway::OPEN);
+
+        let mut boxes = Vec::new();
+        push_volumes(
+            &mut boxes,
+            Point::new(100, 100, 0),
+            Some(&prism),
+            crate::occlusion::Owner::new(0, graphic),
+            &occlusion,
+        );
+
+        // Exactly, not nearly: `facing::WIDTH_OVERLAP` grows every face
+        // `Prism::mesh` builds by three hundredths of a tile on the axis that
+        // crosses the climb, and the same flight through this function is
+        // inside its own unit square on both. The gate is `==` on the tile
+        // bound rather than a tolerance because there is nothing here that
+        // could round — `Prism::footprint` returns the tile's own integers on
+        // that axis.
+        for volume in &boxes {
+            assert_eq!(
+                (volume.lo[0], volume.hi[0]),
+                (100.0, 101.0),
+                "a box reached past its tile across the climb: {volume:?}"
+            );
+            assert!(
+                volume.lo[1] >= 100.0 && volume.hi[1] <= 101.0,
+                "a box reached past its tile along the climb: {volume:?}"
+            );
+        }
+
+        // And the mesh pass's own faces of the same flight *do* reach past it,
+        // which is what says this test measures the difference rather than a
+        // property both share.
+        let widened = prism
+            .mesh(100, 100, 0)
+            .faces()
+            .iter()
+            .flat_map(|face| face.vertices().to_vec())
+            .any(|corner| corner.x < 100.0 || corner.x > 101.0);
+        assert!(
+            widened,
+            "the mesh this replaces should still be the grown one, or this test proves nothing"
+        );
+    }
+
+    /// A wall is not rebuilt at all: its volume is the grid's own box.
+    #[test]
+    fn anything_that_is_not_a_fitted_climbable_stands_as_the_grid_s_own_boxes() {
+        let graphic = Graphic(0x0006);
+        let tile = static_tile(
+            openshard_uofiles::tiledata::TileFlags::WALL
+                | openshard_uofiles::tiledata::TileFlags::BLOCK
+                | openshard_uofiles::tiledata::TileFlags::NO_SHOOT,
+            20,
+        );
+        let mut builder = crate::occlusion::Builder::new(grid_bounds());
+        builder.add(100, 100, 0, graphic, &tile, crate::occlusion::Shape::UNREAD);
+        let occlusion = builder.finish(&Cutaway::OPEN);
+        let owner = crate::occlusion::Owner::new(0, graphic);
+
+        let mut boxes = Vec::new();
+        let range = push_volumes(&mut boxes, Point::new(100, 100, 0), None, owner, &occlusion);
+
+        let grid: Vec<_> = occlusion.pieces_of(100, 100, owner).collect();
+        assert_eq!(range.count as usize, grid.len());
+        assert!(!grid.is_empty(), "the fixture should stand something up");
+        for (volume, (id, solid)) in boxes.iter().zip(&grid) {
+            assert_eq!(volume.lo[0], solid.space.min.x as f32);
+            assert_eq!(volume.hi[2], solid.space.max.z as f32);
+            assert_eq!(volume.solid, crate::occlusion::SolidId::word(Some(*id)));
+        }
+    }
+
+    /// A static this frame's grid holds nothing for stands as nothing, and that
+    /// is an answer rather than a gap.
+    #[test]
+    fn a_static_the_grid_refused_stands_as_no_boxes_at_all() {
+        let occlusion = crate::occlusion::Builder::new(grid_bounds()).finish(&Cutaway::OPEN);
+        let mut boxes = Vec::new();
+        let range = push_volumes(
+            &mut boxes,
+            Point::new(100, 100, 0),
+            None,
+            crate::occlusion::Owner::new(0, Graphic(0x0006)),
+            &occlusion,
+        );
+        assert_eq!(range.count, 0);
+        assert!(boxes.is_empty());
     }
 }

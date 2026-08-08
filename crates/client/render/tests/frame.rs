@@ -1309,6 +1309,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
     let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
     let mut sprites = SpriteRenderer::new(
@@ -1425,6 +1426,7 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
     let land = LandAtlas::pack([]).expect("nothing always fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -1535,6 +1537,7 @@ fn a_full_hue_replaces_the_pixel_by_its_red_channel_regardless_of_its_own_colour
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     };
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1728,6 +1731,7 @@ fn every_pixel_names_the_tile_it_came_from() {
         place: Place::of_static(Point::new(301, 400, 15)),
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
 
     let places = render_places(
@@ -1855,6 +1859,7 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         place,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     };
     let at = Point::new(301, 400, 15);
     // Where in its tile a pixel is, and how high — both off the position plane
@@ -2077,6 +2082,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
         },
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     };
     let quads = [quad(tile(300), 0.0, 0.0), quad(tile(301), 22.0, 22.0)];
     let places = render_places(
@@ -2241,6 +2247,7 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
             },
             twin: 0,
             owner: 0,
+            volumes: openshard_client_render::impostor::Range::default(),
         }],
         &[],
         &[],
@@ -2837,6 +2844,7 @@ fn ground_in_front_hides_a_static_behind_it() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -2950,6 +2958,7 @@ fn at_one_depth_the_later_pass_wins() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
     let none = AnimAtlas::pack([]).expect("nothing always fits");
     let frame = render_both(
@@ -3332,6 +3341,7 @@ fn a_magnified_sprite_translates_texel_for_texel() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
 
     let mut shifted = camera;
@@ -3646,6 +3656,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
 
     let (frame_width, frame_height) = (128u32, 128u32);
@@ -3856,6 +3867,7 @@ fn a_ring_is_drawn_around_a_silhouette_and_not_over_it() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
 
     let (width, height) = (128, 128);
@@ -3936,6 +3948,7 @@ fn two_touching_silhouettes_are_ringed_separately() {
             place: Place::NOWHERE,
             twin: 0,
             owner: 0,
+            volumes: openshard_client_render::impostor::Range::default(),
         })
         .collect();
 
@@ -4007,6 +4020,7 @@ fn a_glow_reaches_past_the_ring_and_fades_with_distance() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
 
     let (width, height) = (128, 128);
@@ -4082,6 +4096,7 @@ fn a_minified_ring_keeps_every_side() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     }];
 
     let (width, height) = (128, 128);
@@ -4169,6 +4184,7 @@ fn dump_a_glowing_sprite() {
         place: Place::NOWHERE,
         twin: 0,
         owner: 0,
+        volumes: openshard_client_render::impostor::Range::default(),
     };
     let backdrop = quad(BACKDROP, 16.0, 16.0, 96.0, 0.9);
     let item = quad(ITEM, 54.0, 54.0, 20.0, 0.5);
@@ -4328,6 +4344,7 @@ fn parity_frame(
                 twin: 0,
                 // The fixture's own, so the shader is told what `Spot` is told.
                 owner: u32::from(owner.raw()),
+                volumes: openshard_client_render::impostor::Range::default(),
             }
             .write(&mut face_rows);
             id

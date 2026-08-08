@@ -1530,6 +1530,28 @@ impl Occlusion {
         })
     }
 
+    /// Every solid of one static on one tile, with the frame's own name for
+    /// each — [`Occlusion::id_of`]'s scan asked once for the whole static
+    /// instead of once per piece.
+    ///
+    /// The impostor's own join (`docs/lighting_rebuild.md` phase 6): a sprite
+    /// fragment is met against the boxes its own static stands as, and it needs
+    /// the [`SolidId`] beside every one of them so that the shadow walk's
+    /// identity test has a name to compare. Asking [`Occlusion::id_of`] per
+    /// piece would walk the cell once a piece, which for a four-tread flight is
+    /// eight walks of the same short list — see this module's own backlog note
+    /// about the scans a drawn static already pays for.
+    ///
+    /// The order is the cell's, which is **not** [`Part`]'s: a caller that wants
+    /// a particular piece matches on `solid.part` rather than counting. Nothing
+    /// here sorts, because the two callers both want all of them.
+    pub fn pieces_of(&self, x: i32, y: i32, owner: Owner) -> impl Iterator<Item = (SolidId, &Solid)> + '_ {
+        self.ids_at(x, y)
+            .iter()
+            .map(|id| (*id, self.solid(*id)))
+            .filter(move |(_, solid)| solid.owner == owner)
+    }
+
     /// What stands on one tile as one box, or `None` for open ground and for
     /// anything outside the rectangle.
     ///

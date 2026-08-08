@@ -83,6 +83,7 @@ pub fn collect(labels: &[Label<'_>], atlas: &FontAtlas) -> Vec<SpriteQuad> {
                     place: crate::place::Place::NOWHERE,
                     twin: 0,
                     owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                    volumes: crate::impostor::Range::default(),
                 });
             }
             x += i32::from(sprite.width);
@@ -131,6 +132,7 @@ pub fn collect_ttf(labels: &[Label<'_>], atlas: &TtfAtlas) -> Vec<SpriteQuad> {
                     place: crate::place::Place::NOWHERE,
                     twin: 0,
                     owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                    volumes: crate::impostor::Range::default(),
                 });
             }
             x += i32::from(glyph.advance);

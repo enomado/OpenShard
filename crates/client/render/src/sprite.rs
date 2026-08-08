@@ -80,23 +80,41 @@ pub struct SpriteQuad {
     /// and its unit is a word — the `.raw()` belongs at this boundary, the way
     /// `hue`'s does.
     pub owner: u32,
+    /// **Which boxes this sprite's own pixels are met against** — the run of
+    /// `docs/lighting_rebuild.md` phase 6's [`crate::impostor::Volume`] list
+    /// belonging to this static, and nothing else's.
+    ///
+    /// The whole of what makes the impostor's silhouette one silhouette: a
+    /// fragment's geometry is looked up through this range, so a neighbouring
+    /// static's shape is not reachable from it and there is no pixel that
+    /// belongs to neither of two objects for a border constant to cover. See
+    /// [`crate::statics::push_volumes`], and `docs/style.md`'s *No fudge
+    /// constants*.
+    ///
+    /// `Range::default()` — no boxes — for a sprite that is not a thing standing
+    /// in the street, and for a static this frame's grid refused. Both mean the
+    /// same to the shader: meet nothing, and answer with the ray's own point at
+    /// the static's base.
+    pub volumes: crate::impostor::Range,
 }
 
 impl SpriteQuad {
     /// Bytes one quad occupies in the instance buffer.
     ///
-    /// Nine floats and five `u32`s — position, size, region, depth, hue, the
-    /// two words of [`crate::place::Place`], `twin` and `owner` — is 56 bytes on
-    /// its own, but the stride is 64: `blit.wgsl`'s `FaceInstance` mirrors this
-    /// struct field for field to read it a second time as storage
-    /// (`docs/gbuffer.md` step 3), and WGSL's storage-buffer layout rounds a
-    /// struct's size up to its own alignment — 16 bytes here, from the two
-    /// `vec4<f32>` fields — so the struct is 64 bytes in the shader's own
-    /// accounting whether or not this pads to match. Twelve bytes of trailing
-    /// zero padding keep the two sides the same width; without them, every
-    /// row but the first is `blit.wgsl`'s `face_instances[id]` reading a
-    /// stride short of where this buffer actually put it — silently wrong for
-    /// any frame with more than one distinct tile, which is every real one.
+    /// Nine floats and seven `u32`s — position, size, region, depth, hue, the
+    /// two words of [`crate::place::Place`], `twin`, `owner` and the two of
+    /// [`SpriteQuad::volumes`] — is exactly 64, and the stride was 64 before the
+    /// last two existed: `blit.wgsl`'s `FaceInstance` mirrors this struct field
+    /// for field to read it a second time as storage (`docs/gbuffer.md` step 3),
+    /// and WGSL's storage-buffer layout rounds a struct's size up to its own
+    /// alignment — 16 bytes here, from the two `vec4<f32>` fields — so the
+    /// struct is 64 bytes in the shader's own accounting whatever this writes.
+    /// Eight bytes of trailing zero padding kept the two sides the same width
+    /// until phase 6 gave those eight bytes to the volume range; without the
+    /// width matching, every row but the first is `blit.wgsl`'s
+    /// `face_instances[id]` reading a stride short of where this buffer actually
+    /// put it — silently wrong for any frame with more than one distinct tile,
+    /// which is every real one.
     /// Written by hand for the same reason
     /// [`GroundQuad::STRIDE`](crate::ground::GroundQuad::STRIDE)
     /// is — `bytemuck`'s derive emits `unsafe impl` and this workspace denies
@@ -139,9 +157,15 @@ impl SpriteQuad {
         }
         out.extend_from_slice(&self.twin.to_le_bytes());
         out.extend_from_slice(&self.owner.to_le_bytes());
-        // See `STRIDE`'s own doc: `blit.wgsl`'s mirror of this struct rounds
-        // up to 64 bytes on its own, so this has to as well.
-        out.extend_from_slice(&[0u8; 8]);
+        // The eight bytes `STRIDE`'s own doc reserved as padding, and they
+        // carry the volume range now: `blit.wgsl`'s mirror of this struct
+        // rounds up to 64 bytes whatever is written here, so the row was
+        // already this wide and these two words cost nothing. Nothing reads
+        // them until `statics.wesl` declares the attribute — phase 6's next
+        // step — and the bytes are written now so that the two sides of the
+        // layout are never a commit apart.
+        out.extend_from_slice(&self.volumes.offset.to_le_bytes());
+        out.extend_from_slice(&self.volumes.count.to_le_bytes());
     }
 }
 
@@ -221,6 +245,7 @@ mod tests {
             place: crate::place::Place::of_static(openshard_protocol::world::Point::new(7, 9, -2)),
             twin: 0xABCD,
             owner: 5,
+            volumes: crate::impostor::Range { offset: 12, count: 3 },
         };
         let mut out = Vec::new();
         quad.write(&mut out);
@@ -234,7 +259,12 @@ mod tests {
         assert_eq!(&out[36..40], &0x8021u32.to_le_bytes(), "hue");
         assert_eq!(&out[48..52], &0xABCDu32.to_le_bytes(), "twin");
         assert_eq!(&out[52..56], &5u32.to_le_bytes(), "owner");
-        assert_eq!(&out[56..64], &[0u8; 8], "padding out to the 64-byte stride");
+        // The eight bytes that were padding until phase 6. They are the volume
+        // range now, and the row is the same 64 bytes wide it always was —
+        // which is the whole reason the range could be added without moving a
+        // single field `blit.wgsl`'s mirror already reads.
+        assert_eq!(&out[56..60], &12u32.to_le_bytes(), "the volume offset");
+        assert_eq!(&out[60..64], &3u32.to_le_bytes(), "and how many boxes");
     }
 
     /// A corner gets a shadow row its twin points at; a plain wall gets none.
@@ -262,6 +292,7 @@ mod tests {
             },
             twin: 0,
             owner: 0,
+            volumes: crate::impostor::Range::default(),
         };
         let corner = SpriteQuad {
             place: crate::place::Place {
