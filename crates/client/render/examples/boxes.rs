@@ -21,7 +21,11 @@
 //! not two `facing::Prism`s) are built from that same [`BoxSpec`], so the
 //! two can never disagree the way `two_cubes.rs`'s session 13 bug did.
 //!
-//! - `OPENSHARD_BOXES_SCENE=tree|pair|line|stair` — which scene to build. Default
+//! - `OPENSHARD_BOXES_SCENE=tree|pair|line|stair|flat` — which scene to build.
+//!   `flat` is the odd one and has no boxes at all: flat ground and one flame,
+//!   which is the only scene where the two *shaded* pictures can be laid beside
+//!   each other — see "The two shaded pictures" below, and [`scene_flat`].
+//!   Default
 //!   `tree`: two boxes on one tile, the lower a half-tile footprint, the
 //!   upper a third-tile footprint standing directly on top of it — small on
 //!   purpose, to see whether a shape that narrow still throws a shadow with
@@ -187,6 +191,27 @@
 //! light, ambient occlusion. That one is compared against nothing on purpose —
 //! none of what it adds exists in the renderer, so every pixel would
 //! "disagree". It is there to be looked at.
+//!
+//! # The two shaded pictures
+//!
+//! `<path>_lit_vs_traced.png` is the *brightness* comparison, which is a
+//! different thing from the shadow masks above: the engine's own `View::Lit`
+//! frame, the tracer's exact render of the same scene in the same light model,
+//! and the difference between them per channel, amplified `8×`. Both encoded by
+//! `tonemap::encode`, so what is left to differ is the light and not the way it
+//! was written to a byte. `docs/lighting_rebuild.md`'s phase 0.
+//!
+//! **`OPENSHARD_BOXES_SCENE=flat` is the scene it means something on.** No
+//! boxes: one flame, flat ground, nothing in the way, and no ambient — so no
+//! silhouette, no invented body albedo, no shadow ray, and no term one side has
+//! and the other does not. Everything else it could differ by is gone, which
+//! leaves falloff, intensity and colour handling. `tests/traced.rs` runs that
+//! same scene as a gate.
+//!
+//! ```sh
+//! OPENSHARD_BOXES_SCENE=flat OPENSHARD_SCENE_ZOOM=0 OPENSHARD_FRAME_DUMP=/tmp/flat \
+//!     cargo run -p openshard-client-render --example boxes
+//! ```
 //!
 //! ```sh
 //! OPENSHARD_FRAME_DUMP=/tmp/tree OPENSHARD_BOXES_SCENE=tree \
@@ -402,6 +427,33 @@ fn scene_stair() -> Vec<BoxSpec> {
         .collect()
 }
 
+/// The tile every scene here is built around, and what stands in for a box's
+/// own tile in the one scene that has no boxes.
+///
+/// Each `scene_*` above picks its own `(100, 100)` by hand; this is that number
+/// named, so that the flame — which is authored as an offset from *the scene's
+/// tile* — has something to be an offset from when there is nothing standing on
+/// it.
+const ANCHOR: (u16, u16) = (100, 100);
+
+/// Nothing at all: flat ground, and the flame above it.
+///
+/// **`docs/lighting_rebuild.md`'s phase 0 scene, and the emptiness is the
+/// point.** The comparison that phase asks for is the engine's shaded frame
+/// beside the path tracer's, and every other scene here has four things in it
+/// that differ for reasons which are not about light: a box's albedo is invented
+/// on the reference's side and absent on the engine's (`mesh_face.wesl` writes
+/// no colour at all — phase 6), and a box's silhouette is a rasteriser's on one
+/// side and an analytic intersection's on the other.
+///
+/// Take the boxes away and what is left is one surface whose colour both sides
+/// read from the same art, lit by one flame, with nothing in the way. What can
+/// still differ is falloff, intensity and colour handling — which is exactly
+/// what phase 0's own "done when" is about, and nothing else.
+fn scene_flat() -> Vec<BoxSpec> {
+    Vec::new()
+}
+
 /// Whether `point` can see `light` at all, geometrically — every box but
 /// `skip` (the one `point` itself rests on, which must not shadow itself)
 /// tested by [`segment_clear_of_box`].
@@ -471,7 +523,10 @@ fn main() {
         "pair" => scene_pair(),
         "line" => scene_line(),
         "stair" => scene_stair(),
-        other => panic!("unknown OPENSHARD_BOXES_SCENE {other:?}, wanted tree, pair, line or stair"),
+        "flat" => scene_flat(),
+        other => {
+            panic!("unknown OPENSHARD_BOXES_SCENE {other:?}, wanted tree, pair, line, stair or flat")
+        }
     };
     eprintln!("scene {scene_name:?}: {} boxes", boxes.len());
     for (i, b) in boxes.iter().enumerate() {
@@ -481,10 +536,14 @@ fn main() {
         );
     }
 
-    let min_tx = boxes.iter().map(|b| b.tile.0).min().expect("at least one box");
-    let max_tx = boxes.iter().map(|b| b.tile.0).max().expect("at least one box");
-    let min_ty = boxes.iter().map(|b| b.tile.1).min().expect("at least one box");
-    let max_ty = boxes.iter().map(|b| b.tile.1).max().expect("at least one box");
+    // The tile the scene stands on — its own boxes', or [`ANCHOR`] where it has
+    // none. Both the grid's bounds and the flame's place are stated relative to
+    // it, so a scene with nothing standing in it still has a somewhere.
+    let anchor = boxes.first().map_or(ANCHOR, |b| b.tile);
+    let min_tx = boxes.iter().map(|b| b.tile.0).min().unwrap_or(anchor.0);
+    let max_tx = boxes.iter().map(|b| b.tile.0).max().unwrap_or(anchor.0);
+    let min_ty = boxes.iter().map(|b| b.tile.1).min().unwrap_or(anchor.1);
+    let max_ty = boxes.iter().map(|b| b.tile.1).max().unwrap_or(anchor.1);
     let bounds = openshard_client_render::camera::TileBounds {
         min_x: i32::from(min_tx) - 5,
         max_x: i32::from(max_tx) + 5,
@@ -713,7 +772,6 @@ fn main() {
     // pixel of the surface it is asking about. See [`Drawn`].
     let drawn = read_gbuffer(&device, &queue, &gbuffer, width, height_px);
 
-    let first = &boxes[0];
     // Picked by looking at a rendered frame, the same way the zoom default
     // above was: a radius wide enough to light both boxes and their own
     // shadow without pulling the whole 512×512 canvas into the torch's
@@ -734,6 +792,11 @@ fn main() {
         // the far tread in shadow and draws a hairline on every tread/riser join.
         // Two tools rendering one scene under two flames would be two scenes.
         "stair" => (2.5, 1.0, "2", "6"),
+        // `flat` puts the flame over the middle of its own tile and low, so the
+        // pool is a disc on open ground with its brightest point in the frame:
+        // the falloff curve is what this scene is a picture of, and a flame off
+        // to one side would show most of one flank of it.
+        "flat" => (0.5, 0.5, "3", "8"),
         _ => (2.5, -1.5, "6", "8"),
     };
     let (ldx, ldy) = env_opt("OPENSHARD_LIGHT_AT")
@@ -743,11 +806,31 @@ fn main() {
     let light_radius: f32 = env_or("OPENSHARD_LIGHT_RADIUS", default_radius)
         .parse()
         .expect("a number");
-    eprintln!("light: at ({ldx:+}, {ldy:+}) of box 0's own tile, z {light_z}, radius {light_radius}");
+    eprintln!("light: at ({ldx:+}, {ldy:+}) of the scene's own tile, z {light_z}, radius {light_radius}");
+    // What everything is multiplied by away from the flame.
+    //
+    // `NIGHT` everywhere but on the scene whose whole errand is a brightness
+    // comparison. The reference tracer has **no ambient term at all** — a
+    // degenerate render is direct light and nothing else — so an ambient here is
+    // a constant the engine's picture has and the tracer's does not, added to
+    // every pixel of a comparison that is trying to measure a falloff curve. It
+    // is not subtractable afterwards either: the sum goes through a tonemap, and
+    // a curve is not linear in what was put into it.
+    //
+    // Giving the tracer an ambient instead would be worse — it would be this
+    // renderer's own ambient model, restated inside the thing that checks this
+    // renderer, which is the one shape an oracle may not have.
+    let ambient = match scene_name.as_str() {
+        "flat" => light::Ambient {
+            sky: [0.0; 3],
+            ground: [0.0; 3],
+        },
+        _ => NIGHT,
+    };
     let mut lighting = Lighting {
-        ambient: NIGHT,
+        ambient,
         lights: vec![Light {
-            at: Vec2::new(f32::from(first.tile.0) + ldx, f32::from(first.tile.1) + ldy),
+            at: Vec2::new(f32::from(anchor.0) + ldx, f32::from(anchor.1) + ldy),
             z: light_z,
             radius: light_radius,
             color: [1.0, 1.0, 1.0],
@@ -762,8 +845,8 @@ fn main() {
     // the crosshair on the dumped frames, the two visibility oracles, and the
     // reference tracer's own emitter all take their light from here.
     let light_at = WorldSpot {
-        x: f64::from(first.tile.0) + f64::from(ldx),
-        y: f64::from(first.tile.1) + f64::from(ldy),
+        x: f64::from(anchor.0) + f64::from(ldx),
+        y: f64::from(anchor.1) + f64::from(ldy),
         z: f64::from(light_z),
     };
     // The same place as three plain numbers, which is what the oracles below
@@ -781,7 +864,15 @@ fn main() {
     // `blit.wgsl` runs, held to it by a parity test) says — a disagreement
     // here is a real defect, not a rendering nuance, because nothing about
     // either side depends on how a pixel projects to the screen.
-    if env_opt("OPENSHARD_BOXES_ORACLE").as_deref() != Some("0") {
+    // A scene with no boxes has no box tops and no box faces, so the two oracles
+    // that sweep them are skipped rather than run over nothing — and *said*,
+    // because a detector that quietly compared nothing reads exactly like one
+    // that found nothing, which is the rule their own non-triviality assertions
+    // exist to enforce.
+    if boxes.is_empty() {
+        eprintln!("scene {scene_name:?} has no boxes: the box-top and face oracles are not run");
+    }
+    if !boxes.is_empty() && env_opt("OPENSHARD_BOXES_ORACLE").as_deref() != Some("0") {
         for (index, b) in boxes.iter().enumerate() {
             let side = 96u32;
             let z = b.max.2;
@@ -872,6 +963,11 @@ fn main() {
     }
 
     let mut shadow_pixels: Vec<u8> = Vec::new();
+    // And the shaded frame itself, which the brightness comparison is *about*.
+    // Kept from the same dump loop as the shadow view and for the same reason:
+    // a second render of the same view is a second frame, and the whole claim of
+    // the comparison is that it is looking at the picture a person looked at.
+    let mut lit_pixels: Vec<u8> = Vec::new();
     // `View::Lit` and `View::Shadow` answer "does it look right" and "what did
     // the walk say"; when a patch in either one is unaccounted for, the
     // question is which surface owns those pixels at all, and that is
@@ -927,8 +1023,14 @@ fn main() {
             &PathBuf::from(format!("{base}_{}.png", view.name())),
             Some(light_mark),
         );
+        // The crosshair `dump` draws is on the *file*, not on what it returns —
+        // see its own doc — so what these two keep is the frame as the shader
+        // wrote it. A comparison against a picture with a marker painted into it
+        // would report the marker.
         if view == View::Shadow {
             shadow_pixels = pixels;
+        } else if view == View::Lit {
+            lit_pixels = pixels;
         }
     }
 
@@ -961,6 +1063,10 @@ fn main() {
     type Mismatch = (f64, f64, f32, (u8, u8, u8));
     if env_opt("OPENSHARD_BOXES_GROUND_ORACLE").as_deref() != Some("0") {
         let mut sampled = 0usize;
+        // Ground pixels no flame's radius covers. Reported rather than silently
+        // dropped: "this many pixels were not compared, and why" is half of what
+        // makes a count of disagreements mean anything.
+        let mut unreached = 0usize;
         let mut mismatches = 0usize;
         let mut too_dark = 0usize;
         let mut too_light = 0usize;
@@ -978,19 +1084,30 @@ fn main() {
             // carry their own interpolated height, and this is the point the
             // shader lit.
             let (x, y, z) = texel.at;
-            sampled += 1;
             let offset = pixel * 4;
-            // `Shade::lit` is the same half-channel test this line has always
-            // been, decoded rather than thresholded. It answers `false` for a
-            // fragment outside every pool as well as for a shadowed one, which
-            // is the conflation `Shade` exists to make visible — see this
-            // tool's own backlog entry in `docs/lighting_height.md`.
-            let gpu_lit = Shade::of([
+            // **A fragment no flame reaches is not a fragment this oracle has an
+            // opinion about.** `oracle_visible` is pure geometry and knows
+            // nothing of a torch's range, so comparing it against a pixel the
+            // shader left dark *because of the radius* counts the radius as a
+            // disagreement. `Shade` exists to make that distinction available
+            // and `Shade::lit`'s own doc says a caller that must not count it
+            // has to match on the variant — this is that caller.
+            //
+            // It went unnoticed while every scene here had its flame reaching
+            // the whole canvas. The `flat` scene is the first where it does not,
+            // and this reported 67,728 of 262,144 ground pixels "rendered too
+            // dark" — every one of them simply out of the torch's reach.
+            let shade = Shade::of([
                 shadow_pixels[offset],
                 shadow_pixels[offset + 1],
                 shadow_pixels[offset + 2],
-            ])
-            .lit();
+            ]);
+            if shade == Shade::Unreached {
+                unreached += 1;
+                continue;
+            }
+            sampled += 1;
+            let gpu_lit = shade.lit();
             let independent = oracle_visible((x, y, z), light_point, &boxes, usize::MAX);
             if independent != gpu_lit {
                 mismatches += 1;
@@ -1036,7 +1153,8 @@ fn main() {
         eprintln!(
             "ground oracle vs rendered View::Shadow: {mismatches}/{sampled} drawn ground pixels disagree \
              ({too_dark} rendered too dark, {too_light} rendered too light; {shader_alone} the shader \
-             alone, {engine_together} both walks together)"
+             alone, {engine_together} both walks together); {unreached} more are outside the flame's \
+             own radius and are not compared"
         );
         assert!(
             sampled > 100,
@@ -1093,7 +1211,7 @@ fn main() {
     // sampled and disagreeing, and the total is asserted non-trivial — a
     // detector that silently compares nothing reads exactly like a detector
     // that found nothing.
-    if env_opt("OPENSHARD_BOXES_FACE_ORACLE").as_deref() != Some("0") {
+    if !boxes.is_empty() && env_opt("OPENSHARD_BOXES_FACE_ORACLE").as_deref() != Some("0") {
         // How many bands to report a face's disagreements in, up its own
         // height. Not a sampling grid any more — the sweep is exhaustive over
         // the face's pixels — only the resolution the "where" line reads at.
@@ -1112,6 +1230,9 @@ fn main() {
                     .map(|(_, _, id)| *id)
                     .expect("every box pushes an east and a south face");
                 let mut sampled = 0usize;
+                // Pixels of this face outside every flame's radius, which this
+                // oracle has no opinion about — see the ground oracle above.
+                let mut unreached = 0usize;
                 let mut disagreeing = 0usize;
                 // And which of the two walks is out, on every disagreement.
                 // `light::sample` is the CPU's own preview of exactly what the
@@ -1148,13 +1269,20 @@ fn main() {
                     // The fragment's own world position, read whole off the
                     // position plane. This is the point the shader lit.
                     let (x, y, z) = texel.at;
-                    sampled += 1;
-                    let gpu_lit = Shade::of([
+                    // Out of every flame's reach is not shadowed — the ground
+                    // oracle above carries the argument, and this is the same
+                    // comparison against the same picture.
+                    let shade = Shade::of([
                         shadow_pixels[pixel * 4],
                         shadow_pixels[pixel * 4 + 1],
                         shadow_pixels[pixel * 4 + 2],
-                    ])
-                    .lit();
+                    ]);
+                    if shade == Shade::Unreached {
+                        unreached += 1;
+                        continue;
+                    }
+                    sampled += 1;
+                    let gpu_lit = shade.lit();
                     let independent = oracle_visible((x, y, z), light_point, &boxes, index);
                     if independent != gpu_lit {
                         disagreeing += 1;
@@ -1188,7 +1316,7 @@ fn main() {
                 eprintln!(
                     "face oracle, box {index}'s own {label} face: {sampled} pixels drawn, \
                      {disagreeing} disagree ({shader_alone} the shader alone, {engine_together} both \
-                     walks together)",
+                     walks together); {unreached} outside the flame's radius, not compared",
                 );
                 if disagreeing > 0 {
                     // Runs of adjacent bands rather than a band apiece: a defect
@@ -1237,6 +1365,10 @@ fn main() {
     // The reference tracer: the same scene rendered again, by something with no
     // idea what a tile is. See this module's own "# The reference tracer".
     if env_opt("OPENSHARD_BOXES_PATHTRACE").as_deref() != Some("0") {
+        // The art itself, as the world passes left it — the albedo half of the
+        // shaded comparison, and the one number in this whole tool that has to
+        // come off the picture rather than out of a scene description.
+        let world_pixels = oracle::read_surface(&device, &queue, &world, width, height_px);
         pathtrace_comparison(PathtraceInputs {
             boxes: &boxes,
             light_at,
@@ -1248,6 +1380,14 @@ fn main() {
             shadow_pixels: &shadow_pixels,
             face_rows: &face_rows,
             base: &base,
+            flame: &lighting.lights[0],
+            albedos: oracle::pathtrace::Albedos {
+                ground: oracle::ground_albedo(&drawn, &world_pixels),
+                // Invented, and it stays invented until phase 6: there is no
+                // colour on the engine's side of a box's face to take one from.
+                ..oracle::pathtrace::Albedos::INVENTED
+            },
+            lit_pixels: &lit_pixels,
         });
     }
 }
@@ -1270,6 +1410,18 @@ struct PathtraceInputs<'a> {
     shadow_pixels: &'a [u8],
     face_rows: &'a [(usize, Stance, u32)],
     base: &'a str,
+    /// The flame this scene is actually lit by — the engine's own `Light`, so
+    /// the reference emits what the renderer emits rather than a brightness
+    /// picked to make its own picture readable.
+    flame: &'a Light,
+    /// What the surfaces reflect. The ground's is read off the frame the world
+    /// passes just drew; see [`ground_albedo`].
+    albedos: oracle::pathtrace::Albedos,
+    /// The engine's own lit frame, `RGBA8`, for the shaded comparison — the
+    /// picture `docs/lighting_rebuild.md`'s phase 0 is *about*. Empty when the
+    /// run did not dump `View::Lit`, and the comparison then says so rather
+    /// than drawing half of itself.
+    lit_pixels: &'a [u8],
 }
 
 /// Render the scene a second time with [`openshard_client_pathtrace`], lay the
@@ -1291,9 +1443,20 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         shadow_pixels,
         face_rows,
         base,
+        flame,
+        albedos,
+        lit_pixels,
     } = inputs;
 
-    let mirror = oracle::pathtrace::Mirror::of(boxes, light_at, light_radius, to_pixel);
+    let mirror = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
+        boxes,
+        light_at,
+        light_radius,
+        colour: flame.color.map(f64::from),
+        intensity: f64::from(flame.intensity),
+        albedos,
+        to_pixel,
+    });
 
     // **In the engine's own light model, and then in physics.** The gate is the
     // first: `Brdf::Flat` is the shipped renderer's model — no cosine, no `1/π`,
@@ -1377,6 +1540,19 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         ],
     );
 
+    // **The two shaded pictures, side by side.** `docs/lighting_rebuild.md`'s
+    // phase 0: the instrument every later phase is judged by is a picture beside
+    // the tracer's, looked at by a person — and until this, the tool wrote the
+    // engine's frame and the tracer's as two files and laid only their *shadow
+    // masks* beside each other.
+    //
+    // The engine's own `View::Lit` frame, the tracer's exact render of the same
+    // scene in the same light model, and the difference between them per
+    // channel. Both encoded by `tonemap::encode`, which is the second half of
+    // the curve `blit.wesl` ends with: two pictures encoded by two spellings
+    // would differ by the spellings.
+    shaded_comparison(&exact, lit_pixels, &verdict, width, height, base);
+
     // And the full mode, on request: a real Monte Carlo render of the same
     // scene, with a spherical emitter, a cosine term and bounced light. It is
     // deliberately not compared against anything — none of what it adds exists
@@ -1443,24 +1619,118 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         .expect("a number");
     let mut pixels = vec![0u8; (width * height * 3) as usize];
     for (pixel, traced) in full.pixels.iter().enumerate() {
-        for channel in 0..3 {
-            // Linear radiance to something a viewer shows: exposure, then the
-            // sRGB transfer curve. No tone curve beyond that — a filmic one
-            // would make the picture prettier and its shadows less readable,
-            // and readable shadows are the whole errand.
-            let linear = (traced.radiance[channel] * exposure).clamp(0.0, 1.0);
-            let encoded = match linear <= 0.003_130_8 {
-                true => linear * 12.92,
-                false => 1.055 * linear.powf(1.0 / 2.4) - 0.055,
-            };
-            pixels[pixel * 3 + channel] = (encoded * 255.0).round() as u8;
-        }
+        // Linear radiance to something a viewer shows, through **the renderer's
+        // own curve** — `tonemap::encode`, the second half of what `blit.wesl`
+        // ends every lit frame with. This spelled the sRGB transfer function out
+        // by hand until phase 0, with a `clamp` where the tonemap's shoulder is,
+        // so the reference and the frame took two different paths out of linear
+        // light and a picture of one could not be laid beside a picture of the
+        // other. `docs/lighting_rebuild.md` phase 1's own rule: nothing in this
+        // crate spells these curves a second time.
+        //
+        // The exposure knob stays a knob, and stays *outside* the curve: it says
+        // how much light this scene has, which is a property of the scene and
+        // not of how a viewer shows it.
+        let encoded = openshard_client_render::tonemap::encode_u8(
+            traced.radiance.map(|channel| (channel * exposure) as f32),
+        );
+        pixels[pixel * 3..pixel * 3 + 3].copy_from_slice(&encoded);
     }
     write_strips(
         std::path::Path::new(&format!("{base}_pathtrace_full.png")),
         width,
         height,
         &[&pixels],
+    );
+}
+
+/// The engine's shaded frame, the tracer's, and the difference — one picture,
+/// and a line of numbers under it.
+///
+/// **`docs/lighting_rebuild.md`'s phase 0 instrument.** Not a gate: it prints
+/// and draws, and a person decides. The gate with the same subject is
+/// `tests/traced.rs`'s brightness test, which runs the flat scene where the two
+/// sides can be held to a quantisation and asserts on it.
+///
+/// Which pixels are compared is [`oracle::pathtrace::compare`]'s own answer,
+/// taken off the verdict rather than decided again here: a pixel counts when
+/// both renderers agree what surface is there. A second rule for it would be a
+/// second opinion about what the picture is of.
+///
+/// The difference strip is per channel and **amplified**, because that is what
+/// makes it useful: an agreement to within a step or two of eight bits is the
+/// success case, and drawn honestly it is a black rectangle indistinguishable
+/// from a comparison that ran on nothing. The scale is printed beside it.
+fn shaded_comparison(
+    traced: &pt_trace::Image,
+    lit: &[u8],
+    verdict: &oracle::pathtrace::Verdict,
+    width: u32,
+    height: u32,
+    base: &str,
+) {
+    if lit.is_empty() {
+        eprintln!(
+            "no `View::Lit` frame was dumped, so the shaded comparison has only one side — add \
+             `lit` to OPENSHARD_BOXES_VIEWS"
+        );
+        return;
+    }
+    // How much a difference of one eight-bit step is drawn as. Eight, so a
+    // single step of quantisation is a visible dark grey and four steps — which
+    // is a real disagreement about light — is already bright.
+    const AMPLIFY: u16 = 8;
+
+    let mut ours = vec![0u8; (width * height * 3) as usize];
+    let mut theirs = vec![0u8; (width * height * 3) as usize];
+    let mut difference = vec![0u8; (width * height * 3) as usize];
+    let (mut compared, mut worst, mut total) = (0usize, 0u16, 0u64);
+    // How many compared pixels sit within each step of the other picture, so the
+    // report says *how* close rather than only how far the worst one is.
+    let mut within = [0usize; 4];
+    for pixel in 0..(width * height) as usize {
+        let engine = [lit[pixel * 4], lit[pixel * 4 + 1], lit[pixel * 4 + 2]];
+        let reference = openshard_client_render::tonemap::encode_u8(
+            traced.pixels[pixel].radiance.map(|channel| channel as f32),
+        );
+        ours[pixel * 3..pixel * 3 + 3].copy_from_slice(&engine);
+        theirs[pixel * 3..pixel * 3 + 3].copy_from_slice(&reference);
+        if verdict.engine_lit[pixel].is_none() {
+            continue;
+        }
+        compared += 1;
+        let mut apart = 0u16;
+        for channel in 0..3 {
+            let step = engine[channel].abs_diff(reference[channel]);
+            apart = apart.max(u16::from(step));
+            difference[pixel * 3 + channel] = (u16::from(step) * AMPLIFY).min(255) as u8;
+        }
+        worst = worst.max(apart);
+        total += u64::from(apart);
+        for (steps, count) in within.iter_mut().enumerate() {
+            *count += usize::from(apart <= steps as u16);
+        }
+    }
+    assert!(
+        compared > 0,
+        "the shaded comparison had no pixel where both renderers agree what surface is there — it \
+         is measuring nothing, which reads exactly like measuring an agreement"
+    );
+    eprintln!(
+        "shaded frame vs path tracer: {compared} pixels compared, worst channel {worst} steps of \
+         255, mean {:.2}; within 0/1/2/3 steps: {}/{}/{}/{}",
+        total as f64 / compared as f64,
+        within[0],
+        within[1],
+        within[2],
+        within[3],
+    );
+    eprintln!("  the difference strip is amplified {AMPLIFY}× — one step of eight bits draws as {AMPLIFY}");
+    write_strips(
+        std::path::Path::new(&format!("{base}_lit_vs_traced.png")),
+        width,
+        height,
+        &[&ours, &theirs, &difference],
     );
 }
 

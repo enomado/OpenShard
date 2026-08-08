@@ -106,6 +106,50 @@ pub fn read_gbuffer(
         .collect()
 }
 
+/// What the ground reflects, in linear units, **read off the frame the world
+/// passes drew**.
+///
+/// The albedo half of a shaded comparison, and it lives here because both
+/// callers of the reference tracer need exactly it: the tool that draws the two
+/// pictures and the gate that asserts on them. Written twice, it would be two
+/// decodes of one art — and the whole claim of a brightness comparison is that
+/// the colour is *the same on both sides*, which two spellings cannot make true.
+///
+/// Not the land art looked up a second time: what is wanted is what the lighting
+/// pass will multiply, which is what the world texture holds at a pixel the id
+/// plane says is land. Taking it from the picture makes "the same albedo" a
+/// measurement rather than two authors agreeing to write the same constant down.
+///
+/// # Panics
+///
+/// If the ground is not one flat colour, or if there is none. Both are the same
+/// failure of a scene to be what a brightness comparison needs: the reference
+/// has a single albedo for its whole ground plane, so a textured floor would be
+/// compared against an average of itself and every pixel would differ by the
+/// texture rather than by the light.
+pub fn ground_albedo(drawn: &[Drawn], world: &[u8]) -> [f64; 3] {
+    let land = openshard_client_render::place::Kind::Land as u32;
+    let mut found: Option<[u8; 3]> = None;
+    for (pixel, texel) in drawn.iter().enumerate() {
+        if texel.kind != land {
+            continue;
+        }
+        let art = [world[pixel * 4], world[pixel * 4 + 1], world[pixel * 4 + 2]];
+        assert_eq!(
+            *found.get_or_insert(art),
+            art,
+            "the ground is not one flat colour — pixel {pixel} is {art:?}, and a reference with a \
+             single ground albedo cannot be laid beside a textured floor"
+        );
+    }
+    let stored = found.expect("the frame drew no ground at all, so there is nothing to compare");
+    stored.map(|channel| {
+        f64::from(openshard_client_render::tonemap::srgb_to_linear(
+            f32::from(channel) / 255.0,
+        ))
+    })
+}
+
 /// One plane copied back to the CPU, whole, at `stride` bytes a texel.
 ///
 /// The row pitch is rounded up to `COPY_BYTES_PER_ROW_ALIGNMENT` and the

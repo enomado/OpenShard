@@ -130,8 +130,11 @@ the rebuild?**
   sprite silhouettes, depth order, the camera. None of it is about light.
 - **Pictures are promoted.** `tests/pictures.rs`, `tests/traced.rs`,
   `dump_the_lighting_views`, `examples/synthetic_stair.rs` are no longer a side
-  channel — they are the acceptance instrument, and the work they still need is
-  to put the engine's frame and the tracer's *side by side* for one look.
+  channel — they are the acceptance instrument. The engine's frame and the
+  tracer's are side by side as of phase 0: `boxes.rs` writes
+  `<base>_lit_vs_traced.png`, three strips — ours, theirs, and the difference
+  amplified `8×` so that an agreement is a black rectangle and a disagreement is
+  not.
 
 ## What arrives, in detail
 
@@ -270,7 +273,50 @@ the choice of model is made by the choice of instrument rather than by us.
 *Done when:* the path tracer and the engine agree on a scene with one flame and
 no occluders, to within the frame's own quantisation — which is a statement about
 falloff and colour handling alone, and is the calibration everything else rests
-on.
+on. **Done.** The scene is `boxes.rs`'s `flat`, the gate is
+`the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground`, and the
+measurement is **262,144 pixels compared, worst channel one step of 255** —
+257,972 of them identical and the remaining 4,172 exactly one step apart. The
+tolerance is `2` and the residual is `1`, so it is a quantisation rather than a
+margin sized to fit; at `0` the gate goes red, which is how that was checked
+rather than argued.
+
+*What had to become true first*, and each was a difference that is not about
+light:
+
+- **the albedo is the same on both sides.** `oracle::ground_albedo` reads it off
+  the world texture the ground pass drew and decodes it, so it is a measurement
+  and not two authors writing the same constant down. `Mirror::of`'s
+  `[0.42, 0.44, 0.40]` is now `Albedos::INVENTED` — still the value where a
+  comparison does not read colour, but a call site has to *say* so.
+- **the flame is the same flame.** `Light`'s own colour and intensity travel to
+  the reference through `Mirrored`; the tracer's own `intensity: 6.0` was picked
+  to make its own picture readable and made every shaded comparison meaningless.
+- **one curve.** `tonemap::encode` is the radiance-only half of `shade` —
+  `linear_to_srgb(tonemap(x))` — and both pictures go through it.
+  `pathtrace_comparison`'s hand-rolled sRGB, with a `clamp` where the shoulder
+  is, was a second spelling of it and phase 1's own rule forbids one.
+- **the ambient is nothing, deliberately.** A degenerate path trace is direct
+  light and has no ambient term, so `NIGHT` would be a constant on one side of
+  the comparison only — and not one that could be subtracted back out, since the
+  sum passes through a tonemap. Giving the tracer an ambient instead would put
+  this renderer's own model inside the thing that checks it.
+
+The scene has no boxes for the fourth reason the backlog named: `mesh_face.wesl`
+writes no colour, so a box's face has nothing on the engine's side to compare a
+body albedo against. That is phase 6's, and `Albedos::body` stays invented until
+then.
+
+*And it found a defect in the instrument on its first run.* Both pixel oracles in
+`boxes.rs` read `Shade::lit()`, which answers `false` for a fragment **outside
+every flame's radius** as well as for a shadowed one — and compared it against
+`oracle_visible`, which is pure geometry and knows nothing of a torch's range.
+`Shade` exists to make exactly that distinction available and its own doc says a
+caller that must not count it has to match on the variant. Every scene until now
+had its flame reaching the whole canvas, so the conflation never fired; `flat` at
+1:1 reported **67,728 of 262,144 ground pixels "rendered too dark"**, every one
+of them simply out of reach. Both oracles now skip `Shade::Unreached` and report
+how many they skipped.
 
 **Phase 1 — linear and HDR.** *(Landed.)* sRGB decode, the multiplication in
 linear radiance, exposure and an ACES curve, encoded once.
@@ -551,9 +597,10 @@ still wanted.
 **Known gaps that outlive the rebuild**
 - The corner-tie CPU/GPU parity gap, with two `#[ignore]`d tests
   (`lighting_raymarch.md`). Phase 4 does not touch stepping, so it stays.
-- Nothing runs the tracer over a real map — all three scenes are hand-built
-  boxes (`lighting_reference.md`). **Phase 0's own work**, along with the
-  brightness calibration that phase's "done when" actually asks for.
+- Nothing runs the tracer over a real map — all four scenes are hand-built boxes,
+  and the fifth is hand-built flat ground (`lighting_reference.md`). The
+  brightness calibration beside this entry **is done** (phase 0); a real map is
+  not, and is now the whole of what is left of it.
 - The tracer is single-threaded, 13 s a frame — too slow for a sweep, and a
   sweep is how the last three defects were found (`lighting_reference.md`).
 - Buffer capacity is one flat `INITIAL_QUADS = 4096` for all kinds, and the
@@ -589,29 +636,41 @@ Things noticed while writing this, not blocking any phase:
   over_footprint` and `blit.wesl`'s twin. Only the horizontal half, because a
   vertical ray's height answer is `crosses`'s soft one and `ray_vs_solid` would
   answer it hard, erasing the penumbra.
-- **There is no lit-against-lit picture, and three separate things stop one being
-  drawn.** The tool writes the engine's shaded frame (`<base>_lit.ppm`) and the
-  tracer's (`<base>_pathtrace_full.ppm`) as two files, and the only thing it puts
-  *side by side* is a pair of shadow masks. Laying the two shaded pictures beside
-  each other today would show a difference for three reasons that are not about
-  light: the tracer's albedos are written down in `oracle::pathtrace::Mirror::of`
-  (`[0.72, 0.70, 0.66]` for a body, `[0.42, 0.44, 0.40]` for the ground) and are
-  not the engine's art; its flame is `intensity: 6.0` against the engine's `1.0`;
-  and it has no ambient where the engine has `NIGHT`. A fourth, underneath them:
-  `mesh_face.wesl` writes only the `place` attachment, so a box's *face* has no
-  albedo in the world texture at all — there is nothing on the engine's side to
-  compare a body's colour against yet.
-
-  This is phase 0's "done when" restated as a picture, and it is the thing to fix
-  before anybody judges a phase by looking. The smallest honest first scene is the
-  one that phase already names: **one flame, flat ground, no occluders**, where
-  the albedo is the same ground art on both sides and what is left to differ is
-  falloff, intensity and colour handling alone. The two encodes must also pass
-  through **one** curve — `tonemap::tonemap` then `linear_to_srgb` — and
-  `pathtrace_comparison`'s hand-rolled sRGB is a second spelling of the second
-  half of that, which phase 1's own rule forbids.
+- ~~**There is no lit-against-lit picture, and three separate things stop one
+  being drawn.**~~ **Done — this is phase 0, and its account is up there.**
+  `<base>_lit_vs_traced.png` is the engine's shaded frame, the tracer's, and the
+  difference amplified `8×`; `boxes.rs`'s `flat` scene is where it means
+  something. All four blockers went: the albedos come from the frame, the flame
+  is the engine's own, the encodes share `tonemap::encode`, and the ambient is
+  nothing on both sides. The fourth — a mesh face has no albedo — is not fixed
+  but *avoided*, by a scene with no boxes in it, and it is still phase 6's.
+- **A body's albedo is still invented, and one scene is not a calibration.**
+  What phase 0 now proves is that the engine and the reference agree about *one
+  surface, flat, unoccluded, unhued*. Three things it says nothing about: a
+  vertical face (no albedo on the engine's side until phase 6), a hued sprite
+  (the ramp is decoded to linear before the light multiplies it, and nothing
+  compares that against anything), and land that is not flat (`ground_albedo`
+  panics on a textured floor rather than handling one — deliberately, because a
+  single-albedo reference cannot judge one). Each is a scene the tracer could
+  hold once the engine's side has a colour to compare.
+- **A scene's flame reaching the whole canvas hid a conflation in two oracles for
+  as long as every scene had one.** Fixed — see phase 0's account — but the shape
+  of it is worth keeping: the oracles were right about every pixel they compared
+  and wrong about *which pixels they had an opinion on*, and no amount of looking
+  at their disagreement counts would have shown it, because the count was the
+  thing that was wrong. What found it was a scene whose flame does not cover the
+  frame. **Every detector in this crate that reads a `View::Shadow` pixel should
+  be asked the same question**, and the two here are unlikely to be all of them.
 - `examples/two_cubes.rs` still projects world points without asking whose pixel
   it got. Phase 2 moves every other reader to `ids`; this one should go with them.
+- **`tests/traced.rs` and `examples/boxes.rs` still build the same scene twice.**
+  The two gates inside `traced.rs` now share one `render(Shot)` fixture — which
+  is what made the brightness gate cheap to add — but the tool has its own copy
+  of the whole pipeline (floor art, synthetic map, atlases, mesh rows, blit), and
+  a scene is authored in one and restated in the other. `line_scene` and
+  `flat`'s flame are already two spellings of numbers that have to agree for a
+  failure in the gate to be reproducible by the tool. The same argument as the
+  three-tread flight below, one layer up.
 - **The parity harness could not see a sub-tile lid, and still barely can.** The
   shader's copy of the shortcut above was fixed and forty-seven frame tests
   stayed green with the fix deleted again: no parity scene had a solid narrower

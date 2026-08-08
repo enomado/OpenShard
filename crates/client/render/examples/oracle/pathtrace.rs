@@ -36,6 +36,47 @@ use openshard_client_render::place::Stance;
 use super::boxes::BoxSpec;
 use super::{Drawn, Shade};
 
+/// What the surfaces of a scene are worth, in linear reflectance.
+///
+/// **Taken from the caller because the caller is the side that knows.** These
+/// were two literals in [`Mirror::of`] until `docs/lighting_rebuild.md`'s phase
+/// 0 asked for the two shaded pictures side by side, at which point they became
+/// the largest difference between them and one that is not about light at all: a
+/// reference whose ground is a different colour from the ground in the frame
+/// disagrees about every pixel of it, brightly, for a reason no phase of the
+/// rebuild will ever fix.
+///
+/// A comparison of *shadows* never cared — [`compare`] reads visibility, not
+/// radiance — which is exactly why the literals survived as long as they did.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Albedos {
+    /// The ground plane's, linear. The one a shaded comparison can take from the
+    /// frame itself: the tool reads the art the world pass actually drew and
+    /// decodes it, so "the same albedo on both sides" is a measurement rather
+    /// than a claim.
+    pub ground: [f64; 3],
+    /// Every box's, linear. **Still a stand-in**, and the reason phase 0's
+    /// scene has no boxes in it: `mesh_face.wesl` writes no colour into the
+    /// world texture at all, so a box's face has nothing on the engine's side
+    /// for this to be compared against. Phase 6 is where a mesh face gets an
+    /// albedo; until then this number is what the *reference* thinks a box
+    /// looks like and nothing checks it.
+    pub body: [f64; 3],
+}
+
+impl Albedos {
+    /// What the tracer assumed before anybody asked it to agree about
+    /// brightness: a pale body on a duller ground, both invented.
+    ///
+    /// Kept as a named constant rather than spread back through the callers
+    /// that do not care, so that "this scene never checked its own colours" is
+    /// a thing a call site *says*.
+    pub const INVENTED: Self = Self {
+        ground: [0.42, 0.44, 0.40],
+        body: [0.72, 0.70, 0.66],
+    };
+}
+
 /// The same scene, in the tracer's own terms.
 ///
 /// Two things are taken from the renderer to build it, and both arrive as
@@ -46,20 +87,44 @@ pub struct Mirror {
     pub flame: pt_light::Light,
 }
 
+/// A scene to mirror, and everything about it the reference cannot invent.
+///
+/// A struct rather than seven positional arguments, and every field is a value
+/// the *engine's* own scene already holds: the flame's colour and intensity are
+/// `light::Light`'s own two fields, and the albedos are the art. A reference
+/// that made up any of them would be judging a different scene and reporting the
+/// difference as the renderer's.
+pub struct Mirrored<'a> {
+    pub boxes: &'a [BoxSpec],
+    pub light_at: WorldSpot,
+    pub light_radius: f64,
+    /// `light::Light::color`, widened. Per channel, a plain multiplier.
+    pub colour: [f64; 3],
+    /// `light::Light::intensity`, widened. **Not the reference's own knob**: a
+    /// tracer rendering the same scene at six times the brightness makes a
+    /// picture nobody can lay beside a frame.
+    pub intensity: f64,
+    pub albedos: Albedos,
+    /// The *renderer's* own world-to-pixel map, handed over as a black box for
+    /// [`pt_camera::Parallel::measure`] to recover. This is the one thing the
+    /// tracer takes from the render crate, and taking it as values rather than
+    /// as a formula is what stops the reference camera from drifting into being
+    /// nobody's camera.
+    pub to_pixel: &'a dyn Fn(WorldSpot) -> (f64, f64),
+}
+
 impl Mirror {
     /// Build the tracer's view of a scene of boxes lit by one flame.
-    ///
-    /// `to_pixel` is the *renderer's* own world-to-pixel map, handed over as a
-    /// black box for [`pt_camera::Parallel::measure`] to recover. This is the
-    /// one thing the tracer takes from the render crate, and taking it as
-    /// values rather than as a formula is what stops the reference camera from
-    /// drifting into being nobody's camera.
-    pub fn of(
-        boxes: &[BoxSpec],
-        light_at: WorldSpot,
-        light_radius: f64,
-        to_pixel: &dyn Fn(WorldSpot) -> (f64, f64),
-    ) -> Self {
+    pub fn of(mirrored: Mirrored<'_>) -> Self {
+        let Mirrored {
+            boxes,
+            light_at,
+            light_radius,
+            colour,
+            intensity,
+            albedos,
+            to_pixel,
+        } = mirrored;
         // **The metric.** The tracer's world is isotropic and this one is not: a
         // step of one in `x` is a tile and a step of one in `z` is a tile's
         // eleventh (`light::Z_PER_TILE`, which the renderer states and uses for
@@ -84,12 +149,12 @@ impl Mirror {
                         isotropic(b.min.0, b.min.1, b.min.2),
                         isotropic(b.max.0, b.max.1, b.max.2),
                     ),
-                    albedo: [0.72, 0.70, 0.66],
+                    albedo: albedos.body,
                 })
                 .collect(),
             ground: Some(pt_scene::Ground {
                 z: 0.0,
-                albedo: [0.42, 0.44, 0.40],
+                albedo: albedos.ground,
             }),
         };
 
@@ -122,8 +187,8 @@ impl Mirror {
             // disagreement about geometry, which is not what any of them would
             // be about.
             falloff: pt_light::Falloff::Windowed { reach: light_radius },
-            colour: [1.0, 1.0, 1.0],
-            intensity: 6.0,
+            colour,
+            intensity,
         };
 
         Self { scene, camera, flame }

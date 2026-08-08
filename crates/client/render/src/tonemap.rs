@@ -46,10 +46,32 @@ pub fn tonemap(radiance: f32) -> f32 {
     mapped.clamp(0.0, 1.0)
 }
 
+/// A linear radiance, as a viewer shows it: curved, then encoded.
+///
+/// The second half of [`shade`], on its own, because there is a producer of
+/// radiance that never had an albedo and a light to multiply — the reference
+/// tracer, whose pixels arrive already multiplied. Judging its picture beside a
+/// frame of ours means both passing through **one** curve, and a comparison
+/// whose two sides encode by two spellings is a comparison of the spellings.
+pub fn encode(radiance: f32) -> f32 {
+    linear_to_srgb(tonemap(radiance))
+}
+
 /// The whole pipeline: stored art, multiplied by linear light, curved, stored
 /// again. What a test predicts a lit pixel to be.
 pub fn shade(albedo_srgb: f32, light: f32) -> f32 {
-    linear_to_srgb(tonemap(srgb_to_linear(albedo_srgb) * light))
+    encode(srgb_to_linear(albedo_srgb) * light)
+}
+
+/// [`encode`] for a whole pixel, in the eight-bit units a frame is read back in.
+///
+/// Rounding, for [`shade_u8`]'s reason and by the same arithmetic.
+pub fn encode_u8(radiance: [f32; 3]) -> [u8; 3] {
+    let mut out = [0u8; 3];
+    for (channel, lit) in out.iter_mut().zip(radiance) {
+        *channel = (encode(lit) * 255.0).round() as u8;
+    }
+    out
 }
 
 /// The same for a whole pixel, in the eight-bit units a frame is read back in.
@@ -114,6 +136,18 @@ mod tests {
             let value = tonemap(radiance);
             assert!(value >= previous, "the curve fell at {radiance}");
             previous = value;
+        }
+    }
+
+    /// The two encoders are one curve, which is the whole reason [`encode`] is
+    /// separate rather than copied: a white surface is the one albedo that
+    /// multiplies a light by nothing, so shading it must be exactly encoding the
+    /// light itself. It fires if anybody ever gives the radiance-only path its
+    /// own exposure or its own curve.
+    #[test]
+    fn shading_white_art_is_encoding_the_light_that_falls_on_it() {
+        for light in [0.0, 0.01, 0.25, 1.0, 4.0, 100.0] {
+            assert_eq!(shade_u8([255; 3], [light; 3]), encode_u8([light; 3]));
         }
     }
 

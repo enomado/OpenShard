@@ -111,14 +111,63 @@ fn flame() -> WorldSpot {
 
 const FLAME_RADIUS: f32 = 8.0;
 
-#[test]
-fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
-    let Some((device, queue)) = gpu() else {
-        eprintln!("no GPU adapter; skipping");
-        return;
-    };
-    let boxes = line_scene();
+/// One frame of a scene of boxes, and everything a comparison needs to read it.
+///
+/// Two tests draw a frame here — the shadow gate and the brightness gate — and
+/// they differ in the scene, the ambient and which view they read back. Building
+/// the pipeline twice would be two fixtures that can drift apart in every way
+/// that is not under test; the camera in particular, which the reference tracer
+/// *measures* through this fixture's own projection.
+struct Rendered {
+    /// What the world passes left on each pixel: the surface, and where its
+    /// fragment is.
+    drawn: Vec<oracle::Drawn>,
+    /// The requested [`View`], read back, `RGBA8`.
+    surface: Vec<u8>,
+    /// The art itself, before any light — what the albedo of a comparison has to
+    /// be taken from.
+    world: Vec<u8>,
+    /// Which box and stance each mesh-face row is, recorded as the rows were
+    /// pushed rather than re-derived.
+    face_rows: Vec<(usize, Stance, u32)>,
+    /// The frame's own world-to-pixel map. Boxed because the tracer's camera is
+    /// recovered from it as a black box and this fixture is what owns the
+    /// camera it closes over.
+    to_pixel: Box<dyn Fn(WorldSpot) -> (f64, f64)>,
+}
 
+/// A frame to draw: the scene, the light on it, and how close the camera is.
+///
+/// The zoom is a field and not a constant because it is **what decides how much
+/// of the world a 512-pixel canvas holds**, and the two gates want opposite
+/// things from that. The shadow gate wants a box's own face to be thousands of
+/// pixels, which is 4:1. The brightness gate wants the flame's whole pool —
+/// bright centre *and* dark rim — inside the frame, and at 4:1 a canvas is three
+/// tiles across, so every pixel of it sits near the middle of an eight-tile pool
+/// and the picture is one flat brightness. That version of the test agreed with
+/// the tracer and would have agreed with almost any falloff curve; its own
+/// non-triviality assertion is what caught it.
+struct Shot<'a> {
+    boxes: &'a [BoxSpec],
+    flame: WorldSpot,
+    /// The flame's reach, in tiles — `light::Light::radius`.
+    radius: f32,
+    ambient: openshard_client_render::light::Ambient,
+    view: View,
+    /// Notches up `camera::LADDER` from 1:1.
+    zoom: u32,
+}
+
+/// Draw a [`Shot`] and read the frame back.
+fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendered {
+    let Shot {
+        boxes,
+        flame,
+        radius,
+        ambient,
+        view,
+        zoom: zoom_notches,
+    } = shot;
     let bounds = TileBounds {
         min_x: 95,
         max_x: 107,
@@ -155,25 +204,25 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         })
         .collect();
 
-    // Three notches is the top of `camera::LADDER` — 4:1 — where a whole-tile
-    // box fills a 512-pixel canvas comfortably.
     let (centre_x, centre_y) = (100, 100);
     let mut camera = Camera::new(
         openshard_protocol::world::Point::new(centre_x as u16, centre_y as u16, 0),
         SIDE,
         SIDE,
     );
-    camera.zoom_about(
-        (SIDE / 2) as i32,
-        (SIDE / 2) as i32,
-        Zoom::ONE.scale_up().scale_up().scale_up(),
-    );
+    let mut zoom = Zoom::ONE;
+    for _ in 0..zoom_notches {
+        zoom = zoom.scale_up();
+    }
+    camera.zoom_about((SIDE / 2) as i32, (SIDE / 2) as i32, zoom);
     let projection = camera.projection();
     // Where a world position lands in this frame, in real pixels. The tracer's
     // camera is *measured* through this closure and never restates it — see
-    // `oracle::pathtrace::Mirror::of`.
-    let to_pixel = |at: WorldSpot| -> (f64, f64) {
-        let screen = camera.to_view_exact(project_exact(at));
+    // `oracle::pathtrace::Mirror::of`. Its own copy of the camera, so the
+    // fixture can hand it back to a caller that outlives this function.
+    let mapped = camera;
+    let to_pixel = move |at: WorldSpot| -> (f64, f64) {
+        let screen = mapped.to_view_exact(project_exact(at));
         (
             f64::from((screen.x - projection.origin.x) * projection.scale + SIDE as f32 * 0.5),
             f64::from((screen.y - projection.origin.y) * projection.scale + SIDE as f32 * 0.5),
@@ -219,11 +268,11 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
     }
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let world = openshard_client_render::blit::world_texture(&device, SIDE, SIDE);
+    let world = openshard_client_render::blit::world_texture(device, SIDE, SIDE);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
-    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, SIDE, SIDE);
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, SIDE, SIDE);
     let gbuffer_views = gbuffer.views();
-    let depth_tex = renderer::depth_texture(&device, SIDE, SIDE);
+    let depth_tex = renderer::depth_texture(device, SIDE, SIDE);
     let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
     // A floor for a shadow to fall on: one flat synthetic land tile, repeated
@@ -245,8 +294,8 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
     let ground_quads =
         openshard_client_render::ground::collect(&synthetic_map, &camera, &land, &texmaps, &Cutaway::OPEN);
 
-    let mut ground_pass = GroundRenderer::new(&device, &queue, format, &land, &texmaps);
-    let mut mesh_pass = MeshFaceRenderer::new(&device);
+    let mut ground_pass = GroundRenderer::new(device, queue, format, &land, &texmaps);
+    let mut mesh_pass = MeshFaceRenderer::new(device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target {
         gbuffer: &gbuffer_views,
@@ -256,28 +305,27 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         height: SIDE,
         projection,
     };
-    ground_pass.render(&device, &queue, &mut encoder, target, &ground_quads);
-    mesh_pass.render(&device, &queue, &mut encoder, target, &vertices, &rows);
+    ground_pass.render(device, queue, &mut encoder, target, &ground_quads);
+    mesh_pass.render(device, queue, &mut encoder, target, &vertices, &rows);
     queue.submit([encoder.finish()]);
 
     // What the world passes left on each pixel: which surface owns it, and where
     // in the world that surface's own fragment is.
-    let drawn = oracle::read_gbuffer(&device, &queue, &gbuffer, SIDE, SIDE);
+    let drawn = oracle::read_gbuffer(device, queue, &gbuffer, SIDE, SIDE);
 
-    let at = flame();
     let lighting = Lighting {
-        ambient: NIGHT,
+        ambient,
         lights: vec![Light {
-            at: Vec2::new(at.x as f32, at.y as f32),
-            z: at.z as f32,
-            radius: FLAME_RADIUS,
+            at: Vec2::new(flame.x as f32, flame.y as f32),
+            z: flame.z as f32,
+            radius,
             color: [1.0, 1.0, 1.0],
             intensity: 1.0,
             beam: None,
         }],
         occlusion,
         sun: None,
-        view: View::Shadow,
+        view,
     };
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
@@ -295,12 +343,12 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         view_formats: &[],
     });
     let surface_view = surface.create_view(&wgpu::TextureViewDescriptor::default());
-    let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
-    let mut blit = openshard_client_render::blit::Blit::new(&device, format);
+    let dummy_instances = openshard_client_render::blit::dummy_instances(device);
+    let mut blit = openshard_client_render::blit::Blit::new(device, format);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     blit.render(
-        &device,
-        &queue,
+        device,
+        queue,
         &mut encoder,
         openshard_client_render::blit::Frame {
             target: &surface_view,
@@ -321,18 +369,62 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         &lighting,
     );
     queue.submit([encoder.finish()]);
-    let shadow = oracle::read_surface(&device, &queue, &surface, SIDE, SIDE);
 
-    let mirror = oracle::pathtrace::Mirror::of(&boxes, at, f64::from(FLAME_RADIUS), &to_pixel);
+    Rendered {
+        drawn,
+        surface: oracle::read_surface(device, queue, &surface, SIDE, SIDE),
+        world: oracle::read_surface(device, queue, &world, SIDE, SIDE),
+        face_rows,
+        to_pixel: Box::new(to_pixel),
+    }
+}
+
+#[test]
+fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let boxes = line_scene();
+    let at = flame();
+    let frame = render(
+        &device,
+        &queue,
+        Shot {
+            boxes: &boxes,
+            flame: at,
+            radius: FLAME_RADIUS,
+            ambient: NIGHT,
+            view: View::Shadow,
+            // Three notches is the top of `camera::LADDER` — 4:1 — where a
+            // whole-tile box fills a 512-pixel canvas comfortably.
+            zoom: 3,
+        },
+    );
+
+    // `Albedos::INVENTED`, and it says so: this comparison is about *visibility*
+    // — which pixels the flame reaches — and nothing in it reads a colour. The
+    // brightness comparison that does is
+    // `the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground`,
+    // which takes its ground albedo off the frame itself.
+    let mirror = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
+        boxes: &boxes,
+        light_at: at,
+        light_radius: f64::from(FLAME_RADIUS),
+        colour: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        albedos: oracle::pathtrace::Albedos::INVENTED,
+        to_pixel: frame.to_pixel.as_ref(),
+    });
     let verdict = oracle::pathtrace::compare(
         &mirror.render(pt_trace::Brdf::Flat, SIDE, SIDE),
         &mirror.render(pt_trace::Brdf::Lambert, SIDE, SIDE),
         oracle::pathtrace::Frame {
             width: SIDE,
             height: SIDE,
-            drawn: &drawn,
-            shadow: &shadow,
-            face_rows: &face_rows,
+            drawn: &frame.drawn,
+            shadow: &frame.surface,
+            face_rows: &frame.face_rows,
         },
     );
     eprint!("{}", verdict.report());
@@ -374,5 +466,176 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
          disagreement explains\n{}",
         verdict.interior,
         verdict.report(),
+    );
+}
+
+/// How far apart the two pictures may be, in steps of an eight-bit channel.
+///
+/// **A quantisation, not a tolerance.** The two sides compute the same product
+/// of the same numbers in different precisions — the shader in `f32` through a
+/// rasteriser, the tracer in `f64` through an analytic intersection — and then
+/// round to a byte. One step is two answers landing either side of a rounding
+/// boundary; anything above it is a difference in what was computed.
+///
+/// Two rather than one because the *fragment* differs as well as the arithmetic:
+/// the shader lights the point the rasteriser wrote at the pixel's centre and
+/// the tracer lights the point its own ray meets, and on a plane seen at 4:1
+/// those are the same place to within a fraction of a tile — but a fraction of a
+/// tile is a real distance to a falloff curve.
+const QUANTISATION: u8 = 2;
+
+/// The engine's shaded frame and the path tracer's agree about *brightness*, on
+/// the one scene where nothing else can explain a difference.
+///
+/// **`docs/lighting_rebuild.md`'s phase 0 "done when", as a gate.** The scene is
+/// the one that phase names: one flame, flat ground, no occluders. What that
+/// buys is that everything the two renderers could disagree about *except* the
+/// light is gone — no silhouette, so no rasteriser fill rule; no box, so no
+/// invented albedo; no occluder, so no shadow ray. What is left is the falloff
+/// curve, the intensity and the colour pipeline, which is exactly the
+/// calibration every later phase rests on.
+///
+/// The three things that had to become true for it to be possible to write,
+/// each of which was a difference of its own until phase 0:
+///
+/// - **the albedo is the same on both sides** — read off the world texture the
+///   ground pass drew, not written down twice;
+/// - **the flame is the same flame** — `Light`'s own colour and intensity, where
+///   the reference used to carry a `6.0` picked to make its own picture
+///   readable;
+/// - **one curve** — both encoded by `tonemap::encode`, the second half of what
+///   `blit.wesl` ends a lit frame with.
+///
+/// And the ambient is *nothing*, deliberately: a degenerate path trace is direct
+/// light and has no ambient term, so `NIGHT` here would be a constant on one
+/// side of the comparison only — and not one that could be subtracted back out
+/// afterwards, since the sum passes through a tonemap.
+#[test]
+fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    // Over the middle of the anchor tile and low, so the pool's brightest point
+    // is in the frame and its rim is too: a comparison that saw only the tail of
+    // the curve would agree about a curve of nearly any shape.
+    let at = WorldSpot {
+        x: 100.5,
+        y: 100.5,
+        z: 3.0,
+    };
+    let dark = openshard_client_render::light::Ambient {
+        sky: [0.0; 3],
+        ground: [0.0; 3],
+    };
+    let frame = render(
+        &device,
+        &queue,
+        Shot {
+            boxes: &[],
+            flame: at,
+            radius: FLAME_RADIUS,
+            ambient: dark,
+            view: View::Lit,
+            zoom: 0,
+        },
+    );
+
+    // What the ground reflects, off the picture itself — the same decode the
+    // tool uses, so the gate and the pictures a person looks at are about one
+    // albedo rather than two.
+    let land = openshard_client_render::place::Kind::Land as u32;
+    let albedo = oracle::ground_albedo(&frame.drawn, &frame.world);
+
+    let mirror = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
+        boxes: &[],
+        light_at: at,
+        light_radius: f64::from(FLAME_RADIUS),
+        colour: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        albedos: oracle::pathtrace::Albedos {
+            ground: albedo,
+            // No body in the scene to have one. Left at the invented value
+            // rather than at zero so that a box arriving here later fails loudly
+            // as a difference rather than quietly as a black shape.
+            ..oracle::pathtrace::Albedos::INVENTED
+        },
+        to_pixel: frame.to_pixel.as_ref(),
+    });
+    let traced = mirror.render(pt_trace::Brdf::Flat, SIDE, SIDE);
+
+    // Compared where the tracer sees the ground and the frame drew it: the two
+    // agreeing what surface is there is the same precondition the shadow gate
+    // has, and on this scene it is the whole of the ground plane in view.
+    let (mut compared, mut worst, mut over) = (0usize, 0u8, 0usize);
+    let mut worst_at = (0u32, 0u32);
+    // Of the compared pixels, how many are in the bright half of the pool and
+    // how many in the dark one — counted here rather than over the whole canvas,
+    // because a picture is only evidence about a curve where the curve was
+    // actually asked.
+    let (mut bright, mut dim) = (0usize, 0usize);
+    for pixel in 0..(SIDE * SIDE) as usize {
+        if frame.drawn[pixel].kind != land {
+            continue;
+        }
+        let Some(seen) = traced.pixels[pixel].seen else {
+            continue;
+        };
+        if seen.surface != openshard_client_pathtrace::scene::Surface::Ground {
+            continue;
+        }
+        compared += 1;
+        let engine = [
+            frame.surface[pixel * 4],
+            frame.surface[pixel * 4 + 1],
+            frame.surface[pixel * 4 + 2],
+        ];
+        let reference = openshard_client_render::tonemap::encode_u8(
+            traced.pixels[pixel].radiance.map(|channel| channel as f32),
+        );
+        let apart = (0..3)
+            .map(|channel| engine[channel].abs_diff(reference[channel]))
+            .max()
+            .expect("three channels");
+        if apart > worst {
+            worst = apart;
+            worst_at = ((pixel as u32) % SIDE, (pixel as u32) / SIDE);
+        }
+        over += usize::from(apart > QUANTISATION);
+        match engine[0] > 128 {
+            true => bright += 1,
+            false => dim += 1,
+        }
+    }
+
+    eprintln!(
+        "shaded frame vs path tracer, flat ground: {compared} pixels compared ({bright} bright, \
+         {dim} dim), worst channel {worst} steps of 255 at {worst_at:?}, {over} past the \
+         {QUANTISATION}-step quantisation"
+    );
+
+    // The scene has to be one where the answer could have been wrong: a frame
+    // that drew no ground, or a flame that reached none of it, would agree
+    // perfectly about nothing. The pool's own rim is inside the canvas, so both
+    // a bright band and a dark one have to be there.
+    assert!(
+        compared > 200_000,
+        "only {compared} of {} pixels were compared",
+        SIDE * SIDE
+    );
+    assert!(
+        bright > 10_000 && dim > 10_000,
+        "the frame has {bright} bright and {dim} dim ground pixels: a picture that is all one \
+         brightness agrees with any falloff curve at all"
+    );
+
+    assert_eq!(
+        over, 0,
+        "the path tracer and the shaded frame disagree about brightness on {over} of {compared} \
+         ground pixels by more than {QUANTISATION} steps of 255 — worst {worst} at {worst_at:?}. \
+         The scene has one flame, flat ground and no occluders, so nothing but the falloff curve, \
+         the flame's own intensity and the colour pipeline can be what differs.\n\
+         `cargo run --release -p openshard-client-render --example boxes` with \
+         `OPENSHARD_BOXES_SCENE=flat` draws the two pictures side by side."
     );
 }
