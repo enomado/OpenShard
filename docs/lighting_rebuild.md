@@ -586,6 +586,35 @@ may not still matter:
 | `Occlusion::owner_at`'s linear scan; `selected`/`outlined` stamping `OwnerId::NONE` | **survive**, reshaped by phase 4's ids |
 | `tests/cost.rs` measuring three planes of five; `plan::Wall::top` as an `i32`; hand-copies of the third channel | **survive** — the third channel's copies went with the channel, and the other two are still work |
 
+### Wanted after the model works, and deliberately not before
+
+Asked for while this document was being settled, and parked on purpose: each of
+them is a *second* answer to "what does a lit frame look like", and a second
+answer is only readable once the first one produces a picture worth comparing
+against. None of them is a reason to soften a phase above.
+
+- **UO's own light, as a mode you can pick.** The reference client draws light by
+  blending sprites from `light.mul`, keyed by `lightidx.mul` and by a light id in
+  the tiledata entry — a source's *shape* is a picture, not a radius, which is
+  where a window's light patch on the floor comes from. Neither file is read by
+  this client at all; `light::flame` is a stand-in of one warm default and a
+  wider campfire, and it is the only invention left in the pass. Reading them is
+  worth doing on its own — it replaces that function and nothing above it — and
+  on top of that, a *native* mode that blends the sprites the way the client does
+  instead of shading with ours belongs beside the deferred pipeline as a switch,
+  not as a fork. See `lighting_archive.md`'s account of the reference client's
+  arrangement, and `docs/client.md`'s own backlog line.
+- **The stylised end, revisited as an experiment.** The dial between a half-space
+  and Lambert is deleted from the plan, and the alternatives it came from are
+  recorded in `lighting_archive.md`. Once phases 3–6 give frames a person is
+  happy with, trying a stylised BRDF against them is a comparison with a baseline,
+  which is the only form in which it is worth anything. Not a knob shipped
+  half-tuned in the meantime.
+- **The circle of transparency** — a radius around the body inside which walls go
+  translucent. It is not a lighting feature at all: it is the fifth item of the
+  blended pass `docs/client.md`'s "What is still M3" describes, recorded here only
+  because it was asked for in the same breath and belongs written down somewhere.
+
 ### Carried over: work no phase here deletes
 
 Gathered from every document above, because these are the things that would

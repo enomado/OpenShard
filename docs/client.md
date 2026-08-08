@@ -420,8 +420,8 @@ of `UpdateMaxDrawZ` landed as booleans: a roof over the player is gone this
 frame, where the client walks its alpha down 25 a frame and drops it at zero
 about a fifth of a second later.
 
-The blended pass is one step and it unlocks four things at once, which is why it
-is written here rather than left as four backlog lines:
+The blended pass is one step and it unlocks five things at once, which is why it
+is written here rather than left as five backlog lines:
 
 1. **`ProcessAlpha` whole.** `Cutaway::shows_static` and `shows_land` become the
    two ends of a ramp instead of a predicate, and `CalculateAlpha` is the ramp.
@@ -435,6 +435,11 @@ is written here rather than left as four backlog lines:
    standing in a doorway from showing through the arch. It needs a 4x4 scan per
    mobile, cached on the mobile against `max_z`, and there is nothing to see it
    with until this pass exists.
+5. **The circle of transparency.** A radius around the body inside which statics
+   go translucent, so a player behind a wall can see themselves — the client's own
+   feature and a player-facing setting, not a debug aid. It is a radial alpha and
+   nothing else, so it is the cheapest of the five once there is a pass that
+   blends, and it is worthless before there is one.
 
 The order matters: a blended quad must not write depth, or it blocks whatever is
 underneath it — which is exactly the note ClassicUO leaves on its own mesh path,
