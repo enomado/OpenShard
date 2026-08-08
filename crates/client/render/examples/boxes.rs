@@ -164,7 +164,18 @@
 //! *degenerate* mode — a point emitter, one path a pixel, no bounces — where
 //! the estimator collapses to one deterministic visibility test and the two
 //! pictures must agree. `<path>_pathtrace.png` is the frame's own shadow
-//! decision beside the tracer's, grey where a pixel was not compared. A pixel
+//! decision beside the tracer's, grey where a pixel was not compared, and then
+//! a third strip of where the two differ — red where the engine lit a pixel the
+//! tracer shadowed, blue the other way round, black everywhere the comparison
+//! judged nothing. Two shadow masks side by side hide a few hundred
+//! disagreeing pixels perfectly well; the third strip is where to look.
+//!
+//! **A dotted line along a shadow's own edge is expected and is not a finding.**
+//! One picture puts an edge on a rasteriser's fill rule and the other on an
+//! analytic intersection, so they disagree about the pixel the edge lands in and
+//! about nothing else — the report counts those separately as "on an edge". What
+//! the strip is for is a *filled* patch: that is a shadow in one renderer and not
+//! in the other, which is the whole errand. A pixel
 //! is compared only where both agree which surface is there, the surface faces
 //! the flame, and neither picture has a shadow edge in its own eight-
 //! neighbourhood — the three splits, and why each is not a shadow, are in
@@ -1329,11 +1340,44 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         }
         pixels
     };
+
+    // And a third strip that says where to look, because the first two do not.
+    // Two 512-pixel shadow masks side by side hide a disagreement of a few
+    // hundred pixels perfectly well — the eye reads both as "a box with a
+    // shadow" — so the difference is drawn rather than left to be found.
+    //
+    // Red where the engine lit a pixel the tracer shadowed, blue where it
+    // shadowed one the tracer lit: the two are opposite defects (a ray that
+    // missed an occluder, and one that hit something that is not there) and a
+    // single colour would say a pixel is wrong without saying which way.
+    // Everything the comparison did not judge stays black, so a lit patch of
+    // this strip is always something to explain.
+    let mut difference = vec![0u8; (width * height * 3) as usize];
+    for (pixel, (ours, theirs)) in verdict
+        .engine_lit
+        .iter()
+        .zip(verdict.traced_lit.iter())
+        .enumerate()
+    {
+        let (Some(ours), Some(theirs)) = (ours, theirs) else {
+            continue;
+        };
+        match (ours, theirs) {
+            (true, false) => difference[pixel * 3] = 255,
+            (false, true) => difference[pixel * 3 + 2] = 255,
+            _ => {}
+        }
+    }
+
     write_strips(
         std::path::Path::new(&format!("{base}_pathtrace.png")),
         width,
         height,
-        &[&strip(&verdict.engine_lit), &strip(&verdict.traced_lit)],
+        &[
+            &strip(&verdict.engine_lit),
+            &strip(&verdict.traced_lit),
+            &difference,
+        ],
     );
 
     // And the full mode, on request: a real Monte Carlo render of the same
