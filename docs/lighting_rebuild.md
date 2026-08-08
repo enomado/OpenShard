@@ -101,6 +101,13 @@ Named, so the plan can be checked against the tree:
 `RAY_CUTOFF` and `MAX_WALK_STEPS` survive: a ray does have a cutoff and a walk
 does have a step budget. They stop being *stand-ins* for the things above.
 
+**Half of that is superseded by phase 6e.** `RAY_CUTOFF` survives it too — a ray
+still has a cutoff — but `MAX_WALK_STEPS` bounds *cells stepped*, and
+[`docs/occluders.md`](occluders.md) deletes the cell. Its replacement is a node
+budget over the hierarchy, in the same role and for the same reason: a loop over
+data must not become unbounded because somebody widened a radius. The sentence
+above was written when the walk was a DDA and is kept as what it then meant.
+
 **`FLAME_SPREAD` was to survive too — "a light does have a size" — and phase 5
 found that it was not one.** Its `1.0` of a tile was the numerator of a penumbra
 ratio, chosen for the edge it drew; the idea survived and the number did not.
@@ -1227,7 +1234,7 @@ is here, in one list.
 |---|---|---|
 | [`lighting.md`](lighting.md) | the current system, end to end: place attachment, occlusion grid, ray walk, sun, beams, doors, art measurement | **the thing being replaced.** Its mechanisms are retired phase by phase; its *content* work (below) survives untouched |
 | [`lighting_world.md`](lighting_world.md) | ambient, the sky field, the day curve, tonal response | **mostly survives.** The sky field is ambient occlusion by another name and phase 8 adopts it; the day curve and the tonal response become phase 1's and phase 8's business |
-| [`lighting_raymarch.md`](lighting_raymarch.md) | the DDA walk, CPU/GPU parity, the tile-boundary hazard | **survives as the walk.** Phase 4 changes what a hit *means* (identity, no bias), not how cells are stepped. Its corner-tie parity gap outlives the rebuild |
+| [`lighting_raymarch.md`](lighting_raymarch.md) | the DDA walk, CPU/GPU parity, the tile-boundary hazard | **survived phases 4–6 as the walk, and phase 6e retires it.** Phase 4 changed what a hit *means* (identity, no bias) and not how cells are stepped; [`occluders.md`](occluders.md) deletes the stepping itself, and with it the tile-boundary hazard and the corner tie — a hierarchy has no cell to be on the boundary of. What carries over unchanged is `ray_vs_solid`, which was never about cells: it is an exact slab test in world coordinates and it is what the new traversal ends in |
 | [`lighting_geometry.md`](lighting_geometry.md) | box → mesh occluders, never started | **cheaper after phase 4**, which makes primitives addressable by id, and **started at phase 6**: a tread is one body rather than two degenerate surfaces, which is the first time the grid's own shape was chosen for what a *view* ray needs as well as a shadow ray. `facing::Blocks` — an authored list of up to four boxes, written and wired to nothing — is where the generic form continues |
 | [`lighting_height.md`](lighting_height.md) | the height track: four landed phases and a long backlog | **the backlog is mostly deleted rather than fixed** — see the mapping below |
 | [`lighting_reference.md`](lighting_reference.md) | the path tracer, a third opinion with no shared arithmetic | **becomes phase 0**, the oracle everything else is judged by |
@@ -1244,7 +1251,7 @@ may not still matter:
 | ~~`FACE_EDGE`'s two scales; the flame at a surface's own height~~ | **done, phase 3** — there is no band, and a flame in a surface's own plane is a cosine of zero rather than a half |
 | `STAND_OFF`/`ON_TOP` at a grazing corner; the `ON_TOP` twin | **done, phase 4** — there is no nudge |
 | risers excused as a group; `flame_end`'s height test; a mobile shadowed by its own wall | **done, phase 4** — identity answers all three |
-| `own_run` | **survives phase 4, measured** — a run of wall is N statics, which no identity merges. `lighting_geometry.md`'s, when a run becomes one solid |
+| `own_run` | **survives phase 4, measured** — a run of wall is N statics, which no identity merges. **Retired at phase 6e**, which is where a run *does* become one solid: [`occluders.md`](occluders.md) S3 merges it and S4 deletes the rule, each behind its own measurement |
 | the `ground < 1e-6` shortcut ignoring a lid's footprint | **fixed** — it was worth fixing alone, and was |
 | `WIDTH_OVERLAP`'s border | **done, phase 6** — there is no second silhouette for a border to reach across |
 | the riser penumbra graded over a third of a face | **done, phase 5** — there is no band; a penumbra is eight rays disagreeing |
@@ -1309,8 +1316,16 @@ still wanted.
   axis-aligned `Solid` cannot state (`lighting.md`, `lighting_world.md`).
 
 **Known gaps that outlive the rebuild**
-- The corner-tie CPU/GPU parity gap, with two `#[ignore]`d tests
-  (`lighting_raymarch.md`). Phase 4 does not touch stepping, so it stays.
+- ~~The corner-tie CPU/GPU parity gap, with two `#[ignore]`d tests
+  (`lighting_raymarch.md`). Phase 4 does not touch stepping, so it stays.~~
+  **It does not outlive the rebuild after all — phase 6e ends it by deleting the
+  thing it is about.** A corner tie is two backends disagreeing about which
+  *cell* a ray crosses first, and [`occluders.md`](occluders.md) leaves no cells
+  to tie. What replaces the claim is stronger and not weaker: the traversal's two
+  spellings are gated against one another on a rendered frame, and both against
+  brute force over every primitive. The entry stays listed here, struck, because
+  "this outlives everything" was said in this document with confidence and the
+  correction is worth more than the tidiness of deleting it.
 - Nothing runs the tracer over a real map — all four scenes are hand-built boxes,
   and the fifth is hand-built flat ground (`lighting_reference.md`). The
   brightness calibration beside this entry **is done** (phase 0); a real map is

@@ -91,6 +91,14 @@ removes what they stand in for; the last two because they are statements about a
 cell in a pass that no longer has one. Each goes only after its own measurement
 says nothing depends on it — see § *Steps*, S4.
 
+**And so does every *scan* of a cell**, which is the same defect wearing a
+different coat: `blit.wesl`'s `own_solid` walks a cell's list to name the solid a
+sprite fragment is a point of, and `occlusion::owner_at` is a linear scan of one
+too — `docs/lighting_rebuild.md`'s backlog has both, and counts **thirteen scans
+of one cell for a four-tread flight**. Under D6 the answer is carried: the
+primitive a fragment met is the primitive it is a point of. They are in scope
+here and land in S4 with the rest.
+
 **D6 — the impostor meets the merged primitive its instance is part of.** Phase
 6c made a fragment's shape a property of its own instance, and `occlusion::Part`
 is the join from an instance to the solids it pushed. After merging that join
@@ -128,6 +136,51 @@ own numbers), not to hide.
 its own change reverted has not landed; it has been written. This is the
 discipline phases 4, 5 and 6 already used and the reason each of them has a
 number in it.
+
+## How this sits in `lighting_rebuild.md`
+
+Checked against it line by line rather than assumed, because that document is the
+entry point and a plan that quietly contradicts it is worse than no plan.
+
+**What it fulfils.** Two of its own promissory notes are this plan: `own_run`'s
+row says the rule is retired "when a run becomes one solid", and
+`lighting_geometry.md`'s row says the generic form of box-into-real-geometry
+"continues" at `facing::Blocks` — an authored list of up to four boxes, written
+and wired to nothing. **D1 is what makes `Blocks` wireable**: a shape of up to
+four boxes cannot be uploaded at all while a primitive's coordinates are a
+tile's, so the carried-over item "`Builder::add` consuming an authored `Blocks`
+list" becomes available here rather than needing its own fight. It is not in
+this plan's steps — it is content, and it stops being blocked.
+
+**What it supersedes, and those documents now say so.** `MAX_WALK_STEPS`, which
+"survives" in the *What goes* table, bounds cells stepped and is replaced by a
+node budget in the same role. `lighting_raymarch.md`'s row read "survives as the
+walk"; the walk it means is the DDA, and S5 retires it — what carries over is
+`ray_vs_solid`, which was never about cells. And the corner-tie CPU/GPU parity
+gap was listed under *Known gaps that outlive the rebuild*: it does not, because
+a corner tie is two backends disagreeing about which **cell** a ray crosses
+first, and there will be no cells.
+
+**What governs this plan and is not restated in it.** *How this is judged* still
+holds: **the instrument is a picture beside the path tracer's, looked at by a
+person.** The census and the brute-force oracle below are detectors, and a
+detector is what catches a defect between two lookings — neither replaces the
+frame, and no step here is finished on a number alone.
+
+**What it must not disturb.** Phase 4's self-shadow rule is identity between
+primitives, and merging changes which primitive a fragment is a point of. The
+three tests that go red when the identity compare is neutralised must stay red
+under that injection through every step — a merge that quietly made a fragment
+exempt from a genuine occluder would be trading this plan's defect for a worse
+one. S4 states it as a gate.
+
+**Where it sits in the order.** Phase 6d — the mesh pass coming off real statics
+and gaining a colour target, which is phase 2's albedo — is still open, and the
+two do not collide: 6d is about *drawing*, this is about the occlusion geometry
+behind it. One place they touch, settled here so no session has to work it out
+again: **a flight's treads do not merge.** S3's rule requires an equal span, and
+three treads are three heights by construction. A flight stays three primitives,
+which is what its shape is.
 
 ## The detector
 
@@ -251,7 +304,10 @@ every hand-built scene; a CPU-against-GPU test in the shape of
 second spelling with no compiler between the two; and a cost measurement — which
 needs `tests/cost.rs` to be able to price a frame **with real occluders**, since
 it builds against `Occlusion::EMPTY` today and therefore cannot see this at all.
-That harness fix is part of this step, not a follow-up.
+That harness fix is part of this step, not a follow-up — and it is also
+`docs/lighting_rebuild.md`'s own backlog entry asking for "a cost harness that
+prices the pass the client actually runs", inherited here rather than left in two
+places.
 
 ## Not in scope, deliberately
 
@@ -269,6 +325,14 @@ Named so that a later session does not adopt them by accident:
 - **The tile-to-world mapping.** D7.
 - **Phases 7 and 8** of `docs/lighting_rebuild.md`, which are billboards and the
   sun and touch none of this.
+- **Land as an occluder** — a hill casts no shadow today. A hierarchy over
+  arbitrary boxes is the structure that would make terrain an occluder cheap,
+  and that is a *reason to expect it later*, not a step here. It stays a carried
+  item of `lighting_rebuild.md`.
+- **A corner's two panels told apart by the screen half.** They are
+  perpendicular, so no merge joins them, and what closes it is a volume carrying
+  its instance row — D6's join one level finer. Named because it looks like this
+  plan's business and is not.
 
 ## Backlog
 
