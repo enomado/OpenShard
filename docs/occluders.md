@@ -352,9 +352,16 @@ most 43 steps of 255, mean under 9, over some 120 pixels: the wall here is
 back-facing, and `N·L` darkens it whatever the visibility says. That is luck of
 the arrangement. Turn the flame to sit just *in front* of the plane and the same
 per-primitive exemption produces acne on a lit surface, where nothing downstream
-saves it. The fixture for that is a **run of wall** —
-`scene::wall_run_lit_from_along_it` exists and no tool draws it yet — and a wall
-is panels, so it lands on `same_run` instead: the cell rule D2 replaces.
+saves it.
+
+**The fixture for that is a run of *bodies*, and a run of wall cannot be it** —
+recorded here because S3 spent an hour finding out. `scene::wall_run_lit_from_along_it`
+*is* drawn, by `pictures.rs`'s `a_wall_lit_from_one_end_has_no_dark_stroke_at_its_seam`,
+and it is green both before and after S3: a wall is panels, so its seam lands on
+`same_run`, which has covered it since phase 4. A body had no exemption at all, which
+is why the defect is a body's — so the fixture is nine treads and the gate is
+`lighting.rs`'s `a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces`.
+See S3's acceptance, point 2.
 
 ## The oracle
 
