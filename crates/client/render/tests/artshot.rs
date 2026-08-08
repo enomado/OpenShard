@@ -7,7 +7,7 @@
 //! always what the artist actually drew, and there is no way to answer it from a
 //! hex id.
 //!
-//! So: a graphic in, a PPM out, at whatever scale is legible, with the tile's own
+//! So: a graphic in, a picture out, at whatever scale is legible, with the tile's own
 //! diamond and its centre column stroked over the top. The overlay is the point —
 //! `facing` reasons in *tile* coordinates (a half-column is 22 pixels, one `z` is
 //! four), and a picture without those lines on it cannot be compared with what
@@ -26,7 +26,6 @@
 //! `target/art/`, or wherever `OPENSHARD_ART_OUT` points.
 
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
 use openshard_protocol::wire::Graphic;
@@ -95,8 +94,8 @@ fn what_the_artist_drew() {
             println!("{id} (0x{id:04X}): no picture");
             continue;
         };
-        let path = out.join(format!("{id:05}-0x{id:04X}.ppm"));
-        write_ppm(&path, &image);
+        let path = out.join(format!("{id:05}-0x{id:04X}.png"));
+        write_png(&path, &image);
         println!(
             "{id} (0x{id:04X}): {}x{} -> {}",
             image.width(),
@@ -114,7 +113,7 @@ fn what_the_artist_drew() {
 /// south corner is the bottom-centre pixel of the picture, which is where the
 /// client stands a static's base. A wall rises from that diamond; a stair should
 /// climb along one of its axes, and the point of the drawing is to see which.
-fn write_ppm(path: &PathBuf, image: &Image) {
+fn write_png(path: &std::path::Path, image: &Image) {
     let (w, h) = (u32::from(image.width()), u32::from(image.height()));
     let (sw, sh) = (w * SCALE, h * SCALE);
     // The background is a colour no 16-bit art pixel can be, so that transparent
@@ -155,10 +154,8 @@ fn write_ppm(path: &PathBuf, image: &Image) {
         y -= Z_STEP;
     }
 
-    let mut file = fs::File::create(path).expect("the picture writes");
-    write!(file, "P6\n{sw} {sh}\n255\n").expect("a header");
     let bytes: Vec<u8> = rgb.iter().flat_map(|p| p.iter().copied()).collect();
-    file.write_all(&bytes).expect("the pixels");
+    openshard_client_render::png::write(path, sw, sh, &bytes).expect("the picture writes");
 }
 
 /// One art pixel of overlay, at art coordinates, in the scaled image.

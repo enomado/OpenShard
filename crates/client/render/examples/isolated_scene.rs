@@ -50,7 +50,7 @@
 //!   nearest, neither the client's own rule — and can show banding neither
 //!   this tool nor the client actually draws; this is the honest way to look
 //!   closer.
-//! - `OPENSHARD_FRAME_DUMP=/tmp/x.ppm` — where to write the picture. Required;
+//! - `OPENSHARD_FRAME_DUMP=/tmp/x.png` — where to write the picture. Required;
 //!   this tool has nothing else to do with a frame once it is drawn.
 //! - `OPENSHARD_FRAME_VIEW=n` — index into `debug::View::ALL` (`0` `Lit`, `4`
 //!   `Occluders`, `5` `Light`, …). Default `Lit`. Ignored under `_SOLIDS`.
@@ -117,7 +117,7 @@
 //!     OPENSHARD_SCENE_AT=1497,1626,10 OPENSHARD_SCENE_TILES=0x0739,0x0738 \
 //!     OPENSHARD_SCENE_GROUND=0 \
 //!     OPENSHARD_SCENE_EXTRA=1498,1626,10,2852 \
-//!     OPENSHARD_FRAME_DUMP=/tmp/corner.ppm OPENSHARD_FRAME_VIEW=5 \
+//!     OPENSHARD_FRAME_DUMP=/tmp/corner.png OPENSHARD_FRAME_VIEW=5 \
 //!     cargo run --release -p openshard-client-render --example isolated_scene
 //! ```
 
@@ -389,7 +389,7 @@ fn unshift(anchor: (u16, u16), syn: (u16, u16)) -> (u16, u16) {
     )
 }
 
-/// Reads `surface` back to `P6` PPM bytes — the one step every mode of this
+/// Reads `surface` back to PNG bytes — the one step every mode of this
 /// tool ends in, whatever filled the texture before it was called.
 fn dump_frame(
     device: &wgpu::Device,
@@ -439,11 +439,7 @@ fn dump_frame(
         .expect("the map completed above")
         .to_vec();
 
-    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
-    for pixel in pixels.chunks_exact(4) {
-        ppm.extend_from_slice(&pixel[..3]);
-    }
-    ppm
+    openshard_client_render::png::encode_rgba(w, h, &pixels)
 }
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -835,9 +831,9 @@ fn main() {
         }
         queue.submit([encoder.finish()]);
 
-        let ppm = dump_frame(&device, &queue, &surface, viewport);
+        let png = dump_frame(&device, &queue, &surface, viewport);
         let path = PathBuf::from(env("OPENSHARD_FRAME_DUMP"));
-        std::fs::write(&path, ppm).expect("writing the frame");
+        std::fs::write(&path, png).expect("writing the frame");
         eprintln!(
             "wrote {} ({count} solids, {mode}, edges {}, opaque {})",
             path.display(),
@@ -881,8 +877,8 @@ fn main() {
     );
     queue.submit([encoder.finish()]);
 
-    let ppm = dump_frame(&device, &queue, &surface, viewport);
+    let png = dump_frame(&device, &queue, &surface, viewport);
     let path = PathBuf::from(env("OPENSHARD_FRAME_DUMP"));
-    std::fs::write(&path, ppm).expect("writing the frame");
+    std::fs::write(&path, png).expect("writing the frame");
     eprintln!("wrote {} ({:?})", path.display(), wanted_view);
 }

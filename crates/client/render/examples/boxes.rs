@@ -61,8 +61,8 @@
 //!   counts recorded there are what they produce: override one for a single
 //!   run to ask a question, but editing a default here silently retires every
 //!   recorded number.
-//! - `OPENSHARD_FRAME_DUMP=/tmp/x` — base path; writes `<path>_lit.ppm` and
-//!   `<path>_shadow.ppm` beside it, both marked with a lime crosshair at the
+//! - `OPENSHARD_FRAME_DUMP=/tmp/x` — base path; writes `<path>_lit.png` and
+//!   `<path>_shadow.png` beside it, both marked with a lime crosshair at the
 //!   flame's own projected position (`synthetic_stair.rs`'s own trick).
 //!
 //! # The oracle
@@ -79,8 +79,8 @@
 //! grid of each box's own top, next to what the engine's own CPU walk
 //! (`light::sample`, the same arithmetic `blit.wgsl` runs, held to it by the
 //! parity suite `docs/lighting_raymarch.md` calls decision 9) says for the
-//! same points, written as one side-by-side comparison PPM per box
-//! (`<path>_oracle_box<N>.ppm`: oracle | engine | signed diff) plus a
+//! same points, written as one side-by-side comparison picture per box
+//! (`<path>_oracle_box<N>.png`: oracle | engine | signed diff) plus a
 //! disagreement count on stderr. `OPENSHARD_BOXES_ORACLE_EXACT=1` swaps the
 //! engine side to `light::sample_exact` (`walk_cells_exact`, the ray-vs-Solid
 //! primitive session 8-11 built) instead of `light::sample`'s own
@@ -163,7 +163,7 @@
 //! It runs by default (`OPENSHARD_BOXES_PATHTRACE=0` to skip) in the
 //! *degenerate* mode — a point emitter, one path a pixel, no bounces — where
 //! the estimator collapses to one deterministic visibility test and the two
-//! pictures must agree. `<path>_pathtrace.ppm` is the frame's own shadow
+//! pictures must agree. `<path>_pathtrace.png` is the frame's own shadow
 //! decision beside the tracer's, grey where a pixel was not compared. A pixel
 //! is compared only where both agree which surface is there, the surface faces
 //! the flame, and neither picture has a shadow edge in its own eight-
@@ -172,7 +172,7 @@
 //!
 //! `OPENSHARD_BOXES_PATHTRACE_SAMPLES=n` (with `_BOUNCES`, `_EMITTER`,
 //! `_EXPOSURE`) additionally renders the *full* mode to
-//! `<path>_pathtrace_full.ppm`: a spherical emitter, a cosine term, indirect
+//! `<path>_pathtrace_full.png`: a spherical emitter, a cosine term, indirect
 //! light, ambient occlusion. That one is compared against nothing on purpose —
 //! none of what it adds exists in the renderer, so every pixel would
 //! "disagree". It is there to be looked at.
@@ -428,8 +428,8 @@ fn raster_top_down(
 
 /// Three side-by-side [`raster_top_down`] strips — oracle, engine, and their
 /// signed difference (red where the engine is darker than the oracle says it
-/// should be, cyan where it is lighter) — written as one wide PPM so the two
-/// pictures sit at the same scale without a second tool to align them.
+/// should be, cyan where it is lighter) — as one picture, so the two sit at the
+/// same scale without a second tool to align them.
 fn write_oracle_comparison(path: &std::path::Path, side: u32, oracle: &[u8], engine: &[u8]) {
     let mut diff = vec![0u8; (side * side * 3) as usize];
     for i in 0..(side * side) as usize {
@@ -442,20 +442,8 @@ fn write_oracle_comparison(path: &std::path::Path, side: u32, oracle: &[u8], eng
             diff[i * 3 + 2] = d.min(255) as u8;
         }
     }
-    let width = side * 3 + 4;
-    let mut ppm = format!("P6\n{width} {side}\n255\n").into_bytes();
-    for row in 0..side {
-        for (strip, gap) in [(oracle, true), (engine, true), (&diff[..], false)] {
-            let start = (row * side * 3) as usize;
-            ppm.extend_from_slice(&strip[start..start + (side * 3) as usize]);
-            if gap {
-                for _ in 0..2 {
-                    ppm.extend_from_slice(&[64, 64, 64]);
-                }
-            }
-        }
-    }
-    std::fs::write(path, ppm).expect("writing the oracle comparison");
+    openshard_client_render::png::write_strips(path, side, side, &[oracle, engine, &diff])
+        .expect("writing the oracle comparison");
     eprintln!("wrote {}", path.display());
 }
 
@@ -826,7 +814,7 @@ fn main() {
                 side * side
             );
             write_oracle_comparison(
-                std::path::Path::new(&format!("{base}_oracle_box{index}.ppm")),
+                std::path::Path::new(&format!("{base}_oracle_box{index}.png")),
                 side,
                 &oracle,
                 &engine,
@@ -920,7 +908,7 @@ fn main() {
             &surface,
             width,
             height_px,
-            &PathBuf::from(format!("{base}_{}.ppm", view.name())),
+            &PathBuf::from(format!("{base}_{}.png", view.name())),
             Some(light_mark),
         );
         if view == View::Shadow {
@@ -1342,7 +1330,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         pixels
     };
     write_strips(
-        std::path::Path::new(&format!("{base}_pathtrace.ppm")),
+        std::path::Path::new(&format!("{base}_pathtrace.png")),
         width,
         height,
         &[&strip(&verdict.engine_lit), &strip(&verdict.traced_lit)],
@@ -1428,34 +1416,16 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         }
     }
     write_strips(
-        std::path::Path::new(&format!("{base}_pathtrace_full.ppm")),
+        std::path::Path::new(&format!("{base}_pathtrace_full.png")),
         width,
         height,
         &[&pixels],
     );
 }
 
-/// Write one or more equally sized RGB images side by side as a single PPM,
-/// separated by a thin grey rule.
-///
-/// The comparison and the picture want to be one file: two files at the same
-/// scale still need a person to align them, and the thing being read here is a
-/// difference of a few pixels in the position of an edge.
+/// [`openshard_client_render::png::write_strips`], with this tool's own "say
+/// what you wrote" on the end of it.
 fn write_strips(path: &std::path::Path, width: u32, height: u32, strips: &[&[u8]]) {
-    let gap = 2u32;
-    let total = width * strips.len() as u32 + gap * (strips.len() as u32 - 1);
-    let mut ppm = format!("P6\n{total} {height}\n255\n").into_bytes();
-    for row in 0..height {
-        for (index, strip) in strips.iter().enumerate() {
-            let start = (row * width * 3) as usize;
-            ppm.extend_from_slice(&strip[start..start + (width * 3) as usize]);
-            if index + 1 < strips.len() {
-                for _ in 0..gap {
-                    ppm.extend_from_slice(&[64, 64, 64]);
-                }
-            }
-        }
-    }
-    std::fs::write(path, ppm).expect("writing the comparison");
+    openshard_client_render::png::write_strips(path, width, height, strips).expect("writing the comparison");
     eprintln!("wrote {}", path.display());
 }

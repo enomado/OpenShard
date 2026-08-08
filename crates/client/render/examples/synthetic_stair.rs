@@ -122,8 +122,8 @@
 //! construction: a pixel nobody compared is a pixel nobody counted.
 //!
 //! Both are written beside whatever `OPENSHARD_FRAME_DUMP` names, as
-//! `<stem>_reference.ppm` and `<stem>_difference.ppm`, along with
-//! `<stem>_faces.ppm`'s map of which plane drew what.
+//! `<stem>_reference.png` and `<stem>_difference.png`, along with
+//! `<stem>_faces.png`'s map of which plane drew what.
 //!
 //! The reference is a **point** source and the engine's flame has a size, so a
 //! band of grey along every shadow edge is the two disagreeing about softness
@@ -131,7 +131,7 @@
 //! of subtracted into a score.
 //!
 //! ```sh
-//! OPENSHARD_FRAME_VIEW=7 OPENSHARD_FRAME_DUMP=/tmp/stair.ppm \
+//! OPENSHARD_FRAME_VIEW=7 OPENSHARD_FRAME_DUMP=/tmp/stair.png \
 //!     cargo run --release -p openshard-client-render --example synthetic_stair
 //! ```
 
@@ -586,7 +586,7 @@ fn runs_of(bands: &[usize]) -> Vec<(usize, usize, usize)> {
     runs
 }
 
-/// `/tmp/stair.ppm` and `shadow` to `/tmp/stair_shadow.ppm` — a second view
+/// `/tmp/stair.png` and `shadow` to `/tmp/stair_shadow.png` — a second view
 /// beside the one that was asked for, rather than over it.
 fn beside(path: &std::path::Path, what: &str) -> PathBuf {
     let stem = path
@@ -758,9 +758,9 @@ fn write_reference(
         };
         shade[pixel * 3..pixel * 3 + 3].copy_from_slice(&colour);
     }
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    ppm.extend_from_slice(&shade);
-    std::fs::write(path, ppm).expect("writing the reference frame");
+    let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
+    rgb.extend_from_slice(&shade);
+    openshard_client_render::png::write(path, width, height, &rgb).expect("writing the reference frame");
     eprintln!("wrote {}", path.display());
     shade
 }
@@ -871,16 +871,17 @@ fn write_light_reference(
         })
         .collect();
 
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
     for pixel in &lit {
         // The frame's own clamp, so the two pictures are the same quantity in the
         // same units: `View::Flames` clamps to `0..=1` and writes eight bits.
         let colour = pixel.map_or([0, 0, 0], |Lit { added, .. }| {
             added.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
         });
-        ppm.extend_from_slice(&colour);
+        rgb.extend_from_slice(&colour);
     }
-    std::fs::write(path, ppm).expect("writing the light reference frame");
+    openshard_client_render::png::write(path, width, height, &rgb)
+        .expect("writing the light reference frame");
     eprintln!("wrote {}", path.display());
     lit
 }
@@ -950,7 +951,7 @@ fn write_light_difference(
     let mut band_worst = 0.0f32;
     let mut examples: Vec<(usize, String)> = Vec::new();
 
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
     for pixel in 0..(width * height) as usize {
         let theirs = [
             f32::from(rendered[pixel * 4]) / 255.0,
@@ -1076,9 +1077,10 @@ fn write_light_difference(
                 }
             }
         };
-        ppm.extend_from_slice(&colour);
+        rgb.extend_from_slice(&colour);
     }
-    std::fs::write(path, ppm).expect("writing the light difference frame");
+    openshard_client_render::png::write(path, width, height, &rgb)
+        .expect("writing the light difference frame");
     eprintln!("wrote {}", path.display());
     eprintln!(
         "light oracle vs rendered View::Flames: {} of {} judged pixels differ by more than \
@@ -1124,7 +1126,7 @@ fn write_light_difference(
 /// pixel nobody compared is a pixel nobody counted — so this one counts, and
 /// prints what it counted beside the picture.
 fn write_difference(rendered: &[u8], reference: &[u8], width: u32, height: u32, path: &std::path::Path) {
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
     let mut renderer_alone = 0usize;
     let mut reference_alone = 0usize;
     for pixel in 0..(width * height) as usize {
@@ -1161,9 +1163,9 @@ fn write_difference(rendered: &[u8], reference: &[u8], width: u32, height: u32, 
                 }
             }
         };
-        ppm.extend_from_slice(&colour);
+        rgb.extend_from_slice(&colour);
     }
-    std::fs::write(path, ppm).expect("writing the difference frame");
+    openshard_client_render::png::write(path, width, height, &rgb).expect("writing the difference frame");
     eprintln!("wrote {}", path.display());
     eprintln!(
         "difference: {renderer_alone} pixels the renderer drew and the geometry does not cover, \
@@ -1186,7 +1188,7 @@ fn write_difference(rendered: &[u8], reference: &[u8], width: u32, height: u32, 
 /// Everything that is not one of the run's own faces is black: the ground, the
 /// background, and any pixel whose row is outside `slabs`.
 fn write_face_map(drawn: &[oracle::Drawn], slabs: &[Slab], width: u32, height: u32, path: &std::path::Path) {
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+    let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
     for texel in drawn {
         let of = |id: usize| -> [u8; 3] {
             let slab = &slabs[id];
@@ -1209,9 +1211,9 @@ fn write_face_map(drawn: &[oracle::Drawn], slabs: &[Slab], width: u32, height: u
             true => of(texel.id as usize),
             false => [0, 0, 0],
         };
-        ppm.extend_from_slice(&colour);
+        rgb.extend_from_slice(&colour);
     }
-    std::fs::write(path, ppm).expect("writing the face map");
+    openshard_client_render::png::write(path, width, height, &rgb).expect("writing the face map");
     eprintln!("wrote {}", path.display());
 }
 
@@ -1498,7 +1500,7 @@ fn main() {
 
     let dumped = env_opt("OPENSHARD_FRAME_DUMP")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("synthetic_stair.ppm"));
+        .unwrap_or_else(|| PathBuf::from("synthetic_stair.png"));
     let oracle_on = env_opt("OPENSHARD_STAIR_ORACLE").as_deref() != Some("0");
     // The view that was asked for, and `Shadow` besides when the oracle needs
     // it — the oracle reads that frame back pixel for pixel, so leaving it out

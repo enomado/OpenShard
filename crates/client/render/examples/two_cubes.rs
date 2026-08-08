@@ -28,8 +28,8 @@
 //!   this is what shows a face wrongly surviving behind one that should have
 //!   hidden it). Default `1`, matching the live overlay's own default.
 //! - `OPENSHARD_FRAME_DUMP=/tmp/x` — base path; this tool writes
-//!   `<path>_forward.ppm`, `<path>_forward_opaque.ppm` and
-//!   `<path>_reversed.ppm` beside it.
+//!   `<path>_forward.png`, `<path>_forward_opaque.png` and
+//!   `<path>_reversed.png` beside it.
 //!
 //! # The same two boxes, through the real lit pipeline
 //!
@@ -59,8 +59,8 @@
 //! `LandAtlas::build` packs real art) repeated over a synthetic
 //! `Map::from_blocks` covering the two boxes' own bounds, and drawn by the
 //! same `ground::collect`/`GroundRenderer` the real map uses. Two extra
-//! frames come out of this half: `<path>_lit.ppm` (`View::Lit`) and
-//! `<path>_shadow.ppm` (`View::Shadow`), both marked with the same lime
+//! frames come out of this half: `<path>_lit.png` (`View::Lit`) and
+//! `<path>_shadow.png` (`View::Shadow`), both marked with the same lime
 //! crosshair `synthetic_stair.rs` uses at the flame's own projected
 //! position.
 //!
@@ -209,11 +209,11 @@ fn dump(
     if let Some(at) = mark {
         mark_crosshair(&mut pixels, width, height, at);
     }
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for pixel in pixels.chunks_exact(4) {
-        ppm.extend_from_slice(&pixel[..3]);
-    }
-    std::fs::write(path, ppm).expect("writing the frame");
+    std::fs::write(
+        path,
+        openshard_client_render::png::encode_rgba(width, height, &pixels),
+    )
+    .expect("writing the frame");
     eprintln!("wrote {}", path.display());
 }
 
@@ -296,10 +296,10 @@ fn main() {
     let base = env_opt("OPENSHARD_FRAME_DUMP").unwrap_or_else(|| "two_cubes".to_string());
 
     for (suffix, order, style) in [
-        ("_forward.ppm", &forward, Style { edges, opaque: false }),
-        ("_forward_opaque.ppm", &forward, Style { edges, opaque: true }),
-        ("_reversed.ppm", &reversed, Style { edges, opaque: false }),
-        ("_reversed_opaque.ppm", &reversed, Style { edges, opaque: true }),
+        ("_forward.png", &forward, Style { edges, opaque: false }),
+        ("_forward_opaque.png", &forward, Style { edges, opaque: true }),
+        ("_reversed.png", &reversed, Style { edges, opaque: false }),
+        ("_reversed_opaque.png", &reversed, Style { edges, opaque: true }),
     ] {
         let surface = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("surface"),
@@ -676,7 +676,7 @@ fn main() {
             &surface,
             width,
             height_px,
-            &PathBuf::from(format!("{base}_{}.ppm", view.name())),
+            &PathBuf::from(format!("{base}_{}.png", view.name())),
             Some(light_mark),
         );
     }

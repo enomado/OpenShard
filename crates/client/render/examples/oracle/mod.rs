@@ -338,7 +338,7 @@ pub fn read_surface(
         .to_vec()
 }
 
-/// [`read_surface`], marked with a crosshair and written out as a PPM.
+/// [`read_surface`], marked with a crosshair and written out as a PNG.
 ///
 /// Returns the *unmarked* pixels: the crosshair is for a person looking at the
 /// picture, and an oracle reading the mark back as a lit pixel would be an
@@ -357,11 +357,11 @@ pub fn dump(
     if let Some(at) = mark {
         mark_crosshair(&mut marked, width, height, at);
     }
-    let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-    for pixel in marked.chunks_exact(4) {
-        ppm.extend_from_slice(&pixel[..3]);
-    }
-    std::fs::write(path, ppm).expect("writing the frame");
+    std::fs::write(
+        path,
+        openshard_client_render::png::encode_rgba(width, height, &marked),
+    )
+    .expect("writing the frame");
     eprintln!("wrote {}", path.display());
     pixels
 }

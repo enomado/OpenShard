@@ -18,11 +18,10 @@
 //! ```
 //!
 //! writes them under `target/lighting/`, or wherever `OPENSHARD_LIGHT_PICTURES`
-//! points, and prints the paths. They are binary PPM, which every image tool
-//! reads:
+//! points, and prints the paths. They are PNG, so a viewer opens one directly:
 //!
 //! ```sh
-//! magick target/lighting/one-torch-on-open-ground.lit.ppm /tmp/look.png
+//! xdg-open target/lighting/one-torch-on-open-ground.lit.plan.png
 //! ```
 //!
 //! No client files anywhere: the scenes are `render/src/scene.rs`'s built rooms.
@@ -109,8 +108,8 @@ fn picture(
 fn written(name: &str, view: View, shape: &str, drawn: &Picture) {
     let directory = directory();
     std::fs::create_dir_all(&directory).expect("the picture directory");
-    let path = directory.join(format!("{name}.{}.{shape}.ppm", view.name().to_lowercase()));
-    std::fs::write(&path, drawn.ppm()).expect("writing the picture");
+    let path = directory.join(format!("{name}.{}.{shape}.png", view.name().to_lowercase()));
+    std::fs::write(&path, drawn.png()).expect("writing the picture");
     eprintln!("wrote {}", path.display());
 }
 

@@ -39,7 +39,7 @@ use crate::occlusion::{self, Cell};
 /// One drawn plan, and what it was drawn of.
 ///
 /// RGBA rows, top-left first, `width * 4` bytes each — the layout the readback
-/// produces and the one [`Picture::ppm`] writes out.
+/// produces and the one [`Picture::png`] writes out.
 #[derive(Clone, Debug)]
 pub struct Picture {
     /// The tiles it covers, inclusive.
@@ -93,14 +93,9 @@ impl Picture {
         pixel[..3].iter().map(|c| f32::from(*c) / 255.0).sum::<f32>() / 3.0
     }
 
-    /// The picture as a binary PPM, which every image tool on a machine reads and
-    /// which needs no dependency to write.
-    pub fn ppm(&self) -> Vec<u8> {
-        let mut out = format!("P6\n{} {}\n255\n", self.width, self.height).into_bytes();
-        for pixel in self.pixels.chunks_exact(4) {
-            out.extend_from_slice(&pixel[..3]);
-        }
-        out
+    /// The picture as a PNG, which is what a person opens.
+    pub fn png(&self) -> Vec<u8> {
+        crate::png::encode_rgba(self.width, self.height, &self.pixels)
     }
 
     /// Paint one pixel, if it is inside the picture.

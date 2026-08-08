@@ -40,7 +40,6 @@
 //! the two tools' output sits side by side.
 
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
 
 use openshard_client_render::arttable::ArtTable;
@@ -153,8 +152,8 @@ fn what_the_table_says_against_what_the_artist_drew() {
         }
         if candidates.is_empty() {
             println!("  nothing authored — this is what a first row starts from");
-            let path = out.join(format!("{id:05}-0x{id:04X}.author.ppm"));
-            write_ppm(&path, &picture, None);
+            let path = out.join(format!("{id:05}-0x{id:04X}.author.png"));
+            write_png(&path, &picture, None);
             println!("  picture: {}", path.display());
         }
         // Both may be authored at once — decision 41's own point, a stair's base
@@ -170,12 +169,12 @@ fn what_the_table_says_against_what_the_artist_drew() {
             } else {
                 String::new()
             };
-            let path = out.join(format!("{id:05}-0x{id:04X}{suffix}.author.ppm"));
-            write_ppm(&path, &picture, Some(candidate));
+            let path = out.join(format!("{id:05}-0x{id:04X}{suffix}.author.png"));
+            write_png(&path, &picture, Some(candidate));
             println!("  picture: {}", path.display());
         }
 
-        // Canvas space: the same width and the same two offsets `write_ppm` just
+        // Canvas space: the same width and the same two offsets `write_png` just
         // drew with, so a column printed here is the column that was coloured
         // there — an art narrower than the tile (nearly every stair) is centred,
         // and printing its own columns flush left would silently misalign it
@@ -198,7 +197,7 @@ fn what_the_table_says_against_what_the_artist_drew() {
 ///
 /// Aligned the way every measurement in `facing` aligns two silhouettes: the
 /// bottom row and the centre column, never a fit slid until it agrees.
-fn write_ppm(path: &PathBuf, art: &Image, candidate: Option<&Image>) {
+fn write_png(path: &std::path::Path, art: &Image, candidate: Option<&Image>) {
     let (aw, ah) = (u32::from(art.width()), u32::from(art.height()));
     let ch = candidate.map_or(0, |image| u32::from(image.height()));
     let w = aw.max(TILE_WIDTH as u32);
@@ -270,10 +269,8 @@ fn write_ppm(path: &PathBuf, art: &Image, candidate: Option<&Image>) {
         y -= Z_STEP;
     }
 
-    let mut file = fs::File::create(path).expect("the picture writes");
-    write!(file, "P6\n{sw} {sh}\n255\n").expect("a header");
     let bytes: Vec<u8> = rgb.iter().flat_map(|pixel| pixel.iter().copied()).collect();
-    file.write_all(&bytes).expect("the pixels");
+    openshard_client_render::png::write(path, sw, sh, &bytes).expect("the picture writes");
 }
 
 /// One pixel of overlay, at unscaled picture coordinates — `tests/artshot.rs`'s
@@ -300,7 +297,7 @@ fn stroke(rgb: &mut [[u8; 3]], sw: u32, sh: u32, x: i32, y: i32, colour: [u8; 3]
 /// `label` naming which picture the numbers are about.
 ///
 /// `image` is read in a canvas `w` wide, `offset` to its left — the same two
-/// numbers [`write_ppm`] just coloured pixels with, so a column printed here is
+/// numbers [`write_png`] just coloured pixels with, so a column printed here is
 /// the column that was coloured there. Printing an image's own columns flush
 /// left instead would silently misalign it against another image centred
 /// differently in the same canvas — nearly every stair, which is narrower than

@@ -3130,7 +3130,8 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
 ///     --ignored dump_a_frame
 /// ```
 ///
-/// Plain PPM so that nothing has to be added to the workspace to write it.
+/// PNG, through `crate::png` — the crate's own encoder, so nothing has to be
+/// added to the workspace to write one.
 #[test]
 #[ignore = "writes a picture for a person, and asserts nothing"]
 fn dump_a_frame_of_britain() {
@@ -3216,14 +3217,14 @@ fn dump_a_frame_of_britain() {
         camera.projection(),
     );
 
-    let mut ppm = format!("P6\n{} {}\n255\n", camera.width, camera.height).into_bytes();
-    for pixel in frame.pixels.chunks_exact(4) {
-        ppm.extend_from_slice(&pixel[..3]);
-    }
     let path = std::env::var_os("OPENSHARD_FRAME_DUMP")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("britain.ppm"));
-    std::fs::write(&path, ppm).expect("writing the frame");
+        .unwrap_or_else(|| PathBuf::from("britain.png"));
+    std::fs::write(
+        &path,
+        openshard_client_render::png::encode_rgba(camera.width, camera.height, &frame.pixels),
+    )
+    .expect("writing the frame");
     eprintln!("wrote {}", path.display());
 }
 
@@ -3836,14 +3837,14 @@ fn dump_a_glowing_sprite() {
         Ring::SOFT,
     );
 
-    let mut ppm = b"P6\n128 128\n255\n".to_vec();
-    for pixel in frame.pixels.chunks_exact(4) {
-        ppm.extend_from_slice(&pixel[..3]);
-    }
     let path = std::env::var_os("OPENSHARD_FRAME_DUMP")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("glow.ppm"));
-    std::fs::write(&path, ppm).expect("writing the frame");
+        .unwrap_or_else(|| PathBuf::from("glow.png"));
+    std::fs::write(
+        &path,
+        openshard_client_render::png::encode_rgba(128, 128, &frame.pixels),
+    )
+    .expect("writing the frame");
     eprintln!("wrote {}", path.display());
 }
 
@@ -4283,7 +4284,6 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
          middle tread, which its own lid does stop",
     );
 }
-
 
 /// Whether `Reach::through` counts as blocked — `light.rs`'s own
 /// `RAY_CUTOFF`, restated here rather than imported: it is not `pub`, and
@@ -4758,17 +4758,16 @@ fn dump_the_lighting_views() {
             let mut lighting = scene.lighting(0.0);
             lighting.view = view;
             let frame = parity_frame(&device, &queue, &lighting, width, height, Fixture::ground());
-            let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
-            for pixel in frame.pixels.chunks_exact(4) {
-                ppm.extend_from_slice(&pixel[..3]);
-            }
-            let path = dir.join(format!("{name}-{}.ppm", view.name()));
-            std::fs::write(&path, ppm).expect("writing the frame");
+            let path = dir.join(format!("{name}-{}.png", view.name()));
+            std::fs::write(
+                &path,
+                openshard_client_render::png::encode_rgba(width, height, &frame.pixels),
+            )
+            .expect("writing the frame");
             eprintln!("wrote {}", path.display());
         }
     }
 }
-
 
 /// A debug view reaches the shader, and draws what it says it draws.
 ///

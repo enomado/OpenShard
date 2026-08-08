@@ -691,11 +691,11 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             queue.submit([encoder.finish()]);
             frame = read_back(&device, &queue, &surface);
         }
-        let mut ppm = format!("P6\n{} {}\n255\n", VIEWPORT.0, VIEWPORT.1).into_bytes();
-        for pixel in frame.chunks_exact(4) {
-            ppm.extend_from_slice(&pixel[..3]);
-        }
-        std::fs::write(&path, ppm).expect("writing the frame");
+        std::fs::write(
+            &path,
+            openshard_client_render::png::encode_rgba(VIEWPORT.0, VIEWPORT.1, &frame),
+        )
+        .expect("writing the frame");
         eprintln!("wrote {} ({:?})", PathBuf::from(&path).display(), wanted);
     }
 
