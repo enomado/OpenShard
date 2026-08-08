@@ -68,6 +68,10 @@
 //! - `OPENSHARD_FRAME_DUMP=/tmp/x` — base path; writes `<path>_lit.png` and
 //!   `<path>_shadow.png` beside it, both marked with a lime crosshair at the
 //!   flame's own projected position (`synthetic_stair.rs`'s own trick).
+//! - `OPENSHARD_BOXES_PROBE=x,y[,radius]` — two scanlines through one pixel:
+//!   which surface each renderer says is there and **where in the world** it is.
+//!   The question a dumped picture cannot answer, since a body's lid and its
+//!   riser are one colour. `tools/mask_probe.py` is the rest of that reading.
 //!
 //! # The oracle
 //!
@@ -1565,6 +1569,34 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         },
     );
     eprint!("{}", verdict.report());
+
+    // `OPENSHARD_BOXES_PROBE=x,y[,radius]` — two scanlines through one pixel,
+    // each side's surface and the **world point** of it. `tools/mask_probe.py`
+    // reads the dumped strips and can say which body a region is; what a picture
+    // cannot say is which *face*, because a body's lid and its riser are one
+    // colour. Guessing that from the shape of a region is how a shadow boundary
+    // gets attributed to the wrong surface, and it has been.
+    if let Some(spec) = env_opt("OPENSHARD_BOXES_PROBE") {
+        let numbers: Vec<u32> = spec
+            .split(',')
+            .map(|n| n.trim().parse().expect("OPENSHARD_BOXES_PROBE is x,y[,radius]"))
+            .collect();
+        eprint!(
+            "{}",
+            oracle::pathtrace::probe(
+                &exact,
+                oracle::pathtrace::Frame {
+                    width,
+                    height,
+                    drawn,
+                    shadow: shadow_pixels,
+                    face_rows,
+                },
+                (numbers[0], numbers[1]),
+                numbers.get(2).copied().unwrap_or(6),
+            )
+        );
+    }
 
     // And the *shape* of the soft edge, which the verdict above cannot see: it
     // reads both pictures as one bit a pixel, and a penumbra is exactly the

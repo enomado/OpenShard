@@ -796,6 +796,74 @@ pub fn penumbra(
     found
 }
 
+/// Two scanlines through one pixel, in words: what each renderer says is there,
+/// **where in the world it is**, and what each says about the light on it.
+///
+/// **The half of `tools/mask_probe.py` a picture cannot carry.** That script
+/// reads the dumped strips and can say "body 0 here, body 3 there, this side
+/// dark and that side lit"; what it cannot say is *which face* those pixels are
+/// on, because a body's lid and its riser are one colour. Every reading on this
+/// track that had to guess between a tread top and a riser guessed from the
+/// shape of a region, which is how a shadow boundary gets attributed to the
+/// wrong surface. The world point settles it — the fragment's own `z` against
+/// the primitive's, in the numbers a `BoxSpec` is written in.
+///
+/// A cross rather than a rectangle: a square of radius six is a hundred and
+/// sixty-nine lines nobody reads, and the two lines through a point are what
+/// show which way a boundary runs.
+pub fn probe(traced: &pt_trace::Image, frame: Frame<'_>, at: (u32, u32), radius: u32) -> String {
+    let Frame {
+        width,
+        height,
+        drawn,
+        shadow,
+        face_rows,
+    } = frame;
+    let mut out = format!(
+        "probe at ({}, {}), ± {radius} — the frame's own surface and fragment, then the tracer's\n",
+        at.0, at.1
+    );
+    let line = |x: u32, y: u32, out: &mut String| {
+        if x >= width || y >= height {
+            return;
+        }
+        let pixel = (y * width + x) as usize;
+        let texel = &drawn[pixel];
+        let lit = Shade::of([shadow[pixel * 4], shadow[pixel * 4 + 1], shadow[pixel * 4 + 2]]).lit();
+        let seen = traced.pixels[pixel].seen;
+        out.push_str(&format!(
+            "  ({x:3}, {y:3}) frame: {:28} at ({:8.3}, {:8.3}, {:6.3}) {:7} | tracer: {:12} at {}\n",
+            engine_side(texel, face_rows),
+            texel.at.0,
+            texel.at.1,
+            texel.at.2,
+            if lit { "lit" } else { "shadowed" },
+            match seen {
+                Some(seen) => format!("{:?}", seen.surface),
+                None => "nothing".to_owned(),
+            },
+            match seen {
+                Some(seen) => format!(
+                    "({:8.3}, {:8.3}, {:6.3})",
+                    seen.at.x,
+                    seen.at.y,
+                    seen.at.z * f64::from(light::Z_PER_TILE)
+                ),
+                None => "—".to_owned(),
+            },
+        ));
+    };
+    out.push_str("  — across —\n");
+    for x in at.0.saturating_sub(radius)..=at.0 + radius {
+        line(x, at.1, &mut out);
+    }
+    out.push_str("  — down —\n");
+    for y in at.1.saturating_sub(radius)..=at.1 + radius {
+        line(at.0, y, &mut out);
+    }
+    out
+}
+
 /// Which surface of the tracer's own scene the renderer says drew a pixel.
 ///
 /// [`None`] where the two have no common vocabulary for it — the cleared

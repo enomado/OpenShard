@@ -761,6 +761,32 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
     );
     eprint!("{}", verdict.report());
     dump_masks(&verdict, "run of flights");
+    // `OPENSHARD_TRACED_PROBE=x,y[,radius]` — two scanlines through one pixel,
+    // with the world point of each side's own surface. What a dumped picture
+    // cannot say is which *face* of a body a region is, and every reading here
+    // that guessed that from the shape of a region guessed wrong at least once.
+    if let Some(spec) = std::env::var_os("OPENSHARD_TRACED_PROBE") {
+        let spec = spec.to_string_lossy();
+        let numbers: Vec<u32> = spec
+            .split(',')
+            .map(|n| n.trim().parse().expect("OPENSHARD_TRACED_PROBE is x,y[,radius]"))
+            .collect();
+        eprint!(
+            "{}",
+            oracle::pathtrace::probe(
+                &exact,
+                oracle::pathtrace::Frame {
+                    width: SIDE,
+                    height: SIDE,
+                    drawn: &frame.drawn,
+                    shadow: &frame.surface,
+                    face_rows: &frame.face_rows,
+                },
+                (numbers[0], numbers[1]),
+                numbers.get(2).copied().unwrap_or(6),
+            )
+        );
+    }
 
     // The same three-sided non-triviality guard the scene above carries, and it
     // matters more here: a staircase is mostly silhouette, so a threshold that

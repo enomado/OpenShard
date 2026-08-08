@@ -221,35 +221,60 @@ of three flights those differ by one. A composite sliced by `width // 3` and rea
 as a three-pixel camera offset, when the slice was off by the ruler. Each of
 those is a question with a numeric answer.
 
-### What the flight seams turned out to be — measured, and not a defect
+### The flight seams: **a continuous wall shadows itself, once per primitive**
 
-The run of flights shows a hard shadow step landing **exactly on the join
-between two primitives** of one continuous riser, which reads as "each new
-primitive starts its shadow at its own corner". It is not that. Three
-measurements, in the order they settle it:
+The run of flights shows a hard shadow step landing exactly on the join between
+two primitives of one continuous riser wall, which reads as "each new primitive
+starts its shadow at its own corner". **It is that, and the mechanism is D2's own
+argument, now with a fixture and numbers under it.** What it is *not* is anything
+about draw order or precision, and ruling those out is what the measurement did.
 
-- **The path tracer draws the identical picture** — 261,682 pixels compared, 0
-  disagreeing in the interior, 11 on an edge. That renderer has no cells, no
-  tiles and no walk, so nothing about traversal order or the grid can be what
-  puts the step there.
-- **`probe` at the join** shows the step is not near the seam, it *is* the seam:
-  every pixel of the west primitive dark, every pixel of the east one lit, with
-  no transition between. That is what a real blocker looks like when the blocker
-  is the neighbour's own body — the flame sits a sixth of a tile *behind* the
-  riser plane, so the segment from a fragment leaves through its own solid
-  (exempt) and enters the next flight's, whose west face is the join.
-- **`seams` against the shaded frame** says how much of it a player sees: at most
-  43 steps of 255 and a mean under 9, over some 120 pixels. The cosine has
-  already darkened a face the flame is behind, so the visibility mask shows a
-  cliff where the lit frame shows almost nothing.
+The probe, in world coordinates, at the join across `x = 101`:
 
-**The seam that is a defect is the opposite configuration** and this scene cannot
-pose it: a flame just *in front* of the plane, where the segment runs along the
-surface and grazes the neighbour it never enters. That is acne on coincident
-planes, it is what `same_run` currently papers over with a cell rule, and it is
-what D2's declared surface identity is for. Its fixture is a **run of wall**, not
-a flight of steps — `scene::wall_run_lit_from_along_it` exists and no tool draws
-it yet.
+```
+(299, 225) frame: box 0's FaceSouth at (100.992, 100.333, 4.333) shadowed
+(300, 225) frame: box 3's FaceSouth at (101.008, 100.333, 4.417) lit
+```
+
+One plane, `y = 100.333`. One flat wall, `x` from 100 to 103, `z` 0 to 5, in
+three primitives. The fragment at `x = 100.992` sends its segment toward a flame
+that sits a sixth of a tile **behind** that plane, so the segment goes into the
+wall: out through its own solid, which is exempt, and straight into box 3, which
+is not — box 3's west face is nine thousandths of a tile away. The fragment nine
+thousandths further east has box 3 as its *own* solid, and its next neighbour is
+a whole tile off, by which point the segment has climbed past `z 5` and clears.
+One tooth per primitive, and the tooth is exactly a tile wide.
+
+Three things this pins down, each of which had to be measured rather than argued:
+
+- **Not draw order.** Shadow is a deferred pass over the G-buffer; the order faces
+  were drawn in decides which surface owns a pixel and nothing else. Reversing the
+  flights changes nothing at all — they are three different tiles, so they are
+  three different depths and there is no tie to break. Measured: identical
+  verdict, `261682 / 0 / 11 / 462`, to the pixel. Reversing the *treads* within a
+  flight does change 7,016 pixels, and that is a tie, but it is a tie about
+  visibility and not about light — and it is a fixture artefact besides, since
+  `box_mesh` gives every box a full-height riser where `Prism::mesh` builds each
+  riser exactly between two treads.
+- **Not precision.** The path tracer, which has no cells, no tiles and no walk,
+  draws the identical picture: 261,682 compared, 0 in the interior, 11 on an edge.
+  It agrees because it is handed the same nine boxes — which is the point. The
+  model is what is wrong, not the arithmetic over it.
+- **And it is live, not a fixture's invention.** `Builder::add` declares a
+  climbable's treads as **bodies** (`edges == EDGE_ANY`, asserted in
+  `occlusion.rs`'s own test: *"a tread is a body: a stair is solid"*), exactly as
+  `add_raw` does here. The walk's body branch never consults `same_run` at all —
+  that exemption is a run of *panels* along a row or column — so for bodies there
+  is no surface exemption of any kind. Only `mine == reference.x`, one primitive.
+
+**What the cosine hides, and what it will not.** In the shaded frame this costs at
+most 43 steps of 255, mean under 9, over some 120 pixels: the wall here is
+back-facing, and `N·L` darkens it whatever the visibility says. That is luck of
+the arrangement. Turn the flame to sit just *in front* of the plane and the same
+per-primitive exemption produces acne on a lit surface, where nothing downstream
+saves it. The fixture for that is a **run of wall** —
+`scene::wall_run_lit_from_along_it` exists and no tool draws it yet — and a wall
+is panels, so it lands on `same_run` instead: the cell rule D2 replaces.
 
 ## The oracle
 
