@@ -1,4 +1,9 @@
 /target
+# And a nested one: a test given a relative dump path (`OPENSHARD_TRACED_DUMP`,
+# `OPENSHARD_FRAME_DUMP`) resolves it against the *crate* directory, not the
+# workspace root, so `crates/<group>/<crate>/target/` appears and `/target` alone
+# does not cover it. One such dump reached a commit before this line existed.
+**/target/
 **/*.rs.bk
 *.pdb
 
