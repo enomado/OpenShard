@@ -21,16 +21,16 @@ picture, not in the code.
 
 Not ten workarounds — three decisions, each with a family growing out of it.
 
-**1. The art is pre-shaded, so a real BRDF was forbidden.** A Lambert term would
-be a second light fighting the painted one, so `light::faces` is a half-space
-instead — and a half-space is a step, and a step has to be softened, so
-`FACE_EDGE` is a band. That band is measured in *tiles along the plane's normal*
-and `z` is divided by `Z_PER_TILE = 11`, which makes one constant mean ±4 screen
-pixels across a wall and **±1.1 `z` above a lid** — more than half a stair step.
-Measured 2026-08-08: with the flame between two treads, **7059 pixels** of a
-single flight sit inside that band against `3940` of genuine penumbra, and the
-band's price peaks exactly where a flame lies in a surface's own plane —
-`0.214` of a channel per pixel, against `0.020` half a step away.
+**1. The art is pre-shaded, so a real BRDF was forbidden** *(retired at phase 3)*.
+A Lambert term would be a second light fighting the painted one, so `light::faces`
+is a half-space instead — and a half-space is a step, and a step has to be
+softened, so `FACE_EDGE` is a band. That band is measured in *tiles along the
+plane's normal* and `z` is divided by `Z_PER_TILE = 11`, which makes one constant
+mean ±4 screen pixels across a wall and **±1.1 `z` above a lid** — more than half
+a stair step. Measured 2026-08-08: with the flame between two treads, **7059
+pixels** of a single flight sit inside that band against `3940` of genuine
+penumbra, and the band's price peaks exactly where a flame lies in a surface's own
+plane — `0.214` of a channel per pixel, against `0.020` half a step away.
 
 **2. The `place` attachment packed a fragment's height into eight bits and a
 four-bit fraction** *(retired at phase 2 — the constants it justified are not)*,
@@ -82,7 +82,7 @@ Named, so the plan can be checked against the tree:
 
 | goes | what replaces it |
 |---|---|
-| `light::faces`, `FACE_EDGE` | `N · L` off the G-buffer normal |
+| ~~`light::faces`, `FACE_EDGE`~~ **gone, phase 3** | `light::lit_from`, `max(N · L, 0)` off the G-buffer normal |
 | `STAND_OFF`, `ON_TOP` | exact position + self-hit by primitive id, bias `0` |
 | `exemption`, `on_surface`, `own_run` | the same id test, once |
 | `mounted_at`, `MOUNTED_CLEARANCE` | a sconce burns where it is; geometry decides the rest |
@@ -489,7 +489,81 @@ Left: albedo for a mesh face, which has none — phase 6.
 
 **Phase 3 — the BRDF.** `N·L` replaces `faces`. `FACE_EDGE` is deleted.
 *Done when:* the light oracle's "inside FACE_EDGE" class no longer exists, and its
-residual against the path tracer is quantisation only.
+residual against the path tracer is quantisation only. **Both done.**
+`light::lit_from` and `blit.wesl`'s twin are `max(N · L, 0)` — `clamp`, one
+`normalize`, no constant of any kind between them — and the class the difference
+picture spent a colour on is gone from the code rather than reading zero.
+
+*The change was one line and the argument to it.* `dot(normal, toward)` divided
+by a width became `dot(normal, normalize(toward))`, and every consequence in this
+phase follows from that division: the term stops being a distance in tiles, so it
+stops needing a width to be measured against, so `FACE_EDGE` has nothing left to
+be. `MOUNTED_CLEARANCE` was `0.5 + FACE_EDGE` and is a plain `0.7` — the same
+number on purpose, so that phase 3 moved the picture through the shading term and
+through nothing else, and phase 4 deletes it anyway.
+
+*The reference had to be asked a different question, and that is what says the
+term is right.* `Brdf::Flat` is a description of the engine **before** this phase
+— no cosine, no `1/π`, no notion of a normal — so a brightness gate against it
+would have judged us against the renderer we had just replaced.
+`the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground` renders
+`Brdf::Lambert` now, and the two conventions meet in one place: the reference's
+flame carries `oracle::pathtrace::LAMBERT_PI`, because our Lambert has no `1/π`
+and physics does. **262,144 pixels compared, 23,564 bright and 238,580 dim, worst
+channel one step of 255, nothing past the two-step quantisation.** The engine's
+cosine and a path tracer's are the same cosine, measured rather than argued.
+
+The *visibility* comparison beside it stays in `Brdf::Flat`, and the split is
+worth stating because it looks like an inconsistency and is not: that variant's
+three clauses are one fact — there is no normal — and the third of them, "a
+surface point's own body does not occlude it", is still exactly what the shipped
+walk does. Phase 4 is what turns that into identity and is where the visibility
+gate moves too.
+
+*The scene had to move as well, twice, and each time because a cosine made a
+degenerate configuration visible.* A flame at `z: 0.0` is **in** the ground's own
+plane, where the cosine is zero everywhere and no pool exists at all;
+`light::gather` never builds one there — it adds `FLAME_LIFT` to every light —
+so two frame tests were writing "on the ground" and meaning "where a fire on the
+ground burns". `FLAME_LIFT` is `pub` now and they say the second. And the
+brightness gate's flame went from three `z` to a whole tile up, because a source
+a quarter of a tile over flat ground grazes it: the frame had 812 bright pixels
+against the ten thousand the gate needs before it is measuring a curve rather
+than its tail.
+
+Three world claims were re-taken, and the rule from *How this is judged* held —
+each was a judgement about the scene rather than a margin nudged to fit:
+
+- **the pool test and the wall test** got the lift above. The wall test's radius
+  went from four tiles to six besides: the far tile was still *inside* the pool
+  and no longer said anything there a byte could hold, so the walled and open
+  frames read alike and the test would have passed by measuring nothing.
+- **the wall-run seam test** asserted a floor of `0.2` on the face beside the
+  lamp. A lamp standing *along* a wall grazes it, so the whole face went dimmer
+  without the claim under test changing at all. It is a *range* now — the east
+  end at least twice the west — which is what "lit from one end" says and what a
+  level never did.
+
+*And the ground has normals*, which answers open question 3. `ground.wesl` writes
+the bilinear patch's own — the cross product of the two tangents of the surface
+its vertices are already lifted to, with the corner heights divided into tiles in
+the vertex stage so the fragment stage needs no `viewport` binding for it. A flat
+tile's four heights are equal, both derivatives are zero and the answer is exactly
+`(0, 0, 1)`, arrived at rather than special-cased. The deliberate zero it replaced
+was a defect of the half-space and not of the normal: a floor is the one surface a
+flame is routinely almost in the plane of, and gating it blacked out every ground
+pixel a fixture was not comfortably above. A cosine is *small* at a grazing flame
+rather than absent, which is what a floor lit by a torch standing on it looks
+like.
+
+What it costs, and it is the phase's own finding rather than a surprise: **a
+surface a flame grazes goes markedly darker, and walls are what a lamp grazes.**
+On `a-wall-run-with-a-lamp-along-it`'s elevation the face is plainly dimmer than
+the half-space drew it and the gradient is tighter, while `one-torch-on-open-
+ground`'s pool is barely changed — which is the shape open question 3 predicted
+for land and open question 1 is still about. Nothing here compensates for it and
+nothing here should: exposure and ambient are ordinary exposure and ordinary
+ambient, and neither has been touched yet.
 
 **Phase 4 — shadows by identity.** Primitive ids in the grid, self-hit by id,
 bias `0`. `STAND_OFF`, `ON_TOP`, `exemption`, `on_surface`, `own_run` and
@@ -535,18 +609,26 @@ as ambient occlusion.
 Written down rather than guessed at:
 
 1. **How much does exposure have to give back?** Double contrast is a global
-   effect and a global exposure may absorb most of it. Nobody has looked at a
-   real frame with `N·L` on it yet, and that is a one-evening experiment inside
-   phase 3.
+   effect and a global exposure may absorb most of it. **Still open, and it now
+   has a picture under it rather than a guess.** Phase 3's frames say the loss is
+   not global at all: open ground barely moves and a *grazed vertical face* moves
+   a great deal, which is the case a global exposure is worst at absorbing. The
+   experiment is still one evening; it is no longer inside phase 3, because
+   nothing in phase 3 is what a knob would be turned against.
 2. ~~**Do statics need per-face albedo?**~~ **Closed by the decree.** A prism's
    four sides sample the same sprite through one projection, so a wall's two
    visible faces carry the art's own two shadings and we multiply both. Flattening
    them per face would be de-lighting through the back door, and the answer is the
    same as to de-lighting itself: not in this renderer. Whatever the sprite says
    is albedo.
-3. **Does the ground want normals at all?** UO's terrain is a height field with
-   per-corner heights, so it has real normals — and its art is nearly unshaded, so
-   `N·L` on it is pure gain. Probably free, worth confirming early.
+3. ~~**Does the ground want normals at all?**~~ **Answered by having them, phase
+   3.** UO's terrain is a height field with per-corner heights, so it has real
+   normals, and `ground.wesl` writes the bilinear patch's own. It was as close to
+   free as the question hoped: the one-torch-on-open-ground pool is barely changed
+   from the half-space's, because on level land the normal is `(0, 0, 1)` and a
+   flame above it is nearly overhead. What the normal buys is the *slope*, which
+   had no lighting at all before and now catches a flame the way the hill it is
+   faces it.
 
 ## The plans this consolidates
 
@@ -575,7 +657,7 @@ may not still matter:
 
 | backlog entry | fate |
 |---|---|
-| `FACE_EDGE`'s two scales; the flame at a surface's own height | **phase 3** — there is no band |
+| ~~`FACE_EDGE`'s two scales; the flame at a surface's own height~~ | **done, phase 3** — there is no band, and a flame in a surface's own plane is a cosine of zero rather than a half |
 | `STAND_OFF`/`ON_TOP` at a grazing corner; the `ON_TOP` twin | **phase 4** — there is no nudge |
 | risers excused as a group; `own_run`; `flame_end`'s height test; a mobile shadowed by its own wall | **phase 4** — identity answers all four |
 | the `ground < 1e-6` shortcut ignoring a lid's footprint | **fixed** — it was worth fixing alone, and was |
@@ -661,6 +743,32 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
+- **The CPU's `Surface` is four fixed normals and land now has a fifth kind.**
+  `light::sample`'s `Surface::Flat` looks straight up, which is exactly right for
+  level land and wrong for a hillside — `ground.wesl` writes the bilinear patch's
+  own normal per fragment and the CPU side cannot state one. It is not a
+  regression: before phase 3 the two disagreed about *every* ground pixel, because
+  the GPU wrote a zero there and the CPU wrote `(0, 0, 1)`. It is a new, smaller
+  disagreement with a name, and what closes it is a `Surface` that can carry a
+  measured vector rather than choose between four.
+- **A slope's normal now nudges its own shadow ray sideways.** `walk`'s `ahead`
+  spends the normal's `x` and `y` on `STAND_OFF`, and until phase 3 a ground
+  fragment's was zero on both. A hillside's is not, so a slope's ray starts a
+  fiftieth of a tile out along the hill. That is more nearly right than not
+  nudging at all — it is the direction out of the surface — but it is a behaviour
+  nobody asked for arriving through a constant phase 4 deletes.
+- **Two scenes moved because a flame stood in a surface's own plane, and the
+  shape of that is worth keeping.** `z: 0.0` in a hand-built `Light` read as "a
+  fire on the ground" for as long as the shading term was a half-space, which
+  gave such a flame the band's own half. Under a cosine it gives nothing, and the
+  tests said so at once. **Every hand-built `Light` in the tree should be asked
+  whether it means a tile's `z` or `FLAME_LIFT` above it**; two were found by
+  failing, and a scene that merely goes dim would not have said anything.
+- **`boxes.rs` now builds two mirrors of one scene** — the same `Mirrored` twice,
+  differing only in the `LAMBERT_PI` on the flame's intensity — because the
+  visibility comparison is in `Brdf::Flat` and the shaded strip in
+  `Brdf::Lambert`. Phase 4 retires the first, and the second mirror should go with
+  it rather than become a habit.
 - **The normal plane is sixteen bytes a fragment and needs four.** Twelve of the
   forty-four this client now asks an adapter for are a unit vector stored as
   three `f32`s, and the only reason is that there is no `f16` on the CPU side

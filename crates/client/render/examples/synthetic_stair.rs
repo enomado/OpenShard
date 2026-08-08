@@ -332,30 +332,58 @@ impl Slab {
     /// How far in front of this plane the flame stands, in tiles, along the
     /// plane's own normal — negative behind it.
     ///
-    /// `light::faces`'s own `along`, which is a distance and not a cosine:
-    /// `toward` is left unnormalised there on purpose, so the band the engine
-    /// softens over is a band in *tiles off the plane* and this number is what
-    /// [`FACE_EDGE`](openshard_client_render::light::FACE_EDGE) is measured
-    /// against. `z` is divided into tiles first, the way `light::sample_with`
-    /// states the offset.
+    /// **A diagnostic now and no longer a term.** It was `light::faces`'s own
+    /// `along`, the unnormalised dot product the engine divided by `FACE_EDGE`,
+    /// and it is what made a single constant mean one width across a wall and
+    /// another above a lid. `docs/lighting_rebuild.md` phase 3 normalised that
+    /// argument; what is left of this is a *legible* number for a report — "the
+    /// flame is a tenth of a tile off this plane" says something a cosine of
+    /// `0.04` does not. `z` is divided into tiles first, the way
+    /// `light::sample_with` states the offset.
     fn off_plane(&self, point: (f64, f64, f64), flame: (f64, f64, f64), up: Face) -> f64 {
-        let z_per_tile = f64::from(openshard_client_render::light::Z_PER_TILE);
         let normal = self.normal(up);
-        let toward = (
-            flame.0 - point.0,
-            flame.1 - point.1,
-            (flame.2 - point.2) / z_per_tile,
-        );
+        let toward = self.toward(point, flame);
         normal.0 * toward.0 + normal.1 * toward.1 + normal.2 * toward.2
     }
 
-    /// Whether the flame stands on the side this plane looks at.
+    /// The fragment-to-flame offset, in tiles on all three axes.
+    fn toward(&self, point: (f64, f64, f64), flame: (f64, f64, f64)) -> (f64, f64, f64) {
+        let z_per_tile = f64::from(openshard_client_render::light::Z_PER_TILE);
+        (
+            flame.0 - point.0,
+            flame.1 - point.1,
+            (flame.2 - point.2) / z_per_tile,
+        )
+    }
+
+    /// How squarely this plane looks at the flame — `light::lit_from`'s own
+    /// quantity, `max(N · L, 0)`.
     ///
-    /// A strict half-space and no band: a fragment inside the engine's own
-    /// `FACE_EDGE` softening is still a fragment whose occlusion term means
-    /// something, so only the ones the flame is *behind* are set aside.
+    /// **This is the one term of the five that the reference shares a *shape*
+    /// with the engine, and it is deliberate.** The band it replaced was not: a
+    /// half-space softened over a fifth of a tile is a stand-in for a BRDF, so an
+    /// oracle ruling strictly was measuring the stand-in's price. A cosine is
+    /// what a path tracer computes too — the reference is not copying the
+    /// engine's arithmetic here, the two have converged on the same physics, and
+    /// the third opinion in `tests/traced.rs` is what says so independently.
+    fn lit_from(&self, point: (f64, f64, f64), flame: (f64, f64, f64), up: Face) -> f64 {
+        let toward = self.toward(point, flame);
+        let span = (toward.0 * toward.0 + toward.1 * toward.1 + toward.2 * toward.2).sqrt();
+        if span <= 0.0 {
+            return 1.0;
+        }
+        (self.off_plane(point, flame, up) / span).clamp(0.0, 1.0)
+    }
+
+    /// Whether the flame is on the side this plane looks at.
+    ///
+    /// The strict half-space it has always been, said through the shading term
+    /// rather than beside it: Lambert is exactly zero behind the plane and
+    /// nowhere else, so "the flame is behind this surface" and "this surface
+    /// catches nothing" are one fact now and there is no second predicate that
+    /// could disagree with the first.
     fn faces(&self, point: (f64, f64, f64), flame: (f64, f64, f64), up: Face) -> bool {
-        self.off_plane(point, flame, up) > 0.0
+        self.lit_from(point, flame, up) > 0.0
     }
 
     /// This plane's four corners, in the ring order
@@ -804,10 +832,13 @@ struct Lit {
 /// Two of those five are the engine's arithmetic re-derived and three are not:
 /// the falloff and the pool are stated in `light.rs`'s own doc and restated here,
 /// `visibility` is [`oracle_visible`]'s independent slab test, and `facing` is
-/// **strict geometry** — a one-sided surface behind the flame is unlit, full
-/// stop. The engine's is a band [`FACE_EDGE`](openshard_client_render::light::FACE_EDGE)
-/// wide, deliberately, and the difference between the two is the price of that
-/// band. It is measured rather than hidden: see [`write_light_difference`].
+/// [`Slab::lit_from`] — geometry, the cosine against the plane's own normal.
+///
+/// That last one used to be a strict half-space against a *band* on the engine's
+/// side, and the difference between the two was a class of its own in
+/// [`write_light_difference`] with a price printed under it. Phase 3 deleted the
+/// band rather than the class: there is one shading term now and both sides
+/// compute it, so those pixels are ordinary agreements and the green is gone.
 ///
 /// What is deliberately **not** here is the flame's own size. The engine's is a
 /// body a tile across and this is a point, so every shadow edge differs by a
@@ -856,7 +887,8 @@ fn write_light_reference(
                     nearest = d;
                     off_plane = slab.off_plane(point, flame, up);
                 }
-                if d >= 1.0 || !slab.faces(point, flame, up) {
+                let facing = slab.lit_from(point, flame, up) as f32;
+                if d >= 1.0 || facing <= 0.0 {
                     continue;
                 }
                 if !oracle_visible(point, flame, slabs, plane) {
@@ -864,7 +896,7 @@ fn write_light_reference(
                 }
                 let fall = (1.0 - d) as f32;
                 for (channel, colour) in added.iter_mut().zip(light.color) {
-                    *channel += colour * light.intensity * fall * fall;
+                    *channel += colour * light.intensity * fall * fall * facing;
                 }
             }
             Some(Lit {
@@ -893,7 +925,7 @@ fn write_light_reference(
 /// Where the rendered `View::Flames` frame and [`write_light_reference`]'s own
 /// disagree **about how bright a pixel is**, as a picture and as a price list.
 ///
-/// A pixel here is one of six things, and five of them are not "the renderer is
+/// A pixel here is one of five things, and four of them are not "the renderer is
 /// wrong":
 ///
 /// - **grey** — the two agree to `TOLERANCE`, drawn at the brightness they agree
@@ -904,11 +936,6 @@ fn write_light_reference(
 ///   everything, which is its flame having a size. Read off the `View::Shadow`
 ///   frame rather than guessed at, so it is the engine's own statement of where
 ///   its penumbra is;
-/// - **green** — the flame stands within half of
-///   [`FACE_EDGE`](openshard_client_render::light::FACE_EDGE) of this fragment's
-///   own plane, where the engine softens `faces` and this oracle rules strictly.
-///   **The one this picture was built to price**: those pixels get a sum and a
-///   worst case printed, which is the first number anyone has put on that band;
 /// - **olive** — the reference is at or over the frame's ceiling, where eight
 ///   bits cannot say how much brighter one side is;
 /// - **yellow** — the two rasterisers gave this pixel to **different planes**, so
@@ -939,20 +966,16 @@ fn write_light_difference(
     /// quantisation itself and the second is the two summations rounding the same
     /// products differently — anything above that is arithmetic, not format.
     const TOLERANCE: f32 = 2.0 / 255.0;
-    let face_edge = f64::from(openshard_client_render::light::FACE_EDGE);
 
     let mut agreed = 0usize;
     let mut brighter = 0usize;
     let mut darker = 0usize;
     let mut penumbra = 0usize;
-    let mut in_band = 0usize;
     let mut clipped = 0usize;
     let mut disputed = 0usize;
     let mut renderer_alone = 0usize;
     let mut reference_alone = 0usize;
     let mut worst = 0.0f32;
-    let mut band_cost = 0.0f32;
-    let mut band_worst = 0.0f32;
     let mut examples: Vec<(usize, String)> = Vec::new();
 
     let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
@@ -1008,7 +1031,6 @@ fn write_light_difference(
                     !same_plane,
                     added.iter().any(|channel| *channel >= 1.0),
                     soft,
-                    off_plane.abs() <= face_edge / 2.0,
                     apart <= TOLERANCE,
                 ) {
                     // First of all, because every class below is a statement
@@ -1021,20 +1043,11 @@ fn write_light_difference(
                         clipped += 1;
                         [140, 140, 0]
                     }
-                    // Before the band, because a penumbra pixel inside the band is
-                    // still a penumbra pixel and the band's price must not collect
-                    // the flame's own softness.
-                    (_, _, true, ..) => {
+                    (_, _, true, _) => {
                         penumbra += 1;
                         [140, 0, 140]
                     }
-                    (_, _, _, true, _) => {
-                        in_band += 1;
-                        band_cost += apart;
-                        band_worst = band_worst.max(apart);
-                        [0, 140, 60]
-                    }
-                    (_, _, _, _, true) => {
+                    (_, _, _, true) => {
                         agreed += 1;
                         let value = (theirs[0] * 90.0) as u8;
                         [value, value, value]
@@ -1089,19 +1102,12 @@ fn write_light_difference(
     eprintln!(
         "light oracle vs rendered View::Flames: {} of {} judged pixels differ by more than \
          {TOLERANCE:.3} ({brighter} rendered brighter, {darker} darker, worst {worst:.3}); \
-         set aside: {penumbra} in the engine's own penumbra, {in_band} inside FACE_EDGE, \
+         set aside: {penumbra} in the engine's own penumbra, \
          {clipped} at the frame's ceiling, {disputed} given to different planes by the two \
          rasterisers, {renderer_alone}/{reference_alone} drawn by one side only",
         brighter + darker,
         agreed + brighter + darker,
     );
-    if in_band > 0 {
-        eprintln!(
-            "  what FACE_EDGE costs on those {in_band} pixels: {band_cost:.1} of a full channel \
-             in total, {:.3} on average, {band_worst:.3} at worst",
-            band_cost / in_band as f32,
-        );
-    }
     for (_, example) in &examples {
         eprintln!("{example}");
     }

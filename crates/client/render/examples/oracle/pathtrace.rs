@@ -77,6 +77,25 @@ impl Albedos {
     };
 }
 
+/// What an intensity is multiplied by to cross from the engine's Lambert into
+/// [`pt_trace::Brdf::Lambert`]'s.
+///
+/// The engine's diffuse term is `albedo × N·L` and the reference's is
+/// `albedo × N·L / π`. **The missing `1/π` is deliberate on our side and stated
+/// in `docs/lighting_rebuild.md`**: putting it in would mean re-tuning every
+/// authored flame in the tree for a constant everyone then divides back out. The
+/// reference is physics and keeps it.
+///
+/// So a comparison across the two is a comparison of two conventions, and this is
+/// the conversion between them — applied to the *flame's intensity*, which is the
+/// one place it can go without either side's own formula being rewritten to suit
+/// the other. It belongs to the comparison and not to `Mirrored`, which is why a
+/// call site multiplies rather than `Mirror::of` dividing.
+///
+/// Nothing needs it against [`pt_trace::Brdf::Flat`], which has no cosine and no
+/// `π` either — that variant is a description of the engine *before* phase 3.
+pub const LAMBERT_PI: f64 = std::f64::consts::PI;
+
 /// The same scene, in the tracer's own terms.
 ///
 /// Two things are taken from the renderer to build it, and both arrive as
@@ -381,11 +400,19 @@ fn on_an_edge<T: PartialEq>(map: &[Option<T>], width: u32, height: u32, x: u32, 
 /// Lay the frame and the tracer's two renders beside each other and count where
 /// they disagree.
 ///
-/// `engine_model` is the render in [`pt_trace::Brdf::Flat`] — the shipped
-/// renderer's own light model, and the one the comparison is *about*.
-/// `physical` is the same scene in [`pt_trace::Brdf::Lambert`], and is used for
-/// exactly one thing: subtracting the two to measure how many pixels the choice
-/// of model decides.
+/// `engine_model` is the render in [`pt_trace::Brdf::Flat`] and `physical` the
+/// same scene in [`pt_trace::Brdf::Lambert`]; the second is used for exactly one
+/// thing, subtracting the two to measure how many pixels the choice of model
+/// decides.
+///
+/// **This compares visibility, and `Flat` is still the engine's visibility
+/// model** after phase 3 turned its *shading* term into a cosine. The variant's
+/// three clauses are one fact — there is no normal — and the third of them is
+/// "a surface point's own body does not occlude it", which the shipped walk
+/// still states as an exemption. `docs/lighting_rebuild.md`'s phase 4 is what
+/// restates that as identity and is where this argument has to be re-taken.
+/// Brightness is judged in `Lambert` already: `tests/traced.rs`'s own gate and
+/// `boxes.rs`'s shaded strip both moved there.
 ///
 /// # Panics
 ///

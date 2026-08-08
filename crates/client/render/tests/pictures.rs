@@ -340,11 +340,19 @@ fn a_wall_lit_from_one_end_has_no_dark_stroke_at_its_seam() {
             pair[1],
         );
     }
-    // And the face is lit at all, or the order above holds for a black picture.
+    // And the face is lit *from one end*, or the order above holds for a black
+    // picture and for a flat one alike.
+    //
+    // Stated as a range rather than as a level, which is what the picture is
+    // about: the lamp is at the east end, so the east end has to be plainly
+    // brighter than the west one. A floor on the near end alone was the older
+    // form and it was a number about this scene at this BRDF — phase 3 turned the
+    // shading term into a cosine and a lamp standing *along* a wall grazes it, so
+    // the whole face went dimmer without the claim under test changing at all.
+    let (near, far) = (across[0].1, across[across.len() - 1].1);
     assert!(
-        across[0].1 > 0.2,
-        "the end of the wall beside the lamp is dark: {:?}",
-        across[0],
+        near > 0.02 && near > far * 2.0,
+        "the wall is not lit from its east end: {near:?} beside the lamp, {far:?} away from it",
     );
 }
 

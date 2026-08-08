@@ -909,11 +909,17 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
     let (_, outside_at) = find(TORCH_TILES as u16 + 1);
 
     // One flame, on its own tile, reaching six tiles of ground.
+    //
+    // At `FLAME_LIFT` and not at the tile's own `z`, which is where `light::gather`
+    // puts every flame it builds: a fire's flame is above the thing that is
+    // burning, and a source lying exactly *in* the ground's plane has a cosine of
+    // zero against it — so a scene that puts one there is asking about a
+    // degenerate case rather than about a torch.
     let lighting = Lighting {
         ambient: openshard_client_render::light::NIGHT,
         lights: vec![Light {
             at: Vec2::new(f32::from(burning.0), f32::from(burning.1)),
-            z: 0.0,
+            z: openshard_client_render::light::FLAME_LIFT,
             radius: TORCH_TILES,
             color: [1.0, 0.7, 0.35],
             intensity: 1.0,
@@ -1124,11 +1130,23 @@ fn a_wall_stops_the_light_behind_it() {
 
     let flame = Light {
         at: Vec2::new(f32::from(FIRST), f32::from(ROW)),
-        z: 0.0,
-        // Four tiles, so that the far side of the wall is inside the pool and
+        // Where `light::gather` puts a flame on a tile — see the pool test's own
+        // note. In the ground's own plane the cosine against it is zero and the
+        // whole row would be dark with or without a wall in it.
+        z: openshard_client_render::light::FLAME_LIFT,
+        // Six tiles, so that the far side of the wall is inside the pool and
         // dark only because the wall is there — a radius that fell short would
         // pass this test for the wrong reason.
-        radius: 4.0,
+        //
+        // It was four until phase 3, and four stopped being enough for a reason
+        // that is not the radius: a flame half a tile up throws a cosine of a
+        // sixth onto ground three tiles away, and `(1 - d)²` of that landed under
+        // one step of the frame's eight bits. The pool still *reached* the far
+        // tile; it no longer said anything there that a byte could hold, so the
+        // walled and open frames read alike and the test would have passed by
+        // measuring nothing. Widening the reach is what puts a measurable
+        // quantity back at the tile being asked about.
+        radius: 6.0,
         color: [1.0, 1.0, 1.0],
         intensity: 1.0,
         beam: None,

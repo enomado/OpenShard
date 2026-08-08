@@ -152,6 +152,14 @@ struct Shot<'a> {
     flame: WorldSpot,
     /// The flame's reach, in tiles — `light::Light::radius`.
     radius: f32,
+    /// How brightly it burns — `light::Light::intensity`.
+    ///
+    /// A field since phase 3, and the reason is the brightness gate: with a
+    /// cosine in the term a pool's *bright* half is a disc under the flame rather
+    /// than most of the canvas, and how wide that disc is is what decides whether
+    /// a comparison is asking the falloff curve about its whole range or about
+    /// its tail. A shadow comparison does not care and passes `1.0`.
+    intensity: f32,
     ambient: openshard_client_render::light::Ambient,
     view: View,
     /// Notches up `camera::LADDER` from 1:1.
@@ -164,6 +172,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         boxes,
         flame,
         radius,
+        intensity,
         ambient,
         view,
         zoom: zoom_notches,
@@ -320,7 +329,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
             z: flame.z as f32,
             radius,
             color: [1.0, 1.0, 1.0],
-            intensity: 1.0,
+            intensity,
             beam: None,
         }],
         occlusion,
@@ -394,6 +403,9 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
             boxes: &boxes,
             flame: at,
             radius: FLAME_RADIUS,
+            // Visibility, so brightness is not what is being read: any intensity
+            // that lights the scene at all answers the same question.
+            intensity: 1.0,
             ambient: NIGHT,
             view: View::Shadow,
             // Three notches is the top of `camera::LADDER` — 4:1 — where a
@@ -516,18 +528,32 @@ fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
         eprintln!("no GPU adapter; skipping");
         return;
     };
-    // Over the middle of the anchor tile and low, so the pool's brightest point
-    // is in the frame and its rim is too: a comparison that saw only the tail of
-    // the curve would agree about a curve of nearly any shape.
+    // Over the middle of the anchor tile, so the pool's brightest point is in the
+    // frame and its rim is too: a comparison that saw only the tail of the curve
+    // would agree about a curve of nearly any shape.
+    //
+    // A tile up, and it used to be a quarter of one. **Phase 3 is what moved
+    // it**, and not by a margin: the shading term is a cosine now, and a source
+    // three `z` above flat ground is nearly *in* that ground — its cosine is
+    // under a tenth over most of a 512-pixel canvas, so the picture had 812
+    // bright pixels against the ten thousand this gate needs to be measuring a
+    // curve at all. The height is what puts a bright core back under the flame;
+    // the curve either side of it is unchanged and is still what is being judged.
     let at = WorldSpot {
         x: 100.5,
         y: 100.5,
-        z: 3.0,
+        z: f64::from(openshard_client_render::light::Z_PER_TILE),
     };
     let dark = openshard_client_render::light::Ambient {
         sky: [0.0; 3],
         ground: [0.0; 3],
     };
+    // Brighter than a torch on purpose, and not to make the picture pretty: the
+    // guard below needs ten thousand pixels either side of the frame's own
+    // midpoint, and with a cosine in the term the bright half is a disc under the
+    // flame. At `1.0` it was four thousand — a comparison of the curve's tail
+    // alone, which is a curve nearly any other curve also fits.
+    const BRIGHTNESS: f32 = 3.0;
     let frame = render(
         &device,
         &queue,
@@ -535,6 +561,7 @@ fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
             boxes: &[],
             flame: at,
             radius: FLAME_RADIUS,
+            intensity: BRIGHTNESS,
             ambient: dark,
             view: View::Lit,
             zoom: 0,
@@ -552,7 +579,11 @@ fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
         light_at: at,
         light_radius: f64::from(FLAME_RADIUS),
         colour: [1.0, 1.0, 1.0],
-        intensity: 1.0,
+        // The engine's Lambert has no `1/π` and the reference's does — see
+        // `LAMBERT_PI`. This is the whole of the conversion between the two
+        // conventions, and it is stated once, here, rather than by either side
+        // being rewritten to look like the other.
+        intensity: f64::from(BRIGHTNESS) * oracle::pathtrace::LAMBERT_PI,
         albedos: oracle::pathtrace::Albedos {
             ground: albedo,
             // No body in the scene to have one. Left at the invented value
@@ -562,7 +593,11 @@ fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
         },
         to_pixel: frame.to_pixel.as_ref(),
     });
-    let traced = mirror.render(pt_trace::Brdf::Flat, SIDE, SIDE);
+    // **`Lambert`, and phase 3 is what changed it from `Flat`.** `Brdf::Flat` is
+    // a description of the engine *before* this phase — no cosine and no notion
+    // of a normal anywhere in it — so leaving the gate there would have made the
+    // reference agree with the renderer we have just replaced.
+    let traced = mirror.render(pt_trace::Brdf::Lambert, SIDE, SIDE);
 
     // Compared where the tracer sees the ground and the frame drew it: the two
     // agreeing what surface is there is the same precondition the shadow gate

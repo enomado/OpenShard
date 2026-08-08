@@ -88,6 +88,19 @@ struct VertexOut {
     // here because a fragment's *world position* is this plus `local`, and that
     // is per pixel. See `FragmentOut::position`.
     @location(7) @interpolate(flat) tile: vec2<f32>,
+    // And the four corner heights, because the *normal* is per pixel on a
+    // bilinear patch and its two derivatives are not constant across one.
+    //
+    // Flat rather than interpolated for the reason `heights` is a per-instance
+    // attribute in the first place: they are the tile's, not this vertex's, and
+    // interpolating them would give a fragment four corners it does not have.
+    //
+    // **In tiles, divided on the way out of the vertex stage**, which is where
+    // the two numbers that do the dividing are. `viewport` is bound to the
+    // vertex stage alone and there is no reason to widen it to the fragment one
+    // for a constant: the fragment shader wants these in the isotropic metric
+    // and in no other, so the conversion belongs to the producer.
+    @location(8) @interpolate(flat) heights_in_tiles: vec4<f32>,
 };
 
 // What one fragment of a world pass writes: the picture, and where in the world
@@ -100,9 +113,34 @@ struct FragmentOut {
     // The same fragment as a point rather than as an id and a fraction —
     // `crate::gbuffer`.
     @location(2) position: vec4<f32>,
-    // And which way it looks, which for land is **nowhere** — see `fs_main`.
+    // And which way it looks — for land, the bilinear patch's own normal. See
+    // `land_normal`.
     @location(3) normal: vec4<f32>,
 };
+
+// The land's own normal, from the four corner heights the tile was lifted by.
+//
+// The surface is the bilinear patch `vs_main` puts its vertices on, so this is
+// the cross product of that patch's two tangents:
+//
+//   h(a, b)  = mix(mix(h00, h10, a), mix(h01, h11, a), b)
+//   dh/da    = mix(h10 - h00, h11 - h01, b)
+//   dh/db    = mix(h01 - h00, h11 - h10, a)
+//   Ta x Tb  = (1, 0, dh/da) x (0, 1, dh/db) = (-dh/da, -dh/db, 1)
+//
+// The heights arrive **in tiles** (`VertexOut::heights_in_tiles`), because a
+// normal is a direction in the *isotropic* world `blit.wgsl` states a
+// fragment-to-flame offset in — one `z` unit is an eleventh of a tile there. In
+// raw units a one-unit step across a tile would read as forty-five degrees.
+//
+// A flat tile's four heights are equal, both derivatives are zero, and this is
+// exactly `(0, 0, 1)` — the same vector `outward(STANCE_FLAT)` names, arrived at
+// rather than special-cased.
+fn land_normal(heights: vec4<f32>, at: vec2<f32>) -> vec3<f32> {
+    let along_x = mix(heights.y - heights.x, heights.w - heights.z, at.y);
+    let along_y = mix(heights.z - heights.x, heights.w - heights.y, at.x);
+    return normalize(vec3<f32>(-along_x, -along_y, 1.0));
+}
 
 @vertex
 fn vs_main(
@@ -194,6 +232,10 @@ fn vs_main(
         (offset.y - offset.x) / f32(viewport.tile.x) + 0.5,
     );
     out.tile = vec2<f32>(f32(place0 & 0xFFFFu), f32(place0 >> 16u));
+    // 44 virtual pixels of tile over 4 a unit of height: `light::Z_PER_TILE`'s
+    // own derivation, off the two numbers this pass is already handed rather
+    // than as a third written-down copy of the constant.
+    out.heights_in_tiles = heights / (viewport.tile.x / viewport.z_step);
     return out;
 }
 
@@ -218,25 +260,20 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // tile's quad is the sprite's 44x44 square, whose corners lie outside the
     // diamond, and a fragment there — one the alpha cut below has not reached
     // yet — would otherwise name a neighbour nothing was drawn on.
-    out.position = vec4<f32>(in.tile + clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0)), in.world_z, 1.0);
-    // And no normal, which is a decision and not an omission.
+    let local = clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0));
+    out.position = vec4<f32>(in.tile + local, in.world_z, 1.0);
+    // And the normal, which land now has and which it did not before.
     //
-    // The stance above says `STANCE_FLAT`, and `outward` of that looks up — but
-    // land is the one surface that must not be gated by which side of its own
-    // plane a flame is on. A wall's flat *cap* wants that gate (decision 27, a
-    // lamp beside a wall lighting its top as fully as one standing over it); a
-    // floor lit at a grazing angle is not behind its own plane the way a cap can
-    // be behind a torch mounted low, and gating it darkened every ground pixel a
-    // fixture's flame was not comfortably above. `blit.wgsl` used to make that
-    // distinction at the reading end, by testing the kind; it is made here now,
-    // where the pass that knows it is the ground already is.
-    //
-    // Land *has* real normals — it is a height field with four corner heights,
-    // interpolated a few lines above — and `docs/lighting_rebuild.md`'s third
-    // open question is whether it should use them. Writing one is a change to
-    // the picture and belongs to phase 3, not to the move that made the normal
-    // data.
-    out.normal = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    // **This was a deliberate zero and phase 3 is what changed it.** The old
+    // reason was the shading term: it was a *half-space* — a flame on the wrong
+    // side of a surface's plane lit it not at all, softened over a fifth of a
+    // tile — and a floor is the one surface a flame is routinely almost in the
+    // plane of, so gating land blacked out every ground pixel a fixture was not
+    // comfortably above. That is a defect of the half-space and not of the
+    // normal: an angular cosine is small at a grazing flame rather than absent,
+    // which is what a floor lit from a torch on it actually looks like.
+    // `docs/lighting_rebuild.md`'s third open question, answered by having one.
+    out.normal = vec4<f32>(land_normal(in.heights_in_tiles, local), 1.0);
 
     // A slope with a texture of its own takes it, and nothing else about the
     // tile changes: the shape is still the diamond its four corners make.

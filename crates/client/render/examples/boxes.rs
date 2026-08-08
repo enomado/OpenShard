@@ -1458,18 +1458,32 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         to_pixel,
     });
 
-    // **In the engine's own light model, and then in physics.** The gate is the
-    // first: `Brdf::Flat` is the shipped renderer's model — no cosine, no `1/π`,
-    // and a fragment's own body not occluding it — so what is left over when the
-    // two pictures are subtracted is geometry alone. An oracle that could only
-    // compute the second would decide the model rather than judge it, and would
-    // report every surface turned away from the flame as a defect.
+    // **Visibility in one model and brightness in another, and phase 3 is what
+    // split them.**
     //
-    // The second render costs one more deterministic visibility test a pixel and
-    // buys the *size* of the choice: how many pixels the model decides, which is
-    // the number `docs/lighting_rebuild.md`'s phase 3 will move.
+    // `Brdf::Flat` still describes how the engine decides *whether* a pixel is
+    // lit: a fragment's own body does not occlude it, which the shipped walk
+    // states as an exemption and `docs/lighting_rebuild.md`'s phase 4 will state
+    // as identity. So the visibility comparison — the whole of `compare` — stays
+    // here, and `physical` beside it still measures how many pixels the choice of
+    // model decides.
+    //
+    // How *bright* a lit pixel is, though, is a cosine now. The shaded picture is
+    // rendered in `Brdf::Lambert` for that reason, out of a second mirror whose
+    // flame carries `LAMBERT_PI`: the engine's diffuse term has no `1/π` and the
+    // reference's does, and the intensity is where the two conventions meet.
     let exact = mirror.render(pt_trace::Brdf::Flat, width, height);
     let physical = mirror.render(pt_trace::Brdf::Lambert, width, height);
+    let shaded = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
+        boxes,
+        light_at,
+        light_radius,
+        colour: flame.color.map(f64::from),
+        intensity: f64::from(flame.intensity) * oracle::pathtrace::LAMBERT_PI,
+        albedos,
+        to_pixel,
+    })
+    .render(pt_trace::Brdf::Lambert, width, height);
     let verdict = oracle::pathtrace::compare(
         &exact,
         &physical,
@@ -1551,7 +1565,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
     // channel. Both encoded by `tonemap::encode`, which is the second half of
     // the curve `blit.wesl` ends with: two pictures encoded by two spellings
     // would differ by the spellings.
-    shaded_comparison(&exact, lit_pixels, &verdict, width, height, base);
+    shaded_comparison(&shaded, lit_pixels, &verdict, width, height, base);
 
     // And the full mode, on request: a real Monte Carlo render of the same
     // scene, with a spherical emitter, a cosine term and bounced light. It is

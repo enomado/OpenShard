@@ -290,17 +290,11 @@ const SOLID_Z_FLOOR: f32 = -128.0;
 // the measure of what the normal plane took away: the one flat value this pass
 // used to read was for a facing.
 
-// How wide the band is, in tiles, over which a flame passing behind a face stops
-// lighting it.
+// How much of a flame at `toward` reaches a surface facing `normal`:
+// `max(N · L, 0)`, and nothing else.
 //
-// Not a step, for the reason a beam's rim is not a step: a hard edge is what the
-// eye finds first, and a lamp walking past the end of a wall would switch its
-// face off between two frames. A fifth of a tile is narrow enough that a wall is
-// still plainly one-sided and wide enough that nothing pops.
-const FACE_EDGE: f32 = 0.2;
-
-// How much of a flame at `toward` reaches a surface facing `normal`: 1 in front
-// of it, 0 behind it, and a gradient `FACE_EDGE` wide across the plane.
+// Textbook Lambert, with no wrap, no band and no width knob — `light::lit_from`'s
+// own doc is the argument, and `docs/lighting_rebuild.md` is the decision.
 //
 // **The one thing a fraction cannot say.** A wall's two faces are one tile and
 // one plane — the same tile, the same fraction, the same height — so without a
@@ -308,9 +302,19 @@ const FACE_EDGE: f32 = 0.2;
 // brightly as the inside. That was reported from the client as a wall behaving
 // like glass, and it is what this fixes.
 //
-// `light::faces`, and the two are one formula.
-fn faces(normal: vec3<f32>, toward: vec3<f32>) -> f32 {
-    return clamp(dot(normal, toward) / FACE_EDGE + 0.5, 0.0, 1.0);
+// `toward` is the fragment-to-flame offset in tiles and **it is normalised
+// here**: fed unnormalised, the same expression answered about a distance along
+// the normal rather than about an angle. `docs/lighting_rebuild.md` phase 3.
+//
+// `light::lit_from`, and the two are one formula.
+fn lit_from(normal: vec3<f32>, toward: vec3<f32>) -> f32 {
+    let span = length(toward);
+    // A fragment standing exactly on the flame has no direction to be lit from,
+    // and full is the answer that does not put a black dot in a pool's middle.
+    if span <= 0.0 {
+        return 1.0;
+    }
+    return clamp(dot(normal, toward / span), 0.0, 1.0);
 }
 
 // How many `z` units make one tile — `light::Z_PER_TILE`, and the same
@@ -1687,9 +1691,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         if light.beam.w > -1.0 {
             lit_by = cone(light.beam, -offset);
         }
-        // And whether the flame is on the side this surface looks at. A wall is
-        // one-sided and its two faces are one tile, so this is the only thing that
-        // keeps a torch in a room from lighting the outside of the house.
+        // And how squarely this surface looks at the flame. A wall is one-sided
+        // and its two faces are one tile, so this is the only thing that keeps a
+        // torch in a room from lighting the outside of the house.
         //
         // Geometry and nothing else. This used to exempt a flame standing in the
         // wall's own row or column, because a lamp mounted on a house sits at its
@@ -1702,11 +1706,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // moving the mounted flame instead of excusing it — `light::mounted_at`,
         // and `docs/lighting.md`'s decision 26.
         // `offset` is already the flame less the fragment with `z` divided into
-        // tiles, which is the space the normal is stated in — so a lid's answer is
-        // how far *above* its plane the flame is, in tiles, through the same
-        // formula and the same soft band.
+        // tiles, which is the space the normal is stated in — so a lid and a wall
+        // go through one formula, and since it is normalised the answer is the
+        // same angle on both.
+        //
+        // The zero vector still means "no facing at all", and it is a value a
+        // producer writes on purpose rather than an absence — see
+        // `docs/lighting_rebuild.md` phase 2 on why the plane is not octahedral.
         if any(normal != vec3<f32>(0.0)) {
-            lit_by = lit_by * faces(normal, offset);
+            lit_by = lit_by * lit_from(normal, offset);
         }
         // The flame's own tile is exempt, and a flame is a body a tile wide:
         // `walk`'s two parameters, and the only two things that make this ray

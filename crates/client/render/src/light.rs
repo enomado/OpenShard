@@ -608,7 +608,18 @@ pub fn burns(graphic: Graphic, tile: &openshard_uofiles::tiledata::StaticTile) -
 /// for a wall sconce; the sprite's real height is not available here, and asking
 /// the atlas for it would tie the lights to whether this frame's art happened to
 /// be packed.
-const FLAME_LIFT: f32 = Z_PER_TILE / 2.0;
+///
+/// `pub` since phase 3, and for a reason worth stating: [`gather`] adds it to
+/// every light the engine builds, so a flame at a tile's own `z` is one nothing
+/// in this crate produces. That did not matter while the shading term was a
+/// half-space — a flame lying exactly in the ground's plane got the band's own
+/// half rather than nothing — and it matters now, because the cosine of a
+/// source *in* a surface is zero and a scene that puts one there is asking about
+/// a degenerate case rather than about a torch. A test writing `z: 0.0` was
+/// stating "on the ground" and meaning "where a fire on the ground burns"; this
+/// is the second one, and it is the engine's own number rather than a plausible
+/// one chosen beside it.
+pub const FLAME_LIFT: f32 = Z_PER_TILE / 2.0;
 
 /// How many tiles beyond the drawn image a flame can still light it from.
 ///
@@ -759,15 +770,19 @@ pub fn collect(
 /// How far outside the plane a mounted flame is placed, in tiles.
 ///
 /// Half a tile takes it from its tile's centre to the plane the panel stands on,
-/// and [`FACE_EDGE`] more takes it clear of the band the facing test softens
-/// over — so the wall it hangs on is lit at full strength rather than at the half
-/// a flame lying exactly in the plane would give it.
+/// and a fifth more takes it off that plane — where the cosine against the face
+/// it is bolted to is zero along the *whole* face, so the wall it hangs on would
+/// come out black from top to bottom however bright the flame is.
+///
+/// The fifth used to be spelt `FACE_EDGE`, and the number is kept at what that
+/// made it on purpose: phase 3 moved the picture through the shading term and
+/// through nothing else. Phase 4 deletes this constant outright.
 ///
 /// The consequence worth stating: it lands on the *next* tile, so the wall it is
 /// mounted on stops being the flame's own cell and starts being an ordinary
 /// occluder. That is what makes a sconce light the street and not the room behind
 /// it, and it is the whole reason this is a move rather than an exemption.
-const MOUNTED_CLEARANCE: f32 = 0.5 + FACE_EDGE;
+const MOUNTED_CLEARANCE: f32 = 0.7;
 
 /// Where a flame standing on a wall tile actually burns: outside the plane its
 /// own tile names, on the side the wall's picture is drawn from.
@@ -1680,36 +1695,39 @@ impl Surface {
 // this function was for — and a face pixel is a point of its own panel and of no
 // other on the tile, which the mask could not have said.
 
-/// How wide the band is, in tiles, over which a flame passing behind a face
-/// stops lighting it. `blit.wgsl`'s `FACE_EDGE`, and the two are one number.
+/// How much of a flame at `toward` reaches a surface facing `normal`:
+/// `max(N · L, 0)`, and nothing else.
 ///
-/// Not a step, for the reason a beam's rim is not one: a hard edge is what the
-/// eye finds first, and a lamp walking past the end of a wall would switch its
-/// face off between two frames.
-/// `pub` because an oracle has to know how wide the band is to say what it costs.
-/// A picture oracle rules on strict geometry — a flame behind a one-sided surface
-/// lights it not at all — and the engine's answer inside this band is deliberately
-/// not that. Those pixels are neither an agreement nor a defect, so an instrument
-/// that cannot name the band either folds a known softening into its residual or,
-/// worse, refuses to judge the whole face and reports nothing at all. Sharing the
-/// number is not sharing the formula: nothing outside this module computes
-/// [`faces`].
-pub const FACE_EDGE: f32 = 0.2;
-
-/// How much of a flame `toward` reaches a surface facing `normal` — `1.0` in
-/// front of it, `0.0` behind it, and a gradient [`FACE_EDGE`] wide across the
-/// plane. Both in tiles, `z` included: a horizontal surface is a surface, and
-/// what decides for it is how far *above* its plane the flame is.
+/// Textbook Lambert, with **no wrap, no band and no width knob** — the decision
+/// at the top of `docs/lighting_rebuild.md`. The art is declared clean albedo and
+/// this renderer is the ordinary one; no term here has the job of arguing with
+/// what an artist painted into a sprite. There was a dial in the plan between a
+/// half-space and this, and it was closed rather than tuned; the plan parks a
+/// stylised BRDF as an experiment of its own, for a day when there are deferred
+/// frames worth comparing one against.
 ///
-/// A half-space test and deliberately not a cosine. UO's art is pre-shaded —
-/// every wall's picture already has a light in it — so a Lambert term would be a
-/// second light fighting the first. What this answers is only whether the flame
-/// is on the side the surface looks at.
+/// `normal` is a unit vector and `toward` is the fragment-to-flame offset in
+/// tiles, `z` included and already divided into them. **It is normalised here**,
+/// which is the whole of what phase 3 changed: the same expression fed an
+/// unnormalised offset answered about a *distance* along the normal, so one
+/// constant meant one width across a wall and quite another above a lid. A cosine
+/// has no length in it and the term is the same on every surface.
 ///
-/// `blit.wgsl`'s `faces`, and the two are one formula.
-fn faces(normal: [f32; 3], toward: [f32; 3]) -> f32 {
-    let along = normal[0] * toward[0] + normal[1] * toward[1] + normal[2] * toward[2];
-    (along / FACE_EDGE + 0.5).clamp(0.0, 1.0)
+/// `blit.wgsl`'s `lit_from`, and the two are one formula.
+fn lit_from(normal: [f32; 3], toward: [f32; 3]) -> f32 {
+    let length = toward.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+    // A fragment standing exactly on the flame has no direction to be lit from,
+    // and every direction is as good an answer as any other. Full is the one that
+    // does not put a black dot in the middle of a pool.
+    if length <= 0.0 {
+        return 1.0;
+    }
+    let cosine = normal
+        .iter()
+        .zip(toward)
+        .map(|(normal, axis)| normal * axis / length)
+        .sum::<f32>();
+    cosine.clamp(0.0, 1.0)
 }
 
 /// What took a ray to nothing: not only *where* it was stopped, but *by what*.
@@ -2002,13 +2020,13 @@ fn sample_with(
             Some(beam) => beam.lights(offset.map(|axis| -axis)),
             None => 1.0,
         };
-        // And whether the flame is on the side this surface looks at — geometry
-        // and nothing else. `blit.wgsl` argues why there is no longer an
-        // exemption for a flame standing in the wall's own line, and
-        // [`mounted_at`] is what replaced it.
+        // And how squarely this surface looks at the flame — geometry and nothing
+        // else. `blit.wgsl` argues why there is no longer an exemption for a
+        // flame standing in the wall's own line, and [`mounted_at`] is what
+        // replaced it.
         let facing = match spot.surface.normal() {
             None => 1.0,
-            Some(normal) => faces(normal, offset),
+            Some(normal) => lit_from(normal, offset),
         };
         let (through, stopped_by) = walk(spot, light, &lighting.occlusion);
         let fall = 1.0 - d;
@@ -3457,14 +3475,52 @@ mod tests {
         same(sun.intensity, 0.55);
     }
 
-    /// [`faces`]'s own gradient: fully towards the light, fully away, and
-    /// exactly edge-on in between — [`FACE_EDGE`]'s own three named points.
+    /// [`lit_from`]'s own gradient: fully towards the light, fully away, and
+    /// exactly edge-on in between — the cosine's three named points.
+    ///
+    /// Edge-on is `0.0` and not a half, which is the whole of "no wrap": a
+    /// stylised term would put its floor here, and a surface the flame lies in
+    /// the plane of would still be lit.
     #[test]
-    fn faces_is_one_towards_the_light_and_zero_away_from_it() {
+    fn lit_from_is_one_towards_the_light_and_zero_away_from_it() {
         let toward = [1.0_f32, 0.0, 0.0];
-        assert_eq!(faces([1.0, 0.0, 0.0], toward), 1.0);
-        assert_eq!(faces([-1.0, 0.0, 0.0], toward), 0.0);
-        assert!((faces([0.0, 1.0, 0.0], toward) - 0.5).abs() < 1e-6);
+        assert_eq!(lit_from([1.0, 0.0, 0.0], toward), 1.0);
+        assert_eq!(lit_from([-1.0, 0.0, 0.0], toward), 0.0);
+        assert_eq!(lit_from([0.0, 1.0, 0.0], toward), 0.0);
+        // And the curve between them is the cosine itself, not a straight line
+        // between the three: sixty degrees off is a half, which is the one point
+        // that tells a cosine from a ramp.
+        let sixty = lit_from([1.0, 0.0, 0.0], [0.5, 0.75_f32.sqrt(), 0.0]);
+        assert!((sixty - 0.5).abs() < 1e-6, "sixty degrees off came out {sixty}");
+    }
+
+    /// **The whole of what phase 3 changed**: the term is an angle and no longer
+    /// a distance.
+    ///
+    /// The same direction at four lengths — a tenth of a tile away and ten tiles
+    /// away — used to give four different answers, because the expression divided
+    /// `dot(normal, offset)` by a constant *in tiles*. That is where a single
+    /// number came to mean ±4 screen pixels across a wall and ±1.1 `z` above a
+    /// lid. It is one answer now, and this is what would fail if the
+    /// normalisation were dropped again.
+    #[test]
+    fn the_shading_term_is_an_angle_and_not_a_distance() {
+        // Well off the axis, so the cosine is neither zero nor one and a bug that
+        // clamped would not be able to hide in the saturated end of the curve.
+        let direction = [0.6_f32, 0.8, 0.0];
+        let normal = [1.0_f32, 0.0, 0.0];
+        let near = lit_from(normal, direction.map(|axis| axis * 0.1));
+        for scale in [1.0_f32, 3.0, 10.0] {
+            let far = lit_from(normal, direction.map(|axis| axis * scale));
+            assert!(
+                (far - near).abs() < 1e-6,
+                "the same direction {scale} times further away answered {far} against {near}"
+            );
+        }
+        assert!(
+            near > 0.0 && near < 1.0,
+            "a saturated {near} would agree with a distance too"
+        );
     }
 
     /// The identity is exactly that: the blit has a case where it must not touch
