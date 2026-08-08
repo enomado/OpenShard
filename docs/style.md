@@ -292,6 +292,58 @@ Denied workspace-wide. If two mutable borrows into one structure are needed,
 split a slice — see `Registry::for_each2_mut`. If a case looks genuinely
 impossible without it, that is a design discussion, not a local decision.
 
+## No fudge constants: a mismatch is fixed in the geometry
+
+**When two representations of one thing disagree, the answer is to change one of
+them, never to add a constant that hides the difference.** A number introduced
+to close a gap, cover a seam, grow a shape past its own edge or nudge a value
+off a boundary is forbidden, whatever it is called and however small it is.
+
+This is a rule and not a preference because the failure mode is always the
+same, and the renderer has paid for it three times:
+
+- `SEAM_OVERLAP`, `0.15` of a `z` unit, grew every stair riser at both ends to
+  cover a hairline along the tread/riser edge. **There was no hairline** — the
+  two quads are built from the same arithmetic, so their corners are bit-
+  identical and the rasteriser's fill rule already closes the edge. The
+  constant cost 1120 pixels of a single flight drawn outside their own plane
+  and displaced every step's corner by 2.4 px, in exchange for nothing.
+- `WIDTH_OVERLAP`, `0.03` of a tile, grows every mesh face past its tile
+  because the fitted prism is narrower than the art. It draws a two-pixel tooth
+  around a flight at `4:1` — a 1355-pixel border, measured — and nobody ever
+  measured the sliver it hides against the tooth it draws. In a scene with no
+  sprite it buys nothing at all.
+- `STAND_OFF` and `ON_TOP` started a shadow ray away from where the fragment
+  really was, because the fragment's own position was not exactly known. They
+  were **numbers off a byte layout**, and the engine was brighter than the
+  geometry allows by up to half a channel until the position became data and
+  both went to zero.
+
+What the three have in common is the diagnosis: a fudge constant is a *second*
+statement of a shape, in a unit that has nothing to do with the shape, tuned
+against one picture. It cannot be right at another zoom, on another sprite, or
+in a scene where the thing it compensates for is absent, and — worse — it makes
+the real defect unmeasurable, because the instrument now shows the compensation
+instead of the error.
+
+So, in order:
+
+1. **Make the two representations one.** Two shapes built from one expression
+   cannot disagree; that is what retired `SEAM_OVERLAP` and what one silhouette
+   per static does for `WIDTH_OVERLAP`.
+2. **If they must stay two, measure the disagreement and carry it as data.** A
+   number a caller can read and a test can bound — `impostor::Meeting::outside`
+   is the shape of it: how far, in tiles, a fragment fell outside its own
+   volume. A frame where it grows is a frame whose geometry is wrong, which is
+   a thing a person can act on.
+3. **Fix the geometry.** A prism that does not fit its art is a fitting
+   problem; the answer lives in the fit, not in a border.
+
+The one number this does *not* forbid is a rounding-scale tolerance whose size
+comes from the arithmetic rather than from a picture — `RAY_TANGENT_TOLERANCE`,
+`impostor::TANGENT` — and each of those has to state the measurement it was
+sized against, in its own doc comment, next to the number.
+
 ## No globals
 
 No `static mut`, no `lazy_static` singletons, no ambient state. Pass the

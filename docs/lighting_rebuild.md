@@ -889,9 +889,63 @@ starts rather than discovered inside it:*
   second number: how many fragments took the nearest-point path, and how far off
   the prism they were.
 
-And what it closes for free: with no separate mesh pass there is no fragment
-without an albedo, so phase 2's own leftover goes with it — and `Albedos::body`
-stops being invented, which gives phase 0 the vertical-face scene it never had.
+*Phase 6a landed: the arithmetic, on its own.* `crate::impostor` is `ray_from`,
+`meets` and `nearest` with thirteen tests and no pipeline change. The three
+points above are settled by it in order — the ray is `VIEW`, one constant
+direction; the miss is `Meeting::outside`, how far in **tiles** a fragment fell
+outside its own volume, a number rather than a branch; and the boxes come from
+the instance, below. Two decisions the geometry does not force are written at
+their own definitions: ties between two exit faces go to `z`, then `y`, then
+`x`, so a lid reads as a lid to its own rim; and `TANGENT` is `1e-4` of a tile
+against a *measured* `3.5e-6` of `f32` rounding at a corner.
+
+*And the scope widened, deliberately: the impostor is for **every** static, not
+only a fitted climbable.* A wall, a floor and a body are boxes too, so the same
+meeting answers them — which retires `statics.wesl`'s whole inverse projection
+(the stance switch, `INSIDE`, the corner branch, the height recovered from
+`pixel_y`) rather than leaving it beside the new path for the majority of
+statics. Three backlog entries go with it: the `INSIDE` clamp that still sits a
+hundred-and-twenty-seventh of a tile behind every east and south face,
+`own_solid`'s ambiguity on a fitted climbable, and `parity_frame`'s fixture
+naming an owner where the shader compares a solid.
+
+**A fragment meets only its own static's boxes, and that is what makes the seam
+disappear by construction rather than by a border.** Today a mesh face is a
+polygon in a shared buffer, rasterised among everyone else's, and which object a
+pixel belongs to is settled afterwards by the depth test — so where two
+silhouettes disagree there is a pixel belonging to neither, and nothing but
+growing a shape can cover it. Under the impostor a pixel is *already* one
+instance's, because that instance's own quad drew it, and the boxes it is met
+against are that instance's alone. A neighbour's geometry is not reachable. So
+"the silhouettes disagree" stops being an event between two objects and becomes
+a property of one: `Meeting::outside`, which is a number to fix the geometry by.
+See `docs/style.md`'s *No fudge constants* — this phase is where that rule was
+written down, and `WIDTH_OVERLAP` is the case it was written from.
+
+*What the mesh pass is, which this phase settles rather than deletes.* It writes
+no colour and takes its depth from the sprite beneath it: it is a **layer over**
+a static, not a pass that draws one. With the impostor no real static needs that
+layer. What still does is the four hand-built scenes — `examples/boxes.rs`,
+`two_cubes.rs`, `tests/traced.rs`, `examples/synthetic_stair.rs` — which have no
+sprites at all and exist to watch rays travel through geometry. So the pass
+stays as **the hand-built-geometry layer**, off every real static, and gains a
+colour target: without one a box in `boxes.rs` has no albedo and the comparison
+against the path tracer there still runs on the invented `Albedos::body`. That
+is phase 2's leftover closed at the diagnostic layer, where it actually lives —
+not, as this document first had it, as a side effect of deleting a pass.
+
+*And a finding about the grid the phase has to work around rather than fix.* A
+fitted climbable's occluders are **surfaces, not a volume**: `Builder::add`
+pushes a lid per tread (degenerate in `z`) and a riser per tread (degenerate on
+the climb axis), and their union encloses nothing. For a flight climbing *away*
+from the camera that is enough — every visible surface is one of them. For a
+flight climbing *towards* it, every riser faces away and is hidden behind its own
+tread, so the grid holds no vertical surface at all where the art draws the whole
+front of the staircase. The impostor therefore meets the **prism's own volume**
+— one box a tread, its strip from the static's base to that tread's height —
+and names the grid's solid through `occlusion::Part`, the join `statics::
+push_mesh` already makes. Making the grid itself hold that volume is
+`lighting_geometry.md`'s question, and it is now a named one.
 
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
