@@ -1082,11 +1082,21 @@ and a box carries no row number. `own_solid` still scans a cell to name a
 sprite's solid, where the box the fragment met already carries one. And the
 phase's own second number — how far a *real* static's art overhangs its own
 fitted prism — is still unmeasured: the gate's fixture is a plain rectangle
-nobody fitted to anything, so its overhang is a property of the fixture. **No
-person has looked at a lit frame of this yet**, which is what *How this is
-judged* says the instrument is; what has been looked at is `View::Normal` over a
-real place, where every fragment now carries a facing and a wall reads as a
-green face, a red end cap and a blue top.
+nobody fitted to anything, so its overhang is a property of the fixture.
+
+*A person has now looked at a lit frame of it*, which is what *How this is
+judged* says the instrument is. `examples/isolated_scene.rs` at Britain's
+`(1497, 1626, 10)`, radius 6, one lamp post added by hand so the scene has a
+flame in it at all, read in `View::Lit`, `View::Light`, `View::Normal` and
+`View::Shadow`. Three things it says. **The census holds on a scene 6c never
+ran** — `0 of 340` drawn pictures stand as no box, against the `19 of 39` the
+grid answered with before the split. **Nothing reads as a seam**: no border, no
+pixel of a silhouette belonging to neither side, which is the phase's own claim
+by construction and is now a claim somebody has checked with their eyes.
+`View::Normal` over the same place is what it was — every fragment carries a
+facing, a wall reads as a green face, a red end cap and a blue top. And it
+found one defect, which is its own backlog entry below: **a flame's own sprite
+is black.**
 
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
@@ -1251,6 +1261,44 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
+- 🚩 **An emitter is black in its own light, and every free-standing one taller
+  than `FLAME_LIFT` is.** Found by looking at a lit frame after phase 6c — the
+  one instrument *How this is judged* names — and reproduced at one item and
+  nothing else: `OPENSHARD_SCENE_RADIUS=0`, no ground, no statics, one lamp post
+  by hand, `0 standing cells`, and the lamp lit by its own flame is a black
+  silhouette with a green wick. The chain is three facts that were each right
+  on their own. `light::burns` answers only for statics light gets *through*
+  (`opacity == CLEAR`), so **an emitter is by definition not in the occlusion
+  grid**. Phase 6c gives a shape to exactly those too — "a pane of glass has a
+  shape whether or not it casts a shadow" — so a lamp post now has a volume.
+  And `light::place` burns at the tile's own centre a `FLAME_LIFT` up, which is
+  **inside** that volume: the impostor answers each of the sprite's own
+  fragments with the camera-facing plane of its own box, whose normal points
+  away from the flame, so `N · L ≤ 0` on every visible face. `View::Shadow`
+  reads those pixels *visible*, which is what says it is the cosine and not the
+  walk. `mounted_at` rescues the sconce alone — it moves a flame
+  `MOUNTED_CLEARANCE` clear of a *panel's* plane, and a panel is another
+  static's edge in the same cell, which a lamp standing in the open has none
+  of. A campfire is unhurt because its box stops below half a tile and the
+  flame clears its lid. **It arrived with 6c rather than being uncovered by
+  it**: before the impostor a lamp post was `Stance::Upright`, whose normal is
+  the zero vector, and the zero vector is the one value `blit.wesl` skips the
+  cosine for. Three candidate answers, none of them measured yet: place the
+  flame where the *art* draws it rather than at the tile's centre (the honest
+  one, and the same unmeasured sprite reading `MOUNTED_CLEARANCE` wants);
+  give an emitter no volume, which trades this for the billboard 6c retired;
+  or say that a surface containing its own light source has no cosine, which is
+  an exemption and therefore the shape this document exists to refuse. **Phase
+  7's billboard question is this question one object over**, and the two should
+  be answered by the same reading of a sprite.
+- **A wall a lamp stands against is barely lit, on a real place now.** Open
+  question 1 had phase 3's synthetic frames under it; the lit frame above is the
+  same shape at Britain: the plaster wall the lamp post is bolted beside takes
+  almost nothing from it while the cobbles under it carry a full pool, because a
+  flame half a tile out from a plane grazes it. Nothing here is a defect — it is
+  the accepted cost, seen at last on art somebody drew — but it is the picture
+  the exposure-and-ambient experiment should be judged against, and it is a
+  better scene for that than any fixture in the tree.
 - **The CPU's `Surface` is four fixed normals and land now has a fifth kind.**
   `light::sample`'s `Surface::Flat` looks straight up, which is exactly right for
   level land and wrong for a hillside — `ground.wesl` writes the bilinear patch's
