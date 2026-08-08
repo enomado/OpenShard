@@ -646,9 +646,15 @@ ambient, and neither has been touched yet.
 bias `0`. *Done when:* the light oracle reports zero brighter-than-geometry
 pixels on the whole flame-height sweep. **Done.** The sweep read
 `31 / 15 / 13 / 0 / 0 / 0 / 0` at flame heights `0..6` when the phase started and
-reads **zero at every one of them**, worst channel `0.000`. (The `175 at z 0`
+read **zero at every one of them**, worst channel `0.000`. (The `175 at z 0`
 this line used to quote was measured before phase 3; the cosine had already taken
 most of it.)
+
+*Re-read after phase 6 reshaped a tread*, which is the first thing the sweep is
+for: `0 / 2 / 0 / 0 / 0 / 0 / 0`, worst channel `0.022` — **two pixels at `z 1`
+alone**, one brighter and one darker, and both at a place the reshaping created.
+They are in the backlog with their addresses. The face oracle is `0` of `10,824`
+at every height, so it is not a disagreement about visibility.
 
 *The rule is one comparison, and every arm of the apparatus it replaced was a
 proxy for a name a fragment did not have.*
@@ -969,6 +975,27 @@ assertion was measuring the split. What replaced it is a fragment on the flight'
 front shadowed by the tread above, and a fragment on the bottom tread shadowed by
 the two climbing away from it.
 
+*And the staircase's own oracle followed, which is what a gate on a scene's
+geometry is built to make happen.* `examples/synthetic_stair.rs` panicked on its
+first run after the reshaping — "the grid holds 3 solids and this oracle derived
+6 planes" — because its whole check was a plane-for-solid pairing, and the two
+lists stopped having the same length. What it states now is **both** shapes and
+the join between them: a `Body` a tread, derived from the profile and held
+against the grid's own solid corner for corner; a `Slab` a drawn face, held
+against the mesh as before; and each face held against the body it is a face of,
+so the surface list and the volume list cannot say different staircases. Two
+things the panic pulled up with it. The example rebuilds `push_mesh`'s loop by
+hand and so still asked for `Part::nth(part)` when the real pipeline had already
+divided — six faces against three bodies, a second failure waiting one line
+below the first. And the fragment's exemption changed *kind*: what the oracle
+drops is the primitive the engine drops, `lit.solid`, which is now the tread's
+whole body rather than the one plane the pixel sits on. Dropping nothing at all
+was tried first — a body has an inside, so "the ray leaves at `t == 0`" excuses
+a fragment's own surface with no name needed — and the sweep priced it at nine
+pixels across the seven flame heights, which is the engine's own rule showing up
+as a measurement. The rule was never an epsilon; phase 4 wrote it as one
+sentence because for a *plane* the name and the tangency are one sentence.
+
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
 in a frame a human being has looked at.
@@ -1227,6 +1254,26 @@ Things noticed while writing this, not blocking any phase:
   the face the ray met, and a ray from the camera can only ever meet `+x`, `+y`
   or `+z` — so what is left is to check whether anything else still reads
   `outward`, and delete it if not.
+- **Two pixels at flame height `1` survive the light oracle, and both sit where
+  the reshaped tread put them.** `[tread 2's riser] at (100.80, 100.33, z 3.10)`
+  — the engine reads it fully blocked and the geometry gives it `0.022`, a tenth
+  of a tile above the top of the body that blocks it; and `[tread 1's riser] at
+  (100.97, 100.67, z 1.02)` — both sides agree the flame is fully visible
+  (`through 255/255`) and they differ by `0.017` in what it is lit *to*, four
+  parts in 255. Neither is a visibility disagreement, so the face oracle is
+  silent on both. What they share is a flame level with a tread's own top
+  (`z 1` is tread 0's height), which is exactly the case
+  `segment_clear_of_box`'s own doc calls out: every ray from that height runs
+  *along* the plane of every surface at it. Worth one measurement each before
+  phase 6d moves these fragments anyway — the mesh pass comes off real statics
+  there, and their positions change with it.
+- **`synthetic_stair.rs` rebuilds `statics::push_mesh`'s loop by hand**, and that
+  is why it still asked the grid for `Part::nth(part)` a commit after the real
+  pipeline started asking for `Part::nth(part / 2)`. It cannot call the real one
+  — `push_mesh` is `pub(crate)` and an example is an external consumer — so the
+  duplication is structural rather than lazy, and the join between a drawn face
+  and the solid it names is now written in two places that have already
+  disagreed once. The same shape as the seventh hand-built flight below.
 - **The three-tread flight is now rebuilt by hand in a seventh place.**
   `statics::tests::flight` joined the five in `light.rs` and the one in
   `frame.rs`, and it is the same `Prism::new(Face::North, &[1, 3, 5])` again. The

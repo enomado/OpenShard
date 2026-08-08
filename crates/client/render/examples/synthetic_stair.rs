@@ -79,24 +79,28 @@
 //! No arithmetic on the oracle's side is shared with `light.rs` or `blit.wesl`.
 //!
 //! What is new here, and what phase 4 needs, is **which occluder the fragment is
-//! excused from**. `boxes.rs` drops the whole box a sampled point rests on,
-//! which for a staircase would be the rule phase 4 must not adopt: a fragment of
-//! a riser really is shadowed by its own flight's tread when the flame stands
-//! above and beyond the stair, and "my own static never shadows me" would light
-//! it. A flight is one static, one owner and **six planes**, and a fragment is a
-//! point of exactly one of them — the face the renderer drew it from. So the
-//! oracle drops that one plane and counts every other, its own flight's
-//! included. That is phase 4's rule with no epsilon in it: a ray leaving a plane
-//! crosses that plane at its own origin and nowhere else, so "a contact at the
-//! origin does not count" and "this primitive does not count" are one sentence
-//! for a plane.
+//! excused from**. "My own static never shadows me" is the rule phase 4 must not
+//! adopt: a fragment of a riser really is shadowed by its own flight's tread
+//! when the flame stands above and beyond the stair, and a flight is one static
+//! and one owner. What the engine drops instead is the fragment's own
+//! **`SolidId`** — the primitive, not the object — and this drops the same one,
+//! named the same way: the `place` attachment says which mesh row drew the
+//! pixel, the row says which grid solid it draws, and that solid is what goes.
+//! Every other body counts, its own flight's included.
+//!
+//! That is one body a tread since `docs/lighting_rebuild.md` phase 6; it was a
+//! lid and a riser plane before, and for a *plane* dropping the primitive and
+//! excusing a contact at the ray's origin are the same sentence, which is how
+//! phase 4 first put it. They are two sentences for a body — a ray heading into
+//! the box a fragment stands on is a real crossing — and the rule that survived
+//! the reshaping is the one about the name.
 //!
 //! The oracle's own geometry is **re-derived** from the tread profile rather
 //! than read off the grid — a check that asked the scene for the scene's own
 //! statement of itself would be checking nothing — and then **gated** against
-//! the grid and against the drawn mesh, plane for plane, so a divergence
-//! between the two derivations is a named panic rather than a drift this tool
-//! reports as the renderer's fault.
+//! the grid body for body, against the drawn mesh face for face, and each face
+//! against the body it is a face of, so a divergence between the derivations is
+//! a named panic rather than a drift this tool reports as the renderer's fault.
 //!
 //! Every line carries the pixels compared as well as the disagreements, the
 //! total is asserted non-trivial, and the pixels no flame reaches at all are
@@ -422,6 +426,28 @@ impl Slab {
     }
 }
 
+/// One **tread**, whole: the volume the occlusion grid stands up for it, from
+/// the flight's own base to that tread's own height, across the strip of the run
+/// that tread spans.
+///
+/// A [`Slab`] is a *surface* — what `Prism::mesh` draws and what the `place`
+/// attachment names — and this is the *solid* a ray travels through. The two
+/// were one thing while the grid held a lid and a riser plane per tread; since
+/// `docs/lighting_rebuild.md` phase 6 put the body back
+/// (`occlusion::Solid::tread_box_of`), a drawn plane is a **face of** one of
+/// these rather than an occluder in its own right. This file states both because
+/// it checks both: [`gate_against_grid`] holds a body against the grid's own
+/// solid, and [`gate_plane_of_body`] holds each plane against the body it is a
+/// face of, so the two derivations cannot drift apart quietly.
+struct Body {
+    /// Which flight of the run, indexing `flights`.
+    flight: usize,
+    /// Which tread of that flight, in climb order.
+    tread: usize,
+    min: (f64, f64, f64),
+    max: (f64, f64, f64),
+}
+
 /// The tile-relative footprint of one climb-axis span, `lo..=hi` of the run
 /// counted from the low side towards `up`.
 ///
@@ -430,7 +456,7 @@ impl Slab {
 /// the drawn mesh already **share**, so an oracle that called it would be
 /// checking the scene against the scene's own statement of itself. What keeps a
 /// re-derivation from becoming a second, quietly different formula is
-/// [`gate_against_grid`], which asserts every plane built here against the solid
+/// [`gate_against_grid`], which asserts every body built here against the solid
 /// the grid really pushed.
 fn strip(x: f64, y: f64, up: Face, lo: f64, hi: f64) -> (f64, f64, f64, f64) {
     match up {
@@ -477,7 +503,35 @@ fn flight_slabs(flight: usize, stands: Point, up: Face, treads: &[u8]) -> Vec<Sl
     slabs
 }
 
-/// That the planes this file derived are the planes the occlusion grid holds —
+/// Every **body** one flight standing at `stands` is, in the order
+/// `Builder::add` pushes them: one a tread, in climb order, each standing from
+/// the flight's own base to that tread's height.
+///
+/// [`strip`] again and deliberately: the footprint of a tread is the same
+/// arithmetic whether the question is which plane the mesh drew or which volume
+/// stops a ray, and one expression for it here is the same rule this file
+/// applies to the engine.
+fn flight_bodies(flight: usize, stands: Point, up: Face, treads: &[u8]) -> Vec<Body> {
+    let count = treads.len();
+    let (x, y) = (f64::from(stands.x), f64::from(stands.y));
+    let base = f64::from(stands.z);
+    treads
+        .iter()
+        .enumerate()
+        .map(|(tread, &height)| {
+            let (lo, hi) = (tread as f64 / count as f64, (tread + 1) as f64 / count as f64);
+            let (min_x, max_x, min_y, max_y) = strip(x, y, up, lo, hi);
+            Body {
+                flight,
+                tread,
+                min: (min_x, min_y, base),
+                max: (max_x, max_y, base + f64::from(height)),
+            }
+        })
+        .collect()
+}
+
+/// That the bodies this file derived are the solids the occlusion grid holds —
 /// same count, same order, same corners, same kind.
 ///
 /// The gate the re-derivation in [`strip`] is worth having: two statements of
@@ -485,54 +539,168 @@ fn flight_slabs(flight: usize, stands: Point, up: Face, treads: &[u8]) -> Vec<Sl
 /// the renderer lit, or they do not, in which case every count below is about a
 /// scene nobody built. A drift that is a panic here is a drift that cannot be
 /// read as the renderer being wrong.
-fn gate_against_grid(slabs: &[Slab], flights: &[Point], occlusion: &Occlusion) {
+///
+/// It compared *planes* until `docs/lighting_rebuild.md` phase 6, when a tread
+/// stopped being a lid and a riser and became one body again. That change is
+/// what this assertion is for — it is the first thing that failed after it, in
+/// the count, which is exactly the shape of failure a gate on a scene's own
+/// geometry is built to have.
+fn gate_against_grid(bodies: &[Body], flights: &[Point], occlusion: &Occlusion) {
     let mut at = 0usize;
     for (flight, stands) in flights.iter().enumerate() {
         let solids: Vec<_> = occlusion
             .solids_at(i32::from(stands.x), i32::from(stands.y))
             .collect();
-        let mine: Vec<&Slab> = slabs.iter().filter(|slab| slab.flight == flight).collect();
+        let mine: Vec<&Body> = bodies.iter().filter(|body| body.flight == flight).collect();
         assert_eq!(
             solids.len(),
             mine.len(),
-            "flight {flight} at ({}, {}): the grid holds {} solids and this oracle derived {} planes",
+            "flight {flight} at ({}, {}): the grid holds {} solids and this oracle derived {} treads",
             stands.x,
             stands.y,
             solids.len(),
             mine.len(),
         );
-        for (slab, solid) in mine.iter().zip(&solids) {
+        for (body, solid) in mine.iter().zip(&solids) {
             let corners = [
-                (slab.min.0, solid.space.min.x),
-                (slab.max.0, solid.space.max.x),
-                (slab.min.1, solid.space.min.y),
-                (slab.max.1, solid.space.max.y),
-                (slab.min.2, solid.space.min.z),
-                (slab.max.2, solid.space.max.z),
+                (body.min.0, solid.space.min.x),
+                (body.max.0, solid.space.max.x),
+                (body.min.1, solid.space.min.y),
+                (body.max.1, solid.space.max.y),
+                (body.min.2, solid.space.min.z),
+                (body.max.2, solid.space.max.z),
             ];
             for (mine, theirs) in corners {
                 assert!(
                     (mine - theirs).abs() < 1e-12,
-                    "{}: this oracle says {mine}, the grid's own solid says {theirs}",
-                    slab.label(),
+                    "flight {} tread {}: this oracle says {mine}, the grid's own solid says {theirs}",
+                    body.flight,
+                    body.tread,
                 );
             }
-            // A lid names no side and a riser names exactly one — the shape of a
-            // solid rather than its position, and the half of the pairing corner
-            // equality cannot check: two coincident planes of different kinds
-            // occupy the same corners.
-            let named = solid.edges != 0;
+            // A tread is a **body**, and a body names every edge: `EDGE_ANY` is
+            // "it stands up and nobody knows which way", which a walk reads as an
+            // exact slab test rather than as a lid's crossing or a panel's run
+            // mask. The half of the pairing corner equality cannot check — a lid
+            // of no height occupies the same corners as a body of no height.
             assert_eq!(
-                named,
-                slab.part == Part::Riser,
-                "{}: the grid's own solid has edges {:#06b}",
-                slab.label(),
+                solid.edges,
+                grid::EDGE_ANY,
+                "flight {} tread {}: the grid's own solid has edges {:#06b}, so it is not a body",
+                body.flight,
+                body.tread,
                 solid.edges,
             );
         }
         at += mine.len();
     }
-    assert_eq!(at, slabs.len(), "a flight's planes went uncompared");
+    assert_eq!(at, bodies.len(), "a flight's treads went uncompared");
+}
+
+/// Which body a plane is a face of: **two drawn faces a tread, one body a
+/// tread**, in the same order, so the join divides.
+///
+/// The same arithmetic `statics::push_mesh` does to name a mesh row's solid
+/// (`Part::nth(part / 2)`), and for the same reason — `Prism::mesh` emits a top
+/// and then the rise below it for each tread while `Builder::add` stands up one
+/// body. Assumed nowhere: [`gate_plane_of_body`] is handed the body this picks
+/// and its first assertion is that the two name the same tread of the same
+/// flight.
+fn body_of(plane: usize) -> usize {
+    plane / 2
+}
+
+/// That the plane this file derived for a mesh face really is a **face of** the
+/// tread's own body — the join between the two derivations above.
+///
+/// Without it the surface list and the volume list are two independent
+/// statements of one staircase that nothing holds together: the sweep would name
+/// a fragment by a plane and ask about visibility with a box, and a drift
+/// between the two would read as the renderer being wrong. What is asserted is
+/// exactly what "a face of" means for an axis-aligned box, and no more — a top
+/// is the body's whole lid; a riser lies in the body's face on the side the
+/// flight descends towards, is as wide as the tread, ends at the tread's own
+/// height and starts somewhere at or above its floor. Where it starts is the
+/// tread below's business and is not re-derived here.
+fn gate_plane_of_body(slab: &Slab, body: &Body, up: Face) {
+    assert_eq!(
+        (slab.flight, slab.tread),
+        (body.flight, body.tread),
+        "{} was paired with flight {} tread {}'s body",
+        slab.label(),
+        body.flight,
+        body.tread,
+    );
+    let same = |mine: f64, theirs: f64, what: &str| {
+        assert!(
+            (mine - theirs).abs() < 1e-12,
+            "{}: this oracle's plane puts {what} at {mine}, the tread's own body at {theirs}",
+            slab.label(),
+        );
+    };
+    // Across the climb both planes are the body's full width: a tread's top
+    // covers its strip of the tile and its riser is as wide as the tread is.
+    match climbs_along_y(up) {
+        true => {
+            same(slab.min.0, body.min.0, "the low x");
+            same(slab.max.0, body.max.0, "the high x");
+        }
+        false => {
+            same(slab.min.1, body.min.1, "the low y");
+            same(slab.max.1, body.max.1, "the high y");
+        }
+    }
+    match slab.part {
+        // The lid: the body's own top face, whole.
+        Part::Top => {
+            same(slab.min.2, body.max.2, "the plane");
+            same(slab.max.2, body.max.2, "the plane");
+            match climbs_along_y(up) {
+                true => {
+                    same(slab.min.1, body.min.1, "the low end of the strip");
+                    same(slab.max.1, body.max.1, "the high end of the strip");
+                }
+                false => {
+                    same(slab.min.0, body.min.0, "the low end of the strip");
+                    same(slab.max.0, body.max.0, "the high end of the strip");
+                }
+            }
+        }
+        // The rise: the exposed part of the body's face on the side the flight
+        // descends towards, which is the side the tread below it does not cover.
+        Part::Riser => {
+            let [dx, dy] = descends_towards(up).outward();
+            let (low, high, face) = match climbs_along_y(up) {
+                true => (
+                    slab.min.1,
+                    slab.max.1,
+                    match dy > 0.0 {
+                        true => body.max.1,
+                        false => body.min.1,
+                    },
+                ),
+                false => (
+                    slab.min.0,
+                    slab.max.0,
+                    match dx > 0.0 {
+                        true => body.max.0,
+                        false => body.min.0,
+                    },
+                ),
+            };
+            same(low, face, "the plane");
+            same(high, face, "the plane");
+            same(slab.max.2, body.max.2, "the top of the rise");
+            assert!(
+                slab.min.2 >= body.min.2 - 1e-12 && slab.min.2 <= slab.max.2,
+                "{}: the rise starts at {} and its own tread's body stands from {} to {}",
+                slab.label(),
+                slab.min.2,
+                body.min.2,
+                body.max.2,
+            );
+        }
+    }
 }
 
 /// That mesh row `id` draws plane `slabs[id]`, which is what lets the `place`
@@ -569,9 +737,9 @@ fn gate_against_mesh(slab: &Slab, face: &openshard_client_render::mesh::Face, up
     }
 }
 
-/// How much of the flame `point` can see, geometrically: every plane of every
-/// flight but `own`, tested by [`segment_clear_of_box`], once per point of the
-/// flame's own sphere.
+/// How much of the flame `point` can see, geometrically: every **body** of every
+/// flight, tested by [`segment_clear_of_box`], once per point of the flame's own
+/// sphere.
 ///
 /// **A share and not a bool since `docs/lighting_rebuild.md`'s phase 5**, which
 /// is where that phase keeps phase 4's own promise. Phase 4 measured 88 pixels of
@@ -581,20 +749,32 @@ fn gate_against_mesh(slab: &Slab, face: &openshard_client_render::mesh::Face, up
 /// engine's rays end, so the two are asked about the same body; the segment test
 /// below is still this file's own and shares no arithmetic with any walk.
 ///
-/// `own` is the one plane the fragment **is** a point of — the face the renderer
-/// drew this pixel from, named by the `place` attachment rather than guessed at.
-/// Dropping exactly that one is `docs/lighting_height.md` phase 4's rule with no
-/// epsilon in it: a ray leaving a plane crosses that plane at its own origin and
-/// nowhere else, so "a contact at the origin does not count" and "this primitive
-/// does not count" are the same sentence for a plane.
+/// `own` is the **solid** the fragment is a point of, and dropping exactly that
+/// one is the engine's own rule stated independently: `light.rs` skips an
+/// occluder whose `SolidId` is the fragment's (`docs/lighting_rebuild.md` phase
+/// 4, `if lit.solid == Some(id) { continue }`). What changed with phase 6 is not
+/// the rule but what a solid *is* — a tread used to be a lid and a riser plane
+/// and is one body now, so the thing to drop is the body the drawn face belongs
+/// to rather than the face itself. The `place` attachment names the mesh row,
+/// the row names the grid solid it draws, and this drops that solid; nothing
+/// here is guessed from a position.
 ///
-/// Every *other* plane counts, its own flight's included, and that is not a
+/// It is a rule and not an epsilon either way. A point on a plane crosses it at
+/// its own origin and nowhere else, so for the split geometry "a contact at the
+/// origin does not count" and "this primitive does not count" were one sentence
+/// — `docs/lighting_height.md` phase 4 says so. For a body they are two: a ray
+/// heading into the box the fragment stands on is a genuine crossing, and both
+/// walks are told to ignore it by name.
+///
+/// Every *other* body counts, its own flight's included, and that is not a
 /// detail — it is the counter-example the fix must not break. A ray leaving the
 /// front of a bottom step, heading up and away from a flame standing above and
-/// beyond the staircase, crosses that same step's own top well away from where
-/// it started; a staircase's own body is genuinely in the way, and a rule
-/// phrased as "a fragment is never shadowed by its own static" would light it.
-fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), slabs: &[Slab], own: usize) -> f64 {
+/// beyond the staircase, passes through the tread above it; a staircase's own
+/// body is genuinely in the way, and a rule phrased as "a fragment is never
+/// shadowed by its own static" would light it. A flight is three bodies and this
+/// drops one of them, which is exactly the granularity phase 4 found the owner
+/// too coarse for.
+fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), bodies: &[Body], own: usize) -> f64 {
     let spot = light::Spot::at(
         Vec2::new(point.0 as f32, point.1 as f32),
         point.2 as f32,
@@ -605,11 +785,11 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), slabs: &[Slab]
         .iter()
         .filter(|at| {
             let to = (f64::from(at[0]), f64::from(at[1]), f64::from(at[2]));
-            slabs
+            bodies
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| *index != own)
-                .all(|(_, slab)| segment_clear_of_box(point, to, slab.min, slab.max))
+                .all(|(_, body)| segment_clear_of_box(point, to, body.min, body.max))
         })
         .count();
     clear as f64 / points.len() as f64
@@ -763,13 +943,15 @@ fn cover(slabs: &[Slab], camera: &Camera, width: u32, height: u32) -> Vec<Option
 ///
 /// It judges a **term** and not the light, which is what
 /// [`write_light_reference`] beside it is for.
-// Eight: the covered pixels, the geometry and which way it climbs, the flame and
-// its reach, the frame's size, and where to write. A struct for any subset would
-// be a second spelling of arguments this one function is the only caller of.
+// Nine: the covered pixels, the geometry as surfaces and as volumes, which way
+// it climbs, the flame and its reach, the frame's size, and where to write. A
+// struct for any subset would be a second spelling of arguments this one
+// function is the only caller of.
 #[allow(clippy::too_many_arguments)]
 fn write_reference(
     covered: &[Option<Covered>],
     slabs: &[Slab],
+    bodies: &[Body],
     up: Face,
     flame: (f64, f64, f64),
     radius: f64,
@@ -793,7 +975,7 @@ fn write_reference(
                 match (
                     distance >= radius,
                     slab.faces(*point, flame, up),
-                    oracle_visible(*point, flame, slabs, *plane) > 0.5,
+                    oracle_visible(*point, flame, bodies, body_of(*plane)) > 0.5,
                 ) {
                     // The three answers `Shade` decodes, in the colours
                     // `blit.wesl` writes them, so the two pictures can be read
@@ -870,9 +1052,15 @@ struct Lit {
 /// The scene's `Lighting` is read for its **lights** and nothing else: where a
 /// flame stands, how far it reaches and how brightly it burns are the scene's own
 /// input, not the renderer's answer. Its occlusion grid is never touched.
+// Eight, for the same reason [`write_reference`] takes nine: the covered pixels,
+// the geometry as surfaces and as volumes, which way it climbs, the lights, the
+// frame's size and where to write. A struct for any subset would be a second
+// spelling of arguments this one function is the only caller of.
+#[allow(clippy::too_many_arguments)]
 fn write_light_reference(
     covered: &[Option<Covered>],
     slabs: &[Slab],
+    bodies: &[Body],
     up: Face,
     lights: &[Light],
     width: u32,
@@ -918,7 +1106,7 @@ fn write_light_reference(
                 // against, and the engine multiplies by how much of the flame it
                 // can see; a reference that switched at a half would call every
                 // penumbra pixel a disagreement of up to half a flame.
-                let seen = oracle_visible(point, flame, slabs, plane) as f32;
+                let seen = oracle_visible(point, flame, bodies, body_of(plane)) as f32;
                 if seen <= 0.0 {
                     continue;
                 }
@@ -1312,19 +1500,35 @@ fn main() {
     }
 
     // The oracle's own statement of the same geometry, derived from the profile
-    // and immediately held against the grid's. See [`Slab`] and [`strip`].
+    // and immediately held against the grid's — as **volumes**, which is what
+    // the grid holds and what a ray travels through. See [`Body`] and [`strip`].
+    let bodies: Vec<Body> = flights
+        .iter()
+        .enumerate()
+        .flat_map(|(flight, stands)| flight_bodies(flight, *stands, up, &treads))
+        .collect();
+    gate_against_grid(&bodies, &flights, &occlusion);
+
+    // And as **surfaces**, which is what the mesh draws and what the `place`
+    // attachment names a pixel by — each one held against the body it is a face
+    // of, so the two derivations cannot say different staircases.
     let slabs: Vec<Slab> = flights
         .iter()
         .enumerate()
         .flat_map(|(flight, stands)| flight_slabs(flight, *stands, up, &treads))
         .collect();
-    gate_against_grid(&slabs, &flights, &occlusion);
+    for (plane, slab) in slabs.iter().enumerate() {
+        gate_plane_of_body(slab, &bodies[body_of(plane)], up);
+    }
 
-    // A flight is **one** occluder of its tile however many treads it was cut
-    // into — one `Builder::add` is one owner (`docs/lighting_height.md` phase
-    // 3), so every face of it carries this one number and no tread of it
-    // shadows another. Each flight of a run gets its **own**, which is the
-    // whole point of building the run: neighbours are not each other's.
+    // A flight is **one owner** of its tile however many treads it was cut into
+    // — one `Builder::add` is one owner (`docs/lighting_height.md` phase 3), so
+    // every face of it carries this one number. What it is *not* is one
+    // occluder: `docs/lighting_rebuild.md` phase 4 made the exemption a
+    // `SolidId`, owner **and** part, precisely because a tread does shadow the
+    // treads below it and an owner alone could not say so. Each flight of a run
+    // gets its own owner, which is the whole point of building the run:
+    // neighbours are not each other's.
     let owners: Vec<Owner> = flights
         .iter()
         .map(|stands| {
@@ -1371,17 +1575,19 @@ fn main() {
             gate_against_mesh(&slabs[rows.len()], face, up);
             // And which *solid* of the grid this face is, which is what the walk
             // compares a fragment against — `docs/lighting_rebuild.md` phase 4.
-            // The `n`th face of a prism's mesh is the `n`th solid its
-            // `Builder::add` pushed; `statics::push_mesh` makes the same join in
-            // the real pipeline and `occlusion`'s own tests gate it.
+            // **Two drawn faces a tread, one solid a tread**: `Prism::mesh`
+            // emits a top and then the rise below it for each, and phase 6 put
+            // the grid's tread back to one body, so the join divides.
+            // `statics::push_mesh` makes exactly this join in the real pipeline
+            // and `occlusion`'s own tests gate it.
             let solid = occlusion
                 .id_of(
                     i32::from(stands.x),
                     i32::from(stands.y),
                     owners[flight],
-                    grid::Part::nth(part),
+                    grid::Part::nth(part / 2),
                 )
-                .expect("a flight's own six solids");
+                .expect("a flight's own solid per tread");
             rows.push(MeshFaceRow {
                 tile: (stands.x, stands.y),
                 stance: Stance::of_normal(face.normal).expect("a stair's own normals are all recognized"),
@@ -1671,6 +1877,7 @@ fn main() {
     let reference = write_reference(
         &covered,
         &slabs,
+        &bodies,
         up,
         flame,
         f64::from(light_radius),
@@ -1691,6 +1898,7 @@ fn main() {
     let lit = write_light_reference(
         &covered,
         &slabs,
+        &bodies,
         up,
         &lighting.lights,
         width,
@@ -1790,7 +1998,7 @@ fn main() {
                 beyond += 1;
             }
             let rendered_lit = shade.lit();
-            let independent = oracle_visible(point, flame, &slabs, id) > 0.5;
+            let independent = oracle_visible(point, flame, &bodies, body_of(id)) > 0.5;
             if independent == rendered_lit {
                 continue;
             }
