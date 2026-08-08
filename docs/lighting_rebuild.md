@@ -1289,6 +1289,53 @@ Things noticed while writing this, not blocking any phase:
   geometry underneath: a run of coplanar floors is still N solids on N tiles,
   which is the merge `same_run`'s own backlog entry wants and would have made
   this class of boundary rarer rather than answered it.
+- 🚩 **`starting_cell` is a repair and not a construction, and the difference is
+  worth being plain about.** It carries no constant and no tolerance, and three
+  fault injections say it is load-bearing — but what it *is* is a rule for what
+  to do when a fragment's two statements of where it is disagree. A fragment
+  says it twice: the instance's tile, through the id plane, and the position
+  plane. A rule that arbitrates between two spellings of one fact is the shape
+  this repo has a name for, and it leaves the question standing rather than
+  removing it. **The construction is available and is smaller than it sounds:
+  the set of cells a ray visits is a property of the segment.** A start point on
+  a boundary is a point of two cells and both should be tested — there is no tie
+  to break, because `ray_vs_solid` answers exactly whether a given solid is
+  crossed and the origin-touch rule already discards a box the ray meets only at
+  its own start, so a cell entered for zero length costs nothing and can produce
+  nothing. The carried tile then keeps only the job that is genuinely its own —
+  `same_run`'s "which cell am I a surface of", which is a statement about the
+  *instance* rather than about the ray — and `Spot::tile` stops being
+  load-bearing for correctness at all. The cost to weigh before doing it: up to
+  four cells at a corner instead of one, on the walk's first step only, and
+  `tests/cost.rs` cannot price it today (it builds against `Occlusion::EMPTY`).
+- **The lateral seams were checked, and they are the tile's own plane rather
+  than a constant — with one named exception.** Measured on the same real place,
+  reading the grid's own boxes: every tread of the stair is `x 100.000..101.000`
+  and every storey's floor the same, so a stack's *lateral* end is the `+x` face
+  of a whole-tile box, at `tile + 1` exactly. Every panel in that radius names
+  `EDGE_SOUTH` or `EDGE_EAST` — `y 100.800..101.000` and `x 100.800..101.000` —
+  whose **camera-facing** side is likewise the tile's own boundary, which is the
+  plane the art draws the wall on. Nothing on the visible side of any of them is
+  an invented number.
+
+  The exception is the one already in this backlog, sharpened by the reading:
+  `PANEL_THICKNESS = 0.2` fattens a panel *inward*, so a `NORTH` or `WEST`
+  panel's camera-facing side is `tile + 0.2` while a `SOUTH` or `EAST` one's is
+  `tile + 1`. Two walls of one run, drawn by the artist on one plane, get
+  positions **four fifths of a tile apart** according to which edge the art
+  happened to name — and the constant is invented outright, by its own doc: "the
+  art still cannot measure a wall's depth, so any number is invented". It did
+  not show in this frame because the radius held no north or west panel; it is
+  in every frame that holds a building's far wall. The construction that removes
+  it is the one that entry already names — **one `0.2` slab straddling the
+  shared edge**, so a pair of neighbouring walls is one wall and both faces land
+  on the plane the art draws — and it is a seam that stops existing rather than
+  one that gets chosen a side.
+
+  What no reading here settles is how far a real static's **art** overhangs its
+  own box laterally. That is phase 6's own second number, still untaken, and it
+  is the only remaining lateral question that a picture rather than the grid has
+  to answer.
 - **How that one was found, kept because the method is the finding — and because
   four of its six steps were wrong turns.** The lines look exactly like an
   exemption leaking, and they are not: **four fault injections each left the
