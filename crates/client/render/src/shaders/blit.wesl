@@ -12,9 +12,9 @@
 // wall from the shadow behind it. `docs/lighting.md` is the argument.
 
 import package::place_format::{
-    KIND_MASK, KIND_NOTHING, KIND_LAND, KIND_STATIC, KIND_MOBILE,
-    PLACE_STANCE_SHIFT, PLACE_STANCE_MASK,
-    STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
+    KIND_NOTHING, KIND_LAND, KIND_STATIC,
+    ids_kind, ids_stance, ids_id,
+    STANCE_MESH_FACE, STANCE_FACE_NORTH,
     STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
 };
 
@@ -40,19 +40,32 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 
 @group(0) @binding(0) var world: texture_2d<f32>;
 @group(0) @binding(1) var world_sampler: sampler;
-// Which tile each pixel of `world` came from: (id, z + 128, kind and the
-// fraction) — an id into one of the three instance buffers below rather than
-// a literal tile, since `docs/gbuffer.md` steps 3 and 7 moved it there for
-// every kind. Never sampled — an integer texture has no filtering, and a
-// place averaged with its neighbour would name a third tile nothing was drawn
-// on.
-@group(0) @binding(3) var place_of: texture_2d<u32>;
+// What drew each pixel of `world`: the kind, the stance and an id into one of
+// the four instance buffers below — `crate::gbuffer::IDS_FORMAT`, one `u32`,
+// and `place_format.wesl` is the layout. An id and not a literal tile since
+// `docs/gbuffer.md` steps 3 and 7 moved it there for every kind. Never sampled
+// — an integer texture has no filtering, and two ids averaged name a third row
+// nothing was drawn from.
+@group(0) @binding(3) var ids_of: texture_2d<u32>;
 // And where that pixel's fragment actually is: `(x, y, z, 1)` in world
 // coordinates, `crate::gbuffer::POSITION_FORMAT`. Never sampled either, and
 // this one for a reason of its own — a position filtered against its
 // neighbour's is a point on neither surface, floating in the air between a
 // wall and the ground behind it.
 @group(0) @binding(15) var position_of: texture_2d<f32>;
+// And which way its surface looks: a unit vector in tiles, or all zeros for a
+// surface with no known facing — `crate::gbuffer::NORMAL_FORMAT`. Never
+// sampled, for the position plane's own reason with a twist: the average of two
+// unit vectors is not a unit vector, and the average of a wall's normal and the
+// ground's behind it points into the seam between them.
+//
+// **This used to be `outward(stance)`, computed here.** A fragment's facing is
+// something the pass that drew it knows — `statics.wesl` resolves a corner's
+// two faces per fragment, and the mesh pass has a measured normal per face —
+// and the lighting was recovering a rounded copy of it from four bits at the
+// far end of a `u16`. `docs/lighting_rebuild.md` phase 2, the same move the
+// position plane is.
+@group(0) @binding(16) var normal_of: texture_2d<f32>;
 // Where each tile's references are, one texel a tile over the rectangle in
 // `lighting.grid`: (offset & 255, offset >> 8, offset >> 16, count). The index
 // of `docs/lighting.md`'s decision 30 — a count of zero is open ground, and
@@ -149,16 +162,9 @@ const VIEW_REACH: u32 = 7u;
 const VIEW_SUN: u32 = 8u;
 const VIEW_SKY: u32 = 9u;
 const VIEW_FLAMES: u32 = 10u;
+const VIEW_NORMAL: u32 = 11u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
-
-// The fourth channel of the place attachment: the kind in the low two bits,
-// then seven bits of tile-local `x` and seven of tile-local `y`. The world
-// passes pack it; `crate::place` documents it. **The fraction is no longer
-// read here** — `position_of` carries the point itself — and what is left of
-// this channel for this pass is the kind. `KIND_MASK`/`KIND_NOTHING`/
-// `KIND_LAND`/`KIND_STATIC`/`KIND_MOBILE` are the import above,
-// `place_format.wesl`.
 
 // The statics and mobiles passes' own `SpriteQuad`, laid out exactly as
 // `sprite.rs`'s `SpriteQuad::write` puts it on the GPU — this is that same
@@ -219,8 +225,8 @@ struct MeshFaceInstance {
 // reads every row past the first at the wrong offset. `place1` — the second
 // word `crate::place::Place::packed` writes, `z`/`kind`/`stance` — is never
 // read: the ground pass's `z` and fraction are this fragment's own, computed
-// by `ground.wgsl` and carried in the attachment already, not a fact the row
-// holds.
+// by `ground.wgsl` and carried in the position plane already, not a fact the
+// row holds.
 struct GroundInstance {
     origin_x: f32,
     origin_y: f32,
@@ -273,48 +279,16 @@ const OWNER_NONE: u32 = 0u;
 const SOLID_Z_STEPS: f32 = 256.0;
 const SOLID_Z_FLOOR: f32 = -128.0;
 
-// The third channel is `z`'s whole units offset by 128 in its low eight bits,
-// sixteenths of a unit in the four above them, and the sprite's stance in the
-// four above those — `crate::place::STANCE_SHIFT`, and `statics.wgsl` writes
-// it. The four faces are the only stance values this pass reads: a flat or
-// faceless surface has no direction to be lit from, and a **corner** never
-// arrives here at all — `statics.wgsl` has already resolved it to the face of the
-// half the fragment was drawn on, because a corner's two surfaces are two halves
-// of one picture and one pixel is on one of them. `PLACE_STANCE_SHIFT`/
-// `PLACE_STANCE_MASK`/`unpack_place_z`/`STANCE_MESH_FACE`/`STANCE_FLAT`/
-// `STANCE_FACE_NORTH`/`STANCE_FACE_EAST`/`STANCE_FACE_SOUTH`/`STANCE_FACE_WEST`
-// are the import above, `place_format.wesl`. `STANCE_MESH_FACE` is not a real
-// stance, a routing sentinel the mesh-face pass writes instead of one of the
-// four faces — read before `outward` ever sees it: the branch above replaces
-// it with the row's own real stance first.
-
-// Which way a face looks, in tiles. Zero for everything that has no face.
-//
-// The direction is the *drawn* one, which is the same thing: the art only ever
-// draws the two faces an isometric camera can see — a wall stands on its tile's
-// `y1` or `x1` edge and its picture is the surface turned towards the viewer —
-// so a south face looks towards `+y` and an east face towards `+x`. North and
-// west are five graphics out of 1197 and are here because the geometry has four
-// edges. `docs/lighting.md`, step 15.
-fn outward(stance: u32) -> vec3<f32> {
-    switch stance {
-        case STANCE_FACE_NORTH: { return vec3<f32>(0.0, -1.0, 0.0); }
-        case STANCE_FACE_EAST: { return vec3<f32>(1.0, 0.0, 0.0); }
-        case STANCE_FACE_SOUTH: { return vec3<f32>(0.0, 1.0, 0.0); }
-        case STANCE_FACE_WEST: { return vec3<f32>(-1.0, 0.0, 0.0); }
-        // A **flat** surface looks up, and this is where that was missing. A
-        // wall's top cap is a `Flat` static, so nothing tested which way it looked
-        // and a lamp beside a wall lit its top as fully as one standing over it —
-        // reported from the client as two walls "adding up" at a corner, which is
-        // the bright diamond a corner's cap makes between two lit faces. Decision
-        // 27.
-        case STANCE_FLAT: { return vec3<f32>(0.0, 0.0, 1.0); }
-        // And `STANCE_UPRIGHT` looks nowhere: a billboard has no side, so every
-        // flame that reaches it lights it. That is a statement about what is not
-        // known, and `light::Surface::normal` returns nothing for the same reason.
-        default: { return vec3<f32>(0.0); }
-    }
-}
+// The stance rides in the id word above the kind — `ids_stance`, and
+// `statics.wgsl` writes it. **It is no longer read here for a normal**:
+// `normal_of` carries the vector itself, and what is left of the stance for
+// this pass is two things. Which instance buffer an id addresses, since a mesh
+// face's row lives in its own (`STANCE_MESH_FACE`); and `own_side`, the shadow
+// walk's own-run test, which asks which *edge of its tile* a fragment's surface
+// stands on rather than which way it looks. `docs/lighting_rebuild.md` phase 4
+// retires the second. `STANCE_FLAT` is no longer imported at all, and that is
+// the measure of what the normal plane took away: the one flat value this pass
+// used to read was for a facing.
 
 // How wide the band is, in tiles, over which a flame passing behind a face stops
 // lighting it.
@@ -506,9 +480,13 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
 // How far in front of its own plane a **face** pixel is walked from, in tiles,
 // and how far above whatever it lies on every point of the world is, in `z`.
 // `light::STAND_OFF` and `light::ON_TOP`, and the numbers are one pair: two steps
-// of the seven-bit fraction the attachment carries, and well under the one `z`
-// unit it quantises height to. Only the walk moves — the attachment still names
-// the wall's own tile, so picking and the debug views are untouched.
+// of the seven-bit fraction the retired `place` attachment carried, and well
+// under the one `z` unit it quantised height to. **They outlived the thing they
+// were measured off**, which is `docs/lighting_rebuild.md`'s second root stated
+// as two constants: the position is exact now and these are still here, because
+// what removes them is phase 4's self-hit by identity and not a wider field.
+// Only the walk moves — the id plane still names the wall's own row, so picking
+// and the debug views are untouched.
 const STAND_OFF: f32 = 2.0 / 127.0;
 const ON_TOP: f32 = 1.0 / 128.0;
 
@@ -1113,6 +1091,13 @@ fn walk(
     raw_start: vec3<f32>,
     raw_finish: vec3<f32>,
     tile: vec2<f32>,
+    // Which way the lit end's surface looks — the G-buffer's own normal, read
+    // once by the caller and handed down rather than derived a second time
+    // from the stance. `STAND_OFF` moves the ray in `x` and `y` alone, and on
+    // those two axes this is exactly what `outward(stance)` used to return: the
+    // one stance the two disagree about is a **flat** one, whose direction is
+    // entirely in `z`, which this never spends.
+    ahead: vec3<f32>,
     stance: u32,
     owner: u32,
     skip_last: bool,
@@ -1128,7 +1113,6 @@ fn walk(
     // The flame's end gets the height and not the offset: a mounted flame is
     // already outside the plane its tile names (`light::mounted_at`), and a flame
     // has no face of its own to be in front of.
-    let ahead = outward(stance);
     let start = vec3<f32>(
         raw_start.x + ahead.x * STAND_OFF,
         raw_start.y + ahead.y * STAND_OFF,
@@ -1355,7 +1339,7 @@ const MAX_SUN_TILES: f32 = 32.0;
 // `walk` draws. The fragment's own tile is skipped there as it is for a flame,
 // which is what lights a wall on the side the sun is on instead of shadowing it
 // with itself.
-fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32, owner: u32) -> f32 {
+fn sunlight(at: vec3<f32>, tile: vec2<f32>, ahead: vec3<f32>, stance: u32, owner: u32) -> f32 {
     let horizontal = length(lighting.sun.xy);
     if horizontal < 1.0e-6 {
         // Straight overhead: nothing but the fragment's own tile is in the way,
@@ -1377,7 +1361,7 @@ fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32, owner: u32) -> f32 {
         // which arrives here as a ceiling below every fragment there is.
         return 1.0;
     }
-    return walk(at, at + step * tiles, tile, stance, owner, false, 0.0);
+    return walk(at, at + step * tiles, tile, ahead, stance, owner, false, 0.0);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -1414,8 +1398,10 @@ fn knee(value: f32) -> f32 {
 // `crate::debug::View` for what each one is for.
 fn debug_color(
     view: u32,
-    place: vec4<u32>,
+    kind: u32,
+    tile: vec2<f32>,
     at: vec3<f32>,
+    normal: vec3<f32>,
     sub: vec2<f32>,
     lit: vec3<f32>,
     flames: vec3<f32>,
@@ -1444,17 +1430,37 @@ fn debug_color(
         }
         return vec3<f32>(sun_through);
     }
+    if view == VIEW_NORMAL {
+        // The G-buffer's normal plane, drawn. Each axis is a channel, mapped
+        // from `-1..1` into `0..1` the way every normal map is read — so a
+        // south-facing wall is green, an east-facing one red, and anything
+        // lying flat is blue.
+        //
+        // A surface with **no** facing is the zero vector, which lands on the
+        // grey in the middle of all three — and that is the shade to look for:
+        // it is the honest one for a mobile and for a tree, and phases 6 and 7
+        // are the work of leaving less of it in a frame. Its being a *neutral*
+        // grey rather than a colour is the point: nothing about it reads as a
+        // direction, because it is not one.
+        return normal * 0.5 + vec3<f32>(0.5);
+    }
     if view == VIEW_PLACE {
         // A checkerboard of tiles with the sub-tile fraction laid over it: the
         // squares say which tile a pixel claims, and the gradient inside each
         // one says the fraction is being written at all. A wall reads as one
         // flat square with its sprite standing out of it — which is exactly the
         // property the lighting depends on.
-        let checker = f32((place.x + place.y) & 1u) * 0.35 + 0.15;
+        //
+        // The tile itself, off the row the fragment's id names — which is what
+        // this view always claimed to draw and did not: the checker used to be
+        // taken from the two halves of the *id*, so a frame's squares counted
+        // instance rows rather than tiles. It went unnoticed because a
+        // diagnostic is read for whether a gradient is *there*, and both
+        // versions have one.
+        let checker = f32((u32(tile.x) + u32(tile.y)) & 1u) * 0.35 + 0.15;
         return vec3<f32>(sub.x, sub.y, checker);
     }
     if view == VIEW_KIND {
-        let kind = place.w & KIND_MASK;
         if kind == 1u {
             return vec3<f32>(0.20, 0.65, 0.30);  // land
         }
@@ -1535,12 +1541,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // the caller from which way the zoom went.
     let color = textureSample(world, world_sampler, in.uv);
 
-    // Which tile this pixel's picture came from. `textureLoad` and not a
-    // sampler, and the texel is the nearest one whatever the zoom: a place is an
-    // identity, and half of one is nobody.
-    let size = vec2<f32>(textureDimensions(place_of));
+    // What drew this pixel. `textureLoad` and not a sampler, and the texel is
+    // the nearest one whatever the zoom: an id is an identity, and half of one
+    // is nobody.
+    let size = vec2<f32>(textureDimensions(ids_of));
     let texel = vec2<i32>(clamp(in.uv * size, vec2<f32>(0.0), size - vec2<f32>(1.0)));
-    let place = textureLoad(place_of, texel, 0);
+    let ids = textureLoad(ids_of, texel, 0).x;
 
     let view = lighting.view.x;
 
@@ -1553,7 +1559,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // every one of these is read by comparing a shape against the picture it
     // came from. The one exception is the kind view, whose whole subject is
     // which pixels are nothing.
-    if (place.w & KIND_MASK) == KIND_NOTHING {
+    if ids_kind(ids) == KIND_NOTHING {
         if view == VIEW_KIND {
             return vec4<f32>(0.0, 0.0, 0.0, color.a);
         }
@@ -1565,14 +1571,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // mobile, step 7 for the ground — because the tile is what the shadow walk
     // starts its cell stepping from, and a whole number a pass knew exactly is
     // not something to recover by flooring anything.
-    let kind = place.w & KIND_MASK;
+    let kind = ids_kind(ids);
     // Read before the id lookup below, not after: a mesh face's sentinel
     // (`STANCE_MESH_FACE`) decides *which* buffer the id addresses, and the
     // real stance a mesh face's normal names lives in that buffer's own row,
     // not in this word — see the branch below and
     // `crate::place::Stance::MeshFace`'s own doc.
-    var stance = (place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK;
-    let id = place.x | (place.y << 16u);
+    var stance = ids_stance(ids);
+    let id = ids_id(ids);
     var tile = vec2<f32>(0.0);
     // And which occluder of that tile this fragment is a point of — the row's
     // own, off the same fetch the tile comes from, `docs/lighting_height.md`
@@ -1622,21 +1628,19 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // this is the difference between two things already known, and only the
     // diagnostics below read it.
     let sub = at.xy - tile;
-    // And which way the surface drawn here looks, where it is a wall's face. Zero
-    // for the ground, for a mobile and for anything standing up whose art would
-    // not name an edge — none of those has a side to be lit from.
+    // And which way the surface drawn here looks — read, like the position, and
+    // no longer recovered from four bits of the place attachment. Zero for the
+    // ground, for a mobile and for anything standing up whose art would not name
+    // an edge: none of those has a side to be lit from, and a zero vector is the
+    // value that says so.
     //
-    // `stance` alone no longer tells land apart from that "nothing standing up"
-    // case: `ground.wgsl` now stamps `STANCE_FLAT` (its own doc comment has why
-    // — `cell_stopped`'s exemption needs to see it), the same value a wall's own
-    // flat cap carries. A cap wants `faces`'s half-space gate — decision 27, the
-    // reason `STANCE_FLAT` looks up at all — but ground never has: a floor lit
-    // at a grazing angle is not behind its own plane the way a wall's cap can be
-    // behind a torch mounted low, and gating it darkened every ground pixel a
-    // fixture's flame was not comfortably above, which nothing before this
-    // stamped `stance` for land ever exercised. `kind` alone, not `stance`,
-    // is what actually distinguishes the two.
-    let normal = select(outward(stance), vec3<f32>(0.0), kind == KIND_LAND);
+    // The distinction between land and a wall's flat cap — both `STANCE_FLAT`,
+    // and only one of them wanting `faces`'s half-space gate — used to be made
+    // here, by testing the kind. It is made by the *producer* now:
+    // `ground.wesl` writes a zero normal outright and `statics.wesl` writes
+    // `outward` of the stance it resolved. See `ground.wesl`'s own comment for
+    // the measurement behind that split.
+    let normal = textureLoad(normal_of, texel, 0).xyz;
 
     // The ambient this *tile* has: the sky's share of it scaled by how much of
     // the sky the column over the tile can see, plus the floor everything gets.
@@ -1707,7 +1711,9 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // The flame's own tile is exempt, and a flame is a body a tile wide:
         // `walk`'s two parameters, and the only two things that make this ray
         // different from the sun's.
-        let through = walk(at, vec3<f32>(to.x, to.y, to.z), tile, stance, owner, true, FLAME_SPREAD);
+        let through = walk(
+            at, vec3<f32>(to.x, to.y, to.z), tile, normal, stance, owner, true, FLAME_SPREAD,
+        );
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
         // from open ground nothing reaches. That difference is the one the whole
@@ -1734,15 +1740,15 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // falloff, only whether anything stands between this pixel and the sky.
     var sun_through = 0.0;
     if lighting.sun_color.w > 0.0 {
-        sun_through = sunlight(at, tile, stance, owner);
+        sun_through = sunlight(at, tile, normal, stance, owner);
         lit = lit + lighting.sun_color.rgb * (lighting.sun_color.w * sun_through);
     }
 
     if view != VIEW_LIT {
         return vec4<f32>(
             debug_color(
-                view, place, at, sub, lit, flames, reached, nearest, nearest_through, sun_through,
-                share,
+                view, kind, tile, at, normal, sub, lit, flames, reached, nearest, nearest_through,
+                sun_through, share,
             ),
             color.a,
         );

@@ -157,14 +157,14 @@ pub(crate) fn depth_state() -> wgpu::DepthStencilState {
     }
 }
 
-/// The second colour target every world pass writes: which tile a pixel is.
+/// The second colour target every world pass writes: what drew a pixel.
 ///
 /// Shared by the ground and the sprite pipelines because it is one attachment
-/// and one format — see [`crate::place`]. No blending, like the picture beside
-/// it: a place is an identity, and averaging two of them names a third tile that
-/// nothing was drawn on.
-pub(crate) const PLACE_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
-    format: crate::place::FORMAT,
+/// and one format — see [`crate::gbuffer::IDS_FORMAT`]. No blending, like the
+/// picture beside it: an id is an identity, and averaging two of them names a
+/// third row nothing was drawn from.
+pub(crate) const IDS_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
+    format: crate::gbuffer::IDS_FORMAT,
     blend: None,
     write_mask: wgpu::ColorWrites::ALL,
 };
@@ -172,11 +172,22 @@ pub(crate) const PLACE_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
 /// The third: where in the world that pixel's fragment is — see
 /// [`crate::gbuffer::POSITION_FORMAT`].
 ///
-/// No blending here either, and for a stronger reason than the place plane's:
+/// No blending here either, and for a stronger reason than the id plane's:
 /// two positions averaged is a point on neither surface, floating in the air
 /// between them.
 pub(crate) const POSITION_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
     format: crate::gbuffer::POSITION_FORMAT,
+    blend: None,
+    write_mask: wgpu::ColorWrites::ALL,
+};
+
+/// And the fourth: which way that pixel's surface looks — see
+/// [`crate::gbuffer::NORMAL_FORMAT`].
+///
+/// No blending, and the argument sharpens once more: the average of two unit
+/// vectors is not a unit vector, so a blended normal is not a direction at all.
+pub(crate) const NORMAL_TARGET: wgpu::ColorTargetState = wgpu::ColorTargetState {
+    format: crate::gbuffer::NORMAL_FORMAT,
     blend: None,
     write_mask: wgpu::ColorWrites::ALL,
 };
@@ -430,8 +441,9 @@ impl GroundRenderer {
                     }),
                     // And the same fragments say where in the world they are —
                     // which tile, and the exact point.
-                    Some(PLACE_TARGET),
+                    Some(IDS_TARGET),
                     Some(POSITION_TARGET),
+                    Some(NORMAL_TARGET),
                 ],
             }),
             primitive: wgpu::PrimitiveState {
@@ -560,11 +572,11 @@ impl GroundRenderer {
                 // reason the depth buffer is: this is the frame's first pass,
                 // and what it leaves is what the passes after it load.
                 Some(wgpu::RenderPassColorAttachment {
-                    view: &target.gbuffer.place,
+                    view: &target.gbuffer.ids,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(crate::place::CLEAR),
+                        load: wgpu::LoadOp::Clear(crate::gbuffer::IDS_CLEAR),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -574,6 +586,15 @@ impl GroundRenderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(crate::gbuffer::POSITION_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.normal,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::gbuffer::NORMAL_CLEAR),
                         store: wgpu::StoreOp::Store,
                     },
                 }),
@@ -889,8 +910,9 @@ impl SpriteRenderer {
                     }),
                     // And the same fragments say where in the world they are —
                     // which tile, and the exact point.
-                    Some(PLACE_TARGET),
+                    Some(IDS_TARGET),
                     Some(POSITION_TARGET),
+                    Some(NORMAL_TARGET),
                 ],
             }),
             primitive: wgpu::PrimitiveState {
@@ -1139,7 +1161,7 @@ impl SpriteRenderer {
                 // Loaded, not cleared: the ground pass wrote the tiles under
                 // these sprites, and a wall keeps only the pixels it drew.
                 Some(wgpu::RenderPassColorAttachment {
-                    view: &target.gbuffer.place,
+                    view: &target.gbuffer.ids,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1149,6 +1171,15 @@ impl SpriteRenderer {
                 }),
                 Some(wgpu::RenderPassColorAttachment {
                     view: &target.gbuffer.position,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.normal,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1315,7 +1346,8 @@ pub struct MeshFaceRenderer {
 
 impl MeshFaceRenderer {
     /// Build the pipeline. Takes no atlas and no colour format: this pass
-    /// writes only [`PLACE_TARGET`] and the shared depth buffer.
+    /// writes only the G-buffer's own planes — [`IDS_TARGET`],
+    /// [`POSITION_TARGET`], [`NORMAL_TARGET`] — and the shared depth buffer.
     pub fn new(device: &wgpu::Device) -> Self {
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh face viewport"),
@@ -1400,6 +1432,15 @@ impl MeshFaceRenderer {
                             offset: 28,
                             shader_location: 4,
                         },
+                        // And this face's own measured normal — the one
+                        // producer in the crate whose normal is geometry
+                        // rather than a stance. See
+                        // [`MeshFaceVertex::normal`].
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 36,
+                            shader_location: 5,
+                        },
                     ],
                 })],
             },
@@ -1407,7 +1448,7 @@ impl MeshFaceRenderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(PLACE_TARGET), Some(POSITION_TARGET)],
+                targets: &[Some(IDS_TARGET), Some(POSITION_TARGET), Some(NORMAL_TARGET)],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1509,7 +1550,7 @@ impl MeshFaceRenderer {
             // G-buffer's own planes and the shared depth buffer.
             color_attachments: &[
                 Some(wgpu::RenderPassColorAttachment {
-                    view: &target.gbuffer.place,
+                    view: &target.gbuffer.ids,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -1519,6 +1560,15 @@ impl MeshFaceRenderer {
                 }),
                 Some(wgpu::RenderPassColorAttachment {
                     view: &target.gbuffer.position,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &target.gbuffer.normal,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {

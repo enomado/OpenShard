@@ -2,9 +2,9 @@
 //! matters — what it leaves alone.
 //!
 //! The scene is built out of the two records the pass actually reads, uploaded
-//! rather than rendered: a place attachment written texel by texel, and a
+//! rather than rendered: an id plane written texel by texel, and a
 //! silhouette mask written the same way. That is deliberate and it is
-//! `crate::place`'s own argument for making the attachment `COPY_DST` — this
+//! `crate::gbuffer`'s own argument for making a plane `COPY_DST` — this
 //! test is about a rule over those two records, and drawing sprites to produce
 //! them would only be a slower way of producing the same bytes, with a whole art
 //! pipeline in between the assertion and what it is about.
@@ -19,7 +19,8 @@
 //! rather than a failure where there is none.
 
 use openshard_client_render::blit::ViewportRect;
-use openshard_client_render::place::{self, Kind, Place, STANCE_SHIFT, Stance};
+use openshard_client_render::gbuffer;
+use openshard_client_render::place::{Kind, Place, Stance};
 use openshard_client_render::select::{Frame as SelectFrame, Select, Selection};
 use openshard_client_render::sprite::SpriteQuad;
 
@@ -43,46 +44,23 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
-}
-
-/// One texel of the place attachment, packed the way the world passes write it
-/// — `crate::place` and `statics.wgsl`, whose fourth channel is the kind in the
-/// low two bits and the sub-tile fraction above it.
-///
-/// `words` is the attachment's first two channels verbatim: an id into
-/// [`ground_rows`] for [`Kind::Land`] (`docs/gbuffer.md` step 7) or into
-/// [`face_rows`] for [`Kind::Static`] (step 3) — the caller picks, this only
-/// packs.
-fn place_texel(words: (u16, u16), kind: Kind, stance: Stance) -> [u16; 4] {
-    [
-        words.0,
-        words.1,
-        // A height of zero, offset as the attachment carries it, with the stance
-        // in the eight bits above.
-        128 | ((stance as u16) << STANCE_SHIFT),
-        // Mid-tile, which is where the fraction is irrelevant to this pass: it
-        // reads the kind and the stance out of these channels and nothing else.
-        (kind as u16) | (64 << 2) | (64 << 9),
-    ]
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// A land texel: `id` is an id into [`ground_rows`], not a tile — since
 /// `docs/gbuffer.md` step 7, the ground half of what step 6 did for a static.
-fn land_texel(id: u32) -> [u16; 4] {
-    place_texel(
-        ((id & 0xFFFF) as u16, (id >> 16) as u16),
-        Kind::Land,
-        Stance::Flat,
-    )
+fn land_texel(id: u32) -> u32 {
+    gbuffer::pack_ids(id, Stance::Flat, Kind::Land)
 }
 
 /// A static texel: `id` is an id into [`face_rows`], not a tile — the whole
-/// point of this test since step 6. Splitting a `u32` id into the attachment's
-/// two 16-bit channels the same way `statics.wgsl` does: `id & 0xFFFF`, `id >>
-/// 16`.
-fn static_texel(id: u32, stance: Stance) -> [u16; 4] {
-    place_texel(((id & 0xFFFF) as u16, (id >> 16) as u16), Kind::Static, stance)
+/// point of this test since step 6.
+fn static_texel(id: u32, stance: Stance) -> u32 {
+    gbuffer::pack_ids(id, stance, Kind::Static)
 }
 
 /// The only row [`scene`]'s statics need: both static bands stand on
@@ -162,7 +140,7 @@ const BANDS: [(u32, u32); 4] = [(0, 16), (16, 32), (32, 48), (48, 64)];
 /// 2. an *upright static* on it — a second wall standing on the very same tile,
 ///    which is the thing that must not be washed;
 /// 3. the land of the tile next door.
-fn scene() -> Vec<[u16; 4]> {
+fn scene() -> Vec<u32> {
     let mut texels = Vec::with_capacity((SIZE * SIZE) as usize);
     for y in 0..SIZE {
         let texel = match y {
@@ -191,19 +169,17 @@ fn mask_id(x: u32, y: u32) -> u8 {
 
 /// Run the pass over the uploaded scene and read the surface back as RGBA8 rows.
 fn wash(device: &wgpu::Device, queue: &wgpu::Queue, selection: Selection) -> Vec<[u8; 4]> {
-    let place_texture = place::texture(device, SIZE, SIZE);
-    let mut place_bytes = Vec::with_capacity((SIZE * SIZE * 8) as usize);
-    for texel in scene() {
-        for channel in texel {
-            place_bytes.extend_from_slice(&channel.to_le_bytes());
-        }
-    }
+    // The whole set rather than a texture of the right format made by hand:
+    // this pass reads one plane of it, and a fixture that built its own would
+    // be a second author of a format `crate::gbuffer` owns.
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, SIZE, SIZE);
+    let ids_bytes: Vec<u8> = scene().iter().flat_map(|word| word.to_le_bytes()).collect();
     queue.write_texture(
-        place_texture.as_image_copy(),
-        &place_bytes,
+        gbuffer.ids().as_image_copy(),
+        &ids_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(SIZE * 8),
+            bytes_per_row: Some(SIZE * 4),
             rows_per_image: Some(SIZE),
         },
         wgpu::Extent3d {
@@ -323,7 +299,7 @@ fn wash(device: &wgpu::Device, queue: &wgpu::Queue, selection: Selection) -> Vec
         SelectFrame {
             target: &surface_view,
             mask: &mask.create_view(&wgpu::TextureViewDescriptor::default()),
-            place: &place_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+            ids: &gbuffer.views().ids,
             face_instances: &face_instances,
             ground_instances: &ground_instances,
             size: (SIZE, SIZE),

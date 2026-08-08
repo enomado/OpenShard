@@ -32,10 +32,11 @@ pub enum View {
     /// Which tile each pixel claims: a checkerboard of tiles, with where in its
     /// tile the pixel is as the other two channels.
     ///
-    /// This is the attachment the whole pass rests on, drawn. A wall reading as
-    /// one flat cell of the board while its sprite rises out of it is the thing
-    /// to look for — that is the wall naming its own tile, which is what lets its
-    /// lit face escape its own shadow.
+    /// The two records the whole pass rests on, drawn together — the tile off
+    /// the row a fragment's id names, the fraction off its position. A wall
+    /// reading as one flat cell of the board while its sprite rises out of it is
+    /// the thing to look for: that is the wall naming its own tile, which is
+    /// what lets its lit face escape its own shadow.
     Place = 1,
     /// What drew each pixel: land, a static, a mobile, or nothing.
     ///
@@ -103,15 +104,32 @@ pub enum View {
     /// above that are the blown-out middle a person is entitled to see as blown
     /// out.
     Flames = 10,
+    /// Which way each pixel's surface looks: the G-buffer's normal plane, each
+    /// axis a channel, `-1..1` mapped into `0..1` the way every normal map is
+    /// read.
+    ///
+    /// `docs/lighting_rebuild.md` phase 2's own "done when", and the reason it
+    /// is a *view* rather than a number is that the failure it looks for is a
+    /// shape: a run of wall whose two faces are one colour, a corner whose
+    /// halves did not split, a flight of steps whose treads and risers read the
+    /// same. None of those is a value a test can name in advance, and all three
+    /// are obvious in a picture.
+    ///
+    /// The shade to look for is the neutral grey in the middle, which is the
+    /// zero vector — a surface with no known facing. It is the honest answer for
+    /// a mobile and for a tree today, and phases 6 and 7 are the work of leaving
+    /// less of it in a frame.
+    Normal = 11,
 }
 
 impl View {
     /// Every view, in the order [`View::next`] walks them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Lit,
         Self::Place,
         Self::Kind,
         Self::Height,
+        Self::Normal,
         Self::Occluders,
         Self::Light,
         Self::Flames,
@@ -146,6 +164,7 @@ impl View {
             Self::Sun => "sun",
             Self::Sky => "sky",
             Self::Flames => "flames",
+            Self::Normal => "normal",
         }
     }
 }
@@ -254,6 +273,7 @@ mod tests {
         assert_eq!(View::Sun as u32, 8);
         assert_eq!(View::Sky as u32, 9);
         assert_eq!(View::Flames as u32, 10);
+        assert_eq!(View::Normal as u32, 11);
     }
 
     /// Cycling visits every view and comes back. The key that does it is the

@@ -11,16 +11,16 @@
 //
 //   1. **Is this pixel the selected thing?** That is the mask: the silhouette
 //      pass drew the picked static's quad into it, depth-tested against the
-//      world, so what is in there is what is *visible* of it. The place
-//      attachment's id (`docs/gbuffer.md` step 3) now *can* tell two statics on
+//      world, so what is in there is what is *visible* of it. The G-buffer's
+//      id plane (`docs/gbuffer.md` step 3) now *can* tell two statics on
 //      one tile apart from each other, but not this pixel from the picked one —
 //      the silhouette is its own tiny draw with its own instance numbering, not
 //      a second use of the world pass's ids, so there is no id here to compare
 //      against. See `docs/gbuffer.md`'s "not settled" item on whether
 //      `render_mask` shrinks.
-//   2. **Is this pixel the ground that thing stands on?** That is the place
-//      attachment, which carries the tile of whatever was drawn at each pixel —
-//      so the answer is a comparison, and needs no second mask, but never a
+//   2. **Is this pixel the ground that thing stands on?** That is the id plane,
+//      which names whatever was drawn at each pixel — so the answer is a
+//      comparison, and needs no second mask, but never a
 //      *direct* one: every kind's pixel carries an id rather than a tile,
 //      into `face_instances` for a static (`docs/gbuffer.md` step 3, see step
 //      6) or `ground_instances` for the land (step 7), so the tile is one more
@@ -32,7 +32,7 @@
 // flat static is a floor, a rug or a road — `Stance::Flat`, which is the client's
 // own `Background` bit — and it is what is visibly *the ground here*.
 
-import package::place_format::{KIND_MASK, KIND_LAND, KIND_STATIC, PLACE_STANCE_SHIFT, PLACE_STANCE_MASK, STANCE_FLAT};
+import package::place_format::{KIND_LAND, KIND_STATIC, STANCE_FLAT, ids_kind, ids_stance, ids_id};
 
 struct VertexOut {
     @builtin(position) position: vec4<f32>,
@@ -52,9 +52,9 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // mask and not the outline's: the ring pass draws an edge round every id it
 // finds, so a selection sharing that texture would be ringed as well as shaded.
 @group(0) @binding(0) var mask: texture_2d<u32>;
-// Which tile each world pixel came from — `crate::place`, the same attachment
-// the lighting reads.
-@group(0) @binding(1) var place_of: texture_2d<u32>;
+// What drew each world pixel — `crate::gbuffer`'s id plane, the same one the
+// lighting reads, and `place_format.wesl` is the layout.
+@group(0) @binding(1) var ids_of: texture_2d<u32>;
 
 // The statics pass's own instance buffer, bound a second time as storage —
 // `docs/gbuffer.md` decision 2 and step 3, the same buffer `blit.wgsl` reads
@@ -140,14 +140,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if textureLoad(mask, at, 0).r != EMPTY {
         wash = selection.sprite;
     } else if selection.tile.z != 0u {
-        let place = textureLoad(place_of, at, 0);
-        let kind = place.w & KIND_MASK;
-        let stance = (place.z >> PLACE_STANCE_SHIFT) & PLACE_STANCE_MASK;
+        let ids = textureLoad(ids_of, at, 0).x;
+        let kind = ids_kind(ids);
+        let stance = ids_stance(ids);
         let ground = kind == KIND_LAND || (kind == KIND_STATIC && stance == STANCE_FLAT);
-        // The **tile** itself, never `place.x`/`place.y` directly: every kind's
-        // pixel carries an id into its own instance buffer there, not a tile —
-        // see `docs/gbuffer.md` step 3 for a static, step 7 for the ground.
-        let id = place.x | (place.y << 16u);
+        // The **tile** itself, never the id directly: every kind's pixel
+        // carries an id into its own instance buffer, not a tile — see
+        // `docs/gbuffer.md` step 3 for a static, step 7 for the ground.
+        let id = ids_id(ids);
         var tile = vec2<u32>(0u);
         if kind == KIND_LAND {
             tile = vec2<u32>(ground_instances[id].place0 & 0xFFFFu, ground_instances[id].place0 >> 16u);

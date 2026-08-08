@@ -17,7 +17,7 @@
 //!    drawing [`statics::selected`](crate::statics::selected)'s quad into a mask
 //!    of its own, depth-tested against the world so what it holds is what is
 //!    visible.
-//! 2. **What is the ground under it?** The place attachment — [`crate::place`] —
+//! 2. **What is the ground under it?** The id plane — [`crate::gbuffer`] —
 //!    whose every texel names the tile the pixel drawn there came from. The
 //!    ground of a tile is the land of it *or a static lying flat in it*: indoors
 //!    the land is under a wooden floor and never drawn, so land alone would leave
@@ -94,12 +94,12 @@ pub struct Frame<'a> {
     /// it would be ringed as well as washed — two statements, one of which
     /// nobody asked for.
     pub mask: &'a wgpu::TextureView,
-    /// Which tile each world pixel came from. The frame's own place attachment,
-    /// the same one the blit lit from.
-    pub place: &'a wgpu::TextureView,
+    /// What drew each world pixel. The frame's own id plane, the same one the
+    /// blit lit from.
+    pub ids: &'a wgpu::TextureView,
     /// The statics pass's own instance buffer, bound a second time as storage —
     /// the same buffer `blit::Frame::face_instances` is. A `Kind::Static`
-    /// pixel's `place.x`/`place.y` is an id into this, not a tile
+    /// pixel's id word carries a row in this, not a tile
     /// (`docs/gbuffer.md` step 3); the ground wash resolves it the same way
     /// `blit.wgsl` does, for the same reason. See step 6.
     pub face_instances: &'a wgpu::Buffer,
@@ -123,7 +123,7 @@ pub struct Frame<'a> {
 /// Bytes of `select.wgsl`'s uniform block: four `vec4`s.
 const SELECTION_BYTES: u64 = 64;
 
-/// Turns a selection mask and the place attachment into a wash on the surface.
+/// Turns a selection mask and the id plane into a wash on the surface.
 #[derive(Debug)]
 pub struct Select {
     pipeline: wgpu::RenderPipeline,
@@ -247,7 +247,7 @@ impl Select {
                 conservative: false,
             },
             // No depth: the world's depth buffer already decided what is
-            // visible, and the mask and the place attachment are the record of
+            // visible, and the mask and the id plane are the record of
             // that decision.
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
@@ -300,7 +300,7 @@ impl Select {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(frame.place),
+                    resource: wgpu::BindingResource::TextureView(frame.ids),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,

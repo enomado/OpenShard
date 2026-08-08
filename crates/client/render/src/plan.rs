@@ -11,7 +11,7 @@
 //! a circle" of that picture is asking three questions at once.
 //!
 //! So this draws the same pass — the real [`blit`](crate::blit), the real
-//! shader, the real [`Lighting`] — over a *synthetic* place attachment that says
+//! shader, the real [`Lighting`] — over a *synthetic* G-buffer that says
 //! every pixel is flat ground on the tile straight above it, one tile to a square
 //! of `scale` pixels. The world image is white, so what comes out is the
 //! multiplier itself. A circle in the world is a circle here, a tile is a square,
@@ -423,8 +423,7 @@ pub struct Wall {
     pub top: i32,
 }
 
-/// Run the blit over a place attachment this caller writes, and read the surface
-/// back.
+/// Run the blit over a G-buffer this caller writes, and read the surface back.
 ///
 /// The half [`draw`] and [`elevation`] share: everything except *where a pixel
 /// says it is*, which is the only thing either of them invents.
@@ -442,99 +441,94 @@ fn drawn(
     let gbuffer = crate::gbuffer::Gbuffer::new(device, width, height);
     let views = gbuffer.views();
 
-    // The G-buffer the caller describes, texel by texel — both planes, through
+    // The G-buffer the caller describes, texel by texel — every plane, through
     // [`crate::gbuffer::Fragment`] rather than packed here, so that this
     // instrument writes what a world pass writes and not a second reading of
-    // the format. There is no quad and no instance: this *is* what a pass would
-    // have left for the surface being asked about.
-    let mut texels: Vec<u16> = Vec::with_capacity((width * height * 4) as usize);
-    let mut positions: Vec<f32> = Vec::with_capacity((width * height * 4) as usize);
-    for py in 0..height {
-        for px in 0..width {
-            let fragment = place_of(px, py);
-            texels.extend_from_slice(&fragment.place());
-            positions.extend_from_slice(&fragment.position());
-        }
-    }
-    // `Kind::Static` pixels — [`elevation`]'s, never [`draw`]'s — no longer
-    // carry their own tile in the attachment: `docs/gbuffer.md` step 3 moved
-    // it to a row this function has to build itself now, the same as a real
-    // static's world pass would have. One row per distinct tile the closure
-    // above actually used, keyed by first sight, and the tile each static
-    // pixel wrote is rewritten in place to the id that names it.
+    // the format. There is no quad: this *is* what a pass would have left for
+    // the surface being asked about.
+    //
+    // Gathered whole before anything is packed, because **an id is not a fact a
+    // fragment knows**. A world pass has one per instance from the rasteriser;
+    // here it is a row number, and a row number cannot be handed out until every
+    // fragment that wants one has been seen. So the closure describes surfaces
+    // by their tile and the two loops below turn tiles into rows —
+    // `docs/gbuffer.md` step 3 for a static, step 7 for the ground, both of
+    // which moved a tile out of the attachment and into an instance buffer this
+    // function has to build itself, the same as a real world pass would have.
+    let fragments: Vec<crate::gbuffer::Fragment> = (0..height)
+        .flat_map(|py| (0..width).map(move |px| (px, py)))
+        .map(|(px, py)| place_of(px, py))
+        .collect();
+
+    // One row per distinct tile each kind actually used, keyed by first sight.
     let mut face_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
     let mut face_rows: Vec<u8> = Vec::new();
-    for texel in texels.chunks_exact_mut(4) {
-        if texel[3] & 3 != crate::place::Kind::Static as u16 {
-            continue;
-        }
-        let (x, y) = (texel[0], texel[1]);
-        let id = *face_ids.entry((x, y)).or_insert_with(|| {
-            let id = (face_rows.len() as u64 / crate::sprite::SpriteQuad::STRIDE) as u32;
-            crate::sprite::SpriteQuad {
-                rect: crate::geometry::Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                },
-                region: crate::atlas::Region {
-                    u: 0.0,
-                    v: 0.0,
-                    du: 0.0,
-                    dv: 0.0,
-                },
-                depth: 0.0,
-                hue: 0,
-                place: crate::place::Place::land(x, y),
-                // No `place_of` closure this function is given ever asks for
-                // a corner `Stance` today, so there is never a second half to
-                // point at — see `crate::sprite::split_corners` for the real
-                // pass's version of this row, which does set it.
-                twin: 0,
-                // A diagnostic picture is never walked for shadows, so there is
-                // no occluder for a row of it to be a point of.
-                owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
-            }
-            .write(&mut face_rows);
-            id
-        });
-        texel[0] = (id & 0xFFFF) as u16;
-        texel[1] = (id >> 16) as u16;
-    }
-    // `Kind::Land` pixels — [`draw`]'s, never [`elevation`]'s — need the same
-    // treatment since `docs/gbuffer.md` step 7: a land pixel's tile is an id
-    // into a row this function builds itself now too, the ground half of the
-    // static loop above.
     let mut ground_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
     let mut ground_rows: Vec<u8> = Vec::new();
-    for texel in texels.chunks_exact_mut(4) {
-        if texel[3] & 3 != crate::place::Kind::Land as u16 {
-            continue;
-        }
-        let (x, y) = (texel[0], texel[1]);
-        let id = *ground_ids.entry((x, y)).or_insert_with(|| {
-            let id = (ground_rows.len() as u64 / crate::ground::GroundQuad::STRIDE) as u32;
-            crate::ground::GroundQuad {
-                x: 0.0,
-                y: 0.0,
-                corners: [0.0; 4],
-                region: crate::atlas::Region {
-                    u: 0.0,
-                    v: 0.0,
-                    du: 0.0,
-                    dv: 0.0,
-                },
-                texmap: None,
-                depth: 0.0,
-                place: crate::place::Place::land(x, y),
-            }
-            .write(&mut ground_rows);
-            id
-        });
-        texel[0] = (id & 0xFFFF) as u16;
-        texel[1] = (id >> 16) as u16;
+    let mut ids: Vec<u32> = Vec::with_capacity(fragments.len());
+    for fragment in &fragments {
+        let tile = fragment.tile;
+        // A kind with no instance buffer of its own here takes row zero and
+        // nothing reads it: only these two are ever asked for a tile, and the
+        // closures this function is given produce no others.
+        let id = match fragment.kind {
+            // `Kind::Static` — [`elevation`]'s pixels, never [`draw`]'s.
+            crate::place::Kind::Static => *face_ids.entry(tile).or_insert_with(|| {
+                let id = (face_rows.len() as u64 / crate::sprite::SpriteQuad::STRIDE) as u32;
+                crate::sprite::SpriteQuad {
+                    rect: crate::geometry::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 0.0,
+                        height: 0.0,
+                    },
+                    region: crate::atlas::Region {
+                        u: 0.0,
+                        v: 0.0,
+                        du: 0.0,
+                        dv: 0.0,
+                    },
+                    depth: 0.0,
+                    hue: 0,
+                    place: crate::place::Place::land(tile.0, tile.1),
+                    // No `place_of` closure this function is given ever asks for
+                    // a corner `Stance` today, so there is never a second half to
+                    // point at — see `crate::sprite::split_corners` for the real
+                    // pass's version of this row, which does set it.
+                    twin: 0,
+                    // A diagnostic picture is never walked for shadows, so there
+                    // is no occluder for a row of it to be a point of.
+                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                }
+                .write(&mut face_rows);
+                id
+            }),
+            // `Kind::Land` — [`draw`]'s pixels, never [`elevation`]'s.
+            crate::place::Kind::Land => *ground_ids.entry(tile).or_insert_with(|| {
+                let id = (ground_rows.len() as u64 / crate::ground::GroundQuad::STRIDE) as u32;
+                crate::ground::GroundQuad {
+                    x: 0.0,
+                    y: 0.0,
+                    corners: [0.0; 4],
+                    region: crate::atlas::Region {
+                        u: 0.0,
+                        v: 0.0,
+                        du: 0.0,
+                        dv: 0.0,
+                    },
+                    texmap: None,
+                    depth: 0.0,
+                    place: crate::place::Place::land(tile.0, tile.1),
+                }
+                .write(&mut ground_rows);
+                id
+            }),
+            crate::place::Kind::Nothing | crate::place::Kind::Mobile => 0,
+        };
+        ids.push(fragment.ids(id));
     }
+    let positions: Vec<f32> = fragments.iter().flat_map(|f| f.position()).collect();
+    let normals: Vec<f32> = fragments.iter().flat_map(|f| f.normal()).collect();
 
     let upload = |texture: &wgpu::Texture, bytes: &[u8], stride: u32| {
         queue.write_texture(
@@ -557,10 +551,12 @@ fn drawn(
             },
         );
     };
-    let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
-    upload(gbuffer.place(), &bytes, 8);
+    let bytes: Vec<u8> = ids.iter().flat_map(|word| word.to_le_bytes()).collect();
+    upload(gbuffer.ids(), &bytes, 4);
     let bytes: Vec<u8> = positions.iter().flat_map(|value| value.to_le_bytes()).collect();
     upload(gbuffer.position(), &bytes, 16);
+    let bytes: Vec<u8> = normals.iter().flat_map(|value| value.to_le_bytes()).collect();
+    upload(gbuffer.normal(), &bytes, 16);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("plan"),

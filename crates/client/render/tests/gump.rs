@@ -24,7 +24,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// A solid opaque block, the one picture every test here draws.

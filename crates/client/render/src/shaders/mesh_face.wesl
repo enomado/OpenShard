@@ -2,8 +2,8 @@
 // corner of a `crate::mesh::Face`, fan-triangulated on the CPU
 // (`Face::fan`). No colour target — the enclosing static's own billboard
 // sprite already drew the picture (`statics.wgsl`), and this pass exists
-// only to give that same static's pixels a more honest per-face normal in
-// `place` than one blended stance (a former `facing::Prism::tread_normal`,
+// only to give that same static's pixels a more honest per-face normal and
+// position than one blended stance (a former `facing::Prism::tread_normal`,
 // retired by step 5 once this pass made it unnecessary) could.
 //
 // Depth is not derived here either, for the same reason `statics.wgsl` says
@@ -12,7 +12,7 @@
 // improve on what the billboard sprite already wrote — never disagree with
 // it (`docs/gbuffer.md` decision 4).
 
-import package::place_format::{KIND_STATIC, STANCE_MESH_FACE, pack_place};
+import package::place_format::{KIND_STATIC, STANCE_MESH_FACE, pack_ids};
 
 struct Viewport {
     // Real pixels per virtual pixel — see `ground.wgsl`, which documents the
@@ -44,6 +44,16 @@ struct VertexOut {
     // flooring a position that can legitimately sit on the edge shared with
     // the next one. See `fs_main`'s own comment.
     @location(2) @interpolate(flat) tile: vec2<f32>,
+    // And this face's own normal — `crate::mesh::Face::normal`, flat like the
+    // two above because a face is planar and every corner of it agrees.
+    //
+    // The one producer in the crate whose normal is *measured geometry* rather
+    // than a stance: a tread's top and its riser are two `Face`s with two real
+    // normals, and `docs/gbuffer.md` decision 3 is the argument for keeping them
+    // apart. The row's `stance` is the same fact rounded to one of five names —
+    // `Stance::of_normal`, on the CPU — and it is still what the shadow walk's
+    // own-run test reads until phase 4 replaces that with an id.
+    @location(3) @interpolate(flat) normal: vec3<f32>,
 };
 
 @vertex
@@ -56,6 +66,7 @@ fn vs_main(
     @location(2) depth: f32,
     @location(3) id: u32,
     @location(4) tile: vec2<f32>,
+    @location(5) normal: vec3<f32>,
 ) -> VertexOut {
     // Virtual pixels to real ones, the same single line `statics.wgsl`'s own
     // vertex stage ends on.
@@ -70,20 +81,26 @@ fn vs_main(
     out.world = world;
     out.id = id;
     out.tile = tile;
+    out.normal = normal;
     return out;
 }
 
-// A hundred-and-twenty-seventh of a tile — `crate::place`'s own fraction
-// unit, the same one `statics.wgsl` packs into the attachment's low bits.
+// A hundred-and-twenty-seventh of a tile — `place_format.wesl`'s `SUB_TILE`,
+// the grain `statics.wgsl` holds its own fragments inside their tile on.
 const INSIDE: f32 = 126.0 / 127.0;
 
 struct FragmentOut {
-    @location(0) place: vec4<u32>,
+    // What drew this fragment and which row it came from —
+    // `crate::gbuffer::IDS_FORMAT`.
+    @location(0) ids: u32,
     // And where that fragment is, unpacked and unquantised — `crate::gbuffer`.
     // This pass is the one producer that had it exactly all along: `in.world`
     // is the rasteriser's own interpolation of three real corners, which is
     // why the phase's test picks a mesh face to compare against.
     @location(1) position: vec4<f32>,
+    // And which way it looks, carried whole from the vertex rather than named
+    // by a stance and read back out of one.
+    @location(2) normal: vec4<f32>,
 };
 
 @fragment
@@ -102,14 +119,15 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     let sub = clamp(in.world.xy - in.tile, vec2<f32>(0.0), vec2<f32>(INSIDE));
 
     var out: FragmentOut;
-    out.place = pack_place(in.id, in.world.z, STANCE_MESH_FACE, KIND_STATIC, sub);
+    out.ids = pack_ids(in.id, STANCE_MESH_FACE, KIND_STATIC);
     // The same point, as the number rather than as three fields of a `u16`
     // each. Built from `in.tile + sub` and not from `in.world` directly,
     // though the two differ only on a face's own outermost edge: the clamp is
-    // what keeps the point inside the tile `place` names, and a reader that
+    // what keeps the point inside the tile the row names, and a reader that
     // floors this to find a cell would otherwise be handed the neighbour's on
     // exactly the fragments `INSIDE` exists for. Removing it is phase 4's,
     // where the cell stops being a separate fact from the position.
     out.position = vec4<f32>(in.tile + sub, in.world.z, 1.0);
+    out.normal = vec4<f32>(in.normal, 1.0);
     return out;
 }

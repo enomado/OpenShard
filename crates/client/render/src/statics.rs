@@ -272,6 +272,11 @@ pub(crate) fn push_mesh(
                 depth,
                 id,
                 tile: [at.x as f32, at.y as f32],
+                // The face's own, straight through — the same vector the row's
+                // stance above is `Stance::of_normal` of, carried rather than
+                // named so that the G-buffer's normal plane holds geometry and
+                // not a rounding of it.
+                normal: face.normal,
             });
         }
     }

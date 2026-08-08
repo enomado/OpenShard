@@ -1,7 +1,7 @@
-// The `place` attachment's own bit format — what `crate::place::Place::packed`
-// writes on the CPU side and what every world pass (`ground.wgsl`,
-// `statics.wgsl`, `mesh_face.wgsl`) and every reader (`blit.wgsl`,
-// `select.wgsl`) must agree on to draw one shadow correctly.
+// What a fragment *is* — the vocabulary `crate::place`'s `Kind` and `Stance`
+// state in Rust, and the packing of the G-buffer's id plane that carries them.
+// Every world pass (`ground.wgsl`, `statics.wgsl`, `mesh_face.wgsl`) writes it
+// and every reader (`blit.wgsl`, `select.wgsl`) takes it apart.
 //
 // One `pub const` block instead of five hand-copied ones. Before this file,
 // each of those five shader modules carried its own copy of these numbers —
@@ -10,63 +10,52 @@
 // stamp a bit this module's readers branch on decoded as a meaningful-but-
 // wrong default instead of failing to compile: `ground.wgsl` never stamping
 // `STANCE_FLAT` (session 23, `docs/lighting_raymarch.md`) is what that gap
-// looks like when it fires, not a one-off. `crate::place::STANCE_SHIFT`
-// states the same numbers once more on the Rust side; nothing but a person
-// reading both can check the two still agree — see its own doc comment.
+// looks like when it fires, not a one-off. `crate::gbuffer::pack_ids` and its
+// neighbouring constants state the same numbers once more on the Rust side;
+// nothing but a person reading both can check the two still agree — see their
+// own doc comments.
 //
-// Migrated one pass at a time — `ground.wgsl` first (this module exists
-// because of its bug), the others tracked as backlog in
-// `docs/lighting_raymarch.md`. A shader not yet migrated still carries its
-// own copy of whatever subset of these it needs, unchanged.
+// **This used to be the `place` attachment's format**, four `u16` channels
+// holding an id, a height in whole units and sixteenths, a stance and a
+// hundred-and-twenty-seventh-of-a-tile fraction on each axis.
+// `docs/lighting_rebuild.md` phase 2 took the height and the fraction out of
+// it — a position plane carries the point itself — and what was left of eight
+// bytes a fragment was six bits and an id. So it is one `u32` now, and the
+// packing below is the whole of it.
 
-// The fourth channel's low two bits: `crate::place::Kind`.
+// The id word's low two bits: `crate::place::Kind`.
 const KIND_MASK: u32 = 3u;
 const KIND_NOTHING: u32 = 0u;
 const KIND_LAND: u32 = 1u;
 const KIND_STATIC: u32 = 2u;
 const KIND_MOBILE: u32 = 3u;
 
-// The fourth channel's upper bits, above the kind: a hundred-and-twenty-
-// seventh of a tile in each of the two tile-local axes.
-const SUB_TILE_MASK: u32 = 127u;
+// Steps of the tile-local grid a fragment's position is held inside its own
+// tile on: a hundred-and-twenty-seventh of a tile, on each axis.
+//
+// **No longer a packing.** Nothing quantises a fraction to it any more; what
+// is left is the *clamp* the world passes apply to keep a fragment's position
+// inside the tile its id names — `statics.wesl`'s `INSIDE`, and `mesh_face`'s
+// own copy of the same number. `docs/lighting_rebuild.md` phase 4 is where the
+// cell stops being a fact separate from the position and this goes with it.
 const SUB_TILE: f32 = 127.0;
 
-// How the third channel is divided: `z`'s whole units, offset by 128, in the
-// low eight bits of a `u16`; **sixteenths of a unit** in the four above them;
-// the stance in the four above those. `crate::place::STANCE_SHIFT` and its
-// neighbours are the same numbers, stated once more in Rust.
+// Where the stance and the id ride above the kind in that word.
 //
-// The fraction is `docs/lighting_height.md` phase 1, and the four bits it
-// takes were spare here before it. Until then this channel held `round(raw_z)`
-// alone, which is exact on a floor or a lid — a lid *is* at an integer `z` —
-// and a lie on anything standing up: height varies continuously down a
-// vertical face, and rounding it to the nearest unit turns one surface into a
-// staircase of one-unit treads, each lit as though it were a whole unit higher
-// or lower than it really is. Sixteenths because a `z` unit is four screen
-// pixels at zoom 1, so one step is a quarter of a pixel — under anything a
-// frame can show. Eight bits of fraction would have meant moving the stance
-// out of the channel entirely, which is real work for precision nothing can
-// see; see the plan doc's "Why four bits and not eight".
-const PLACE_STANCE_SHIFT: u32 = 12u;
-const PLACE_STANCE_MASK: u32 = 15u;
-const PLACE_Z_FRAC_SHIFT: u32 = 8u;
-const PLACE_Z_FRAC_MASK: u32 = 15u;
-const PLACE_Z_MASK: u32 = 255u;
-
-// Steps of that fraction in one `z` unit — `PLACE_Z_FRAC_MASK + 1`, named
-// apart from it because every use is arithmetic on an `f32` rather than a mask.
-const PLACE_Z_FRAC_STEPS: f32 = 16.0;
-
-// The height a packed third channel holds, whole units and fraction together.
+// Two bits of kind, four of stance — ten values, one flat, one unknown, four
+// wall faces, four corners, and the mesh-face sentinel above them — and the
+// twenty-six left over are the id. `crate::gbuffer::IDS_STANCE_SHIFT` and
+// `IDS_ID_SHIFT` are the same two numbers in Rust.
 //
-// The one place the two fields are put back into a number, so that a reader
-// cannot take the whole units and quietly drop the rest — which is exactly
-// what every reader did before the fraction existed, and would keep doing
-// without a fault, one sixteenth of a unit at a time.
-fn unpack_place_z(channel: u32) -> f32 {
-    return f32(channel & PLACE_Z_MASK) - 128.0
-        + f32((channel >> PLACE_Z_FRAC_SHIFT) & PLACE_Z_FRAC_MASK) / PLACE_Z_FRAC_STEPS;
-}
+// Twenty-six bits is not a budget anyone is near: an id is a row in one of
+// four instance buffers and the widest frame this client has drawn is in the
+// low thousands. What the layout is actually chosen for is the *bottom* —
+// `KIND_NOTHING` is zero and so is the plane's clear value, so a pixel nothing
+// drew and a pixel a pass stamped as nothing are the same word, which is the
+// one invariant every reader's first branch rests on.
+const IDS_STANCE_SHIFT: u32 = 2u;
+const IDS_STANCE_MASK: u32 = 15u;
+const IDS_ID_SHIFT: u32 = 6u;
 
 // `crate::place::Stance`, in the four bits above.
 const STANCE_UPRIGHT: u32 = 0u;
@@ -82,53 +71,75 @@ const STANCE_CORNER: u32 = 6u;
 // the mesh-face pass writes instead of one of the five above.
 const STANCE_MESH_FACE: u32 = 10u;
 
+// Which way a face looks, in tiles. Zero for everything that has no face.
+//
+// The direction is the *drawn* one, which is the same thing: the art only ever
+// draws the two faces an isometric camera can see — a wall stands on its tile's
+// `y1` or `x1` edge and its picture is the surface turned towards the viewer —
+// so a south face looks towards `+y` and an east face towards `+x`. North and
+// west are five graphics out of 1197 and are here because the geometry has four
+// edges. `docs/lighting.md`, step 15.
+//
+// A **flat** surface looks up, and that is where this was once missing: a
+// wall's top cap is a `Flat` static, so nothing tested which way it looked and
+// a lamp beside a wall lit its top as fully as one standing over it — decision
+// 27. Land carries the same stance and must *not* be gated, and what tells the
+// two apart is the *kind*: `ground.wesl` writes a zero normal outright rather
+// than calling this. `crate::place::Stance::normal` states the same pair once
+// more on the Rust side.
+//
+// `STANCE_UPRIGHT` looks nowhere: a billboard has no side, so every flame that
+// reaches it lights it. That is a statement about what is not known, and
+// `light::Surface::normal` returns nothing for the same reason. A **corner**
+// never arrives here — `statics.wesl` has already resolved it to the face of
+// the half the fragment was drawn on — and `STANCE_MESH_FACE` never does
+// either: the mesh pass carries `crate::mesh::Face`'s own normal on its
+// vertices.
+//
+// **This lives here and not in `blit.wesl`, where it used to.** A normal is now
+// something a world pass *writes* — `docs/lighting_rebuild.md` phase 2, the
+// G-buffer's normal plane — and the pass that writes it is `statics.wesl`,
+// which is the file that already resolved the corner. The lighting reads the
+// plane and has no case for a stance at all.
+fn outward(stance: u32) -> vec3<f32> {
+    switch stance {
+        case STANCE_FACE_NORTH: { return vec3<f32>(0.0, -1.0, 0.0); }
+        case STANCE_FACE_EAST: { return vec3<f32>(1.0, 0.0, 0.0); }
+        case STANCE_FACE_SOUTH: { return vec3<f32>(0.0, 1.0, 0.0); }
+        case STANCE_FACE_WEST: { return vec3<f32>(-1.0, 0.0, 0.0); }
+        case STANCE_FLAT: { return vec3<f32>(0.0, 0.0, 1.0); }
+        default: { return vec3<f32>(0.0); }
+    }
+}
+
 // What `ground.wgsl`/`statics.wgsl`/`mesh_face.wgsl` each built by hand, one
-// `vec4<u32>` literal per file, before this: `id` split across the first two
-// channels, `z` and `stance` folded into the third, `kind` and the tile-local
-// fraction into the fourth. Sharing this closes half of session 23's bug
+// literal per file, before this. Sharing it closes half of session 23's bug
 // class rather than the whole of it — see `docs/lighting_raymarch.md`'s own
 // note on the distinction — but it closes the more dangerous half: `stance`
-// is a required parameter here, so a producer literally cannot build a
-// `place` value without deciding on one. Getting the *value* wrong (passing
+// is a required parameter here, so a producer literally cannot build an id
+// word without deciding on one. Getting the *value* wrong (passing
 // `STANCE_UPRIGHT` where `STANCE_FLAT` was meant) is still possible and still
 // a bug, but it is now a line a person reading the call site can see and
 // question — not a bit that simply never got OR'd in, invisible until a
 // scene happens to tell the two apart.
 //
-// `raw_z` and `sub` are each pre-clamp: every call site before this clamped
-// `z` to `-128.0..127.0` and `sub` to its own tile (statics/mesh_face to
-// `0.0..INSIDE`, ground to the full `0.0..1.0`) before folding it in, and
-// this repeats both clamps rather than trusting the caller already did —
-// harmless where a caller's own range is already inside `0.0..1.0`, and a
-// second gate on the one thing every one of the three used to get separately
-// right.
-//
-// **The height is quantised once, in sixteenths, and only then split** into
-// the two fields — not clamped to whole units and rounded a second time for
-// the remainder. Rounding twice is not the same arithmetic, and it has a
-// failure the single rounding cannot have: a remainder that rounds up to a
-// full unit carries into the field above, which here is not a higher digit of
-// anything but the *stance*. A wall whose fraction happened to land near one
-// would have reported itself a floor.
-fn pack_place(id: u32, raw_z: f32, stance: u32, kind: u32, sub: vec2<f32>) -> vec4<u32> {
-    // The same range the clamp always covered, stated in the units the field
-    // now counts in: `-128 .. 127 + 15/16` is everything the two fields can
-    // say together, and a height outside it is pinned to the nearer end
-    // exactly as it was before.
-    let steps = i32(clamp(
-        round(raw_z * PLACE_Z_FRAC_STEPS),
-        -128.0 * PLACE_Z_FRAC_STEPS,
-        128.0 * PLACE_Z_FRAC_STEPS - 1.0,
-    ));
-    // An **arithmetic** shift, which is what makes this a `floor` and not a
-    // truncation: a height of -3.5 is -4 whole units and eight sixteenths, the
-    // way `unpack_place_z` adds them back, rather than -3 and minus eight. The
-    // mask below is the same statement for the remainder — always positive,
-    // always under one unit.
-    let z = u32((steps >> 4u) + 128)
-        | (u32(steps & i32(PLACE_Z_FRAC_MASK)) << PLACE_Z_FRAC_SHIFT)
-        | (stance << PLACE_STANCE_SHIFT);
-    let clamped = clamp(sub, vec2<f32>(0.0), vec2<f32>(1.0));
-    let packed_sub = (u32(round(clamped.x * SUB_TILE)) << 2u) | (u32(round(clamped.y * SUB_TILE)) << 9u);
-    return vec4<u32>(id & 0xFFFFu, id >> 16u, z, kind | packed_sub);
+// `crate::gbuffer::pack_ids` is the Rust twin, for the two things on that side
+// that build a G-buffer without drawing a frame.
+fn pack_ids(id: u32, stance: u32, kind: u32) -> u32 {
+    return (kind & KIND_MASK)
+        | ((stance & IDS_STANCE_MASK) << IDS_STANCE_SHIFT)
+        | (id << IDS_ID_SHIFT);
+}
+
+// And the three questions asked of one, so that no reader spells a shift.
+fn ids_kind(word: u32) -> u32 {
+    return word & KIND_MASK;
+}
+
+fn ids_stance(word: u32) -> u32 {
+    return (word >> IDS_STANCE_SHIFT) & IDS_STANCE_MASK;
+}
+
+fn ids_id(word: u32) -> u32 {
+    return word >> IDS_ID_SHIFT;
 }

@@ -446,7 +446,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// `960x720`-shaped, defaulting to a size whose row is already 256-byte

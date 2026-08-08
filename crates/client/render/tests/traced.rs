@@ -68,7 +68,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// `examples/boxes.rs`'s own `line` scene: two whole-tile boxes side by side due
@@ -208,6 +212,7 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
                     depth: d,
                     id,
                     tile: [f32::from(b.tile.0), f32::from(b.tile.1)],
+                    normal: face.normal,
                 });
             }
         }
@@ -257,7 +262,7 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
 
     // What the world passes left on each pixel: which surface owns it, and where
     // in the world that surface's own fragment is.
-    let drawn = oracle::read_place(&device, &queue, gbuffer.place(), SIDE, SIDE);
+    let drawn = oracle::read_gbuffer(&device, &queue, &gbuffer, SIDE, SIDE);
 
     let at = flame();
     let lighting = Lighting {

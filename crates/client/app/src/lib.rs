@@ -3680,8 +3680,18 @@ impl App {
             ..Default::default()
         }))
         .map_err(|error| StartupError::NoDevice(error.to_string()))?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .map_err(|error| StartupError::NoDevice(error.to_string()))?;
+        // The defaults, plus the one thing the renderer asks for above them: a
+        // G-buffer's planes and the picture beside them are past WebGPU's
+        // guaranteed `maxColorAttachmentBytesPerSample`, and an adapter that
+        // reports only the floor cannot draw this frame. It surfaces here as
+        // `NoDevice` with wgpu's own message, which names the limit — see
+        // `openshard_client_render::gbuffer::required_limits` for why it is
+        // asked for and what brings it back down.
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: openshard_client_render::gbuffer::required_limits(),
+            ..Default::default()
+        }))
+        .map_err(|error| StartupError::NoDevice(error.to_string()))?;
 
         let capabilities = surface.get_capabilities(&adapter);
         // A non-sRGB format, deliberately: `client/render` writes the art's own
@@ -4830,7 +4840,7 @@ impl App {
                 select::Frame {
                     target: &view,
                     mask: &select_view,
-                    place: &gbuffer_views.place,
+                    ids: &gbuffer_views.ids,
                     face_instances: window.statics.instances_buffer(),
                     ground_instances: window.renderer.instances_buffer(),
                     size: (render_width, render_height),

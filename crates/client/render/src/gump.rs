@@ -11,11 +11,11 @@
 //! of an atlas, and reusing it here was the first thing tried. It does not fit,
 //! and the three reasons are the three things an interface is not:
 //!
-//! - It writes the **place attachment**, which says which tile a pixel came
-//!   from so the lighting pass can dim it. A gump stands on no tile. Handing it
-//!   [`Place::NOWHERE`](crate::place::Place::NOWHERE) would work and would still
-//!   cost a second full-size attachment on the surface, for an answer nothing
-//!   reads.
+//! - It writes the **G-buffer**, which says what drew a pixel and where that
+//!   fragment is so the lighting pass can dim it. A gump stands on no tile.
+//!   Handing it [`Place::NOWHERE`](crate::place::Place::NOWHERE) would work and
+//!   would still cost three more full-size attachments on the surface, for an
+//!   answer nothing reads.
 //! - It **tests and writes depth**, against a buffer the world passes filled at
 //!   the world's own resolution. The surface is a different size after a
 //!   minifying blit, and an attachment has to match its target.

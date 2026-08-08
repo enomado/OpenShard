@@ -120,7 +120,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// The widest view the ladder offers — where the world image is largest, the
@@ -289,7 +293,7 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture
     pixels
 }
 
-/// Draw the world image and its place attachment once, and light it every way.
+/// Draw the world image and its G-buffer once, and light it every way.
 ///
 /// The world passes run once and their output is reused by every case: what is
 /// being timed is the blit, and re-drawing Britain between the readings would

@@ -20,15 +20,13 @@
 //! arithmetic. That is the whole claim an oracle makes — reusing the thing
 //! under test to check the thing under test proves the two agree with each
 //! other and nothing else — so the only engine code this module touches is the
-//! `place` attachment's own *format* (`crate::place`), which is a wire, not an
-//! answer.
+//! G-buffer's own *format* (`crate::gbuffer`), which is a wire, not an answer.
 
 pub mod boxes;
 pub mod pathtrace;
 
-use openshard_client_render::place;
-
-/// One texel of the `place` attachment, decoded: **who drew this pixel**.
+/// One pixel of the G-buffer, decoded: **who drew this pixel, and where that
+/// fragment is**.
 ///
 /// The renderer's own answer to a question every oracle here has to ask and
 /// used to answer by reconstructing the picture on the CPU — which surface owns
@@ -38,53 +36,106 @@ use openshard_client_render::place;
 /// Comparing a rendered pixel that some other surface drew against an oracle's
 /// answer about this one is not a measurement of anything.
 ///
-/// See [`openshard_client_render::place`] for the format.
-///
-/// It also carries **where in the world the fragment itself is**, which is not
-/// the world point that projected onto it: the pixel's own fragment sits at the
-/// pixel's centre, and the attachment quantises what it carries — a
-/// hundred-and-twenty-seventh of a tile across, a sixteenth of a `z` unit up.
-/// That is the point the shader lit, so it is the point an oracle has to ask
-/// about; anything else compares the picture against a fragment the rasteriser
-/// could not produce.
+/// See [`openshard_client_render::gbuffer`] for both formats.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Drawn {
     /// [`openshard_client_render::place::Kind`]'s own two bits.
     pub kind: u32,
-    /// The stance, which for a mesh face is the [`place::Stance::MeshFace`]
+    /// The stance, which for a mesh face is the
+    /// [`Stance::MeshFace`](openshard_client_render::place::Stance::MeshFace)
     /// routing sentinel rather than the face's real one.
     pub stance: u32,
     /// The instance row this fragment's picture came from — a `MeshFaceRow` for
     /// a mesh face, a ground quad for land.
     pub id: u32,
-    /// Where in its tile the fragment is, both axes, `0.0..1.0`. The tile itself
-    /// is not here — it is in the instance row `id` names.
-    pub sub: (f64, f64),
-    /// And how high, in the map's own `z` units.
-    pub z: f64,
+    /// And **where in the world the fragment itself is**, which is not the world
+    /// point that projected onto it: the pixel's own fragment sits at the
+    /// pixel's centre. That is the point the shader lit, so it is the point an
+    /// oracle has to ask about; anything else compares the picture against a
+    /// fragment the rasteriser could not produce.
+    ///
+    /// The number itself, off the position plane. This used to be a tile-local
+    /// fraction in hundred-and-twenty-sevenths and a height in sixteenths, which
+    /// every caller then added to a tile it looked up — three fields, one of
+    /// them quantised twice on the way. `docs/lighting_rebuild.md` phase 2.
+    pub at: (f64, f64, f64),
 }
 
-/// The `place` attachment read back, one [`Drawn`] a pixel, row-major.
+/// The G-buffer read back, one [`Drawn`] a pixel, row-major.
 ///
-/// `Rgba16Uint`, eight bytes a texel — `place::texture` asks for `COPY_SRC`
-/// exactly so this is possible, and its own doc says so.
-pub fn read_place(
+/// Two planes and one struct, because no caller has ever wanted one without the
+/// other: what drew a pixel and where that fragment is are the two halves of
+/// "which surface owns this pixel", and reading them apart is two readbacks a
+/// caller has to keep in step by hand. `crate::gbuffer`'s planes ask for
+/// `COPY_SRC` exactly so this is possible, and their own docs say so.
+pub fn read_gbuffer(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    place_texture: &wgpu::Texture,
+    gbuffer: &openshard_client_render::gbuffer::Gbuffer,
     width: u32,
     height: u32,
 ) -> Vec<Drawn> {
+    let ids = read_plane(device, queue, gbuffer.ids(), width, height, 4);
+    let positions = read_plane(device, queue, gbuffer.position(), width, height, 16);
+    ids.chunks_exact(4)
+        .zip(positions.chunks_exact(16))
+        .map(|(word, point)| {
+            let word = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+            let axis = |i: usize| {
+                f64::from(f32::from_le_bytes([
+                    point[i * 4],
+                    point[i * 4 + 1],
+                    point[i * 4 + 2],
+                    point[i * 4 + 3],
+                ]))
+            };
+            Drawn {
+                // Through `gbuffer`'s own three readers rather than three shifts
+                // spelled here: the layout is a contract with
+                // `place_format.wesl` and an oracle restating it is a fourth
+                // copy of it, in the one file whose whole claim is that it
+                // shares no arithmetic with what it measures. A *format* is a
+                // wire and reading it through the engine's own accessor is what
+                // keeps this module honest about the difference.
+                kind: word & 3,
+                stance: openshard_client_render::gbuffer::ids_stance(word),
+                id: openshard_client_render::gbuffer::ids_id(word),
+                at: (axis(0), axis(1), axis(2)),
+            }
+        })
+        .collect()
+}
+
+/// One plane copied back to the CPU, whole, at `stride` bytes a texel.
+///
+/// The row pitch is rounded up to `COPY_BYTES_PER_ROW_ALIGNMENT` and the
+/// padding cut off again at the end, rather than assuming a width that happens
+/// to divide it. The id plane is four bytes a texel where the `place`
+/// attachment it replaced was eight, so every width that used to be aligned
+/// stopped being — a scene 32 pixels across was exactly on the boundary and is
+/// now half of one, which is a validation error naming a buffer layout and not
+/// the plane that shrank.
+fn read_plane(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    stride: u32,
+) -> Vec<u8> {
+    let row = width * stride;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded = row.div_ceil(align) * align;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("place readback"),
-        size: u64::from(width) * u64::from(height) * 8,
+        label: Some("g-buffer readback"),
+        size: u64::from(padded) * u64::from(height),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: place_texture,
+            texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -93,7 +144,7 @@ pub fn read_place(
             buffer: &readback,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(width * 8),
+                bytes_per_row: Some(padded),
                 rows_per_image: Some(height),
             },
         },
@@ -111,29 +162,11 @@ pub fn read_place(
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("waiting on our own submission");
-    let bytes = slice
-        .get_mapped_range()
-        .expect("the map completed above")
-        .to_vec();
+    let bytes = slice.get_mapped_range().expect("the map completed above");
     bytes
-        .chunks_exact(8)
-        .map(|texel| {
-            let channel = |i: usize| u32::from(u16::from_le_bytes([texel[i * 2], texel[i * 2 + 1]]));
-            Drawn {
-                kind: channel(3) & 3,
-                stance: (channel(2) >> place::STANCE_SHIFT) & 15,
-                id: channel(0) | (channel(1) << 16),
-                sub: (
-                    f64::from((channel(3) >> 2) & 127) / 127.0,
-                    f64::from((channel(3) >> 9) & 127) / 127.0,
-                ),
-                // Through `place::unpacked_height` and not `& 0xFF`: the whole
-                // units alone still look like a height and quietly put every
-                // fragment of a vertical face back on the staircase
-                // `docs/lighting_height.md` phase 1 removed.
-                z: f64::from(place::unpacked_height(channel(2) as u16)),
-            }
-        })
+        .chunks_exact(padded as usize)
+        .flat_map(|padded_row| &padded_row[..row as usize])
+        .copied()
         .collect()
 }
 

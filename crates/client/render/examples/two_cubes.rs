@@ -119,7 +119,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// A lime crosshair on a black backing plate, centred at `at` — copied from
@@ -524,6 +528,7 @@ fn main() {
                     depth: d,
                     id,
                     tile: [f32::from(tile.x), f32::from(tile.y)],
+                    normal: face.normal,
                 });
             }
         }

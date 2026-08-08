@@ -33,7 +33,7 @@
 // draws it flat, which leaves gaps against its stretched neighbours; ours stays
 // watertight and is textured approximately. See docs/client.md.
 
-import package::place_format::{KIND_LAND, STANCE_FLAT, pack_place};
+import package::place_format::{KIND_LAND, STANCE_FLAT, pack_ids};
 
 struct Viewport {
     // The target's size in *real* pixels — the display's, which at a
@@ -82,7 +82,7 @@ struct VertexOut {
     // one their corner interpolation gave them, which is the height the light
     // has to reach. Taking the tile's base instead would light a hilltop as if
     // it were the valley floor.
-    @location(5) place_z: f32,
+    @location(5) world_z: f32,
     // This tile's own `(x, y)`, flat across the instance — the same two numbers
     // `blit.wgsl` fetches back out of `ground_instances[id].place0`, carried
     // here because a fragment's *world position* is this plus `local`, and that
@@ -94,10 +94,14 @@ struct VertexOut {
 // it came from.
 struct FragmentOut {
     @location(0) color: vec4<f32>,
-    @location(1) place: vec4<u32>,
-    // The same fragment as a point rather than as an id, a fraction and a
-    // height in three fields of two `u16`s — `crate::gbuffer`.
+    // What drew this fragment and which row it came from —
+    // `crate::gbuffer::IDS_FORMAT`.
+    @location(1) ids: u32,
+    // The same fragment as a point rather than as an id and a fraction —
+    // `crate::gbuffer`.
     @location(2) position: vec4<f32>,
+    // And which way it looks, which for land is **nowhere** — see `fs_main`.
+    @location(3) normal: vec4<f32>,
 };
 
 @vertex
@@ -178,7 +182,7 @@ fn vs_main(
     out.texmap_uv = texmap.xy + corner * texmap.zw;
     out.has_texmap = f32(texmap.z > 0.0);
     out.id = instance_index;
-    out.place_z = height;
+    out.world_z = height;
     // The diamond's own axes, inverted from the screen offset this vertex is at:
     // `slope_offset` above is `((a - b) * 22, (a + b - 1) * 22)` for a tile-local
     // `(a, b)`, and this is that solved for the pair. Written from the offset
@@ -193,30 +197,46 @@ fn vs_main(
     return out;
 }
 
-// Where in the world this fragment's pixel is: the instance's id, the
-// interpolated corner height, and "this is ground".
+// Who drew this fragment: the instance's id, "this lies in its tile", and
+// "this is ground".
 //
-// **The tile itself no longer rides here** — `docs/gbuffer.md` step 7 moved it
+// **The tile itself does not ride here** — `docs/gbuffer.md` step 7 moved it
 // to this pass's own instance buffer, read back by `blit.wgsl`/`select.wgsl`
 // as `ground_instances[id]`, the same move step 3 made for a static's tile.
-// The height and the sub-tile fraction stay exactly where they were: both are
-// this fragment's own, from the bilinear interpolation above, not a fact the
-// whole instance shares — carrying either from the row would flatten exactly
-// what they exist to vary.
-fn place_of(in: VertexOut) -> vec4<u32> {
-    return pack_place(in.id, in.place_z, STANCE_FLAT, KIND_LAND, in.local);
+// Neither does the height or the sub-tile fraction any more: both are this
+// fragment's own rather than a fact the whole instance shares, so both are in
+// the position plane below, unquantised. `docs/lighting_rebuild.md` phase 2.
+fn ids_of(in: VertexOut) -> u32 {
+    return pack_ids(in.id, STANCE_FLAT, KIND_LAND);
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> FragmentOut {
     var out: FragmentOut;
-    out.place = place_of(in);
-    // The same place as a point. Clamped to the tile exactly as `pack_place`
-    // clamps the fraction it packs, and for the same reason: a flat tile's quad
-    // is the sprite's 44x44 square, whose corners lie outside the diamond, and
-    // a fragment there — one the alpha cut below has not reached yet — would
-    // otherwise name a neighbour nothing was drawn on.
-    out.position = vec4<f32>(in.tile + clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0)), in.place_z, 1.0);
+    out.ids = ids_of(in);
+    // And the fragment as a point. Clamped into the tile its id names — a flat
+    // tile's quad is the sprite's 44x44 square, whose corners lie outside the
+    // diamond, and a fragment there — one the alpha cut below has not reached
+    // yet — would otherwise name a neighbour nothing was drawn on.
+    out.position = vec4<f32>(in.tile + clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0)), in.world_z, 1.0);
+    // And no normal, which is a decision and not an omission.
+    //
+    // The stance above says `STANCE_FLAT`, and `outward` of that looks up — but
+    // land is the one surface that must not be gated by which side of its own
+    // plane a flame is on. A wall's flat *cap* wants that gate (decision 27, a
+    // lamp beside a wall lighting its top as fully as one standing over it); a
+    // floor lit at a grazing angle is not behind its own plane the way a cap can
+    // be behind a torch mounted low, and gating it darkened every ground pixel a
+    // fixture's flame was not comfortably above. `blit.wgsl` used to make that
+    // distinction at the reading end, by testing the kind; it is made here now,
+    // where the pass that knows it is the ground already is.
+    //
+    // Land *has* real normals — it is a height field with four corner heights,
+    // interpolated a few lines above — and `docs/lighting_rebuild.md`'s third
+    // open question is whether it should use them. Writing one is a change to
+    // the picture and belongs to phase 3, not to the move that made the normal
+    // data.
+    out.normal = vec4<f32>(0.0, 0.0, 0.0, 1.0);
 
     // A slope with a texture of its own takes it, and nothing else about the
     // tile changes: the shape is still the diamond its four corners make.

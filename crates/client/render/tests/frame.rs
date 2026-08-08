@@ -33,10 +33,11 @@ use openshard_client_render::light::{Light, Lighting, Surface};
 /// "outside" to compare against inside the picture.
 const TORCH_TILES: f32 = 3.0;
 use openshard_client_render::camera::TileBounds;
+use openshard_client_render::gbuffer;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::occlusion::{Builder, Occlusion, OwnerId, Shape};
 use openshard_client_render::outline::{self, Outline, Ring};
-use openshard_client_render::place::Place;
+use openshard_client_render::place::{Kind, Place};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
 use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::statics;
@@ -73,10 +74,16 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    // The defaults are WebGL2's limits in wgpu's downlevel form, which is the
-    // point: a pipeline that needs more than this would not run in a browser,
-    // and finding that out here is cheaper than finding it out in one.
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    // The defaults, plus the one thing this crate asks for above them —
+    // `gbuffer::required_limits`, whose own doc has the arithmetic. Asking for
+    // exactly what the app asks for is the point: a test running under wider
+    // limits than the client gets would be a test that cannot find the pipeline
+    // the client will fail to create.
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// A rendered frame, as RGBA8 rows.
@@ -1724,66 +1731,70 @@ fn every_pixel_names_the_tile_it_came_from() {
     // low bits of the fourth channel.
     let wall_pixel = places.at(64, 64);
     assert_eq!(
-        [wall_pixel[0], wall_pixel[1]],
-        [0, 0],
+        gbuffer::ids_id(wall_pixel),
+        0,
         "a wall's pixel did not name the only static drawn this frame, by id",
     );
-    assert_eq!(wall_pixel[3] & 3, 2, "and another kind");
+    assert_eq!(
+        gbuffer::ids_kind(wall_pixel),
+        Some(Kind::Static),
+        "and another kind",
+    );
     // Its height is the pixel's own, not the sprite's base: four pixels up the
     // picture is one unit of `z`, which is what gives a wall a gradient down its
     // face instead of one flat brightness.
     //
-    // And two pixels up is **half** a unit, which the channel can now say:
-    // `docs/lighting_height.md` phase 1 put a fraction under the whole units,
-    // and before it this same pair of pixels could only differ by a whole one
-    // or by none at all — which is the staircase that phase is about. Decoded
-    // through `place::unpacked_height` rather than subtracted raw, because the
-    // channel's low eight bits are no longer the whole of the height.
-    let higher = places.at(64, 62);
-    let height = openshard_client_render::place::unpacked_height;
+    // And two pixels up is **half** a unit, which the position plane says
+    // outright. The attachment this replaced could only say it after
+    // `docs/lighting_height.md` phase 1 put a fraction of sixteenths under the
+    // whole units; before that, this same pair of pixels differed by a whole
+    // unit or by none at all, which is the staircase that phase is about — and
+    // sixteenths are gone now too, along with everything else that quantised a
+    // height on the way to a reader.
+    let higher = places.position_at(64, 62);
+    let wall_point = places.position_at(64, 64);
     assert_eq!(
-        height(higher[2]) - height(wall_pixel[2]),
+        higher[2] - wall_point[2],
         0.5,
-        "two pixels up the wall is not half a unit of height: {higher:?} against {wall_pixel:?}",
+        "two pixels up the wall is not half a unit of height: {higher:?} against {wall_point:?}",
     );
     // A pixel of the ground beside it: an id naming the one ground quad this
     // frame drew — its own tile is `docs/gbuffer.md` step 7's
-    // `ground_instances[id]` row now, not a number this attachment carries
-    // directly, the same move step 3 made for the wall above — at the height
-    // the corners gave it, and the land kind.
+    // `ground_instances[id]` row, not a number a fragment carries directly, the
+    // same move step 3 made for the wall above — at the height the corners gave
+    // it, and the land kind.
     let ground_pixel = places.at(64, 84);
-    let ground_id = u32::from(ground_pixel[0]) | (u32::from(ground_pixel[1]) << 16);
     assert_eq!(
-        ground[ground_id as usize].place,
+        ground[gbuffer::ids_id(ground_pixel) as usize].place,
         Place::land(300, 400),
         "the ground beside the wall named something else",
     );
-    // `ground.wgsl` stamps its own stance alongside the height, the same way
-    // `statics.wgsl` always has — see `docs/lighting_raymarch.md`'s
-    // ground-stance entry for why a land pixel that never named one read as
-    // `Stance::Upright` to `blit.wgsl`'s own exemption logic instead. Said
-    // through `place::packed_height` rather than as the literal this was
-    // (`384`, which was `128 | STANCE_FLAT << 8`): a literal here pins the
-    // *layout* as much as the value, and the layout has since moved once, for
-    // `docs/lighting_height.md` phase 1's fraction.
+    // `ground.wgsl` stamps its own stance, the same way `statics.wgsl` always
+    // has — see `docs/lighting_raymarch.md`'s ground-stance entry for why a land
+    // pixel that never named one read as `Stance::Upright` to `blit.wgsl`'s own
+    // exemption logic instead.
     assert_eq!(
-        ground_pixel[2],
-        openshard_client_render::place::packed_height(0.0, openshard_client_render::place::Stance::Flat),
-        "and another height",
+        gbuffer::ids_stance(ground_pixel),
+        openshard_client_render::place::Stance::Flat as u32,
+        "and another stance",
     );
-    assert_eq!(ground_pixel[3] & 3, 1, "and another kind");
-    // And the ground's fraction of its tile moves with the pixel, which is what
+    assert_eq!(places.position_at(64, 84)[2], 0.0, "and another height",);
+    assert_eq!(
+        gbuffer::ids_kind(ground_pixel),
+        Some(Kind::Land),
+        "and another kind",
+    );
+    // And the ground's place in its tile moves with the pixel, which is what
     // the lighting reads to make a pool a gradient rather than a set of flat
     // tiles. Two pixels apart on the screen are two different places in a tile.
-    let beside = places.at(70, 84);
     assert_ne!(
-        beside[3] >> 2,
-        ground_pixel[3] >> 2,
+        places.position_at(70, 84)[0],
+        places.position_at(64, 84)[0],
         "a pixel six across is at the same place in its tile",
     );
     // And a corner nothing was drawn on stays the clear value, whose kind is
     // `Nothing` — a background the lighting must leave alone.
-    assert_eq!(places.at(2, 2)[3], 0, "an untouched pixel claimed a tile");
+    assert_eq!(places.at(2, 2), 0, "an untouched pixel claimed a tile");
 }
 
 /// A floor's pixels are spread across its tile; a wall's run up it.
@@ -1827,16 +1838,13 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         twin: 0,
         owner: 0,
     };
-    // The fraction of a tile a place holds, as the shaders pack it: seven bits
-    // each, above the two the kind takes.
-    let sub = |place: [u16; 4]| ((place[3] >> 2) & 127, (place[3] >> 9) & 127);
-    // The third channel is a height *and* a stance — `crate::place::STANCE_SHIFT`
-    // — so a test about heights has to say which part it means. The height is
-    // both of its own fields together, which is what `unpacked_height` is for.
-    let height = |place: [u16; 4]| openshard_client_render::place::unpacked_height(place[2]);
-    let stance = |place: [u16; 4]| place[2] >> openshard_client_render::place::STANCE_SHIFT;
-
     let at = Point::new(301, 400, 15);
+    // Where in its tile a pixel is, and how high — both off the position plane
+    // and both exact. They used to be a seven-bit fraction and a height in
+    // sixteenths, read out of the two `u16`s an attachment carried them in, so
+    // "the middle of the tile" was `64` of `127` rather than `0.5`.
+    let sub = |point: [f32; 4]| (point[0] - f32::from(at.x), point[1] - f32::from(at.y));
+    let height = |point: [f32; 4]| point[2];
     let places = render_places(
         &device,
         &queue,
@@ -1852,10 +1860,10 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     // The middle of the sprite is the middle of the tile, and the four
     // directions off it are the four world directions — a step right is further
     // along `x` and less along `y`, a step down is further along both.
-    let middle = places.at(62, 62);
+    let middle = places.position_at(62, 62);
     let (mid_x, mid_y) = sub(middle);
-    let (right_x, right_y) = sub(places.at(72, 62));
-    let (below_x, below_y) = sub(places.at(62, 72));
+    let (right_x, right_y) = sub(places.position_at(72, 62));
+    let (below_x, below_y) = sub(places.position_at(62, 72));
     assert!(
         right_x > mid_x && right_y < mid_y,
         "right of the middle: {right_x} {right_y}"
@@ -1867,17 +1875,18 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     // And a floor is at one height everywhere: what runs down its picture is the
     // tile, which the fraction has already spent.
     assert_eq!(
-        [height(middle), height(places.at(62, 72))],
+        [height(middle), height(places.position_at(62, 72))],
         [f32::from(at.z); 2],
         "a floor's pixels stand at different heights",
     );
-    // And it says it is a floor, in the bits above the height. That the channel
-    // carries a stance at all is what lets the lighting refuse to light a wall
-    // from behind — see `crate::place::Stance` — and a floor's own value is what
-    // says the bits are being written rather than left at zero.
+    // And it says it is a floor, in the id word's stance bits. That a fragment
+    // carries a stance at all is what lets the lighting tell a mesh face's row
+    // from a sprite's and keeps a run of wall from shadowing itself — see
+    // `crate::place::Stance` — and a floor's own value is what says the bits are
+    // being written rather than left at zero.
     assert_eq!(
-        stance(middle),
-        openshard_client_render::place::Stance::Flat as u16,
+        gbuffer::ids_stance(places.at(62, 62)),
+        openshard_client_render::place::Stance::Flat as u32,
         "a floor's pixel does not carry its stance",
     );
 
@@ -1899,26 +1908,26 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     // which of the two axes it is. Spreading its pixels along the horizontal —
     // `x - y`, the one direction no wall runs — is the shape this asserts is not
     // being written.
-    let (mid_x, mid_y) = sub(places.at(62, 62));
+    let (mid_x, mid_y) = sub(places.position_at(62, 62));
     assert_eq!(
         (mid_x, mid_y),
-        (64, 64),
+        (0.5, 0.5),
         "a wall's fraction is not its tile's middle"
     );
     assert_eq!(
-        sub(places.at(72, 62)),
+        sub(places.position_at(72, 62)),
         (mid_x, mid_y),
         "it moved across the picture"
     );
     assert_eq!(
-        sub(places.at(62, 72)),
+        sub(places.position_at(62, 72)),
         (mid_x, mid_y),
         "it moved down the picture"
     );
     // And its height is the picture's, which is the half of this the older test
     // covers — asserted here too so that the two stances are one comparison.
     assert!(
-        places.at(62, 62)[2] > places.at(62, 72)[2],
+        height(places.position_at(62, 62)) > height(places.position_at(62, 72)),
         "a wall is not taller further up its picture",
     );
 }
@@ -1977,13 +1986,17 @@ fn a_ground_pixel_carries_its_own_stance() {
     );
 
     let stance = |x: u32, y: u32| {
-        let place = places.at(x, y);
-        assert_eq!(place[3] & 3, 1, "nothing was drawn at ({x}, {y})");
-        place[2] >> openshard_client_render::place::STANCE_SHIFT
+        let word = places.at(x, y);
+        assert_eq!(
+            gbuffer::ids_kind(word),
+            Some(Kind::Land),
+            "nothing was drawn at ({x}, {y})",
+        );
+        gbuffer::ids_stance(word)
     };
     assert_eq!(
         stance(64, 64),
-        openshard_client_render::place::Stance::Flat as u16,
+        openshard_client_render::place::Stance::Flat as u32,
         "a ground pixel does not carry its stance",
     );
 }
@@ -2047,6 +2060,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
         twin: 0,
         owner: 0,
     };
+    let quads = [quad(tile(300), 0.0, 0.0), quad(tile(301), 22.0, 22.0)];
     let places = render_places(
         &device,
         &queue,
@@ -2054,19 +2068,22 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
         &texmaps,
         &[],
         &statics,
-        &[quad(tile(300), 0.0, 0.0), quad(tile(301), 22.0, 22.0)],
+        &quads,
         &[],
         &[],
         256,
     );
 
-    // Where in the world a pixel says it is: the tile plus the fraction, in
-    // tiles. This is exactly what `blit.wgsl` computes to measure a distance,
-    // which is why the assertions below are about it rather than about the bits.
+    // Where in the world a pixel says it is, in tiles. This is exactly what
+    // `blit.wgsl` reads to measure a distance, which is why the assertions below
+    // are about it rather than about the bits.
     let world_x = |x: u32, y: u32| {
-        let place = places.at(x, y);
-        assert_eq!(place[3] & 3, 2, "nothing was drawn at ({x}, {y})");
-        f32::from(place[0]) + f32::from((place[3] >> 2) & 127) / 127.0
+        assert_eq!(
+            gbuffer::ids_kind(places.at(x, y)),
+            Some(Kind::Static),
+            "nothing was drawn at ({x}, {y})",
+        );
+        places.position_at(x, y)[0]
     };
 
     // A row that crosses the join. The first sprite's face occupies its left
@@ -2099,25 +2116,32 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
     // look at `x`.
     //
     // *One step short*, because `blit.wgsl` finds a fragment's cell with
-    // `floor(tile + fraction)` and exempts that cell from shadowing it. A clean
-    // `127` names the tile **beyond** the wall, so the wall's own tile stops
+    // `floor(position)` and exempts that cell from shadowing it. A clean whole
+    // number names the tile **beyond** the wall, so the wall's own tile stops
     // being exempt and the wall is shadowed by itself — measured on Britain, a
     // run of lit wall at 249 dropping to the ambient 65. `statics.wgsl`'s
-    // `INSIDE` is the step, and this is the number it produces.
-    // Stated as the two facts rather than as the byte, so that a change to how
-    // many bits the fraction has does not silently retire either of them.
+    // `INSIDE` is the step, and this is the point it produces.
+    //
+    // Asked of the *position plane*, which is where the clamp now shows: the
+    // fraction it used to be asked of was seven bits of a `u16`, so "one step
+    // short of the edge" was `126` of `127` and this loop read bytes. It is the
+    // same claim about the same clamp, in the units the shader actually walks.
     for (x, y) in [(left, row - 21), (left + 21, row), (left + 22, row + 1)] {
-        let place = places.at(x, y);
-        let (sub_x, sub_y) = ((place[3] >> 2) & 127, (place[3] >> 9) & 127);
+        let point = places.position_at(x, y);
+        // Which tile this pixel's own sprite stands on — off the row its id
+        // names, which is `docs/gbuffer.md` step 3's whole point and the only
+        // way to turn a position back into a fraction of a *named* tile.
+        let stands = quads[gbuffer::ids_id(places.at(x, y)) as usize].place;
+        let sub_y = point[1] - f32::from(stands.y);
         assert!(
-            sub_y > 120,
+            sub_y > 120.0 / 127.0,
             "the south face left its own edge at ({x}, {y}): {sub_y}"
         );
         // The cell `blit.wgsl` will call this fragment's own, computed its way.
-        for (tile, sub, axis) in [(place[0], sub_x, 'x'), (place[1], sub_y, 'y')] {
-            let cell = (f32::from(tile) + f32::from(sub) / 127.0).floor() as u16;
+        for (whole, axis, at) in [(stands.x, 'x', point[0]), (stands.y, 'y', point[1])] {
             assert_eq!(
-                cell, tile,
+                at.floor() as u16,
+                whole,
                 "at ({x}, {y}) the walk puts this pixel in the {axis} neighbour, so the wall it is \
                  the face of is no longer exempt from shadowing it",
             );
@@ -2211,44 +2235,46 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
     let row = ORIGIN as u32 + u32::from(HEIGHT);
     let middle = ORIGIN as u32 + 22;
     let stance = |x: u32, y: u32| {
-        let place = places.at(x, y);
-        assert_eq!(place[3] & 3, 2, "nothing was drawn at ({x}, {y})");
-        place[2] >> openshard_client_render::place::STANCE_SHIFT
+        let word = places.at(x, y);
+        assert_eq!(
+            gbuffer::ids_kind(word),
+            Some(Kind::Static),
+            "nothing was drawn at ({x}, {y})",
+        );
+        gbuffer::ids_stance(word)
     };
     assert_eq!(
         stance(middle + 4, row),
-        Stance::FaceEast as u16,
+        Stance::FaceEast as u32,
         "the right half of the corner is not its east face",
     );
     assert_eq!(
         stance(middle - 4, row),
-        Stance::FaceSouth as u16,
+        Stance::FaceSouth as u32,
         "the left half of the corner is not its south face",
     );
 
-    // And the fraction each half carries is its own face's: an east face lies on
-    // `x + 1` and a south face on `y + 1`, so the two halves are two different
-    // surfaces of one tile and not one surface read twice. Compared as the
-    // *fixed* coordinate of each, because that is what a face is — the run along
-    // the edge moves in both.
+    // And where in its tile each half sits is its own face's: an east face lies
+    // on `x + 1` and a south face on `y + 1`, so the two halves are two
+    // different surfaces of one tile and not one surface read twice. Compared as
+    // the *fixed* coordinate of each, because that is what a face is — the run
+    // along the edge moves in both.
     let sub = |x: u32, y: u32| {
-        let place = places.at(x, y);
-        ((place[3] >> 2) & 127, (place[3] >> 9) & 127)
+        let point = places.position_at(x, y);
+        (point[0] - f32::from(at.x), point[1] - f32::from(at.y))
     };
     let (right_x, _) = sub(middle + 4, row);
     let (_, left_y) = sub(middle - 4, row);
-    assert!(right_x > 120, "the east half left its own edge: {right_x}");
-    assert!(left_y > 120, "the south half left its own edge: {left_y}");
+    let edge = 120.0 / 127.0;
+    assert!(right_x > edge, "the east half left its own edge: {right_x}");
+    assert!(left_y > edge, "the south half left its own edge: {left_y}");
 
     // And the two halves are two different rows, not one instance's id read
     // twice — `docs/gbuffer.md` step 4. This frame drew exactly one corner,
     // so `split_corners` gives it id `0` and a shadow row at id `1`: the
     // right half (its own instance) keeps `0`, the left half (the diagonal
     // test's other side) takes the shadow's `1`.
-    let id = |x: u32, y: u32| {
-        let place = places.at(x, y);
-        u32::from(place[0]) | (u32::from(place[1]) << 16)
-    };
+    let id = |x: u32, y: u32| gbuffer::ids_id(places.at(x, y));
     assert_eq!(id(middle + 4, row), 0, "the right half is not the drawn instance");
     assert_eq!(id(middle - 4, row), 1, "the left half is not its shadow row");
 }
@@ -2289,6 +2315,7 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
         depth: 0.4,
         id: 0,
         tile,
+        normal: Stance::FaceEast.normal(),
     };
     let vertices = [
         corner(54.0, 54.0),
@@ -2316,11 +2343,15 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
         &rows,
         128,
     );
-    let place = places.at(64, 64);
-    assert_eq!(place[3] & 3, 2, "nothing was drawn at (64, 64)");
+    let word = places.at(64, 64);
     assert_eq!(
-        place[2] >> openshard_client_render::place::STANCE_SHIFT,
-        Stance::MeshFace as u16,
+        gbuffer::ids_kind(word),
+        Some(Kind::Static),
+        "nothing was drawn at (64, 64)",
+    );
+    assert_eq!(
+        gbuffer::ids_stance(word),
+        Stance::MeshFace as u32,
         "a mesh-face pixel does not carry the mesh-face sentinel",
     );
 }
@@ -2332,10 +2363,15 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
 /// (`MeshFaceVertex::world`) and the rasteriser interpolates them, so the
 /// number the pass has is the number the geometry has — there is no projection
 /// to invert and nothing to reconstruct. What this pins is that the number
-/// *survives*: the same fragment's place attachment holds `z` to a sixteenth of
-/// a unit and its tile fraction to a hundred-and-twenty-seventh, and every
-/// constant on the height track exists because the lighting read those instead
-/// of this.
+/// *survives*: the attachment this replaced held `z` to a sixteenth of a unit
+/// and the tile fraction to a hundred-and-twenty-seventh, and every constant on
+/// the height track exists because the lighting read those instead of this.
+///
+/// It used to assert the packed height beside the position, so that the two
+/// were compared rather than merely both present. There is nothing left to
+/// compare: the id plane carries no height at all, which is the phase's own
+/// point arriving. What is left is the exactness — and the fixture below is
+/// still chosen so that a pipeline which quantised anywhere would fail it.
 ///
 /// The quad is flat and one point over one tile, so every fragment of it has
 /// the same position and any pixel inside the shape answers — no clamp is in
@@ -2352,10 +2388,10 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
     let statics = StaticAtlas::pack([]).expect("nothing always fits");
 
-    // A height with a fraction the place attachment cannot hold: `15.1` is not
-    // a multiple of a sixteenth, and neither fraction of the tile is a multiple
-    // of a hundred-and-twenty-seventh. That is the point — a test at `15.0` and
-    // `0.5` would pass through the old packing untouched and prove nothing.
+    // A height no sixteenth and a fraction no hundred-and-twenty-seventh can
+    // hold: `15.1` is not a multiple of either. That is the point — a test at
+    // `15.0` and `0.5` would pass through the retired packing untouched and
+    // prove nothing, so this one fails if anything on the path quantises.
     let tile = [300.0, 400.0];
     let world = [tile[0] + 0.3, tile[1] + 0.7, 15.1];
     let corner = |x: f32, y: f32| MeshFaceVertex {
@@ -2364,6 +2400,7 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
         depth: 0.4,
         id: 0,
         tile,
+        normal: Stance::Flat.normal(),
     };
     let vertices = [
         corner(54.0, 54.0),
@@ -2391,20 +2428,133 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
         &rows,
         128,
     );
-    assert_eq!(places.at(64, 64)[3] & 3, 2, "nothing was drawn at (64, 64)");
+    assert_eq!(
+        gbuffer::ids_kind(places.at(64, 64)),
+        Some(Kind::Static),
+        "nothing was drawn at (64, 64)",
+    );
     assert_eq!(
         places.position_at(64, 64),
         [world[0], world[1], world[2], 1.0],
         "a mesh face's fragment does not carry the position the pass computed",
     );
-    // And what the old fields say about the same fragment, so that the two are
-    // compared rather than merely both present: the packing is off by up to a
-    // thirty-second of a `z` unit and a two-hundred-and-fifty-fourth of a tile,
-    // which is the quantisation this plane removes.
-    let place = places.at(64, 64);
-    let packed_z = openshard_client_render::place::unpacked_height(place[2]);
-    assert_ne!(packed_z, world[2], "the packed height happened to be exact");
-    assert!((packed_z - world[2]).abs() <= 0.5 / 16.0);
+}
+
+/// A mesh face's pixel carries **its own face's** normal, and the two faces of
+/// one flight carry two different ones.
+///
+/// The other half of `docs/lighting_rebuild.md` phase 2's "done when", and the
+/// mesh pass is the producer to ask it of for the same reason the position half
+/// asks it here: its normals are measured geometry — `crate::mesh::Face::normal`,
+/// one per face — rather than a stance a reader turns back into a direction.
+///
+/// Two faces in one draw, a tread's top and its riser, because one face alone
+/// cannot fail this: a plane that wrote a constant would pass it. And the place
+/// attachment is asserted beside them, saying `MeshFace` for **both** — that
+/// sentinel is a routing tag and not a facing, so the attachment genuinely
+/// cannot tell these two surfaces apart and the plane genuinely can. That is
+/// the whole of what this phase moved.
+#[test]
+fn two_mesh_faces_carry_their_own_two_normals() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
+    use openshard_client_render::place::Stance;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([]).expect("nothing always fits");
+
+    let tile = [300.0, 400.0];
+    // One square of screen per face, far enough apart that neither's pixels are
+    // the other's. The projection this pass is handed maps a view-space
+    // coordinate to the pixel of the same number — see `Target::whole` — so
+    // these are the pixels the two faces land on.
+    let quad = |from: f32, id: u32, normal: [f32; 3]| {
+        let corner = |x: f32, y: f32| MeshFaceVertex {
+            screen: Vec2::new(x, y),
+            world: [tile[0] + 0.5, tile[1] + 0.5, 15.0],
+            depth: 0.4,
+            id,
+            tile,
+            normal,
+        };
+        let to = from + 20.0;
+        [
+            corner(from, from),
+            corner(to, from),
+            corner(to, to),
+            corner(from, from),
+            corner(to, to),
+            corner(from, to),
+        ]
+    };
+    // A tread's top looks up; its riser looks east. `Prism::mesh` builds both
+    // from exactly these two shapes, and `Stance::normal` is the same table.
+    let top = Stance::Flat.normal();
+    let riser = Stance::FaceEast.normal();
+    let vertices: Vec<MeshFaceVertex> = quad(54.0, 0, top)
+        .into_iter()
+        .chain(quad(84.0, 1, riser))
+        .collect();
+    let rows = [
+        MeshFaceRow {
+            tile: (300, 400),
+            stance: Stance::Flat,
+            owner: 0,
+        },
+        MeshFaceRow {
+            tile: (300, 400),
+            stance: Stance::FaceEast,
+            owner: 0,
+        },
+    ];
+
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &[],
+        &vertices,
+        &rows,
+        128,
+    );
+    for (x, y, what) in [(64, 64, "the top"), (94, 94, "the riser")] {
+        assert_eq!(
+            gbuffer::ids_kind(places.at(x, y)),
+            Some(Kind::Static),
+            "nothing was drawn on {what}",
+        );
+    }
+    assert_eq!(
+        places.normal_at(64, 64),
+        [top[0], top[1], top[2], 1.0],
+        "a tread's top does not carry its own normal",
+    );
+    assert_eq!(
+        places.normal_at(94, 94),
+        [riser[0], riser[1], riser[2], 1.0],
+        "a riser does not carry its own normal",
+    );
+    // And the field the lighting used to read this from cannot separate them:
+    // both fragments' stance bits hold the routing sentinel, which names no
+    // direction at all.
+    for (x, y) in [(64, 64), (94, 94)] {
+        assert_eq!(
+            gbuffer::ids_stance(places.at(x, y)),
+            Stance::MeshFace as u32,
+            "the id word stopped carrying the sentinel at ({x}, {y})",
+        );
+    }
+    // A pixel nothing drew is the cleared value, which is how the fourth
+    // channel earns its place: `(0, 0, 0, 0)` is "no fragment here" and
+    // `(0, 0, 0, 1)` is "a fragment with no facing", and the two must not read
+    // alike.
+    assert_eq!(places.normal_at(4, 4), [0.0; 4], "the clear is not all zeros");
 }
 
 /// Draw ground, statics and any mesh faces standing on them, and read back the
@@ -2423,7 +2573,10 @@ fn render_places(
     mesh_rows: &[openshard_client_render::mesh_face::MeshFaceRow],
     size: u32,
 ) -> Places {
-    assert_eq!(size * 8 % 256, 0, "a row copy has to be 256-byte aligned");
+    // The narrowest plane decides it: the id plane is four bytes a texel where
+    // the `place` attachment it replaced was eight, so a size that used to be
+    // exactly on the boundary is now half of one.
+    assert_eq!(size * 4 % 256, 0, "a row copy has to be 256-byte aligned");
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let world = openshard_client_render::blit::world_texture(device, size, size);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2434,13 +2587,19 @@ fn render_places(
     let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
 
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("places"),
-        size: u64::from(size) * u64::from(size) * 8,
+        label: Some("ids"),
+        size: u64::from(size) * u64::from(size) * 4,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
     let position_readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("positions"),
+        size: u64::from(size) * u64::from(size) * 16,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let normal_readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("normals"),
         size: u64::from(size) * u64::from(size) * 16,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
@@ -2491,8 +2650,9 @@ fn render_places(
             },
         );
     };
-    copy(gbuffer.place(), &readback, 8);
+    copy(gbuffer.ids(), &readback, 4);
     copy(gbuffer.position(), &position_readback, 16);
+    copy(gbuffer.normal(), &normal_readback, 16);
     queue.submit([encoder.finish()]);
 
     let read = |buffer: &wgpu::Buffer| {
@@ -2514,45 +2674,58 @@ fn render_places(
         width: size,
         bytes: read(&readback),
         positions: read(&position_readback),
+        normals: read(&normal_readback),
     }
 }
 
-/// The place attachment read back: four `u16` channels a texel.
+/// The G-buffer read back: three planes over one frame's pixels.
 struct Places {
     width: u32,
+    /// The id plane — one `u32` a texel, `crate::gbuffer::pack_ids`'s layout.
     bytes: Vec<u8>,
-    /// The position plane over the same pixels — read back with the place one
+    /// The position plane over the same pixels — read back with the id one
     /// and never apart from it, because the two are one frame's answer and a
     /// fixture that copied them from different draws would compare a fragment
     /// against a different fragment.
     positions: Vec<u8>,
+    /// And the normal plane over the same pixels, on the same terms.
+    normals: Vec<u8>,
 }
 
 impl Places {
-    /// `(x, y, z + 128, kind)` at one pixel.
-    fn at(&self, x: u32, y: u32) -> [u16; 4] {
-        let start = ((y * self.width + x) * 8) as usize;
-        let mut out = [0u16; 4];
-        for (channel, slot) in out.iter_mut().enumerate() {
-            let at = start + channel * 2;
-            *slot = u16::from_le_bytes([self.bytes[at], self.bytes[at + 1]]);
-        }
-        out
+    /// The id word at one pixel — kind, stance and row, and
+    /// `crate::gbuffer`'s three readers are how to take it apart.
+    fn at(&self, x: u32, y: u32) -> u32 {
+        let start = ((y * self.width + x) * 4) as usize;
+        u32::from_le_bytes([
+            self.bytes[start],
+            self.bytes[start + 1],
+            self.bytes[start + 2],
+            self.bytes[start + 3],
+        ])
     }
 
     /// `(x, y, z, 1)` at one pixel — [`openshard_client_render::gbuffer`]'s
     /// position plane, the number itself rather than the fields above.
     fn position_at(&self, x: u32, y: u32) -> [f32; 4] {
-        let start = ((y * self.width + x) * 16) as usize;
+        Self::float_at(&self.positions, self.width, x, y)
+    }
+
+    /// `(x, y, z, 1)` again, and this one is a direction:
+    /// [`openshard_client_render::gbuffer`]'s normal plane.
+    fn normal_at(&self, x: u32, y: u32) -> [f32; 4] {
+        Self::float_at(&self.normals, self.width, x, y)
+    }
+
+    /// One texel of either of the two `Rgba32Float` planes — they are read the
+    /// same way because they are the same format, and saying so once is what
+    /// keeps the third from arriving with its own copy of the arithmetic.
+    fn float_at(plane: &[u8], width: u32, x: u32, y: u32) -> [f32; 4] {
+        let start = ((y * width + x) * 16) as usize;
         let mut out = [0f32; 4];
         for (channel, slot) in out.iter_mut().enumerate() {
             let at = start + channel * 4;
-            *slot = f32::from_le_bytes([
-                self.positions[at],
-                self.positions[at + 1],
-                self.positions[at + 2],
-                self.positions[at + 3],
-            ]);
+            *slot = f32::from_le_bytes([plane[at], plane[at + 1], plane[at + 2], plane[at + 3]]);
         }
         out
     }
@@ -3984,16 +4157,17 @@ const PARITY_TILE: u32 = 8;
 /// formula against another, and a synthetic layout means the *expected* value
 /// comes from a tile this function names rather than from a second copy of the
 /// camera's arithmetic.
-fn parity_place(px: u32, py: u32) -> (u16, u16, u16, u16) {
+fn parity_place(px: u32, py: u32) -> (u16, u16, f32, f32) {
     let (cx, cy) = openshard_client_render::scene::CENTRE;
     let tile_x = cx - 4 + (px / PARITY_TILE) as u16;
     let tile_y = cy - 4 + (py / PARITY_TILE) as u16;
-    // Sixteenths of a tile, which is what a seven-bit fraction holds exactly:
-    // a value the shader divides by 127 and the CPU side divides by 127, so the
-    // two agree on the number and not merely on the intent.
-    let sub_x = (px % PARITY_TILE) as u16 * 16;
-    let sub_y = (py % PARITY_TILE) as u16 * 16;
-    (tile_x, tile_y, sub_x, sub_y)
+    // Sixteen hundred-and-twenty-sevenths of a tile a pixel. The grain is what
+    // the retired attachment's seven-bit fraction could hold exactly, kept
+    // rather than rounded off to eighths so that these fixtures' numbers did not
+    // all move on the day the position became a float — a parity margin re-taken
+    // for a reason that is not the one under test is a margin nobody can read.
+    let step = |along: u32| (along % PARITY_TILE) as f32 * 16.0 / 127.0;
+    (tile_x, tile_y, step(px), step(py))
 }
 
 /// What every pixel of a parity fixture *is*: a surface, at a height, of an
@@ -4120,8 +4294,9 @@ fn parity_frame(
         })
     };
 
-    let mut texels: Vec<u16> = Vec::with_capacity((width * height * 4) as usize);
+    let mut ids: Vec<u32> = Vec::with_capacity((width * height) as usize);
     let mut positions: Vec<f32> = Vec::with_capacity((width * height * 4) as usize);
+    let mut normals: Vec<f32> = Vec::with_capacity((width * height * 4) as usize);
     for py in 0..height {
         for px in 0..width {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
@@ -4158,27 +4333,21 @@ fn parity_frame(
             // itself and not this fixture's reading of it.
             let fragment = openshard_client_render::gbuffer::Fragment {
                 tile: (x, y),
-                sub: (
-                    f32::from(sub_x) / openshard_client_render::place::SUB_TILE,
-                    f32::from(sub_y) / openshard_client_render::place::SUB_TILE,
-                ),
+                sub: (sub_x, sub_y),
                 z: f32::from(z),
                 kind,
                 stance,
             };
-            // A static's or a mobile's *tile* comes from the row now — only
-            // that moved, and only in the place plane: the id goes over the two
-            // words the tile occupies there, and the position plane keeps
-            // saying where the fragment is.
+            // A static's or a mobile's *tile* comes from the row — that is what
+            // the id plane names, and the position plane keeps saying where the
+            // fragment itself is.
             let id = match kind {
                 openshard_client_render::place::Kind::Static => id_of(x, y),
                 _ => ground_id_of(x, y),
             };
-            let mut place = fragment.place();
-            place[0] = (id & 0xFFFF) as u16;
-            place[1] = (id >> 16) as u16;
-            texels.extend_from_slice(&place);
+            ids.push(fragment.ids(id));
             positions.extend_from_slice(&fragment.position());
+            normals.extend_from_slice(&fragment.normal());
         }
     }
     let upload = |texture: &wgpu::Texture, bytes: &[u8], stride: u32| {
@@ -4202,10 +4371,12 @@ fn parity_frame(
             },
         );
     };
-    let bytes: Vec<u8> = texels.iter().flat_map(|word| word.to_le_bytes()).collect();
-    upload(gbuffer.place(), &bytes, 8);
+    let bytes: Vec<u8> = ids.iter().flat_map(|word| word.to_le_bytes()).collect();
+    upload(gbuffer.ids(), &bytes, 4);
     let bytes: Vec<u8> = positions.iter().flat_map(|value| value.to_le_bytes()).collect();
     upload(gbuffer.position(), &bytes, 16);
+    let bytes: Vec<u8> = normals.iter().flat_map(|value| value.to_le_bytes()).collect();
+    upload(gbuffer.normal(), &bytes, 16);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("surface"),
@@ -4384,10 +4555,7 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
         (cx, cy),
         "the lit pixel has to be on the flight's own tile"
     );
-    let over = Vec2::new(
-        f32::from(x) + f32::from(sub_x) / 127.0,
-        f32::from(y) + f32::from(sub_y) / 127.0,
-    );
+    let over = Vec2::new(f32::from(x) + sub_x, f32::from(y) + sub_y);
 
     let lighting = Lighting {
         ambient: openshard_client_render::light::NIGHT,
@@ -4618,10 +4786,7 @@ fn exact_walk_disagreements(lighting: &Lighting, surface: Surface, z: i8) -> Exa
             let spot = openshard_client_render::light::Spot {
                 surface,
                 ..openshard_client_render::light::Spot::at(
-                    Vec2::new(
-                        f32::from(x) + f32::from(sub_x) / 127.0,
-                        f32::from(y) + f32::from(sub_y) / 127.0,
-                    ),
+                    Vec2::new(f32::from(x) + sub_x, f32::from(y) + sub_y),
                     f32::from(z),
                     own_tile,
                 )

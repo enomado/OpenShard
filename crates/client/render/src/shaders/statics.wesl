@@ -16,7 +16,7 @@
 
 import package::place_format::{
     KIND_MASK, SUB_TILE, STANCE_FLAT, STANCE_FACE_NORTH, STANCE_FACE_EAST,
-    STANCE_FACE_SOUTH, STANCE_FACE_WEST, STANCE_CORNER, pack_place,
+    STANCE_FACE_SOUTH, STANCE_FACE_WEST, STANCE_CORNER, pack_ids, outward,
 };
 
 struct Viewport {
@@ -119,11 +119,9 @@ const HALF_TILE_WIDTH: f32 = TILE_WIDTH * 0.5;
 const HALF_TILE_HEIGHT: f32 = 22.0;
 
 // `crate::place::Stance`, in the four bits `Place::packed` writes it to — the
-// *instance* word's own bits, a different word from the attachment's own
-// `PLACE_STANCE_SHIFT` (imported above): the third channel there is a `z + 128`
-// in the low eight bits of a `u16`, and the eight above it were spare. The
-// numbers here are pinned on the Rust side; nothing but a person reading both
-// files can check that these agree with them.
+// *instance* word's own bits, a different word from the G-buffer's own
+// `IDS_STANCE_SHIFT`. The numbers here are pinned on the Rust side; nothing
+// but a person reading both files can check that these agree with them.
 const STANCE_SHIFT: u32 = 16u;
 const STANCE_MASK: u32 = 15u;
 
@@ -131,11 +129,20 @@ const STANCE_MASK: u32 = 15u;
 // it came from.
 struct FragmentOut {
     @location(0) color: vec4<f32>,
-    @location(1) place: vec4<u32>,
-    // And where in the world that fragment is, unpacked — `crate::gbuffer`.
-    // The same three numbers `place` carries as an id into a row, a seven-bit
-    // fraction and a `z` in sixteenths, before any of that quantisation.
+    // What drew this fragment and which row it came from —
+    // `crate::gbuffer::IDS_FORMAT`.
+    @location(1) ids: u32,
+    // And where in the world that fragment is — `crate::gbuffer`. The point
+    // itself, and not the tile-local fraction and sixteenths of a `z` unit the
+    // id word used to carry beside the id.
     @location(2) position: vec4<f32>,
+    // And which way this fragment's surface looks — `crate::gbuffer::
+    // NORMAL_FORMAT`. This pass is where a **corner** is taken apart, which is
+    // the whole reason the normal is written here rather than derived by the
+    // reader: a corner's two faces are two halves of one picture and one pixel
+    // is on one of them, and by the time anything downstream sees this fragment
+    // that decision has already been made and thrown away.
+    @location(3) normal: vec4<f32>,
 };
 
 @vertex
@@ -336,31 +343,31 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         z = base + ((sub.x + sub.y - 1.0) * HALF_TILE_HEIGHT - down) / Z_STEP;
     }
 
-    // The stance rides into the attachment above the height, in the eight bits a
-    // `z` leaves free in a `u16`. It is not a duplicate of what the fraction
-    // already says: a fraction says *where in its tile* a pixel is, and a face
-    // says **which way that surface looks** — which is the one thing the lighting
-    // cannot recover, because a wall's two faces are one tile and one plane. See
-    // `crate::place::Place` and `blit.wgsl`'s `outward`.
+    // The stance rides into the id word above the kind, and it is not a
+    // duplicate of what the position below already says: a position says
+    // *where in its tile* a pixel is, and a face says **which way that surface
+    // looks** — which the lighting cannot recover from a point, because a
+    // wall's two faces are one tile and one plane. It is read for two things
+    // now and neither is a normal: which instance buffer a mesh face's id
+    // addresses, and the shadow walk's own-run test. See `crate::place::Place`.
     //
-    // The **tile**'s `x`/`y` no longer ride here — `docs/gbuffer.md` step 3
-    // moved them to this pass's own instance buffer, read back by `blit.wgsl`
-    // as `instances[id]`, since the whole tile is the same two numbers on
-    // every one of a sprite's pixels. `z` and `sub` still are not: unlike the
-    // tile itself, both are this fragment's own — `z` is the height along a
-    // standing face computed above, and `sub` is where in the tile this pixel
-    // sits, which is what keeps a row of wall tiles reading as one continuous
-    // surface across the seam between them (see the paragraph above) rather
-    // than each tile lighting as a flat block. Carrying either from the row —
-    // one value for the whole instance — would flatten exactly what they
-    // exist to vary. Only the id replaces `x`/`y`; everything else here is
-    // unchanged from before this pass had one.
-    out.place = pack_place(id, z, stance, (in.place.y >> 8u) & KIND_MASK, sub);
+    // Nothing else rides here. The **tile**'s `x`/`y` went to this pass's own
+    // instance buffer at `docs/gbuffer.md` step 3, read back by `blit.wgsl` as
+    // `face_instances[id]`, since the whole tile is the same two numbers on
+    // every one of a sprite's pixels; `z` and `sub` went to the position plane
+    // at `docs/lighting_rebuild.md` phase 2, since both are this fragment's own
+    // and both were being quantised on the way.
+    out.ids = pack_ids(id, stance, (in.place.y >> 8u) & KIND_MASK);
     // And the same fragment as a point. The tile comes off the instance's own
     // first word — the one `blit.wgsl` fetches back out of `face_instances[id]`
     // — so this is what that pass reconstructs, computed where the two halves
     // are still both exact instead of after each has been through a field.
     let tile = vec2<f32>(f32(in.place.x & 0xFFFFu), f32(in.place.x >> 16u));
     out.position = vec4<f32>(tile + sub, z, 1.0);
+    // And the normal, off the stance the corner branch above already resolved.
+    // The fourth channel is coverage and not part of the vector: a zero normal
+    // is a real answer here — an upright picture has no side — so "nothing drew
+    // this pixel" needs a channel of its own to be distinguishable from it.
+    out.normal = vec4<f32>(outward(stance), 1.0);
     return out;
 }

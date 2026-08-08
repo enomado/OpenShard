@@ -23,7 +23,7 @@ pub struct MeshFaceRow {
     /// The tile this face's static stands on.
     pub tile: (u16, u16),
     /// This face's real stance — never [`Stance::MeshFace`] itself, which is
-    /// only ever the attachment's own routing sentinel, not a row's content.
+    /// only ever the id word's own routing sentinel, not a row's content.
     pub stance: Stance,
     /// Which occluder of `tile` the static this face belongs to is, or
     /// [`OwnerId::NONE`](crate::occlusion::OwnerId::NONE) for one this frame's
@@ -104,15 +104,30 @@ pub struct MeshFaceVertex {
     /// shadow-raymarch anomaly, an isolated lit pixel on an otherwise
     /// evenly-shadowed flat face, sitting exactly on that edge.
     pub tile: [f32; 2],
+    /// This face's own unit normal — [`crate::mesh::Face::normal`], carried
+    /// whole rather than named by [`MeshFaceRow::stance`] and read back out of
+    /// one.
+    ///
+    /// The two say the same thing today, and only because
+    /// [`crate::place::Stance::of_normal`] refuses anything but the five
+    /// vectors [`crate::facing::Prism::mesh`] builds — a mesh whose faces are
+    /// not axis-aligned would have a normal no stance can name, and this is the
+    /// field that would still be right. `docs/lighting_rebuild.md` phase 2 is
+    /// the decision to carry it: the G-buffer's normal plane is written from
+    /// here, and nothing downstream turns a stance into a direction any more.
+    ///
+    /// Flat across the face, the same as `id` and `tile` — a [`crate::mesh::Face`]
+    /// is planar, so there is nothing for the rasteriser to interpolate.
+    pub normal: [f32; 3],
 }
 
 impl MeshFaceVertex {
     /// Bytes one vertex occupies: `Float32x2` (screen), `Float32x3` (world),
-    /// `Float32` (depth), `Uint32` (id) and `Float32x2` (tile), with no
-    /// padding to match — unlike `SpriteQuad`, nothing reads this buffer a
-    /// second time as storage, so there is no `blit.wgsl`-side mirror whose
-    /// alignment to round up to.
-    pub const STRIDE: u64 = 36;
+    /// `Float32` (depth), `Uint32` (id), `Float32x2` (tile) and `Float32x3`
+    /// (normal), with no padding to match — unlike `SpriteQuad`, nothing reads
+    /// this buffer a second time as storage, so there is no `blit.wgsl`-side
+    /// mirror whose alignment to round up to.
+    pub const STRIDE: u64 = 48;
 
     /// Append this vertex to a vertex buffer's upload bytes.
     pub fn write(&self, out: &mut Vec<u8>) {
@@ -127,7 +142,7 @@ impl MeshFaceVertex {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out.extend_from_slice(&self.id.to_le_bytes());
-        for value in self.tile {
+        for value in self.tile.iter().chain(self.normal.iter()) {
             out.extend_from_slice(&value.to_le_bytes());
         }
     }
@@ -167,6 +182,7 @@ mod tests {
             depth: 0.75,
             id: 0xABCD,
             tile: [100.0, 100.0],
+            normal: [0.0, 0.0, 1.0],
         };
         let mut out = Vec::new();
         vertex.write(&mut out);
@@ -180,5 +196,8 @@ mod tests {
         assert_eq!(&out[24..28], &0xABCDu32.to_le_bytes(), "id");
         assert_eq!(&out[28..32], &100.0f32.to_le_bytes(), "tile.x");
         assert_eq!(&out[32..36], &100.0f32.to_le_bytes(), "tile.y");
+        assert_eq!(&out[36..40], &0.0f32.to_le_bytes(), "normal.x");
+        assert_eq!(&out[40..44], &0.0f32.to_le_bytes(), "normal.y");
+        assert_eq!(&out[44..48], &1.0f32.to_le_bytes(), "normal.z");
     }
 }

@@ -159,7 +159,7 @@ use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::tiledata::{StaticTile, TileFlags};
 
-use oracle::{Shade, dump, read_place, segment_clear_of_box};
+use oracle::{Shade, dump, read_gbuffer, segment_clear_of_box};
 
 /// The graphic every flight of the run is built from — a real climbable
 /// staircase's own number, and the key [`Occlusion::owner_at`] joins on.
@@ -203,7 +203,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// The side a climber approaches a riser from: the face opposite the one the
@@ -1338,6 +1342,7 @@ fn main() {
                     depth: DEPTH,
                     id,
                     tile: [f32::from(stands.x), f32::from(stands.y)],
+                    normal: face.normal,
                 });
             }
         }
@@ -1396,7 +1401,7 @@ fn main() {
     // "whose pixel is this, and where in the world is its fragment". Read once,
     // here, because the blit below neither writes it nor changes it however
     // many views are dumped.
-    let drawn = read_place(&device, &queue, gbuffer.place(), width, height);
+    let drawn = read_gbuffer(&device, &queue, &gbuffer, width, height);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("surface"),
@@ -1678,15 +1683,11 @@ fn main() {
             {
                 continue;
             }
-            // The fragment's own world position, off the attachment: the tile
-            // from the row this pixel names, the rest from the texel. This is
-            // the point the shader lit, quantisation and all.
-            let row = &rows[texel.id as usize];
-            let point = (
-                f64::from(row.tile.0) + texel.sub.0,
-                f64::from(row.tile.1) + texel.sub.1,
-                texel.z,
-            );
+            // The fragment's own world position, read whole off the position
+            // plane. This is the point the shader lit — exactly, now: the tile
+            // and the fraction it used to be added up from were each quantised
+            // on the way into the attachment that carried them.
+            let point = texel.at;
             let shade = Shade::of([
                 shadow_pixels[pixel * 4],
                 shadow_pixels[pixel * 4 + 1],
@@ -1728,6 +1729,9 @@ fn main() {
                 Part::Top => Surface::Flat,
                 Part::Riser => Surface::Face(riser_face),
             };
+            // The cell the walk starts from is the mesh face's own tile, off the
+            // row this pixel's id names — not `floor` of the position.
+            let row = &rows[texel.id as usize];
             let spot = light::Spot {
                 at: Vec2::new(point.0 as f32, point.1 as f32),
                 z: point.2 as f32,

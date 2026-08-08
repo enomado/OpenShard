@@ -25,8 +25,9 @@ single flight sit inside that band against `3940` of genuine penumbra, and the
 band's price peaks exactly where a flame lies in a surface's own plane —
 `0.214` of a channel per pixel, against `0.020` half a step away.
 
-**2. The `place` attachment packs a fragment's height into eight bits and a
-four-bit fraction**, so a fragment's own position is not exactly known — so a
+**2. The `place` attachment packed a fragment's height into eight bits and a
+four-bit fraction** *(retired at phase 2 — the constants it justified are not)*,
+so a fragment's own position was not exactly known — so a
 shadow ray must start away from where it really is. `STAND_OFF = 2/127` of a tile
 and `ON_TOP = 1/128` of a `z` unit are **numbers taken from the byte layout**,
 not from any statement about surfaces. Their price, measured with the light
@@ -58,7 +59,7 @@ something reconstructed downstream:
 | quantity | where it lives | unit |
 |---|---|---|
 | fragment position | G-buffer, `Rgba32Float` | tiles, `z` **in tiles** |
-| surface normal | G-buffer, `Rg16Snorm`, octahedral | unit vector |
+| surface normal | G-buffer, `Rgba32Float` (was to be `Rg16Snorm`, octahedral — see phase 2) | unit vector |
 | albedo | G-buffer, `Rgba8UnormSrgb` | linear after decode |
 | primitive identity | G-buffer, `R32Uint` | opaque id |
 | light accumulation | offscreen, `Rgba16Float` | linear radiance |
@@ -82,7 +83,7 @@ Named, so the plan can be checked against the tree:
 | `FLAME_DEPTH`, `pierces`, `crosses`'s softening, `SOFT_CROSSING_*` | an area light and N shadow rays |
 | `(1 − d)²` falloff | windowed inverse square |
 | `knee()` | a tonemap on HDR |
-| `place`'s `z + 128` · fraction · stance packing | position and normal as data |
+| ~~`place`'s `z + 128` · fraction · stance packing~~ **gone, phase 2** | position and normal as data; an id word for what is left |
 
 `FLAME_SPREAD`, `RAY_CUTOFF` and `MAX_WALK_STEPS` survive: a light does have a
 size, a ray does have a cutoff, and a walk does have a step budget. They stop
@@ -316,6 +317,9 @@ flattening it. The middle picture, linear light with the old numbers, is what
 its readers (select, outline, tooltips, every oracle in `examples/`) move to `ids`.
 *Done when:* a `View::Normal` shows the geometry's own normals, and a test asserts
 the stored position equals the world position the mesh pass computed, exactly.
+**Both done** — position and normal below, and the id plane after them retired
+the `place` attachment outright. What is left of the phase is albedo, which is
+phase 6's: a mesh face has none.
 
 *Position landed.* `crates/client/render/src/gbuffer.rs` is the set — a `Gbuffer`
 owning the planes and a `Views` lending them, so the two still to come are one
@@ -338,9 +342,89 @@ records. **The position is clamped into its tile** exactly where `pack_place`
 clamps the fraction, so this step changed precision and nothing else; the clamp
 goes at phase 4, where the cell stops being a fact separate from the position.
 
-Left: the normal plane and `View::Normal`, the id plane, albedo for a mesh face
-(which has none — phase 6), and `place`'s own retirement once nothing reads its
-fraction, height or stance.
+*Normal landed.* The plane, `View::Normal`, and — the thing worth saying first —
+**a normal is written by the pass that knows it now, not derived by the pass that
+reads it.** `blit.wesl`'s `outward(stance)` is gone from the lighting entirely:
+`statics.wesl` writes `outward` of the stance it has *just* resolved a corner
+into, `mesh_face.wesl` carries `mesh::Face::normal` on its own vertices —
+measured geometry, the one producer whose normal was never a stance — and
+`ground.wesl` writes a zero outright. That last one closes a `select` on the kind
+that had been sitting in the reader: land and a wall's flat cap are one stance
+and only one of them wants the half-space gate, and the pass that knows which it
+is drawing is the one that says so now. `Stance::normal` is the Rust twin,
+`Stance::of_normal`'s inverse, and the two round-trip in a test.
+`two_mesh_faces_carry_their_own_two_normals` is the phase's other half of "done
+when": a tread's top and its riser, one draw, two normals — and the place
+attachment asserted beside them holding `MeshFace` for **both**, which is the
+measure of it. The attachment cannot tell those two surfaces apart. The plane
+can.
+
+Two things it did not do the way this document said. **The format is
+`Rgba32Float` and not `Rg16Snorm`, octahedral.** Every 16-bit norm format is
+behind `wgpu::Features::TEXTURE_FORMAT_16BIT_NORM`, which is native-only and not
+in WebGPU's core set — so the row in the table above was never available. The
+nearest compact renderable format, `Rgba16Float`, is not taken either: the
+hand-written producers (`plan.rs`'s diagnostic pictures, `tests/`' fixtures)
+*write* this plane from the CPU and there is no `f16` on that side, so it would
+mean a hand-rolled encoder — a second spelling of a float format with no compiler
+comparing the two. Octahedral has a second problem of its own besides: it has no
+zero, and **the zero vector is a value here** — a billboard has no side, and
+phases 6 and 7 are the work of leaving less of that in a frame, not of pretending
+it is absent today.
+
+And **the client now asks an adapter for more than WebGPU's guaranteed
+minimum.** A world pass writes the picture and every plane in one draw, and
+`maxColorAttachmentBytesPerSample` bounds the total: the floor is 32 and the set
+was already at exactly 32 before this — picture 8, `place` 8, position 16 — so
+*no* fourth plane fitted, in any format. `gbuffer::required_limits` is the one
+place that asks, `attachment_bytes_per_sample` sums the real per-format table
+rather than the widths a person reads off the names, and
+`a_g_buffer_costs_what_it_says` pins the total and asserts it is past the
+floor. The cost is stated plainly rather than absorbed: a device reporting only
+the minimum cannot run this client. Phase 2's own end brings it back — the target
+layout is position, normal, albedo and ids at exactly 32, with no separate
+picture beside them, because the albedo *is* the picture. The id plane took the
+first four of the sixteen back on arrival (48 → 44), which is why it went next
+and for a reason that had nothing to do with its readers.
+
+*The id plane landed, and it is where the attachment ended.* `place`'s eight
+bytes a fragment were an id, a height in whole units and sixteenths, a stance
+and seven bits of tile-local `x` and `y`. The position plane had already taken
+the height and the fraction and the normal plane the facing the stance stood in
+for, so what was left was **six bits and an id** — `gbuffer::pack_ids`, one
+`R32Uint`, kind in the low two bits, stance in four above it, the row in the
+twenty-six above that. `crate::place` keeps `Kind`, `Stance` and `Place` — the
+vocabulary and the *instance row*'s own two words — and carries no attachment
+format at all; `packed_height`, `unpacked_height`, `Z_FRAC_*`, `SUB_TILE`,
+`STANCE_SHIFT`, `FORMAT`, `texture` and `CLEAR` are gone, along with
+`place_format.wesl`'s `pack_place` and `unpack_place_z`.
+
+**The kind is at the bottom of the word on purpose.** The clear value is zero
+and `Kind::Nothing` is zero, so a pixel nothing drew and a pixel a pass stamped
+as nothing are the same number — which is the invariant every reader's first
+branch rests on, and the one thing a layout can quietly break.
+`nothing_drawn_and_nothing_cleared_are_one_kind` and
+`an_id_word_holds_three_things_and_gives_all_three_back` are the two halves of
+it.
+
+**It bought a third of the budget back, which is why it went next.**
+`ATTACHMENT_BYTES_PER_SAMPLE` is 44 against 48, and the twelve still over
+WebGPU's floor of 32 are the normal plane's — see the backlog, which is where
+the octahedral pair now belongs. And the stance survived the move, so the phase
+did not retire it: `blit.wesl` still reads it to route a mesh face's id to its
+own instance buffer and to ask the shadow walk's own-run test which edge a
+fragment stands on. **Phase 4 is what retires the second**; the first goes when
+a mesh face stops being a pass of its own.
+
+Two things it changed that are not the format. `parity_place`'s sub-tile
+fraction is an `f32` rather than sixteen-of-a-hundred-and-twenty-seven, kept at
+the same grain so that no parity margin moved for a reason that is not under
+test. And `View::Place`'s checkerboard is drawn from the **tile** now: it was
+taken from the two halves of the *id*, so a frame's squares counted instance
+rows rather than tiles, and it went unnoticed because a diagnostic is read for
+whether a gradient is there and both versions have one.
+
+Left: albedo for a mesh face, which has none — phase 6.
 
 **Phase 3 — the BRDF.** `N·L` replaces `faces`. `FACE_EDGE` is deleted.
 *Done when:* the light oracle's "inside FACE_EDGE" class no longer exists, and its
@@ -417,7 +501,7 @@ is here, in one list.
 | [`lighting_geometry.md`](lighting_geometry.md) | box → mesh occluders, never started | **cheaper after phase 4**, which makes primitives addressable by id. The choice of primitive shape stays its own question |
 | [`lighting_height.md`](lighting_height.md) | the height track: four landed phases and a long backlog | **the backlog is mostly deleted rather than fixed** — see the mapping below |
 | [`lighting_reference.md`](lighting_reference.md) | the path tracer, a third opinion with no shared arithmetic | **becomes phase 0**, the oracle everything else is judged by |
-| [`gbuffer.md`](gbuffer.md) | the `place` attachment's format, ids, per-face mesh geometry | **phase 2 replaces the format** and inherits every one of its readers. Its open question — how to encode a normal for a non-axis-aligned face — is answered there: octahedral, in the buffer |
+| [`gbuffer.md`](gbuffer.md) | the `place` attachment's format, ids, per-face mesh geometry | **phase 2 replaced the format** and inherited every one of its readers. Its open question — how to encode a normal for a non-axis-aligned face — is answered there: as three floats in a plane of its own, the encoding argued for in phase 2's own account (octahedral, which this document first named, is not a format wgpu will render to under WebGPU's core set) |
 | [`world_coordinates.md`](world_coordinates.md) | a position should carry its own cell; one metric | **half of it is phase 2** (positions as data, `z` in tiles once). The CPU-side type stays its own track |
 
 ### What each phase deletes from `lighting_height.md`'s backlog
@@ -436,7 +520,7 @@ may not still matter:
 | the wire's span rounding to nearest; the exact-tangent definition | **phase 4** — a primitive is not a byte range any more |
 | `boxes.rs` reading `Unreached` as shadowed; `two_cubes.rs`'s old idiom; the projection idiom stated five times; `mesh::Face`/`facing::Face` colliding | **survive** — instrument work, still worth doing |
 | `Occlusion::owner_at`'s linear scan; `selected`/`outlined` stamping `OwnerId::NONE` | **survive**, reshaped by phase 4's ids |
-| `tests/cost.rs` measuring three planes of five; `plan::Wall::top` as an `i32`; hand-copies of the third channel | **survive**, and phase 2 is when they get corrected |
+| `tests/cost.rs` measuring three planes of five; `plan::Wall::top` as an `i32`; hand-copies of the third channel | **survive** — the third channel's copies went with the channel, and the other two are still work |
 
 ### Carried over: work no phase here deletes
 
@@ -483,6 +567,18 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
+- **The normal plane is sixteen bytes a fragment and needs four.** Twelve of the
+  forty-four this client now asks an adapter for are a unit vector stored as
+  three `f32`s, and the only reason is that there is no `f16` on the CPU side
+  writing it. An octahedral pair in an `R32Uint`, packed as integers on both
+  sides the way `place_format.wesl`'s own id word is and pinned by a round trip,
+  would buy the whole of that back — and it needs a value for "no facing", which
+  the id word has spare bits for: twenty-six of its thirty-two are an id, and
+  nothing this client draws needs more than a dozen of them. This was to be done
+  *with* the id plane; it was not, because the id plane on its own was already
+  the step that brought the total under the next thing that would have needed
+  it. It is the whole of what stands between this client and WebGPU's floor
+  today, so it is worth doing before phase 6 makes the budget a question again.
 - `docs/lighting_height.md`'s backlog does not disappear — most of its entries
   are *deleted* by a phase here rather than fixed, and each should be marked with
   which phase kills it rather than left reading as work.
@@ -533,12 +629,16 @@ Things noticed while writing this, not blocking any phase:
   of the frame's own pixels and no longer calls a sweep at all. It is the direct
   claim that fires when the shader's gate is removed, and it was always the only
   half that could.
-- **The parity apparatus was built on `place`'s packing, which is why it could not
-  have survived phase 2 anyway.** `parity_frame` writes the attachment by hand,
-  texel by texel, in the exact `z + 128 | stance` layout — so it is a second
-  author of the format the G-buffer replaces. `parity_place`, `parity_frame` and
-  `Fixture` are kept for now because three surviving tests draw a frame through
-  them; phase 2 rewrites all three against the G-buffer or deletes them.
+- ~~**The parity apparatus was built on `place`'s packing, which is why it could
+  not have survived phase 2 anyway.**~~ **Done.** `parity_frame` and `plan.rs`'s
+  `drawn` both go through `gbuffer::Fragment` for all three planes now, and
+  neither spells a layout. The one thing that changed shape rather than moving:
+  an **id is not a fact a fragment knows** — a world pass has one per instance
+  from the rasteriser, and a fixture's is a row number it can only hand out once
+  it has seen every fragment it means to draw. So both harnesses gather their
+  fragments whole, key a row per distinct tile, and only then pack. `Fragment`
+  carries the tile and `Fragment::ids` takes the id, which is that asymmetry
+  stated in the type.
 - The three-tread flight is rebuilt by hand in five tests in `light.rs` and now a
   sixth in `frame.rs`, each restating the same `Prism::new(Face::North, &[1, 3,
   5])` and the same tile bounds. It is the scene every stair defect is found on
@@ -546,9 +646,9 @@ Things noticed while writing this, not blocking any phase:
 - ~~`renderer.rs`'s `depth_state()` has lost its doc comment: `PLACE_TARGET` was
   inserted between the comment and the function.~~ **Fixed.** The constant moved
   below the function it had been spliced into, and both have their own doc again.
-- ~~Hand-copies of the third channel.~~ **Fixed for the hand-written producers.**
+- ~~Hand-copies of the third channel.~~ **Fixed, and then the channel went.**
   `gbuffer::Fragment` is what a G-buffer texel *is* — tile, sub, `z`, kind,
-  stance — and `place()`/`position()` are the only two spellings of the packing
-  outside the shaders. `plan.rs`'s two closures and `frame.rs`'s `parity_frame`
-  went through it; they had three copies of the fraction's `<< 2`/`<< 9` between
-  them, and the second plane would have made that six.
+  stance — and `ids()`/`position()`/`normal()` are the only three spellings of
+  the layout outside the shaders. `plan.rs`'s two closures and `frame.rs`'s
+  `parity_frame` went through it; they had three copies of the fraction's
+  `<< 2`/`<< 9` between them, and the id plane deleted the fraction outright.

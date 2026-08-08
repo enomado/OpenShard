@@ -220,7 +220,7 @@ use openshard_client_pathtrace::trace as pt_trace;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::tiledata::{StaticTile, TileFlags};
 use oracle::boxes::{BoxSpec, box_mesh, box_owner};
-use oracle::{Shade, dump, read_place, segment_clear_of_box};
+use oracle::{Shade, dump, read_gbuffer, segment_clear_of_box};
 
 fn env_opt(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -244,7 +244,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: openshard_client_render::gbuffer::required_limits(),
+        ..Default::default()
+    }))
+    .ok()
 }
 
 /// A "christmas tree": one tile, two boxes stacked on it, each narrower than
@@ -606,6 +610,7 @@ fn main() {
                     depth: d,
                     id,
                     tile: [f32::from(b.tile.0), f32::from(b.tile.1)],
+                    normal: face.normal,
                 });
             }
         }
@@ -706,7 +711,7 @@ fn main() {
     // writes it nor changes it however many views are dumped — and every oracle
     // in this tool needs it to know whether the pixel it is about to read is a
     // pixel of the surface it is asking about. See [`Drawn`].
-    let drawn = read_place(&device, &queue, gbuffer.place(), width, height_px);
+    let drawn = read_gbuffer(&device, &queue, &gbuffer, width, height_px);
 
     let first = &boxes[0];
     // Picked by looking at a rendered frame, the same way the zoom default
@@ -967,18 +972,12 @@ fn main() {
             if texel.kind != openshard_client_render::place::Kind::Land as u32 {
                 continue;
             }
-            // The fragment's own point: the tile off the ground quad this pixel
-            // names, the fraction and the height off the texel. A hillside's
-            // pixels each carry their own interpolated height, which is why the
-            // `z` is read rather than assumed — this scene's floor is flat, and
-            // a scene whose floor is not would otherwise be asked about the
-            // wrong plane.
-            let tile = ground_quads[texel.id as usize].place;
-            let (x, y, z) = (
-                f64::from(tile.x) + texel.sub.0,
-                f64::from(tile.y) + texel.sub.1,
-                texel.z,
-            );
+            // The fragment's own point, read whole off the position plane — not
+            // a tile looked up in a row plus a fraction and a height taken out
+            // of two `u16`s and added back to it. A hillside's pixels each
+            // carry their own interpolated height, and this is the point the
+            // shader lit.
+            let (x, y, z) = texel.at;
             sampled += 1;
             let offset = pixel * 4;
             // `Shade::lit` is the same half-channel test this line has always
@@ -997,10 +996,14 @@ fn main() {
                 mismatches += 1;
                 // The ground is no occluder, so it owns nothing and is exempt
                 // from nothing — `Spot::flat`'s own default.
+                // The cell the walk starts from is the tile the ground quad this
+                // pixel names stands on — the row, not `floor` of the position,
+                // which is the class of bug `walk`'s own comment records.
+                let tile = ground_quads[texel.id as usize].place;
                 let spot = light::Spot::flat(
                     Vec2::new(x as f32, y as f32),
                     z as f32,
-                    (f64::from(tile.x) as i32, f64::from(tile.y) as i32),
+                    (i32::from(tile.x), i32::from(tile.y)),
                 );
                 let through = light::sample(spot, &lighting)
                     .reaches
@@ -1142,15 +1145,9 @@ fn main() {
                     {
                         continue;
                     }
-                    // The fragment's own world position, off the attachment:
-                    // the tile from the row this pixel names, the rest from the
-                    // texel. This is the point the shader lit.
-                    let row = &rows[texel.id as usize];
-                    let (x, y, z) = (
-                        f64::from(row.tile.0) + texel.sub.0,
-                        f64::from(row.tile.1) + texel.sub.1,
-                        texel.z,
-                    );
+                    // The fragment's own world position, read whole off the
+                    // position plane. This is the point the shader lit.
+                    let (x, y, z) = texel.at;
                     sampled += 1;
                     let gpu_lit = Shade::of([
                         shadow_pixels[pixel * 4],
