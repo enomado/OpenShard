@@ -1193,6 +1193,23 @@ Things noticed while writing this, not blocking any phase:
   test`. The claim it makes is small enough to state as a unit test of
   `walk_cells_*` on a two-solid fixture (a lid whose edge is another solid's own
   plane, a ray leaving that edge), and that is what would catch it being deleted.
+- **A north or west face's normal contradicts the argument `outward` itself
+  makes for it.** `place_format.wesl`'s own doc says the direction is "the
+  *drawn* one… the art only ever draws the two faces an isometric camera can
+  see… so a south face looks towards `+y` and an east face towards `+x`" — and
+  then answers `(0, −1, 0)` for `STANCE_FACE_NORTH`, which is the side turned
+  *away* from the viewer. A north-edge panel's visible surface is its `+y` one:
+  it is the interior of the room, which is exactly what a house's north wall
+  shows. Five graphics out of 1197, which is why nothing has caught it. **Phase
+  6 fixes it by construction and not by editing the table** — the impostor names
+  the face the ray met, and a ray from the camera can only ever meet `+x`, `+y`
+  or `+z` — so what is left is to check whether anything else still reads
+  `outward`, and delete it if not.
+- **The three-tread flight is now rebuilt by hand in a seventh place.**
+  `statics::tests::flight` joined the five in `light.rs` and the one in
+  `frame.rs`, and it is the same `Prism::new(Face::North, &[1, 3, 5])` again. The
+  backlog entry below asking for one constructor is a line longer every time the
+  scene is used, which is the argument for it.
 - **A flame's size is a constant and belongs on the `Light`.** `FLAME_RADIUS` is
   one number for a candle, a torch and a campfire, and `Flame` already carries the
   reach, the colour, the intensity and the flicker — a size is the field that is
