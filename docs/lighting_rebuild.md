@@ -1096,7 +1096,9 @@ by construction and is now a claim somebody has checked with their eyes.
 `View::Normal` over the same place is what it was — every fragment carries a
 facing, a wall reads as a green face, a red end cap and a blue top. And it
 found **two** defects, each its own backlog entry below: a flame's own sprite is
-black, and a roof leaks a line of light along every tile boundary.
+black, and a shadowed floor leaked a line of light along every tile boundary —
+that second one is **fixed**, and it was 6c's own arrival, since the position
+that contradicts its instance's tile is what the impostor started writing.
 
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
@@ -1261,35 +1263,63 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
-- 🚩 **A shadowed roof leaks a one-pixel line of full light along every tile
-  boundary, and it is the walk's cell hazard rather than any of the rules that
-  look like it.** Seen on the lit frame above: a stepped run of roof statics
-  standing in the lamp's shadow, drawn across by thin stair-stepped lines that
-  read *fully visible* in `View::Shadow`. Four fault injections say what it is
-  **not**, and each left the frame unchanged pixel for pixel: `same_run`
-  neutralised, the identity compare forced `false`, the origin-touch rule
-  (`entered == 0 && leaves == 0`) forced `false`, and `RAY_TANGENT_TOLERANCE`
-  widened ten thousandfold from `1e-6` to `1e-2` (198 one-pixel runs became
-  192). Three measurements say what it **is**. The runs are **one pixel wide at
-  1:1, at 2:1 and at 4:1** — a feature of measure zero in the world, since a
+- ~~🚩 **A shadowed floor leaks a one-pixel line of full light along every tile
+  boundary.**~~ **Fixed, and the fix is `light::starting_cell`.** The cause is
+  the last measurement below: the carried tile was allowed to *contradict* the
+  position rather than only to break its ties. `starting_cell` keeps the carried
+  tile for every point of its own tile's closure — both edges included, which is
+  the whole of what it was for — and takes `floor` for a point strictly outside
+  it; both walks and `blit.wesl` now seed from it. On the frame that found it,
+  the narrow leaks over the building's floors went from **303 to 0** (99 remain
+  in the count, all at the wedges' own penumbra edges, where a one-pixel run is
+  what a shadow boundary is). Three gates, each fault-injected to red before
+  being trusted: `a_walk_starts_in_a_cell_its_own_start_point_is_in` over
+  fractions either side of both edges;
+  `a_ray_starting_just_past_its_own_tile_is_stopped_by_the_cell_it_is_in` on
+  both CPU walks; and — for the shader's own second spelling of the rule —
+  `a_fragment_a_hair_inside_a_wall_is_shadowed_by_the_cell_it_drifted_into`,
+  which needed `Fixture` to grow a `drift`, since a parity fragment's fraction
+  runs to `112/127` and could never reach an edge at all. Neutralised in the
+  shader, that pixel reads `241` against its open neighbour's `241`.
+  **The direction was half the fixture** and the first version of the CPU test
+  got it wrong: a ray heading *away* from the carried tile seeds a negative
+  distance, leaves at once and reaches the true cell anyway, so it stayed green
+  with the rule removed. The leak is the other sign — a ray heading back over
+  the carried tile, seeded a whole tile of slack. What is *not* fixed is the
+  geometry underneath: a run of coplanar floors is still N solids on N tiles,
+  which is the merge `same_run`'s own backlog entry wants and would have made
+  this class of boundary rarer rather than answered it.
+- **How that one was found, kept because the method is the finding — and because
+  four of its six steps were wrong turns.** The lines look exactly like an
+  exemption leaking, and they are not: **four fault injections each left the
+  frame unchanged**, counted rather than eyeballed. `same_run` neutralised, 303
+  narrow leaks against 303. The identity compare forced `false`, 282. The
+  origin-touch rule (`entered == 0 && leaves == 0`) forced `false`, 303. And
+  `RAY_TANGENT_TOLERANCE` widened ten thousandfold from `1e-6` to `1e-2`, 295 —
+  which is what says the answer was never a razor.
+
+  Then four measurements narrowed it. The runs are **one pixel wide at 1:1, at
+  2:1 and at 4:1**, so the thing they draw has measure zero in the world; a
   world-space stripe doubles with each notch. They stand **inside one facing
-  with the same facing either side** — 365 of some 600 runs are `+z | +z | +z`
-  off the normal plane, so they are not a step's own edge, which would butt
-  against a change of facing. And against `View::Place`'s checkerboard, which is
-  drawn from the tile, **303 of 305 of them straddle a tile change** and two do
-  not. So: a fragment standing exactly on a tile boundary belongs to two cells,
-  the walk's `first` is the one the instance carries, and the occluder in the
-  other one is never tested. That is `docs/lighting_raymarch.md`'s tile-boundary
-  hazard — a known gap, recorded there as a corner-tie two pixels wide on a
-  synthetic stair, and worth **one stripe per roof tile** on a real place.
-  **It cannot be right**: visibility is continuous except at an occluder's own
-  silhouette, and a line of full light between two blocked neighbours is a
-  discontinuity no geometry produces. What it is not is a tolerance — that was
-  measured above and moved six pixels. What would answer it is the walk testing
-  every cell a boundary fragment is a point of, which is a statement about the
-  walk's first step rather than about a razor. Its natural home is the
-  `walk_cells_*` unit test the backlog already wants for the origin-touch rule:
-  a fragment on a shared edge, two cells, one occluder.
+  with the same facing either side** (365 of some 600 runs are `+z | +z | +z`
+  off the normal plane), so they are not a step's own edge, which would butt
+  against a change of facing. Against `View::Place`'s checkerboard, which is
+  drawn from the tile, **303 of 305 straddle a tile change**. And the last one
+  is the one that named it: `View::Place` repainted for one run as "is this
+  fragment's position outside the tile its own instance carries" separates
+  *exactly on the edge* — 5,759 pixels, the ordinary state of every south and
+  east face since 6c — from **strictly outside**, which is 474 pixels of the
+  frame, and **324 of those 474 leak.** Two thirds of a set that is a third of
+  a percent of the picture. `View::Shadow`'s own neighbours are on a mismatch
+  4% of the time, so the enrichment is twentyfold.
+
+  What made the last step available was the CPU twin disagreeing with the
+  shader for a reason that is not the walk: `isolated_scene`'s profile mode
+  builds its `Spot::tile` with `floor()` **on purpose**, to keep showing what a
+  naively-derived tile does — so it never reproduced the leak, and that is what
+  said the tile was the variable. `docs/lighting_raymarch.md`'s tile-boundary
+  hazard is the family; the specific defect is one rule that had drifted from
+  its own contract.
 - 🚩 **An emitter is black in its own light, and every free-standing one taller
   than `FLAME_LIFT` is.** Found by looking at a lit frame after phase 6c — the
   one instrument *How this is judged* names — and reproduced at one item and

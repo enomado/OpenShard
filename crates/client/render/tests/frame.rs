@@ -4550,6 +4550,19 @@ struct Fixture {
     /// through the mesh pass, whose row names its solid outright. See this file's
     /// own entry in `docs/lighting_rebuild.md`'s backlog.
     owner: OwnerId,
+    /// How far past the sub-tile fraction every fragment's *position* is written,
+    /// while its **tile stays what [`parity_place`] says**.
+    ///
+    /// A fixture's fragments are otherwise inside their own tile by construction
+    /// — the fraction runs to `112/127` and never reaches an edge — so the one
+    /// state a real frame is full of since `docs/lighting_rebuild.md` phase 6c
+    /// could not be stated here at all: a position on, or a rounding past, the
+    /// boundary its own instance's tile ends at. That is what the impostor writes
+    /// for every south and east face, and a share of them land a hair over.
+    ///
+    /// Zero for every fixture that is not about it. `light::starting_cell` is the
+    /// rule this exists to point the frame at.
+    drift: (f32, f32),
 }
 
 impl Fixture {
@@ -4560,6 +4573,7 @@ impl Fixture {
             surface: Surface::Upright,
             z: 0,
             owner: OwnerId::NONE,
+            drift: (0.0, 0.0),
         }
     }
 }
@@ -4578,7 +4592,12 @@ fn parity_frame(
     height: u32,
     fixture: Fixture,
 ) -> Frame {
-    let Fixture { surface, z, owner } = fixture;
+    let Fixture {
+        surface,
+        z,
+        owner,
+        drift,
+    } = fixture;
     let world = openshard_client_render::blit::world_texture(device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, width, height);
@@ -4692,7 +4711,10 @@ fn parity_frame(
             // itself and not this fixture's reading of it.
             let fragment = openshard_client_render::gbuffer::Fragment {
                 tile: (x, y),
-                sub: (sub_x, sub_y),
+                // The tile is the row's and the fraction is the fixture's — the
+                // asymmetry `drift` exists to state, and the one a real static's
+                // own impostor produces.
+                sub: (sub_x + drift.0, sub_y + drift.1),
                 z: f32::from(z),
                 kind,
                 stance,
@@ -4933,6 +4955,7 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
     };
     let fixture = Fixture {
         surface: Surface::Flat,
+        drift: (0.0, 0.0),
         // The bottom tread's own height: what makes `LIT` a point *of* that
         // tread rather than of the air over it.
         z: 1,
@@ -4948,6 +4971,111 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
         "the flame is directly over {LIT:?} and the lids between them are strips \
          of the tile it is not under: {lit:?} there against {blocked:?} over the \
          middle tread, which its own lid does stop",
+    );
+}
+
+/// **A fragment a hair past its own tile's edge is shadowed by the wall it has
+/// drifted into.**
+///
+/// `blit.wesl`'s `starting_cell` and `light::starting_cell` are one rule written
+/// twice with no compiler between them, and this is the only thing comparing
+/// them — the shader's copy, on the shader. `light.rs`'s own
+/// `a_ray_starting_just_past_its_own_tile_is_stopped_by_the_cell_it_is_in` is
+/// the same claim about the two CPU walks.
+///
+/// The scene is one body on the centre tile and a flame four tiles west of it,
+/// with the fixture's whole frame drifted a fifth of a tile east. That puts the
+/// rightmost pixel of the tile *west* of the wall at `x = centre + 0.08` — inside
+/// the wall's own cell, and inside its box — while the id plane goes on saying
+/// the tile it was drawn on. Its neighbour one pixel left stays west of the wall
+/// and stands in the open, which is what makes the pair a claim rather than a
+/// number: the one inside the wall must be dark and the one beside it must not.
+///
+/// Neutralise `starting_cell` in the shader and the inside pixel comes out as
+/// bright as the open one — the walk is handed a whole tile of slack to a
+/// boundary it has already crossed, so it never looks at the cell it is standing
+/// in. That is the light leak `docs/lighting_rebuild.md` phase 6c's backlog
+/// measured as a line along every tile boundary of a building's floors.
+///
+/// `Surface::Upright` on purpose: the ray here is horizontal, so a `Flat`
+/// fragment would answer with a cosine of zero and both pixels would be dark for
+/// a reason that is not the walk.
+#[test]
+fn a_fragment_a_hair_inside_a_wall_is_shadowed_by_the_cell_it_drifted_into() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+
+    let wall = openshard_uofiles::tiledata::StaticTile {
+        flags: openshard_uofiles::tiledata::TileFlags::new(openshard_uofiles::tiledata::TileFlags::NO_SHOOT),
+        height: 20,
+        ..openshard_uofiles::tiledata::StaticTile::default()
+    };
+    let (cx, cy) = openshard_client_render::scene::CENTRE;
+    let mut builder = Builder::new(TileBounds {
+        min_x: i32::from(cx) - 10,
+        max_x: i32::from(cx) + 10,
+        min_y: i32::from(cy) - 10,
+        max_y: i32::from(cy) + 10,
+    });
+    builder.add(cx, cy, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+    let occlusion = builder.finish(&Cutaway::OPEN);
+
+    // A fifth of a tile, which is far more than the rounding a real frame drifts
+    // by — the claim is about which side of a boundary a point is on, and a
+    // fixture that states it at `f32`'s own scale would be testing the arithmetic
+    // of the fixture rather than the rule.
+    const DRIFT: f32 = 0.2;
+    // `px % PARITY_TILE == 7` is the last pixel of its tile, fraction `112/127`;
+    // with the drift its position is `0.08` into the next tile. `px - 1` is
+    // `96/127 + 0.2`, still short of the boundary.
+    const INSIDE: (u32, u32) = (31, 35);
+    const BESIDE: (u32, u32) = (30, 35);
+    let (tile_x, tile_y, sub_x, sub_y) = parity_place(INSIDE.0, INSIDE.1);
+    assert_eq!(
+        (tile_x + 1, tile_y),
+        (cx, cy),
+        "the drifted pixel has to sit on the tile just west of the wall",
+    );
+    let at = (f32::from(tile_x) + sub_x + DRIFT, f32::from(tile_y) + sub_y);
+    assert!(
+        at.0 > f32::from(cx) && at.0 < f32::from(cx) + 1.0,
+        "the drifted position {at:?} has to land inside the wall's own tile",
+    );
+
+    let lighting = Lighting {
+        ambient: openshard_client_render::light::NIGHT,
+        lights: vec![Light {
+            // Due west of both pixels, so the ray runs back across the tile the
+            // drifted fragment claims and the wall it stands in is the only thing
+            // between them.
+            at: Vec2::new(f32::from(cx) - 3.5, at.1),
+            z: 10.0,
+            radius: 12.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 3.0,
+            beam: None,
+        }],
+        occlusion,
+        sun: None,
+        view: View::default(),
+    };
+    let fixture = Fixture {
+        surface: Surface::Upright,
+        // Inside the body's own `0..20`, and level with the flame.
+        z: 10,
+        owner: OwnerId::NONE,
+        drift: (DRIFT, 0.0),
+    };
+
+    let (width, height) = (64, 64);
+    let frame = parity_frame(&device, &queue, &lighting, width, height, fixture);
+    let inside = frame.pixel(INSIDE.0, INSIDE.1);
+    let beside = frame.pixel(BESIDE.0, BESIDE.1);
+    assert!(
+        i32::from(beside[0]) > i32::from(inside[0]) + 40,
+        "the fragment at {at:?} stands inside the wall on ({cx}, {cy}) and reads \
+         {inside:?}, against {beside:?} one pixel west of it in the open",
     );
 }
 

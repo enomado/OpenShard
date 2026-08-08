@@ -603,6 +603,18 @@ fn own_side(stance: u32) -> u32 {
     }
 }
 
+// The cell a walk actually starts in: the tile its caller carries, unless the
+// start point is **strictly outside** that tile. `light::starting_cell`, and the
+// two are one rule — see it for what the carried tile is for, why a point past
+// the edge is not the tie it settles, and the 324 leaked pixels that named this.
+// No tolerance: the comparison is against the tile's own two planes and a point
+// exactly on one is inside.
+fn starting_cell(at: vec2<f32>, tile: vec2<f32>) -> vec2<i32> {
+    let x = select(tile.x, floor(at.x), at.x < tile.x || at.x > tile.x + 1.0);
+    let y = select(tile.y, floor(at.y), at.y < tile.y || at.y > tile.y + 1.0);
+    return vec2<i32>(i32(x), i32(y));
+}
+
 // `light::same_run`, and see it for why `docs/lighting_rebuild.md` phase 4 does
 // *not* delete this: a run of wall is N different statics cut on tile boundaries,
 // so the panel next along the run is a different solid however exactly a fragment
@@ -1159,7 +1171,12 @@ fn walk(
     // `light::walk_cells`'s `first`, the same fix, and
     // `docs/lighting_raymarch.md` step 5: this is where it names the same class of
     // bug the CPU walk had, on the GPU walk decision 9 requires to match it.
-    let first = vec2<i32>(i32(tile.x), i32(tile.y));
+    //
+    // **And the carried tile breaks a tie rather than overruling the position** —
+    // `light::starting_cell`, and the two are one rule. A point strictly outside
+    // the tile it was handed is not on a boundary at all, and seeding this walk
+    // from that tile hands it a negative distance to a boundary already crossed.
+    let first = starting_cell(lit.xy, tile);
     if ground < 1.0e-6 {
         // Straight up or down. There is no direction to walk in and there never
         // was — but "the only cells on the line are the exempt ones", which is

@@ -2176,6 +2176,40 @@ struct DdaCell {
     continues: bool,
 }
 
+/// The cell a walk actually starts in: the tile its caller carries, unless the
+/// start point is **strictly outside** that tile.
+///
+/// [`Spot::tile`] exists to break a tie the position cannot: a fragment sitting
+/// exactly on its tile's own far edge is a point of two cells, and `floor()`
+/// there picks whichever side the float happens to round to rather than the
+/// side the geometry stands on. That is the whole of what the carried tile is
+/// for, and this keeps it: a point anywhere in the tile's **closure**, both
+/// edges included, walks from the tile it was given.
+///
+/// What it does not let the carried tile do is *contradict* the position. Since
+/// `docs/lighting_rebuild.md` phase 6c a fragment's position is where its own
+/// view ray leaves its own box, and a box's camera-facing plane is its tile's
+/// own boundary — so the exact-edge case is no longer a rarity but the normal
+/// state of every south and east face, and `f32` rounding drops a share of
+/// those a hair *past* the edge. A pair like that is not a tie: the point is in
+/// the next cell, plainly, and the walk that seeds its boundary distances from
+/// the other one gets a negative distance to a boundary it has already crossed.
+/// Measured before the fix, on one real place at 4:1: **474 fragments of a frame
+/// stood strictly outside their own carried tile, and 324 of them leaked a fully
+/// lit pixel into a shadow** — a line of light along every tile boundary of a
+/// building's floors. `docs/lighting_rebuild.md` phase 6c's backlog has the
+/// three fault injections that said what it was not.
+///
+/// No tolerance anywhere: the comparison is against the tile's own two planes,
+/// and a point exactly on one is inside.
+fn starting_cell(from: [f32; 3], tile: (i32, i32)) -> (i32, i32) {
+    let pick = |at: f32, cell: i32| match at < cell as f32 || at > (cell + 1) as f32 {
+        true => at.floor() as i32,
+        false => cell,
+    };
+    (pick(from[0], tile.0), pick(from[1], tile.1))
+}
+
 /// Which cells a straight ray from `from` to `to` visits, in order — plain
 /// single-axis DDA, one cell per step, no diagonal jump.
 ///
@@ -2384,7 +2418,11 @@ fn walk_cells_exact(
     lit: LitEnd,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
-    let first = lit.tile;
+    // The cell the walk is really in, which is `lit.tile` for every point of
+    // its own tile's closure and `floor` for one that has drifted past it —
+    // see [`starting_cell`] for the measurement that made the difference
+    // visible.
+    let first = starting_cell(from, lit.tile);
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
@@ -2734,7 +2772,11 @@ fn walk_cells_streaming(
     lit: LitEnd,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
-    let first = lit.tile;
+    // The cell the walk is really in, which is `lit.tile` for every point of
+    // its own tile's closure and `floor` for one that has drifted past it —
+    // see [`starting_cell`] for the measurement that made the difference
+    // visible.
+    let first = starting_cell(from, lit.tile);
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
     if ground < 1e-6 {
@@ -4385,6 +4427,113 @@ mod tests {
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
             );
         });
+    }
+
+    /// A walk starts in a cell the ray is actually in — [`starting_cell`]'s
+    /// whole claim, stated over positions that have drifted off the tile they
+    /// were handed.
+    ///
+    /// The domain is the interesting one and not a plausible one: a fraction of
+    /// exactly `0.0` or `1.0` is a point on the tile's own edge, where the
+    /// carried tile is the answer and `floor` is not, and a fraction just past
+    /// either is the drift `docs/lighting_rebuild.md` phase 6c's impostor
+    /// produces at every south and east face. Both are asserted by one
+    /// invariant, which is the point: the cell is the carried one whenever the
+    /// point is in its closure, and contains the point regardless.
+    #[test]
+    fn a_walk_starts_in_a_cell_its_own_start_point_is_in() {
+        use proptest::prelude::*;
+
+        proptest!(ProptestConfig::with_cases(4_096), |(
+            tile_x in -20_i32..20,
+            tile_y in -20_i32..20,
+            // A tile's width either side of its own two edges, so the sample
+            // lands inside, exactly on, and past each of them.
+            off_x in -0.25_f32..1.25,
+            off_y in -0.25_f32..1.25,
+        )| {
+            let tile = (tile_x, tile_y);
+            let from = [tile_x as f32 + off_x, tile_y as f32 + off_y, 0.0];
+            let cell = starting_cell(from, tile);
+
+            // The point is in the cell's own closure — the invariant a DDA
+            // seeded from `cell` needs and the one the leak broke.
+            prop_assert!(
+                from[0] >= cell.0 as f32 && from[0] <= (cell.0 + 1) as f32,
+                "x {} is not in cell {} (carried {tile_x})", from[0], cell.0,
+            );
+            prop_assert!(
+                from[1] >= cell.1 as f32 && from[1] <= (cell.1 + 1) as f32,
+                "y {} is not in cell {} (carried {tile_y})", from[1], cell.1,
+            );
+
+            // And the carried tile still wins every tie it exists to break: a
+            // point anywhere in its closure, both edges included, walks from it.
+            let inside_x = (0.0..=1.0).contains(&off_x);
+            let inside_y = (0.0..=1.0).contains(&off_y);
+            prop_assert_eq!(inside_x, cell.0 == tile_x, "x: carried {}, got {}, off {}", tile_x, cell.0, off_x);
+            prop_assert_eq!(inside_y, cell.1 == tile_y, "y: carried {}, got {}, off {}", tile_y, cell.1, off_y);
+        });
+    }
+
+    /// A ray that starts a hair past its own tile's edge is stopped by the wall
+    /// standing in the cell it has drifted into.
+    ///
+    /// The defect [`starting_cell`] was written for, at one point rather than as
+    /// a picture. The fragment carries tile `(99, 100)` and stands at
+    /// `x = 100.0 + 1e-4` — a tenth of a thousandth of a tile past the boundary,
+    /// which is the scale `f32` rounding puts an impostor's own face at — and the
+    /// wall it is standing against is the body on `(100, 100)`. Seeded from the
+    /// carried tile the walk computes a whole tile of slack to a boundary it has
+    /// already crossed, never visits `(100, 100)` while the ray is inside it, and
+    /// the wall lets the light through.
+    ///
+    /// **The direction is half the fixture**, and the first version of this test
+    /// got it wrong: a ray heading *away* from the carried tile seeds a negative
+    /// distance, steps out of it at once and reaches the true cell anyway, so it
+    /// stays green with the rule neutralised and gates nothing. The leak is the
+    /// other sign — a ray heading *back* over the carried tile, which seeds a
+    /// whole tile of slack and walks straight past the cell it started in.
+    ///
+    /// Both walks, because the fix is one rule in two functions, and the shader's
+    /// own copy of it is `blit.wesl`'s `starting_cell`.
+    #[test]
+    fn a_ray_starting_just_past_its_own_tile_is_stopped_by_the_cell_it_is_in() {
+        use crate::occlusion::{Builder, Shape};
+
+        let wall = StaticTile {
+            flags: TileFlags::new(TileFlags::NO_SHOOT),
+            height: 20,
+            ..StaticTile::default()
+        };
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 90,
+            max_x: 110,
+            min_y: 90,
+            max_y: 110,
+        });
+        occlusion.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        // A hair inside the body's own west edge, walking back across the tile
+        // the fragment claims, at a height the body spans. Seeded from `(99, …)`
+        // the walk is told it has a whole tile before its first boundary and
+        // never looks at `(100, …)` at all.
+        let from = [100.0 + 1e-4, 100.5, 10.0];
+        let to = [96.0, 100.5, 10.0];
+        let lit = LitEnd::nowhere((99, 100));
+        for (name, through) in [
+            (
+                "walk_cells_streaming",
+                walk_cells_streaming(from, to, lit, &occlusion).0,
+            ),
+            ("walk_cells_exact", walk_cells_exact(from, to, lit, &occlusion).0),
+        ] {
+            assert_eq!(
+                through, 0.0,
+                "{name} let a ray through the body it starts inside the cell of",
+            );
+        }
     }
 
     /// The same claim over a body whose `z` span is **not** a whole number,
