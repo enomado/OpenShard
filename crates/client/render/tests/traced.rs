@@ -50,7 +50,7 @@ use openshard_client_render::depth;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{Light, Lighting, NIGHT};
 use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
-use openshard_client_render::occlusion::{Builder, OwnerId};
+use openshard_client_render::occlusion::{Builder, Part, SolidId};
 use openshard_client_render::place::Stance;
 use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, Target};
 use openshard_protocol::wire::Graphic;
@@ -197,19 +197,28 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         builder.add_raw(b.tile.0, b.tile.1, b.solid(), box_owner(index, b));
     }
     let occlusion = builder.finish(&Cutaway::OPEN);
-    let owners: Vec<OwnerId> = boxes
+    // Which *solid* of the grid each box is — `add_raw` pushes exactly one per
+    // box, so `Part::ONLY` names it. `docs/lighting_rebuild.md` phase 4: this is
+    // the number a fragment carries and the walk compares, and it was the box's
+    // `OwnerId` until the phase found one level of identity too coarse for a
+    // flight of steps.
+    let solids: Vec<SolidId> = boxes
         .iter()
         .enumerate()
         .map(|(index, b)| {
-            let owner = box_owner(index, b);
-            let id = occlusion.owner_at(i32::from(b.tile.0), i32::from(b.tile.1), owner.z, owner.graphic);
-            assert_ne!(
-                id,
-                OwnerId::NONE,
-                "box {index} is not in the grid this test just built — the comparison would then be \
-                 measuring a scene with one box missing, and would pass for it"
-            );
-            id
+            occlusion
+                .id_of(
+                    i32::from(b.tile.0),
+                    i32::from(b.tile.1),
+                    box_owner(index, b),
+                    Part::ONLY,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "box {index} is not in the grid this test just built — the comparison would \
+                         then be measuring a scene with one box missing, and would pass for it"
+                    )
+                })
         })
         .collect();
 
@@ -261,7 +270,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
             rows.push(MeshFaceRow {
                 tile: (b.tile.0, b.tile.1),
                 stance,
-                owner: u32::from(owners[box_index].raw()),
+                solid: solids[box_index].raw(),
             });
             for corner in face.fan() {
                 vertices.push(MeshFaceVertex {

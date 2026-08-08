@@ -2346,7 +2346,7 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
     let rows = [MeshFaceRow {
         tile: (300, 400),
         stance: Stance::FaceEast,
-        owner: 0,
+        solid: openshard_client_render::occlusion::SolidId::NOBODY,
     }];
 
     let places = render_places(
@@ -2431,7 +2431,7 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
     let rows = [MeshFaceRow {
         tile: (300, 400),
         stance: Stance::Flat,
-        owner: 0,
+        solid: openshard_client_render::occlusion::SolidId::NOBODY,
     }];
 
     let places = render_places(
@@ -2520,12 +2520,12 @@ fn two_mesh_faces_carry_their_own_two_normals() {
         MeshFaceRow {
             tile: (300, 400),
             stance: Stance::Flat,
-            owner: 0,
+            solid: openshard_client_render::occlusion::SolidId::NOBODY,
         },
         MeshFaceRow {
             tile: (300, 400),
             stance: Stance::FaceEast,
-            owner: 0,
+            solid: openshard_client_render::occlusion::SolidId::NOBODY,
         },
     ];
 
@@ -4209,6 +4209,19 @@ struct Fixture {
     /// from its own lid by identity alone, and without an owner the fragment is
     /// shadowed by the very step it stands on and every other question about it
     /// is unreachable.
+    ///
+    /// **An owner and not a `SolidId`, which is one level coarser than what the
+    /// shader compares** — `docs/lighting_rebuild.md` phase 4. Every pixel this
+    /// fixture writes is a `Kind::Static` *sprite*, so `blit.wesl`'s `own_solid`
+    /// narrows this owner by the pixel's own stance, exactly as it does for a real
+    /// wall. For a flight that narrowing is ambiguous by construction — three
+    /// lids, one owner, one flat stance — so which tread a flat pixel comes out a
+    /// point of is the grid's own reference order. The one test in that shape
+    /// (`the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under`)
+    /// passes because that order puts the bottom tread first, and it is written
+    /// down here because nothing else says so: the real pipeline draws a flight
+    /// through the mesh pass, whose row names its solid outright. See this file's
+    /// own entry in `docs/lighting_rebuild.md`'s backlog.
     owner: OwnerId,
 }
 

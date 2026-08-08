@@ -199,17 +199,21 @@ pub fn collect(
         // The *placed* graphic and not `placed.showing`: the grid keyed its
         // owner off the same one, and an animated static would otherwise change
         // owner every hundred milliseconds. See `occlusion::Owner`.
+        let key = crate::occlusion::Owner::new(at.z, Graphic(item.tile));
         let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, Graphic(item.tile));
         let quad = quad_of(at, &placed, base, u32::from(item.hue), owner);
         if let Some(prism) = &placed.prism {
             push_mesh(
-                &mut mesh_vertices,
-                &mut mesh_rows,
+                MeshSink {
+                    vertices: &mut mesh_vertices,
+                    rows: &mut mesh_rows,
+                },
                 camera,
                 at,
                 prism,
                 quad.depth,
-                owner,
+                key,
+                occlusion,
             );
         }
         quads.push((placed.order, quad));
@@ -230,6 +234,17 @@ pub fn collect(
     }
 }
 
+/// The mesh pass's two lists, which only ever grow together: one
+/// [`MeshFaceRow`] and the six [`MeshFaceVertex`]es of the face it describes.
+///
+/// A pair rather than two arguments because they are one output — a row without
+/// its vertices draws nothing and vertices without their row address a buffer
+/// past its end — and because [`push_mesh`] is the one producer of both.
+pub(crate) struct MeshSink<'a> {
+    pub vertices: &'a mut Vec<MeshFaceVertex>,
+    pub rows: &'a mut Vec<MeshFaceRow>,
+}
+
 /// Push one climbable static's honest faces — a top and a riser per tread,
 /// [`crate::facing::Prism::mesh`] — as raw, fan-triangulated vertices.
 ///
@@ -243,26 +258,48 @@ pub fn collect(
 /// than the map's — [`Placed::prism`] is set by [`place`] either way, and a
 /// second copy of this loop would be a second place the two could disagree.
 ///
-/// `owner` is the enclosing static's own, and every face of the flight gets it —
-/// one `Builder::add` is one owner however many solids it pushed, which is
-/// `docs/lighting_height.md` phase 3's first decision seen from the drawing side.
+/// **Every face carries the name of the solid the grid stood up for it**, and
+/// that is `docs/lighting_rebuild.md` phase 4 seen from the drawing side. The
+/// join is by [`crate::occlusion::Part`] — the `n`th face of a prism's mesh is
+/// the `n`th solid its `Builder::add` pushed, because both walk the same treads
+/// from the same two facts — and `occlusion::tests::
+/// a_flight_draws_its_own_solids_in_the_grid_s_own_order` is what holds that
+/// against the geometry rather than leaving it as two loops that agree.
+///
+/// `owner` is the enclosing static's own, and it is a *key* here rather than a
+/// number to be carried: one `Builder::add` is one owner however many solids it
+/// pushed, so the owner alone is what the phase found insufficient — the walk
+/// could not tell one tread of a flight from another with it.
+///
+/// A face the grid has no solid for gets [`crate::occlusion::SolidId::NOBODY`].
+/// That is not a defect to assert away: the grid drops a static the cutaway hides
+/// or the draw ceiling cuts, and this pass legitimately draws one whose solid is
+/// not in this frame's list. It reads as "a point of no occluder", which is the
+/// honest answer — exempt from nothing, shadowed by everything.
 pub(crate) fn push_mesh(
-    vertices: &mut Vec<MeshFaceVertex>,
-    rows: &mut Vec<MeshFaceRow>,
+    into: MeshSink<'_>,
     camera: &Camera,
     at: Point,
     prism: &crate::facing::Prism,
     depth: f32,
-    owner: crate::occlusion::OwnerId,
+    owner: crate::occlusion::Owner,
+    occlusion: &crate::occlusion::Occlusion,
 ) {
+    let MeshSink { vertices, rows } = into;
     let mesh = prism.mesh(i32::from(at.x), i32::from(at.y), i32::from(at.z));
-    for face in mesh.faces() {
+    for (part, face) in mesh.faces().iter().enumerate() {
         let id = rows.len() as u32;
+        let solid = occlusion.id_of(
+            i32::from(at.x),
+            i32::from(at.y),
+            owner,
+            crate::occlusion::Part::nth(part),
+        );
         rows.push(MeshFaceRow {
             tile: (at.x, at.y),
             stance: crate::place::Stance::of_normal(face.normal)
                 .expect("Prism::mesh only ever produces normals Stance::of_normal recognizes"),
-            owner: u32::from(owner.raw()),
+            solid: crate::occlusion::SolidId::word(solid),
         });
         for corner in face.fan() {
             let screen = camera.to_view_exact(crate::camera::project_exact(corner));
@@ -1167,14 +1204,22 @@ mod tests {
         let at = Point::new(100, 100, 0);
         let mut vertices = Vec::new();
         let mut rows = Vec::new();
+        // An empty grid, deliberately: this test is about where a vertex is, and
+        // an empty grid holds no solid for any face — so every row comes out
+        // `SolidId::NOBODY`, which is the honest answer and not a thing under
+        // test here. `light.rs`'s own flight tests are where the join is asserted.
+        let occlusion = crate::occlusion::Occlusion::EMPTY;
         push_mesh(
-            &mut vertices,
-            &mut rows,
+            MeshSink {
+                vertices: &mut vertices,
+                rows: &mut rows,
+            },
             &camera,
             at,
             &prism,
             0.0,
-            crate::occlusion::OwnerId::NONE,
+            crate::occlusion::Owner::new(0, Graphic(0x0736)),
+            &occlusion,
         );
 
         assert!(!vertices.is_empty(), "a three-tread stair has faces to draw");

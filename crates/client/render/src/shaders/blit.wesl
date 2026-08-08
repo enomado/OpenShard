@@ -178,10 +178,11 @@ const VIEW_NORMAL: u32 = 11u;
 // still has to be declared: this struct's size is what WGSL uses to stride
 // through the buffer, and a struct narrower than `SpriteQuad::STRIDE` reads
 // every row past the first at the wrong offset.
-// `owner` (`docs/lighting_height.md` phase 3) *is* read here, unlike `twin`:
-// which occluder of its own tile the thing drawn on a pixel is, so that
-// `cell_stopped` can ask whether a solid it meets is the one the fragment is a
-// point of instead of guessing from its height. `crate::sprite::SpriteQuad`.
+// `owner` *is* read here, unlike `twin`: which occluder of its own tile the
+// static drawn on a pixel is. **It is a key and no longer the comparison** —
+// `docs/lighting_rebuild.md` phase 4 compares a `SolidId`, and a sprite instance
+// covers a corner's two panels, so `own_solid` narrows this owner by the
+// fragment's own stance to name one of them. `crate::sprite::SpriteQuad`.
 struct FaceInstance {
     rect: vec4<f32>,
     region: vec4<f32>,
@@ -196,13 +197,19 @@ struct FaceInstance {
 @group(0) @binding(10) var<storage, read> mobile_instances: array<FaceInstance>;
 
 // `docs/gbuffer.md` step 4c's mesh-face pass's own row: the tile a face's
-// static stands on, and which way that face really faces — a mesh face has
-// no picture, so it shares no field with `FaceInstance` and lives in its own
-// buffer instead. `crate::mesh_face::MeshFaceRow`, laid out identically.
+// static stands on, which way that face really faces, and **which solid of the
+// grid it is the drawn form of** — a mesh face has no picture, so it shares no
+// field with `FaceInstance` and lives in its own buffer instead.
+// `crate::mesh_face::MeshFaceRow`, laid out identically.
+//
+// `solid` was an owner until `docs/lighting_rebuild.md` phase 4. A mesh face is
+// one primitive by construction, so it can name it outright, which is what lets
+// a flight's treads stop shadowing each other without a height being read
+// anywhere — see `own_solid` for the sprite side, which cannot.
 struct MeshFaceInstance {
     tile: u32,
     stance: u32,
-    owner: u32,
+    solid: u32,
 };
 
 @group(0) @binding(11) var<storage, read> mesh_instances: array<MeshFaceInstance>;
@@ -269,7 +276,21 @@ struct GroundInstance {
 // and anything the grid refused stamp. Zero and matching nothing, which is why
 // the numbering `Builder::finish` hands out starts at one: two fragments that are
 // each a point of nothing are not a point of the same thing.
+//
+// Still read, by `own_solid` alone: a sprite instance covers a corner's two
+// panels, so what a *fragment* of one is a point of is its static's owner
+// narrowed by its own stance. Nothing else compares an owner any more.
 const OWNER_NONE: u32 = 0u;
+
+// And no *solid* at all: what a fragment carries when it is a point of none —
+// the ground, a mobile, a gump, a face whose static this frame's grid refused.
+// `occlusion::SolidId::NOBODY`, and the two are one number.
+//
+// **It cannot collide with a real id.** A reference carries its id in three
+// bytes (`id_at`), so every id this pass can read back is at most `0xFF_FFFF`
+// and this is strictly greater than all of them. `docs/lighting_rebuild.md`
+// phase 4.
+const SOLID_NOBODY: u32 = 0xFFFFFFFFu;
 
 // Steps of a `z` unit that plane carries one in, and where it counts from.
 //
@@ -509,20 +530,12 @@ fn on_surface(z: f32, low: f32, high: f32) -> bool {
     return z >= low - ON_TOP && z <= high + ON_TOP;
 }
 
-// Whether a **lid** is a plane the fragment is drawn *on*, rather than one
-// standing between it and the flame. `docs/lighting_height.md` phase 4's rule,
-// and `light::drawn_on` — see that function for the whole of the argument. Two
-// facts, no tolerance: the lid is a plane (`low == high`), so a ray leaving it
-// crosses it at its own origin and nowhere else and there is no later crossing an
-// exemption could swallow; and the fragment is drawn at exactly that height,
-// asked of `drawn`, which is `walk`'s `raw_start.z` and **not** its nudged
-// `start.z`. The nudge is the walk's own; a question about which surface a
-// fragment *is* has to be asked where the fragment is, and a
-// hundred-and-twenty-eighth of `ON_TOP` answering it as a crossing is exactly
-// what painted a stair's tread tops black.
-fn drawn_on(drawn: f32, low: f32, high: f32) -> bool {
-    return low == high && drawn == low;
-}
+// **`drawn_on` lived here**, and `docs/lighting_rebuild.md` phase 4 retired it
+// along with its twin — see `light.rs`'s own note where the Rust one stood. It
+// asked whether a lid was a plane the fragment was drawn at the height of, which
+// is how one static's several lids were told apart when identity was per static.
+// A fragment names its own solid now, and `walk`'s `raw_start.z` is no longer
+// carried through two functions to be compared against a span.
 
 // A soft interval: 1 well inside `low..=high`, 0 well outside, and a gradient
 // `band` wide across each edge.
@@ -702,6 +715,63 @@ fn span_of(id: u32) -> vec2<f32> {
         f32(raw.x | (raw.y << 8u)) / SOLID_Z_STEPS + SOLID_Z_FLOOR,
         f32(raw.z | (raw.w << 8u)) / SOLID_Z_STEPS + SOLID_Z_FLOOR,
     );
+}
+
+// **Which solid of the grid a *sprite* fragment is a point of**, or
+// `SOLID_NOBODY` where the grid holds none.
+//
+// `docs/lighting_rebuild.md` phase 4, and the half of it a mesh face does not
+// need: `mesh_instances[id].solid` names one primitive outright, because the pass
+// that draws a tread draws exactly one. A sprite instance is not one primitive —
+// a corner static is two panels and one picture, and which of the two a fragment
+// belongs to is decided *per fragment*, by the stance `statics.wgsl` resolved the
+// corner into. So the id has to be found here rather than carried.
+//
+// It is exact rather than a guess, and the reason is a property of
+// `Builder::add`: a static that is not a fitted climbable pushes **either** one
+// lid, **or** one body, **or** one panel per named side — never two of a kind.
+// So `(owner, shape)` names exactly one solid of the cell, and the fragment's own
+// stance is what says which shape:
+//
+//   - a fragment with a **side** is a point of the panel standing on that side;
+//   - a fragment with none is a point of the lid (`edges == 0`) or of the body
+//     (`edges == EDGE_MASK`), and a static has only one of those two.
+//
+// Once a fragment, not once a candidate solid, which is the other half of why it
+// is a function: the walk's own rule is now a single comparison of two ids, and
+// everything that used to be asked per solid per light — a height inside a span,
+// which plane the fragment was drawn at, `edges & own` — is asked here once.
+//
+// **A fitted climbable is the one case this cannot answer**, and it is the case
+// that does not ask: its six solids are lids and panels of one owner, so `own`
+// alone is ambiguous — and every pixel of it is drawn by the mesh pass over the
+// sprite, which carries its id. Where the mesh does not quite cover the sprite
+// (`WIDTH_OVERLAP`'s border, phase 6's), this answers with some tread of the
+// right shape rather than the right one. That is a hairline on a static whose own
+// art overhangs its volume, and phase 6 removes the border rather than this the
+// ambiguity.
+fn own_solid(tile: vec2<i32>, owner: u32, own: u32) -> u32 {
+    if owner == OWNER_NONE {
+        return SOLID_NOBODY;
+    }
+    let span = solids_at(tile.x, tile.y);
+    for (var k = 0u; k < span.y; k = k + 1u) {
+        let reference = id_at(span.x + k);
+        if reference.y != owner {
+            continue;
+        }
+        let edges = solid_at(reference.x).w & EDGE_MASK;
+        if own != 0u {
+            if (edges & own) != 0u {
+                return reference.x;
+            }
+            continue;
+        }
+        if edges == 0u || edges == EDGE_MASK {
+            return reference.x;
+        }
+    }
+    return SOLID_NOBODY;
 }
 
 // One tile's surfaces as one box: the union of the spans, the largest opacity
@@ -944,21 +1014,18 @@ fn cell_stopped(
     first: vec2<i32>,
     last: vec2<i32>,
     own: u32,
-    owner: u32,
+    // Which solid of the grid the lit end is a point of, or `SOLID_NOBODY` for a
+    // point of none. `light::ExemptionContext`'s `solid`, and the whole of the
+    // self-shadow rule.
+    mine: u32,
     stance: u32,
     skip_last: bool,
     spread: f32,
     start: vec3<f32>,
     finish: vec3<f32>,
-    // The lit end's height **before** `walk`'s own `ON_TOP` moved `start` off it.
-    // The two travel together and answer different questions — `light::
-    // ExemptionContext`'s `spot_z`/`drawn_z` pair, and `drawn_on` for which is
-    // which.
-    drawn_z: f32,
     delta: vec3<f32>,
     ground: f32,
 ) -> f32 {
-    let own_cell = cell.x == first.x && cell.y == first.y;
     let span = solids_at(cell.x, cell.y);
     let lit = start;
     // **The tile-wide union of sides used to be gathered here**, in a loop of
@@ -994,30 +1061,18 @@ fn cell_stopped(
             continue;
         }
         // Same `lit_end`/`flame_end`/`same_run` decision `light::exemption`
-        // makes — see its own doc comment for the whole of why `lit_end` is an
-        // identity now and not a height. `OWNER_NONE` matches nothing, so a
-        // fragment that is a point of no occluder (the ground, a mobile) is
-        // exempt from none of them; `light::occlusion::OwnerId::same`.
+        // makes — see its own doc comment. **`lit_end` is one comparison of two
+        // names**: `docs/lighting_rebuild.md` phase 4, and everything that used
+        // to stand in for it here is gone with it — the owner, the `own_cell`
+        // gate an owner needed to be meaningful, and the `match` on `edges` that
+        // asked each shape the one question the wire could answer about it.
+        // `SOLID_NOBODY` matches no reference, so a fragment that is a point of
+        // no occluder is exempt from nothing.
         let same_run = select(0u, own_run(own, cell, first), on_surface(lit.z, low, high));
-        let lit_end = own_cell && owner != OWNER_NONE && owner == reference.y;
+        let lit_end = mine == reference.x;
         let flame_end =
             skip_last && cell.x == last.x && cell.y == last.y && on_surface(finish.z, low, high);
-        // **Which of the static's surfaces the fragment is a point of, and not
-        // merely which static** — `light::exemption`'s own `match` on `edges`,
-        // and see it for the whole argument. An owner is per static and a static
-        // is several solids; a flight's own risers stand between its own tread
-        // tops and a flame, and that is its body rather than a self-shadow. Each
-        // shape is asked the one exact question the wire can answer about it: a
-        // lid, the height the fragment is drawn at; a body, nothing, since it has
-        // no face to be a point of one of; a panel, whether the fragment's own
-        // stance names the side this panel stands on.
-        var is_mine = (edges & own) != 0u;
-        if edges == 0u {
-            is_mine = drawn_on(drawn_z, low, high);
-        } else if edges == EDGE_MASK {
-            is_mine = true;
-        }
-        if (lit_end && is_mine) || (edges != 0u && flame_end) {
+        if lit_end || (edges != 0u && flame_end) {
             continue;
         }
         // How soft this crossing's own edge is: the penumbra a source of
@@ -1103,7 +1158,10 @@ fn walk(
     // entirely in `z`, which this never spends.
     ahead: vec3<f32>,
     stance: u32,
-    owner: u32,
+    // Which solid of the grid the lit end is a point of — `own_solid` for a
+    // sprite fragment, `mesh_instances[id].solid` for a mesh face, `SOLID_NOBODY`
+    // for the ground and a mobile. Resolved once by the caller, per fragment.
+    mine: u32,
     skip_last: bool,
     spread: f32,
 ) -> f32 {
@@ -1168,12 +1226,10 @@ fn walk(
                 continue;
             }
             // Phase 4's rule, here too — `light::walk_cells_streaming`'s own copy
-            // of it in this same shortcut. Every solid this loop sees is on the
-            // fragment's own cell by construction, so the owner is the whole of
-            // what `cell_stopped` would add, and a ray going straight up or down
-            // off a tread is exactly the ray whose only contact with that tread's
-            // own top is the point it started at.
-            if owner != OWNER_NONE && owner == reference.y && drawn_on(raw_start.z, vertical.x, vertical.y) {
+            // of it in this same shortcut, and here it is the whole rule: a ray
+            // going straight up or down off a tread is exactly the ray whose only
+            // contact with that tread's own top is the point it started at.
+            if mine == id {
                 continue;
             }
             let stops = f32(stands.z) / 255.0 * crosses(
@@ -1231,7 +1287,7 @@ fn walk(
     var cell = first;
     for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let stopped = cell_stopped(
-            cell, first, last, own, owner, stance, skip_last, spread, start, finish, raw_start.z, delta, ground,
+            cell, first, last, own, mine, stance, skip_last, spread, start, finish, delta, ground,
         );
         through = through * (1.0 - stopped);
         if through <= 0.004 {
@@ -1270,7 +1326,7 @@ fn walk(
             out_by_x,
         );
         let probe_stopped = cell_stopped(
-            probe, first, last, own, owner, stance, skip_last, spread, start, finish, raw_start.z, delta, ground,
+            probe, first, last, own, mine, stance, skip_last, spread, start, finish, delta, ground,
         );
         through = through * (1.0 - probe_stopped);
         if through <= 0.004 {
@@ -1343,7 +1399,7 @@ const MAX_SUN_TILES: f32 = 32.0;
 // `walk` draws. The fragment's own tile is skipped there as it is for a flame,
 // which is what lights a wall on the side the sun is on instead of shadowing it
 // with itself.
-fn sunlight(at: vec3<f32>, tile: vec2<f32>, ahead: vec3<f32>, stance: u32, owner: u32) -> f32 {
+fn sunlight(at: vec3<f32>, tile: vec2<f32>, ahead: vec3<f32>, stance: u32, mine: u32) -> f32 {
     let horizontal = length(lighting.sun.xy);
     if horizontal < 1.0e-6 {
         // Straight overhead: nothing but the fragment's own tile is in the way,
@@ -1365,7 +1421,7 @@ fn sunlight(at: vec3<f32>, tile: vec2<f32>, ahead: vec3<f32>, stance: u32, owner
         // which arrives here as a ceiling below every fragment there is.
         return 1.0;
     }
-    return walk(at, at + step * tiles, tile, ahead, stance, owner, false, 0.0);
+    return walk(at, at + step * tiles, tile, ahead, stance, mine, false, 0.0);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -1584,11 +1640,14 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var stance = ids_stance(ids);
     let id = ids_id(ids);
     var tile = vec2<f32>(0.0);
-    // And which occluder of that tile this fragment is a point of — the row's
-    // own, off the same fetch the tile comes from, `docs/lighting_height.md`
-    // phase 3. Land keeps `OWNER_NONE`: the ground is no occluder, so it is
-    // exempt from none of them, which is what it always was in effect.
-    var owner = OWNER_NONE;
+    // **And which solid of the grid this fragment is a point of** — the one
+    // number the shadow walk compares, `docs/lighting_rebuild.md` phase 4.
+    // Resolved here, once a fragment, rather than asked per candidate solid per
+    // light the way the owner-and-shape pair it replaced was.
+    //
+    // Land keeps `SOLID_NOBODY`: the ground is no occluder, so it is exempt from
+    // nothing, which is what it always was in effect.
+    var mine = SOLID_NOBODY;
     if kind == KIND_LAND {
         tile = vec2<f32>(
             f32(ground_instances[id].place0 & 0xFFFFu),
@@ -1599,24 +1658,33 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // own, so its row lives in `mesh_instances`, not
         // `face_instances` — and carries the *real* stance the
         // attachment's sentinel stood in for.
+        //
+        // And its solid outright: a mesh face is one primitive by construction,
+        // so the pass that drew it already knew which. See `MeshFaceInstance`.
         let row = mesh_instances[id];
         tile = vec2<f32>(f32(row.tile & 0xFFFFu), f32(row.tile >> 16u));
         stance = row.stance;
-        owner = row.owner;
+        mine = row.solid;
     } else {
         var row_place: vec2<u32>;
+        var owner = OWNER_NONE;
         if kind == KIND_STATIC {
             row_place = face_instances[id].place;
             owner = face_instances[id].owner;
         } else {
             row_place = mobile_instances[id].place;
-            // A mobile's row stamps `OWNER_NONE` on the CPU side
+            // A mobile's row stamps `OwnerId::NONE` on the CPU side
             // (`mobiles::collect`), so this reads it rather than assuming it —
             // one place decides what a billboard is a point of, and it is the
-            // one that builds the row.
+            // one that builds the row. `own_solid` turns that into
+            // `SOLID_NOBODY` by the same rule it uses for everything else,
+            // which is why a mobile needs no branch of its own here.
             owner = mobile_instances[id].owner;
         }
         tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
+        // A sprite instance is not one primitive: a corner static is two panels
+        // and one picture, and the stance `statics.wgsl` resolved says which.
+        mine = own_solid(vec2<i32>(i32(tile.x), i32(tile.y)), owner, own_side(stance));
     }
     // And where the fragment itself is — read, not rebuilt. This used to be
     // `tile + fraction` with the fraction taken out of the place attachment's
@@ -1720,7 +1788,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // `walk`'s two parameters, and the only two things that make this ray
         // different from the sun's.
         let through = walk(
-            at, vec3<f32>(to.x, to.y, to.z), tile, normal, stance, owner, true, FLAME_SPREAD,
+            at, vec3<f32>(to.x, to.y, to.z), tile, normal, stance, mine, true, FLAME_SPREAD,
         );
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
@@ -1748,7 +1816,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // falloff, only whether anything stands between this pixel and the sky.
     var sun_through = 0.0;
     if lighting.sun_color.w > 0.0 {
-        sun_through = sunlight(at, tile, normal, stance, owner);
+        sun_through = sunlight(at, tile, normal, stance, mine);
         lit = lit + lighting.sun_color.rgb * (lighting.sun_color.w * sun_through);
     }
 

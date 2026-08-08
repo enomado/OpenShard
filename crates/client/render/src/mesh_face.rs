@@ -25,17 +25,23 @@ pub struct MeshFaceRow {
     /// This face's real stance — never [`Stance::MeshFace`] itself, which is
     /// only ever the id word's own routing sentinel, not a row's content.
     pub stance: Stance,
-    /// Which occluder of `tile` the static this face belongs to is, or
-    /// [`OwnerId::NONE`](crate::occlusion::OwnerId::NONE) for one this frame's
-    /// grid has no solid for.
+    /// **Which solid of the grid this face is the drawn form of**, or
+    /// [`SolidId::NOBODY`](crate::occlusion::SolidId::NOBODY) for a face this
+    /// frame's grid has no solid for.
     ///
-    /// `docs/lighting_height.md` phase 3, and the mesh half of
-    /// [`SpriteQuad::owner`](crate::sprite::SpriteQuad::owner) — see that field
-    /// for what `blit.wgsl` asks it. A flight of steps is where the phase's own
-    /// first decision shows: its treads are a lid and a riser each, several
-    /// solids from one `Builder::add`, and every one of its faces carries the one
-    /// owner that call gave them all.
-    pub owner: u32,
+    /// `docs/lighting_rebuild.md` phase 4, and the mesh half of
+    /// [`SpriteQuad::owner`](crate::sprite::SpriteQuad::owner) — which is still
+    /// an owner, because a sprite instance covers a corner's *two* panels and
+    /// only a fragment's own stance says which; a mesh face is one primitive by
+    /// construction and can carry the id outright.
+    ///
+    /// It was that owner here too, and a flight of steps is exactly where one
+    /// level of identity is not enough: its treads are a lid and a riser each,
+    /// six solids from one `Builder::add`, all wearing one owner. The walk then
+    /// needed a height to tell which lid a fragment stood on. This is the number
+    /// that replaced it — [`crate::occlusion::Occlusion::id_of`] of the face's
+    /// own [`Part`](crate::occlusion::Part), joined where the mesh is built.
+    pub solid: u32,
 }
 
 impl MeshFaceRow {
@@ -53,7 +59,7 @@ impl MeshFaceRow {
         let tile = u32::from(self.tile.0) | u32::from(self.tile.1) << 16;
         out.extend_from_slice(&tile.to_le_bytes());
         out.extend_from_slice(&(self.stance as u32).to_le_bytes());
-        out.extend_from_slice(&self.owner.to_le_bytes());
+        out.extend_from_slice(&self.solid.to_le_bytes());
     }
 }
 
@@ -159,7 +165,7 @@ mod tests {
         let row = MeshFaceRow {
             tile: (0x1234, 0x5678),
             stance: Stance::FaceWest,
-            owner: 3,
+            solid: 3,
         };
         let mut out = Vec::new();
         row.write(&mut out);
@@ -170,7 +176,7 @@ mod tests {
             "y in the high half, x in the low"
         );
         assert_eq!(&out[4..8], &(Stance::FaceWest as u32).to_le_bytes());
-        assert_eq!(&out[8..12], &3u32.to_le_bytes(), "the owner");
+        assert_eq!(&out[8..12], &3u32.to_le_bytes(), "the solid this face is");
     }
 
     /// The vertex layout is a contract with `mesh_face.wgsl`'s `vs_main`.

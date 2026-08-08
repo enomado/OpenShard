@@ -81,16 +81,18 @@ fn spot(tile: (u16, u16), z: f32) -> Spot {
 /// How bright a point **of the static standing on `tile`** is, at a height —
 /// what a pixel of that static's own picture would come out at.
 ///
-/// The distinction [`at`] cannot make and `docs/lighting_height.md` phase 3 is
-/// about. A wall's face lies *on* the panel it is the face of, so the wall must
-/// not shadow it — and until that phase the rule that said so was "a point is
-/// never shadowed by its own *tile*", which a point of the air standing in the
-/// same tile got for free. Now it is the *thing*: a fragment carries which
-/// occluder of its cell it was drawn from, and only that one is exempt.
+/// The distinction [`at`] cannot make. A wall's face lies *on* the panel it is
+/// the face of, so the wall must not shadow it — and the rule that said so was
+/// once "a point is never shadowed by its own *tile*", which a point of the air
+/// standing in the same tile got for free. Now it is the *thing*: a fragment
+/// carries the [`occlusion::SolidId`] of the solid it is a point of, and only
+/// that one is exempt. `docs/lighting_rebuild.md` phase 4.
 ///
-/// `graphic` and `z_at` are the static's own, the pair
-/// [`occlusion::Occlusion::owner_at`] keys on — the same two the scene placed it
-/// with, not the height the probe is taken at.
+/// `graphic` and `z_at` are the static's own, the pair [`occlusion::Owner`] is
+/// keyed on — the same two the scene placed it with, not the height the probe is
+/// taken at. Every wall in these scenes stands on one side of its tile, so it is
+/// one solid and [`occlusion::Part::ONLY`] names it; a corner would need to say
+/// which of its two panels it means.
 fn on_the_static(
     lighting: &Lighting,
     tile: (u16, u16),
@@ -98,16 +100,21 @@ fn on_the_static(
     graphic: openshard_protocol::wire::Graphic,
     z_at: i8,
 ) -> f32 {
-    let owner = lighting
+    let solid = lighting
         .occlusion
-        .owner_at(i32::from(tile.0), i32::from(tile.1), z_at, graphic);
-    assert_ne!(
-        owner,
-        occlusion::OwnerId::NONE,
-        "no {graphic:?} at {tile:?} in this scene's grid — the probe would be \
-         asking about a point of nothing, which is a different question",
-    );
-    light::sample(spot(tile, z).owned_by(owner), lighting).brightness()
+        .id_of(
+            i32::from(tile.0),
+            i32::from(tile.1),
+            occlusion::Owner::new(z_at, graphic),
+            occlusion::Part::ONLY,
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "no {graphic:?} at {tile:?} in this scene's grid — the probe would be \
+                 asking about a point of nothing, which is a different question",
+            )
+        });
+    light::sample(spot(tile, z).part_of(solid), lighting).brightness()
 }
 
 /// The room, drawn, for the message a failing assertion carries.

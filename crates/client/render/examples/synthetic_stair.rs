@@ -152,7 +152,7 @@ use openshard_client_render::facing::{Face, Prism};
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Light, Lighting, Surface};
 use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
-use openshard_client_render::occlusion::{Builder, Occlusion, OwnerId, Shape};
+use openshard_client_render::occlusion::{self as grid, Builder, Occlusion, Owner, Shape, SolidId};
 use openshard_client_render::place::{Kind, Stance};
 use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, Target};
 use openshard_protocol::wire::Graphic;
@@ -1297,13 +1297,19 @@ fn main() {
     // 3), so every face of it carries this one number and no tread of it
     // shadows another. Each flight of a run gets its **own**, which is the
     // whole point of building the run: neighbours are not each other's.
-    let owners: Vec<OwnerId> = flights
+    let owners: Vec<Owner> = flights
         .iter()
         .map(|stands| {
-            let owner = occlusion.owner_at(i32::from(stands.x), i32::from(stands.y), stands.z, STAIR);
-            assert_ne!(
-                owner,
-                OwnerId::NONE,
+            let owner = Owner::new(stands.z, STAIR);
+            assert!(
+                occlusion
+                    .id_of(
+                        i32::from(stands.x),
+                        i32::from(stands.y),
+                        owner,
+                        grid::Part::nth(0)
+                    )
+                    .is_some(),
                 "the flight at ({}, {}) is not in the grid this tool built",
                 stands.x,
                 stands.y,
@@ -1327,18 +1333,31 @@ fn main() {
     let mut rows: Vec<MeshFaceRow> = Vec::new();
     for (flight, stands) in flights.iter().enumerate() {
         let mesh = prism.mesh(i32::from(stands.x), i32::from(stands.y), i32::from(stands.z));
-        for face in mesh.faces() {
+        for (part, face) in mesh.faces().iter().enumerate() {
             // Row `id` draws plane `slabs[id]`: the two lists are built by one
             // pass over the same flights in the same order, and this is where
             // that is checked instead of trusted. Everything the oracle below
-            // does rests on it — the `place` attachment names a row, and a row
-            // has to name a plane for "whose pixel is this" to have an answer.
+            // does rests on it — the id word names a row, and a row has to name
+            // a plane for "whose pixel is this" to have an answer.
             let id = rows.len() as u32;
             gate_against_mesh(&slabs[rows.len()], face, up);
+            // And which *solid* of the grid this face is, which is what the walk
+            // compares a fragment against — `docs/lighting_rebuild.md` phase 4.
+            // The `n`th face of a prism's mesh is the `n`th solid its
+            // `Builder::add` pushed; `statics::push_mesh` makes the same join in
+            // the real pipeline and `occlusion`'s own tests gate it.
+            let solid = occlusion
+                .id_of(
+                    i32::from(stands.x),
+                    i32::from(stands.y),
+                    owners[flight],
+                    grid::Part::nth(part),
+                )
+                .expect("a flight's own six solids");
             rows.push(MeshFaceRow {
                 tile: (stands.x, stands.y),
                 stance: Stance::of_normal(face.normal).expect("a stair's own normals are all recognized"),
-                owner: u32::from(owners[flight].raw()),
+                solid: solid.raw(),
             });
             for corner in face.fan() {
                 let screen = camera.to_view_exact(project_exact(corner));
@@ -1369,11 +1388,11 @@ fn main() {
             maxy = maxy.max(c.screen.y);
         }
         eprintln!(
-            "face {id}: {}, tile ({}, {}), owner {}, stance {:?}, screen x {minx:.1}..{maxx:.1}, y {miny:.1}..{maxy:.1}",
+            "face {id}: {}, tile ({}, {}), solid {}, stance {:?}, screen x {minx:.1}..{maxx:.1}, y {miny:.1}..{maxy:.1}",
             slabs[id].label(),
             row.tile.0,
             row.tile.1,
-            row.owner,
+            row.solid,
             row.stance,
         );
     }
@@ -1449,10 +1468,16 @@ fn main() {
     };
     // The CPU twin of a pixel, on demand. A picture says a fragment came out
     // black; this says *what* took its ray, by name — and after
-    // `docs/lighting_height.md` phase 3 the name that decides the answer is the
-    // owner, so a probe carries the flight's own [`occlusion::OwnerId`] exactly
-    // as the mesh rows above do. A probe built with `OwnerId::NONE` would be a
-    // point of nothing and would answer a question no pixel of this scene asks.
+    // `docs/lighting_rebuild.md` phase 4 the name that decides the answer is the
+    // **solid**, so a probe carries one exactly as the mesh rows above do. A
+    // probe carrying none would be a point of nothing and would answer a
+    // question no pixel of this scene asks.
+    //
+    // Which solid is found by *geometry* here and not by a part number, because
+    // a person types a position: the flight's own solid whose box holds the
+    // point. It is printed rather than assumed — a point on the seam between a
+    // tread's top and its riser is legitimately in both boxes, and the report
+    // says which one the probe took.
     if let Some(spec) = env_opt("OPENSHARD_STAIR_PROBE") {
         for one in spec.split(';').filter(|s| !s.trim().is_empty()) {
             let mut fields = one.split(',');
@@ -1468,26 +1493,41 @@ fn main() {
                 Some("upright") => Surface::Upright,
                 Some(other) => Surface::Face(parse_face(other)),
             };
-            // The tile under the point, and *that* tile's owner. A drawn
-            // fragment gets its owner from the tile its own static stands on, so
-            // a probe that borrowed a neighbour's would be asking a question no
-            // pixel asks. A point on a tile boundary belongs to whichever side
-            // `floor` picks, which is a real ambiguity — so the tile and the
-            // owner are both printed rather than assumed.
+            // The tile under the point, and *that* tile's own solids. A drawn
+            // fragment is a point of a solid standing on the tile its own static
+            // stands on, so a probe that borrowed a neighbour's would be asking a
+            // question no pixel asks. A point on a tile boundary belongs to
+            // whichever side `floor` picks, which is a real ambiguity — so the
+            // tile and the solid are both printed rather than assumed.
             let tile = (px.floor() as i32, py.floor() as i32);
-            let owner = lighting.occlusion.owner_at(tile.0, tile.1, at.z, STAIR);
+            let holds = |space: &openshard_client_render::solid::Solid| {
+                f64::from(px) >= space.min.x
+                    && f64::from(px) <= space.max.x
+                    && f64::from(py) >= space.min.y
+                    && f64::from(py) <= space.max.y
+                    && f64::from(pz) >= space.min.z
+                    && f64::from(pz) <= space.max.z
+            };
+            let solid = lighting
+                .occlusion
+                .cell(tile.0, tile.1)
+                .find(|(_, stands)| stands.owner == Owner::new(at.z, STAIR) && holds(&stands.space))
+                .map(|(id, _)| id);
             let spot = light::Spot {
                 at: Vec2::new(px, py),
                 z: pz,
                 tile,
                 surface,
-                owner,
+                solid,
             };
             eprint!(
-                "probe {surface:?} on ({}, {}) owner {}: {}",
+                "probe {surface:?} on ({}, {}) solid {}: {}",
                 tile.0,
                 tile.1,
-                owner.raw(),
+                match solid {
+                    Some(id) => id.raw().to_string(),
+                    None => "none".to_string(),
+                },
                 light::sample(spot, &lighting),
             );
         }
@@ -1736,14 +1776,17 @@ fn main() {
                 Part::Riser => Surface::Face(riser_face),
             };
             // The cell the walk starts from is the mesh face's own tile, off the
-            // row this pixel's id names — not `floor` of the position.
+            // row this pixel's id names — not `floor` of the position. And so is
+            // the solid: the row carries the name of the one it draws, so this
+            // probe is a point of exactly what the rendered fragment is a point
+            // of, with nothing re-derived. `docs/lighting_rebuild.md` phase 4.
             let row = &rows[texel.id as usize];
             let spot = light::Spot {
                 at: Vec2::new(point.0 as f32, point.1 as f32),
                 z: point.2 as f32,
                 tile: (i32::from(row.tile.0), i32::from(row.tile.1)),
                 surface,
-                owner: owners[slab.flight],
+                solid: Some(SolidId::new(row.solid)),
             };
             let sampled = light::sample(spot, &lighting);
             let through = sampled
@@ -1762,8 +1805,7 @@ fn main() {
                 // `Sample`'s own report and not a re-derivation of it: it names
                 // the solid that stopped the ray and how that solid stands to
                 // this fragment, which is the pair phase 4's instrument exists
-                // to print and the pair a reader gets wrong from two equal owner
-                // numbers side by side.
+                // to print.
                 examples.push(format!(
                     "  [{}] independent oracle says {}, rendered says {}\n    {sampled}",
                     slab.label(),

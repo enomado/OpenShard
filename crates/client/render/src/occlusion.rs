@@ -1271,6 +1271,23 @@ impl OwnerId {
 pub struct SolidId(u32);
 
 impl SolidId {
+    /// What an instance row carries for a fragment that is a point of **no**
+    /// solid — the ground, a mobile, a gump, a pass with no grid behind it.
+    ///
+    /// `docs/lighting_rebuild.md` phase 4: an id is what a fragment carries and
+    /// what the shadow walk compares it against, and the absence of one has to be
+    /// a word the wire can hold. `Option` is the shape on this side (see
+    /// `light::Spot::solid`); this is its spelling on the other.
+    ///
+    /// **It cannot collide with a real id, and that is a proof rather than a
+    /// margin.** A row is a full `u32`, and a *reference* carries an id in three
+    /// bytes ([`Occlusion::id_bytes`]) — so every id the walk can ever read back
+    /// is at most `0xFF_FFFF`, and this is strictly greater than all of them. A
+    /// sentinel picked inside the reference's own range would instead be
+    /// "unreachable in practice", which is what [`MAX_SOLIDS_PER_CELL`]-sized
+    /// arguments are made of.
+    pub const NOBODY: u32 = u32::MAX;
+
     /// The id of the `n`th solid of a list.
     pub fn new(at: u32) -> Self {
         Self(at)
@@ -1280,6 +1297,13 @@ impl SolidId {
     /// three bytes, and a slice index.
     pub fn raw(self) -> u32 {
         self.0
+    }
+
+    /// The word an instance row carries for a fragment that is a point of this
+    /// solid, or of none — the one place the [`Option`] on this side becomes
+    /// [`SolidId::NOBODY`] on the wire.
+    pub fn word(solid: Option<Self>) -> u32 {
+        solid.map_or(Self::NOBODY, Self::raw)
     }
 }
 
@@ -1428,22 +1452,21 @@ impl Occlusion {
         &self.owners[from..from + usize::from(span.count)]
     }
 
-    /// The solids standing on one tile, each with the [`OwnerId`] its own
-    /// reference carries — what both walks iterate.
+    /// The solids standing on one tile, each **named** — what both walks
+    /// iterate.
     ///
     /// A tile carries one lid, or one body, or a panel per side its art named; a
     /// caller combines them itself, and the combination is a rule rather than a
     /// fold — see `light::walk_cells_exact`, which takes the largest and not the
     /// product, because two panels of one wall are one wall.
     ///
-    /// The pair and not the solid alone, because the number is a fact about the
-    /// *reference*: [`Occlusion::owners`] says why, and a caller that zipped the
-    /// two lists itself would be the second place that has to stay in step.
-    pub fn cell(&self, x: i32, y: i32) -> impl Iterator<Item = (&Solid, OwnerId)> + '_ {
-        self.ids_at(x, y)
-            .iter()
-            .zip(self.owners_at(x, y))
-            .map(|(id, owner)| (self.solid(*id), *owner))
+    /// The pair and not the solid alone, because a walk's whole self-shadow rule
+    /// is a comparison of the [`SolidId`] against the one the fragment carries —
+    /// `docs/lighting_rebuild.md` phase 4. It was the [`OwnerId`] beside the
+    /// solid until then, which is one level too coarse: a flight's six solids
+    /// wear one owner, and a tread has to be able to shadow the tread below it.
+    pub fn cell(&self, x: i32, y: i32) -> impl Iterator<Item = (SolidId, &Solid)> + '_ {
+        self.ids_at(x, y).iter().map(|id| (*id, self.solid(*id)))
     }
 
     /// The solids standing on one tile, followed through their references.
@@ -1473,9 +1496,11 @@ impl Occlusion {
     /// static nothing in the walk can be a point of.
     pub fn owner_at(&self, x: i32, y: i32, z: i8, graphic: Graphic) -> OwnerId {
         let key = Owner::new(z, graphic);
-        self.cell(x, y)
-            .find(|(solid, _)| solid.owner == key)
-            .map_or(OwnerId::NONE, |(_, owner)| owner)
+        self.ids_at(x, y)
+            .iter()
+            .zip(self.owners_at(x, y))
+            .find(|(id, _)| self.solid(**id).owner == key)
+            .map_or(OwnerId::NONE, |(_, owner)| *owner)
     }
 
     /// Which solid of the frame's list one **piece** of a static standing on

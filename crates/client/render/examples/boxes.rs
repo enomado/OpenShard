@@ -232,7 +232,7 @@ use openshard_client_render::facing::Face as WallFace;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Light, Lighting, NIGHT};
 use openshard_client_render::mesh_face::{MeshFaceRow, MeshFaceVertex};
-use openshard_client_render::occlusion::{Builder, OwnerId};
+use openshard_client_render::occlusion::{Builder, Part, SolidId};
 use openshard_client_render::place::Stance;
 use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, Target};
 // The reference tracer, under short names because this file's own `light`,
@@ -567,31 +567,32 @@ fn main() {
         builder.add_raw(b.tile.0, b.tile.1, b.solid(), box_owner(index, b));
     }
     let occlusion = builder.finish(&Cutaway::OPEN);
-    // Which occluder of its own cell the grid made each box — what a fragment of
-    // that box has to carry for `exemption` to know it is a point of it, and
-    // what `pair` is entirely about: two boxes on one tile, so two numbers, where
-    // the height test the number replaced cannot tell them apart at all.
-    // `docs/lighting_height.md` phase 3.
-    let owners: Vec<OwnerId> = boxes
+    // Which *solid* of the grid each box is — what a fragment of that box has to
+    // carry for `exemption` to know it is a point of it, and what `pair` is
+    // entirely about: two boxes on one tile, so two names, where the height test
+    // they replaced cannot tell them apart at all. `add_raw` pushes exactly one
+    // solid a box, so `Part::ONLY` is the piece. `docs/lighting_rebuild.md` phase
+    // 4; it was the box's `OwnerId` until then.
+    let solids: Vec<SolidId> = boxes
         .iter()
         .enumerate()
         .map(|(index, b)| {
-            let owner = occlusion.owner_at(
-                i32::from(b.tile.0),
-                i32::from(b.tile.1),
-                box_owner(index, b).z,
-                box_owner(index, b).graphic,
-            );
-            assert_ne!(
-                owner,
-                OwnerId::NONE,
-                "box {index} is not in the grid this tool just built — every oracle \
-                 below would then be measuring a scene with one box missing"
-            );
-            owner
+            occlusion
+                .id_of(
+                    i32::from(b.tile.0),
+                    i32::from(b.tile.1),
+                    box_owner(index, b),
+                    Part::ONLY,
+                )
+                .unwrap_or_else(|| {
+                    panic!(
+                        "box {index} is not in the grid this tool just built — every oracle \
+                         below would then be measuring a scene with one box missing"
+                    )
+                })
         })
         .collect();
-    eprintln!("owners: {:?}", owners.iter().map(|o| o.raw()).collect::<Vec<_>>());
+    eprintln!("solids: {:?}", solids.iter().map(|s| s.raw()).collect::<Vec<_>>());
 
     let (width, height_px): (u32, u32) = (512, 512);
     // Three notches is the top of `camera::LADDER` — 4:1, the closest this
@@ -657,9 +658,9 @@ fn main() {
             rows.push(MeshFaceRow {
                 tile: (b.tile.0, b.tile.1),
                 stance,
-                // Every face of one box carries that box's own number — one
-                // added thing is one owner, whatever it was cut into.
-                owner: u32::from(owners[box_index].raw()),
+                // Every face of one box carries that box's own solid — a raw box
+                // is one solid however many faces are drawn over it.
+                solid: solids[box_index].raw(),
             });
             for corner in face.fan() {
                 let screen = camera.to_view_exact(project_exact(corner));
@@ -887,17 +888,17 @@ fn main() {
                     },
                 );
             let engine = raster_top_down(side, (b.min.0, b.min.1), (b.max.0, b.max.1), |x, y| {
-                // A point of *this box's own top*, which is what the owner
+                // A point of *this box's own top*, which is what the solid id
                 // says: the box it is on must not shadow it, and any other box
-                // on the same tile must. Before `docs/lighting_height.md` phase
-                // 3 that was read off the height, and on `pair` — where both
-                // boxes span the same heights — it exempted the wrong one.
+                // on the same tile must. Before identity that was read off the
+                // height, and on `pair` — where both boxes span the same
+                // heights — it exempted the wrong one.
                 let spot = light::Spot::flat(
                     Vec2::new(x as f32, y as f32),
                     z as f32,
                     (i32::from(b.tile.0), i32::from(b.tile.1)),
                 )
-                .owned_by(owners[index]);
+                .part_of(solids[index]);
                 let sampler = match env_opt("OPENSHARD_BOXES_ORACLE_EXACT").as_deref() {
                     Some("1") => light::sample_exact,
                     _ => light::sample,
@@ -1294,7 +1295,7 @@ fn main() {
                             (i32::from(b.tile.0), i32::from(b.tile.1)),
                             face,
                         )
-                        .owned_by(owners[index]);
+                        .part_of(solids[index]);
                         let through = light::sample(spot, &lighting)
                             .reaches
                             .first()

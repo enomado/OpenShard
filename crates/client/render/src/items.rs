@@ -150,6 +150,7 @@ pub fn collect(
             true => u32::from(HIGHLIGHT_HUE.0),
             false => u32::from(item.hue.0),
         };
+        let key = crate::occlusion::Owner::new(item.at.z, item.graphic);
         let owner = occlusion.owner_at(
             i32::from(item.at.x),
             i32::from(item.at.y),
@@ -159,13 +160,16 @@ pub fn collect(
         let quad = quad_of(item.at, &placed, base, hue, owner);
         if let Some(prism) = &placed.prism {
             crate::statics::push_mesh(
-                &mut mesh_vertices,
-                &mut mesh_rows,
+                crate::statics::MeshSink {
+                    vertices: &mut mesh_vertices,
+                    rows: &mut mesh_rows,
+                },
                 camera,
                 item.at,
                 prism,
                 quad.depth,
-                owner,
+                key,
+                occlusion,
             );
         }
         quads.push((order, quad));

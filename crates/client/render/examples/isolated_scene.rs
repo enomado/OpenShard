@@ -279,8 +279,8 @@ fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
             z,
             // A point in the world rather than a fragment of one of its statics:
             // this tool walks a segment through the scene, so it is a point of no
-            // occluder and exempt from none. See `light::Spot::owner`.
-            owner: openshard_client_render::occlusion::OwnerId::NONE,
+            // solid and exempt from none. See `light::Spot::solid`.
+            solid: None,
             // `floor()`, deliberately: this tool exists to bisect exactly the
             // ambiguity `Spot::tile` closes for a real caller
             // (`docs/lighting_raymarch.md` step 2), so the profile has to keep
@@ -340,10 +340,10 @@ fn face_light(
             tile: (x.floor() as i32, y.floor() as i32),
             surface,
             // The wireframe's own face colours: a probe of a *place*, not of a
-            // drawn fragment, so it names no owner and is exempt from nothing —
+            // drawn fragment, so it names no solid and is exempt from nothing —
             // which is what makes the picture show every solid's real effect,
             // including the one being coloured.
-            owner: openshard_client_render::occlusion::OwnerId::NONE,
+            solid: None,
         };
         let multiplier = light::sample(spot, lighting).multiplier;
         [
