@@ -817,6 +817,117 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
     );
 }
 
+/// **A face fragment's own plane is the primitive's own number, bit for bit** —
+/// the one thing `docs/occluders.md`'s S3 said it had to measure before it could
+/// be written.
+///
+/// D2's surface exemption compares a fragment's plane against a candidate box's
+/// bound: skip the candidate when its extent along the fragment's normal axis
+/// *ends* at the fragment's own plane. The fragment's plane comes off the
+/// interpolated position the mesh pass writes; the bound comes out of the
+/// primitive buffer. Two sources, one comparison, and the plan pinned what to do
+/// about that in advance — measure, and if the two are not identical, carry the
+/// plane from the instance row rather than introduce a tolerance.
+///
+/// **They are identical, and this is the measurement.** The reason is not luck:
+/// every vertex of an axis-aligned face carries the *same* coordinate on that
+/// face's own axis, and interpolating a value that is equal at all three corners
+/// returns it exactly under the `v0 + b·(v1−v0) + c·(v2−v0)` form every
+/// rasteriser uses. So the exemption may be written as an equality, and S3 adds no
+/// constant.
+///
+/// It stays as a gate because the claim is about the *pipeline* and not about
+/// arithmetic anyone can re-derive: a projection that went perspective, a vertex
+/// format that lost a bit, or a driver that interpolates as `a·v0 + b·v1 + c·v2`
+/// would each break the equality while leaving every picture in this file looking
+/// right — and would turn the surface exemption into a rule that fires on some
+/// pixels of a seam and not others.
+///
+/// The stair scene rather than a synthetic quad, because it is the geometry the
+/// exemption is *for*: nine boxes whose faces sit on the thirds of a tile, which
+/// are the coordinates with no exact `f32` at all.
+#[test]
+fn a_face_fragments_own_plane_is_the_primitives_own_number() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let boxes = stair_scene();
+    let frame = render(
+        &device,
+        &queue,
+        Shot {
+            boxes: &boxes,
+            flame: flame(),
+            radius: FLAME_RADIUS,
+            intensity: 1.0,
+            ambient: NIGHT,
+            view: View::Shadow,
+            zoom: 2,
+            flame_radius: 0.0,
+        },
+    );
+
+    let mut checked = 0_usize;
+    let mut off = Vec::new();
+    for texel in &frame.drawn {
+        if texel.kind != openshard_client_render::place::Kind::Static as u32
+            || texel.stance != Stance::MeshFace as u32
+        {
+            continue;
+        }
+        let Some((box_index, stance, _)) = frame.face_rows.iter().find(|(_, _, id)| *id == texel.id) else {
+            continue;
+        };
+        let b = &boxes[*box_index];
+        // The face's own axis, and which end of the box it is the face of — the
+        // vertices of that face all carry this one coordinate, so the fragment's
+        // must be it as well.
+        let (axis, plane) = match stance {
+            Stance::FaceNorth => (1, b.min.1),
+            Stance::FaceSouth => (1, b.max.1),
+            Stance::FaceWest => (0, b.min.0),
+            Stance::FaceEast => (0, b.max.0),
+            // A lid, which is the fragment's `z`. `Upright` and the corners do not
+            // occur here: `box_mesh` gives every face an axis-aligned normal.
+            Stance::Flat => (2, b.max.2),
+            other => panic!("a box's face came back as {other:?}"),
+        };
+        let at = [texel.at.0, texel.at.1, texel.at.2];
+        checked += 1;
+        // `plane` is `f64` off the `BoxSpec`; the vertex carried it through `as
+        // f32` and the position plane is `f32`, so the number to match is the
+        // `f32` one. That cast is the wire's own rounding and not a tolerance —
+        // `Solid::wire_box` is the same step on the occluder side.
+        if at[axis] != f64::from(plane as f32) {
+            off.push(format!(
+                "box {box_index}'s {stance:?}: the fragment is at {:.9} on axis {axis}, the face is \
+                 at {:.9} — {:e} apart",
+                at[axis],
+                f64::from(plane as f32),
+                at[axis] - f64::from(plane as f32),
+            ));
+        }
+    }
+
+    // A detector that examined nothing reads exactly like one that found nothing,
+    // and every face of this scene is thousands of pixels.
+    assert!(
+        checked > 20_000,
+        "only {checked} face fragments were examined out of {} pixels",
+        SIDE * SIDE,
+    );
+    assert!(
+        off.is_empty(),
+        "{} of {checked} face fragments do not sit on their own face's plane, so the surface \
+         exemption cannot be an equality and has to carry the plane from the instance row \
+         instead:\n{}",
+        off.len(),
+        off.iter().take(12).cloned().collect::<Vec<_>>().join("\n"),
+    );
+    eprintln!("{checked} face fragments, every one exactly on its own face's plane");
+}
+
 /// How far the engine's penumbra may sit from the reference's *on average*, as a
 /// fraction of the whole flame.
 ///

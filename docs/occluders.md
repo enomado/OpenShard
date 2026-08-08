@@ -484,12 +484,32 @@ when its extent along the fragment's own normal axis ends at the fragment's own
 plane, on the fragment's back side. Both walks and the shader, one rule, stated
 once the way `Solid::wire_box` is.
 
-What the step must settle, and it is the only open question in it: **where the
+What the step must settle, and it was the only open question in it: **where the
 fragment's plane comes from.** Reading it off the interpolated position plane and
 comparing to a stored box is a float equality across two sources; if it is not
 bit-identical, the fix is to carry the plane from the instance row — which
 already carries `solid` — and *not* to introduce a tolerance. Measure first, and
 record which of the two it was.
+
+✅ **Measured, and it is the interpolated position: they are identical, bit for
+bit.** `traced.rs`'s `a_face_fragments_own_plane_is_the_primitives_own_number`
+renders the run of flights and compares every face fragment's coordinate on its
+own face's axis against that face's own bound: **39,930 fragments, zero off**, on
+a scene whose faces sit on the thirds of a tile — the coordinates with no exact
+`f32` at all.
+
+The reason it holds is not luck. Every vertex of an axis-aligned face carries the
+*same* coordinate on that face's axis, and interpolating a value equal at all
+three corners returns it exactly under the `v0 + b·(v1−v0) + c·(v2−v0)` form a
+rasteriser uses. So **the exemption is an equality, nothing is added to the
+instance row, and S3 adds no number anywhere** — which is acceptance point 6
+satisfied by construction rather than by inspection.
+
+The measurement stays as a gate, because what it pins is the *pipeline*: a
+projection that went perspective, a vertex format that lost a bit, or a driver
+interpolating as `a·v0 + b·v1 + c·v2` would each break the equality while leaving
+every picture looking right, and would turn the exemption into a rule that fires
+on some pixels of a seam and not others.
 
 ### Acceptance for S3, as things to run and numbers to read
 
