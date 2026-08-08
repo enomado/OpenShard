@@ -251,20 +251,29 @@ fn the_edge_of_a_shadow_lands_where_the_geometry_puts_it() {
 
 /// A ray grazing the top of a wall is dimmed rather than switched.
 ///
-/// **The penumbra that survives**, and the whole of it: a flame is a body rather
-/// than a point, so the edge of what a wall casts is soft over a band of the
-/// similar-triangles width decision 14 derived — `spread * t / (1 - t)`, in `z`
-/// units. Decision 18 kept it vertical and dropped it sideways, and decision 24
-/// dropped the last of the sideways one when it stopped scaling a whole-tile
-/// occluder by the length of the crossing. Nothing measured this until then; what
-/// did was a sideways sweep, and it was measuring the term that went.
+/// **The penumbra, and it is cast rather than drawn** —
+/// `docs/lighting_rebuild.md` phase 5. What made this band before was
+/// `spread * t / (1 - t)` in `z` units, the similar-triangles width of decision
+/// 14, computed by the one ray that walked; what makes it now is eight rays at
+/// the flame's own sphere disagreeing about whether the wall is in the way. The
+/// claim is the same claim and the numbers under it are not, which is why both
+/// margins below moved:
 ///
-/// Up the wall and not across it, at a quarter of a `z` unit: the spot climbs
-/// from below the wall's top to well above it, so the ray to the torch on the far
-/// side crosses the wall's plane at a height that walks up through the top edge
-/// of the span. Three claims, and they fail separately — the low end is dark, the
-/// high end is clear, and it is monotone in between rather than a step with noise
-/// either side of it.
+/// - **the band is a `z` unit wide against about eight.** The old flame was a
+///   tile across and a quarter of a tile tall; the new one is an eighth of a tile
+///   in radius, which is what the art measures ([`light::FLAME_RADIUS`]), so the
+///   sweep steps an eighth of a `z` to have anything to look at.
+/// - **it climbs to within one ray of monotone rather than exactly.** The sample
+///   pattern is rotated per fragment so that eight rays read as grain rather than
+///   as eight bands, and two neighbouring points of a sweep are two different
+///   rotations. The expectation is monotone; a single sample of eight is what any
+///   one step may give back.
+///
+/// Up the wall and not across it: the spot climbs from below the wall's top to
+/// well above it, so the ray to the torch on the far side crosses the wall's
+/// plane at a height that walks up through the top edge of the span. Three
+/// claims, and they fail separately — the low end is dark, the high end is clear,
+/// and it is a gradient in between rather than a step.
 #[test]
 fn a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched() {
     let scene = scene::torch_before_a_wall();
@@ -275,8 +284,8 @@ fn a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched() {
     // past the top of it.
     let at = Vec2::new(f32::from(CENTRE.0) + 0.5, f32::from(CENTRE.1) + 1.5);
     let tile = (at.x.floor() as i32, at.y.floor() as i32);
-    let sweep: Vec<(f32, f32)> = (0..=120)
-        .map(|step| step as f32 / 4.0)
+    let sweep: Vec<(f32, f32)> = (0..=240)
+        .map(|step| step as f32 / 8.0)
         .map(|z| {
             let through = light::sample(Spot::at(at, z, tile), &lighting)
                 .reaches
@@ -301,14 +310,19 @@ fn a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched() {
         "the wall's top edge switches rather than dims: {partial} samples in between\n\
          {sweep:?}{picture}",
     );
-    // And it climbs. A band that went dark again above the wall would give the
-    // same count and would be a different, worse answer.
+    // And it climbs, to within one ray of the eight. A band that went dark again
+    // above the wall would give the same count and would be a different, worse
+    // answer; what this has to leave room for is the rotation of the sample
+    // pattern, which is a different draw of the same eight directions at every
+    // point of the sweep. The slack is stated as `1 / SHADOW_RAYS` rather than as
+    // a number, so that changing the ray count moves it and nothing else has to.
+    let one_ray = 1.0 / light::SHADOW_RAYS as f32;
     for pair in sweep.windows(2) {
         let [(z, below), (_, above)] = pair else {
             continue;
         };
         assert!(
-            *above >= below - 1e-6,
+            *above >= below - one_ray - 1e-6,
             "the shadow deepens on the way up the wall, at z {z}: {below} then {above}\n\
              {sweep:?}{picture}",
         );
@@ -1970,7 +1984,19 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
 /// `PANEL_THICKNESS` bounds the first, nothing before session 10 measured
 /// the second — so the step is tighter than either fixture in this file has
 /// yet defeated, not merely tight enough for the one that was measured.
-const BRUTE_STEP: f32 = 0.001;
+///
+/// **And it was defeated a second time, by `docs/lighting_rebuild.md`'s phase
+/// 5.** A flame is a sphere now and the fuzz asks this oracle about
+/// `SHADOW_RAYS` points of it rather than about its centre, so every case is
+/// eight chances at a corner rather than one — and one of them found a clip
+/// under a thousandth of a tile deep on the first run
+/// (`spot (103.30, 100.13, 1.64)` to `light (95.82, 99.77, 1.00)`, where the
+/// centre ray clears the wall tile's corner by two hundredths in `y` and some
+/// of the eight clear it by nothing at all). Five times tighter again, for the
+/// same reason and by the same rule: this is a point sampler and *any* step can
+/// be defeated by a thin enough sliver, so the number moves when a fixture
+/// moves it and the whole file still runs in a second.
+const BRUTE_STEP: f32 = 0.0002;
 
 /// Whether the straight segment from `from` to `to` passes through any solid
 /// standing between the two tiles the walk itself exempts.
@@ -2146,7 +2172,6 @@ fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
             sun: None,
             view: debug::View::default(),
         };
-        let target_tile = (light_at.x.floor() as i32, light_at.y.floor() as i32);
         for &(at, z) in &spots {
             let spot = Spot::flat(at, z, (100, 100));
             let sample = light::sample(spot, &lighting);
@@ -2154,14 +2179,23 @@ fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
                 continue;
             };
             let walked_blocked = reach.through <= 0.004;
-            let brute_blocked = brute_force_blocked(
-                [at.x, at.y, z],
-                [light_at.x, light_at.y, light_z],
-                (100, 100),
-                target_tile,
-                true,
-                &occlusion,
-            );
+            // The same body on both sides — see the fuzz below for the
+            // measurement that made this necessary. This grid keeps every ray a
+            // comfortable distance from a corner, so it was green either way;
+            // being green for the right reason is the difference between an
+            // oracle and a coincidence.
+            let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, light_z])
+                .iter()
+                .all(|point| {
+                    brute_force_blocked(
+                        [at.x, at.y, z],
+                        *point,
+                        (100, 100),
+                        (point[0].floor() as i32, point[1].floor() as i32),
+                        true,
+                        &occlusion,
+                    )
+                });
             compared += 1;
             blocked_count += usize::from(walked_blocked);
             if walked_blocked != brute_blocked {
@@ -2284,14 +2318,27 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
             return Ok(());
         };
         let walked_blocked = reach.through <= 0.004;
-        let brute_blocked = brute_force_blocked(
-            [spot_at.x, spot_at.y, spot_z],
-            [light_at.x, light_at.y, flame_z],
-            spot_tile,
-            target_tile,
-            true,
-            &occlusion,
-        );
+        // **The oracle is asked about the same body the walk was** —
+        // `docs/lighting_rebuild.md` phase 5. A flame is a sphere and the walk
+        // casts `SHADOW_RAYS` rays at points of it, so an oracle asked about its
+        // *centre* alone is a point source, and the two part company wherever a
+        // ray grazes a corner: measured, on the shrunk case `spot (107.78,
+        // 100.49)` to `light (97.08, 99.71)`, where the centre ray clips the wall
+        // tile's far corner and most of the eight miss it. `light::flame_points`
+        // is where the rays end, shared so that the *scene* is shared and the
+        // answer is not — this oracle still walks the segment its own dumb way.
+        let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, flame_z])
+            .iter()
+            .all(|point| {
+                brute_force_blocked(
+                    [spot_at.x, spot_at.y, spot_z],
+                    *point,
+                    spot_tile,
+                    (point[0].floor() as i32, point[1].floor() as i32),
+                    true,
+                    &occlusion,
+                )
+            });
         prop_assert_eq!(
             walked_blocked,
             brute_blocked,
@@ -2375,7 +2422,6 @@ fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
             sun: None,
             view: debug::View::default(),
         };
-        let target_tile = (light_at.x.floor() as i32, light_at.y.floor() as i32);
         for &(at, z) in &spots {
             let spot = Spot::flat(at, z, (100, 100));
             let sample = light::sample_exact(spot, &lighting);
@@ -2383,14 +2429,23 @@ fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
                 continue;
             };
             let walked_blocked = reach.through <= 0.004;
-            let brute_blocked = brute_force_blocked(
-                [at.x, at.y, z],
-                [light_at.x, light_at.y, light_z],
-                (100, 100),
-                target_tile,
-                true,
-                &occlusion,
-            );
+            // The same body on both sides — see the fuzz below for the
+            // measurement that made this necessary. This grid keeps every ray a
+            // comfortable distance from a corner, so it was green either way;
+            // being green for the right reason is the difference between an
+            // oracle and a coincidence.
+            let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, light_z])
+                .iter()
+                .all(|point| {
+                    brute_force_blocked(
+                        [at.x, at.y, z],
+                        *point,
+                        (100, 100),
+                        (point[0].floor() as i32, point[1].floor() as i32),
+                        true,
+                        &occlusion,
+                    )
+                });
             compared += 1;
             blocked_count += usize::from(walked_blocked);
             if walked_blocked != brute_blocked {
@@ -2495,14 +2550,27 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
             return Ok(());
         };
         let walked_blocked = reach.through <= 0.004;
-        let brute_blocked = brute_force_blocked(
-            [spot_at.x, spot_at.y, spot_z],
-            [light_at.x, light_at.y, flame_z],
-            spot_tile,
-            target_tile,
-            true,
-            &occlusion,
-        );
+        // **The oracle is asked about the same body the walk was** —
+        // `docs/lighting_rebuild.md` phase 5. A flame is a sphere and the walk
+        // casts `SHADOW_RAYS` rays at points of it, so an oracle asked about its
+        // *centre* alone is a point source, and the two part company wherever a
+        // ray grazes a corner: measured, on the shrunk case `spot (107.78,
+        // 100.49)` to `light (97.08, 99.71)`, where the centre ray clips the wall
+        // tile's far corner and most of the eight miss it. `light::flame_points`
+        // is where the rays end, shared so that the *scene* is shared and the
+        // answer is not — this oracle still walks the segment its own dumb way.
+        let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, flame_z])
+            .iter()
+            .all(|point| {
+                brute_force_blocked(
+                    [spot_at.x, spot_at.y, spot_z],
+                    *point,
+                    spot_tile,
+                    (point[0].floor() as i32, point[1].floor() as i32),
+                    true,
+                    &occlusion,
+                )
+            });
         prop_assert_eq!(
             walked_blocked,
             brute_blocked,

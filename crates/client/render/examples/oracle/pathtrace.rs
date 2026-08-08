@@ -96,6 +96,68 @@ impl Albedos {
 /// `π` either — that variant is a description of the engine *before* phase 3.
 pub const LAMBERT_PI: f64 = std::f64::consts::PI;
 
+/// What shape the reference gives the flame, and how hard it works at it.
+///
+/// **The engine's flame is a sphere as of `docs/lighting_rebuild.md`'s phase 5**,
+/// and a reference that kept it a point would report the whole penumbra as a
+/// disagreement — which is what it did, on one pixel, the moment the eight rays
+/// landed. So this is a field of the scene rather than a constant of the tracer:
+/// a comparison says which body it is about, out loud, at the call site.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Body {
+    /// A point. One shadow ray a pixel answers it exactly, which is what
+    /// [`Mirror::render`]'s own `is_exact` assertion is about — and it is still
+    /// the right question for a scene with no occluder in it, where the flame's
+    /// size cannot cast anything.
+    Point,
+    /// The sphere the engine casts at: [`light::FLAME_RADIUS`] in tiles, sampled
+    /// `samples` ways a pixel.
+    ///
+    /// The count is the reference's own and has nothing to do with
+    /// [`light::SHADOW_RAYS`]: this side is the thing being measured *against*,
+    /// so it wants enough samples that its own noise is small beside the
+    /// engine's, and the comparison measures that noise rather than assuming it.
+    Sphere { radius: f64, samples: u32 },
+}
+
+/// The engine's own flame, as the reference has to model it to be judging the
+/// same scene: [`light::FLAME_RADIUS`], read across rather than written down
+/// again.
+///
+/// **Sixty-four samples against the engine's eight**, and the ratio is the whole
+/// point of the number: this side is the ruler, so its own noise has to be small
+/// beside what it is measuring. Eight times the rays is roughly a third of the
+/// standard error, and [`penumbra`] measures what is left rather than trusting
+/// the arithmetic — see its `noise` field.
+///
+/// One constant so that the tool a person points at a scene and the gate that
+/// runs under `cargo test` cannot drift into judging two different flames.
+pub const ENGINE_FLAME: Body = Body::Sphere {
+    radius: light::FLAME_RADIUS as f64,
+    samples: 64,
+};
+
+/// The seed every picture a person looks at is rendered under, and the second
+/// one [`penumbra`] measures the reference's own noise with.
+///
+/// Two named constants rather than two literals at a call site, because the
+/// *pair* is the instrument: one seed is a render and two seeds are an error bar,
+/// and a caller passing the same number twice would get an error bar of zero and
+/// a gate that believes itself exactly.
+pub const FIRST_SEED: u64 = 0;
+pub const SECOND_SEED: u64 = 1;
+
+/// How far apart the two penumbras may be, as a fraction of the whole flame.
+///
+/// **A sampling bound, not a tolerance**, and it is one ray of the engine's own
+/// [`light::SHADOW_RAYS`]. Eight stratified samples of the share of a disc that
+/// is visible give a count that is the true share times eight, plus or minus the
+/// one sample the pattern's rotation moves across the edge — so an eighth is what
+/// the estimator can be wrong by before anything is wrong with the *model*. The
+/// reference's own noise is measured beside it rather than folded into it: see
+/// [`Penumbra::noise`], which is what says whether this number is doing any work.
+pub const PENUMBRA_ALLOWED: f64 = 1.0 / light::SHADOW_RAYS as f64;
+
 /// The same scene, in the tracer's own terms.
 ///
 /// Two things are taken from the renderer to build it, and both arrive as
@@ -104,6 +166,10 @@ pub struct Mirror {
     pub scene: pt_scene::Scene,
     pub camera: pt_camera::Parallel,
     pub flame: pt_light::Light,
+    /// How many paths a pixel [`Mirror::render`] asks for, which the emitter
+    /// decides: a point is exact in one and a sphere is an estimate in any
+    /// number.
+    samples: u32,
 }
 
 /// A scene to mirror, and everything about it the reference cannot invent.
@@ -124,6 +190,10 @@ pub struct Mirrored<'a> {
     /// picture nobody can lay beside a frame.
     pub intensity: f64,
     pub albedos: Albedos,
+    /// What shape the flame is, and how hard the reference works at it. See
+    /// [`Body`] — a comparison with an occluder in it wants the engine's own
+    /// sphere, and one without cannot tell the difference.
+    pub body: Body,
     /// The *renderer's* own world-to-pixel map, handed over as a black box for
     /// [`pt_camera::Parallel::measure`] to recover. This is the one thing the
     /// tracer takes from the render crate, and taking it as values rather than
@@ -142,6 +212,7 @@ impl Mirror {
             colour,
             intensity,
             albedos,
+            body,
             to_pixel,
         } = mirrored;
         // **The metric.** The tracer's world is isotropic and this one is not: a
@@ -196,9 +267,13 @@ impl Mirror {
             1e-2,
         );
 
+        let (emitter, samples) = match body {
+            Body::Point => (pt_light::Emitter::Point, 1),
+            Body::Sphere { radius, samples } => (pt_light::Emitter::Sphere { radius }, samples),
+        };
         let flame = pt_light::Light {
             at: isotropic(light_at.x, light_at.y, light_at.z),
-            emitter: pt_light::Emitter::Point,
+            emitter,
             // The renderer's own windowed curve and its own radius, so "outside
             // the torch's reach" means the same thing on both sides of the
             // comparison. A physical inverse square here would darken the far
@@ -210,31 +285,45 @@ impl Mirror {
             intensity,
         };
 
-        Self { scene, camera, flame }
+        Self {
+            scene,
+            camera,
+            flame,
+            samples,
+        }
     }
 
     /// Render this scene in one light model, deterministically.
     ///
+    /// `seed` names the render: the same seed and the same scene give the same
+    /// image on any machine, and *two different seeds are how the noise of an
+    /// estimate is measured* rather than argued about — see [`penumbra`].
+    ///
     /// # Panics
     ///
-    /// If the render is an estimate rather than an exact answer. Every
-    /// comparison below is against a renderer with hard shadows, and a
-    /// soft-shadow render disagreeing with a hard-shadow one is not a finding.
-    pub fn render(&self, brdf: pt_trace::Brdf, width: u32, height: u32) -> pt_trace::Image {
+    /// If a [`Body::Point`] render comes back an estimate. That combination is
+    /// the one the shadow gate's own `interior == 0` rests on, and an estimate
+    /// disagreeing with a hard-shadow frame would not be a finding. A
+    /// [`Body::Sphere`] render *is* an estimate by construction and says so by
+    /// not being asked.
+    pub fn render(&self, brdf: pt_trace::Brdf, seed: u64, width: u32, height: u32) -> pt_trace::Image {
         let image = pt_trace::render(
             &self.scene,
             &self.camera,
             std::slice::from_ref(&self.flame),
             &pt_trace::Settings {
                 brdf,
+                samples: self.samples,
+                seed,
                 ..pt_trace::Settings::degenerate()
             },
             width,
             height,
         );
         assert!(
-            image.is_exact(),
-            "the gate only means anything against an exact render, and this one is an estimate"
+            image.is_exact() || self.samples > 1,
+            "a one-sample render of an area emitter is an estimate with nothing to average, which is \
+             neither of the two things a caller can mean"
         );
         image
     }
@@ -332,6 +421,168 @@ impl Verdict {
         }
         out
     }
+}
+
+/// What a penumbra comparison found, and what the reference's own noise was
+/// while it found it.
+///
+/// **The noise is a field and not a footnote.** Both sides of this comparison are
+/// estimates — the engine's eight stratified rays and the reference's own random
+/// ones — so "they agree to within `d`" means nothing until `d` is laid beside
+/// how much the reference disagrees *with itself*. That second number is measured
+/// by rendering the same scene under two seeds, which is the only way to get it
+/// that does not involve believing an argument about variance.
+pub struct Penumbra {
+    /// Pixels where both sides say the flame partly reaches: the penumbra, which
+    /// is the only place this comparison has anything to be about.
+    pub compared: usize,
+    /// The largest and the mean difference over those, as fractions of the whole
+    /// flame.
+    pub worst: f64,
+    pub mean: f64,
+    /// Where the worst one is, for a person with the picture open.
+    pub worst_at: (u32, u32),
+    /// And the same two numbers for the reference against itself, one seed
+    /// against another, over the same pixels.
+    pub noise: f64,
+    pub noise_mean: f64,
+    /// The mean difference **with its sign**: how much brighter the engine's
+    /// penumbra is than the reference's, on average.
+    ///
+    /// **The sharp number, and the reason the two means above are not enough.**
+    /// Noise on either side is symmetric, so it cancels here and thousands of
+    /// pixels average it away — the standard error of this over a few thousand
+    /// pixels is a thousandth of a flame. What does *not* cancel is a difference
+    /// in the model: a flame of the wrong radius, a disc sampled off centre, a
+    /// penumbra sitting a pixel to one side of where it belongs. Those are what
+    /// this phase could actually have got wrong, and they show up here at ten
+    /// times their size in [`Penumbra::mean`].
+    pub bias: f64,
+    /// How many of the compared pixels are past what sampling explains: the
+    /// caller's own `allowed` for the engine's side, plus the reference's
+    /// measured disagreement with itself at that same pixel.
+    pub over: usize,
+}
+
+impl Penumbra {
+    /// The whole finding as the line a run prints.
+    pub fn report(&self, allowed: f64) -> String {
+        format!(
+            "penumbra vs path tracer: {} pixels partly lit on both sides, worst {:.4} of the flame at \
+             {:?}, mean {:.4}, signed mean {:+.4}; the reference against itself over the same pixels is \
+             worst {:.4}, mean {:.4}; {} past {:.4} plus that pixel's own reference noise\n",
+            self.compared,
+            self.worst,
+            self.worst_at,
+            self.mean,
+            self.bias,
+            self.noise,
+            self.noise_mean,
+            self.over,
+            allowed,
+        )
+    }
+}
+
+/// How much of the flame each side says a pixel can see, compared where they
+/// both say "some of it".
+///
+/// **`docs/lighting_rebuild.md`'s phase 5 "done when".** [`compare`] reads the
+/// two pictures as one bit a pixel, which is the right question for a hard shadow
+/// and says nothing at all about the shape of a soft one: a penumbra is exactly
+/// the region where that bit is arbitrary. This reads the *fraction* instead —
+/// the engine's `View::Shadow` grey, which is `nearest_through`, against the
+/// reference's own `Visibility::reached`.
+///
+/// `second` is the same scene under a second seed and is what measures the
+/// reference's noise; `allowed` is the *engine's* own share of the budget, and it
+/// is the caller's to state because it is a ray count that belongs to the engine.
+/// A pixel counts as over when the two are further apart than `allowed` plus what
+/// the reference disagrees with itself by at that same pixel — which is the whole
+/// of "within sampling noise, and the noise is measured rather than asserted
+/// away".
+///
+/// # Panics
+///
+/// If it found no penumbra to compare. A soft-shadow gate over a scene with no
+/// soft shadow in it is green for every renderer there is.
+pub fn penumbra(
+    traced: &pt_trace::Image,
+    second: &pt_trace::Image,
+    frame: Frame<'_>,
+    allowed: f64,
+) -> Penumbra {
+    let Frame {
+        width,
+        height,
+        drawn,
+        shadow,
+        face_rows,
+    } = frame;
+    let mut found = Penumbra {
+        compared: 0,
+        worst: 0.0,
+        mean: 0.0,
+        worst_at: (0, 0),
+        noise: 0.0,
+        noise_mean: 0.0,
+        bias: 0.0,
+        over: 0,
+    };
+    let (mut total, mut noise_total, mut signed) = (0.0, 0.0, 0.0);
+    for pixel in 0..(width * height) as usize {
+        // The same precondition [`compare`] has: the two must agree what surface
+        // is there, or the difference is about depth order and not about light.
+        if traced_surface(&drawn[pixel], face_rows) != traced.pixels[pixel].seen.map(|seen| seen.surface) {
+            continue;
+        }
+        let (x, y) = ((pixel as u32) % width, (pixel as u32) / width);
+        let visibility = traced.visibility(x, y, 0);
+        if !visibility.within_reach {
+            continue;
+        }
+        // The penumbra, and nothing else: the umbra and the open ground are what
+        // [`compare`]'s own bit already covers, and including them here would
+        // bury the number this exists to produce under a field of exact zeros.
+        if visibility.reached <= 0.0 || visibility.reached >= 1.0 {
+            continue;
+        }
+        let Shade::Through(grey) =
+            Shade::of([shadow[pixel * 4], shadow[pixel * 4 + 1], shadow[pixel * 4 + 2]])
+        else {
+            // `Blocked` and `Unreached` are the two the engine says in a colour
+            // rather than in a level — see `Shade`. Neither is a fraction, and a
+            // caller that read them as one would be reading `0.2` of a channel as
+            // a fifth of a flame.
+            continue;
+        };
+        let difference = f64::from(grey) / 255.0 - visibility.reached;
+        let apart = difference.abs();
+        let own = (second.visibility(x, y, 0).reached - visibility.reached).abs();
+        found.compared += 1;
+        total += apart;
+        signed += difference;
+        noise_total += own;
+        found.noise = found.noise.max(own);
+        // The engine's own bound plus what the *reference* is worth at this
+        // pixel, measured. A pixel in the middle of a soft edge is where both
+        // estimators are noisiest, and a budget that ignored the reference's
+        // share would be a gate on the ruler.
+        found.over += usize::from(apart > allowed + own);
+        if apart > found.worst {
+            found.worst = apart;
+            found.worst_at = (x, y);
+        }
+    }
+    assert!(
+        found.compared > 0,
+        "no pixel of this scene is partly lit on both sides — a soft-shadow gate over a scene with no \
+         soft shadow in it is green for every renderer there is"
+    );
+    found.mean = total / found.compared as f64;
+    found.noise_mean = noise_total / found.compared as f64;
+    found.bias = signed / found.compared as f64;
+    found
 }
 
 /// Which surface of the tracer's own scene the renderer says drew a pixel.

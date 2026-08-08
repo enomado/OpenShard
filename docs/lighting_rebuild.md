@@ -90,14 +90,18 @@ Named, so the plan can be checked against the tree:
 | ~~`exemption`~~ **gone, phase 4**; `on_surface` and `own_run` **stay, measured** | the same id test, once — inline, in both walks. The other two are `same_run`, which is a *different* claim: see phase 4 |
 | ~~`mounted_at`'s height test~~ **gone, phase 4**; `mounted_at` and `MOUNTED_CLEARANCE` **stay, measured** | a sconce burns where it hangs, which the map does not say and the art does — see phase 4 |
 | `WIDTH_OVERLAP` | one silhouette — see the impostor phase |
-| `FLAME_DEPTH`, `pierces`, `crosses`'s softening, `SOFT_CROSSING_*` | an area light and N shadow rays |
+| ~~`FLAME_DEPTH`, `pierces`, `crosses`'s softening, `SOFT_CROSSING_*`~~ **gone, phase 5**; `inside` and the `spread` parameter went with them | an area light and eight shadow rays at `FLAME_RADIUS` |
 | `(1 − d)²` falloff | windowed inverse square |
 | `knee()` | a tonemap on HDR |
 | ~~`place`'s `z + 128` · fraction · stance packing~~ **gone, phase 2** | position and normal as data; an id word for what is left |
 
-`FLAME_SPREAD`, `RAY_CUTOFF` and `MAX_WALK_STEPS` survive: a light does have a
-size, a ray does have a cutoff, and a walk does have a step budget. They stop
-being *stand-ins* for the things above.
+`RAY_CUTOFF` and `MAX_WALK_STEPS` survive: a ray does have a cutoff and a walk
+does have a step budget. They stop being *stand-ins* for the things above.
+
+**`FLAME_SPREAD` was to survive too — "a light does have a size" — and phase 5
+found that it was not one.** Its `1.0` of a tile was the numerator of a penumbra
+ratio, chosen for the edge it drew; the idea survived and the number did not.
+`FLAME_RADIUS` is an eighth of a tile, off the art, and it is the size.
 
 ## How this is judged
 
@@ -224,15 +228,22 @@ this pixel is*, which is the only honest unit for one.
 
 ### Soft shadows
 
-A flame is a sphere of radius `FLAME_SPREAD`. `N` shadow rays per light towards
-stratified points on it, `N = 8` by default and `1` for a hard-shadow debug view.
-Sample positions from a per-pixel blue-noise offset so the error is high-frequency
-rather than banded. No temporal accumulation in the first pass; if `8` rays is
-too noisy or too slow, that is the moment to add it, and not before.
+A flame is a sphere of radius `FLAME_RADIUS`. `N` shadow rays per light towards
+stratified points on it, `N = 8`. Sample positions rotated by a per-fragment
+offset so the error is high-frequency rather than banded. No temporal accumulation
+in the first pass; if `8` rays is too noisy or too slow, that is the moment to add
+it, and not before.
 
 This deletes the entire `pierces`/`crosses`-softening apparatus, whose band is
 `soft × FLAME_DEPTH` with `FLAME_DEPTH = Z_PER_TILE/4` — a penumbra sized for a
 wall's top edge three tiles away, applied to an edge a fifth of a tile away.
+
+**Landed at phase 5, with two things this paragraph got wrong.** The radius is
+`FLAME_RADIUS` and not `FLAME_SPREAD`, which was never a size — see that phase.
+And the blue noise is *world*-space rather than per-pixel, because the CPU twin
+has no pixel and a float hash is what two backends disagree about; the
+hard-shadow debug view was not built, since the sun still casts one ray through
+the same walk and is the hard-shadow case a frame already shows.
 
 ### One silhouette: the sprite is the shape, the prism is the geometry
 
@@ -681,10 +692,118 @@ at the line where a tread's lid meets its riser's plane. Both walks agree about
 them; it is the engine's area light against a point source, and phase 5 is where
 those become comparable. Against 473 "rendered too light" before the phase.
 
+**That last sentence was wrong, and phase 5 is what measured it.** Making the
+oracle an area light left all 88 exactly where they were. What they are is a ray
+touching the riser's box at `t = 0` — the fragment stands *in* that box's own top
+plane, so no interval separates them and identity cannot excuse a different
+primitive. Phase 5's own account has the rule that closed them; the number is `0`
+of 11,469 now.
+
 **Phase 5 — area lights.** N rays to a sphere. `FLAME_DEPTH`, `pierces` and
 `crosses`'s softening are deleted.
 *Done when:* the penumbra matches the path tracer's within sampling noise, and the
-noise is measured rather than asserted away.
+noise is measured rather than asserted away. **Done.** The gate is
+`the_frame_and_the_path_tracer_agree_about_every_interior_pixel`'s second half:
+**11,896 pixels partly lit on both sides, the frame's penumbra `+0.0070` of a
+flame from the reference's on average against the `0.025` a model difference would
+have to clear, and `0.0676` of mean absolute difference against the `0.0995` half
+a ray of eight plus the reference's own measured noise allows.** The noise is the
+reference rendered twice under two seeds: worst `0.3125`, mean `0.0547`.
+
+*The four constants were one apparatus, and the size in them was not a size.*
+`FLAME_SPREAD` was `1.0` of a tile, `SOFT_CROSSING_MIN`/`MAX` bounded the
+`t / (1 - t)` ratio it multiplied, and `FLAME_DEPTH` converted the width that
+produced into a height because every edge softened vertically is horizontal. That
+is the textbook penumbra formula with the source's own size in it — and the size
+was a tile because a tile drew an edge somebody liked, which made the flame a
+pancake: a tile across and a quarter of a tile tall. `FLAME_RADIUS` is **an eighth
+of a tile**, and it is the one measurement in the pile that was ever taken from
+the art — `FLAME_DEPTH`'s own, a torch's drawn flame at eight or ten screen pixels
+and four pixels to a `z`, which is exactly twice this as a diameter. `pierces`,
+`inside`, `crosses`'s band and the `spread` parameter every walk threaded went
+with them; `hole` is a rectangle and `pierced` is what is left of a panel after
+one.
+
+*What the pictures cost, and it is the whole visible change:* **shadows are about
+eight times crisper.** On `torch_before_a_wall`, the band up the wall's top edge
+went from about eight `z` to one, measured by the same sweep that asserts it —
+`a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched` steps an eighth
+of a `z` now to have anything to look at. That is not a regression: an eighth of a
+tile is what the flame is, and the old width was the number that made the picture
+rather than the number in it.
+
+*The sampling, and the one place two backends had to be made to agree.* Eight rays
+at a Vogel spiral on the disc the sphere presents to the fragment — the
+silhouette, which is what `pathtrace::Emitter::Sphere` samples too, `sqrt` of the
+index for equal area, laid out in tile space and multiplied back into `z`. Only
+visibility is sampled; the falloff and the cosine stay at the flame's centre,
+where at an eighth of a tile they move by well under a byte. The pattern is
+rotated per fragment, or eight rays are eight visible bands — and the rotation is
+**an integer hash of the world position quantised to a hundred-and-twenty-eighth
+of a tile**, because the obvious thing (a hash of the pixel) cannot be spelled on
+the CPU side at all and the usual `fract(sin(dot(…)))` is the arithmetic two
+backends are least likely to agree about. Being stable in the *world* is worth
+having on its own: a panning camera does not make a penumbra crawl.
+
+What it costs, and the rotation is what buys it: **a sweep is monotone only to
+within one ray.** Two neighbouring points of a sweep are two different rotations of
+the same eight directions, so `a_ray_grazing_the_top_of_a_wall_…` allows
+`1 / SHADOW_RAYS` of slack and says so as the ray count rather than as a number.
+
+*The cost, measured on Britain at 4:1 by holding the frame still and moving the
+ray count alone* — `tests/cost.rs`, seven flames, two million pixels:
+
+| | one ray | eight rays |
+|---|---|---|
+| `night` (the seven flames) | 1.276 ms | 2.818 ms |
+| above the `dark` floor | 0.255 ms | 1.819 ms |
+| `sun` (still one ray, and unmoved) | 1.344 ms | 1.347 ms |
+
+Seven times the work for eight times the rays, and 2.8 ms of a 16.7 ms frame. The
+sun's row is the control: it casts one ray either way and does not move, which is
+what says the measurement is about the rays and not about the day's weather.
+
+*Three oracles were asked about a point and had to be asked about the sphere.*
+None of them is the walk, and each was reporting the difference between a point
+source and a body as the renderer's:
+
+- **the brute-force fuzz** (`tests/lighting.rs`) shrank to a case where the centre
+  ray clips a wall tile's far corner and most of the eight miss it. It asks
+  `light::flame_points` where the rays end now — the *scene* shared, not the
+  answer; its own dumb 0.001-tile stepper is untouched. It then found a corner
+  clip under a thousandth of a tile deep on its first run, which is the second
+  time that step has been defeated by a fixture, so it is five times tighter
+  again and the file still runs in a second.
+- **`boxes.rs`'s box-top and face oracles**, and **`synthetic_stair.rs`'s**: a
+  share of the flame rather than a bit. The stair's *light* reference multiplies
+  by that share instead of gating on it, which is what the engine does.
+
+*And the 88 pixels phase 4 left on the table are gone — for a reason that phase
+named wrongly.* Phase 4 recorded 88 pixels of a tread's outer corner drawn
+shadowed where the face oracle said lit, and wrote that they were "the engine's
+area light against a point source, and phase 5 is where those become comparable."
+They are not. Making the oracle an area light left all 88 exactly where they were,
+which is what says the cause is not the light's body — and the report named it
+outright: a fragment at `(100.01, 101.00, z 1.0)` stopped by *a panel spanning
+`z 0.00..1.00` on its own cell*, which is the riser directly under the tread's
+lip. A riser is a plane on the climb axis and a tread's lid stops exactly at it,
+so a fragment on that lip stands in the riser's own plane at exactly the riser's
+top, and every ray it sends touches that box at `t = 0` and nowhere else. Identity
+cannot excuse it: the riser is genuinely a different primitive.
+
+What closes it is one line in each walk and in the shader, and it is `crosses`'s
+own strictness said about a box instead of a plane:
+
+```
+if entered == 0.0 && leaves == 0.0 { continue; }
+```
+
+**A ray that only touches a solid at the point it starts from has not gone through
+it.** No epsilon — both ends are exact numbers off the slab test, and the rule is
+narrow by construction: a ray that starts *inside* a box leaves it at some `t > 0`
+and a lid the ray genuinely crosses is found at the `t` of its own plane, so
+neither is touched. The face oracle reads `0 of 11,469` after it, against 88
+before, and the light oracle stays at zero on every flame height.
 
 **Phase 6 — the impostor.** Sprite silhouette, analytic prism for depth and
 normal, one draw. `WIDTH_OVERLAP` is deleted.
@@ -773,7 +892,7 @@ may not still matter:
 | `own_run` | **survives phase 4, measured** — a run of wall is N statics, which no identity merges. `lighting_geometry.md`'s, when a run becomes one solid |
 | the `ground < 1e-6` shortcut ignoring a lid's footprint | **fixed** — it was worth fixing alone, and was |
 | `WIDTH_OVERLAP`'s border | **phase 6** |
-| the riser penumbra graded over a third of a face | **phase 5** |
+| the riser penumbra graded over a third of a face | **done, phase 5** — there is no band; a penumbra is eight rays disagreeing |
 | the wire's span rounding to nearest; the exact-tangent definition | **phase 4** — a primitive is not a byte range any more |
 | `boxes.rs` reading `Unreached` as shadowed; `two_cubes.rs`'s old idiom; the projection idiom stated five times; `mesh::Face`/`facing::Face` colliding | **survive** — instrument work, still worth doing |
 | `Occlusion::owner_at`'s linear scan; `selected`/`outlined` stamping `OwnerId::NONE` | **survive**, reshaped by phase 4's ids |
@@ -862,6 +981,17 @@ Things noticed while writing this, not blocking any phase:
   the GPU wrote a zero there and the CPU wrote `(0, 0, 1)`. It is a new, smaller
   disagreement with a name, and what closes it is a `Surface` that can carry a
   measured vector rather than choose between four.
+- **The reference tracer samples its own disc at random, and could stratify.**
+  That single fact is why phase 5's penumbra gate is three aggregate statistics
+  rather than a per-pixel one: at sixty-four samples the reference disagrees with
+  *itself* by a third of a flame at the middle of a soft edge (measured — worst
+  `0.3125`), so a per-pixel comparison there is a gate on the ruler. Stratified
+  over its own sample index the error would be `O(1/N)` instead of `O(1/√N)` and
+  sixty-four samples would be sharper than the engine's eight rays by an order of
+  magnitude, at no extra cost — which would make the per-pixel claim available and
+  would sharpen `penumbra`'s `over` count from a diagnostic into a gate. It needs
+  `pathtrace::Emitter::sample` to know which of `settings.samples` it is being
+  asked for, which is a signature and three of that crate's own tests.
 - **Nothing on the GPU side tests the shader's own identity compare.** Forced to
   `false`, `tests/frame.rs` stays green from end to end while three tests in
   `light.rs` and `tests/lighting.rs` go red — so the rule the *shipped* walk uses
@@ -919,6 +1049,19 @@ Things noticed while writing this, not blocking any phase:
   tests said so at once. **Every hand-built `Light` in the tree should be asked
   whether it means a tile's `z` or `FLAME_LIFT` above it**; two were found by
   failing, and a scene that merely goes dim would not have said anything.
+- **The origin-touch rule is stated three times and tested through none of them
+  directly.** `if entered == 0.0 && leaves == 0.0 { continue; }` lives in both
+  walks and in `blit.wesl`, and what says it is right is a *tool's* count going
+  from 88 to 0 — `synthetic_stair`'s face oracle, which nothing runs under `cargo
+  test`. The claim it makes is small enough to state as a unit test of
+  `walk_cells_*` on a two-solid fixture (a lid whose edge is another solid's own
+  plane, a ray leaving that edge), and that is what would catch it being deleted.
+- **A flame's size is a constant and belongs on the `Light`.** `FLAME_RADIUS` is
+  one number for a candle, a torch and a campfire, and `Flame` already carries the
+  reach, the colour, the intensity and the flicker — a size is the field that is
+  missing, and a campfire is visibly wider than a candle. What stops it today is
+  the uniform: `Light` on the GPU is three `vec4`s with no spare lane, so a fourth
+  is 1 KB more at 64 lights. Worth doing when something else needs that lane.
 - **`boxes.rs` now builds two mirrors of one scene** — the same `Mirrored` twice,
   differing only in the `LAMBERT_PI` on the flame's intensity — because the
   visibility comparison is in `Brdf::Flat` and the shaded strip in

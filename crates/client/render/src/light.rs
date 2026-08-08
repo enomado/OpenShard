@@ -880,127 +880,102 @@ fn place(at: Point, flame: Flame, time: f32) -> Light {
 /// radius somebody widens later.
 pub const MAX_WALK_STEPS: i32 = 72;
 
-/// How far a ray must travel inside an occluding cell for that cell to stop all
-/// it can, in tiles. `blit.wgsl`'s `SOFT_CROSSING`.
-///
-/// The walk knows the length of each cell it crosses, and spending it is what
-/// makes a shadow's edge a gradient rather than a step at a tile boundary: a ray
-/// that clips a wall tile's corner keeps most of its light, one that crosses the
-/// tile squarely keeps none.
-///
-/// It is not one length. A flame is a body, not a point, so an occluder close to
-/// what it shadows draws a sharp edge and a distant one draws a wide penumbra
-/// whose width is the flame's own size times `t / (1 - t)` — `t` being how far
-/// along the ray the occluder is from the lit end. That is where these three
-/// numbers go: [`FLAME_SPREAD`] is the size in tiles, and the bounds keep the
-/// ends of the ratio finite. Invented here, the way [`crate::occlusion::PANE`]
-/// is — no client file says how big a flame is.
-const FLAME_SPREAD: f32 = 1.0;
+// **`FLAME_SPREAD`, `SOFT_CROSSING_MIN`, `SOFT_CROSSING_MAX` and `FLAME_DEPTH`
+// lived here**, and `docs/lighting_rebuild.md` phase 5 is what deleted all four.
+// **A ray is a ray, and a penumbra is what N of them disagreeing about make.**
+//
+// They were one apparatus: `FLAME_SPREAD` said a flame is a body a tile across,
+// the two bounds kept the `t / (1 - t)` ratio finite at both ends of a ray, and
+// `FLAME_DEPTH` converted the width that produced into a height, because every
+// edge the walk softened vertically is horizontal. Every one of them was a
+// number about a *picture of* a penumbra rather than about a flame: the ratio is
+// the textbook penumbra formula with the source's own size in it, and the size
+// was `1.0` because that is what drew an edge a person liked — the same tile it
+// would have been if a flame were a tile across, which it is not.
+//
+// What replaces the four is [`FLAME_RADIUS`] and eight rays: the flame has a
+// size in the one place a size belongs, the walk answers "yes" or "no" the way a
+// ray does, and the gradient at a shadow's edge is the share of the flame a
+// fragment can still see. `pierces`'s band, `crosses`'s band, `inside`'s band and
+// the `spread` parameter every walk threaded went with them.
 
-/// The narrowest a shadow's edge gets: an occluder the fragment is against.
-const SOFT_CROSSING_MIN: f32 = 0.05;
+/// How big a flame is: the radius of the sphere [`shadow`] samples, in tiles.
+///
+/// **An eighth of a tile, and the art is what says so.** The projection draws
+/// four screen pixels to one `z` ([`crate::camera::Z_STEP`]), and the flame a
+/// torch graphic actually has drawn on it is eight or ten pixels tall — two and a
+/// half `z`, a fifth of a tile, so a radius of an eighth. That measurement is not
+/// new: it is the one `FLAME_DEPTH` was taken from, which was `Z_PER_TILE / 4`
+/// and is exactly twice this. A height became a radius, and a flame that used to
+/// be a pancake — a tile across and a quarter of a tile tall — is a ball.
+///
+/// **What went with the pancake is `FLAME_SPREAD`'s `1.0`, which was never a
+/// size.** It was the numerator of the penumbra's `t / (1 - t)` — the width a
+/// person liked at the far end of a ray — and the only reason it was stated in
+/// tiles is that the ratio it multiplied is dimensionless. This renderer casts
+/// rays at the flame now, so the size is a size: eight times narrower than the
+/// number that stood in for one, and every shadow in the frame is correspondingly
+/// crisper. `docs/lighting_rebuild.md` phase 5 has the pictures.
+///
+/// A sphere and not the ellipsoid the two old constants imply, because the
+/// reference tracer's `Emitter::Sphere` is a sphere and a penumbra judged against
+/// it has to be cast by the same body. In *tile* space, which is where the sphere
+/// is round: `z` is divided into tiles before the disc is laid out and multiplied
+/// back after, the same metric [`Z_PER_TILE`] gives the falloff.
+///
+/// `blit.wgsl`'s `FLAME_RADIUS`, and the two are one number.
+pub const FLAME_RADIUS: f32 = 0.125;
 
-/// And the widest, for an occluder almost at the flame.
-const SOFT_CROSSING_MAX: f32 = 0.7;
+/// How many rays a fragment casts at each flame.
+///
+/// Eight, which is the plan's own default and is where a penumbra stops looking
+/// like a staircase at the zooms this client draws. It buys a gradient of nine
+/// levels across a shadow's edge; a per-fragment rotation of the sample pattern
+/// ([`dither`]) is what turns the eight into a continuum rather than eight bands.
+///
+/// There is no temporal accumulation behind it and deliberately none yet — the
+/// moment eight is too noisy or too slow is the moment to add one, and not
+/// before. `blit.wgsl`'s `SHADOW_RAYS`, and the two are one number.
+pub const SHADOW_RAYS: usize = 8;
 
 /// Below this, a ray has been stopped: `blit.wgsl`'s early exit, and under a
 /// byte's worth of light either way.
 const RAY_CUTOFF: f32 = 0.004;
 
-/// How much of a panel a ray pierces at height `z` runs into: `1.0` well inside
-/// the span it occupies, `0.0` well outside, and a gradient `tall` `z` units wide
-/// across its edges.
-///
-/// The vertical half of decision 14's penumbra, and all that is left of it: a
-/// flame is a body rather than a point, so a ray grazing the top of a wall is
-/// dimmed rather than switched.
-///
-/// The band is centred on the *top* edge and hangs below the bottom one, for the
-/// reason `blit.wgsl`'s `pierces` states at length: a wall is based on the ground
-/// it stands on and the ray a person looks at runs along that base, so a band
-/// centred there would let half of every flame along every wall in the frame.
-///
-/// `blit.wgsl`'s `pierces`, and the two are one formula.
-fn pierces(z: f32, low: f32, high: f32, tall: f32) -> f32 {
-    let band = tall.max(1e-3);
-    ((z - low + band * 0.5).min(high - z) / band + 0.5).clamp(0.0, 1.0)
-}
-
-/// How much of a **lid** is in the way of a ray that runs from `from` to `to` in
-/// `z` across one cell: `1.0` where the ray went through the plane and out the
-/// other side, `0.0` where it stayed on one side of it, and a gradient between
-/// where the flame itself straddles the plane.
+/// Whether a **lid** is in the way of a ray that runs from `from` to `to` in `z`
+/// across one cell: `1.0` where the ray went through the plane and out the other
+/// side, `0.0` where it stayed on one side of it.
 ///
 /// **A lid is a plane and not a slab, and that is the whole of why this is not
-/// [`pierces`] and not the length rule beside it.** A floor is `height 0` in
-/// `tiledata.mul` — 4,534 of the 4,647 lids over the block of Britain
-/// `artscan`'s `column` example reads — so its span is zero deep, and a rule that
-/// scales what an occluder stops by how far the ray ran *inside* the span gets
-/// zero out of every floor in the world. That is what lit the storey above a
-/// torch through its own floorboards; see `scene::storey_over_a_torch`.
+/// the length rule beside it.** A floor is `height 0` in `tiledata.mul` — 4,534
+/// of the 4,647 lids over the block of Britain `artscan`'s `column` example reads
+/// — so its span is zero deep, and a rule that scales what an occluder stops by
+/// how far the ray ran *inside* the span gets zero out of every floor in the
+/// world. That is what lit the storey above a torch through its own floorboards;
+/// see `scene::storey_over_a_torch`.
 ///
 /// The crossing test is **strict**, and that is the one thing here that has to be
 /// argued rather than stated. A ray that runs exactly along the top of a lid — a
 /// candle standing on the floor it lights, both at one `z` — has not gone through
 /// anything, and a test that counted a touch would put half a floor's shadow
-/// across every room lit from inside it. It is [`pierces`]'s asymmetry arriving
-/// at the surface that has no thickness for a band to hang under.
+/// across every room lit from inside it.
 ///
-/// The softness is the flame's own size and is measured at the *flame*: the plane
-/// cuts the source, so what gets through is the share of it left on the lit
-/// side. `source` is the ray's far end in `z` and `spread` how big the flame is,
-/// in tiles — a sunbeam passes `0.0` and gets the hard edge a point source casts.
-///
-/// **How tall that flame is, though, is [`FLAME_DEPTH`] and not its width.** The
-/// two were one number for a day and it lit the storey over every wall sconce in
-/// Britain: a sconce burns four or five `z` under the floor above it, and a flame
-/// eleven `z` tall — [`FLAME_SPREAD`] of one tile, which is the *lateral*
-/// softness of a shadow edge — pokes a tenth of itself through the boards.
+/// **It answers one ray, and one ray has no penumbra** —
+/// `docs/lighting_rebuild.md` phase 5. It used to take the flame's own `z` and
+/// its size and return the share of the source left on the lit side of the
+/// plane, which is the analytic soft shadow this pass drew instead of casting
+/// one: a single ray reporting what eight would have found. Eight are cast now,
+/// so this reports what its own ray found, and the share is what they disagree
+/// about. `source` and `spread` went with the band.
 ///
 /// `blit.wgsl`'s `crosses`, and the two are one formula.
-fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread: f32) -> f32 {
+fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
     let (under, over) = (entering.min(leaving), entering.max(leaving));
-    if under >= high || over <= low {
-        return 0.0;
+    match under >= high || over <= low {
+        true => 0.0,
+        false => 1.0,
     }
-    // How far past the lid the flame itself stands, on the side the ray left by.
-    let beyond = match leaving >= entering {
-        true => source - high,
-        false => low - source,
-    };
-    (beyond / (spread * FLAME_DEPTH).max(1e-3) + 0.5).clamp(0.0, 1.0)
 }
-
-/// How tall a flame is, in `z` units, for the one question that asks: how much of
-/// it a floor cuts off ([`crosses`]).
-///
-/// A **quarter of a tile**, and the art is what says so rather than another
-/// constant: the projection draws four screen pixels to one `z`
-/// ([`crate::camera::Z_STEP`]), and the flame a torch graphic actually has drawn
-/// on it is eight or ten pixels tall — two and a half `z`. Half a tile was the
-/// first answer here, taken from [`FLAME_LIFT`] because it was the only number
-/// in the file about a flame's height, and it is twice what the pictures show.
-///
-/// What the difference is worth, on the corner of Britain's house at
-/// `1509,1635`: a ray passing three quarters of a `z` under the top of the wall
-/// beside it keeps `0.31` of its light at half a tile, `0.11` at a quarter and
-/// nothing at an eighth. The middle one is the picture; the third would be
-/// choosing the number to make one pixel dark.
-///
-/// Scaled by the caller's `spread` so that a point source stays a point: the sun
-/// passes `0.0` and a plane cuts it cleanly, which is what a floor's own shadow
-/// on the ground under it is made of.
-///
-/// **It is what turns a softness in tiles into one in `z`, everywhere.** A
-/// penumbra is the size of the source *across the edge it spills over*, and
-/// every edge this pass softens vertically — a wall's top, a hole's sill, a
-/// lid's plane — is horizontal, so what blurs it is how tall the flame is and
-/// not how wide. [`Z_PER_TILE`] did that conversion until a house's corner was
-/// measured: a ray passing three quarters of a `z` under the top of a wall kept
-/// two fifths of its light, because the band was seven and a half `z` — a flame
-/// as tall as it is wide. The lateral softness is unchanged and still
-/// [`FLAME_SPREAD`]'s; it is the axis that was being asked the wrong question.
-const FLAME_DEPTH: f32 = Z_PER_TILE / 4.0;
 
 // **`STAND_OFF`, `ON_TOP` and `stand_clear` lived here**, and
 // `docs/lighting_rebuild.md` phase 4 is what deleted them. **The bias is zero.**
@@ -1082,22 +1057,13 @@ fn on_surface(z: f32, low: f32, high: f32) -> bool {
 // carried beside `spot_z` for the sole purpose of asking this question where the
 // fragment is rather than where its ray starts.
 
-/// A soft interval: `1.0` well inside `low..=high`, `0.0` well outside, and a
-/// gradient `band` wide across each edge.
-///
-/// [`pierces`] with its one asymmetry taken out, and the asymmetry is why this
-/// is a second function rather than a call of the first. A wall's *bottom* edge
-/// is the ground it stands on and the ray a person looks at runs along it, so
-/// that band hangs below rather than straddling. **A hole's edges are in the
-/// middle of a surface** and no ray runs along them by construction, so a hole
-/// softens the same amount in both directions or it is a hole that has been
-/// moved half a penumbra downwards.
-///
-/// `blit.wgsl`'s `inside`, and the two are one formula.
-fn inside(x: f32, low: f32, high: f32, band: f32) -> f32 {
-    let band = band.max(1e-3);
-    ((x - low).min(high - x) / band + 0.5).clamp(0.0, 1.0)
-}
+// **`inside` lived here**, and `docs/lighting_rebuild.md` phase 5 deleted it with
+// the rest of the analytic penumbra. It was `pierces` with its one asymmetry
+// taken out — a soft interval, a band wide at each edge — and its one caller was
+// [`hole`], because a window's edges are in the middle of a surface and no ray
+// runs along them by construction, so they softened in both directions where a
+// wall's own top softened in one. Both bands are eight rays now, and a plain
+// interval is what is left of the question.
 
 /// Where along a panel's own run a point of it lies, `0.0` to `1.0` across the
 /// tile.
@@ -1117,66 +1083,52 @@ fn run_v(edges: u8, px: f32, py: f32) -> f32 {
     along - along.floor()
 }
 
-/// How much of a surface is **missing** where a ray goes through it: `1.0` well
-/// inside the hole, `0.0` well outside it, and the same penumbra across its
-/// edges that the top of a wall gets.
+/// Whether a surface is **missing** where a ray goes through it: `1.0` inside the
+/// hole, `0.0` outside it.
 ///
-/// The two spans are combined with `min` and not with a product, so that the
-/// corner of a hole is softened once rather than twice: a point that is halfway
-/// into the hole across *and* halfway up is on the diagonal of one corner, and
-/// two halves multiplied would make it a quarter of a hole.
+/// Both spans have to hold, which is what an opening in a wall is: a rectangle,
+/// and a ray is through it or through the wall. They were combined with `min` of
+/// two soft intervals until phase 5 — deliberately `min` and not a product, so
+/// that a point halfway into the hole across *and* halfway up read as one
+/// corner's own softening rather than as a quarter of a hole. With no band left
+/// on either span the `min` is a conjunction and says so.
 ///
 /// `blit.wgsl`'s `hole`.
-fn hole(aperture: Option<crate::occlusion::Aperture>, v: f32, z: f32, wide: f32, tall: f32) -> f32 {
+fn hole(aperture: Option<crate::occlusion::Aperture>, v: f32, z: f32) -> f32 {
     let Some(hole) = aperture else {
         return 0.0;
     };
-    let across = inside(
-        v,
-        f32::from(hole.near) / crate::occlusion::RUN_STEPS,
-        f32::from(hole.far) / crate::occlusion::RUN_STEPS,
-        wide,
-    );
-    across.min(inside(z, hole.bottom as f32, hole.top as f32, tall))
+    let across = v >= f32::from(hole.near) / crate::occlusion::RUN_STEPS
+        && v <= f32::from(hole.far) / crate::occlusion::RUN_STEPS;
+    match across && z >= hole.bottom as f32 && z <= hole.top as f32 {
+        true => 1.0,
+        false => 0.0,
+    }
 }
 
 /// How much of a surface stands in the way at the point a ray goes through its
-/// plane: the span it occupies, less the hole in it.
+/// plane: all of it, less the hole in it.
 ///
 /// The whole of step 21.3 in one line, and the reason it is one line is decision
 /// 30.7: a panel was already *pierced at a point* rather than travelled through,
 /// so the point was already being computed and a window is what that point is
 /// asked about. `cross` is where the ray crosses, in all three — one point and
 /// not three loose coordinates, which is what `blit.wgsl`'s own `vec3<f32>`
-/// parameter has always been and what both callers already had in hand; `wide`
-/// is the penumbra in tiles along the run and `tall` the same number in `z`.
+/// parameter has always been and what both callers already had in hand.
 ///
-/// `low`/`high` are the panel's own `z` span, passed in for the reason
-/// [`on_surface`]'s are.
+/// **The span itself is not asked about any more** — phase 5. The `pierces` call
+/// that stood here softened the panel's own top and bottom edges over a band, and
+/// its hard half was already answered before it: a caller reaches this only with a
+/// `ray_vs_solid` hit against the box `low`/`high` are the `z` bounds of, and
+/// `cross` is that crossing's own midpoint, so `cross[2]` is inside the span by
+/// construction. What is left is the aperture, which is the only thing on a panel
+/// that a ray can miss without missing the panel.
 ///
 /// `blit.wgsl`'s `pierced`.
-fn pierced(
-    stands: &crate::occlusion::Solid,
-    low: f32,
-    high: f32,
-    cross: [f32; 3],
-    wide: f32,
-    tall: f32,
-) -> f32 {
-    let across = pierces(cross[2], low, high, tall);
+fn pierced(stands: &crate::occlusion::Solid, cross: [f32; 3]) -> f32 {
     match stands.aperture {
-        None => across,
-        Some(_) => {
-            across
-                * (1.0
-                    - hole(
-                        stands.aperture,
-                        run_v(stands.edges, cross[0], cross[1]),
-                        cross[2],
-                        wide,
-                        tall,
-                    ))
-        }
+        None => 1.0,
+        Some(_) => 1.0 - hole(stands.aperture, run_v(stands.edges, cross[0], cross[1]), cross[2]),
     }
 }
 
@@ -1863,7 +1815,7 @@ pub fn sample_exact(spot: Spot, lighting: &Lighting) -> Sample {
 fn sample_with(
     spot: Spot,
     lighting: &Lighting,
-    walk: impl Fn(Spot, &Light, &Occlusion) -> (f32, Option<Stopper>),
+    walk: impl Fn(Spot, [f32; 3], &Occlusion) -> (f32, Option<Stopper>),
     walk_sun: impl Fn(Spot, Sun, &Occlusion) -> (f32, Option<Stopper>),
 ) -> Sample {
     // The ambient this *tile* has, and not the frame's: how much of the sky the
@@ -1911,7 +1863,11 @@ fn sample_with(
             None => 1.0,
             Some(normal) => lit_from(normal, offset),
         };
-        let (through, stopped_by) = walk(spot, light, &lighting.occlusion);
+        // Eight rays at the flame's own sphere, and the share of them that
+        // arrived — `docs/lighting_rebuild.md` phase 5. It is the only term here
+        // that is an estimate rather than a formula, which is why it is the only
+        // one with a ray count behind it.
+        let (through, stopped_by) = shadow(spot, light, &lighting.occlusion, &walk);
         let fall = 1.0 - d;
         let added = light
             .color
@@ -2002,27 +1958,173 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper
         from[1] + step[1] * tiles,
         from[2] + step[2] * tiles,
     ];
-    // No tile to exempt at the far end, and a point source: the sun subtends half
-    // a degree, so its penumbra is the narrowest the walk draws.
-    walk_cells_streaming(from, to, LitEnd::of(spot), 0.0, occlusion)
+    // No tile to exempt at the far end, and no source size: the sun subtends half
+    // a degree, which is a point at this scale.
+    walk_cells_streaming(from, to, LitEnd::of(spot), occlusion)
 }
 
-/// The ray from a spot to a flame: [`walk_cells_streaming`] with a flame's two
-/// ends.
+/// The ray from a spot to a point of a flame: [`walk_cells_streaming`] with the
+/// two ends of it.
 ///
-/// A flame is a body about a tile across, which is what its penumbra is made of,
-/// and that is now the *whole* difference between this ray and the sun's. "The
-/// flame's own tile must not shadow it" was the second half of that sentence, and
-/// phase 4 retired it: a sconce is moved clear of the wall it stands on
-/// ([`mounted_at`]) rather than excused from it.
-fn walk(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
-    walk_cells_streaming(
-        [spot.at.x, spot.at.y, spot.z],
-        [light.at.x, light.at.y, light.z],
-        LitEnd::of(spot),
-        FLAME_SPREAD,
-        occlusion,
-    )
+/// **`at` and not `light.at`**, because phase 5 asks this [`SHADOW_RAYS`] times
+/// per flame with that many points of the flame's own sphere — see [`shadow`],
+/// which is what callers want.
+///
+/// There is nothing left in here that a sun's ray does not also have: the
+/// `spread` this used to carry was a flame's size standing in for its own
+/// penumbra, and the size is in the ray's far end now.
+fn walk(spot: Spot, at: [f32; 3], occlusion: &Occlusion) -> (f32, Option<Stopper>) {
+    walk_cells_streaming([spot.at.x, spot.at.y, spot.z], at, LitEnd::of(spot), occlusion)
+}
+
+/// A number in `0.0..1.0` that belongs to a point of the world and to no other:
+/// the rotation [`shadow`] turns its sample pattern by.
+///
+/// **World space and integers, so that both backends produce the same number.**
+/// The obvious thing — a hash of the pixel — cannot be spelled identically on
+/// the CPU side, which has no pixel; and a float hash of the kind shaders
+/// usually carry (`fract(sin(dot(…)))`) is exactly the arithmetic two backends
+/// are least likely to agree about. This quantises the position to a
+/// hundred-and-twenty-eighth of a tile, which is under a screen pixel at 1:1 and
+/// well under one at any zoom this client draws, and mixes the three integers
+/// with a plain bit-avalanche. It is *stable in the world* rather than on the
+/// screen, so a panning camera does not make a penumbra crawl.
+///
+/// What it is worth: eight rays put nine levels across a shadow's edge, and with
+/// one pattern for the whole frame those nine are nine visible bands. Rotating
+/// the pattern per fragment spends the same eight rays on a different eight
+/// directions each time, which turns the banding into grain — the error is the
+/// same size and the eye is far worse at seeing it. `blit.wgsl`'s `dither`.
+fn dither(at: [f32; 3]) -> f32 {
+    let quantised = |axis: f32| (axis * 128.0).floor() as i32 as u32;
+    let mut hash = quantised(at[0]).wrapping_mul(0x8DA6_B343)
+        ^ quantised(at[1]).wrapping_mul(0xD816_3841)
+        ^ quantised(at[2]).wrapping_mul(0xCB1A_B31F);
+    hash ^= hash >> 16;
+    hash = hash.wrapping_mul(0x7FEB_352D);
+    hash ^= hash >> 15;
+    hash = hash.wrapping_mul(0x846C_A68B);
+    hash ^= hash >> 16;
+    // The top 24 bits over 2²⁴: a float's own mantissa, so every value this can
+    // produce is representable and none of them is `1.0`.
+    (hash >> 8) as f32 / 16_777_216.0
+}
+
+/// Turns of the sample spiral between one point of a flame and the next.
+///
+/// The golden angle, `π(3 − √5)`, which is what makes a Vogel spiral of any
+/// length evenly spread rather than spoked: no two of the eight fall near one
+/// another and the eighth does not land back on the first. Written out rather
+/// than computed, so that `blit.wgsl`'s copy is the same bits.
+const GOLDEN_ANGLE: f32 = 2.399_963_2;
+
+/// Where the rays of [`shadow`] end: [`SHADOW_RAYS`] points of the sphere a
+/// flame at `flame` is, as `spot` sees it.
+///
+/// A position and not a [`Light`], because that is all it is about: two points
+/// and a radius. An oracle holding a flame as three numbers can ask this, which
+/// is most of them.
+///
+/// A Vogel spiral on the disc the sphere presents to the spot — the silhouette,
+/// not the surface, which is the same choice `pathtrace::Emitter::Sphere` makes
+/// and for the same reason: what a receiver can be occluded from is the disc it
+/// sees. `sqrt` of the index spaces them by equal *area* rather than by equal
+/// radius, so the middle of the flame is not sampled eight times over, and
+/// [`dither`] turns the whole pattern by an angle that belongs to the spot.
+///
+/// The disc is laid out in **tile space**, `z` divided by [`Z_PER_TILE`], and the
+/// offsets multiplied back on the way out: that is the metric the sphere is round
+/// in, and the one the falloff and the cosine are already stated in.
+///
+/// **Public because an oracle needs it.** A detector comparing this renderer's
+/// shadows against an independent point-in-box sampler has to be asked about the
+/// same *body*, or it is comparing a sphere against a point and reporting the
+/// difference as the walk's — see `tests/lighting.rs`'s fuzz, which is where that
+/// happened. What it shares with the thing under test is the scene, not the
+/// answer.
+pub fn flame_points(spot: Spot, flame: [f32; 3]) -> [[f32; 3]; SHADOW_RAYS] {
+    let toward = [
+        flame[0] - spot.at.x,
+        flame[1] - spot.at.y,
+        (flame[2] - spot.z) / Z_PER_TILE,
+    ];
+    let span = toward.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+    if span < 1e-6 {
+        // The spot is inside the flame. Every point of the sphere is as good as
+        // any other and none of them has a direction, so every ray is the one to
+        // the centre — the ray that has no length.
+        return [flame; SHADOW_RAYS];
+    }
+    let normal = toward.map(|axis| axis / span);
+    // Two directions across the ray, built the textbook branching way: away from
+    // whichever axis the ray is most nearly along, so the cross product is never
+    // near zero. Any consistent pair does — the pattern is rotated per fragment
+    // anyway — and what matters is only that `blit.wgsl` builds the same one.
+    let aside = match normal[0].abs() > 0.9 {
+        true => [0.0, 1.0, 0.0],
+        false => [1.0, 0.0, 0.0],
+    };
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let across = cross(aside, normal);
+    let length = across.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+    let across = across.map(|axis| axis / length);
+    let up = cross(normal, across);
+
+    let phase = dither([spot.at.x, spot.at.y, spot.z]) * std::f32::consts::TAU;
+    std::array::from_fn(|ray| {
+        let angle = phase + GOLDEN_ANGLE * ray as f32;
+        let radius = FLAME_RADIUS * ((ray as f32 + 0.5) / SHADOW_RAYS as f32).sqrt();
+        let (sin, cos) = angle.sin_cos();
+        [
+            flame[0] + (across[0] * cos + up[0] * sin) * radius,
+            flame[1] + (across[1] * cos + up[1] * sin) * radius,
+            flame[2] + (across[2] * cos + up[2] * sin) * radius * Z_PER_TILE,
+        ]
+    })
+}
+
+/// How much of a flame a spot can see: [`SHADOW_RAYS`] rays at the points of it
+/// [`flame_points`] names, and the share of them that got there.
+///
+/// **This is the whole of the soft shadow** — `docs/lighting_rebuild.md` phase 5.
+/// A shadow's edge is a gradient because a fragment in it can see part of the
+/// flame and not the rest, which is what a penumbra *is*; nothing here softens
+/// anything, and every one of the rays is the hard, exact walk the sun's ray is.
+///
+/// Only the *visibility* is sampled. The falloff and the cosine are taken at the
+/// flame's own centre, which is the ordinary split — at an eighth of a tile
+/// across and at any distance a torch reaches, moving the sample point moves
+/// either term by well under a byte, and it keeps a flame's brightness from
+/// carrying this function's noise.
+///
+/// The [`Stopper`] handed back is the one that took the most from any single ray,
+/// so a diagnostic naming "what stopped this" names something that genuinely did.
+///
+/// `blit.wgsl`'s own loop over `walk`, and the two are one arrangement.
+fn shadow(
+    spot: Spot,
+    light: &Light,
+    occlusion: &Occlusion,
+    walk: impl Fn(Spot, [f32; 3], &Occlusion) -> (f32, Option<Stopper>),
+) -> (f32, Option<Stopper>) {
+    let mut reached = 0.0;
+    let mut worst: Option<(f32, Stopper)> = None;
+    for at in flame_points(spot, [light.at.x, light.at.y, light.z]) {
+        let (through, stopped_by) = walk(spot, at, occlusion);
+        reached += through;
+        if let Some(stopper) = stopped_by {
+            if worst.is_none_or(|(lost, _)| through < lost) {
+                worst = Some((through, stopper));
+            }
+        }
+    }
+    (reached / SHADOW_RAYS as f32, worst.map(|(_, stopper)| stopper))
 }
 
 /// One segment of the world, cell by cell: how much of a ray survives it, and
@@ -2280,7 +2382,6 @@ fn walk_cells_exact(
     from: [f32; 3],
     to: [f32; 3],
     lit: LitEnd,
-    spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
     let first = lit.tile;
@@ -2314,8 +2415,7 @@ fn walk_cells_exact(
             if lit.solid == Some(id) {
                 continue;
             }
-            let by_surface =
-                f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high, to[2], spread);
+            let by_surface = f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high);
             if by_surface > stopped {
                 stopped = by_surface;
                 worst = Some(Stopper {
@@ -2403,12 +2503,30 @@ fn walk_cells_exact(
             if lit.solid == Some(id) {
                 continue;
             }
+            // **A ray that only touches a solid at the point it starts from has
+            // not gone through it**, and that is exactly `crosses`'s own
+            // strictness said about a box instead of a plane. No epsilon: the
+            // interval is `0.0..0.0`, both ends exact numbers off the slab test.
+            //
+            // The case it is about is a tread's outer corner. A riser is a plane
+            // on the climb axis and a tread's lid stops exactly at it, so a
+            // fragment on that lip stands *in* the riser's own plane at exactly
+            // the riser's top — and every ray it sends anywhere touches the
+            // riser's box at `t = 0` and nowhere else. Identity cannot excuse it,
+            // because the riser is genuinely a different primitive from the lid.
+            // Measured before the rule: 88 pixels of a three-tread flight drawn
+            // shadowed where every independent oracle in the tree says lit.
+            //
+            // Only at the origin, and only for a zero-length interval: a ray that
+            // starts *inside* a box leaves it at some `t > 0`, and a lid the ray
+            // genuinely crosses is found at the `t` of its own plane. Neither is
+            // touched.
+            if entered == 0.0 && leaves == 0.0 {
+                continue;
+            }
             let same_run = same_run(own, cell, first, from[2], low, high);
             let middle = (entered + leaves) * 0.5;
-            let soft =
-                (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
             let opacity = f32::from(stands.opacity) / 255.0;
-            let tall = soft * FLAME_DEPTH;
             let by_surface = match stands.edges {
                 0 => {
                     // **Not the lid's own `entered`/`leaves`.** A lid is
@@ -2447,7 +2565,7 @@ fn walk_cells_exact(
                         ray_vs_solid(from, to, &footprint).unwrap_or((entered, leaves));
                     let from_z = from[2] + delta[2] * tile_entered;
                     let to_z = from[2] + delta[2] * tile_leaves;
-                    opacity * crosses(from_z, to_z, low, high, to[2], spread)
+                    opacity * crosses(from_z, to_z, low, high)
                 }
                 // A body is a real 3D box and `ray_vs_solid` is an exact
                 // slab test — a `Some` here already means the segment
@@ -2467,7 +2585,7 @@ fn walk_cells_exact(
                             from[1] + delta[1] * middle,
                             from[2] + delta[2] * middle,
                         ];
-                        opacity * pierced(stands, low, high, cross, soft, tall)
+                        opacity * pierced(stands, cross)
                     }
                 }
             };
@@ -2603,7 +2721,6 @@ fn walk_cells_streaming(
     from: [f32; 3],
     to: [f32; 3],
     lit: LitEnd,
-    spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
     let first = lit.tile;
@@ -2638,8 +2755,7 @@ fn walk_cells_streaming(
             if lit.solid == Some(id) {
                 continue;
             }
-            let by_surface =
-                f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high, to[2], spread);
+            let by_surface = f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high);
             if by_surface > stopped {
                 stopped = by_surface;
                 worst = Some(Stopper {
@@ -2707,12 +2823,15 @@ fn walk_cells_streaming(
             if lit.solid == Some(id) {
                 continue;
             }
+            // And the same one touch rule; `walk_cells_exact`'s copy states it at
+            // length. A ray that only meets a solid at the point it starts from
+            // has not gone through it.
+            if entered == 0.0 && leaves == 0.0 {
+                continue;
+            }
             let same_run = same_run(own, cell, first, from[2], low, high);
             let middle = (entered + leaves) * 0.5;
-            let soft =
-                (spread * middle / (1.0 - middle).max(1e-3)).clamp(SOFT_CROSSING_MIN, SOFT_CROSSING_MAX);
             let opacity = f32::from(stands.opacity) / 255.0;
-            let tall = soft * FLAME_DEPTH;
             let by_surface = match stands.edges {
                 0 => {
                     // Same tile-footprint lookup [`walk_cells_exact`] needs
@@ -2737,7 +2856,7 @@ fn walk_cells_streaming(
                         ray_vs_solid(from, to, &footprint).unwrap_or((entered, leaves));
                     let from_z = from[2] + delta[2] * tile_entered;
                     let to_z = from[2] + delta[2] * tile_leaves;
-                    opacity * crosses(from_z, to_z, low, high, to[2], spread)
+                    opacity * crosses(from_z, to_z, low, high)
                 }
                 // Same as `walk_cells_exact`'s own copy: a `Some` from the
                 // exact `ray_vs_solid` slab test already means a genuine
@@ -2753,7 +2872,7 @@ fn walk_cells_streaming(
                             from[1] + delta[1] * middle,
                             from[2] + delta[2] * middle,
                         ];
-                        opacity * pierced(stands, low, high, cross, soft, tall)
+                        opacity * pierced(stands, cross)
                     }
                 }
             };
@@ -2837,14 +2956,8 @@ fn walk_cells_streaming(
 /// [`walk`], through [`walk_cells_exact`] instead of [`walk_cells`] — for
 /// `docs/lighting_raymarch.md`'s point 3 agreement pass, not for anywhere
 /// real.
-fn walk_exact(spot: Spot, light: &Light, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
-    walk_cells_exact(
-        [spot.at.x, spot.at.y, spot.z],
-        [light.at.x, light.at.y, light.z],
-        LitEnd::of(spot),
-        FLAME_SPREAD,
-        occlusion,
-    )
+fn walk_exact(spot: Spot, at: [f32; 3], occlusion: &Occlusion) -> (f32, Option<Stopper>) {
+    walk_cells_exact([spot.at.x, spot.at.y, spot.z], at, LitEnd::of(spot), occlusion)
 }
 
 /// [`walk_sun`], through [`walk_cells_exact`] instead of [`walk_cells`] —
@@ -2872,7 +2985,7 @@ fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<S
         from[1] + step[1] * tiles,
         from[2] + step[2] * tiles,
     ];
-    walk_cells_exact(from, to, LitEnd::of(spot), 0.0, occlusion)
+    walk_cells_exact(from, to, LitEnd::of(spot), occlusion)
 }
 
 /// How wide the flame in a hand throws its light: the full angle, in degrees.
@@ -2975,23 +3088,25 @@ mod tests {
     /// that only asked about the crossing would pass with a rule that laid half
     /// a floor's shadow across every room lit from inside it.
     ///
-    /// The flame's own `z` is the fourth argument, and it is what softens the
-    /// answer: a torch a storey below the floor is wholly under it, and what
-    /// comes through is nothing.
+    /// **The flame's own `z` was the fifth argument and it is not one any more**
+    /// — `docs/lighting_rebuild.md` phase 5. A ray crossing a lid used to come
+    /// back with the share of the source left on the lit side of the plane, so a
+    /// flame standing exactly *in* the plane cut the answer to a half. This
+    /// function answers about one ray now, and one ray either went through the
+    /// plane or did not; a flame in the plane of a lid is eight rays, of which
+    /// four cross it, and the half is where it always belonged — in the
+    /// disagreement between rays rather than inside one of them.
     #[test]
     fn a_floor_stops_a_ray_through_it_and_not_one_along_it() {
         // A ray from a wall pixel at 25 down to a torch at 5, crossing this
         // cell between 22 and 18: through the floor at 20.
-        assert_eq!(crosses(22.0, 18.0, 20.0, 20.0, 5.0, FLAME_SPREAD), 1.0);
+        assert_eq!(crosses(22.0, 18.0, 20.0, 20.0), 1.0);
         // The same floor, and a flame standing on it: the ray runs along the
         // plane and has gone through nothing.
-        assert_eq!(crosses(20.0, 20.0, 20.0, 20.0, 20.0, FLAME_SPREAD), 0.0);
+        assert_eq!(crosses(20.0, 20.0, 20.0, 20.0), 0.0);
         // And a ray wholly above it — a lamp on the upper storey lighting the
         // upper storey — is not touched by the floor under both of them.
-        assert_eq!(crosses(25.0, 23.0, 20.0, 20.0, 26.0, FLAME_SPREAD), 0.0);
-        // A flame *in* the plane of the lid is half cut by it: it is a body
-        // about a tile across, and half of it is on either side.
-        assert!((crosses(22.0, 18.0, 20.0, 20.0, 20.0, FLAME_SPREAD) - 0.5).abs() < 1e-6);
+        assert_eq!(crosses(25.0, 23.0, 20.0, 20.0), 0.0);
     }
 
     /// A one-tile-square, fully opaque panel or body, for the small pure
@@ -3021,61 +3136,16 @@ mod tests {
         }
     }
 
-    /// [`inside`]'s own shape, checked at the three places its doc comment
-    /// makes a claim about: the middle (fully in), and each edge (exactly
-    /// half, since the band straddles it symmetrically) — the one thing that
-    /// tells `inside` apart from [`pierces`], whose band does not straddle.
-    #[test]
-    fn inside_is_full_at_the_middle_and_half_at_each_edge() {
-        assert_eq!(inside(50.0, 0.0, 100.0, 4.0), 1.0);
-        assert!((inside(0.0, 0.0, 100.0, 4.0) - 0.5).abs() < 1e-6);
-        assert!((inside(100.0, 0.0, 100.0, 4.0) - 0.5).abs() < 1e-6);
-        assert_eq!(inside(-10.0, 0.0, 100.0, 4.0), 0.0);
-        assert_eq!(inside(110.0, 0.0, 100.0, 4.0), 0.0);
-    }
-
-    /// The shape [`inside`]'s own doc comment claims but the example above
-    /// does not check on its own: always in `0.0..=1.0`, and symmetric about
-    /// the interval's own centre, over arbitrary intervals and positions.
-    #[test]
-    fn inside_is_clamped_and_symmetric_about_the_intervals_centre() {
-        use proptest::prelude::*;
-
-        proptest!(ProptestConfig::with_cases(512), |(
-            low in -50.0_f32..50.0,
-            width in 0.1_f32..50.0,
-            band in 0.01_f32..10.0,
-            frac in -0.5_f32..1.5,
-        )| {
-            let high = low + width;
-            let x = low + frac * width;
-            let value = inside(x, low, high, band);
-            prop_assert!((0.0..=1.0).contains(&value));
-
-            let mirrored = low + high - x;
-            let value2 = inside(mirrored, low, high, band);
-            prop_assert!(
-                (value - value2).abs() < 1e-3,
-                "inside({x}) = {value}, inside({mirrored}) = {value2}, should agree by symmetry",
-            );
-        });
-    }
-
-    /// [`pierces`]'s one asymmetry, stated as numbers: the band is centred on
-    /// the *top* edge (half blocked exactly there) and hangs below the
-    /// bottom one rather than straddling it — so the bottom edge itself is
-    /// still fully blocked, and the halfway point is a whole `band / 2`
-    /// below it. This is the whole of why `pierces` is a second function
-    /// from [`inside`] rather than a call of it, checked directly rather
-    /// than trusted from the doc comment's argument.
-    #[test]
-    fn pierces_centres_its_band_on_the_top_edge_only() {
-        assert_eq!(pierces(10.0, 0.0, 20.0, 2.0), 1.0);
-        assert!((pierces(20.0, 0.0, 20.0, 2.0) - 0.5).abs() < 1e-6);
-        assert_eq!(pierces(30.0, 0.0, 20.0, 2.0), 0.0);
-        assert_eq!(pierces(0.0, 0.0, 20.0, 2.0), 1.0);
-        assert!((pierces(-1.0, 0.0, 20.0, 2.0) - 0.5).abs() < 1e-6);
-    }
+    // **Three tests of the analytic penumbra stood here** and went with it at
+    // `docs/lighting_rebuild.md` phase 5, along with the two functions they were
+    // about. `inside_is_full_at_the_middle_and_half_at_each_edge` and
+    // `inside_is_clamped_and_symmetric_about_the_intervals_centre` were `inside`'s
+    // band, and `pierces_centres_its_band_on_the_top_edge_only` was the one
+    // asymmetry that made `pierces` a second function rather than a call of the
+    // first — a wall's bottom edge is the ground it stands on and the ray a person
+    // looks at runs along it, so that band hung below rather than straddling.
+    // Their subject was a band's own shape, and there is no band; the rule from
+    // *How this is judged* is the one that retired them.
 
     /// Which axis [`run_v`] reads is the edge mask, and the fractional part
     /// is `along - along.floor()` rather than [`f32::fract`] — the two
@@ -3092,35 +3162,36 @@ mod tests {
         assert!((run_v(crate::occlusion::EDGE_NORTH, -3.25, 0.0) - 0.75).abs() < 1e-6);
     }
 
-    /// [`hole`]'s two claims: nothing without an aperture, and — with one —
-    /// the [`inside`]-shaped soft rectangle it documents, checked at a point
-    /// deep in both spans and at two points each outside one of them.
+    /// [`hole`]'s two claims: nothing without an aperture, and — with one — the
+    /// rectangle it documents, checked at a point deep in both spans and at two
+    /// points each outside one of them.
+    ///
+    /// The rectangle is a *hard* one since phase 5, so the three points that were
+    /// chosen to be well clear of a band are now merely inside and outside, and
+    /// the tolerances they were read to are exact equalities.
     #[test]
-    fn hole_is_zero_with_no_aperture_and_the_soft_rectangle_with_one() {
-        assert_eq!(hole(None, 0.5, 10.0, 0.1, 0.1), 0.0);
+    fn hole_is_zero_with_no_aperture_and_the_rectangle_with_one() {
+        assert_eq!(hole(None, 0.5, 10.0), 0.0);
 
         let aperture = crate::occlusion::Aperture::new(0.25, 0.75, 5, 15);
-        assert!((hole(Some(aperture), 0.5, 10.0, 0.05, 1.0) - 1.0).abs() < 1e-3);
-        assert!(hole(Some(aperture), 0.9, 10.0, 0.05, 1.0) < 1e-3);
-        assert!(hole(Some(aperture), 0.5, 30.0, 0.05, 1.0) < 1e-3);
+        assert_eq!(hole(Some(aperture), 0.5, 10.0), 1.0);
+        assert_eq!(hole(Some(aperture), 0.9, 10.0), 0.0);
+        assert_eq!(hole(Some(aperture), 0.5, 30.0), 0.0);
     }
 
-    /// [`pierced`] with no aperture is exactly [`pierces`] — the surface it
-    /// is asked about is solid — and with one, a point deep inside the hole
-    /// is open while the same height beside the hole is still stopped by the
-    /// wall around it.
+    /// [`pierced`] with no aperture is the whole surface — a ray that reached it
+    /// has already crossed the box the panel is — and with one, a point deep
+    /// inside the hole is open while the same height beside the hole is still
+    /// stopped by the wall around it.
     #[test]
-    fn pierced_is_pierces_with_no_hole_and_open_where_the_hole_is() {
+    fn pierced_is_the_whole_surface_with_no_hole_and_open_where_the_hole_is() {
         let wall = test_solid(0, 20, crate::occlusion::EDGE_NORTH);
-        assert_eq!(
-            pierced(&wall, wall.low(), wall.high(), [0.5, 0.0, 10.0], 0.05, 2.0),
-            pierces(10.0, 0.0, 20.0, 2.0),
-        );
+        assert_eq!(pierced(&wall, [0.5, 0.0, 10.0]), 1.0);
 
         let mut windowed = wall;
         windowed.aperture = Some(crate::occlusion::Aperture::new(0.25, 0.75, 5, 15));
-        assert!(pierced(&windowed, 0.0, 20.0, [0.5, 0.0, 10.0], 0.05, 1.0) < 1e-3);
-        assert!((pierced(&windowed, 0.0, 20.0, [0.9, 0.0, 10.0], 0.05, 1.0) - 1.0).abs() < 1e-3);
+        assert_eq!(pierced(&windowed, [0.5, 0.0, 10.0]), 0.0);
+        assert_eq!(pierced(&windowed, [0.9, 0.0, 10.0]), 1.0);
     }
 
     /// [`same_run`]'s bitmask logic, exhaustively over its four shapes: same
@@ -4131,7 +4202,7 @@ mod tests {
         let from = [101.26917_f32, 99.877884, 4.255842];
         let to = [100.57816_f32, 100.689926, 0.0];
         let tile = (from[0].floor() as i32, from[1].floor() as i32);
-        let new = walk_cells_exact(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion);
+        let new = walk_cells_exact(from, to, LitEnd::nowhere(tile), &occlusion);
         assert!(
             new.0 < 0.5,
             "a ray crossing the first tread's own lid should not read as more than half open: \
@@ -4197,7 +4268,7 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let new = walk_cells_exact(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion);
+            let new = walk_cells_exact(from, to, LitEnd::nowhere(tile), &occlusion);
             prop_assert!((0.0..=1.0).contains(&new.0), "from {from:?} to {to:?}: through {}", new.0);
         });
     }
@@ -4231,9 +4302,8 @@ mod tests {
         for y in [99.9_f32, 100.1, 100.2, 100.3, 101.0] {
             let tile = (102, y.floor() as i32);
             let from = [102.5_f32, y, 10.0];
-            let exact = walk_cells_exact(from, flame, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
-            let streaming =
-                walk_cells_streaming(from, flame, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, flame, LitEnd::nowhere(tile), &occlusion).0;
+            let streaming = walk_cells_streaming(from, flame, LitEnd::nowhere(tile), &occlusion).0;
             assert!(
                 (exact - streaming).abs() < 1e-4,
                 "y {y}: walk_cells_exact through {exact} disagrees with walk_cells_streaming through {streaming}",
@@ -4277,8 +4347,8 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
@@ -4379,8 +4449,8 @@ mod tests {
             };
             prop_assume!(hits_with(-quantum) == hits_with(quantum));
 
-            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
@@ -4436,8 +4506,8 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
@@ -4533,8 +4603,8 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
+            let exact = walk_cells_exact(from, to, LitEnd::nowhere(tile), &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
                 "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
@@ -4614,7 +4684,7 @@ mod tests {
             let tile = (fx.floor() as i32, fy.floor() as i32);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), FLAME_SPREAD, &occlusion).0;
+            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(tile), &occlusion).0;
             prop_assert!((0.0..=1.0).contains(&streaming), "from {from:?} to {to:?}: through {streaming}");
         });
     }

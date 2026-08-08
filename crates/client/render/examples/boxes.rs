@@ -454,15 +454,36 @@ fn scene_flat() -> Vec<BoxSpec> {
     Vec::new()
 }
 
-/// Whether `point` can see `light` at all, geometrically — every box but
-/// `skip` (the one `point` itself rests on, which must not shadow itself)
-/// tested by [`segment_clear_of_box`].
-fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), boxes: &[BoxSpec], skip: usize) -> bool {
-    boxes
+/// How much of `light` `point` can see, geometrically — every box but `skip` (the
+/// one `point` itself rests on, which must not shadow itself) tested by
+/// [`segment_clear_of_box`], once per point of the flame.
+///
+/// **A share and not a bool, and `docs/lighting_rebuild.md`'s phase 4 predicted
+/// exactly this.** It answered about the flame's *centre* until phase 5, and its
+/// disagreements with the frame were reported that phase as "the engine's area
+/// light against a point source, and phase 5 is where those become comparable".
+/// This is where. `light::flame_points` names where the engine's rays end, so the
+/// two are asked about the same body; the segment test is still this file's own
+/// and shares no arithmetic with any walk.
+fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), boxes: &[BoxSpec], skip: usize) -> f64 {
+    let spot = light::Spot::at(
+        Vec2::new(point.0 as f32, point.1 as f32),
+        point.2 as f32,
+        (point.0.floor() as i32, point.1.floor() as i32),
+    );
+    let points = light::flame_points(spot, [light.0 as f32, light.1 as f32, light.2 as f32]);
+    let clear = points
         .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != skip)
-        .all(|(_, b)| segment_clear_of_box(point, light, b.min, b.max))
+        .filter(|at| {
+            let to = (f64::from(at[0]), f64::from(at[1]), f64::from(at[2]));
+            boxes
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != skip)
+                .all(|(_, b)| segment_clear_of_box(point, to, b.min, b.max))
+        })
+        .count();
+    clear as f64 / points.len() as f64
 }
 
 /// A flat grayscale raster, `sampler` called once per pixel with the world
@@ -877,16 +898,15 @@ fn main() {
         for (index, b) in boxes.iter().enumerate() {
             let side = 96u32;
             let z = b.max.2;
-            let oracle =
-                raster_top_down(
-                    side,
-                    (b.min.0, b.min.1),
-                    (b.max.0, b.max.1),
-                    |x, y| match oracle_visible((x, y, z), light_point, &boxes, index) {
-                        true => 1.0,
-                        false => 0.0,
-                    },
-                );
+            let oracle = raster_top_down(
+                side,
+                (b.min.0, b.min.1),
+                (b.max.0, b.max.1),
+                // The share of the flame this point can see, drawn as a grey:
+                // the picture beside it is the engine's own `through`, which
+                // is the same quantity, so a soft edge now appears on both.
+                |x, y| oracle_visible((x, y, z), light_point, &boxes, index) as f32,
+            );
             let engine = raster_top_down(side, (b.min.0, b.min.1), (b.max.0, b.max.1), |x, y| {
                 // A point of *this box's own top*, which is what the solid id
                 // says: the box it is on must not shadow it, and any other box
@@ -1109,7 +1129,7 @@ fn main() {
             }
             sampled += 1;
             let gpu_lit = shade.lit();
-            let independent = oracle_visible((x, y, z), light_point, &boxes, usize::MAX);
+            let independent = oracle_visible((x, y, z), light_point, &boxes, usize::MAX) > 0.5;
             if independent != gpu_lit {
                 mismatches += 1;
                 // The ground is no occluder, so it owns nothing and is exempt
@@ -1284,7 +1304,7 @@ fn main() {
                     }
                     sampled += 1;
                     let gpu_lit = shade.lit();
-                    let independent = oracle_visible((x, y, z), light_point, &boxes, index);
+                    let independent = oracle_visible((x, y, z), light_point, &boxes, index) > 0.5;
                     if independent != gpu_lit {
                         disagreeing += 1;
                         let up = ((z - b.min.2) / (b.max.2 - b.min.2) * bands as f64) as usize;
@@ -1449,6 +1469,16 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         lit_pixels,
     } = inputs;
 
+    // **The engine's own sphere where there is something to cast a shadow, and a
+    // point where there is not** — the same choice `tests/traced.rs`'s two gates
+    // make, for the same two reasons. A reference holding a point where the frame
+    // holds a body reports the whole penumbra as a disagreement; and a scene with
+    // no occluder in it has no penumbra to report, so the sixty-four samples buy
+    // nothing there but a slower picture.
+    let body = match boxes.is_empty() {
+        true => oracle::pathtrace::Body::Point,
+        false => oracle::pathtrace::ENGINE_FLAME,
+    };
     let mirror = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
         boxes,
         light_at,
@@ -1456,6 +1486,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         colour: flame.color.map(f64::from),
         intensity: f64::from(flame.intensity),
         albedos,
+        body,
         to_pixel,
     });
 
@@ -1473,8 +1504,13 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
     // rendered in `Brdf::Lambert` for that reason, out of a second mirror whose
     // flame carries `LAMBERT_PI`: the engine's diffuse term has no `1/π` and the
     // reference's does, and the intensity is where the two conventions meet.
-    let exact = mirror.render(pt_trace::Brdf::Flat, width, height);
-    let physical = mirror.render(pt_trace::Brdf::Lambert, width, height);
+    let exact = mirror.render(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED, width, height);
+    let physical = mirror.render(
+        pt_trace::Brdf::Lambert,
+        oracle::pathtrace::FIRST_SEED,
+        width,
+        height,
+    );
     let shaded = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
         boxes,
         light_at,
@@ -1482,9 +1518,15 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         colour: flame.color.map(f64::from),
         intensity: f64::from(flame.intensity) * oracle::pathtrace::LAMBERT_PI,
         albedos,
+        body,
         to_pixel,
     })
-    .render(pt_trace::Brdf::Lambert, width, height);
+    .render(
+        pt_trace::Brdf::Lambert,
+        oracle::pathtrace::FIRST_SEED,
+        width,
+        height,
+    );
     let verdict = oracle::pathtrace::compare(
         &exact,
         &physical,
@@ -1497,6 +1539,34 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
         },
     );
     eprint!("{}", verdict.report());
+
+    // And the *shape* of the soft edge, which the verdict above cannot see: it
+    // reads both pictures as one bit a pixel, and a penumbra is exactly the
+    // region where that bit is arbitrary. `docs/lighting_rebuild.md` phase 5.
+    // Only where there is a penumbra to look at: `penumbra` says so by panicking,
+    // which is right for a gate and wrong for a tool a person points at a scene
+    // with no occluder in it.
+    if !boxes.is_empty() {
+        let allowed = oracle::pathtrace::PENUMBRA_ALLOWED;
+        let soft = oracle::pathtrace::penumbra(
+            &exact,
+            &mirror.render(
+                pt_trace::Brdf::Flat,
+                oracle::pathtrace::SECOND_SEED,
+                width,
+                height,
+            ),
+            oracle::pathtrace::Frame {
+                width,
+                height,
+                drawn,
+                shadow: shadow_pixels,
+                face_rows,
+            },
+            allowed,
+        );
+        eprint!("{}", soft.report(allowed));
+    }
 
     // The picture: the frame's own shadow decision, the tracer's, and where
     // they differ. Same three-strip shape the box-top oracle already writes, so

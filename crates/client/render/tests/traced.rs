@@ -435,11 +435,18 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         colour: [1.0, 1.0, 1.0],
         intensity: 1.0,
         albedos: oracle::pathtrace::Albedos::INVENTED,
+        // **The engine's own sphere, and phase 5 is what changed it from a
+        // point.** A reference holding a point where the frame holds a body
+        // reports the whole penumbra as a disagreement — it did, on one pixel of
+        // this very scene, the hour the eight rays landed.
+        body: oracle::pathtrace::ENGINE_FLAME,
         to_pixel: frame.to_pixel.as_ref(),
     });
+    let seen = |brdf, seed| mirror.render(brdf, seed, SIDE, SIDE);
+    let exact = seen(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED);
     let verdict = oracle::pathtrace::compare(
-        &mirror.render(pt_trace::Brdf::Flat, SIDE, SIDE),
-        &mirror.render(pt_trace::Brdf::Lambert, SIDE, SIDE),
+        &exact,
+        &seen(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED),
         oracle::pathtrace::Frame {
             width: SIDE,
             height: SIDE,
@@ -449,6 +456,27 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         },
     );
     eprint!("{}", verdict.report());
+
+    // **And the shape of the soft edge, which is phase 5's own "done when".**
+    // The verdict above reads both pictures as one bit a pixel, which is the
+    // right question for a hard shadow and says nothing at all about a soft one:
+    // a penumbra is exactly the region where that bit is arbitrary. This reads
+    // the fraction instead, and measures the reference's own noise beside it so
+    // that "they agree to within an eighth" is a statement with a scale under it.
+    let allowed = oracle::pathtrace::PENUMBRA_ALLOWED;
+    let soft = oracle::pathtrace::penumbra(
+        &exact,
+        &seen(pt_trace::Brdf::Flat, oracle::pathtrace::SECOND_SEED),
+        oracle::pathtrace::Frame {
+            width: SIDE,
+            height: SIDE,
+            drawn: &frame.drawn,
+            shadow: &frame.surface,
+            face_rows: &frame.face_rows,
+        },
+        allowed,
+    );
+    eprint!("{}", soft.report(allowed));
 
     // The scene has to be one where the answer could have been wrong. All three
     // of these are the same guard from different sides: a frame that drew
@@ -488,7 +516,77 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
         verdict.interior,
         verdict.report(),
     );
+
+    // The soft gate's own non-triviality: a penumbra of a handful of pixels is a
+    // hard shadow with a rounding error on it, and would pass this for any ray
+    // count at all — including one.
+    assert!(
+        soft.compared > 1_000,
+        "only {} pixels of this frame are partly lit on both sides: {}",
+        soft.compared,
+        soft.report(allowed),
+    );
+    // **The two gates are aggregates, and that is a finding rather than a
+    // convenience.** At sixty-four random samples a pixel the reference's own
+    // per-pixel error is a *third of a flame* at the middle of a soft edge — it
+    // disagrees with itself by that much, measured — so a per-pixel comparison
+    // there is a gate on the ruler and not on the thing being measured. What is
+    // sharp at this sample count is what averages: thousands of pixels turn the
+    // reference's noise into a thousandth and leave a model difference standing.
+    // The per-pixel count is in the report for a person to read; it is not what
+    // this asserts, and `soft.over` being non-zero is the reference's variance.
+    // See the backlog: a reference that stratified its own disc would make the
+    // per-pixel claim available, at no extra samples.
+    //
+    // The mean is the triangle inequality with both terms named: the engine's own
+    // estimator is worth half a ray on average, and the reference's distance from
+    // the truth is its measured disagreement with *itself* over root two — two
+    // independent errors either side of the same answer are root two apart.
+    // Neither term is chosen to fit; both were checked by breaking them, below.
+    let budget = ENGINE_MEAN + soft.noise_mean / std::f64::consts::SQRT_2;
+    assert!(
+        soft.mean <= budget,
+        "the frame's penumbra is {:.4} of a flame from the reference's on average, past the {budget:.4} \
+         that half a ray of eight plus the reference's own measured {:.4} allows\n{}",
+        soft.mean,
+        soft.noise_mean / std::f64::consts::SQRT_2,
+        soft.report(allowed),
+    );
+    // **And the sharp one.** Everything above is a bound on noise, and noise is
+    // symmetric: it cancels in a signed mean over thousands of pixels, where a
+    // wrong *model* does not. A flame of the wrong radius, a disc sampled off
+    // centre, a penumbra sitting to one side of where it belongs — each of those
+    // moves this and is invisible in the numbers above.
+    assert!(
+        soft.bias.abs() < PENUMBRA_BIAS,
+        "the frame's penumbra is {:+.4} of a flame brighter than the reference's on average, past the \
+         {PENUMBRA_BIAS} a sampling difference explains — that is a model difference, not a noise \
+         one\n{}",
+        soft.bias,
+        soft.report(allowed),
+    );
 }
+
+/// How far the engine's penumbra may sit from the reference's *on average*, as a
+/// fraction of the whole flame.
+///
+/// Noise cancels in a signed mean and a model difference does not, so this is a
+/// far tighter number than the per-pixel budget beside it: over the few thousand
+/// pixels of this scene's soft edge, the standard error of a signed mean of
+/// eighth-scale noise is about a thousandth. A fortieth is thirty times that and
+/// still an order of magnitude under anything a wrong radius or an off-centre
+/// disc would produce.
+const PENUMBRA_BIAS: f64 = 0.025;
+
+/// What the engine's own eight-ray estimator is worth on average, as a fraction
+/// of the whole flame: **half of one ray**.
+///
+/// Eight stratified samples of how much of a disc a fragment can see land within
+/// one ray of the true share — that is what stratification buys and it is
+/// `PENUMBRA_ALLOWED`'s own argument — and a quantity bounded by one ray averages
+/// half of one. It is a bound and not a fit: the measured figure on this scene is
+/// under half of it, with the reference's own share taken out.
+const ENGINE_MEAN: f64 = 0.5 / openshard_client_render::light::SHADOW_RAYS as f64;
 
 /// How far apart the two pictures may be, in steps of an eight-bit channel.
 ///
@@ -593,6 +691,9 @@ fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
         // conventions, and it is stated once, here, rather than by either side
         // being rewritten to look like the other.
         intensity: f64::from(BRIGHTNESS) * oracle::pathtrace::LAMBERT_PI,
+        // A point: this scene has no occluder, so the flame's own size cannot
+        // cast anything and an exact render is the stronger reference.
+        body: oracle::pathtrace::Body::Point,
         albedos: oracle::pathtrace::Albedos {
             ground: albedo,
             // No body in the scene to have one. Left at the invented value
@@ -606,7 +707,7 @@ fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
     // a description of the engine *before* this phase — no cosine and no notion
     // of a normal anywhere in it — so leaving the gate there would have made the
     // reference agree with the renderer we have just replaced.
-    let traced = mirror.render(pt_trace::Brdf::Lambert, SIDE, SIDE);
+    let traced = mirror.render(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED, SIDE, SIDE);
 
     // Compared where the tracer sees the ground and the frame drew it: the two
     // agreeing what surface is there is the same precondition the shadow gate

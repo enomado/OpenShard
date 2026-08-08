@@ -569,8 +569,17 @@ fn gate_against_mesh(slab: &Slab, face: &openshard_client_render::mesh::Face, up
     }
 }
 
-/// Whether the flame can see `point` at all, geometrically: every plane of every
-/// flight but `own`, tested by [`segment_clear_of_box`].
+/// How much of the flame `point` can see, geometrically: every plane of every
+/// flight but `own`, tested by [`segment_clear_of_box`], once per point of the
+/// flame's own sphere.
+///
+/// **A share and not a bool since `docs/lighting_rebuild.md`'s phase 5**, which
+/// is where that phase keeps phase 4's own promise. Phase 4 measured 88 pixels of
+/// a tread's outer corner that the frame drew shadowed and this oracle called
+/// lit, and named them: "the engine's area light against a point source, and
+/// phase 5 is where those become comparable." `light::flame_points` is where the
+/// engine's rays end, so the two are asked about the same body; the segment test
+/// below is still this file's own and shares no arithmetic with any walk.
 ///
 /// `own` is the one plane the fragment **is** a point of — the face the renderer
 /// drew this pixel from, named by the `place` attachment rather than guessed at.
@@ -585,12 +594,25 @@ fn gate_against_mesh(slab: &Slab, face: &openshard_client_render::mesh::Face, up
 /// beyond the staircase, crosses that same step's own top well away from where
 /// it started; a staircase's own body is genuinely in the way, and a rule
 /// phrased as "a fragment is never shadowed by its own static" would light it.
-fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), slabs: &[Slab], own: usize) -> bool {
-    slabs
+fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), slabs: &[Slab], own: usize) -> f64 {
+    let spot = light::Spot::at(
+        Vec2::new(point.0 as f32, point.1 as f32),
+        point.2 as f32,
+        (point.0.floor() as i32, point.1.floor() as i32),
+    );
+    let points = light::flame_points(spot, [light.0 as f32, light.1 as f32, light.2 as f32]);
+    let clear = points
         .iter()
-        .enumerate()
-        .filter(|(at, _)| *at != own)
-        .all(|(_, slab)| segment_clear_of_box(point, light, slab.min, slab.max))
+        .filter(|at| {
+            let to = (f64::from(at[0]), f64::from(at[1]), f64::from(at[2]));
+            slabs
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != own)
+                .all(|(_, slab)| segment_clear_of_box(point, to, slab.min, slab.max))
+        })
+        .count();
+    clear as f64 / points.len() as f64
 }
 
 /// Runs of adjacent non-empty bands, as `(first, past_the_last, points)`.
@@ -771,7 +793,7 @@ fn write_reference(
                 match (
                     distance >= radius,
                     slab.faces(*point, flame, up),
-                    oracle_visible(*point, flame, slabs, *plane),
+                    oracle_visible(*point, flame, slabs, *plane) > 0.5,
                 ) {
                     // The three answers `Shade` decodes, in the colours
                     // `blit.wesl` writes them, so the two pictures can be read
@@ -891,12 +913,18 @@ fn write_light_reference(
                 if d >= 1.0 || facing <= 0.0 {
                     continue;
                 }
-                if !oracle_visible(point, flame, slabs, plane) {
+                // **Scaled by the share, not gated on it** — phase 5. This is
+                // the reference the engine's own `View::Flames` is judged
+                // against, and the engine multiplies by how much of the flame it
+                // can see; a reference that switched at a half would call every
+                // penumbra pixel a disagreement of up to half a flame.
+                let seen = oracle_visible(point, flame, slabs, plane) as f32;
+                if seen <= 0.0 {
                     continue;
                 }
                 let fall = (1.0 - d) as f32;
                 for (channel, colour) in added.iter_mut().zip(light.color) {
-                    *channel += colour * light.intensity * fall * fall * facing;
+                    *channel += colour * light.intensity * fall * fall * facing * seen;
                 }
             }
             Some(Lit {
@@ -1762,7 +1790,7 @@ fn main() {
                 beyond += 1;
             }
             let rendered_lit = shade.lit();
-            let independent = oracle_visible(point, flame, &slabs, id);
+            let independent = oracle_visible(point, flame, &slabs, id) > 0.5;
             if independent == rendered_lit {
                 continue;
             }
