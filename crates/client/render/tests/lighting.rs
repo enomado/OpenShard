@@ -765,23 +765,21 @@ fn a_hole_in_a_floor_lets_the_light_through() {
 /// [`scene::INSIDE`], eight thousandths of a tile short of the plane it is the
 /// face of, and that is the only horizontal position a frame ever draws one at.
 /// The middle of the tile is swept beside it for the claim that is about the
-/// *room* — its own wall is lit — and deliberately not for anything at or above
-/// the floor line, which is where the two positions part. What closes the line is
-/// `light::stand_clear` walking a face pixel from a hair in **front** of its
-/// plane, so that the cell the ray starts in is the one the floor is in; from the
-/// middle of a tile that hair is half a tile short, the ray crosses the floor's
-/// plane inside the wall's own column — which has no plank over it, because a
-/// house's floor stops at its wall — and the light comes back. A model whose
-/// answer depends on where in its cell a pixel stands is worth saying out loud;
-/// what makes it sound is that the drawn position is the only one that exists.
+/// *room* — its own wall is lit.
 ///
-/// The other half is [`light::ON_TOP`], and neither half closes it alone: a
-/// pixel whose `z` is exactly the floor's lies *in* the plane, and the crossing
-/// test is strict, so the ray runs along the plane rather than through it. Strict
-/// it must stay — inclusive, it would lay half a floor's shadow across every room
-/// lit from inside it — so the point is moved onto the boards instead of the test
-/// being loosened. A pixel is drawn on top of a floor, and so is the candle
-/// standing on it.
+/// **And as a point of the wall it is a point of**, which is what closes the
+/// floor line and is `docs/lighting_rebuild.md` phase 4. This tile holds two
+/// panels, `0..20` and `20..40`; a pixel at exactly `20` is on the boundary of
+/// both, and until the phase nothing on this side said which — the probe named no
+/// occluder at all, and what kept the storey dark was `light::stand_clear`
+/// lifting the ray a hundred-and-twenty-eighth in `z` and eight thousandths of a
+/// tile in front of the plane, so that it started *above* the lower wall's span
+/// and in the cell the floor is in. Two constants off a byte layout, standing in
+/// for "which wall is this a pixel of".
+///
+/// It is the upper wall's, and saying so is the whole of it: the pixel is exempt
+/// from the storey's own panel and shadowed by the room's, which is a wall
+/// between it and the sconce. The ray needs no nudge to find that out.
 #[test]
 fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
     let scene = scene::storey_over_a_lit_room();
@@ -789,10 +787,29 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
     let picture = picture(&scene, &lighting);
     let tile = scene::STOREY_WALL;
     let ambient = ambient(&lighting, tile);
+    // Which of the tile's two walls a pixel at this height is a point of: the
+    // storey's from the floor line up, the room's below it. A real fragment
+    // carries the number of the static its own picture came from, and at the line
+    // itself the picture is the storey's — its sprite is based at `WALL_HEIGHT`.
+    let wall_at = |z: f32| {
+        let base = match z >= f32::from(scene::WALL_HEIGHT) {
+            true => scene::WALL_HEIGHT as i8,
+            false => 0,
+        };
+        lighting
+            .occlusion
+            .id_of(
+                i32::from(tile.0),
+                i32::from(tile.1),
+                occlusion::Owner::new(base, scene::WALL_EAST),
+                occlusion::Part::ONLY,
+            )
+            .expect("both storeys of the wall are in this scene's grid")
+    };
     let face = |across: f32, z: f32| {
         let at = Vec2::new(f32::from(tile.0) + across, f32::from(tile.1) + 0.5);
         light::sample(
-            Spot::face(at, z, (i32::from(tile.0), i32::from(tile.1)), Face::East),
+            Spot::face(at, z, (i32::from(tile.0), i32::from(tile.1)), Face::East).part_of(wall_at(z)),
             &lighting,
         )
         .brightness()
@@ -813,11 +830,13 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
         }
     }
 
-    // And everything from the floor line up, at the fraction a frame draws a face
-    // pixel at. The line itself first, then three heights of the storey's wall:
+    // And everything **above** the floor line, at the fraction a frame draws a face
+    // pixel at. A sixteenth of a `z` unit up first — the narrowest thing the
+    // residual below could hide behind — then three heights of the storey's wall:
     // one spot could pass on a ray that happened to miss the room.
     for z in [
-        f32::from(scene::WALL_HEIGHT),
+        f32::from(scene::WALL_HEIGHT) + 0.0625,
+        f32::from(scene::WALL_HEIGHT) + 0.25,
         f32::from(scene::WALL_HEIGHT) + 1.0,
         25.0,
         35.0,
@@ -829,6 +848,35 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
              ambient's {ambient}{picture}",
         );
     }
+
+    // **The line itself is not dark, and this is where that is written down
+    // rather than asserted away.** `docs/lighting_rebuild.md` phase 4 took the
+    // bias to zero, and a pixel at exactly `WALL_HEIGHT` lies *in* the plane of
+    // the storey's floor: the strict crossing test says a ray leaving a plane has
+    // not gone through it, so the floor does not stop this one. What dims it is
+    // the room's own wall, whose top edge the ray grazes and whose penumbra
+    // therefore takes about half the flame.
+    //
+    // It was dark before the phase because `stand_clear` started the ray a
+    // hundred-and-twenty-eighth *above* the plane and eight thousandths of a tile
+    // east of it — in the room's own cell, over the boards — which is the model
+    // answering a question about where a pixel is with two constants off a byte
+    // layout. The residual is one mathematical plane and not the four screen
+    // pixels the original defect was: the sweep above starts a sixteenth of a `z`
+    // over the line and is already at the ambient exactly.
+    //
+    // A range and not a level, for the reason phase 3's wall-run seam is one: what
+    // is claimed is "the line is dimmer than the room it sits over and brighter
+    // than night", which is the shape of a graze, and any level would be a number
+    // chosen to fit.
+    let line = face(scene::INSIDE, f32::from(scene::WALL_HEIGHT));
+    let below = face(scene::INSIDE, f32::from(scene::WALL_HEIGHT) - 1.0);
+    assert!(
+        brighter_by(line, ambient) > 0.0 && line < below,
+        "the floor line should be a graze — lit, and dimmer than the room's own \
+         wall under it: {line} at the line, {below} a unit below, ambient \
+         {ambient}{picture}",
+    );
 }
 
 /// A ray does **not** slip between two walls that touch only at their corners.
@@ -1840,21 +1888,26 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
     // caps. That test only ever reads the tile's *middle* in `y`; this one
     // extends the same claim to the tile's own far `y` edge — a whole
     // number — which is exactly the coordinate shape the real defect had.
-    let top = grid
-        .solids_at(100, 100)
-        .filter(|solid| solid.edges == 0)
-        .max_by_key(|solid| solid.top())
+    let (id, top) = grid
+        .cell(100, 100)
+        .filter(|(_, solid)| solid.edges == 0)
+        .max_by_key(|(_, solid)| solid.top())
         .expect("the climb built three tops");
     let mid_x = ((top.space.min.x + top.space.max.x) / 2.0) as f32;
     let edge_y = top.space.max.y as f32;
     let z = top.top() as f32;
     let tile = (100, 100);
 
-    // East, level with the top tread — the same light the proven fixture
-    // uses, foot of the flight, where a person actually stands a torch.
+    // East and over the top tread by `FLAME_LIFT` — the same light the proven
+    // fixture uses, foot of the flight, where a person actually stands a torch.
+    // Level with the tread it is *not*, for the reason that fixture states at
+    // length: the riser this tread caps stops at exactly the tread's height, so a
+    // ray to a source at that height grazes its top edge and a flame of real depth
+    // is half cut by it. `docs/lighting_rebuild.md` phase 4 took the bias to zero,
+    // which is what made that graze visible instead of stepped over.
     let light = light::Light {
         at: Vec2::new(102.5, 100.5),
-        z,
+        z: z + light::FLAME_LIFT,
         radius: 6.0,
         color: [1.0, 1.0, 1.0],
         intensity: 1.0,
@@ -1870,13 +1923,24 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
 
     // The tile's own middle in `y`, and its far edge: both are points of the
     // same tread, both fed the same `tile` a real caller would carry, and
-    // neither should be shadowed by the riser it caps
-    // (`Surface::shadowed_by_own_tile`'s exemption). A flip between them is
+    // neither should be shadowed by the riser it caps — which is now the plain
+    // statement that the two are different solids and only one of them is the
+    // fragment's own. A flip between them is
     // `walk_cells` disagreeing with itself about which tile the ray left
     // from — the old `first = from.floor()` read the far edge as the tile
     // beyond this one, where the exemption never applies.
-    let middle = light::sample(Spot::flat(Vec2::new(mid_x, 100.5), z, tile), &lighting).reaches[0].through;
-    let on_edge = light::sample(Spot::flat(Vec2::new(mid_x, edge_y), z, tile), &lighting).reaches[0].through;
+    let middle = light::sample(
+        Spot::flat(Vec2::new(mid_x, 100.5), z, tile).part_of(id),
+        &lighting,
+    )
+    .reaches[0]
+        .through;
+    let on_edge = light::sample(
+        Spot::flat(Vec2::new(mid_x, edge_y), z, tile).part_of(id),
+        &lighting,
+    )
+    .reaches[0]
+        .through;
 
     assert!(
         (middle - on_edge).abs() < 0.05,

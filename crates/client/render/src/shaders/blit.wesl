@@ -502,32 +502,27 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
     return clamp(beyond / max(spread * FLAME_DEPTH, 1.0e-3) + 0.5, 0.0, 1.0);
 }
 
-// How far in front of its own plane a **face** pixel is walked from, in tiles,
-// and how far above whatever it lies on every point of the world is, in `z`.
-// `light::STAND_OFF` and `light::ON_TOP`, and the numbers are one pair: two steps
-// of the seven-bit fraction the retired `place` attachment carried, and well
-// under the one `z` unit it quantised height to. **They outlived the thing they
-// were measured off**, which is `docs/lighting_rebuild.md`'s second root stated
-// as two constants: the position is exact now and these are still here, because
-// what removes them is phase 4's self-hit by identity and not a wider field.
-// Only the walk moves — the id plane still names the wall's own row, so picking
-// and the debug views are untouched.
-const STAND_OFF: f32 = 2.0 / 127.0;
-const ON_TOP: f32 = 1.0 / 128.0;
+// **`STAND_OFF` and `ON_TOP` lived here**, and `docs/lighting_rebuild.md` phase 4
+// deleted them: **the bias is zero.** They were two steps of the seven-bit
+// fraction the retired `place` attachment carried and well under the one `z` unit
+// it quantised a height to — numbers off a byte layout, standing in for a ray
+// that did not start inside the surface it was drawn on. Identity does that
+// exactly now, and phase 2's exact position plus a per-solid `ray_vs_solid`
+// removed the second thing they bought. `light.rs`'s own note where the pair
+// stood has the whole argument.
 
 // Whether a lit point lies **on** a surface: its `z` is inside the span that
-// surface occupies, its two edges included — and inclusive by `ON_TOP`, which is
-// the nudge `walk` gave the point and has to be given back here, or a pixel of a
-// wall's top cap stops being a point of its own wall and the wall shadows it.
-// What the exemptions are asked, one surface at a time — see `walk`, and
-// `light::on_surface`.
+// surface occupies, its two edges included, and **exactly** — the `ON_TOP`
+// tolerance was the nudge `walk` gave the point, handed back here, and both went
+// at phase 4. What the exemptions are asked, one surface at a time — see `walk`,
+// and `light::on_surface`.
 //
 // `low`/`high` are `span_of`'s pair and not the texel's own two channels: this
 // is a question about whether a fragment is a point *of* the solid, and half a
 // unit of rounding is the difference between a face's bottom row belonging to
 // the box it is drawn on and standing under it.
 fn on_surface(z: f32, low: f32, high: f32) -> bool {
-    return z >= low - ON_TOP && z <= high + ON_TOP;
+    return z >= low && z <= high;
 }
 
 // **`drawn_on` lived here**, and `docs/lighting_rebuild.md` phase 4 retired it
@@ -1146,17 +1141,14 @@ fn cell_stopped(
     return stopped;
 }
 
+// **`ahead` is gone from this signature and from `sunlight`'s.** It was the lit
+// end's own outward normal, and the only thing it was ever spent on was
+// `STAND_OFF`; with the bias at zero there is nothing here that asks which way a
+// surface looks. `docs/lighting_rebuild.md` phase 4.
 fn walk(
-    raw_start: vec3<f32>,
-    raw_finish: vec3<f32>,
+    start: vec3<f32>,
+    finish: vec3<f32>,
     tile: vec2<f32>,
-    // Which way the lit end's surface looks — the G-buffer's own normal, read
-    // once by the caller and handed down rather than derived a second time
-    // from the stance. `STAND_OFF` moves the ray in `x` and `y` alone, and on
-    // those two axes this is exactly what `outward(stance)` used to return: the
-    // one stance the two disagree about is a **flat** one, whose direction is
-    // entirely in `z`, which this never spends.
-    ahead: vec3<f32>,
     stance: u32,
     // Which solid of the grid the lit end is a point of — `own_solid` for a
     // sprite fragment, `mesh_instances[id].solid` for a mesh face, `SOLID_NOBODY`
@@ -1165,32 +1157,18 @@ fn walk(
     skip_last: bool,
     spread: f32,
 ) -> f32 {
-    // **Both ends stand where they are drawn, not inside what they are drawn on.**
-    // See `STAND_OFF` and `ON_TOP`, and `light::stand_clear`: a face pixel is
-    // walked from a hair in front of the plane it is the face of, and every point
-    // of the world from a hair above whatever it lies on. Without the pair a wall
-    // pixel at exactly a floor's `z` was lit by the room below it — the bright
-    // stroke a house wore along its floorboards — and neither closes it alone.
-    //
-    // The flame's end gets the height and not the offset: a mounted flame is
-    // already outside the plane its tile names (`light::mounted_at`), and a flame
-    // has no face of its own to be in front of.
-    let start = vec3<f32>(
-        raw_start.x + ahead.x * STAND_OFF,
-        raw_start.y + ahead.y * STAND_OFF,
-        raw_start.z + ON_TOP,
-    );
-    let finish = vec3<f32>(raw_finish.x, raw_finish.y, raw_finish.z + ON_TOP);
+    // **Both ends stand exactly where they are, and the bias is zero** —
+    // `docs/lighting_rebuild.md` phase 4. A pair of nudges off the retired
+    // attachment's byte layout stood here; identity is what keeps a ray from
+    // being stopped by the surface it left, and it does not need the ray moved.
     let delta = finish - start;
     let ground = length(delta.xy);
     let lit = start;
     // The caller's own tile, not `floor(start.x/y)`: `start` can legitimately sit
-    // exactly on this tile's own far edge — `raw_start` is a mesh face's
-    // reconstructed `(tile, sub)` pair with `sub` clamped short of `1.0`
-    // (`mesh_face.wgsl`'s `INSIDE`), and a `Flat` surface's zero `outward` adds no
-    // nudge to push it off that edge either — and flooring it back would pick
-    // whichever side happens to round down rather than the side the geometry
-    // actually stands on. `light::walk_cells`'s `first`, the same fix, and
+    // exactly on this tile's own far edge — a mesh face's own outer corner does,
+    // and nothing nudges it off — and flooring it back would pick whichever side
+    // happens to round down rather than the side the geometry actually stands on.
+    // `light::walk_cells`'s `first`, the same fix, and
     // `docs/lighting_raymarch.md` step 5: this is where it names the same class of
     // bug the CPU walk had, on the GPU walk decision 9 requires to match it.
     let first = vec2<i32>(i32(tile.x), i32(tile.y));
@@ -1399,7 +1377,7 @@ const MAX_SUN_TILES: f32 = 32.0;
 // `walk` draws. The fragment's own tile is skipped there as it is for a flame,
 // which is what lights a wall on the side the sun is on instead of shadowing it
 // with itself.
-fn sunlight(at: vec3<f32>, tile: vec2<f32>, ahead: vec3<f32>, stance: u32, mine: u32) -> f32 {
+fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32, mine: u32) -> f32 {
     let horizontal = length(lighting.sun.xy);
     if horizontal < 1.0e-6 {
         // Straight overhead: nothing but the fragment's own tile is in the way,
@@ -1421,7 +1399,7 @@ fn sunlight(at: vec3<f32>, tile: vec2<f32>, ahead: vec3<f32>, stance: u32, mine:
         // which arrives here as a ceiling below every fragment there is.
         return 1.0;
     }
-    return walk(at, at + step * tiles, tile, ahead, stance, mine, false, 0.0);
+    return walk(at, at + step * tiles, tile, stance, mine, false, 0.0);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -1788,7 +1766,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // `walk`'s two parameters, and the only two things that make this ray
         // different from the sun's.
         let through = walk(
-            at, vec3<f32>(to.x, to.y, to.z), tile, normal, stance, mine, true, FLAME_SPREAD,
+            at, vec3<f32>(to.x, to.y, to.z), tile, stance, mine, true, FLAME_SPREAD,
         );
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
@@ -1816,7 +1794,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // falloff, only whether anything stands between this pixel and the sky.
     var sun_through = 0.0;
     if lighting.sun_color.w > 0.0 {
-        sun_through = sunlight(at, tile, normal, stance, mine);
+        sun_through = sunlight(at, tile, stance, mine);
         lit = lit + lighting.sun_color.rgb * (lighting.sun_color.w * sun_through);
     }
 

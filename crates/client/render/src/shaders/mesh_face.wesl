@@ -85,9 +85,16 @@ fn vs_main(
     return out;
 }
 
-// A hundred-and-twenty-seventh of a tile — `place_format.wesl`'s `SUB_TILE`,
-// the grain `statics.wgsl` holds its own fragments inside their tile on.
-const INSIDE: f32 = 126.0 / 127.0;
+// **`INSIDE` lived here**, and `docs/lighting_rebuild.md` phase 4 deleted it. It
+// was a hundred-and-twenty-seventh of a tile — the grain the retired `place`
+// attachment held a fragment inside its tile on — and this pass clamped its own
+// exact position into it so that a reader flooring the position would be handed
+// the tile the row names rather than the neighbour's. Nothing floors it: the walk
+// takes its starting cell from the row, which is the whole of what
+// `MeshFaceVertex::tile` is for. What the clamp cost was eight thousandths of a
+// tile of error in the ray's origin on exactly the fragments a flight's outer
+// corner is made of, and with the bias at zero that is the largest thing left
+// between a fragment and where it really is.
 
 struct FragmentOut {
     // What drew this fragment and which row it came from —
@@ -105,29 +112,23 @@ struct FragmentOut {
 
 @fragment
 fn fs_main(in: VertexOut) -> FragmentOut {
-    // Where in its tile this fragment is, and how high — both exact, both
-    // free: `in.world` already interpolated to this fragment's own true
-    // position, so there is no per-stance formula to invert a second time.
-    //
-    // Subtracted from the face's own known tile, not `fract()`: a face's own
-    // edge can sit exactly on a whole number — this tread's outer corner does
-    // — and `fract` of a whole number is `0.0`, not `1.0`, so it always
-    // resolved that edge to the *next* tile rather than the one the face
-    // actually stands on. `docs/lighting.md`'s shadow-raymarch anomaly: one
-    // fragment on an otherwise evenly-shadowed flat face reading fully lit,
-    // because the walk it fed started from the wrong tile's occluders.
-    let sub = clamp(in.world.xy - in.tile, vec2<f32>(0.0), vec2<f32>(INSIDE));
-
     var out: FragmentOut;
     out.ids = pack_ids(in.id, STANCE_MESH_FACE, KIND_STATIC);
-    // The same point, as the number rather than as three fields of a `u16`
-    // each. Built from `in.tile + sub` and not from `in.world` directly,
-    // though the two differ only on a face's own outermost edge: the clamp is
-    // what keeps the point inside the tile the row names, and a reader that
-    // floors this to find a cell would otherwise be handed the neighbour's on
-    // exactly the fragments `INSIDE` exists for. Removing it is phase 4's,
-    // where the cell stops being a separate fact from the position.
-    out.position = vec4<f32>(in.tile + sub, in.world.z, 1.0);
+    // **`in.world`, exactly**, which this pass has had all along: the
+    // rasteriser's own interpolation of three real corners, affine across a
+    // planar face. It went through `in.tile + clamp(in.world.xy - in.tile, …)`
+    // until phase 4, which changed nothing but the outermost eight thousandths of
+    // a tile of a face — and those are exactly a flight's own outer corner, the
+    // fragments every stair defect is found on. See the note where `INSIDE` stood.
+    //
+    // Which *tile* this fragment's walk starts from is a separate fact and stays
+    // one: `MeshFaceVertex::tile`, carried on the vertex. A face's own edge can
+    // sit exactly on a whole number — this tread's outer corner does — and
+    // `floor`ing a position there picks whichever side rounds down rather than the
+    // side the geometry stands on. `docs/lighting.md`'s shadow-raymarch anomaly is
+    // that bug: one fragment on an otherwise evenly-shadowed tread reading fully
+    // lit, because the walk it fed started from the wrong tile's occluders.
+    out.position = vec4<f32>(in.world, 1.0);
     out.normal = vec4<f32>(in.normal, 1.0);
     return out;
 }

@@ -985,58 +985,38 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32, source: f32, spread
 /// [`FLAME_SPREAD`]'s; it is the axis that was being asked the wrong question.
 const FLAME_DEPTH: f32 = Z_PER_TILE / 4.0;
 
-/// How far in front of its own plane a **face** pixel is walked from, in tiles.
-///
-/// `statics.wgsl` places one at `INSIDE` — a hundred-and-twenty-seventh short of
-/// the plane — because a fraction of exactly one names the *next* tile and the
-/// attachment's tile is what a click selects. That is right for the attachment
-/// and wrong for the walk: the pixel is drawn on the plane, the space it is lit
-/// from is in front of it, and the floor whose edge meets that plane belongs to
-/// the tile in front. Eight thousandths of a tile behind the boundary was enough
-/// for a ray to cross a storey's floor *before* reaching the cell that floor is
-/// in, which is the bright line a house wore along its floorboards.
-///
-/// Two steps of the seven-bit fraction, which is what it takes to get past the
-/// boundary from `INSIDE` and is a third of a pixel of world. Only the walk moves
-/// — the attachment still names the wall's own tile, so picking, the debug views
-/// and the wireframe are untouched.
-const STAND_OFF: f32 = 2.0 / 127.0;
-
-/// And how far **above** whatever it lies on every point of the world is walked
-/// from, in `z`.
-///
-/// The other half of the same sentence, and the half a lid needs: a plane is
-/// crossed rather than travelled through ([`crosses`]), and the test is strict,
-/// so a point whose `z` is exactly a floor's lies *in* that floor and a ray from
-/// it to a flame below runs along the plane rather than through it. A pixel is
-/// drawn on top of the boards, not in them; so is a candle standing on them,
-/// which is why this moves the flame's end too.
-///
-/// Well under one `z` unit — the attachment quantises `z` to whole ones — and
-/// well over the last bits of a float.
-const ON_TOP: f32 = 1.0 / 128.0;
-
-/// The two ends of a ray, moved off the surfaces they are drawn on: see
-/// [`STAND_OFF`] and [`ON_TOP`].
-///
-/// The flame's end gets the height and not the offset. A mounted flame is
-/// already outside the plane its tile names — decision 26's `mounted_at`, which
-/// moves it by a good deal more than this — and a flame has no face of its own to
-/// be in front of.
-fn stand_clear(from: [f32; 3], to: [f32; 3], surface: Surface) -> ([f32; 3], [f32; 3]) {
-    let [ahead, across] = match surface.face() {
-        Some(face) => face.outward(),
-        None => [0.0, 0.0],
-    };
-    (
-        [
-            from[0] + ahead * STAND_OFF,
-            from[1] + across * STAND_OFF,
-            from[2] + ON_TOP,
-        ],
-        [to[0], to[1], to[2] + ON_TOP],
-    )
-}
+// **`STAND_OFF`, `ON_TOP` and `stand_clear` lived here**, and
+// `docs/lighting_rebuild.md` phase 4 is what deleted them. **The bias is zero.**
+//
+// They were `2.0 / 127.0` of a tile in front of a face's own plane and
+// `1.0 / 128.0` of a `z` above whatever a point lay on, and both numbers came
+// off the `place` attachment's byte layout rather than off any statement about
+// surfaces: two steps of a seven-bit fraction, and well under the whole `z` unit
+// that attachment quantised a height to. What they bought was two things, and
+// three earlier phases took the reason for each away:
+//
+//   - **A ray did not start inside the surface it was drawn on.** That was
+//     identity's job all along and it does it exactly now: a fragment names its
+//     own solid and the walk skips that one solid, whatever the geometry does at
+//     the origin. `exemption`, and the phase's own commit.
+//   - **A face pixel was walked from in front of its plane**, because the
+//     attachment placed it a hundred-and-twenty-seventh *behind* that plane and a
+//     ray from there crossed a neighbouring floor before the walk reached the
+//     cell that floor stands in. Phase 2 replaced the packing with the exact
+//     position, and `docs/lighting_raymarch.md`'s per-solid `ray_vs_solid` gave
+//     every solid its own exact interval and footprint — so a crossing is found
+//     on the cell the solid is referenced from, whenever along the ray it
+//     happens.
+//
+// And what they cost, measured with the light oracle: up to `0.51` of a channel
+// brighter than the geometry allows on the top band of a riser, because a ray
+// lifted a hundred-and-twenty-eighth clear of its own surface is a ray that
+// escapes the occluders standing at that surface's own height.
+//
+// `crosses` needs no nudge either, and never did: its crossing test is strict, so
+// a ray leaving a lid's plane exactly — `under >= high` — reads zero rather than
+// half. That strictness is the same sentence [`ON_TOP`] was, spelled in the place
+// the geometry is decided instead of in the ray's start.
 
 /// Whether a lit point lies **on** a surface: its `z` is inside the span that
 /// surface occupies, its two edges included.
@@ -1051,11 +1031,12 @@ fn stand_clear(from: [f32; 3], to: [f32; 3], surface: Surface) -> ([f32; 3], [f3
 /// and its top is the cap somebody's floor pixel is lying on, and a pixel is a
 /// point of the surface it is drawn from at both.
 ///
-/// **And inclusive by [`ON_TOP`]**, which is the same nudge [`stand_clear`] gave
-/// the point and has to be given back here. A pixel of a wall's top cap is at
-/// exactly the wall's own `top`; moved a hair above it and asked without the
-/// tolerance, it stopped being a point of its own wall and the wall shadowed it —
-/// the room's own wall went dark at the one height its cap is drawn at.
+/// **And exact.** It was inclusive by [`ON_TOP`] — the tolerance was the nudge
+/// `stand_clear` gave the point, handed back here so that a pixel of a wall's top
+/// cap, drawn at exactly the wall's own `top` and then lifted a hair above it,
+/// still read as a point of its own wall. Phase 4 deleted the nudge, so there is
+/// nothing left to give back and no tolerance left to argue about: both sides are
+/// exact numbers on the wire.
 ///
 /// `low`/`high` are the solid's `z` span and **not** its
 /// [`bottom`](crate::occlusion::Solid::bottom)/`top`, which is
@@ -1066,7 +1047,7 @@ fn stand_clear(from: [f32; 3], to: [f32; 3], surface: Surface) -> ([f32; 3], [f3
 ///
 /// `blit.wgsl`'s `on_surface`.
 fn on_surface(z: f32, low: f32, high: f32) -> bool {
-    z >= low - ON_TOP && z <= high + ON_TOP
+    z >= low && z <= high
 }
 
 // **`drawn_on` lived here**, and `docs/lighting_rebuild.md` phase 4 is what
@@ -2350,7 +2331,6 @@ fn walk_cells_exact(
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
-    let (from, to) = stand_clear(from, to, lit.surface);
     let first = lit.tile;
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
@@ -2682,7 +2662,6 @@ fn walk_cells_streaming(
     spread: f32,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
-    let (from, to) = stand_clear(from, to, lit.surface);
     let first = lit.tile;
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
     let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
@@ -3224,36 +3203,27 @@ mod tests {
         assert_eq!(own_run(own, first, first), own);
     }
 
-    /// [`Surface::face`]'s own outward normal is the only thing
-    /// [`stand_clear`] nudges by — no face nudges neither axis, and a face
-    /// nudges only the axis its own [`Face::outward`] names, never the far
-    /// end of the ray.
+    // **`stand_clear_nudges_only_along_a_faces_own_outward_normal` lived here**
+    // and went with the nudge it was about: `docs/lighting_rebuild.md` phase 4
+    // took the bias to zero, and a test whose whole subject is which axis a
+    // constant moves a ray along does not survive the constant.
+
+    /// [`on_surface`]'s own inclusiveness, at both ends and **exactly** — a
+    /// fragment at a wall's own `top` is a point of that wall, and one a
+    /// hairsbreadth above it is not.
+    ///
+    /// It was inclusive by `ON_TOP` until phase 4, which is the tolerance
+    /// `stand_clear` gave the point and had to be given back here; with the nudge
+    /// gone there is nothing to give back, and the third and fourth assertions
+    /// below are the pair that says so.
     #[test]
-    fn stand_clear_nudges_only_along_a_faces_own_outward_normal() {
-        let from = [10.0_f32, 20.0, 5.0];
-        let to = [15.0, 25.0, 8.0];
-
-        let (nudged_from, nudged_to) = stand_clear(from, to, Surface::Upright);
-        assert_eq!(nudged_from, [10.0, 20.0, 5.0 + ON_TOP]);
-        assert_eq!(nudged_to, [15.0, 25.0, 8.0 + ON_TOP]);
-
-        let (nudged_from, nudged_to) = stand_clear(from, to, Surface::Face(Face::East));
-        assert_eq!(nudged_from, [10.0 + STAND_OFF, 20.0, 5.0 + ON_TOP]);
-        assert_eq!(nudged_to, [15.0, 25.0, 8.0 + ON_TOP]);
-    }
-
-    /// [`on_surface`]'s own inclusiveness, at both ends and by exactly
-    /// [`ON_TOP`] — the tolerance [`stand_clear`] gave the point and has to
-    /// be given back here, per that function's own doc comment.
-    #[test]
-    fn on_surface_is_inclusive_of_both_ends_by_exactly_on_top() {
+    fn on_surface_is_inclusive_of_both_ends_and_exact() {
         let wall = test_solid(0, 20, crate::occlusion::EDGE_NORTH);
         let (low, high) = (wall.low(), wall.high());
         assert!(on_surface(0.0, low, high));
         assert!(on_surface(20.0, low, high));
-        assert!(on_surface(20.0 + ON_TOP, low, high));
-        assert!(!on_surface(20.0 + ON_TOP * 2.0, low, high));
-        assert!(!on_surface(0.0 - ON_TOP * 2.0, low, high));
+        assert!(!on_surface(20.0 + 1.0 / 128.0, low, high));
+        assert!(!on_surface(-1.0 / 128.0, low, high));
     }
 
     /// And that the span it is inclusive of is the caller's own, fraction
@@ -3789,22 +3759,37 @@ mod tests {
 
         // The highest tread's own top, off the built grid rather than
         // recomputed: `footprint`'s own fractions are not this test's subject.
-        let top = occlusion
-            .solids_at(100, 100)
-            .filter(|solid| solid.edges == 0)
-            .max_by_key(|solid| solid.top())
+        // Named, not merely found: a fragment of it is a point of *that* solid,
+        // which is what phase 4 compares — see `Spot::part_of`.
+        let (id, top) = occlusion
+            .cell(100, 100)
+            .filter(|(_, solid)| solid.edges == 0)
+            .max_by_key(|(_, solid)| solid.top())
             .expect("the climb built three tops");
         let at = Vec2::new(
             ((top.space.min.x + top.space.max.x) / 2.0) as f32,
             ((top.space.min.y + top.space.max.y) / 2.0) as f32,
         );
-        let spot = Spot::flat(at, top.top() as f32, (100, 100));
+        let spot = Spot::flat(at, top.top() as f32, (100, 100)).part_of(id);
 
-        // East of the stair, level with the top tread — the foot of the flight,
-        // which is where a person actually stands a torch.
+        // East of the stair, over the top tread's own height by [`FLAME_LIFT`] —
+        // a torch standing at the foot of the flight, which is where a person
+        // actually stands one, and *not* one whose flame is exactly level with the
+        // tread.
+        //
+        // **The level flame is a graze, and phase 4 is what made it visible.** The
+        // riser this tread caps stops at exactly the tread's own height, so a ray
+        // running from the tread to a source at that height runs exactly along the
+        // riser's top edge — and a flame is a body [`FLAME_DEPTH`] tall, so half of
+        // it is above that edge and half below. `crosses`/`pierces` answer `0.5`,
+        // which is what the geometry says and not a defect. It read `1.0` while
+        // `stand_clear` lifted every ray a hundred-and-twenty-eighth clear of its
+        // own surface, and that is the margin this claim was resting on rather than
+        // the claim itself: what the test is about is a riser not shadowing the
+        // tread it caps *tile-wide*, which is what a real staircase render showed.
         let light = Light {
             at: Vec2::new(102.5, 100.5),
-            z: top.top() as f32,
+            z: top.top() as f32 + FLAME_LIFT,
             radius: 6.0,
             color: [1.0, 1.0, 1.0],
             intensity: 1.0,
@@ -4478,7 +4463,9 @@ mod tests {
             // output, and this test asserted the second while meaning the
             // first.
             let solid = occlusion.solids_at(100, 100).next().expect("the fixture's own body");
-            let (near, far) = stand_clear(from, to, Surface::Flat);
+            // The ray as the walks see it, which since phase 4 is the ray as
+            // given: `stand_clear` stood here and the bias is zero now.
+            let (near, far) = (from, to);
             let quantum = (1.0 / crate::occlusion::Solid::Z_STEPS) as f32;
             let hits_with = |grown: f32| {
                 let mut space = solid.space;
