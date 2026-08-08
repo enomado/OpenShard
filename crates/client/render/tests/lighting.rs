@@ -2000,16 +2000,83 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
 /// moves it and the whole file still runs in a second.
 const BRUTE_STEP: f32 = 0.0002;
 
+/// Whether `point` stands anywhere in `tile`'s own column, boundaries included.
+///
+/// The exemption's own predicate, and closed on purpose — see
+/// [`brute_force_blocked`]'s doc for why the tie on a boundary is resolved
+/// towards the exemption rather than by `floor()`.
+fn in_column(point: [f32; 3], tile: (i32, i32)) -> bool {
+    point[0] >= tile.0 as f32
+        && point[0] <= tile.0 as f32 + 1.0
+        && point[1] >= tile.1 as f32
+        && point[1] <= tile.1 as f32 + 1.0
+}
+
+/// The parameter interval of the segment `from`→`to` that lies inside the box
+/// `min`..`max`, or `None` where it never enters — the textbook slab test, in
+/// `f64`, and **exact**.
+///
+/// Why a third oracle exists beside [`brute_force_blocked`] and the two walks:
+/// a fixed-step point sampler can be defeated by a sliver thinner than its step,
+/// so when a sampler and a walk disagree, *neither of them is the arbiter of
+/// which one is right*. `docs/occluders.md` § *The oracle* says so, and the
+/// pinned corner graze of 2026-08-09 is what it was written for: this function
+/// answered it in one run, and answered against the sampler.
+///
+/// Shares nothing with `solid::ray_vs_solid` — same textbook, written out here in
+/// the test's own arithmetic and in double precision, because a walk being held
+/// to the crate's own slab test would be the crate agreeing with itself.
+fn segment_inside_box(from: [f64; 3], to: [f64; 3], min: [f64; 3], max: [f64; 3]) -> Option<(f64, f64)> {
+    let (mut enter, mut leave) = (0.0_f64, 1.0_f64);
+    for axis in 0..3 {
+        let delta = to[axis] - from[axis];
+        if delta == 0.0 {
+            // Parallel to this pair of faces: either always between them or
+            // never, and no `t` to clip by.
+            if from[axis] < min[axis] || from[axis] > max[axis] {
+                return None;
+            }
+            continue;
+        }
+        let (first, second) = ((min[axis] - from[axis]) / delta, (max[axis] - from[axis]) / delta);
+        enter = enter.max(first.min(second));
+        leave = leave.min(first.max(second));
+        if enter > leave {
+            return None;
+        }
+    }
+    Some((enter, leave))
+}
+
 /// Whether the straight segment from `from` to `to` passes through any solid
 /// standing between the two tiles the walk itself exempts.
 ///
 /// Deliberately dumb, the way `docs/lighting_raymarch.md` step 4 asks: fixed
-/// steps along the line, a point-in-box test against
-/// [`occlusion::Occlusion::solids_at`]'s own boxes, no `floor()`/`fract()`
-/// reconstruction of a cell and no DDA. It shares no arithmetic with
-/// `light::walk_cells` or `blit.wgsl`'s `walk`, so a bug the two of them share
-/// — the shape this whole doc is about — cannot hide from it the way a second
-/// DDA rewrite could.
+/// steps along the line and a point-in-box test against **every solid in the
+/// frame**, with no DDA and — since 2026-08-09 — no cell lookup either.
+/// It shares no arithmetic with `light::walk_cells` or `blit.wgsl`'s `walk`, so
+/// a bug the two of them share — the shape this whole doc is about — cannot hide
+/// from it the way a second DDA rewrite could.
+///
+/// **It used to ask `solids_at(floor(x), floor(y))`, and that was the one bit of
+/// the walk's own indexing it had kept.** A fuzz seed found what that costs: a
+/// segment grazing a whole-tile body's corner spends `0.000225` of a tile inside
+/// it — deeper than [`BRUTE_STEP`], so the march did land a point in there — at a
+/// place where the clip's whole `y` extent is three millionths of a tile below
+/// `y = 101`. No `f32` exists in that gap, so the sampled point's `y` was
+/// *exactly* `101.0`: inside the box on every axis, and `floor()`ed into cell
+/// `(100, 101)`, which lists no solid at all. The oracle stood inside a wall and
+/// reported open ground, both walks were told they were wrong, and the suite
+/// stayed red for a day. A brute force that indexes is not a brute force; see
+/// [`occlusion::Occlusion::solids`].
+///
+/// The two exempt tiles are stated as **volumes** for the same reason, closed on
+/// both sides: a point on a tile's own boundary belongs to that tile's column and
+/// to its neighbour's, and an exemption that resolves the tie with `floor()`
+/// resolves it the way that just cost a day. Exempting such a point from both is
+/// the safe direction — the alternative is calling a ray blocked by a solid the
+/// walk itself is excusing — and it loses nothing but a graze of exactly zero
+/// depth, which `docs/occluders.md`'s D2 has already ruled is not a passage.
 ///
 /// Scoped to a binary answer, blocked or not: a boundary misread flips exactly
 /// that, and `walk_cells`'s own soft gradient across a grazing edge is a
@@ -2038,16 +2105,14 @@ fn brute_force_blocked(
             from[1] + delta[1] * t,
             from[2] + delta[2] * t,
         ];
-        let tile = (point[0].floor() as i32, point[1].floor() as i32);
-        if tile == own_tile || (skip_last && tile == target_tile) {
+        if in_column(point, own_tile) || (skip_last && in_column(point, target_tile)) {
             continue;
         }
-        for solid in occlusion.solids_at(tile.0, tile.1) {
+        for solid in occlusion.solids() {
             assert!(
                 solid.aperture.is_none(),
-                "brute_force_blocked does not model apertures; at ({}, {})",
-                tile.0,
-                tile.1,
+                "brute_force_blocked does not model apertures; one stands at {:?}",
+                solid.space.min,
             );
             let (min, max) = (solid.space.min, solid.space.max);
             let inside = f64::from(point[0]) >= min.x
@@ -2596,4 +2661,150 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
             if brute_blocked { "blocked" } else { "open" },
         );
     });
+}
+
+/// The corner graze a fuzz seed found on 2026-08-09, and **who was right**,
+/// decided by an exact test rather than by either disputant.
+///
+/// Both fuzz tests above called this ray blocked; [`brute_force_blocked`] called
+/// it open; `docs/occluders.md` pinned the seed and made resolving it S3's
+/// precondition, because "the oracle stayed equal" cannot be an acceptance
+/// criterion over a comparison that is already red.
+///
+/// [`segment_inside_box`] settles it: **all eight rays at the flame really do
+/// enter the wall's box**, so blocked is the truth and both walks had it. What
+/// the sampler got wrong was not its resolution — the thinnest of the eight
+/// spends `0.000225` of a tile inside the body, deeper than [`BRUTE_STEP`], and
+/// the march did land a point in there — it was that the sampler looked the box
+/// up by the cell it `floor()`ed the point into. That point's `y` is exactly
+/// `101.0`, because the clip's whole `y` extent is narrower than an `f32` step at
+/// `101`, so it floored into `(100, 101)` and found an empty cell while standing
+/// inside the wall.
+///
+/// So this test asserts all three, and it is the fix's own gate: with
+/// `brute_force_blocked` back on `solids_at(floor(…))` the last assertion fails
+/// while the first two still hold, which is the shape of the day this cost.
+#[test]
+fn the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so() {
+    use openshard_client_render::occlusion::{Builder, Shape};
+    use openshard_protocol::wire::Graphic;
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    // The shrunk seed's own numbers, spelled out: `spot_dx = 3.6040761`,
+    // `spot_frac = 0.94628215`, `spot_z = 2.0036669`, `flame_dx = 5.8166175`,
+    // `flame_z = 13.689882`, `row = 101.0`, `frac = 0.025267871`.
+    let spot_at = Vec2::new(101.0 + 3.6040761, 100.0 + 0.94628215);
+    let spot_z = 2.0036669_f32;
+    let light_at = Vec2::new(99.0 - 5.8166175, 101.0 + 0.025267871);
+    let flame_z = 13.689882_f32;
+
+    let wall = StaticTile {
+        flags: TileFlags::new(TileFlags::NO_SHOOT),
+        height: 20,
+        ..StaticTile::default()
+    };
+    let mut grid = Builder::new(openshard_client_render::camera::TileBounds {
+        min_x: 90,
+        max_x: 110,
+        min_y: 90,
+        max_y: 110,
+    });
+    grid.add(100, 100, 0, Graphic(0x0100), &wall, Shape::UNREAD);
+    let occlusion = grid.finish(&Cutaway::OPEN);
+
+    let spot_tile = (spot_at.x.floor() as i32, spot_at.y.floor() as i32);
+    let spot = Spot::flat(spot_at, spot_z, spot_tile);
+    let light = light::Light {
+        at: light_at,
+        z: flame_z,
+        radius: 30.0,
+        color: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        beam: None,
+    };
+    let lighting = Lighting {
+        ambient: light::NIGHT,
+        lights: vec![light],
+        occlusion: occlusion.clone(),
+        sun: None,
+        view: debug::View::default(),
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
+    };
+
+    // 1. The exact answer, per ray, in double precision and over the frame's own
+    //    boxes. The wall is the only solid in the scene, and neither exempt tile
+    //    — the spot's `(104, 100)`, the flame's `(93, 101)` — touches it, so the
+    //    whole segment counts and there is nothing for an exemption to remove.
+    let wall = occlusion.solids().first().expect("the grid stood the wall up");
+    let (min, max) = (wall.space.min, wall.space.max);
+    let from = [f64::from(spot_at.x), f64::from(spot_at.y), f64::from(spot_z)];
+    let mut thinnest = f64::INFINITY;
+    for (ray, point) in light::flame_points(
+        spot,
+        [light_at.x, light_at.y, flame_z],
+        openshard_client_render::light::FLAME_RADIUS,
+    )
+    .iter()
+    .enumerate()
+    {
+        let to = [f64::from(point[0]), f64::from(point[1]), f64::from(point[2])];
+        let inside = segment_inside_box(from, to, [min.x, min.y, min.z], [max.x, max.y, max.z]);
+        let Some((enter, leave)) = inside else {
+            panic!(
+                "ray {ray} to ({:.5}, {:.5}, {:.5}) misses the wall exactly; the whole \
+                 verdict rests on all eight entering it",
+                to[0], to[1], to[2],
+            );
+        };
+        let ground = ((to[0] - from[0]).powi(2) + (to[1] - from[1]).powi(2)).sqrt();
+        thinnest = thinnest.min((leave - enter) * ground);
+    }
+    // Recorded rather than merely asserted positive: this is the number that says
+    // the sampler's step was never the problem.
+    assert!(
+        thinnest > f64::from(BRUTE_STEP),
+        "the thinnest of the eight clips {thinnest:.6} tiles of the wall, which is under \
+         BRUTE_STEP ({BRUTE_STEP}) — then a point sampler missing it would be its \
+         resolution after all, and this fixture no longer says what it was written to say",
+    );
+
+    // 2. Both walks. They were the accused and they were right.
+    for (name, sample) in [
+        ("walk_cells", light::sample(spot, &lighting)),
+        ("walk_cells_exact", light::sample_exact(spot, &lighting)),
+    ] {
+        let reach = sample
+            .reaches
+            .iter()
+            .find(|reach| reach.within)
+            .expect("the flame is within reach of the spot");
+        assert!(
+            reach.through <= 0.004,
+            "{name} lets {:.4} of the light through a wall the segment provably enters",
+            reach.through,
+        );
+    }
+
+    // 3. The fixed-step sampler, which is what this session repaired.
+    let brute_blocked = light::flame_points(
+        spot,
+        [light_at.x, light_at.y, flame_z],
+        openshard_client_render::light::FLAME_RADIUS,
+    )
+    .iter()
+    .all(|point| {
+        brute_force_blocked(
+            [spot_at.x, spot_at.y, spot_z],
+            *point,
+            spot_tile,
+            (point[0].floor() as i32, point[1].floor() as i32),
+            true,
+            &occlusion,
+        )
+    });
+    assert!(
+        brute_blocked,
+        "brute_force_blocked says open where the segment provably crosses the box — \
+         the cell lookup is back",
+    );
 }

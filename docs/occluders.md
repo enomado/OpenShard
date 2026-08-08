@@ -373,6 +373,46 @@ that changes a pixel turns this red.
 fixed-step point samplers, which is a *different* dumbness and worth keeping
 beside an exact one.
 
+### **"No cells" is the load-bearing word, and it cost a day to learn why**
+
+Both samplers looked their boxes up by `solids_at(floor(x), floor(y))`. Everything
+else about them was brute force — fixed steps, no DDA, a point-in-box test in
+`f64` — and that one line made them not brute force at all: it is the walk's own
+indexing with a slower loop inside it, and it inherits the one thing indexing can
+get wrong.
+
+**A point on a box's own `max` face floors into the next cell, which does not list
+that box.** So a sampler standing *inside* a solid is handed an empty cell and
+reports open ground. That is the whole of the corner graze pinned on 2026-08-09
+and resolved on the same day (§ *Backlog*), and the damage it does is worse than
+being wrong: an oracle arbitrates, so a wrong oracle convicts whichever walk was
+right. Both walks were called defective for a day over a wall they had read
+correctly.
+
+So the rule, and it is not a preference:
+
+> An oracle iterates **every primitive in the frame** — `Occlusion::solids()`,
+> which exists for this and says so — and states its tile exemptions as
+> **volumes**, closed on both sides, so a point on a boundary is exempt from both
+> columns rather than assigned to one by `floor()`. After the repair there is no
+> `floor()` left in either sampler.
+
+**Nor was the step size ever the culprit here, and that matters** because it is the
+thing this oracle *has* been patched for twice: the clip in question is `0.000225`
+of a tile deep, larger than `BRUTE_STEP`, and the march really did land a point in
+it. `the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so` asserts that
+depth against `BRUTE_STEP` for exactly this reason — if a later fixture makes the
+sliver thinner than the step, that test says so instead of quietly becoming a
+resolution story again.
+
+**And when a sampler and a walk disagree, neither of them is the arbiter.** A
+fixed-step sampler can be defeated by a thin enough sliver at any resolution, so
+the tie-break is an exact segment-versus-box test: `segment_inside_box` in
+`tests/lighting.rs`, the textbook slab test in `f64`, written out in the test's own
+arithmetic rather than calling `solid::ray_vs_solid` — being held to the crate's
+own slab test would be the crate agreeing with itself. It answered the pinned case
+in one run. Reach for it first the next time this shape appears.
+
 ## Steps
 
 Each is landable alone and leaves the tree working. A session starts at the first
@@ -477,11 +517,10 @@ anybody's description of a picture.
    that — no cells, no traversal shared with either walk. Any ray where the walk
    now says "open" and brute force says "blocked" is the theorem being wrong.
 
-   🔴 **It is not equal today**, and that is this step's precondition rather than
-   its result — see § *Backlog*'s pinned corner graze. Acceptance cannot read
-   "the oracle stayed equal" over a comparison that is already red; the case has
-   to be resolved first, and it has to be resolved by deciding **which side is
-   right**, not by widening the fuzzer's carve-out.
+   ✅ **It is equal again** — the precondition is met. The pinned corner graze was
+   the *oracle's* defect, not either walk's, it was resolved by deciding which side
+   was right rather than by widening the fuzzer's carve-out, and the seed stays
+   pinned and green. See § *The oracle*'s "no cells" rule and § *Backlog*.
 
 4. **The path tracer stays at `interior == 0`.** Both gates, both scenes.
 
@@ -595,11 +634,10 @@ Named so that a later session does not adopt them by accident:
 Findings from this track that do not block a step. Kept here so the plan can be
 read as work.
 
-🔴 **A pinned corner graze where both walks and the brute-force oracle
-disagree** — `lighting.proptest-regressions`' newest line, found by a fresh seed
-on 2026-08-09 and pinned by proptest, so **the suite is red until it is
-resolved**. Nothing in that session touched `crates/*/src`; the case was always
-there and no seed had reached it.
+✅ **The pinned corner graze: the walks were right and the oracle was wrong —
+closed 2026-08-09.** `lighting.proptest-regressions`' newest line, found by a
+fresh seed, red for a day. Nothing in the session that found it touched
+`crates/*/src`; the case was always there and no seed had reached it.
 
 ```
 spot  (104.6041, 100.9463,  2.00) tile (104, 100)
@@ -612,15 +650,47 @@ column while its `y` runs 100.971 → 100.978 — **three hundredths of a tile f
 the corner at `(101, 101)`**, which is the region the sibling grid test excludes
 by construction and this fuzzer aims at on purpose.
 
-What is measured, and what is not. Measured: **both** walks fail on it, the
-streaming one and the exact one, identically — so it is not the DDA's stepping
-but something the two share. The oracle's own step is `0.0002` of a tile, so
-"the sampler walked over a thin clip" needs the clip to be shorter than that,
-which is checkable and unchecked. Not measured, and the first thing to settle:
-**which side is right.** The oracle blocks only when *all eight* flame points are
-blocked, so a single grazing ray of the eight decides it — the answer is an
-analytic segment-versus-box test on those eight points, and neither side of this
-disagreement is it.
+**Settled by the exact test rather than by either disputant**, which is what the
+open question asked for: `segment_inside_box` over the eight flame points says all
+eight enter the wall's box, so **blocked is the truth** and both walks had it.
+
+What the sampler got wrong, in one line of numbers:
+
+```
+ray 5: enters at t 0.315466, leaves at 0.315485 — 0.000225 tiles of wall,
+       and over that whole clip y runs 100.999997 → 101.000000
+step 18023: point (100.9999084, 101.0000000, 5.52059) → tile (100, 101)
+            inside the box on every axis, and that cell lists 0 solids
+```
+
+The clip's entire `y` extent is three millionths of a tile below `y = 101`, and no
+`f32` exists in that gap — the ulp at 101 is `7.6e-6` — so the sampled point's `y`
+is *exactly* `101.0`. `floor()` sends it to cell `(100, 101)`, which is empty, and
+the oracle reported open ground from inside a wall.
+
+So the step was never the culprit: `0.000225` is **deeper** than `BRUTE_STEP`, and
+the march did land a point in there. Both walks failing identically was the clue
+read backwards — they agreed because they were *right*, and the thing the two of
+them share is not a DDA bug but a correct answer. The fix is § *The oracle*'s "no
+cells" rule: both samplers iterate `Occlusion::solids()` and state their exemptions
+as closed volumes, so neither has a `floor()` in it any more. The seed stays pinned
+and passes, `the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so` pins
+the verdict itself, and putting the cell lookup back turns exactly that assertion
+red while the walks' two stay green.
+
+**This also disarms half of the merge hazard below**: `brute_force_blocked` was
+named there as "cell-based too, and would agree with the defect". It is not
+cell-based any more, so a merged primitive wider than its registration cell is
+now caught by the oracle rather than blessed by it. The two *walks* are still
+cell-based, which is the rest of that entry and S3b's own problem.
+
+**`frame.rs`'s `ground_truth_blocked` took the same repair with no coverage to
+prove it.** It is only ever called on a `walk_cells`/`walk_cells_exact`
+disagreement, and the sweep over all seven scenes reports `0 explained, 0
+unexplained, 0 grazed` — the two walks no longer disagree anywhere, so the
+arbiter is a standby that never runs. Its correctness rests on its twin in
+`lighting.rs`, which the fuzzers do exercise. Worth knowing before trusting it as
+a gate: it is not one today.
 
 **A cell lists a primitive once, and D1 has just made that a hole S3b will fall
 into.** `Builder::push` puts a solid in exactly the cell it was added on;
@@ -630,8 +700,11 @@ caller, and it is `bake`'s. Nothing before S1 could build a box reaching past it
 own tile, so nothing noticed. **S3b's merge is exactly the thing that builds
 one**, and the moment it does, the grid stops being a superset: a ray that
 crosses the overhang without ever entering the registration cell is answered
-"open" by both walks *and* by `tests/lighting.rs`'s `brute_force_blocked`, which
-is cell-based too and would agree with the defect. This is D3's own argument
+"open" by both walks. `tests/lighting.rs`'s `brute_force_blocked` was cell-based
+too and would have agreed with the defect; since the corner graze above it iterates
+every primitive, so the oracle now **catches** this instead of blessing it — the
+difference between a step that fails loudly and one that merges wrong geometry
+quietly. This is D3's own argument
 arriving early, and S3b has to answer it before it merges anything — either by
 listing a merged primitive in every cell it spans, or by taking the hierarchy
 first. It is why S1's own gate keeps its fixture inside one tile: the wire is

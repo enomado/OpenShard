@@ -5209,11 +5209,32 @@ fn a_fragment_a_hair_inside_a_wall_is_shadowed_by_the_cell_it_drifted_into() {
 /// number rather than reach into the crate for it.
 const EXACT_WALK_BLOCKED: f32 = 0.004;
 
+/// Whether `point` stands anywhere in `tile`'s own column, boundaries included —
+/// the exemption's predicate, closed on both sides.
+///
+/// See [`ground_truth_blocked`] for why the tie a boundary point makes is
+/// resolved towards the exemption instead of by `floor()`.
+fn in_column(point: [f32; 3], tile: (i32, i32)) -> bool {
+    point[0] >= tile.0 as f32
+        && point[0] <= tile.0 as f32 + 1.0
+        && point[1] >= tile.1 as f32
+        && point[1] <= tile.1 as f32 + 1.0
+}
+
 /// Whether the straight segment from `from` to `to` passes through any solid
 /// standing between the two tiles the walk itself exempts — the same idea as
 /// `tests/lighting.rs`'s `brute_force_blocked`, restated here rather than
 /// shared across two independent test crates: dumb, fixed-step marching and a
 /// point-in-box test, sharing no arithmetic with either walk.
+///
+/// **And against every solid in the frame, not the ones a cell lists** — the same
+/// repair `brute_force_blocked` took on 2026-08-09 and for the same measured
+/// reason, since this oracle had the identical `solids_at(floor(x), floor(y))` in
+/// it. A point on a box's own `max` face floors into the neighbouring cell, which
+/// does not list that box, so the march could stand inside a wall and report open
+/// ground. It arbitrates between the two walks here, which makes an oracle that
+/// can be wrong about a corner worse than useless: it convicts whichever walk was
+/// right. See `docs/occluders.md` § *The oracle*.
 ///
 /// **Twenty thousand steps over the whole segment, not `brute_force_blocked`'s
 /// fixed `0.02`-tile step.** The first version of this oracle used that same
@@ -5227,9 +5248,10 @@ const EXACT_WALK_BLOCKED: f32 = 0.004;
 /// is a practical stand-in that this file's own scenes have not defeated, not
 /// a claim of exactness the way `ray_vs_solid`'s analytic slab test is one.
 ///
-/// Returns `None` where a solid with an aperture stands on the marched path.
-/// `brute_force_blocked` instead hard-`assert!`s a scene never has one, which
-/// it can afford: every fixture in that file is hand-built to keep the
+/// Returns `None` where the march finds itself **inside** a solid that has an
+/// aperture — the one case it cannot judge, since the point may be standing in
+/// the hole. `brute_force_blocked` instead hard-`assert!`s a scene never has one,
+/// which it can afford: every fixture in that file is hand-built to keep the
 /// premise true. This one runs over `scene::wall_with_a_hole_in_it`, whose
 /// entire point is an aperture, so a disagreement whose path crosses the hole
 /// is left unexplained rather than a reason to panic the whole sweep.
@@ -5250,14 +5272,10 @@ fn ground_truth_blocked(
             from[1] + delta[1] * t,
             from[2] + delta[2] * t,
         ];
-        let tile = (point[0].floor() as i32, point[1].floor() as i32);
-        if tile == own_tile || (skip_last && tile == target_tile) {
+        if in_column(point, own_tile) || (skip_last && in_column(point, target_tile)) {
             continue;
         }
-        for solid in occlusion.solids_at(tile.0, tile.1) {
-            if solid.aperture.is_some() {
-                return None;
-            }
+        for solid in occlusion.solids() {
             let (min, max) = (solid.space.min, solid.space.max);
             let inside = f64::from(point[0]) >= min.x
                 && f64::from(point[0]) <= max.x
@@ -5266,7 +5284,15 @@ fn ground_truth_blocked(
                 && f64::from(point[2]) >= min.z
                 && f64::from(point[2]) <= max.z;
             if inside {
-                return Some(true);
+                // A hole is the one thing this march cannot judge, and it is only
+                // unable to judge a solid it is actually *inside*: bailing on
+                // every apertured solid in the frame would make
+                // `scene::wall_with_a_hole_in_it` unanswerable everywhere,
+                // including the rays that never come near the window.
+                return match solid.aperture {
+                    Some(_) => None,
+                    None => Some(true),
+                };
             }
         }
     }

@@ -1474,6 +1474,25 @@ impl Occlusion {
         self.ids_at(x, y).iter().map(|id| self.solid(*id))
     }
 
+    /// Every solid in the frame, in [`SolidId`] order and with no cell involved.
+    ///
+    /// **What a brute-force oracle is entitled to see**, and the reason this
+    /// exists beside [`Occlusion::solids_at`]: an oracle that looks a box up by
+    /// `floor()`ing a point into a cell is not brute force, it is the walk's own
+    /// indexing with a slower loop inside it — and it inherits the one thing that
+    /// indexing can get wrong. A point on a box's own `max` face floors into the
+    /// *next* cell, which does not list that box, so a sampler standing inside a
+    /// solid can be told the ground is open. That is measured, not hypothetical:
+    /// see `docs/occluders.md`'s § *The oracle*, where it cost a red suite and a
+    /// session of blaming both walks for it.
+    ///
+    /// A frame holds hundreds of these, and every caller of this is a test that
+    /// asks about a handful of rays, so the linear scan is the point rather than
+    /// a cost to apologise for.
+    pub fn solids(&self) -> &[Solid] {
+        &self.solids
+    }
+
     /// Which occluder of `(x, y)` the static standing at `z` with graphic
     /// `graphic` is — [`OwnerId::NONE`] where this frame's grid has no such
     /// static on that tile.
