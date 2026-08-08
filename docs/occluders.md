@@ -203,6 +203,54 @@ geometry says one).
 built after the fix has never been seen to fire; this one is built while the
 defect is still there, and its first reading is the thing S3 is measured against.
 
+### Reading the dump, in numbers rather than by eye
+
+`tests/traced.rs` and `examples/boxes.rs` both write
+[`Verdict::strips`](../crates/client/render/examples/oracle/pathtrace.rs) when
+their dump variable names a directory: the frame's own shadow decision, the
+tracer's, their difference, **why an uncompared pixel was not compared**, and
+**which solid the frame drew**, one colour a body. `tools/mask_probe.py` reads
+that composite back — an overlay of the shadow onto the body map, the
+neighbourhood of one pixel as text, and a seam census across the joins.
+
+**It exists because every wrong reading on this track came from looking instead
+of measuring.** A dump older than the fix, read as a live lighting fault. A mask
+laid over a picture from the *other* tool and so placed one tile east — the tool
+centres on the scene's own tile bounds, the gate on a named tile, and for a run
+of three flights those differ by one. A composite sliced by `width // 3` and read
+as a three-pixel camera offset, when the slice was off by the ruler. Each of
+those is a question with a numeric answer.
+
+### What the flight seams turned out to be — measured, and not a defect
+
+The run of flights shows a hard shadow step landing **exactly on the join
+between two primitives** of one continuous riser, which reads as "each new
+primitive starts its shadow at its own corner". It is not that. Three
+measurements, in the order they settle it:
+
+- **The path tracer draws the identical picture** — 261,682 pixels compared, 0
+  disagreeing in the interior, 11 on an edge. That renderer has no cells, no
+  tiles and no walk, so nothing about traversal order or the grid can be what
+  puts the step there.
+- **`probe` at the join** shows the step is not near the seam, it *is* the seam:
+  every pixel of the west primitive dark, every pixel of the east one lit, with
+  no transition between. That is what a real blocker looks like when the blocker
+  is the neighbour's own body — the flame sits a sixth of a tile *behind* the
+  riser plane, so the segment from a fragment leaves through its own solid
+  (exempt) and enters the next flight's, whose west face is the join.
+- **`seams` against the shaded frame** says how much of it a player sees: at most
+  43 steps of 255 and a mean under 9, over some 120 pixels. The cosine has
+  already darkened a face the flame is behind, so the visibility mask shows a
+  cliff where the lit frame shows almost nothing.
+
+**The seam that is a defect is the opposite configuration** and this scene cannot
+pose it: a flame just *in front* of the plane, where the segment runs along the
+surface and grazes the neighbour it never enters. That is acne on coincident
+planes, it is what `same_run` currently papers over with a cell rule, and it is
+what D2's declared surface identity is for. Its fixture is a **run of wall**, not
+a flight of steps — `scene::wall_run_lit_from_along_it` exists and no tool draws
+it yet.
+
 ## The oracle
 
 **Brute force over every primitive in the scene.** No hierarchy, no cells, no
