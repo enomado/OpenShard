@@ -373,6 +373,62 @@ pub enum Judged {
     InteriorSurface,
 }
 
+/// The world box a set of points fits in, in the engine's own units — tiles
+/// across, `z` units up.
+///
+/// Both sides of a disagreement are reduced to one of these so that they can be
+/// laid beside a `BoxSpec`, which is written in exactly those numbers.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Span {
+    pub min: (f64, f64, f64),
+    pub max: (f64, f64, f64),
+}
+
+impl Span {
+    /// Nothing, and inverted so that the first point swallowed becomes both
+    /// corners. A span that was never given a point prints as its own
+    /// infinities rather than as a plausible box at the origin.
+    const EMPTY: Self = Self {
+        min: (f64::INFINITY, f64::INFINITY, f64::INFINITY),
+        max: (f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+    };
+
+    fn swallow(&mut self, at: (f64, f64, f64)) {
+        self.min = (self.min.0.min(at.0), self.min.1.min(at.1), self.min.2.min(at.2));
+        self.max = (self.max.0.max(at.0), self.max.1.max(at.1), self.max.2.max(at.2));
+    }
+}
+
+impl std::fmt::Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "x {:.3}..{:.3}, y {:.3}..{:.3}, z {:.3}..{:.3}",
+            self.min.0, self.max.0, self.min.1, self.max.1, self.min.2, self.max.2
+        )
+    }
+}
+
+/// One kind of "the two disagree which surface is there", with **where in the
+/// world it is** and not only how much of it there is.
+///
+/// **A pixel count cannot be checked against geometry, and that is not a
+/// hypothetical.** A field of these was read off a picture by eye and placed one
+/// tile from where it actually stood; the numbers below are in the units a
+/// `BoxSpec` is written in, so the next reading is a comparison against the
+/// scene rather than against a memory of the picture.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Disagreed {
+    pub count: usize,
+    /// Where the *engine's* own fragments are — off the position plane, which is
+    /// the point the shader lit.
+    pub engine: Span,
+    /// And where the tracer's rays actually met something. Converted out of the
+    /// tracer's isotropic `z` into the engine's units on the way in, because a
+    /// report with two `z` scales in it is a report nobody can subtract.
+    pub traced: Span,
+}
+
 /// Every count the comparison produces, and the two maps it produced them from.
 ///
 /// One struct rather than a printed line, because two callers want different
@@ -395,7 +451,7 @@ pub struct Verdict {
     /// And the ones that do not sit on one, which nothing sub-pixel explains.
     pub interior_surface: usize,
     /// What those were, by name.
-    pub surface_pairs: BTreeMap<String, usize>,
+    pub surface_pairs: BTreeMap<String, Disagreed>,
     /// Pixels of a surface whose own normal points away from the flame, and how
     /// many of those the frame draws lit.
     pub back_facing: usize,
@@ -412,6 +468,15 @@ pub struct Verdict {
     /// are the same data.
     pub engine_lit: Vec<Option<bool>>,
     pub traced_lit: Vec<Option<bool>>,
+    /// And what the *frame* says is there, per pixel — the same map the
+    /// comparison's own precondition is taken on.
+    ///
+    /// **Kept so that a dump can draw the scene in the frame's own camera.** The
+    /// alternative is what actually happened: a mask from the gate laid over a
+    /// picture from `examples/boxes.rs`, which centres on the scene's tile bounds
+    /// where the gate centres on one named tile — one tile of offset, and an
+    /// overlay that agreed with the geometry everywhere except where it mattered.
+    pub engine_surface: Vec<Option<pt_scene::Surface>>,
     /// Why each pixel is in the comparison or is not — the counts above, kept per
     /// pixel so a picture can say which of them a region is. See [`Judged`].
     pub judged: Vec<Judged>,
@@ -443,9 +508,11 @@ impl Verdict {
              physical `N·L` would move\n",
             self.back_facing, self.back_facing_lit, self.model_decides,
         ));
-        for (pair, count) in &self.surface_pairs {
+        for (pair, at) in &self.surface_pairs {
             out.push_str(&format!(
-                "  [different surface, not on a silhouette] {count}: {pair}\n"
+                "  [different surface, not on a silhouette] {}: {pair}\n    the frame's own fragments \
+                 lie in {}\n    the tracer's own hits lie in {}\n",
+                at.count, at.engine, at.traced,
             ));
         }
         for example in self.surface_examples.iter().chain(&self.examples) {
@@ -478,6 +545,14 @@ impl Verdict {
     ///    exists because its absence cost a session — see [`Judged`]. Black is a
     ///    compared pixel, grey is nothing drawn, teal is a silhouette, and **red
     ///    is the only one that is a defect**.
+    /// 5. **Which solid the frame drew**, one colour a body — the strip that
+    ///    makes the fourth one *placeable*. A region of the fourth strip is a
+    ///    shape until something says which box it is on, and the only picture
+    ///    that can say so is one taken through the same camera. Laying a mask
+    ///    over a frame from `examples/boxes.rs` instead is what put a reading one
+    ///    tile east of the truth: that tool centres on the scene's own tile
+    ///    bounds, this gate centres on a named tile, and for a run of three
+    ///    flights those differ by one.
     pub fn strips(&self) -> Vec<Vec<u8>> {
         let mask = |map: &[Option<bool>]| {
             let mut pixels = vec![0u8; map.len() * 3];
@@ -512,9 +587,47 @@ impl Verdict {
             why[pixel * 3..pixel * 3 + 3].copy_from_slice(&colour);
         }
 
-        vec![mask(&self.engine_lit), mask(&self.traced_lit), difference, why]
+        let mut scene = vec![0u8; self.engine_surface.len() * 3];
+        for (pixel, surface) in self.engine_surface.iter().enumerate() {
+            let colour = match surface {
+                None => [0, 0, 0],
+                Some(pt_scene::Surface::Ground) => [32, 32, 40],
+                Some(pt_scene::Surface::Body(body)) => BODY_COLOURS[body % BODY_COLOURS.len()],
+            };
+            scene[pixel * 3..pixel * 3 + 3].copy_from_slice(&colour);
+        }
+
+        vec![
+            mask(&self.engine_lit),
+            mask(&self.traced_lit),
+            difference,
+            why,
+            scene,
+        ]
     }
 }
+
+/// One colour per body, cycled — enough of them that the nine of a run of three
+/// flights are all distinct, and picked far enough apart that neighbours never
+/// read as the same shape.
+///
+/// **Deliberately nothing to do with light.** This strip answers "which solid is
+/// this pixel", which is the question an overlay of a mask onto a *shaded*
+/// picture only ever answers by eye — and answered it one tile wrong, once.
+const BODY_COLOURS: [[u8; 3]; 12] = [
+    [222, 60, 60],
+    [60, 200, 90],
+    [70, 120, 240],
+    [230, 180, 40],
+    [200, 70, 210],
+    [40, 200, 210],
+    [240, 130, 50],
+    [140, 220, 60],
+    [110, 90, 230],
+    [230, 110, 150],
+    [90, 180, 150],
+    [200, 200, 120],
+];
 
 /// The grey a pixel nobody compared is drawn as, in both masks and in the
 /// reasons strip — one constant so that "this is the same grey" is true rather
@@ -798,6 +911,7 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
         nothing_drawn: 0,
         engine_lit: Vec::new(),
         traced_lit: Vec::new(),
+        engine_surface: Vec::new(),
         // `NothingDrawn` is the fallthrough and the loop below names every other
         // case, so a pixel keeps this exactly when the frame drew nothing the
         // tracer has a word for — which is the same condition the count above is
@@ -867,7 +981,24 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
                                 .surface_examples
                                 .push(format!("  [pixel ({x}, {y})] {what}"));
                         }
-                        *verdict.surface_pairs.entry(what).or_default() += 1;
+                        // Both sides' own idea of where this pixel is, kept as a
+                        // world box per kind of disagreement. The tracer's `z`
+                        // is isotropic tiles and the engine's is `z` units, so
+                        // it is converted here — one scale in the report, or the
+                        // two lines cannot be read against each other.
+                        let seen = engine_model.pixels[pixel]
+                            .seen
+                            .map(|seen| (seen.at.x, seen.at.y, seen.at.z * f64::from(light::Z_PER_TILE)));
+                        let found = verdict.surface_pairs.entry(what).or_insert(Disagreed {
+                            count: 0,
+                            engine: Span::EMPTY,
+                            traced: Span::EMPTY,
+                        });
+                        found.count += 1;
+                        found.engine.swallow(drawn[pixel].at);
+                        if let Some(at) = seen {
+                            found.traced.swallow(at);
+                        }
                     }
                 }
                 continue;
@@ -909,5 +1040,6 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
     );
     verdict.engine_lit = engine_lit;
     verdict.traced_lit = traced_lit;
+    verdict.engine_surface = engine_surface;
     verdict
 }
