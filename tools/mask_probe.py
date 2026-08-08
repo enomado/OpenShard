@@ -105,8 +105,12 @@ def overlay(argv):
             colour = source[x, y]
             if colour == (0, 0, 0):
                 continue
+            # Lit is the body's own colour washed a third of the way to white,
+            # shadowed is a quarter of it. Adding a flat 150 was the first try
+            # and it collapses distinct hues into one pale yellow — which is the
+            # same failure as drawing three reasons in one grey.
             if engine[x, y][0] > 128:
-                target[x, y] = tuple(min(255, channel + 150) for channel in colour)
+                target[x, y] = tuple(int(channel + (255 - channel) * 0.45) for channel in colour)
             else:
                 target[x, y] = tuple(channel // 4 for channel in colour)
     if len(argv) > 2:
