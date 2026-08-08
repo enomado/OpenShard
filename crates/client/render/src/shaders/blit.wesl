@@ -625,8 +625,14 @@ fn own_side(stance: u32) -> u32 {
     }
 }
 
-// `light::own_run`.
-fn own_run(own: u32, cell: vec2<i32>, first: vec2<i32>) -> u32 {
+// `light::same_run`, and see it for why `docs/lighting_rebuild.md` phase 4 does
+// *not* delete this: a run of wall is N different statics cut on tile boundaries,
+// so the panel next along the run is a different solid however exactly a fragment
+// names its own. The height gate rides inside it now, where the Rust twin has it.
+fn same_run(own: u32, cell: vec2<i32>, first: vec2<i32>, spot_z: f32, low: f32, high: f32) -> u32 {
+    if !on_surface(spot_z, low, high) {
+        return 0u;
+    }
     var line = 0u;
     if cell.y == first.y {
         line = line | EDGE_NORTH | EDGE_SOUTH;
@@ -830,11 +836,12 @@ fn sky_at(x: i32, y: i32) -> f32 {
 // 0 for a wall.
 //
 // **One walk for both the flame and the sun.** They differ in their *ends* and in
-// nothing else, so the ends are the parameters: `skip_last` is the flame's own
-// tile, which must not shadow it (a sconce stands *on* a wall), and `spread` is
-// how big the source is — see `FLAME_SPREAD`. A sunbeam passes `0` for both: its
-// far end is a point in the sky rather than a tile, and the sun subtends half a
-// degree, so its penumbra is the narrowest this walk draws.
+// nothing else, and what is left of that is one parameter: `spread`, how big the
+// source is — see `FLAME_SPREAD`. A sunbeam passes `0`, since the sun subtends
+// half a degree and its penumbra is the narrowest this walk draws. The
+// `skip_last` beside it — the flame's own tile, excused because a sconce stands
+// *on* a wall — went at `docs/lighting_rebuild.md` phase 4, which moves such a
+// flame clear of that wall (`light::mounted_at`) rather than excusing it.
 //
 // They were two functions until the sun's was measured. The sun's sampled one
 // point per tile — the arrangement this walk replaced for flames — and a sealed
@@ -1007,14 +1014,12 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
 fn cell_stopped(
     cell: vec2<i32>,
     first: vec2<i32>,
-    last: vec2<i32>,
     own: u32,
     // Which solid of the grid the lit end is a point of, or `SOLID_NOBODY` for a
-    // point of none. `light::ExemptionContext`'s `solid`, and the whole of the
-    // self-shadow rule.
+    // point of none. `light::LitEnd`'s `solid`, and the whole of the self-shadow
+    // rule.
     mine: u32,
     stance: u32,
-    skip_last: bool,
     spread: f32,
     start: vec3<f32>,
     finish: vec3<f32>,
@@ -1055,21 +1060,19 @@ fn cell_stopped(
         if !hit.hit {
             continue;
         }
-        // Same `lit_end`/`flame_end`/`same_run` decision `light::exemption`
-        // makes — see its own doc comment. **`lit_end` is one comparison of two
-        // names**: `docs/lighting_rebuild.md` phase 4, and everything that used
-        // to stand in for it here is gone with it — the owner, the `own_cell`
-        // gate an owner needed to be meaningful, and the `match` on `edges` that
-        // asked each shape the one question the wire could answer about it.
-        // `SOLID_NOBODY` matches no reference, so a fragment that is a point of
-        // no occluder is exempt from nothing.
-        let same_run = select(0u, own_run(own, cell, first), on_surface(lit.z, low, high));
-        let lit_end = mine == reference.x;
-        let flame_end =
-            skip_last && cell.x == last.x && cell.y == last.y && on_surface(finish.z, low, high);
-        if lit_end || (edges != 0u && flame_end) {
+        // **A surface does not shadow itself, and that is one comparison of two
+        // names** — `docs/lighting_rebuild.md` phase 4, `light.rs`'s own inline
+        // copy of it in both walks. Everything that used to stand in for it here
+        // is gone: the owner, the `own_cell` gate an owner needed to be
+        // meaningful, the `match` on `edges` that asked each shape the one
+        // question the wire could answer about it, and `flame_end` — the far end's
+        // own height test, which `mounted_at` made unnecessary. `SOLID_NOBODY`
+        // matches no reference, so a fragment that is a point of no occluder is
+        // exempt from nothing.
+        if mine == reference.x {
             continue;
         }
+        let same_run = same_run(own, cell, first, lit.z, low, high);
         // How soft this crossing's own edge is: the penumbra a source of
         // this size casts from this far along the ray, taken at the exact
         // crossing's own midpoint rather than the cell-shared one the old
@@ -1154,7 +1157,6 @@ fn walk(
     // sprite fragment, `mesh_instances[id].solid` for a mesh face, `SOLID_NOBODY`
     // for the ground and a mobile. Resolved once by the caller, per fragment.
     mine: u32,
-    skip_last: bool,
     spread: f32,
 ) -> f32 {
     // **Both ends stand exactly where they are, and the bias is zero** —
@@ -1222,9 +1224,8 @@ fn walk(
         }
         return max(0.0, 1.0 - stopped);
     }
-    let last = vec2<i32>(i32(floor(finish.x)), i32(floor(finish.y)));
     // Which side of its own tile the lit end **is the face of**. What it is for
-    // is `own_run` below: a run of wall is one surface and no part of a surface
+    // is `same_run` below: a run of wall is one surface and no part of a surface
     // shadows another part of it. The pixel's own side and not its tile's whole
     // mask, which is what decision 23 says in words — a corner's *perpendicular*
     // panel is a different surface and stops the ray as it always did. A pixel
@@ -1265,7 +1266,7 @@ fn walk(
     var cell = first;
     for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let stopped = cell_stopped(
-            cell, first, last, own, mine, stance, skip_last, spread, start, finish, delta, ground,
+            cell, first, own, mine, stance, spread, start, finish, delta, ground,
         );
         through = through * (1.0 - stopped);
         if through <= 0.004 {
@@ -1304,7 +1305,7 @@ fn walk(
             out_by_x,
         );
         let probe_stopped = cell_stopped(
-            probe, first, last, own, mine, stance, skip_last, spread, start, finish, delta, ground,
+            probe, first, own, mine, stance, spread, start, finish, delta, ground,
         );
         through = through * (1.0 - probe_stopped);
         if through <= 0.004 {
@@ -1399,7 +1400,7 @@ fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32, mine: u32) -> f32 {
         // which arrives here as a ceiling below every fragment there is.
         return 1.0;
     }
-    return walk(at, at + step * tiles, tile, stance, mine, false, 0.0);
+    return walk(at, at + step * tiles, tile, stance, mine, 0.0);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -1766,7 +1767,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // `walk`'s two parameters, and the only two things that make this ray
         // different from the sun's.
         let through = walk(
-            at, vec3<f32>(to.x, to.y, to.z), tile, stance, mine, true, FLAME_SPREAD,
+            at, vec3<f32>(to.x, to.y, to.z), tile, stance, mine, FLAME_SPREAD,
         );
         // Recorded before the shadow is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
