@@ -1100,7 +1100,14 @@ black, and a shadowed floor leaked a line of light along every tile boundary —
 that second one is **fixed**, and it was 6c's own arrival, since the position
 that contradicts its instance's tile is what the impostor started writing.
 
-**Phase 6e — the grid stops being a rule.** The tile is the *map's* unit and it
+**Phase 6e — the grid stops being a rule.** 🚩 **[`docs/occluders.md`](occluders.md)
+is the plan and the live document; this paragraph is its summary and does not
+carry the decisions.** What it fixes is the ragged boundary between solids on
+neighbouring tiles, its "done when" is that there are no holes, no fringe and no
+stair-stepping there, and the broad phase it lands on is a bounding volume
+hierarchy rather than the tile grid.
+
+The tile is the *map's* unit and it
 has no business in the answer. Light is `∫ visibility × BRDF × falloff`,
 visibility is "does this segment meet any primitive", and a primitive is a box
 in the world — none of those three sentences contains a tile. The grid exists so
