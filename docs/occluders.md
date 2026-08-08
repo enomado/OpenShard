@@ -22,6 +22,12 @@ draws either.
 stair-stepping between solids.** That sentence is the acceptance criterion, and
 § *The detector* turns it into a number a run can print and a gate can fail on.
 
+**Which step delivers it: S3**, and it is the only one that moves this number.
+S1 lifted the ceiling that made the shape unstateable, S2 is the ruler, S4/S5 and
+S3b are deletions and optimisations that must move nothing. So acceptance for the
+sentence above is § *Acceptance for S3* — six things to run, each with a figure
+to read, none of them resting on anybody's description of a picture.
+
 ## Why it is ragged — the root, measured
 
 **A primitive is a tile's.** Not by any argument about geometry; by the shape of
@@ -75,15 +81,73 @@ primitive's own `min`/`max`, not a cell and a fraction of it.
 of any coordinate. *Rejected:* widening the fraction to sixteen bits — it keeps
 the ceiling that a primitive is a tile's, which is the whole defect.
 
-**D2 — one physical surface is one primitive.** Contiguous neighbours that are
-the same surface merge into one box at build time. This is what makes the seam
-stop existing rather than get chosen a side. *Rejected:* leaving the seam and
-widening the rules that hide it, which is `WIDTH_OVERLAP`'s own family and what
-`docs/style.md`'s *No fudge constants* was written from.
+**D2 — a fragment is exempt from its own *surface*, not from its own primitive.**
+*Rejected:* leaving the seam and widening the rules that hide it, which is
+`WIDTH_OVERLAP`'s own family and what `docs/style.md`'s *No fudge constants* was
+written from. Also rejected: an `ε` along the normal — the classic shadow bias,
+which this renderer already owned as `STAND_OFF`/`ON_TOP` and already deleted.
+
+**The defect this names.** A shadow ray starts *on* the surface, so it meets that
+surface at `t = 0`. The textbook has two cures — offset the origin, or exclude
+the primitive the ray came from — and this renderer took the second, correctly.
+But the exclusion is spelled `mine == reference.x`: **one** primitive, where one
+physical surface is N of them. The ray leaves its own box and enters the
+neighbour's a thousandth of a tile later. It is the mesh tracer's own
+self-intersection bug, one level up: excluding the source *triangle* does not
+save a ray that grazes into the next triangle of the same polygon.
+
+**The rule, and it is a theorem rather than a heuristic.** A primitive is
+axis-aligned, so each of its faces lies at its own extremum — the whole box is
+therefore in the closed half-space **behind** the plane of that face. So for a
+fragment on that plane with outward normal `N`, and any ray with `d·N > 0`: the
+ray leaves the half-space at `t = 0+` and never returns, and **no primitive whose
+face lies in that plane facing the same way can ever occlude it.**
+
+> Skip a candidate exactly when its extent along the fragment's own normal axis
+> **ends at the fragment's own plane, on the fragment's back side** —
+> `candidate.hi[axis] == plane` for an outward `+`, `candidate.lo[axis] == plane`
+> for a `−`.
+
+That set is provably empty of true occlusions, which is the whole difference from
+a bias: `ε` trades acne against peter-panning, this discards nothing. The other
+two cases close themselves — `d·N < 0` is a light behind the surface and `N·L` is
+already zero there, and `d·N = 0` is measure zero and is precisely the graze the
+exemption exists for.
+
+**What it subsumes**, so the step is a deletion rather than an addition:
+`mine == reference.x` (a fragment's own box ends at its own face — the special
+case), `same_run` **with** its row/column cell test and its `on_surface` height
+gate (a run of wall is coplanar same-facing panels), and — to be measured —
+`ray_vs_solid`'s zero-length graze rule, which exists today for exactly this
+reason and says so.
+
+**Two halves, and the order between them is the decision.**
+
+- **D2a — the identity.** The rule above. It moves no geometry and needs no
+  merge. **This is what cures the seam.**
+- **D2b — the merge.** Contiguous same-surface neighbours become one box at build
+  time. A **pure optimisation** once D2a holds: fewer primitives, no pixel moved.
+  Last, not first.
+
+*Reversed from this plan's first draft*, where the merge was the premise and the
+identity fell out of it. The reason is measured: the merge is what forces a
+primitive wider than a tile, which is what forces the hierarchy (D3) and breaks
+the grid's superset property — so making it the premise buys a seam fix at the
+price of three other steps. And a *derived* identity cannot work for a lid at
+all: `edges == 0` gives `own == 0`, so `same_run` is unconditionally zero and a
+floor gets no exemption in principle.
+
+⚠ **Honest status of the theorem.** It was derived in the session that measured
+the run of flights, not when this plan was written, and its one soft spot is
+float equality: the fragment's plane arrives interpolated from the rasteriser and
+the candidate's box from the storage buffer. If those are not bit-identical the
+temptation is a tolerance, and the answer is **not** a tolerance but removing the
+second number — carry the plane from the instance row, which already carries
+`solid`. That has to be measured, and S3's gate is where.
 
 **D3 — the broad phase is a bounding volume hierarchy.** A tree of axis-aligned
-boxes over the merged primitives; a ray that misses a node skips its whole
-subtree. The uniform tile grid goes. *The reason is D2 and not speed:* a uniform
+boxes over the primitives; a ray that misses a node skips its whole
+subtree. The uniform tile grid goes. *The reason is D2b and not speed:* a uniform
 grid must list a primitive in **every cell it spans** or it stops being a
 superset, so the more a surface merges — which is the point — the worse a grid
 fits it. A grid likes many small primitives of one size; a hierarchy likes few
@@ -100,6 +164,12 @@ vertical shortcut and the per-cell `max` are deleted. The first two because D2
 removes what they stand in for; the last two because they are statements about a
 cell in a pass that no longer has one. Each goes only after its own measurement
 says nothing depends on it — see § *Steps*, S4.
+
+**And `same_run` is licensed by D2a rather than by the merge**, which is what the
+reversal above buys: the identity replaces it outright, so S4 no longer waits on
+a build-time transformation of the geometry. It is also less load-bearing than
+this plan first assumed — the walk's body branch never consults it at all, so for
+a climbable it was never holding anything up. See § *Why it is ragged*, point 3.
 
 **And so does every *scan* of a cell**, which is the same defect wearing a
 different coat: `blit.wesl`'s `own_solid` walks a cell's list to name the solid a
@@ -188,7 +258,7 @@ one. S4 states it as a gate.
 and gaining a colour target, which is phase 2's albedo — is still open, and the
 two do not collide: 6d is about *drawing*, this is about the occlusion geometry
 behind it. One place they touch, settled here so no session has to work it out
-again: **a flight's treads do not merge.** S3's rule requires an equal span, and
+again: **a flight's treads do not merge.** S3b's rule requires an equal span, and
 three treads are three heights by construction. A flight stays three primitives,
 which is what its shape is.
 
@@ -367,13 +437,65 @@ moves.
 how many pairs it examined, and its synthetic twin runs under `cargo test` on a
 scene with a known seam.
 
-**S3 — merge.** D2. Contiguous neighbours that are the same surface become one
-primitive at build time, after `occlusion::boxes_of` and inside `Builder::finish`.
-Two primitives merge exactly when they share a whole face, have equal opacity,
-equal `edges` classification and equal span — all exact comparisons, since the
-coordinates come from integers and authored fractions, and **no tolerance is
-introduced anywhere**. `occlusion::Part` keeps pointing every instance at the
-solid it is now a part of (D6).
+**S3 — the surface exemption. 🚩 This is the step that cures the seam.** D2a, and
+nothing else: no geometry is built, moved or merged. The walk's
+`mine == reference.x` becomes the half-space predicate — a candidate is skipped
+when its extent along the fragment's own normal axis ends at the fragment's own
+plane, on the fragment's back side. Both walks and the shader, one rule, stated
+once the way `Solid::wire_box` is.
+
+What the step must settle, and it is the only open question in it: **where the
+fragment's plane comes from.** Reading it off the interpolated position plane and
+comparing to a stored box is a float equality across two sources; if it is not
+bit-identical, the fix is to carry the plane from the instance row — which
+already carries `solid` — and *not* to introduce a tolerance. Measure first, and
+record which of the two it was.
+
+### Acceptance for S3, as things to run and numbers to read
+
+Each is a command, an artefact and a figure, so acceptance does not rest on
+anybody's description of a picture.
+
+1. **The seam census on the run of flights goes to zero.**
+   ```sh
+   OPENSHARD_TRACED_DUMP=target/traced/s3 cargo test --release -p openshard-client-render \
+     --test traced -- the_frame_and_the_path_tracer_agree_about_a_run_of_flights --nocapture
+   ./tools/mask_probe.py seams target/traced/s3/run_of_flights_pathtrace.png
+   ```
+   **Before: 123 pixels** where the shadow decision flips across a join of two
+   flights (26 + 12 + 6 + 44 + 30 + 5 by body pair). **After: none, and the tool
+   says so in words.**
+
+2. **The wall run, lit along itself, has no acne.** The fixture
+   `scene::wall_run_lit_from_along_it` exists and no tool draws it — drawing it is
+   part of this step. This is the configuration a cosine cannot hide, so this is
+   the picture that says the cure is real rather than lucky: **before** it must
+   show the seam, **after** it must be clean, and both go in the dump.
+
+3. **The brute-force oracle stays equal.** The exemption's whole claim is that it
+   discards no true occlusion, and the oracle is the non-circular check of exactly
+   that — no cells, no traversal shared with either walk. Any ray where the walk
+   now says "open" and brute force says "blocked" is the theorem being wrong.
+
+4. **The path tracer stays at `interior == 0`.** Both gates, both scenes.
+
+5. **Fault injection, both directions.** Neutralising the exemption must turn the
+   three tests phase 4 found red *red again* — the self-shadow rule is widened
+   here, not weakened. And widening it past the theorem (skipping any candidate
+   whose face merely *touches* the plane, without the side test) must turn the
+   oracle red, since that one does discard true occlusions.
+
+6. **No new constant.** `git diff` shows no tolerance, no epsilon, no widened box.
+   If the plane had to come from the instance row, that is a *removed* number and
+   not an added one.
+
+**S3b — the merge, and it is last.** D2b. Contiguous neighbours that are the same
+surface become one primitive at build time, after `occlusion::boxes_of` and inside
+`Builder::finish`. Two primitives merge exactly when they share a whole face, have
+equal opacity, equal `edges` classification and equal span — all exact
+comparisons, since the coordinates come from integers and authored fractions, and
+**no tolerance is introduced anywhere**. `occlusion::Part` keeps pointing every
+instance at the solid it is now a part of (D6).
 
 **`PANEL_THICKNESS`'s inward fattening is answered here** and not separately: two
 walls on a shared tile edge are one surface, so they merge into one slab lying on
@@ -381,14 +503,19 @@ the plane the art draws, which is what the `docs/lighting_rebuild.md` backlog
 entry asks for. The constant survives as *how thick a wall is* and stops being
 *which side of its tile a wall sits on*.
 
-*Gate:* the census goes to zero. A run of N coplanar walls is one primitive, and
-a storey's floor is one. `same_run` neutralised now leaves the whole suite green
-— which is not a claim, it is the **measurement that licenses S4** to delete it.
+*Gate:* **not one pixel moves.** That is the whole of what a pure optimisation
+means, and it is checkable: the shadow masks before and after are identical, and
+the cost harness says the primitive count fell. It runs **after** S5, since a
+merged primitive is wider than a tile and the grid stops being a superset the
+moment one exists — see the backlog's first entry, which is this step's own
+precondition and not a nuisance.
 
 **S4 — delete the cell rules.** D5, in this order and each behind its own
-measurement: `same_run` (licensed by S3's reading), the per-cell `max` (there is
-no cell to group by, and the corner double-count it existed for is gone with the
-merge), the vertical shortcut (a hierarchy has no reason for a special case, and
+measurement: `same_run` (licensed by S3, which replaces what it stands in for —
+and no longer waiting on a merge), the per-cell `max` (there is no cell to group
+by; the corner double-count it existed for outlives the merge's departure to S3b,
+so this one carries its own measurement rather than inheriting one), the vertical
+shortcut (a hierarchy has no reason for a special case, and
 this removes a branch that has twice had to grow a footprint gate to stop being a
 different answer), and `starting_cell` with `first` (nothing left reads a cell).
 
@@ -398,7 +525,7 @@ phase 4 found go red when identity is neutralised must stay red under that
 injection — the self-shadow rule is **not** part of this and must not be
 weakened by the merge.
 
-**S5 — the hierarchy.** D3. A CPU build over the merged primitives and a
+**S5 — the hierarchy.** D3. A CPU build over the primitives and a
 stackless traversal on both sides.
 
 Pinned so the step has no decisions left in it:
@@ -462,17 +589,17 @@ Named so that a later session does not adopt them by accident:
 Findings from this track that do not block a step. Kept here so the plan can be
 read as work.
 
-**A cell lists a primitive once, and D1 has just made that a hole S3 will fall
+**A cell lists a primitive once, and D1 has just made that a hole S3b will fall
 into.** `Builder::push` puts a solid in exactly the cell it was added on;
 `Solid::footprint` — which answers *which tiles a box touches* and whose own doc
 says "the day a box is wider, this is where the extra tiles come from" — has one
 caller, and it is `bake`'s. Nothing before S1 could build a box reaching past its
-own tile, so nothing noticed. **S3's merge is exactly the thing that builds
+own tile, so nothing noticed. **S3b's merge is exactly the thing that builds
 one**, and the moment it does, the grid stops being a superset: a ray that
 crosses the overhang without ever entering the registration cell is answered
 "open" by both walks *and* by `tests/lighting.rs`'s `brute_force_blocked`, which
 is cell-based too and would agree with the defect. This is D3's own argument
-arriving early, and S3 has to answer it before it merges anything — either by
+arriving early, and S3b has to answer it before it merges anything — either by
 listing a merged primitive in every cell it spans, or by taking the hierarchy
 first. It is why S1's own gate keeps its fixture inside one tile: the wire is
 what that step is about, and a straddling box would have failed it for a reason
