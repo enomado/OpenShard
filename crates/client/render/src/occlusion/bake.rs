@@ -727,6 +727,7 @@ mod tests {
             aperture: None,
             roof: false,
             owner: super::super::Owner::new(0, openshard_protocol::wire::Graphic(0)),
+            part: super::super::Part::ONLY,
         }
     }
 

@@ -3161,6 +3161,7 @@ mod tests {
             aperture: None,
             roof: false,
             owner: crate::occlusion::Owner::new(bottom as i8, openshard_protocol::wire::Graphic(0)),
+            part: crate::occlusion::Part::ONLY,
         }
     }
 
@@ -3340,6 +3341,7 @@ mod tests {
             aperture: None,
             roof: false,
             owner: crate::occlusion::Owner::new(3, openshard_protocol::wire::Graphic(0)),
+            part: crate::occlusion::Part::ONLY,
         };
         let (low, high) = (box_at_half.low(), box_at_half.high());
         assert_eq!((low, high), (3.5, 6.5));

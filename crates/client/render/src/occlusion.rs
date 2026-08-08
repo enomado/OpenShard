@@ -625,6 +625,14 @@ pub struct Solid {
     /// Never uploaded. What crosses the wire is [`OwnerId`], the number
     /// [`Builder::finish`] gives this key within its cell.
     pub owner: Owner,
+    /// And **which** of that thing's solids this one is — see [`Part`].
+    ///
+    /// Never uploaded either, and for a different reason than [`Solid::owner`]:
+    /// the wire already names a solid outright ([`SolidId`], the first three
+    /// bytes of a reference), so this is only ever a *join key* on this side —
+    /// what lets the pass that draws a flight's third tread find the grid's own
+    /// third tread. `docs/lighting_rebuild.md` phase 4.
+    pub part: Part,
 }
 
 impl Solid {
@@ -1160,6 +1168,44 @@ impl Owner {
     }
 }
 
+/// Which solid **of its own static** a [`Solid`] is: the `n`th one that
+/// [`Builder::add`] pushed, counting from zero within that one call.
+///
+/// [`Owner`] names the thing the world added and this names the piece of it, and
+/// the pair is what `docs/lighting_rebuild.md` phase 4 needs. A flight of steps
+/// is one `add` and a lid and a riser per tread; a corner is one `add` and a
+/// panel per named side. Identity alone — the owner — cannot tell a flight's
+/// second tread from its third, and the whole of phase 4 is that it must, because
+/// a tread genuinely shadows the one below it and must not shadow itself.
+///
+/// **It is the push order and nothing else**, which is exactly what makes it
+/// usable from the drawing side: [`crate::facing::Prism::mesh`] walks the same
+/// treads in the same order that [`Builder::add`]'s climbable branch does, so the
+/// `n`th face it draws is the `n`th solid the grid stood up.
+/// `a_flight_draws_its_own_solids_in_the_grid_s_own_order` is what gates that
+/// against the geometry rather than leaving it as two loops that happen to agree.
+///
+/// Not on the wire: see [`Solid::part`]. A walk compares [`SolidId`]s, which name
+/// a solid outright; this only exists so the pass that *draws* a primitive can
+/// find the one the grid built for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Part(u8);
+
+impl Part {
+    /// The only solid of a static that pushed one: a lid, a body, a raw box.
+    pub const ONLY: Self = Self(0);
+
+    /// The `n`th, counting from zero in [`Builder::add`]'s own push order.
+    pub fn nth(at: usize) -> Self {
+        Self(at as u8)
+    }
+
+    /// Which one this is, for the join and for a report that prints it.
+    pub fn raw(self) -> u8 {
+        self.0
+    }
+}
+
 /// Which occluder **of this cell** an [`Owner`] is, in one byte: what the wire
 /// carries and what a fragment is compared against.
 ///
@@ -1430,6 +1476,33 @@ impl Occlusion {
         self.cell(x, y)
             .find(|(solid, _)| solid.owner == key)
             .map_or(OwnerId::NONE, |(_, owner)| owner)
+    }
+
+    /// Which solid of the frame's list one **piece** of a static standing on
+    /// `(x, y)` is — `None` where this frame's grid has no such piece.
+    ///
+    /// [`Occlusion::owner_at`]'s join carried a step further, and
+    /// `docs/lighting_rebuild.md` phase 4's whole reason for [`Part`]: a pass
+    /// that draws a flight's third tread has to be able to name the *solid* the
+    /// grid stood up for that tread, because identity per static excuses a tread
+    /// from the risers that genuinely shadow it. The owner alone cannot say which
+    /// piece; the pair can, and it is exact rather than a height.
+    ///
+    /// `None` and not a sentinel, unlike `owner_at`: a caller here is asking
+    /// about one named piece of one static it has already found in the grid, so a
+    /// miss is either a static the grid refused outright — which `owner_at` has
+    /// already reported as [`OwnerId::NONE`] — or the two sides disagreeing about
+    /// how many pieces a shape has, which is a defect and not a fragment with no
+    /// occluder behind it. The caller decides which of those it is looking at.
+    ///
+    /// A scan of the cell, for [`Occlusion::owner_at`]'s own reason: a tile holds
+    /// two or three solids, and this is asked once per drawn *face* rather than
+    /// once per pixel.
+    pub fn id_of(&self, x: i32, y: i32, owner: Owner, part: Part) -> Option<SolidId> {
+        self.ids_at(x, y).iter().copied().find(|id| {
+            let solid = self.solid(*id);
+            solid.owner == owner && solid.part == part
+        })
     }
 
     /// What stands on one tile as one box, or `None` for open ground and for
@@ -1941,6 +2014,12 @@ impl Builder {
             // fed to `box_of`'s two existing rules changes.
             let treads = prism.treads();
             let mut risen = bottom;
+            // **Two solids a tread, top first, in climb order** — and the count
+            // is a [`Part`] rather than a local convenience, because
+            // [`crate::facing::Prism::mesh`] emits its faces in this same order
+            // and the pass that draws one has to be able to name the solid the
+            // grid stood up for it. See [`Part`], and the gate its doc names.
+            let mut part = 0;
             for (tread, &height) in treads.iter().enumerate() {
                 let top_z = bottom + i32::from(height);
                 self.push(
@@ -1959,6 +2038,7 @@ impl Builder {
                         aperture: None,
                         roof: tile.flags.is_roof(),
                         owner,
+                        part: Part::nth(part),
                     },
                 );
                 self.push(
@@ -1978,9 +2058,11 @@ impl Builder {
                         aperture: None,
                         roof: tile.flags.is_roof(),
                         owner,
+                        part: Part::nth(part + 1),
                     },
                 );
                 risen = top_z;
+                part += 2;
             }
             return;
         }
@@ -2006,6 +2088,7 @@ impl Builder {
                     aperture: None,
                     roof: tile.flags.is_roof(),
                     owner,
+                    part: Part::ONLY,
                 },
             );
             return;
@@ -2044,9 +2127,15 @@ impl Builder {
                     aperture: None,
                     roof: tile.flags.is_roof(),
                     owner,
+                    part: Part::ONLY,
                 },
             ),
             named => {
+                // A corner's panels are numbered in the order they are pushed,
+                // which is the order this array names the sides in — see
+                // [`Part`]. Nothing draws a panel from a mesh today, so no join
+                // rests on it yet; the numbering is total because the field is.
+                let mut part = 0;
                 for side in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
                     if named & side != 0 {
                         self.push(
@@ -2071,8 +2160,10 @@ impl Builder {
                                 aperture: shape.hole.map(|hole| Aperture::above(bottom, hole)),
                                 roof: tile.flags.is_roof(),
                                 owner,
+                                part: Part::nth(part),
                             },
                         );
+                        part += 1;
                     }
                 }
             }
@@ -2133,6 +2224,10 @@ impl Builder {
                 aperture: None,
                 roof: false,
                 owner,
+                // One call, one box: there is no second piece of this static for
+                // a number to tell it apart from. A scene that wants two boxes on
+                // one tile states two owners, which is this method's own doc.
+                part: Part::ONLY,
             },
         );
     }
@@ -2489,6 +2584,7 @@ mod tests {
             // two graphics apart on one tile — the tests that are go through
             // `Builder::add`, which derives the key itself.
             owner: Owner::new(bottom as i8, Graphic(0)),
+            part: Part::ONLY,
         }
     }
 
@@ -2774,11 +2870,18 @@ mod tests {
         // And in the list it is **two solids**, which is the shape decision 30
         // gives a corner: one plane a side, each with the tile's own span. The
         // merged view above is a fold over exactly these.
+        //
+        // One owner and two [`Part`]s: the same static, pushed twice, and the
+        // number is which push. `stands_at` builds the first, since a scene of
+        // one box is what it is for.
         assert_eq!(
             occlusion.solids_at(102, 103).copied().collect::<Vec<_>>(),
             [
                 stands_at(102, 103, 0, 20, EDGE_EAST),
-                stands_at(102, 103, 0, 20, EDGE_SOUTH),
+                Solid {
+                    part: Part::nth(1),
+                    ..stands_at(102, 103, 0, 20, EDGE_SOUTH)
+                },
             ],
         );
     }
@@ -3222,6 +3325,70 @@ mod tests {
         );
     }
 
+    /// **A flight's `n`th drawn face is its `n`th solid**, and this is the gate
+    /// under [`Part`] rather than the two loops being trusted to agree.
+    ///
+    /// `docs/lighting_rebuild.md` phase 4 rests on it: a pass drawing a tread has
+    /// to name the solid the grid stood up for that tread, and the number it uses
+    /// is [`Builder::add`]'s own push order. [`crate::facing::Prism::mesh`] walks
+    /// the same treads from the same two facts ([`Prism::treads`], [`Prism::up`])
+    /// and emits a top then a riser for each, so the orders coincide — but "they
+    /// coincide" is a property of two pieces of code in two modules, and the only
+    /// honest way to hold it is to compare the geometry.
+    ///
+    /// **Compared on the axes the mesh does not widen.** Every face
+    /// `Prism::mesh` builds is grown by `WIDTH_OVERLAP` across the climb —
+    /// phase 6's, and the whole reason a face and its solid are not simply equal
+    /// — so what is asserted is each solid's own *degenerate* axis: a top is a
+    /// plane in `z` and its face's four corners are all at that `z`; a riser is a
+    /// plane on the climb axis and its face's corners are all at that coordinate.
+    /// The widened axis is left alone deliberately: pinning it here would make
+    /// this test fail when phase 6 removes the widening, for a reason that has
+    /// nothing to do with what it is about.
+    #[test]
+    fn a_flight_draws_its_own_solids_in_the_grid_s_own_order() {
+        use crate::facing::{Face, Prism};
+
+        let stair = tile(TileFlags::NO_SHOOT | TileFlags::CLIMBABLE, 20);
+        for up in [Face::North, Face::East, Face::South, Face::West] {
+            let prism = Prism::new(up, &[1, 3, 5]).expect("three treads");
+            let mut builder = Builder::new(bounds());
+            builder.add(100, 100, 0, NOT_A_DOOR, &stair, Shape::solid(prism));
+            let occlusion = builder.finish(&Cutaway::OPEN);
+            let owner = Owner::new(0, NOT_A_DOOR);
+
+            let mesh = prism.mesh(100, 100, 0);
+            assert_eq!(
+                mesh.faces().len(),
+                occlusion.solids_at(100, 100).count(),
+                "climbing {up:?}: one drawn face per solid the grid stood up",
+            );
+            for (part, face) in mesh.faces().iter().enumerate() {
+                let id = occlusion
+                    .id_of(100, 100, owner, Part::nth(part))
+                    .unwrap_or_else(|| panic!("climbing {up:?}: no solid for part {part}"));
+                let solid = occlusion.solid(id);
+                // Which axis this solid is a plane in, and where that plane is.
+                // A top is flat in `z`; a riser is flat along the climb, which is
+                // `y` for a north/south flight and `x` for an east/west one.
+                let (axis, plane) = match part % 2 {
+                    0 => (2, solid.space.min.z),
+                    _ => match up {
+                        Face::North | Face::South => (1, solid.space.min.y),
+                        Face::East | Face::West => (0, solid.space.min.x),
+                    },
+                };
+                for corner in face.vertices() {
+                    let at = [corner.x, corner.y, corner.z][axis];
+                    assert_eq!(
+                        at, plane,
+                        "climbing {up:?}: face {part} does not lie in part {part}'s own plane",
+                    );
+                }
+            }
+        }
+    }
+
     /// [`Solid::footprint`]'s `-1` adjustment for a "far"-edged degenerate plane
     /// is only correct where that plane sits exactly on the tile's true
     /// boundary — every panel [`Solid::box_of`] builds does, but
@@ -3244,6 +3411,7 @@ mod tests {
             aperture: None,
             roof: false,
             owner: Owner::new(1, Graphic(0)),
+            part: Part::nth(3),
         };
         assert_eq!(
             riser.footprint(),
