@@ -366,14 +366,19 @@ const MAX_WALK_STEPS: i32 = 72;
 
 // How big a flame is: the radius of the sphere `shadow` samples, in tiles.
 //
-// **An eighth of a tile, and the art is what says so** — a torch's drawn flame is
-// eight or ten screen pixels tall, four pixels to a `z`, so two and a half `z` of
-// a tile's eleven. The retired `FLAME_DEPTH` was that same measurement as a
-// height and is exactly twice this. `FLAME_SPREAD`'s `1.0` beside it was never a
-// size at all: it was the numerator of the penumbra ratio, which is why the
-// flame this replaces was a tile across and a quarter of a tile tall.
-// `light::FLAME_RADIUS`, and the two are one number.
-const FLAME_RADIUS: f32 = 0.125;
+// **On the wire and no longer a constant** — `lighting.ground.w`, which is
+// `light::Lighting::flame_radius`. A frame draws `light::FLAME_RADIUS`, an
+// eighth of a tile, and the art is what says so: a torch's drawn flame is eight
+// or ten screen pixels tall, four pixels to a `z`, so two and a half `z` of a
+// tile's eleven. What the field buys is a *comparison* that can ask for zero —
+// eight rays at a sphere are an estimate, and a gate laid against a path tracer
+// otherwise reports that estimate's noise as a disagreement. See that field.
+//
+// A channel of the header that held a stated zero until a reader existed for it,
+// which is this file's own rule for claiming one.
+fn flame_radius() -> f32 {
+    return lighting.ground.w;
+}
 
 // How many rays a fragment casts at each flame. `light::SHADOW_RAYS`.
 const SHADOW_RAYS: u32 = 8u;
@@ -1342,7 +1347,7 @@ fn shadow(at: vec3<f32>, to: vec3<f32>, tile: vec2<f32>, stance: u32, mine: u32)
     var reached = 0.0;
     for (var ray = 0u; ray < SHADOW_RAYS; ray = ray + 1u) {
         let angle = phase + GOLDEN_ANGLE * f32(ray);
-        let radius = FLAME_RADIUS * sqrt((f32(ray) + 0.5) / f32(SHADOW_RAYS));
+        let radius = flame_radius() * sqrt((f32(ray) + 0.5) / f32(SHADOW_RAYS));
         let offset = (across * cos(angle) + up * sin(angle)) * radius;
         let point = vec3<f32>(to.x + offset.x, to.y + offset.y, to.z + offset.z * Z_PER_TILE);
         reached = reached + walk(at, point, tile, stance, mine);

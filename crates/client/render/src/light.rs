@@ -390,6 +390,24 @@ pub struct Lighting {
     /// lights are read, out of the same uniform block, and a second channel into
     /// the same shader is a second thing to keep in step.
     pub view: crate::debug::View,
+    /// How big every flame in this frame is, in tiles — the radius of the sphere
+    /// [`shadow`] casts its [`SHADOW_RAYS`] at.
+    ///
+    /// **[`FLAME_RADIUS`] is the answer, and this is a field so that a
+    /// *comparison* can ask for zero.** A sphere is what a penumbra is made of
+    /// and phase 5 is not being undone; but a sphere is also an *estimate* —
+    /// eight rays against a reference's sixty-four paths — and a gate laid
+    /// against a path tracer then reports that estimate's noise as a
+    /// disagreement. On the run-of-flights scene it reported exactly eight
+    /// pixels of it, all at a graze six thousandths of a tile deep, and at zero
+    /// radius the same comparison is exact on all 252,949 pixels. A knob is what
+    /// tells "the walk is wrong" from "the two rulers disagree about a soft
+    /// edge"; a constant cannot be asked.
+    ///
+    /// A frame's, not a flame's: every flame in the world is the same size, and
+    /// a per-light radius would be a second meaning for [`Light::radius`], which
+    /// is a *reach* and not a size.
+    pub flame_radius: f32,
 }
 
 impl Lighting {
@@ -408,6 +426,7 @@ impl Lighting {
         occlusion: Occlusion::EMPTY,
         sun: None,
         view: crate::debug::View::Lit,
+        flame_radius: FLAME_RADIUS,
     };
 
     /// Whether this would change a single pixel.
@@ -764,6 +783,7 @@ pub fn collect(
         // the way to the blit: which view is on is a property of the person
         // looking, not of the world walked here.
         view: crate::debug::View::Lit,
+        flame_radius: FLAME_RADIUS,
     }
 }
 
@@ -1867,7 +1887,7 @@ fn sample_with(
         // arrived — `docs/lighting_rebuild.md` phase 5. It is the only term here
         // that is an estimate rather than a formula, which is why it is the only
         // one with a ray count behind it.
-        let (through, stopped_by) = shadow(spot, light, &lighting.occlusion, &walk);
+        let (through, stopped_by) = shadow(spot, light, &lighting.occlusion, lighting.flame_radius, &walk);
         let fall = 1.0 - d;
         let added = light
             .color
@@ -2042,7 +2062,7 @@ const GOLDEN_ANGLE: f32 = 2.399_963_2;
 /// difference as the walk's — see `tests/lighting.rs`'s fuzz, which is where that
 /// happened. What it shares with the thing under test is the scene, not the
 /// answer.
-pub fn flame_points(spot: Spot, flame: [f32; 3]) -> [[f32; 3]; SHADOW_RAYS] {
+pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32) -> [[f32; 3]; SHADOW_RAYS] {
     let toward = [
         flame[0] - spot.at.x,
         flame[1] - spot.at.y,
@@ -2079,7 +2099,7 @@ pub fn flame_points(spot: Spot, flame: [f32; 3]) -> [[f32; 3]; SHADOW_RAYS] {
     let phase = dither([spot.at.x, spot.at.y, spot.z]) * std::f32::consts::TAU;
     std::array::from_fn(|ray| {
         let angle = phase + GOLDEN_ANGLE * ray as f32;
-        let radius = FLAME_RADIUS * ((ray as f32 + 0.5) / SHADOW_RAYS as f32).sqrt();
+        let radius = radius * ((ray as f32 + 0.5) / SHADOW_RAYS as f32).sqrt();
         let (sin, cos) = angle.sin_cos();
         [
             flame[0] + (across[0] * cos + up[0] * sin) * radius,
@@ -2111,11 +2131,15 @@ fn shadow(
     spot: Spot,
     light: &Light,
     occlusion: &Occlusion,
+    // How big the flame is — [`Lighting::flame_radius`], carried down rather
+    // than read off the constant so that the shader and this walk can be asked
+    // about the same frame.
+    radius: f32,
     walk: impl Fn(Spot, [f32; 3], &Occlusion) -> (f32, Option<Stopper>),
 ) -> (f32, Option<Stopper>) {
     let mut reached = 0.0;
     let mut worst: Option<(f32, Stopper)> = None;
-    for at in flame_points(spot, [light.at.x, light.at.y, light.z]) {
+    for at in flame_points(spot, [light.at.x, light.at.y, light.z], radius) {
         let (through, stopped_by) = walk(spot, at, occlusion);
         reached += through;
         if let Some(stopper) = stopped_by {
@@ -3827,6 +3851,7 @@ mod tests {
             occlusion,
             sun: None,
             view: crate::debug::View::default(),
+            flame_radius: FLAME_RADIUS,
         };
 
         let sample = sample(spot, &lighting);
@@ -3941,6 +3966,7 @@ mod tests {
                 occlusion: occlusion.clone(),
                 sun: None,
                 view: crate::debug::View::default(),
+                flame_radius: FLAME_RADIUS,
             };
             let streaming = sample(spot, &lighting).reaches[0].through;
             let exact = sample_exact(spot, &lighting).reaches[0].through;
@@ -4063,6 +4089,7 @@ mod tests {
                 occlusion: occlusion.clone(),
                 sun: None,
                 view: crate::debug::View::default(),
+                flame_radius: FLAME_RADIUS,
             };
             (
                 sample(spot, &lighting).reaches[0].through,
@@ -4149,6 +4176,7 @@ mod tests {
             occlusion,
             sun: None,
             view: crate::debug::View::default(),
+            flame_radius: FLAME_RADIUS,
         };
 
         // `blocked`: whether the straight segment from `(102.5, y)` to the

@@ -99,6 +99,58 @@ fn line_scene() -> Vec<BoxSpec> {
     ]
 }
 
+/// Three climbable flights side by side, as nine boxes — `examples/synthetic_
+/// stair`'s own `OPENSHARD_STAIR_RUN=3` scene, written out rather than built
+/// through `facing::Prism` so that the tracer and the frame are handed the
+/// **same nine AABBs** and nothing between them can differ.
+///
+/// The geometry, from that tool's own printout: each flight owns one tile, its
+/// three treads divide that tile in thirds along `y` (a north climb), and each
+/// tread is a body from the static's base at `z 0` up to its own height of 1, 3
+/// and 5. So the three flights' treads abut **exactly** across `x = 101` and
+/// `x = 102` — three tiles of one continuous landing at `z 5`, three of one at
+/// `z 3`, three of one at `z 1`.
+///
+/// **Why this scene and not one more pair of cubes.** Every box here has a
+/// neighbour it shares a whole face with, at the same height, belonging to a
+/// *different static* — the shape `docs/occluders.md` is about, and the one no
+/// scene compared against the tracer has ever had. `line_scene`'s two boxes abut
+/// too, but they are one storey of one height: nothing in them can pose the
+/// question of a surface that is continuous across a boundary while its
+/// primitives are not.
+fn stair_scene() -> Vec<BoxSpec> {
+    let third = 1.0 / 3.0;
+    let mut boxes = Vec::new();
+    for flight in 0..3 {
+        let x = 100.0 + f64::from(flight);
+        // Tread `n` covers the strip `n` thirds from the tile's own far edge and
+        // stands `1 + 2n` tall — `Prism::new(North, &[1, 3, 5])`'s own profile.
+        // **Top tread first within a flight, and that is not a detail.** The
+        // three share a tile and therefore a `depth::Order`, and a tie there goes
+        // to whichever was pushed later, so the last one painted wins. `box_mesh`
+        // gives every box a full-height `+y` face knowing nothing about what
+        // abuts it, so the part of a tread's riser below the tread in front of it
+        // is interior to the union — real geometry no camera can see. Painting
+        // the near treads last is what buries it.
+        //
+        // In climb order instead, which is how this scene was first written, that
+        // buried riser is drawn *over* the tread in front and the tracer reports
+        // it: **7,016 pixels** of "the frame draws box N's south face, the tracer
+        // sees body N−1", none of them on a silhouette. The tracer was right and
+        // the order was wrong. `examples/boxes.rs`'s own `scene_stair` carries the
+        // same rule and found the same thing first.
+        for (tread, height) in [1.0, 3.0, 5.0].into_iter().enumerate().rev() {
+            let near = 100.0 + (2 - tread) as f64 * third;
+            boxes.push(BoxSpec {
+                tile: (100 + flight as u16, 100),
+                min: (x, near, 0.0),
+                max: (x + 1.0, near + third, height),
+            });
+        }
+    }
+    boxes
+}
+
 /// Up and to the boxes' `+x`, `-y` side, above them — the tool's own default for
 /// this scene, picked there by looking at a rendered frame.
 fn flame() -> WorldSpot {
@@ -164,6 +216,17 @@ struct Shot<'a> {
     view: View,
     /// Notches up `camera::LADDER` from 1:1.
     zoom: u32,
+    /// How big the flame is — `light::Lighting::flame_radius`, and the reason
+    /// that is a field rather than a constant.
+    ///
+    /// [`light::FLAME_RADIUS`](openshard_client_render::light::FLAME_RADIUS) is
+    /// what a frame draws, and the two gates that judge a *soft* edge pass it.
+    /// **Zero is a point, and it is what a gate judging the walk itself wants**:
+    /// eight rays at a sphere are an estimate, the reference's sixty-four paths
+    /// are a better one, and their difference is noise that a binary lit/shadowed
+    /// comparison reports as disagreement. At zero there is no estimate on either
+    /// side and the two renderers either agree exactly or do not.
+    flame_radius: f32,
 }
 
 /// Draw a [`Shot`] and read the frame back.
@@ -176,6 +239,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         ambient,
         view,
         zoom: zoom_notches,
+        flame_radius,
     } = shot;
     let bounds = TileBounds {
         min_x: 95,
@@ -344,6 +408,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         occlusion,
         sun: None,
         view,
+        flame_radius,
     };
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
@@ -420,6 +485,9 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
             // Three notches is the top of `camera::LADDER` — 4:1 — where a
             // whole-tile box fills a 512-pixel canvas comfortably.
             zoom: 3,
+            // The shipped sphere: this gate carries the penumbra assertions
+            // below, and they are the ones phase 5 is judged by.
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
         },
     );
 
@@ -567,6 +635,198 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
     );
 }
 
+/// The two shadow masks and their difference, as one three-strip picture —
+/// `examples/boxes.rs`'s own dump, available from the gate.
+///
+/// **Written only where `OPENSHARD_TRACED_DUMP` names a directory**, and the
+/// gate does not read it back: a test that asserted about a file would be a test
+/// of the file. What this is for is the instrument `docs/lighting_rebuild.md`
+/// insists on — a picture beside the path tracer's, looked at by a person — and
+/// until now that picture was only reachable by running the tool on the tool's
+/// own scene.
+///
+/// Left, the frame's own decision; middle, the tracer's; right, where they
+/// differ — **red** where the frame lit a pixel the tracer shadowed, **blue**
+/// the other way round. Two opposite defects (a ray that missed an occluder, and
+/// one that hit something that is not there), so one colour would say a pixel is
+/// wrong without saying which way. Grey in the masks is a pixel nobody compared,
+/// so a grey field reads as "not measured" rather than as a shadow; black in the
+/// difference strip is agreement, so anything lit there is something to explain.
+fn dump_masks(verdict: &oracle::pathtrace::Verdict, name: &str) {
+    let Some(dir) = std::env::var_os("OPENSHARD_TRACED_DUMP") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the dump directory");
+    let strip = |map: &[Option<bool>]| {
+        let mut pixels = vec![0u8; (SIDE * SIDE * 3) as usize];
+        for (pixel, lit) in map.iter().enumerate() {
+            let value = match lit {
+                Some(true) => 255u8,
+                Some(false) => 0,
+                None => 96,
+            };
+            pixels[pixel * 3..pixel * 3 + 3].fill(value);
+        }
+        pixels
+    };
+    let mut difference = vec![0u8; (SIDE * SIDE * 3) as usize];
+    for (pixel, (ours, theirs)) in verdict
+        .engine_lit
+        .iter()
+        .zip(verdict.traced_lit.iter())
+        .enumerate()
+    {
+        let (Some(ours), Some(theirs)) = (ours, theirs) else {
+            continue;
+        };
+        match (ours, theirs) {
+            (true, false) => difference[pixel * 3] = 255,
+            (false, true) => difference[pixel * 3 + 2] = 255,
+            _ => {}
+        }
+    }
+    let path = dir.join(format!("{}_pathtrace.png", name.replace(' ', "_")));
+    openshard_client_render::png::write_strips(
+        &path,
+        SIDE,
+        SIDE,
+        &[
+            &strip(&verdict.engine_lit),
+            &strip(&verdict.traced_lit),
+            &difference,
+        ],
+    )
+    .expect("writing the mask comparison");
+    eprintln!("wrote {}", path.display());
+}
+
+/// **The same gate, on three flights standing side by side** —
+/// [`stair_scene`], and `docs/occluders.md`'s own shape: nine primitives, each
+/// sharing a whole face with a neighbour of a *different static* at the same
+/// height.
+///
+/// **What this can and cannot settle, because the distinction is the whole
+/// value of the answer.** Both renderers are handed the same nine boxes. So a
+/// disagreement here is the *walk* being wrong about a model both sides hold;
+/// agreement says the walk is right about it and says **nothing** about whether
+/// nine boxes are the model we want. A landing that is continuous to a person
+/// and nine solids to us is a question no reference renderer can be asked — it
+/// answers what the geometry does, not what the geometry should be.
+///
+/// The flame sits just clear of the top landing and off its east end, which is
+/// the arrangement the seam question lives in: rays run *along* a surface that is
+/// continuous in the world and cut into three primitives here. Just clear and
+/// not in the plane — a flame buried in the landing is genuinely inside the
+/// neighbouring boxes for half its own sphere, and that darkness is honest on
+/// both sides, so a fixture that put it there would be asking about nothing.
+#[test]
+fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let boxes = stair_scene();
+    // Off the east end of the run and a unit and a half over the top landing:
+    // `examples/synthetic_stair`'s `OPENSHARD_LIGHT_AT=3.5,0.167 LIGHT_Z=6.5`,
+    // picked there by looking at the rendered frame.
+    let at = WorldSpot {
+        x: 103.5,
+        y: 100.167,
+        z: 6.5,
+    };
+    let radius = 8.0_f32;
+    let frame = render(
+        &device,
+        &queue,
+        Shot {
+            boxes: &boxes,
+            flame: at,
+            radius,
+            intensity: 1.0,
+            ambient: NIGHT,
+            view: View::Shadow,
+            // Two notches and not three: the run is three tiles across and a
+            // 512-pixel canvas at 4:1 holds about that, so the top zoom would
+            // put the far flight's own seam off the edge of the picture — and
+            // the seam is the reason this scene exists.
+            zoom: 2,
+            // **A point, and the reason is in `Shot::flame_radius`.** This gate
+            // asks whether the walk is right about nine abutting primitives; at
+            // the shipped radius it also asks whether eight rays estimate a soft
+            // edge the way sixty-four paths do, and reports the difference as a
+            // disagreement — eight pixels of it, measured, all at a graze six
+            // thousandths of a tile deep. The soft edge has its own gate on the
+            // scene above.
+            flame_radius: 0.0,
+        },
+    );
+
+    let mirror = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
+        boxes: &boxes,
+        light_at: at,
+        light_radius: f64::from(radius),
+        colour: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        albedos: oracle::pathtrace::Albedos::INVENTED,
+        // **A point on this side too, because the frame's flame is one.**
+        // `ENGINE_FLAME` is the shipped sphere and it is right for every scene
+        // that draws one; here the `Shot` above asked for a radius of zero, and a
+        // reference holding a body where the frame holds a point reports the
+        // whole penumbra as a disagreement. It did: forty-seven pixels, the hour
+        // the radius became a field and this line had not followed.
+        body: oracle::pathtrace::Body::Point,
+        to_pixel: frame.to_pixel.as_ref(),
+    });
+    let seen = |brdf, seed| mirror.render(brdf, seed, SIDE, SIDE);
+    let exact = seen(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED);
+    assert!(
+        exact.is_exact(),
+        "a point emitter came back an estimate: this gate's whole claim is that neither side is one",
+    );
+    let verdict = oracle::pathtrace::compare(
+        &exact,
+        &seen(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED),
+        oracle::pathtrace::Frame {
+            width: SIDE,
+            height: SIDE,
+            drawn: &frame.drawn,
+            shadow: &frame.surface,
+            face_rows: &frame.face_rows,
+        },
+    );
+    eprint!("{}", verdict.report());
+    dump_masks(&verdict, "run of flights");
+
+    // The same three-sided non-triviality guard the scene above carries, and it
+    // matters more here: a staircase is mostly silhouette, so a threshold that
+    // let the comparison shrink to the flat tops would quietly stop asking about
+    // the joins.
+    assert!(
+        verdict.compared > 50_000,
+        "only {} of {} pixels were compared — a detector that compares nothing reads exactly like a \
+         detector that found nothing",
+        verdict.compared,
+        SIDE * SIDE,
+    );
+    let lit = verdict.traced_lit.iter().flatten().filter(|lit| **lit).count();
+    let dark = verdict.traced_lit.iter().flatten().filter(|lit| !**lit).count();
+    assert!(
+        lit > 5_000 && dark > 5_000,
+        "the tracer saw {lit} lit and {dark} shadowed pixels: a scene that is all one or the other \
+         agrees with anything"
+    );
+
+    assert_eq!(
+        verdict.interior,
+        0,
+        "the path tracer and the frame disagree about {} pixels of a run of flights that no edge and \
+         no surface disagreement explains\n{}",
+        verdict.interior,
+        verdict.report(),
+    );
+}
+
 /// How far the engine's penumbra may sit from the reference's *on average*, as a
 /// fraction of the whole flame.
 ///
@@ -672,6 +932,10 @@ fn the_frame_and_the_path_tracer_agree_about_brightness_on_open_ground() {
             ambient: dark,
             view: View::Lit,
             zoom: 0,
+            // The brightness gate has no occluder in it at all, so the flame's
+            // own size reaches nothing: the shipped one, because a scene that is
+            // about the falloff curve should be lit by the flame the client has.
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
         },
     );
 

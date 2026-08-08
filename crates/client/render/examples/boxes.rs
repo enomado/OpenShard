@@ -407,6 +407,17 @@ fn scene_line() -> Vec<BoxSpec> {
 /// reports it: 3,784 pixels of "the frame draws box 2's south face, the tracer
 /// sees body 1", none of them on a silhouette. The tracer was right and the
 /// order was what was wrong — which is the first thing this scene found.
+/// **`OPENSHARD_STAIR_RUN=n` stands `n` flights side by side**, across the climb
+/// rather than along it — `examples/synthetic_stair`'s own knob, spelled the same
+/// way so that a person pointing the two tools at "the same scene" gets the same
+/// scene. One flight cannot pose the question `docs/occluders.md` is about: a run
+/// is what puts two treads of *different statics* at one height either side of a
+/// tile boundary, sharing a whole face.
+///
+/// The flights are laid out flight by flight, and within a flight top tread
+/// first, so the paint order above holds inside each of them — a flight's own
+/// buried risers are what that order buries, and a neighbouring flight is beside
+/// it rather than in front of it.
 fn scene_stair() -> Vec<BoxSpec> {
     let (tx, ty) = (100u16, 100u16);
     let treads: Vec<f64> = env_or("OPENSHARD_STAIR_TREADS", "1,3,5")
@@ -414,23 +425,25 @@ fn scene_stair() -> Vec<BoxSpec> {
         .map(|h| h.trim().parse().expect("a number"))
         .collect();
     assert!(!treads.is_empty(), "a flight with no treads is not a scene");
+    let run: u16 = env_or("OPENSHARD_STAIR_RUN", "1").parse().expect("a count");
+    assert!(run >= 1, "a run of no flights is not a scene");
     let n = treads.len() as f64;
-    let (x0, y0) = (f64::from(tx), f64::from(ty));
-    treads
-        .iter()
-        .enumerate()
-        .rev()
-        .map(|(i, &h)| {
-            // `Prism::footprint`'s own `Face::North` branch, for the run
-            // `[i/n, (i+1)/n]`: the low tread sits at the `+y` edge, which is
-            // also the near one, which is why the climb order is the paint
-            // order here.
-            let (lo, hi) = (i as f64 / n, (i as f64 + 1.0) / n);
-            BoxSpec {
-                tile: (tx, ty),
-                min: (x0, y0 + 1.0 - hi, 0.0),
-                max: (x0 + 1.0, y0 + 1.0 - lo, h),
-            }
+    let y0 = f64::from(ty);
+    (0..run)
+        .flat_map(|flight| {
+            let x0 = f64::from(tx) + f64::from(flight);
+            treads.iter().enumerate().rev().map(move |(i, &h)| {
+                // `Prism::footprint`'s own `Face::North` branch, for the run
+                // `[i/n, (i+1)/n]`: the low tread sits at the `+y` edge, which is
+                // also the near one, which is why the climb order is the paint
+                // order here.
+                let (lo, hi) = (i as f64 / n, (i as f64 + 1.0) / n);
+                BoxSpec {
+                    tile: (tx + flight, ty),
+                    min: (x0, y0 + 1.0 - hi, 0.0),
+                    max: (x0 + 1.0, y0 + 1.0 - lo, h),
+                }
+            })
         })
         .collect()
 }
@@ -479,7 +492,11 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), boxes: &[BoxSp
         point.2 as f32,
         (point.0.floor() as i32, point.1.floor() as i32),
     );
-    let points = light::flame_points(spot, [light.0 as f32, light.1 as f32, light.2 as f32]);
+    let points = light::flame_points(
+        spot,
+        [light.0 as f32, light.1 as f32, light.2 as f32],
+        openshard_client_render::light::FLAME_RADIUS,
+    );
     let clear = points
         .iter()
         .filter(|at| {
@@ -870,6 +887,7 @@ fn main() {
         occlusion,
         sun: None,
         view: View::Lit,
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
     };
     // Where the flame itself is, in the one place every consumer of it reads:
     // the crosshair on the dumped frames, the two visibility oracles, and the

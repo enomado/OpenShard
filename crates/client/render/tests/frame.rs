@@ -938,6 +938,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         occlusion: Occlusion::EMPTY,
         sun: None,
         view: View::Lit,
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
     };
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
     let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
@@ -1173,6 +1174,7 @@ fn a_wall_stops_the_light_behind_it() {
             occlusion,
             sun: None,
             view: View::Lit,
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         blit.render(
@@ -4952,6 +4954,7 @@ fn the_shader_reads_a_primitive_at_no_fraction_a_byte_could_name() {
             occlusion: occlusion.clone(),
             sun: Some(sun),
             view: View::default(),
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
         };
         let fixture = Fixture {
             surface: Surface::Upright,
@@ -5070,6 +5073,7 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
         occlusion,
         sun: None,
         view: View::default(),
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
     };
     let fixture = Fixture {
         surface: Surface::Flat,
@@ -5177,6 +5181,7 @@ fn a_fragment_a_hair_inside_a_wall_is_shadowed_by_the_cell_it_drifted_into() {
         occlusion,
         sun: None,
         view: View::default(),
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
     };
     let fixture = Fixture {
         surface: Surface::Upright,

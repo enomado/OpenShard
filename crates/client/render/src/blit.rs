@@ -636,13 +636,16 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     }
     bytes.extend_from_slice(&(count as f32).to_le_bytes());
 
-    // `ground`: the floor every tile gets, roof or no roof. A fourth channel of
-    // nothing, because a `vec3` in a uniform block is padded to four either way
-    // and a stated zero is a zero somebody wrote.
+    // `ground`: the floor every tile gets, roof or no roof. The fourth channel
+    // held a stated zero — a `vec3` is padded to four either way and this file's
+    // own rule is that a channel is claimed when a reader exists — and one does
+    // now: `Lighting::flame_radius`, how big a flame's own sphere is. It rides
+    // here rather than in a plane of its own because it is one number a frame,
+    // read once per ray bundle, and the header already had the room.
     for channel in lighting.ambient.ground {
         bytes.extend_from_slice(&channel.to_le_bytes());
     }
-    bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+    bytes.extend_from_slice(&lighting.flame_radius.to_le_bytes());
 
     // `grid`: where the occlusion texture's corner is on the map, and how big it
     // is. Signed integers, which is what the shader declares that field as —

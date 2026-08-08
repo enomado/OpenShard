@@ -1576,6 +1576,7 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
         occlusion: grid.finish(&Cutaway::OPEN),
         sun: None,
         view: openshard_client_render::debug::View::Lit,
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
     };
 
     // Due east of the wall, level with the flame: the ray runs straight through
@@ -1686,6 +1687,7 @@ fn ray(grid: &occlusion::Occlusion, from: (f32, f32, f32), to: (f32, f32, f32)) 
         occlusion: grid.clone(),
         sun: None,
         view: debug::View::Lit,
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
     };
     let tile = (from.0.floor() as i32, from.1.floor() as i32);
     light::sample(Spot::at(Vec2::new(from.0, from.1), from.2, tile), &lighting).reaches[0].through
@@ -1932,6 +1934,7 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
         occlusion: grid,
         sun: None,
         view: debug::View::default(),
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
     };
 
     // The tile's own middle in `y`, and its far edge: both are points of the
@@ -2170,6 +2173,7 @@ fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
             occlusion: occlusion.clone(),
             sun: None,
             view: debug::View::default(),
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
         };
         for &(at, z) in &spots {
             let spot = Spot::flat(at, z, (100, 100));
@@ -2183,18 +2187,22 @@ fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
             // comfortable distance from a corner, so it was green either way;
             // being green for the right reason is the difference between an
             // oracle and a coincidence.
-            let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, light_z])
-                .iter()
-                .all(|point| {
-                    brute_force_blocked(
-                        [at.x, at.y, z],
-                        *point,
-                        (100, 100),
-                        (point[0].floor() as i32, point[1].floor() as i32),
-                        true,
-                        &occlusion,
-                    )
-                });
+            let brute_blocked = light::flame_points(
+                spot,
+                [light_at.x, light_at.y, light_z],
+                openshard_client_render::light::FLAME_RADIUS,
+            )
+            .iter()
+            .all(|point| {
+                brute_force_blocked(
+                    [at.x, at.y, z],
+                    *point,
+                    (100, 100),
+                    (point[0].floor() as i32, point[1].floor() as i32),
+                    true,
+                    &occlusion,
+                )
+            });
             compared += 1;
             blocked_count += usize::from(walked_blocked);
             if walked_blocked != brute_blocked {
@@ -2309,6 +2317,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
             occlusion: occlusion.clone(),
             sun: None,
             view: debug::View::default(),
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
         };
 
         let spot = Spot::flat(spot_at, spot_z, spot_tile);
@@ -2326,7 +2335,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
         // tile's far corner and most of the eight miss it. `light::flame_points`
         // is where the rays end, shared so that the *scene* is shared and the
         // answer is not — this oracle still walks the segment its own dumb way.
-        let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, flame_z])
+        let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, flame_z], openshard_client_render::light::FLAME_RADIUS)
             .iter()
             .all(|point| {
                 brute_force_blocked(
@@ -2420,6 +2429,7 @@ fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
             occlusion: occlusion.clone(),
             sun: None,
             view: debug::View::default(),
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
         };
         for &(at, z) in &spots {
             let spot = Spot::flat(at, z, (100, 100));
@@ -2433,18 +2443,22 @@ fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
             // comfortable distance from a corner, so it was green either way;
             // being green for the right reason is the difference between an
             // oracle and a coincidence.
-            let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, light_z])
-                .iter()
-                .all(|point| {
-                    brute_force_blocked(
-                        [at.x, at.y, z],
-                        *point,
-                        (100, 100),
-                        (point[0].floor() as i32, point[1].floor() as i32),
-                        true,
-                        &occlusion,
-                    )
-                });
+            let brute_blocked = light::flame_points(
+                spot,
+                [light_at.x, light_at.y, light_z],
+                openshard_client_render::light::FLAME_RADIUS,
+            )
+            .iter()
+            .all(|point| {
+                brute_force_blocked(
+                    [at.x, at.y, z],
+                    *point,
+                    (100, 100),
+                    (point[0].floor() as i32, point[1].floor() as i32),
+                    true,
+                    &occlusion,
+                )
+            });
             compared += 1;
             blocked_count += usize::from(walked_blocked);
             if walked_blocked != brute_blocked {
@@ -2541,6 +2555,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
             occlusion: occlusion.clone(),
             sun: None,
             view: debug::View::default(),
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
         };
 
         let spot = Spot::flat(spot_at, spot_z, spot_tile);
@@ -2558,7 +2573,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
         // tile's far corner and most of the eight miss it. `light::flame_points`
         // is where the rays end, shared so that the *scene* is shared and the
         // answer is not — this oracle still walks the segment its own dumb way.
-        let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, flame_z])
+        let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, flame_z], openshard_client_render::light::FLAME_RADIUS)
             .iter()
             .all(|point| {
                 brute_force_blocked(

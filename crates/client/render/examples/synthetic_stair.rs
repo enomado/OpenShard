@@ -780,7 +780,11 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), bodies: &[Body
         point.2 as f32,
         (point.0.floor() as i32, point.1.floor() as i32),
     );
-    let points = light::flame_points(spot, [light.0 as f32, light.1 as f32, light.2 as f32]);
+    let points = light::flame_points(
+        spot,
+        [light.0 as f32, light.1 as f32, light.2 as f32],
+        openshard_client_render::light::FLAME_RADIUS,
+    );
     let clear = points
         .iter()
         .filter(|at| {
@@ -1699,6 +1703,7 @@ fn main() {
         occlusion,
         sun: None,
         view: selected,
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
     };
     // The CPU twin of a pixel, on demand. A picture says a fragment came out
     // black; this says *what* took its ray, by name — and after
