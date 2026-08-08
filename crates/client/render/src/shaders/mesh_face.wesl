@@ -13,6 +13,7 @@
 // it (`docs/gbuffer.md` decision 4).
 
 import package::place_format::{KIND_STATIC, STANCE_MESH_FACE, pack_ids};
+import package::normal_format::pack_normal;
 
 struct Viewport {
     // Real pixels per virtual pixel — see `ground.wgsl`, which documents the
@@ -106,8 +107,8 @@ struct FragmentOut {
     // why the phase's test picks a mesh face to compare against.
     @location(1) position: vec4<f32>,
     // And which way it looks, carried whole from the vertex rather than named
-    // by a stance and read back out of one.
-    @location(2) normal: vec4<f32>,
+    // by a stance and read back out of one — packed by `normal_format.wesl`.
+    @location(2) normal: u32,
 };
 
 @fragment
@@ -129,6 +130,6 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // that bug: one fragment on an otherwise evenly-shadowed tread reading fully
     // lit, because the walk it fed started from the wrong tile's occluders.
     out.position = vec4<f32>(in.world, 1.0);
-    out.normal = vec4<f32>(in.normal, 1.0);
+    out.normal = pack_normal(in.normal);
     return out;
 }

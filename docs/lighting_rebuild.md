@@ -69,7 +69,7 @@ something reconstructed downstream:
 | quantity | where it lives | unit |
 |---|---|---|
 | fragment position | G-buffer, `Rgba32Float` | tiles, `z` **in tiles** |
-| surface normal | G-buffer, `Rgba32Float` (was to be `Rg16Snorm`, octahedral — see phase 2) | unit vector |
+| surface normal | G-buffer, `R32Uint`, octahedral (was to be `Rg16Snorm` — see phase 2) | unit vector |
 | albedo | G-buffer, `Rgba8UnormSrgb` | linear after decode |
 | primitive identity | G-buffer, `R32Uint` | opaque id |
 | light accumulation | offscreen, `Rgba16Float` | linear radiance |
@@ -449,20 +449,20 @@ zero, and **the zero vector is a value here** — a billboard has no side, and
 phases 6 and 7 are the work of leaving less of that in a frame, not of pretending
 it is absent today.
 
-And **the client now asks an adapter for more than WebGPU's guaranteed
-minimum.** A world pass writes the picture and every plane in one draw, and
-`maxColorAttachmentBytesPerSample` bounds the total: the floor is 32 and the set
-was already at exactly 32 before this — picture 8, `place` 8, position 16 — so
-*no* fourth plane fitted, in any format. `gbuffer::required_limits` is the one
-place that asks, `attachment_bytes_per_sample` sums the real per-format table
-rather than the widths a person reads off the names, and
-`a_g_buffer_costs_what_it_says` pins the total and asserts it is past the
-floor. The cost is stated plainly rather than absorbed: a device reporting only
-the minimum cannot run this client. Phase 2's own end brings it back — the target
-layout is position, normal, albedo and ids at exactly 32, with no separate
-picture beside them, because the albedo *is* the picture. The id plane took the
-first four of the sixteen back on arrival (48 → 44), which is why it went next
-and for a reason that had nothing to do with its readers.
+And **the client asked an adapter for more than WebGPU's guaranteed minimum for
+the length of this phase.** A world pass writes the picture and every plane in
+one draw, and `maxColorAttachmentBytesPerSample` bounds the total: the floor is
+32 and the set was already at exactly 32 before this — picture 8, `place` 8,
+position 16 — so *no* fourth plane fitted, in any format.
+`gbuffer::required_limits` is the one place that asks,
+`attachment_bytes_per_sample` sums the real per-format table rather than the
+widths a person reads off the names, and `a_g_buffer_costs_what_it_says` pins
+the total. The cost was stated plainly rather than absorbed while it stood: a
+device reporting only the minimum could not run this client. Both later steps of
+this phase gave it back — the id plane four (48 → 44) and the packed normal
+plane twelve (44 → 32) — so the assertion now reads the other way, and the
+target layout phase 6 has to hit is that same 32 with no separate picture beside
+the albedo.
 
 *The id plane landed, and it is where the attachment ended.* `place`'s eight
 bytes a fragment were an id, a height in whole units and sixteenths, a stance
@@ -485,9 +485,9 @@ branch rests on, and the one thing a layout can quietly break.
 it.
 
 **It bought a third of the budget back, which is why it went next.**
-`ATTACHMENT_BYTES_PER_SAMPLE` is 44 against 48, and the twelve still over
-WebGPU's floor of 32 are the normal plane's — see the backlog, which is where
-the octahedral pair now belongs. And the stance survived the move, so the phase
+`ATTACHMENT_BYTES_PER_SAMPLE` was 44 against 48, and the twelve still over
+WebGPU's floor of 32 were the normal plane's — packed next, below, which is what
+brought the total to 32 exactly. And the stance survived the move, so the phase
 did not retire it: `blit.wesl` still reads it to route a mesh face's id to its
 own instance buffer and to ask the shadow walk's own-run test which edge a
 fragment stands on. **Phase 4 is what retires the second**; the first goes when
@@ -500,6 +500,63 @@ test. And `View::Place`'s checkerboard is drawn from the **tile** now: it was
 taken from the two halves of the *id*, so a frame's squares counted instance
 rows rather than tiles, and it went unnoticed because a diagnostic is read for
 whether a gradient is there and both versions have one.
+
+*And the normal plane was packed, which is what put the whole set under
+WebGPU's floor.* The plane was `Rgba32Float` — sixteen bytes a fragment for a
+unit vector and a coverage bit — and those twelve extra bytes were, after the id
+plane, the entire remainder of what this client asked an adapter for above the
+guaranteed 32. `ATTACHMENT_BYTES_PER_SAMPLE` is **32 exactly** now, so
+`a_g_buffer_costs_what_it_says` asserts `<= floor` where it used to assert
+`> floor`, and the sentence "a device reporting only the minimum cannot run this
+client" is retired rather than softened.
+
+**It went before phase 6 because it is a term of phase 6's own sum.** That
+phase's target layout is position `16` + normal + albedo `8` + ids `4` with no
+separate picture beside them — which comes to 32 only if the normal is 4. It was
+never a tidiness item.
+
+Four decisions, and the second is the one that had to be made rather than
+looked up:
+
+- **`R32Uint`, octahedral, integers on both sides.** `Rg16Snorm` is behind
+  `TEXTURE_FORMAT_16BIT_NORM`, native-only; `Rgba16Float` is renderable and was
+  refused for the reason phase 2 refused it — this plane is *written from the
+  CPU* by `plan.rs` and by two fixtures, there is no `f16` there, and a
+  hand-rolled encoder is a second spelling of a format with no compiler
+  comparing the two. An integer word has neither problem and turns the encoding
+  into the thing this crate already keeps honest.
+- **The two non-vectors stayed in the plane, in two bits of their own.** A
+  fragment nothing drew and a fragment with no facing are different answers, and
+  the four-float plane separated them with its fourth channel. Fifteen bits an
+  axis leaves two over, so `NORMAL_DRAWN` and `NORMAL_FACING` carry that split at
+  no cost — rather than being inferred from the id word beside it (`KIND_NOTHING`
+  and `STANCE_UPRIGHT` do name the same two states today). The plane still means
+  something read alone, which is how `View::Normal` and every test that copies it
+  back read it.
+- **The span is even.** Each axis quantises to `32766` steps and not to the
+  `32767` its bits allow, so that zero lands on a code instead of half a step off
+  one. Nearly every normal this renderer writes is cardinal — every wall face,
+  every lid, every level tile — and an odd span moves all of them by a
+  ten-thousandth for nothing. With an even one, all six round-trip bit-for-bit,
+  and the sweep's worst over the whole sphere is **`0.0068°`**, against a `0.01°`
+  bound taken from what a channel can show rather than from the mapping.
+- **The gate is an integer against an integer, not a tolerance.**
+  `two_mesh_faces_carry_their_own_two_normals` renders a face and asserts the
+  word the GPU wrote equals `gbuffer::pack_normal`'s. `normal_format.wesl` and
+  its Rust twin are two spellings no compiler compares, and this is the only
+  thing that does — fault-injected by moving the span on one side alone, which
+  turns it red. The test grew a **third** face, a slope off every axis, for
+  exactly that: the two cardinal ones go through the packing's exact cases and
+  would survive a fold spelled differently.
+
+*And one thing the first version of that sweep got wrong, which is worth
+keeping.* It measured the angle as `acos` of a dot product and reported the
+packing losing `0.028°` — four times the truth. Near zero, `acos`'s derivative
+is infinite, so a dot carrying `f32`'s own `1e-7` comes back as `sqrt(2e-7)`,
+which is `0.026°`: the number being read was the *instrument's* noise floor and
+nothing of the packing was visible under it. The chord is well conditioned —
+subtracting two nearby `f32`s is exact — and `2·asin(|a − b| / 2)` is the same
+angle.
 
 Left: albedo for a mesh face, which has none — phase 6.
 
@@ -810,6 +867,32 @@ normal, one draw. `WIDTH_OVERLAP` is deleted.
 *Done when:* the difference frame's "drawn by one side only" classes are zero
 except for rasteriser fill-rule dashes, against today's 1370.
 
+*Three things this paragraph does not settle, written down before the phase
+starts rather than discovered inside it:*
+
+- **Where the prism comes from.** A fragment needs its static's own boxes, which
+  means a range into a storage buffer per instance. `statics.wesl`'s header said
+  it kept "inside WebGL2's ceiling" and that was a stale objection — the crate's
+  ceiling is WebGPU (`lib.rs`, `docs/lighting.md` decision 30.5) and `blit.wesl`
+  beside it reads eleven storage buffers. The comment is corrected; the design
+  is allowed.
+- **The view ray is a constant and the phase should say so.** From
+  `camera::project_exact`, holding a screen point fixed gives `dx = dy` and
+  `22·(dx + dy) = 4·dz`, so `dz = 11·dx` — and at `Z_PER_TILE = 11` the
+  direction in the isotropic metric is exactly **`(1, 1, 1)`**. So there is no
+  per-fragment unprojection to write: it is a slab test against a constant
+  direction. Writing an inverse projection here would be the sixth spelling of
+  one, which is already a backlog entry of its own.
+- **The miss case needs its own measurement.** "A pixel whose ray misses the
+  prism takes the nearest point on it" lives on a pixel or two of silhouette and
+  no picture gate will ever fail on it. The phase's "done when" should carry a
+  second number: how many fragments took the nearest-point path, and how far off
+  the prism they were.
+
+And what it closes for free: with no separate mesh pass there is no fragment
+without an albedo, so phase 2's own leftover goes with it — and `Albedos::body`
+stops being invented, which gives phase 0 the vertical-face scene it never had.
+
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
 in a frame a human being has looked at.
@@ -876,7 +959,7 @@ is here, in one list.
 | [`lighting_geometry.md`](lighting_geometry.md) | box → mesh occluders, never started | **cheaper after phase 4**, which makes primitives addressable by id. The choice of primitive shape stays its own question |
 | [`lighting_height.md`](lighting_height.md) | the height track: four landed phases and a long backlog | **the backlog is mostly deleted rather than fixed** — see the mapping below |
 | [`lighting_reference.md`](lighting_reference.md) | the path tracer, a third opinion with no shared arithmetic | **becomes phase 0**, the oracle everything else is judged by |
-| [`gbuffer.md`](gbuffer.md) | the `place` attachment's format, ids, per-face mesh geometry | **phase 2 replaced the format** and inherited every one of its readers. Its open question — how to encode a normal for a non-axis-aligned face — is answered there: as three floats in a plane of its own, the encoding argued for in phase 2's own account (octahedral, which this document first named, is not a format wgpu will render to under WebGPU's core set) |
+| [`gbuffer.md`](gbuffer.md) | the `place` attachment's format, ids, per-face mesh geometry | **phase 2 replaced the format** and inherited every one of its readers. Its open question — how to encode a normal for a non-axis-aligned face — is answered there: an octahedral pair packed as integers into an `R32Uint`, with two bits over for the two answers that are not directions. (`Rg16Snorm`, which this document first named, is not a format wgpu will render to under WebGPU's core set; the plane spent one phase as three floats before it was packed) |
 | [`world_coordinates.md`](world_coordinates.md) | a position should carry its own cell; one metric | **half of it is phase 2** (positions as data, `z` in tiles once). The CPU-side type stays its own track |
 
 ### What each phase deletes from `lighting_height.md`'s backlog
@@ -1067,18 +1150,10 @@ Things noticed while writing this, not blocking any phase:
   visibility comparison is in `Brdf::Flat` and the shaded strip in
   `Brdf::Lambert`. Phase 4 retires the first, and the second mirror should go with
   it rather than become a habit.
-- **The normal plane is sixteen bytes a fragment and needs four.** Twelve of the
-  forty-four this client now asks an adapter for are a unit vector stored as
-  three `f32`s, and the only reason is that there is no `f16` on the CPU side
-  writing it. An octahedral pair in an `R32Uint`, packed as integers on both
-  sides the way `place_format.wesl`'s own id word is and pinned by a round trip,
-  would buy the whole of that back — and it needs a value for "no facing", which
-  the id word has spare bits for: twenty-six of its thirty-two are an id, and
-  nothing this client draws needs more than a dozen of them. This was to be done
-  *with* the id plane; it was not, because the id plane on its own was already
-  the step that brought the total under the next thing that would have needed
-  it. It is the whole of what stands between this client and WebGPU's floor
-  today, so it is worth doing before phase 6 makes the budget a question again.
+- ~~**The normal plane is sixteen bytes a fragment and needs four.**~~ **Done —
+  see phase 2's own account.** An octahedral pair in an `R32Uint`, integers on
+  both sides, and the two spare bits carry "nothing drew this" and "no facing"
+  rather than the id word doing it. `ATTACHMENT_BYTES_PER_SAMPLE` is 32.
 - `docs/lighting_height.md`'s backlog does not disappear — most of its entries
   are *deleted* by a phase here rather than fixed, and each should be marked with
   which phase kills it rather than left reading as work.

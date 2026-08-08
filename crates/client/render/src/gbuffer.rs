@@ -28,14 +28,14 @@
 //! pass's, which is exactly the two lifetimes the hand-written code had — only
 //! now they are named.
 //!
-//! # What a G-buffer costs to bind, and the one limit it does not fit under
+//! # What a G-buffer costs to bind, and the limit it fits under exactly
 //!
 //! A world pass writes the picture and every plane here in one draw, and WebGPU
 //! bounds the *total* bytes a fragment may write across a pass's colour
 //! attachments: `maxColorAttachmentBytesPerSample`, whose guaranteed minimum is
-//! **32**. See [`required_limits`] — this is the one place in the crate that
-//! asks an adapter for more than the floor, and the arithmetic is written out
-//! there.
+//! **32**. The set comes to exactly that. See [`required_limits`], where the
+//! arithmetic is written out, and [`NORMAL_FORMAT`] for the twelve bytes that
+//! had to be given back to get there.
 
 /// The device limits this crate's pipelines need, above the guaranteed
 /// minimum — one spelling, because eleven call sites request a device and a
@@ -45,27 +45,27 @@
 /// **Only `max_color_attachment_bytes_per_sample`, and only because deferred
 /// shading is what it bounds.** A world pass writes the picture and every plane
 /// of the G-buffer in one draw, and WebGPU counts the bytes a fragment writes
-/// across all of them together. The floor is 32 and the set here is past it —
-/// [`ATTACHMENT_BYTES_PER_SAMPLE`] is the sum, spelled out and pinned by a test,
-/// so that a plane added or a format widened moves a number a person can read
-/// rather than turning into a validation error naming no cause.
+/// across all of them together. [`ATTACHMENT_BYTES_PER_SAMPLE`] is the sum,
+/// spelled out and pinned by a test, so that a plane added or a format widened
+/// moves a number a person can read rather than turning into a validation error
+/// naming no cause.
 ///
-/// This is a real portability cost and it is worth stating plainly: **a device
-/// that reports only the guaranteed minimum cannot run this client.** The
-/// ceiling is WebGPU (see the crate docs) and desktop adapters report far more
-/// than 32 — but the floor is a floor, and asking for more than it is a choice
-/// rather than something that happened. The choice is
-/// `docs/lighting_rebuild.md`'s: a fragment's position, its normal and what it
-/// belongs to are *data*, and data has a size. Phase 2's own end brings the sum
-/// back down — the target layout there is position, normal, albedo and ids at
-/// exactly 32, with no separate picture beside them, because the albedo *is*
-/// the picture.
+/// **This asks for nothing above the floor today, and it is kept because the
+/// next plane will.** The set came to 44 while the normal plane was three
+/// floats and a coverage channel, which meant plainly that a device reporting
+/// only the guaranteed minimum could not run this client; [`NORMAL_FORMAT`] is
+/// one packed word now and the sum is exactly 32. Phase 6's target layout —
+/// position, normal, albedo and ids, with no separate picture beside them
+/// because the albedo *is* the picture — is the same 32, so the arithmetic
+/// below is what says that phase still fits rather than something a person
+/// re-derives when it lands.
 ///
-/// The id plane bought four of the sixteen back on arrival: [`IDS_FORMAT`] is
-/// an `R32Uint` where the `place` attachment it replaced was an `Rgba16Uint`,
-/// and the eight bytes that plane charged were mostly a height and a fraction
-/// the position plane now carries exactly. The twelve still over the floor are
-/// [`NORMAL_FORMAT`]'s, and its own doc says what would buy them.
+/// The two steps that got there, in order, because each is a different kind of
+/// saving. The id plane bought four: [`IDS_FORMAT`] is an `R32Uint` where the
+/// `place` attachment it replaced was an `Rgba16Uint`, and the eight bytes that
+/// plane charged were mostly a height and a fraction the position plane now
+/// carries exactly. The normal plane bought twelve, and bought them without
+/// giving anything up — see its own doc.
 pub fn required_limits() -> wgpu::Limits {
     wgpu::Limits {
         max_color_attachment_bytes_per_sample: attachment_bytes_per_sample(),
@@ -97,8 +97,10 @@ fn attachment_bytes_per_sample() -> u32 {
         .sum()
 }
 
-/// What that sum is expected to be. See [`attachment_bytes_per_sample`].
-pub const ATTACHMENT_BYTES_PER_SAMPLE: u32 = 44;
+/// What that sum is expected to be — and it is WebGPU's guaranteed minimum
+/// exactly, not a number under it with room to spare. See
+/// [`attachment_bytes_per_sample`].
+pub const ATTACHMENT_BYTES_PER_SAMPLE: u32 = 32;
 
 /// Every colour attachment a world pass writes, in the order it binds them.
 ///
@@ -254,53 +256,163 @@ pub const POSITION_CLEAR: wgpu::Color = wgpu::Color {
     a: 0.0,
 };
 
-/// Which way each pixel's surface looks: `(x, y, z, 1)`, a unit vector, or all
-/// zeros for a surface with no known facing.
+/// Which way each pixel's surface looks: one octahedral word, and the layout is
+/// [`pack_normal`].
 ///
-/// **The zero vector is a value here and not an absence**, which is what
-/// decides the format. A billboard has no side — a tree, a body, a wall whose
-/// art named no edge — so every flame that reaches it lights it, and
-/// `blit.wesl` tests `any(normal != 0)` for exactly that. Land is the same
-/// answer for a different reason (see `docs/lighting_rebuild.md`'s third open
-/// question, which is whether it should be). Both are transitional: phase 6
-/// gives an upright static an impostor normal and phase 7 gives a mobile one,
-/// and when they do, this channel stops having a third case.
+/// `R32Uint`, four bytes a fragment where this was sixteen — three `f32`s of
+/// unit vector and an `f32` of coverage. Those twelve bytes were the whole of
+/// what stood between this client and WebGPU's guaranteed
+/// `maxColorAttachmentBytesPerSample`; see [`required_limits`], which asks for
+/// nothing above it now.
+///
+/// **The zero vector is a value here and not an absence**, and it is what made
+/// the obvious encodings unavailable. A billboard has no side — a tree, a body,
+/// a wall whose art named no edge — so every flame that reaches it lights it,
+/// and `blit.wesl` branches on exactly that. It is transitional: phase 6 gives
+/// an upright static an impostor normal and phase 7 gives a mobile one, and
+/// when they do, this stops having a third case. Until then it is a *state*,
+/// carried in a bit of its own — [`NORMAL_FACING`] — rather than inferred from
+/// the id word beside it, so that the plane still means something read alone.
 ///
 /// **Not `Rg16Snorm`, octahedral, which is what `docs/lighting_rebuild.md`'s
-/// own table says.** Two reasons, and the first is decisive: every 16-bit norm
-/// format is behind `wgpu::Features::TEXTURE_FORMAT_16BIT_NORM`, which is
-/// native-only and not in WebGPU's core set — the ceiling this crate draws
-/// under (see the crate docs). The nearest compact renderable format is
-/// `Rgba16Float`, and it is not taken either: [`crate::plan`]'s diagnostic
-/// pictures and the fixtures in `tests/` *write* this plane from the CPU, and
-/// there is no `f16` on that side, so it would mean a hand-rolled encoder — a
-/// second spelling of a float format with no compiler comparing the two, which
-/// is the class of defect this crate has already paid for twice. The second
-/// reason is the octahedral mapping itself: it has no zero, so the case above
-/// would need a channel of its own anyway.
+/// own table said.** Every 16-bit norm format is behind
+/// `wgpu::Features::TEXTURE_FORMAT_16BIT_NORM`, which is native-only and not in
+/// WebGPU's core set — the ceiling this crate draws under (see the crate docs).
+/// Nor `Rgba16Float`, the nearest compact renderable float format: this plane
+/// is *written from the CPU* by [`crate::plan`]'s diagnostic pictures and by
+/// the fixtures in `tests/`, and there is no `f16` on that side, so it would
+/// mean a hand-rolled encoder — a second spelling of a float format with no
+/// compiler comparing the two, which is the class of defect this crate has
+/// already paid for twice.
 ///
-/// So it is the position plane's own format, written and read the same way.
-/// Shrinking it is welcome later, on the same terms the position plane states
-/// for its own reconstruction: gated on a test that the encoded normal comes
-/// back equal to the stored one. What it would buy is not memory but
-/// [`ATTACHMENT_BYTES_PER_SAMPLE`] — sixteen bytes a fragment against the four
-/// an octahedral pair needs, which is half of what this crate asks an adapter
-/// for above the floor.
-pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+/// An integer word has neither problem, and it turns the encoding into the
+/// thing this crate already knows how to keep honest: the same integers on both
+/// sides, compared by a test that renders a face and reads the word back. See
+/// [`pack_normal`].
+pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
 
-/// What an untouched pixel of [`NORMAL_FORMAT`] is left as.
+/// What an untouched pixel of [`NORMAL_FORMAT`] is left as: zero, which is
+/// [`NORMAL_DRAWN`] clear.
 ///
-/// All zeros, and the fourth channel is the one that separates "nothing drew
-/// here" from "something drew here and has no facing" — the same coverage bit
-/// [`POSITION_CLEAR`] carries, for the same reason. The lighting never asks:
-/// it has already passed a [`crate::place::Kind::Nothing`] pixel through
-/// untouched. `View::Normal` does.
+/// The bit is what separates "nothing drew here" from "something drew here and
+/// has no facing" — the job the fourth channel did while this was four floats,
+/// kept for the same reason and at no cost, since the fifteen bits an axis
+/// needs leave two over. The lighting never asks: it has already passed a
+/// [`crate::place::Kind::Nothing`] pixel through untouched. `View::Normal` and
+/// the tests that copy this plane back do.
 pub const NORMAL_CLEAR: wgpu::Color = wgpu::Color {
     r: 0.0,
     g: 0.0,
     b: 0.0,
     a: 0.0,
 };
+
+/// Bits of one axis of the octahedral pair — `normal_format.wesl`'s
+/// `NORMAL_AXIS_BITS`, and nothing but a person reading both files can compare
+/// them. [`pack_normal`] below is what everything on this side goes through.
+pub const NORMAL_AXIS_BITS: u32 = 15;
+
+/// That axis's mask: `normal_format.wesl`'s `NORMAL_AXIS_MASK`.
+pub const NORMAL_AXIS_MASK: u32 = (1 << NORMAL_AXIS_BITS) - 1;
+
+/// How many steps an axis is quantised into — **even**, and one short of what
+/// [`NORMAL_AXIS_MASK`] allows.
+///
+/// The evenness is the whole of why cardinal normals survive this exactly.
+/// `-1`, `0` and `+1` are the three values almost every normal this renderer
+/// writes is made of — every wall face, every lid, every level tile — and an
+/// odd span puts zero half a step off a code, which would move all of them by a
+/// ten-thousandth for nothing. With an even one they land on `0`, the middle
+/// code and the top code, and come back bit-identical.
+pub const NORMAL_AXIS_SPAN: f32 = 32766.0;
+
+/// The bit that says this fragment has a facing at all —
+/// `normal_format.wesl`'s `NORMAL_FACING`. See [`NORMAL_FORMAT`] for the three
+/// states this and [`NORMAL_DRAWN`] spell between them.
+pub const NORMAL_FACING: u32 = 1 << 30;
+
+/// And the bit that says a fragment was drawn here: `normal_format.wesl`'s
+/// `NORMAL_DRAWN`, and the one [`NORMAL_CLEAR`] leaves clear.
+pub const NORMAL_DRAWN: u32 = 1 << 31;
+
+/// Which side of zero a number is on, counting zero as the positive side — the
+/// twin of `normal_format.wesl`'s `axis_sign`.
+///
+/// **Neither `f32::signum` nor a `sign` intrinsic.** WGSL's `sign` answers `0`
+/// at zero, and the octahedron's fold multiplies by this: a zero there collapses
+/// a whole edge of the square onto the origin. `f32::signum` does not have that
+/// problem and has a different one — it is a third spelling, and the two halves
+/// of this packing agreeing is the only thing keeping them one format.
+fn axis_sign(value: f32) -> f32 {
+    if value >= 0.0 { 1.0 } else { -1.0 }
+}
+
+/// One word of [`NORMAL_FORMAT`] from one direction — the Rust twin of
+/// `normal_format.wesl`'s `pack_normal`.
+///
+/// A zero vector means "no facing" and is the one input that is not a
+/// direction; everything else is expected to be a unit vector, and the mapping
+/// is octahedral — see `normal_format.wesl`, which carries the argument for it
+/// once.
+///
+/// **The two sides are compared by rendering, not by reading.**
+/// `two_mesh_faces_carry_their_own_two_normals` hands the mesh pass a normal,
+/// reads the plane back and asserts the word equals this function's — so the
+/// gate is an integer computed by the GPU against an integer computed here,
+/// with no tolerance and nothing in between. That is what a hand-rolled `f16`
+/// encoder could not have offered.
+pub fn pack_normal(normal: [f32; 3]) -> u32 {
+    let [x, y, z] = normal;
+    let sum = x.abs() + y.abs() + z.abs();
+    if sum == 0.0 {
+        return NORMAL_DRAWN;
+    }
+    // Onto the octahedron, which is what makes the two components below add up
+    // to a known total and therefore recoverable from each other.
+    let (x, y, z) = (x / sum, y / sum, z / sum);
+    // The lower half folds outwards into the corners of the square.
+    let oct = if z < 0.0 {
+        [(1.0 - y.abs()) * axis_sign(x), (1.0 - x.abs()) * axis_sign(y)]
+    } else {
+        [x, y]
+    };
+    // Clamped before the scale rather than after: the fold is exact in
+    // principle and a rounding error of one bit at a corner would otherwise
+    // produce a code past the mask, which wraps rather than saturates.
+    let step = |value: f32| {
+        let steps = (value.clamp(-1.0, 1.0) * 0.5 + 0.5) * NORMAL_AXIS_SPAN;
+        (steps.round() as u32) & NORMAL_AXIS_MASK
+    };
+    NORMAL_DRAWN | NORMAL_FACING | step(oct[0]) | step(oct[1]) << NORMAL_AXIS_BITS
+}
+
+/// And back: the unit vector a word names, or a zero vector for a fragment with
+/// no facing. `normal_format.wesl`'s `unpack_normal`.
+///
+/// A word nothing drew answers zero as well — a reader that must tell those two
+/// apart tests [`NORMAL_DRAWN`], exactly as one that must tell an unlit
+/// fragment from an unreached one matches on the variant rather than on the
+/// number.
+pub fn unpack_normal(word: u32) -> [f32; 3] {
+    if word & NORMAL_FACING == 0 {
+        return [0.0; 3];
+    }
+    let axis =
+        |steps: u32| f32::from(u16::try_from(steps).expect("fifteen bits")) / NORMAL_AXIS_SPAN * 2.0 - 1.0;
+    let x = axis(word & NORMAL_AXIS_MASK);
+    let y = axis((word >> NORMAL_AXIS_BITS) & NORMAL_AXIS_MASK);
+    // The third component is what the octahedron's own equation leaves: it is
+    // negative exactly on the folded half, which is how the fold is undone
+    // without a bit saying it happened.
+    let z = 1.0 - x.abs() - y.abs();
+    let [x, y] = if z < 0.0 {
+        [(1.0 - y.abs()) * axis_sign(x), (1.0 - x.abs()) * axis_sign(y)]
+    } else {
+        [x, y]
+    };
+    let length = (x * x + y * y + z * z).sqrt();
+    [x / length, y / length, z / length]
+}
 
 /// The attachments of one frame, at one size.
 ///
@@ -436,26 +548,33 @@ impl Fragment {
         ]
     }
 
-    /// And the four of [`NORMAL_FORMAT`]'s.
+    /// The one word of [`NORMAL_FORMAT`]'s texel. See [`pack_normal`].
     ///
     /// Derived from the stance rather than carried as a fifth field, because
-    /// that is what the world passes themselves do: `statics.wesl` writes
+    /// that is what the sprite pass itself does: `statics.wesl` writes
     /// `outward` of the stance it just resolved a corner into, and there is no
-    /// producer anywhere that knows a facing this enum cannot name. The one
-    /// place the two part company is **land**, which carries
-    /// [`crate::place::Stance::Flat`] and no normal — `ground.wesl`'s own
-    /// choice, and see [`crate::place::Stance::normal`] for why the kind and
-    /// not the stance is what tells the ground from a wall's flat cap.
+    /// producer of a *sprite* that knows a facing this enum cannot name.
+    ///
+    /// The one place the two part company is **land**, which carries
+    /// [`crate::place::Stance::Flat`] and answers no facing here — where
+    /// `ground.wesl` writes the bilinear patch's own normal per fragment.
+    /// That is not this method being wrong: a fixture states a surface by its
+    /// stance and a stance cannot hold a hillside's direction, which is
+    /// `docs/lighting_rebuild.md`'s own backlog entry about the CPU's four
+    /// fixed normals, seen from the fixture side. What a fixture gets is level
+    /// land's answer with the facing bit clear rather than `(0, 0, 1)`, so a
+    /// parity scene lights it from every side — which is what it did before
+    /// this plane existed at all, and what keeps a margin from moving for a
+    /// reason that is not under test.
     ///
     /// The day the mesh pass is not the only producer with geometry of its own
     /// — phase 6's impostor, phase 7's billboard — this grows a field and the
     /// derivation goes.
-    pub fn normal(self) -> [f32; 4] {
-        let [x, y, z] = match self.kind {
-            crate::place::Kind::Land => [0.0; 3],
-            _ => self.stance.normal(),
-        };
-        [x, y, z, 1.0]
+    pub fn normal(self) -> u32 {
+        match self.kind {
+            crate::place::Kind::Land => NORMAL_DRAWN,
+            _ => pack_normal(self.stance.normal()),
+        }
     }
 }
 
@@ -500,7 +619,7 @@ mod tests {
     use super::*;
 
     /// [`ATTACHMENT_BYTES_PER_SAMPLE`] is the sum of what the attachments
-    /// actually cost, and it is past the floor.
+    /// actually cost, and that sum fits WebGPU's guaranteed minimum.
     ///
     /// The number is a device limit this crate asks an adapter for, so getting
     /// it wrong is not a wrong picture: it is `request_device` refusing on one
@@ -509,17 +628,20 @@ mod tests {
     /// widths a person reads off the format names — WebGPU charges for
     /// alignment, and an `Rgba8Unorm` picture costs eight bytes and not four,
     /// which is exactly the sort of thing nobody guesses right.
+    ///
+    /// The second assertion is the one that changed direction. It used to read
+    /// `total > floor` and say "if a plane is ever shrunk back under the floor,
+    /// this is the line that says so" — which is what happened, so it says the
+    /// opposite now: the set fits every adapter, and a plane added or widened
+    /// past the floor has to argue for itself here rather than arrive.
     #[test]
     fn a_g_buffer_costs_what_it_says() {
         let total = attachment_bytes_per_sample();
         assert_eq!(total, ATTACHMENT_BYTES_PER_SAMPLE);
         assert_eq!(required_limits().max_color_attachment_bytes_per_sample, total);
-        // And the fact that makes this constant exist at all. If a plane is ever
-        // shrunk back under the floor, this is the line that says so — and the
-        // whole of `required_limits` goes with it.
         assert!(
-            total > wgpu::Limits::default().max_color_attachment_bytes_per_sample,
-            "the G-buffer fits the guaranteed minimum: ask for nothing above it",
+            total <= wgpu::Limits::default().max_color_attachment_bytes_per_sample,
+            "the G-buffer asks an adapter for more than WebGPU guarantees",
         );
     }
 
@@ -571,19 +693,130 @@ mod tests {
         // The ground and a rug lying on it are the same stance and the same
         // shape of pixel, and only one of them is gated by which side of its own
         // plane a flame is on. See `ground.wesl`, which has the measurement.
+        let land = at(crate::place::Kind::Land, crate::place::Stance::Flat);
+        assert_eq!(land & NORMAL_FACING, 0, "a fixture's land claims a facing");
+        assert_eq!(unpack_normal(land), [0.0; 3]);
+        let floor = at(crate::place::Kind::Static, crate::place::Stance::Flat);
+        assert_eq!(unpack_normal(floor), [0.0, 0.0, 1.0], "a floor does not look up");
+        // A billboard has no side, and says so with a clear facing bit — which
+        // is why the two states have a bit each and are not one zero vector.
+        let body = at(crate::place::Kind::Mobile, crate::place::Stance::Upright);
+        assert_eq!(body & NORMAL_FACING, 0, "a body claims a facing");
+        // And all three were drawn, which is the other bit and the thing that
+        // separates any of them from a pixel nothing touched.
+        for (word, what) in [(land, "land"), (floor, "a floor"), (body, "a body")] {
+            assert_eq!(word & NORMAL_DRAWN, NORMAL_DRAWN, "{what} reads as undrawn");
+        }
+    }
+
+    /// Every direction survives the octahedral packing to within a fraction of
+    /// a degree, and the ones this renderer actually writes survive it exactly.
+    ///
+    /// Two claims, and the second is the one worth the constant: **a cardinal
+    /// normal round-trips bit-for-bit.** Every wall face, every lid and every
+    /// level tile is one of six vectors, so an encoding that moved them by a
+    /// ten-thousandth would be moving nearly every fragment in a frame for
+    /// nothing — see [`NORMAL_AXIS_SPAN`], whose evenness is what buys it.
+    ///
+    /// The first is a bound rather than an equality, and it is tied to what a
+    /// frame can show rather than to the mapping: at `0.01°` the cosine a
+    /// shading term multiplies by moves by under `2e-4`, which is a twentieth
+    /// of one step of a 255-level channel. The worst measured over the sweep
+    /// below is **`0.0068°`**, so the bound is not a margin sized to fit.
+    #[test]
+    fn a_direction_survives_the_normal_packing() {
+        // The angle between two nearly-parallel unit vectors, **from the chord
+        // and not from the dot product**. `acos` of a dot is the obvious
+        // spelling and it cannot measure this at all: near zero its derivative
+        // is infinite, so a dot carrying `f32`'s own `1e-7` of error comes back
+        // as `sqrt(2e-7)`, which is `0.026°` — larger than anything this test is
+        // looking for. Measured: the first version of this test reported the
+        // packing losing `0.028°` and the packing was not what it was reading.
+        // The chord is well conditioned instead: subtracting two nearby `f32`s
+        // is exact, and `2·asin(|a − b| / 2)` is the same angle.
+        let angle = |a: [f32; 3], b: [f32; 3]| {
+            let chord: f64 = (0..3)
+                .map(|i| {
+                    let d = f64::from(a[i]) - f64::from(b[i]);
+                    d * d
+                })
+                .sum::<f64>()
+                .sqrt();
+            2.0 * (chord / 2.0).clamp(-1.0, 1.0).asin().to_degrees()
+        };
+        // The six a producer in this crate actually writes: `Stance::normal`'s
+        // four faces, a lid, and level land's own.
+        for cardinal in [
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ] {
+            assert_eq!(
+                unpack_normal(pack_normal(cardinal)),
+                cardinal,
+                "a cardinal normal did not come back exactly: {cardinal:?}",
+            );
+        }
+        // And a sweep over the whole sphere, including the folded lower half
+        // and the diagonals where the octahedron's own edges are — which is
+        // where a fold spelled two different ways would show.
+        let mut worst = 0.0f64;
+        for i in 0..97 {
+            for j in 0..89 {
+                let theta = std::f64::consts::PI * f64::from(i) / 96.0;
+                let phi = std::f64::consts::TAU * f64::from(j) / 89.0;
+                let direction = [
+                    (theta.sin() * phi.cos()) as f32,
+                    (theta.sin() * phi.sin()) as f32,
+                    theta.cos() as f32,
+                ];
+                let length =
+                    (direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2])
+                        .sqrt();
+                let unit = [
+                    direction[0] / length,
+                    direction[1] / length,
+                    direction[2] / length,
+                ];
+                let back = unpack_normal(pack_normal(unit));
+                worst = worst.max(angle(unit, back));
+            }
+        }
+        assert!(
+            worst < 0.01,
+            "the packing loses {worst}°, which a channel can show"
+        );
+    }
+
+    /// The two bits above the direction are three states, and none of them is
+    /// reachable from another.
+    ///
+    /// The case that matters is the middle one: "drawn, with no facing" is what
+    /// a billboard writes, and if it decoded to a *direction* every tree in a
+    /// frame would be lit from one side by an angle nobody measured.
+    #[test]
+    fn a_normal_word_says_which_of_three_answers_it_is() {
+        let nothing = 0;
+        let no_facing = pack_normal([0.0; 3]);
+        let facing = pack_normal([0.0, 0.0, 1.0]);
+
+        assert_eq!(nothing & NORMAL_DRAWN, 0, "the clear reads as drawn");
         assert_eq!(
-            at(crate::place::Kind::Land, crate::place::Stance::Flat),
-            [0.0, 0.0, 0.0, 1.0],
+            no_facing, NORMAL_DRAWN,
+            "a billboard's word is more than the one bit"
         );
         assert_eq!(
-            at(crate::place::Kind::Static, crate::place::Stance::Flat),
-            [0.0, 0.0, 1.0, 1.0],
+            facing & (NORMAL_DRAWN | NORMAL_FACING),
+            NORMAL_DRAWN | NORMAL_FACING
         );
-        // A billboard has no side, and says so with a zero — which is why the
-        // fourth channel is coverage and not part of the vector.
-        assert_eq!(
-            at(crate::place::Kind::Mobile, crate::place::Stance::Upright),
-            [0.0, 0.0, 0.0, 1.0],
-        );
+        // Both of the first two answer the zero vector, and that is deliberate:
+        // a reader telling them apart tests the bit, exactly as one telling an
+        // unlit fragment from an unreached one matches on the variant.
+        assert_eq!(unpack_normal(nothing), [0.0; 3]);
+        assert_eq!(unpack_normal(no_facing), [0.0; 3]);
+        assert_eq!(unpack_normal(facing), [0.0, 0.0, 1.0]);
     }
 }

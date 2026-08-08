@@ -386,15 +386,17 @@ impl Blit {
                     count: None,
                 },
                 // And which way that pixel's surface looks — the third plane,
-                // `crate::gbuffer::NORMAL_FORMAT`. Unfilterable for a reason of
-                // its own again: the average of two unit vectors is not a unit
-                // vector, and the average of a wall's normal and the ground's
-                // behind it points into the seam between them.
+                // `crate::gbuffer::NORMAL_FORMAT`, one octahedral word. An
+                // integer texture, which cannot be filtered at all, and that is
+                // the answer this plane wanted anyway: the average of two unit
+                // vectors is not a unit vector, and the average of a wall's
+                // normal and the ground's behind it points into the seam
+                // between them.
                 wgpu::BindGroupLayoutEntry {
                     binding: 16,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        sample_type: wgpu::TextureSampleType::Uint,
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },

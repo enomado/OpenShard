@@ -18,6 +18,8 @@ import package::place_format::{
     STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
 };
 
+import package::normal_format::unpack_normal;
+
 import package::tonemap::shade;
 
 struct VertexOut {
@@ -53,10 +55,11 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // neighbour's is a point on neither surface, floating in the air between a
 // wall and the ground behind it.
 @group(0) @binding(15) var position_of: texture_2d<f32>;
-// And which way its surface looks: a unit vector in tiles, or all zeros for a
-// surface with no known facing — `crate::gbuffer::NORMAL_FORMAT`. Never
-// sampled, for the position plane's own reason with a twist: the average of two
-// unit vectors is not a unit vector, and the average of a wall's normal and the
+// And which way its surface looks: one octahedral word, or a word with no
+// facing bit for a surface with no known one — `crate::gbuffer::NORMAL_FORMAT`,
+// and `normal_format.wesl` is the layout. Never sampled — an integer texture has
+// no filtering, and it would be wrong here anyway: the average of two unit
+// vectors is not a unit vector, and the average of a wall's normal and the
 // ground's behind it points into the seam between them.
 //
 // **This used to be `outward(stance)`, computed here.** A fragment's facing is
@@ -65,7 +68,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOut {
 // and the lighting was recovering a rounded copy of it from four bits at the
 // far end of a `u16`. `docs/lighting_rebuild.md` phase 2, the same move the
 // position plane is.
-@group(0) @binding(16) var normal_of: texture_2d<f32>;
+@group(0) @binding(16) var normal_of: texture_2d<u32>;
 // Where each tile's references are, one texel a tile over the rectangle in
 // `lighting.grid`: (offset & 255, offset >> 8, offset >> 16, count). The index
 // of `docs/lighting.md`'s decision 30 — a count of zero is open ground, and
@@ -1741,12 +1744,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // value that says so.
     //
     // The distinction between land and a wall's flat cap — both `STANCE_FLAT`,
-    // and only one of them wanting `faces`'s half-space gate — used to be made
-    // here, by testing the kind. It is made by the *producer* now:
-    // `ground.wesl` writes a zero normal outright and `statics.wesl` writes
-    // `outward` of the stance it resolved. See `ground.wesl`'s own comment for
-    // the measurement behind that split.
-    let normal = textureLoad(normal_of, texel, 0).xyz;
+    // and only one of them wanting the retired half-space gate — used to be made
+    // here, by testing the kind. It is made by the *producer* now: `ground.wesl`
+    // writes the bilinear patch's own normal and `statics.wesl` writes `outward`
+    // of the stance it resolved. See `ground.wesl`'s own comment for the
+    // measurement behind that split.
+    let normal = unpack_normal(textureLoad(normal_of, texel, 0).x);
 
     // The ambient this *tile* has: the sky's share of it scaled by how much of
     // the sky the column over the tile can see, plus the floor everything gets.

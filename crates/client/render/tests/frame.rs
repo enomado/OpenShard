@@ -2472,6 +2472,19 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
 /// sentinel is a routing tag and not a facing, so the attachment genuinely
 /// cannot tell these two surfaces apart and the plane genuinely can. That is
 /// the whole of what this phase moved.
+///
+/// **It is also where the two halves of the octahedral packing are compared.**
+/// The plane holds one `u32` now (`gbuffer::NORMAL_FORMAT`), and what is
+/// asserted is that word against `gbuffer::pack_normal` of the vector this test
+/// handed the pass — an integer the GPU computed against an integer this side
+/// computed, with no tolerance between them. `normal_format.wesl` and
+/// `gbuffer::pack_normal` are two spellings of one mapping that no compiler
+/// compares, and this is the only thing that does.
+///
+/// The third face is there for that and for nothing else: a **slope**, whose
+/// components are none of `-1`, `0` or `1`. The two cardinal faces above go
+/// through the packing's exact cases and would pass under a fold spelled
+/// differently on the two sides; a direction off the axes would not.
 #[test]
 fn two_mesh_faces_carry_their_own_two_normals() {
     let Some((device, queue)) = gpu() else {
@@ -2512,22 +2525,29 @@ fn two_mesh_faces_carry_their_own_two_normals() {
     // from exactly these two shapes, and `Stance::normal` is the same table.
     let top = Stance::Flat.normal();
     let riser = Stance::FaceEast.normal();
-    let vertices: Vec<MeshFaceVertex> = quad(54.0, 0, top)
+    // And a slope, off every axis, which is what `ground.wesl`'s own bilinear
+    // patch writes on a hillside and what no cardinal case can stand in for.
+    // Normalised here rather than authored as a unit vector so that the number
+    // fed to the pass is the number `pack_normal` is asked about.
+    let slope = {
+        let raw = [0.37f32, -0.62, 0.69];
+        let length = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+        [raw[0] / length, raw[1] / length, raw[2] / length]
+    };
+    let vertices: Vec<MeshFaceVertex> = quad(24.0, 0, slope)
         .into_iter()
-        .chain(quad(84.0, 1, riser))
+        .chain(quad(54.0, 1, top))
+        .chain(quad(84.0, 2, riser))
         .collect();
-    let rows = [
-        MeshFaceRow {
-            tile: (300, 400),
-            stance: Stance::Flat,
-            solid: openshard_client_render::occlusion::SolidId::NOBODY,
-        },
-        MeshFaceRow {
-            tile: (300, 400),
-            stance: Stance::FaceEast,
-            solid: openshard_client_render::occlusion::SolidId::NOBODY,
-        },
-    ];
+    let row = |stance| MeshFaceRow {
+        tile: (300, 400),
+        stance,
+        solid: openshard_client_render::occlusion::SolidId::NOBODY,
+    };
+    // The slope's row carries `Flat`: a stance is four faces and a lid and
+    // cannot name a hillside, which is exactly why the normal is a plane of its
+    // own and not four bits of the id word.
+    let rows = [row(Stance::Flat), row(Stance::Flat), row(Stance::FaceEast)];
 
     let places = render_places(
         &device,
@@ -2541,38 +2561,41 @@ fn two_mesh_faces_carry_their_own_two_normals() {
         &rows,
         128,
     );
-    for (x, y, what) in [(64, 64, "the top"), (94, 94, "the riser")] {
+    let faces = [
+        (34, 34, slope, "a slope"),
+        (64, 64, top, "a tread's top"),
+        (94, 94, riser, "a riser"),
+    ];
+    for (x, y, normal, what) in faces {
         assert_eq!(
             gbuffer::ids_kind(places.at(x, y)),
             Some(Kind::Static),
             "nothing was drawn on {what}",
         );
-    }
-    assert_eq!(
-        places.normal_at(64, 64),
-        [top[0], top[1], top[2], 1.0],
-        "a tread's top does not carry its own normal",
-    );
-    assert_eq!(
-        places.normal_at(94, 94),
-        [riser[0], riser[1], riser[2], 1.0],
-        "a riser does not carry its own normal",
-    );
-    // And the field the lighting used to read this from cannot separate them:
-    // both fragments' stance bits hold the routing sentinel, which names no
-    // direction at all.
-    for (x, y) in [(64, 64), (94, 94)] {
+        // The word, not the direction: see `Places::normal_at`. What a failure
+        // *means* is spelled out beside it, since two words differing in their
+        // low bits and two words naming opposite directions read alike as
+        // integers.
+        let word = places.normal_at(x, y);
+        assert_eq!(
+            word,
+            gbuffer::pack_normal(normal),
+            "{what} carries {:?} where the pass was handed {normal:?}",
+            gbuffer::unpack_normal(word),
+        );
+        // And the field the lighting used to read this from cannot separate
+        // them: every one of these fragments' stance bits holds the routing
+        // sentinel, which names no direction at all.
         assert_eq!(
             gbuffer::ids_stance(places.at(x, y)),
             Stance::MeshFace as u32,
-            "the id word stopped carrying the sentinel at ({x}, {y})",
+            "the id word stopped carrying the sentinel on {what}",
         );
     }
-    // A pixel nothing drew is the cleared value, which is how the fourth
-    // channel earns its place: `(0, 0, 0, 0)` is "no fragment here" and
-    // `(0, 0, 0, 1)` is "a fragment with no facing", and the two must not read
-    // alike.
-    assert_eq!(places.normal_at(4, 4), [0.0; 4], "the clear is not all zeros");
+    // A pixel nothing drew is the cleared word, which is how `NORMAL_DRAWN`
+    // earns its bit: zero is "no fragment here" and a fragment with no facing
+    // is that bit alone, and the two must not read alike.
+    assert_eq!(places.normal_at(4, 4), 0, "the clear is not the undrawn word");
 }
 
 /// Draw ground, statics and any mesh faces standing on them, and read back the
@@ -2618,7 +2641,7 @@ fn render_places(
     });
     let normal_readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("normals"),
-        size: u64::from(size) * u64::from(size) * 16,
+        size: u64::from(size) * u64::from(size) * 4,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -2670,7 +2693,7 @@ fn render_places(
     };
     copy(gbuffer.ids(), &readback, 4);
     copy(gbuffer.position(), &position_readback, 16);
-    copy(gbuffer.normal(), &normal_readback, 16);
+    copy(gbuffer.normal(), &normal_readback, 4);
     queue.submit([encoder.finish()]);
 
     let read = |buffer: &wgpu::Buffer| {
@@ -2729,15 +2752,28 @@ impl Places {
         Self::float_at(&self.positions, self.width, x, y)
     }
 
-    /// `(x, y, z, 1)` again, and this one is a direction:
-    /// [`openshard_client_render::gbuffer`]'s normal plane.
-    fn normal_at(&self, x: u32, y: u32) -> [f32; 4] {
-        Self::float_at(&self.normals, self.width, x, y)
+    /// The octahedral word at one pixel —
+    /// [`openshard_client_render::gbuffer`]'s normal plane, the word itself
+    /// rather than the direction in it.
+    ///
+    /// The **word**, deliberately, because that is what makes this a comparison
+    /// between two implementations rather than a tolerance: a caller asserts it
+    /// against `gbuffer::pack_normal` of the vector it handed the pass, so the
+    /// integer the GPU computed is checked against the integer this side
+    /// computes, exactly. `unpack_normal` is there for a caller that wants to
+    /// *say* what a failure means.
+    fn normal_at(&self, x: u32, y: u32) -> u32 {
+        let start = ((y * self.width + x) * 4) as usize;
+        u32::from_le_bytes([
+            self.normals[start],
+            self.normals[start + 1],
+            self.normals[start + 2],
+            self.normals[start + 3],
+        ])
     }
 
-    /// One texel of either of the two `Rgba32Float` planes — they are read the
-    /// same way because they are the same format, and saying so once is what
-    /// keeps the third from arriving with its own copy of the arithmetic.
+    /// One texel of the position plane, the crate's one remaining
+    /// `Rgba32Float` attachment.
     fn float_at(plane: &[u8], width: u32, x: u32, y: u32) -> [f32; 4] {
         let start = ((y * width + x) * 16) as usize;
         let mut out = [0f32; 4];
@@ -4327,7 +4363,7 @@ fn parity_frame(
 
     let mut ids: Vec<u32> = Vec::with_capacity((width * height) as usize);
     let mut positions: Vec<f32> = Vec::with_capacity((width * height * 4) as usize);
-    let mut normals: Vec<f32> = Vec::with_capacity((width * height * 4) as usize);
+    let mut normals: Vec<u32> = Vec::with_capacity((width * height) as usize);
     for py in 0..height {
         for px in 0..width {
             let (x, y, sub_x, sub_y) = parity_place(px, py);
@@ -4378,7 +4414,7 @@ fn parity_frame(
             };
             ids.push(fragment.ids(id));
             positions.extend_from_slice(&fragment.position());
-            normals.extend_from_slice(&fragment.normal());
+            normals.push(fragment.normal());
         }
     }
     let upload = |texture: &wgpu::Texture, bytes: &[u8], stride: u32| {
@@ -4406,8 +4442,8 @@ fn parity_frame(
     upload(gbuffer.ids(), &bytes, 4);
     let bytes: Vec<u8> = positions.iter().flat_map(|value| value.to_le_bytes()).collect();
     upload(gbuffer.position(), &bytes, 16);
-    let bytes: Vec<u8> = normals.iter().flat_map(|value| value.to_le_bytes()).collect();
-    upload(gbuffer.normal(), &bytes, 16);
+    let bytes: Vec<u8> = normals.iter().flat_map(|word| word.to_le_bytes()).collect();
+    upload(gbuffer.normal(), &bytes, 4);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("surface"),

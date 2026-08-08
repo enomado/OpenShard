@@ -34,6 +34,7 @@
 // watertight and is textured approximately. See docs/client.md.
 
 import package::place_format::{KIND_LAND, STANCE_FLAT, pack_ids};
+import package::normal_format::pack_normal;
 
 struct Viewport {
     // The target's size in *real* pixels — the display's, which at a
@@ -113,9 +114,9 @@ struct FragmentOut {
     // The same fragment as a point rather than as an id and a fraction —
     // `crate::gbuffer`.
     @location(2) position: vec4<f32>,
-    // And which way it looks — for land, the bilinear patch's own normal. See
-    // `land_normal`.
-    @location(3) normal: vec4<f32>,
+    // And which way it looks — for land, the bilinear patch's own normal, packed
+    // by `normal_format.wesl`. See `land_normal`.
+    @location(3) normal: u32,
 };
 
 // The land's own normal, from the four corner heights the tile was lifted by.
@@ -273,7 +274,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // normal: an angular cosine is small at a grazing flame rather than absent,
     // which is what a floor lit from a torch on it actually looks like.
     // `docs/lighting_rebuild.md`'s third open question, answered by having one.
-    out.normal = vec4<f32>(land_normal(in.heights_in_tiles, local), 1.0);
+    out.normal = pack_normal(land_normal(in.heights_in_tiles, local));
 
     // A slope with a texture of its own takes it, and nothing else about the
     // tile changes: the shape is still the diamond its four corners make.

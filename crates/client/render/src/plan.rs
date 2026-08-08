@@ -528,7 +528,7 @@ fn drawn(
         ids.push(fragment.ids(id));
     }
     let positions: Vec<f32> = fragments.iter().flat_map(|f| f.position()).collect();
-    let normals: Vec<f32> = fragments.iter().flat_map(|f| f.normal()).collect();
+    let normals: Vec<u32> = fragments.iter().map(|f| f.normal()).collect();
 
     let upload = |texture: &wgpu::Texture, bytes: &[u8], stride: u32| {
         queue.write_texture(
@@ -555,8 +555,8 @@ fn drawn(
     upload(gbuffer.ids(), &bytes, 4);
     let bytes: Vec<u8> = positions.iter().flat_map(|value| value.to_le_bytes()).collect();
     upload(gbuffer.position(), &bytes, 16);
-    let bytes: Vec<u8> = normals.iter().flat_map(|value| value.to_le_bytes()).collect();
-    upload(gbuffer.normal(), &bytes, 16);
+    let bytes: Vec<u8> = normals.iter().flat_map(|word| word.to_le_bytes()).collect();
+    upload(gbuffer.normal(), &bytes, 4);
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("plan"),

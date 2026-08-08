@@ -7,8 +7,12 @@
 // a sprite is a picture with a shape rather than a diamond with a known one, so
 // the fragment shader discards on alpha.
 //
-// Inside WebGL2's ceiling, like its neighbour: vertex-buffer instancing, one
-// uniform block, one sampled texture.
+// Vertex-buffer instancing, one uniform block, one sampled texture — which was
+// once here because it is inside WebGL2's ceiling, and is now simply what this
+// pass needs. The crate's ceiling is **WebGPU** (see `crate` docs, and
+// `docs/lighting.md` decision 30.5): `blit.wgsl` beside this reads eleven
+// storage buffers, so a pass here that wants one is allowed one. Phase 6's
+// impostor is the one that will — it needs a prism's own boxes per fragment.
 //
 // The depth comes in per instance and is written whole. It is not derived here
 // because it is one ordering shared with the ground pass, and a second copy of
@@ -18,6 +22,7 @@ import package::place_format::{
     KIND_MASK, SUB_TILE, STANCE_FLAT, STANCE_FACE_NORTH, STANCE_FACE_EAST,
     STANCE_FACE_SOUTH, STANCE_FACE_WEST, STANCE_CORNER, pack_ids, outward,
 };
+import package::normal_format::pack_normal;
 
 struct Viewport {
     // The target's size in *real* pixels — see `ground.wgsl`, which documents
@@ -137,12 +142,13 @@ struct FragmentOut {
     // id word used to carry beside the id.
     @location(2) position: vec4<f32>,
     // And which way this fragment's surface looks — `crate::gbuffer::
-    // NORMAL_FORMAT`. This pass is where a **corner** is taken apart, which is
-    // the whole reason the normal is written here rather than derived by the
-    // reader: a corner's two faces are two halves of one picture and one pixel
-    // is on one of them, and by the time anything downstream sees this fragment
-    // that decision has already been made and thrown away.
-    @location(3) normal: vec4<f32>,
+    // NORMAL_FORMAT`, one octahedral word, `normal_format.wesl`. This pass is
+    // where a **corner** is taken apart, which is the whole reason the normal is
+    // written here rather than derived by the reader: a corner's two faces are
+    // two halves of one picture and one pixel is on one of them, and by the time
+    // anything downstream sees this fragment that decision has already been made
+    // and thrown away.
+    @location(3) normal: u32,
 };
 
 @vertex
@@ -365,9 +371,9 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     let tile = vec2<f32>(f32(in.place.x & 0xFFFFu), f32(in.place.x >> 16u));
     out.position = vec4<f32>(tile + sub, z, 1.0);
     // And the normal, off the stance the corner branch above already resolved.
-    // The fourth channel is coverage and not part of the vector: a zero normal
-    // is a real answer here — an upright picture has no side — so "nothing drew
-    // this pixel" needs a channel of its own to be distinguishable from it.
-    out.normal = vec4<f32>(outward(stance), 1.0);
+    // `pack_normal` carries the two bits that separate the three answers: a zero
+    // vector is a real one here — an upright picture has no side — so "nothing
+    // drew this pixel" needs a bit of its own to be distinguishable from it.
+    out.normal = pack_normal(outward(stance));
     return out;
 }

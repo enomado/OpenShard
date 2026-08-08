@@ -83,10 +83,13 @@ const STANCE_MESH_FACE: u32 = 10u;
 // A **flat** surface looks up, and that is where this was once missing: a
 // wall's top cap is a `Flat` static, so nothing tested which way it looked and
 // a lamp beside a wall lit its top as fully as one standing over it — decision
-// 27. Land carries the same stance and must *not* be gated, and what tells the
-// two apart is the *kind*: `ground.wesl` writes a zero normal outright rather
-// than calling this. `crate::place::Stance::normal` states the same pair once
-// more on the Rust side.
+// 27. Land carries the same stance and is a different surface, which is why
+// `ground.wesl` does not call this at all: it writes the bilinear patch's own
+// normal per fragment, so a hillside catches a flame the way the hill it is
+// faces it. (It wrote a deliberate *zero* here until phase 3, when the shading
+// term stopped being a half-space — see that file's own comment for the
+// measurement.) `crate::place::Stance::normal` states the same table once more
+// on the Rust side.
 //
 // `STANCE_UPRIGHT` looks nowhere: a billboard has no side, so every flame that
 // reaches it lights it. That is a statement about what is not known, and
