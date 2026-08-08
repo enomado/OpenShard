@@ -168,6 +168,45 @@ pub struct StaticGeometry {
     pub boxes: Vec<crate::impostor::Volume>,
 }
 
+impl StaticGeometry {
+    /// Append another frame's-worth of statics to this one, as one set.
+    ///
+    /// The map's furniture and the server's dropped items are two [`collect`]s
+    /// of the same shape drawn by one pass, so the two have to become one list
+    /// — and **three of the four fields here are addressed by index**, so
+    /// appending is not `Vec::extend` three times. A quad names its boxes by an
+    /// offset into `boxes`, and a mesh vertex names its row by an index into
+    /// `mesh_rows`; both are relative to the list they were built against, and
+    /// both start at zero in the second one.
+    ///
+    /// **The mesh half was a live defect** — `docs/lighting_rebuild.md` phase 6c
+    /// found it while wiring the first half — and it needs a climbable *item* to
+    /// show, which is why nothing had: an item with a prism drew its faces
+    /// against whichever of the map's rows its own numbering happened to land
+    /// on, so the tile and the solid a fragment reported were another static's.
+    /// One place does the join now, and it does both.
+    pub fn absorb(&mut self, other: Self) {
+        let boxes = self.boxes.len() as u32;
+        let rows = self.mesh_rows.len() as u32;
+        self.quads.extend(other.quads.into_iter().map(|mut quad| {
+            // An empty range keeps its own offset rather than being moved: it
+            // addresses nothing and `offset + 0` past the end of the list is
+            // not a place to point at.
+            if quad.volumes.count != 0 {
+                quad.volumes.offset += boxes;
+            }
+            quad
+        }));
+        self.mesh_vertices
+            .extend(other.mesh_vertices.into_iter().map(|mut vertex| {
+                vertex.id += rows;
+                vertex
+            }));
+        self.mesh_rows.extend(other.mesh_rows);
+        self.boxes.extend(other.boxes);
+    }
+}
+
 /// `occlusion` is **this frame's own grid**, and it has to have been built
 /// already: what each row carries beside its picture is the number that grid gave
 /// the static it draws ([`crate::occlusion::Occlusion::owner_at`]), which is the
@@ -212,8 +251,18 @@ pub fn collect(
         let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, Graphic(item.tile));
         // The boxes this static's own pixels will be met against — phase 6, and
         // built in the same walk as everything else about this static for
-        // `for_each_static_in`'s own reason.
-        let volumes = push_volumes(&mut boxes, at, key, occlusion);
+        // `for_each_static_in`'s own reason. The tile and the shape are the two
+        // the *grid* is built from, asked here of the same tiledata and the same
+        // atlas, so that what a fragment is met against is what a shadow ray
+        // crosses and not a second reading of the art.
+        let volumes = push_volumes(
+            &mut boxes,
+            at,
+            tiledata.static_tile(item.tile),
+            &crate::occlusion::shape_of(Some(atlas), Graphic(item.tile)),
+            key,
+            occlusion,
+        );
         let quad = quad_of(at, &placed, base, u32::from(item.hue), owner, volumes);
         if let Some(prism) = &placed.prism {
             push_mesh(
@@ -259,47 +308,50 @@ pub fn collect(
 /// thing `facing::WIDTH_OVERLAP` grows a mesh to cover — only a pixel of *this*
 /// static that fell some measured distance outside *this* static's volume.
 ///
-/// **The grid's own boxes, verbatim, whatever the static is.** There is no
-/// second shape to build here and no join to keep honest: a wall's panel, a
-/// floor's lid, a body's tile and — since the lid-and-riser split was retired —
-/// a flight's treads are all already volumes, and the name each carries is the
-/// [`crate::occlusion::SolidId`] the shadow walk compares against.
+/// **The static's own shape, and the grid only for the name.**
+/// [`crate::occlusion::boxes_of`] says what a thing standing here is — a wall's
+/// panel, a floor's lid, a body's tile, a flight's treads — and
+/// [`crate::occlusion::Occlusion::id_of`] says which solid of *this frame's grid*
+/// each of those is, or nothing where the grid holds none.
 ///
-/// This rebuilt a climbable's volume from its own [`crate::facing::Prism`] for
-/// exactly one commit, joining back to the grid by
-/// [`crate::occlusion::Part`]. That was a compensation for the grid holding
-/// *surfaces* where a view ray needs a volume — which is the thing
-/// `docs/style.md`'s *No fudge constants* says to fix in the geometry rather
-/// than work around, and [`crate::occlusion::Builder::add`]'s climbable branch
-/// is where it was fixed instead.
+/// **Not the grid's own boxes, which is what this asked for until phase 6c and
+/// which was wrong for most of a frame.** `Builder::add` answers two questions at
+/// once and only one of them is about shape: it refuses outright anything the
+/// tiledata does not mark `NO_SHOOT` or `WINDOW`, so a floorboard, a rug, a fence
+/// and about half the walls of a Britain street stand as **no box at all**.
+/// Measured on one real place at radius 6: nineteen of thirty-nine drawn
+/// pictures, twelve of them south-facing walls. Read through the grid, every one
+/// of those became a billboard — the middle of its tile, no facing, lit from
+/// every side — which is a worse answer than the stance it replaced and would
+/// have undone `docs/lighting.md`'s decision 27 for every wall cap in the world.
+/// A pane of glass has a shape whether or not it casts a shadow.
 ///
-/// An empty range is the honest answer for a static this frame's grid holds
-/// nothing for — refused for opacity, above the draw ceiling, hidden by the
-/// cutaway. The shader has no box to meet and writes the ray's own point at the
-/// static's base with no facing, which is what [`crate::place::Stance::Upright`]
-/// has always meant: a picture whose shape nothing measured.
+/// The join is by [`crate::occlusion::Part`], the same one [`push_mesh`] uses and
+/// for the same reason: both walk the shapes in the order the grid pushed them,
+/// so the `n`th here is the `n`th there. A `NOBODY` name is the honest answer for
+/// a shape the grid refused — the fragment is *somewhere*, and it is a point of
+/// nothing the shadow walk can be asked to exempt.
+///
+/// An empty range is left only for a picture with no shape at all, which
+/// `boxes_of` never produces today; the shader's own no-volume case is what
+/// [`crate::place::Stance::Upright`] has always meant, and a mobile is what
+/// reaches it.
 pub(crate) fn push_volumes(
     out: &mut Vec<crate::impostor::Volume>,
     at: Point,
+    tile: &openshard_uofiles::tiledata::StaticTile,
+    shape: &crate::occlusion::Shape,
     owner: crate::occlusion::Owner,
     occlusion: &crate::occlusion::Occlusion,
 ) -> crate::impostor::Range {
     let offset = out.len() as u32;
-    for (id, solid) in occlusion.pieces_of(i32::from(at.x), i32::from(at.y), owner) {
-        out.push(crate::impostor::Volume {
-            lo: [
-                solid.space.min.x as f32,
-                solid.space.min.y as f32,
-                solid.space.min.z as f32,
-            ],
-            hi: [
-                solid.space.max.x as f32,
-                solid.space.max.y as f32,
-                solid.space.max.z as f32,
-            ],
-            solid: crate::occlusion::SolidId::word(Some(id)),
-        });
-    }
+    let (x, y) = (i32::from(at.x), i32::from(at.y));
+    crate::occlusion::boxes_of(x, y, at.z, tile, shape, |part, _, space| {
+        out.push(crate::impostor::Volume::of(
+            &space,
+            crate::occlusion::SolidId::word(occlusion.id_of(x, y, owner, part)),
+        ));
+    });
     crate::impostor::Range {
         offset,
         count: out.len() as u32 - offset,
@@ -1385,7 +1437,18 @@ mod tests {
         let owner = crate::occlusion::Owner::new(0, graphic);
 
         let mut boxes = Vec::new();
-        let range = push_volumes(&mut boxes, Point::new(100, 100, 0), owner, &occlusion);
+        let shape = crate::occlusion::Shape {
+            prism: Some(prism),
+            ..crate::occlusion::Shape::UNREAD
+        };
+        let range = push_volumes(
+            &mut boxes,
+            Point::new(100, 100, 0),
+            &tile,
+            &shape,
+            owner,
+            &occlusion,
+        );
         assert_eq!(
             range,
             crate::impostor::Range { offset: 0, count: 3 },
@@ -1427,7 +1490,9 @@ mod tests {
         }
     }
 
-    /// A wall is not rebuilt at all: its volume is the grid's own box.
+    /// A wall's volume and the grid's own box for it are the same box, because
+    /// both come out of `occlusion::boxes_of` — and its `SolidId` is the grid's,
+    /// which is what the shadow walk compares.
     #[test]
     fn anything_that_is_not_a_fitted_climbable_stands_as_the_grid_s_own_boxes() {
         let graphic = Graphic(0x0006);
@@ -1443,7 +1508,14 @@ mod tests {
         let owner = crate::occlusion::Owner::new(0, graphic);
 
         let mut boxes = Vec::new();
-        let range = push_volumes(&mut boxes, Point::new(100, 100, 0), owner, &occlusion);
+        let range = push_volumes(
+            &mut boxes,
+            Point::new(100, 100, 0),
+            &tile,
+            &crate::occlusion::Shape::UNREAD,
+            owner,
+            &occlusion,
+        );
 
         let grid: Vec<_> = occlusion.pieces_of(100, 100, owner).collect();
         assert_eq!(range.count as usize, grid.len());
@@ -1455,19 +1527,54 @@ mod tests {
         }
     }
 
-    /// A static this frame's grid holds nothing for stands as nothing, and that
-    /// is an answer rather than a gap.
+    /// **A static the grid refused still has a shape**, and it is the same shape
+    /// — only the name is missing.
+    ///
+    /// The phase 6c claim, and the one this test asserted the *opposite* of
+    /// until then. `Builder::add` refuses everything the tiledata does not mark
+    /// `NO_SHOOT` or `WINDOW`, which on one real place at radius 6 was nineteen
+    /// of thirty-nine drawn pictures — twelve of them south-facing walls. An
+    /// empty range for those is a billboard: the middle of the tile, no facing,
+    /// lit from every side. The fixture is deliberately a *wall* rather than a
+    /// curiosity, because that is what the measurement found.
     #[test]
-    fn a_static_the_grid_refused_stands_as_no_boxes_at_all() {
-        let occlusion = crate::occlusion::Builder::new(grid_bounds()).finish(&Cutaway::OPEN);
+    fn a_static_the_grid_refused_still_stands_as_its_own_shape() {
+        let graphic = Graphic(0x0006);
+        // A wall the grid will not hold: no `NO_SHOOT`, no `WINDOW`, so
+        // `occlusion::opacity` answers `CLEAR` and `Builder::add` returns before
+        // it pushes anything.
+        let tile = static_tile(openshard_uofiles::tiledata::TileFlags::WALL, 20);
+        let mut builder = crate::occlusion::Builder::new(grid_bounds());
+        builder.add(100, 100, 0, graphic, &tile, crate::occlusion::Shape::UNREAD);
+        let occlusion = builder.finish(&Cutaway::OPEN);
+        let owner = crate::occlusion::Owner::new(0, graphic);
+        assert_eq!(
+            occlusion.pieces_of(100, 100, owner).count(),
+            0,
+            "the fixture should be a static the grid refuses",
+        );
+
         let mut boxes = Vec::new();
         let range = push_volumes(
             &mut boxes,
             Point::new(100, 100, 0),
-            crate::occlusion::Owner::new(0, Graphic(0x0006)),
+            &tile,
+            &crate::occlusion::Shape::UNREAD,
+            owner,
             &occlusion,
         );
-        assert_eq!(range.count, 0);
-        assert!(boxes.is_empty());
+        assert_eq!(range.count, 1, "a refused wall is still one body");
+        assert_eq!(
+            (boxes[0].lo, boxes[0].hi),
+            ([100.0, 100.0, 0.0], [101.0, 101.0, 20.0]),
+            "and it is the box the tiledata's own height gives it",
+        );
+        // And it is a point of nothing, which is the honest name for a shape no
+        // shadow ray will ever meet.
+        assert_eq!(
+            boxes[0].solid,
+            crate::occlusion::SolidId::word(None),
+            "a shape the grid refused cannot name a solid of it",
+        );
     }
 }

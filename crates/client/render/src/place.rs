@@ -232,9 +232,23 @@ impl Stance {
         }
     }
 
-    /// Which way a surface with this stance looks, in tiles — the Rust twin of
-    /// `place_format.wesl`'s `outward`, and [`Stance::of_normal`]'s inverse for
-    /// the five it recognises.
+    /// Which way a surface with this stance looks, in tiles —
+    /// [`Stance::of_normal`]'s inverse for the five it recognises.
+    ///
+    /// **No world pass reads this any more, and its shader twin is deleted.**
+    /// `place_format.wesl`'s `outward` was the same table and
+    /// `docs/lighting_rebuild.md` phase 6c retired it: a drawn fragment's normal
+    /// is the face of the box its own view ray met, measured rather than looked
+    /// up. What still asks this is a *hand-built* G-buffer — `plan.rs`'s
+    /// diagnostic pictures and the fixtures in `tests/` — which states its own
+    /// scene by naming a stance and has no boxes to meet. Kept for that, and for
+    /// [`Stance::of_normal`], which is a live reader on the producing side.
+    ///
+    /// Two of its rows are the *drawn* face rather than the one a camera sees:
+    /// `FaceNorth` answers `(0, -1, 0)`, which is the side turned away from the
+    /// viewer. That is the defect the impostor closed by construction, and it
+    /// survives here because a fixture asking "which way does a north-edge panel
+    /// face" is asking about the edge, not about the picture.
     ///
     /// The zero vector for [`Stance::Upright`], for a corner and for
     /// [`Stance::MeshFace`], and each is zero for its own reason. An upright

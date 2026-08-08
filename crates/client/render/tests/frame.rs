@@ -22,6 +22,7 @@ use openshard_client_render::debug::View;
 use openshard_client_render::geometry::{Rect, Vec2};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
+use openshard_client_render::impostor::{Range, Volume};
 use openshard_client_render::light::{Light, Lighting, Surface};
 
 /// The reach the lighting tests give their flame, in tiles.
@@ -35,7 +36,7 @@ const TORCH_TILES: f32 = 3.0;
 use openshard_client_render::camera::TileBounds;
 use openshard_client_render::gbuffer;
 use openshard_client_render::mobiles::{self, Mobile};
-use openshard_client_render::occlusion::{Builder, Occlusion, OwnerId, Shape};
+use openshard_client_render::occlusion::{self, Builder, Occlusion, OwnerId, Shape};
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place::{Kind, Place};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
@@ -246,8 +247,13 @@ fn render_both(
         projection,
     };
     renderer.render(device, queue, &mut encoder, target_view, quads);
-    statics.render(device, queue, &mut encoder, target_view, static_quads, None);
-    people.render(device, queue, &mut encoder, target_view, mobiles.1, None);
+    // No boxes, on purpose: what this harness reads back is the *picture*, and
+    // the impostor decides a fragment's position and normal rather than its
+    // colour. A quad with no volume is the billboard reading — see
+    // `statics.wesl` — and nothing here looks at what it wrote.
+    // `render_places` below is the harness that does, and it takes them.
+    statics.render(device, queue, &mut encoder, target_view, static_quads, &[], None);
+    people.render(device, queue, &mut encoder, target_view, mobiles.1, &[], None);
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &target,
@@ -1326,6 +1332,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
         &mut encoder,
         Target::whole(&world_view, &depth_view, &gbuffer_views, width, height),
         &quads,
+        &[],
         None,
     );
 
@@ -1637,7 +1644,7 @@ fn render_hued(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target::whole(&view, &depth_view, &gbuffer_views, width, height);
     ground.render(device, queue, &mut encoder, target_view, &[]);
-    statics.render(device, queue, &mut encoder, target_view, quads, None);
+    statics.render(device, queue, &mut encoder, target_view, quads, &[], None);
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
             texture: &target,
@@ -1744,6 +1751,7 @@ fn every_pixel_names_the_tile_it_came_from() {
         &wall,
         &[],
         &[],
+        &[],
         128,
     );
 
@@ -1846,7 +1854,11 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     )])
     .expect("fits");
     let sprite = statics.sprite(GRAPHIC).expect("packed");
-    let quad = |place| SpriteQuad {
+    // `volumes` is which of the frame's boxes this picture's own pixels are met
+    // against — the whole of the impostor's association, and the difference
+    // between the two halves of this test: the floor has a lid, and the wall
+    // below is deliberately given nothing.
+    let quad = |place, volumes| SpriteQuad {
         rect: Rect {
             x: ORIGIN,
             y: ORIGIN,
@@ -1859,7 +1871,7 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         place,
         twin: 0,
         owner: 0,
-        volumes: openshard_client_render::impostor::Range::default(),
+        volumes,
     };
     let at = Point::new(301, 400, 15);
     // Where in its tile a pixel is, and how high — both off the position plane
@@ -1868,6 +1880,21 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
     // "the middle of the tile" was `64` of `127` rather than `0.5`.
     let sub = |point: [f32; 4]| (point[0] - f32::from(at.x), point[1] - f32::from(at.y));
     let height = |point: [f32; 4]| point[2];
+    // A floor's own box: the lid the occlusion grid stands for it, flat at the
+    // static's own height and the whole tile across. Stated through
+    // `Occlusion::box_of` rather than as six numbers, because that function is
+    // the one place a kind becomes geometry and a fixture inventing its own slab
+    // would assert about a shape the grid never holds.
+    let lid = [Volume::of(
+        &occlusion::Solid::box_of(
+            i32::from(at.x),
+            i32::from(at.y),
+            i32::from(at.z),
+            i32::from(at.z),
+            0,
+        ),
+        occlusion::SolidId::word(None),
+    )];
     let places = render_places(
         &device,
         &queue,
@@ -1875,7 +1902,8 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         &texmaps,
         &[],
         &statics,
-        &[quad(Place::of_floor(at))],
+        &[quad(Place::of_floor(at), Range { offset: 0, count: 1 })],
+        &lid,
         &[],
         &[],
         128,
@@ -1920,7 +1948,8 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         &texmaps,
         &[],
         &statics,
-        &[quad(Place::of_static(at))],
+        &[quad(Place::of_static(at), Range::default())],
+        &[],
         &[],
         &[],
         128,
@@ -2005,6 +2034,7 @@ fn a_ground_pixel_carries_its_own_stance() {
         &[],
         &[],
         &[],
+        &[],
         128,
     );
 
@@ -2066,7 +2096,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
     );
 
     let tile = |x: u16| Point::new(x, 400, 0);
-    let quad = |at: Point, dx: f32, dy: f32| SpriteQuad {
+    let quad = |at: Point, run: u32, dx: f32, dy: f32| SpriteQuad {
         rect: Rect {
             x: ORIGIN + dx,
             y: ORIGIN + dy,
@@ -2082,9 +2112,31 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
         },
         twin: 0,
         owner: 0,
-        volumes: openshard_client_render::impostor::Range::default(),
+        // The `n`th tile's panel is the `n`th box, which is what a quad's own
+        // range says and what makes each fragment meet its *own* wall.
+        volumes: Range {
+            offset: run,
+            count: 1,
+        },
     };
-    let quads = [quad(tile(300), 0.0, 0.0), quad(tile(301), 22.0, 22.0)];
+    // The two panels the grid stands for a run of wall: a slab on the south edge
+    // of each tile, `PANEL_THICKNESS` deep into the tile it stands on, as tall as
+    // the art — four screen pixels to a `z` unit, `camera::Z_STEP`. Through
+    // `Solid::box_of`, which is the one place a kind becomes geometry.
+    let panel = |x: u16| {
+        Volume::of(
+            &occlusion::Solid::box_of(
+                i32::from(x),
+                400,
+                0,
+                i32::from(HEIGHT) / openshard_client_render::camera::Z_STEP,
+                openshard_client_render::occlusion::EDGE_SOUTH,
+            ),
+            occlusion::SolidId::word(None),
+        )
+    };
+    let boxes = [panel(300), panel(301)];
+    let quads = [quad(tile(300), 0, 0.0, 0.0), quad(tile(301), 1, 22.0, 22.0)];
     let places = render_places(
         &device,
         &queue,
@@ -2093,6 +2145,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
         &[],
         &statics,
         &quads,
+        &boxes,
         &[],
         &[],
         256,
@@ -2131,25 +2184,23 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
         "one tile of wall spans {} of a tile",
         last_of_the_first - first_of_the_first,
     );
-    // The fixed coordinate is the edge, one step of the fraction short of it —
-    // and both halves of that are load-bearing.
+    // The fixed coordinate is the edge, **exactly** — because a south panel's
+    // camera-facing plane is `y + 1` and the impostor answers with the point
+    // where the view ray leaves that box. A fraction that drifted off it would
+    // put the lit surface inside the tile rather than on its boundary, which the
+    // two assertions above cannot see because both only ever look at `x`.
     //
-    // *The edge*, because a south face lies on `y + 1`: a fraction that drifted
-    // off it would put the lit surface inside the tile rather than on its
-    // boundary, which the two assertions above cannot see because both only ever
-    // look at `x`.
-    //
-    // *One step short*, because `blit.wgsl` finds a fragment's cell with
-    // `floor(position)` and exempts that cell from shadowing it. A clean whole
-    // number names the tile **beyond** the wall, so the wall's own tile stops
-    // being exempt and the wall is shadowed by itself — measured on Britain, a
-    // run of lit wall at 249 dropping to the ambient 65. `statics.wgsl`'s
-    // `INSIDE` is the step, and this is the point it produces.
-    //
-    // Asked of the *position plane*, which is where the clamp now shows: the
-    // fraction it used to be asked of was seven bits of a `u16`, so "one step
-    // short of the edge" was `126` of `127` and this loop read bytes. It is the
-    // same claim about the same clamp, in the units the shader actually walks.
+    // *Exactly*, and this is the claim that was re-taken at
+    // `docs/lighting_rebuild.md` phase 6c. It used to be *one step short* of the
+    // edge — `120/127`, produced by `statics.wgsl`'s `INSIDE` clamp — and the
+    // reason was that `blit.wgsl` found a fragment's cell with
+    // `floor(position)`, so a clean whole number named the tile beyond the wall
+    // and the wall stopped being exempt from shadowing itself. Neither half of
+    // that survives: the walk takes the cell from the tile the *instance*
+    // carries (a whole number a pass knew exactly), and what a fragment is
+    // exempt from is decided by primitive identity since phase 4. So the honest
+    // number is the plane the geometry states, and this asserts it to the float
+    // rather than to a step of a byte.
     for (x, y) in [(left, row - 21), (left + 21, row), (left + 22, row + 1)] {
         let point = places.position_at(x, y);
         // Which tile this pixel's own sprite stands on — off the row its id
@@ -2158,18 +2209,9 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
         let stands = quads[gbuffer::ids_id(places.at(x, y)) as usize].place;
         let sub_y = point[1] - f32::from(stands.y);
         assert!(
-            sub_y > 120.0 / 127.0,
-            "the south face left its own edge at ({x}, {y}): {sub_y}"
+            (sub_y - 1.0).abs() < 1e-5,
+            "the south face is not on its own edge at ({x}, {y}): {sub_y}"
         );
-        // The cell `blit.wgsl` will call this fragment's own, computed its way.
-        for (whole, axis, at) in [(stands.x, 'x', point[0]), (stands.y, 'y', point[1])] {
-            assert_eq!(
-                at.floor() as u16,
-                whole,
-                "at ({x}, {y}) the walk puts this pixel in the {axis} neighbour, so the wall it is \
-                 the face of is no longer exempt from shadowing it",
-            );
-        }
     }
 }
 
@@ -2224,6 +2266,21 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
     );
 
     let at = Point::new(300, 400, 0);
+    // A corner is two panels, and the grid pushes them one at a time — so the
+    // fragment is met against both and the ray decides which it is a pixel of.
+    // Through `Solid::box_of` for the same reason the wall-run test above does.
+    let corner = [RIGHT, LEFT].map(|face| {
+        Volume::of(
+            &occlusion::Solid::box_of(
+                i32::from(at.x),
+                i32::from(at.y),
+                0,
+                i32::from(HEIGHT) / openshard_client_render::camera::Z_STEP,
+                openshard_client_render::occlusion::edges_of(Some(Facing::One(face))),
+            ),
+            occlusion::SolidId::word(None),
+        )
+    });
     let places = render_places(
         &device,
         &queue,
@@ -2247,8 +2304,9 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
             },
             twin: 0,
             owner: 0,
-            volumes: openshard_client_render::impostor::Range::default(),
+            volumes: Range { offset: 0, count: 2 },
         }],
+        &corner,
         &[],
         &[],
         256,
@@ -2290,9 +2348,17 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
     };
     let (right_x, _) = sub(middle + 4, row);
     let (_, left_y) = sub(middle - 4, row);
-    let edge = 120.0 / 127.0;
-    assert!(right_x > edge, "the east half left its own edge: {right_x}");
-    assert!(left_y > edge, "the south half left its own edge: {left_y}");
+    // On the edge exactly, for the reason the wall-run test above states at
+    // length: the plane is the box's, and `INSIDE`'s step short of it is gone
+    // with the clamp that produced it.
+    assert!(
+        (right_x - 1.0).abs() < 1e-5,
+        "the east half is off its own edge: {right_x}"
+    );
+    assert!(
+        (left_y - 1.0).abs() < 1e-5,
+        "the south half is off its own edge: {left_y}"
+    );
 
     // And the two halves are two different rows, not one instance's id read
     // twice — `docs/gbuffer.md` step 4. This frame drew exactly one corner,
@@ -2302,6 +2368,210 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
     let id = |x: u32, y: u32| gbuffer::ids_id(places.at(x, y));
     assert_eq!(id(middle + 4, row), 0, "the right half is not the drawn instance");
     assert_eq!(id(middle - 4, row), 1, "the left half is not its shadow row");
+}
+
+/// The impostor is written twice — `impostor.wesl` and [`impostor`] — and this
+/// is the only thing that compares them.
+///
+/// `docs/lighting_rebuild.md` phase 6c, and the same argument
+/// `normal_format.wesl`'s own gate makes one plane down: two spellings of one
+/// arithmetic have no compiler between them, and every reader downstream sees
+/// only the answer, so a disagreement about *which box* or *which face* would
+/// show as a picture somebody eventually calls wrong. What is asserted is
+/// therefore not "the position looks reasonable" but **the word the GPU wrote
+/// equals what this side answers for the same ray and the same boxes** — the
+/// normal as an integer, exactly, and the point to a ten-thousandth of a tile,
+/// which is a hundredth of a screen pixel.
+///
+/// Swept over the sprite's whole rectangle rather than at three chosen points,
+/// because what a second spelling gets wrong is a *case*: a tie between two exit
+/// faces, the fold at a corner, the box in front. A sweep meets all of them and
+/// counts what it met, so the test says how much of the arithmetic it reached
+/// instead of leaving that to a reader.
+///
+/// **And it is where the phase's second number is taken.** `Meeting::outside` is
+/// how far outside its own volume a fragment fell — the sprite overhanging the
+/// boxes, which is the thing `WIDTH_OVERLAP` used to hide — and this fixture's
+/// art is a plain rectangle that deliberately overhangs on every side, so the
+/// count is large and the *bound* is the claim: no fragment is answered with a
+/// point more than a tile away from the shape it belongs to.
+#[test]
+fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    use openshard_client_render::impostor;
+
+    const GRAPHIC: Graphic = Graphic(1);
+    const WIDE: u16 = 44;
+    const TALL: u16 = 105;
+    const ORIGIN: f32 = 10.0;
+    const SIZE: u32 = 128;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let red = Color16(0b0_11111_00000_00000);
+    // Opaque everywhere, so that every texel of the quad is a fragment: the
+    // sweep wants the whole rectangle, including the pixels that miss.
+    let statics = StaticAtlas::pack([(
+        GRAPHIC,
+        Image::new(WIDE, TALL, vec![red; usize::from(WIDE) * usize::from(TALL)]),
+    )])
+    .expect("fits");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+
+    let at = Point::new(300, 400, 0);
+    // Two boxes on one tile, one in front of the other and each a strip of it —
+    // a flight of two treads, which is the shape with a *selection* in it: the
+    // near tread hides the lower half of the far one, so the sweep crosses both
+    // a lid and the front of a rise, and `nearest`'s "the box in front wins" is
+    // load-bearing rather than decorative. Written out rather than taken from
+    // `Solid::box_of` because what is under test here is the arithmetic and not
+    // the grid's own shapes — the two tests above are where those are stated.
+    let boxes = [
+        Volume {
+            lo: [300.0, 400.5, 0.0],
+            hi: [301.0, 401.0, 3.0],
+            solid: occlusion::SolidId::word(None),
+        },
+        Volume {
+            lo: [300.0, 400.0, 0.0],
+            hi: [301.0, 400.5, 6.0],
+            solid: occlusion::SolidId::word(None),
+        },
+        // And a lid, flat: `lo.z == hi.z`, which is what the grid stands for a
+        // floor and the one shape whose `z` slab is a point — so the sweep runs
+        // the degenerate path, where a division answers one `t` twice, on both
+        // sides. Not the *tie* between two exits, which is a line across this
+        // box and not an area: a sweep of whole pixels reaches it only by luck,
+        // and `impostor::tests::a_lid_with_no_thickness_is_met_on_its_own_plane`
+        // is where that case is constructed rather than hoped for.
+        Volume {
+            lo: [300.0, 400.0, 9.0],
+            hi: [301.0, 401.0, 9.0],
+            solid: occlusion::SolidId::word(None),
+        },
+    ];
+    let quads = [SpriteQuad {
+        rect: Rect {
+            x: ORIGIN,
+            y: ORIGIN,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
+        region: sprite.region,
+        depth: 0.4,
+        hue: 0,
+        place: Place::of_static(at),
+        twin: 0,
+        owner: 0,
+        volumes: Range {
+            offset: 0,
+            count: boxes.len() as u32,
+        },
+    }];
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &quads,
+        &boxes,
+        &[],
+        &[],
+        SIZE,
+    );
+
+    // Where the fragment stage's own two numbers come from, restated here and
+    // nowhere else: `across` is the offset from the column the sprite is centred
+    // on and `down` the offset from the row the tile's centre projects to, both
+    // measured at the **fragment's centre**, which is half a texel past its
+    // corner. A half-pixel error here would move every comparison below by a
+    // fortieth of a tile and none of them would pass.
+    let middle_x = ORIGIN + f32::from(sprite.width) * 0.5;
+    let bottom_y = ORIGIN + f32::from(sprite.height);
+    let half_tile_height = (openshard_client_render::camera::TILE_WIDTH / 2) as f32;
+
+    let (mut compared, mut outside, mut worst) = (0u32, 0u32, 0.0f32);
+    let mut faces = [0u32; 3];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            if gbuffer::ids_kind(places.at(x, y)) != Some(Kind::Static) {
+                continue;
+            }
+            let across = x as f32 + 0.5 - middle_x;
+            let down = y as f32 + 0.5 - (bottom_y - half_tile_height);
+            let start = impostor::ray_from((i32::from(at.x), i32::from(at.y)), f32::from(at.z), across, down);
+            let (which, met) = impostor::nearest(
+                start,
+                boxes
+                    .iter()
+                    .enumerate()
+                    .map(|(n, volume)| (n, volume.lo, volume.hi)),
+            )
+            .expect("two boxes");
+
+            assert_eq!(
+                places.normal_at(x, y),
+                gbuffer::pack_normal(met.normal),
+                "({x}, {y}) met a different face on the GPU: {met:?}",
+            );
+            let point = places.position_at(x, y);
+            for (axis, name) in [(0, 'x'), (1, 'y'), (2, 'z')] {
+                assert!(
+                    (point[axis] - met.at[axis]).abs() < 1e-4,
+                    "({x}, {y}) landed elsewhere on {name}: {point:?} against {:?}",
+                    met.at,
+                );
+            }
+            // And whatever it answered is a point *of the box it named* — the
+            // property every reader downstream leans on, and the one the
+            // nearest-point fallback exists to keep. Stated as containment
+            // rather than as a bound on `outside`, because a bound is a number
+            // somebody would have to pick and this is the claim itself.
+            let volume = &boxes[which];
+            for axis in 0..3 {
+                assert!(
+                    met.at[axis] >= volume.lo[axis] - 1e-5 && met.at[axis] <= volume.hi[axis] + 1e-5,
+                    "({x}, {y}) was answered off its own box on axis {axis}: {:?}",
+                    met.at,
+                );
+            }
+            compared += 1;
+            faces[met.normal.iter().position(|n| *n == 1.0).expect("one axis")] += 1;
+            if !met.hit() {
+                outside += 1;
+                worst = worst.max(met.outside);
+            }
+        }
+    }
+
+    // What the sweep actually reached, printed rather than left to a reader: a
+    // pass that agreed about one face on four pixels would satisfy every
+    // assertion above.
+    eprintln!(
+        "{compared} fragments compared — {} on an east face, {} on a south face, {} on a lid; \
+         {outside} of them fell outside their own volume, the worst by {worst} of a tile",
+        faces[0], faces[1], faces[2],
+    );
+    assert_eq!(
+        compared,
+        u32::from(WIDE) * u32::from(TALL),
+        "the sweep should reach every texel of an opaque sprite",
+    );
+    assert!(
+        faces.iter().all(|seen| *seen > 100),
+        "the sweep should meet all three of a box's camera-facing sides: {faces:?}",
+    );
+    // And that the miss case was reached at all, which is what says the
+    // containment check above is about more than the pixels that hit. **How
+    // far** a real static's art overhangs its own fitted prism is the number
+    // phase 6's own "done when" asks for, and it is not this: this fixture's
+    // picture is a plain rectangle nobody fitted to anything, so its overhang is
+    // a property of the fixture. See that phase's backlog.
+    assert!(outside > 0, "a rectangle over two strips should overhang them");
 }
 
 /// A mesh-face fragment's own `place.z` carries the routing sentinel,
@@ -2363,6 +2633,7 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
         &texmaps,
         &[],
         &statics,
+        &[],
         &[],
         &vertices,
         &rows,
@@ -2448,6 +2719,7 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
         &texmaps,
         &[],
         &statics,
+        &[],
         &[],
         &vertices,
         &rows,
@@ -2564,6 +2836,7 @@ fn two_mesh_faces_carry_their_own_two_normals() {
         &[],
         &statics,
         &[],
+        &[],
         &vertices,
         &rows,
         128,
@@ -2617,6 +2890,7 @@ fn render_places(
     quads: &[GroundQuad],
     static_atlas: &StaticAtlas,
     static_quads: &[SpriteQuad],
+    static_boxes: &[openshard_client_render::impostor::Volume],
     mesh_vertices: &[openshard_client_render::mesh_face::MeshFaceVertex],
     mesh_rows: &[openshard_client_render::mesh_face::MeshFaceRow],
     size: u32,
@@ -2669,6 +2943,7 @@ fn render_places(
         &mut encoder,
         target,
         &instances.rows,
+        static_boxes,
         Some(instances.drawn),
     );
     // Right after statics, into the same static's own pixels — the real
@@ -3688,7 +3963,7 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target_view = Target::whole(&view, &depth_view, &gbuffer_views, frame_width, frame_height);
     ground.render(&device, &queue, &mut encoder, target_view, &[]);
-    statics.render(&device, &queue, &mut encoder, target_view, &quads, None);
+    statics.render(&device, &queue, &mut encoder, target_view, &quads, &[], None);
     queue.submit([encoder.finish()]);
     let frame = read_back(&device, &queue, &target);
 
@@ -3757,7 +4032,7 @@ fn render_outlined(
     let mut sprites = SpriteRenderer::new(device, queue, format, atlas.pixels(), &hue_ramp);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     ground_pass.render(device, queue, &mut encoder, target, &[]);
-    sprites.render(device, queue, &mut encoder, target, quads, None);
+    sprites.render(device, queue, &mut encoder, target, quads, &[], None);
     // One quad, one ring — the item case, and what the tests below assert
     // about two sprites that touch.
     let rings: Vec<&[SpriteQuad]> = outlined.iter().map(std::slice::from_ref).collect();

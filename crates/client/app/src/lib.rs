@@ -4464,15 +4464,7 @@ impl App {
             &window.atlases.texmaps,
             &cutaway,
         );
-        let statics::StaticGeometry {
-            quads: static_quads,
-            mut mesh_vertices,
-            mut mesh_rows,
-            // `docs/lighting_rebuild.md` phase 6's boxes. Named rather than
-            // skipped with `..` so that this call site fails to compile the day
-            // the statics pass starts reading them.
-            boxes: _,
-        } = statics::collect(
+        let mut world_statics = statics::collect(
             &self.map,
             &camera,
             &self.tiledata,
@@ -4514,12 +4506,13 @@ impl App {
             &cutaway,
             ringed,
         );
-        let statics::StaticGeometry {
-            quads: item_quads,
-            mesh_vertices: item_mesh_vertices,
-            mesh_rows: item_mesh_rows,
-            boxes: _,
-        } = items::collect(
+        // Through the same passes as the map's own furniture, because they are
+        // the same kind of thing: one picture list, one mesh, one box list. A
+        // climbable item gets the honest mesh a climbable map static does
+        // (`items::collect`'s own doc) and a dropped item is met against its own
+        // boxes exactly as a wall is — and both of those are addressed by index,
+        // which is what `StaticGeometry::absorb` exists to keep right.
+        world_statics.absorb(items::collect(
             &self.items,
             &camera,
             &self.tiledata,
@@ -4528,17 +4521,13 @@ impl App {
             &cutaway,
             hued,
             &lighting.occlusion,
-        );
-        let static_quads = {
-            let mut quads = static_quads;
-            quads.extend(item_quads);
-            quads
-        };
-        // A climbable item gets the same honest mesh a climbable map static
-        // does — `items::collect`'s own doc — so its faces join the map
-        // statics' here, one buffer and one `mesh_pass.render` call for both.
-        mesh_vertices.extend(item_mesh_vertices);
-        mesh_rows.extend(item_mesh_rows);
+        ));
+        let statics::StaticGeometry {
+            quads: static_quads,
+            mesh_vertices,
+            mesh_rows,
+            boxes: static_boxes,
+        } = world_statics;
         // A corner static's two faces get their own id past this point — see
         // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
         let static_instances = split_corners(static_quads);
@@ -4637,6 +4626,7 @@ impl App {
             &mut encoder,
             target,
             &static_instances.rows,
+            &static_boxes,
             Some(static_instances.drawn),
         );
         // Right after statics, into the same static's own pixels its
@@ -4657,6 +4647,9 @@ impl App {
             &mut encoder,
             target,
             &mobile_quads,
+            // A mobile has no volume — `docs/lighting_rebuild.md` says so in as
+            // many words, and phase 7 is what gives a billboard a normal.
+            &[],
             None,
         );
         // The silhouettes, here and not later: the mask is depth-tested against
@@ -4724,6 +4717,7 @@ impl App {
             &mut encoder,
             target,
             &text_quads,
+            &[],
             None,
         );
         // And the world image onto the surface, into the rect the panels left

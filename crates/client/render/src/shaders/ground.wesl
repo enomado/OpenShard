@@ -135,7 +135,7 @@ struct FragmentOut {
 // raw units a one-unit step across a tile would read as forty-five degrees.
 //
 // A flat tile's four heights are equal, both derivatives are zero, and this is
-// exactly `(0, 0, 1)` — the same vector `outward(STANCE_FLAT)` names, arrived at
+// exactly `(0, 0, 1)` — the vector a level surface has, arrived at
 // rather than special-cased.
 fn land_normal(heights: vec4<f32>, at: vec2<f32>) -> vec3<f32> {
     let along_x = mix(heights.y - heights.x, heights.w - heights.z, at.y);

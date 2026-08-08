@@ -678,6 +678,77 @@ pub struct SpriteRenderer {
     /// The atlas texture, kept so that it can be grown into rather than
     /// replaced. See [`SpriteRenderer::upload_rows`].
     atlas_texture: wgpu::Texture,
+    /// The boxes this frame's instances are met against —
+    /// [`crate::impostor::Volume`], one flat list for the frame with every
+    /// instance naming its own run of it.
+    ///
+    /// A storage buffer and therefore *in the bind group*, which is why the four
+    /// fields below it are kept: a list that outgrows this has to be replaced,
+    /// and replacing it means building the group again. The instance buffer next
+    /// to it needs none of that — it is a vertex buffer and bound per draw.
+    volumes: wgpu::Buffer,
+    /// Boxes it can hold before it has to be replaced.
+    volume_capacity: u64,
+    /// Everything [`SpriteRenderer::new`] built the bind group out of, kept for
+    /// exactly the one reason above.
+    layout: wgpu::BindGroupLayout,
+    atlas_view: wgpu::TextureView,
+    ramp_view: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+}
+
+/// A buffer for `boxes` of [`crate::impostor::Volume`].
+fn new_volume_buffer(device: &wgpu::Device, boxes: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("statics volumes"),
+        size: boxes * crate::impostor::Volume::STRIDE,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// The statics pass's bind group, built here rather than inline because it is
+/// built twice: once at [`SpriteRenderer::new`] and again whenever the volume
+/// buffer is replaced by a larger one.
+fn static_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniforms: &wgpu::Buffer,
+    atlas: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    ramp: &wgpu::TextureView,
+    volumes: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("statics"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(atlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(ramp),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: volumes.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 impl SpriteRenderer {
@@ -783,35 +854,30 @@ impl SpriteRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // The frame's boxes — `docs/lighting_rebuild.md` phase 6c. Read
+                // by the fragment stage alone: a quad's rectangle is the
+                // sprite's own and the geometry under it is a *per fragment*
+                // question.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("statics"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniforms.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&ramp_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
+        // One box, which is nothing, so that the binding exists before a frame
+        // has produced any: wgpu refuses a zero-sized storage binding, and every
+        // pass that shares this shader without boxes of its own — a mobile, a
+        // glyph, a silhouette — draws against exactly this. Nothing reads it,
+        // since a row with no boxes never enters the loop.
+        let volumes = new_volume_buffer(device, 1);
+        let bind_group = static_bind_group(device, &layout, &uniforms, &view, &sampler, &ramp_view, &volumes);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("statics"),
@@ -891,6 +957,17 @@ impl SpriteRenderer {
                                 format: wgpu::VertexFormat::Uint32,
                                 offset: 48,
                                 shader_location: 7,
+                            },
+                            // Which run of the volume buffer this instance's own
+                            // fragments are met against —
+                            // `crate::impostor::Range`, and
+                            // `docs/lighting_rebuild.md` phase 6c. The two words
+                            // `SpriteQuad::write` puts where the row was padding
+                            // to its stride anyway.
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32x2,
+                                offset: 56,
+                                shader_location: 8,
                             },
                         ],
                     }),
@@ -1067,6 +1144,12 @@ impl SpriteRenderer {
             mask_rings,
             mask_capacity,
             atlas_texture,
+            volumes,
+            volume_capacity: 1,
+            layout,
+            atlas_view: view,
+            ramp_view,
+            sampler,
         }
     }
 
@@ -1105,6 +1188,15 @@ impl SpriteRenderer {
     /// can address it by id, but has no picture of its own to rasterise: it
     /// rides at the tail of `quads`, past `drawn`, and the pass never draws
     /// it.
+    ///
+    /// `boxes` is the frame's whole [`crate::impostor::Volume`] list —
+    /// [`crate::statics::StaticGeometry::boxes`] — which every quad names its own
+    /// run of, and which the fragment stage meets a view ray with to find where
+    /// a pixel is and which way its surface looks. A pass with no geometry of
+    /// its own passes `&[]`: a mobile, a glyph, a gump. It is a parameter and
+    /// not a second call because a quad's range is an index *into it*, and two
+    /// calls could disagree about which frame's list that was.
+    #[expect(clippy::too_many_arguments, reason = "a frame's own list per argument")]
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -1112,6 +1204,7 @@ impl SpriteRenderer {
         encoder: &mut wgpu::CommandEncoder,
         target: Target<'_>,
         quads: &[SpriteQuad],
+        boxes: &[crate::impostor::Volume],
         drawn: Option<u32>,
     ) {
         let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
@@ -1145,6 +1238,31 @@ impl SpriteRenderer {
             return;
         }
         queue.write_buffer(&self.instances, 0, &instance_bytes);
+
+        // The boxes, and the bind group again if they no longer fit. The buffer
+        // is *in* the group, so growing it is not the one-line replacement the
+        // instance buffer above is — which is why the four resources beside it
+        // are kept on this type at all.
+        if boxes.len() as u64 > self.volume_capacity {
+            self.volume_capacity = (boxes.len() as u64).next_power_of_two();
+            self.volumes = new_volume_buffer(device, self.volume_capacity);
+            self.bind_group = static_bind_group(
+                device,
+                &self.layout,
+                &self.uniforms,
+                &self.atlas_view,
+                &self.sampler,
+                &self.ramp_view,
+                &self.volumes,
+            );
+        }
+        let mut volume_bytes = Vec::with_capacity(boxes.len() * crate::impostor::Volume::STRIDE as usize);
+        for volume in boxes {
+            volume.write(&mut volume_bytes);
+        }
+        if !volume_bytes.is_empty() {
+            queue.write_buffer(&self.volumes, 0, &volume_bytes);
+        }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("statics"),

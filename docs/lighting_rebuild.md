@@ -996,6 +996,98 @@ pixels across the seven flame heights, which is the engine's own rule showing up
 as a measurement. The rule was never an epsilon; phase 4 wrote it as one
 sentence because for a *plane* the name and the tangency are one sentence.
 
+*Phase 6c landed: the pass meets its own boxes, and the inverse projection is
+gone.* `statics.wesl` reads a storage buffer of `impostor::Volume`s, takes the
+run of it its own instance names, and answers a fragment's **position and
+normal** with the face of the box its view ray leaves. What that replaced is
+five branches: a floor's two fractions from the pixel's offset from the tile's
+centre, a wall's one fraction pinned to the edge its stance names and the other
+run along it, and a height recovered from `pixel_y` at four screen pixels a `z`.
+`INSIDE` went with them — the hundred-and-twenty-seventh of a tile every one of
+those was clamped by — and `place_format.wesl`'s `outward` went with the
+*normal*, which is the whole of what that table was for.
+
+**The wrong table it was, and the impostor cannot spell it.** `outward` answered
+`(0, −1, 0)` for a north face, the side turned *away* from the viewer, where
+what a camera sees of a north wall is its `+y` surface — this document's own
+backlog, five graphics out of 1197, which is why nothing had caught it. A ray
+from the camera leaves a box through `+x`, `+y` or `+z` and through nothing
+else, so there is no row left to be wrong. `crate::place::Stance::normal` keeps
+the table with its defect written down beside it: its readers are the hand-built
+G-buffers of `plan.rs` and the fixtures, which state a scene by naming a stance
+and have no boxes to meet.
+
+*The gate is `a_sprite_pixel_meets_the_same_box_on_both_sides`, and it is the
+only thing comparing the two spellings.* `impostor.wesl` and `impostor.rs` are
+one arithmetic written twice with no compiler between them —
+`normal_format.wesl`'s situation one plane down — so the test renders a sprite
+over three boxes and asserts, for **every one of 4,620 fragments**, that the
+normal word the GPU wrote equals `gbuffer::pack_normal` of what this side
+answers and that the point agrees to `1e-4` of a tile. It reports what it
+reached rather than leaving that to a reader: 638 east faces, 913 south faces,
+3,069 lids, and 2,684 fragments answered by the nearest-point fallback. Two
+fault injections turn it red — the `+y` normal flipped, and `far` shifted by two
+thousandths — and one deliberately does *not*: the tie between two exit faces is
+a **line** across a box rather than an area, so a sweep of whole pixels reaches
+it only by luck, and `impostor.rs`'s own lid test is where that case is
+constructed instead.
+
+**And it found that the grid was the wrong place to ask what shape a static is.**
+`push_volumes` read the occlusion grid, and `Builder::add` answers two questions
+at once: what shape is this, and does it stop light. It refuses outright
+everything the tiledata does not mark `NO_SHOOT` or `WINDOW` — so on one real
+place at radius 6, **nineteen of thirty-nine drawn pictures stood as no box at
+all, twelve of them south-facing walls**. Read through the grid, every one of
+those became a billboard: the middle of its tile, no facing, lit from every
+side. That is a *worse* answer than the stance it replaced, and it would have
+undone `docs/lighting.md`'s decision 27 — a lamp beside a wall lighting its cap
+as fully as one standing over it — for every wall cap in the world.
+
+So the two questions came apart. `occlusion::boxes_of` is what shape a static
+standing at a place *is*, one function with two readers: `Builder::add` is now
+the opacity gate, the owner, the roof bit and the hole's placement wrapped
+around it, and `push_volumes` is the same shapes joined to the grid by `Part`
+for their `SolidId` — or `NOBODY` where the grid refused them, which is the
+honest name for a shape no shadow ray will meet. **A pane of glass has a shape
+whether or not it casts a shadow.** The census reads `0 of 39` now, and
+`examples/isolated_scene.rs` prints it every run.
+
+Two things it changed that are not the pass. `blit.wesl`'s ambient takes the sky
+share from **the tile the instance carries** rather than `floor(position)`: a
+south or east face's fragment now lies exactly on its tile's boundary, where
+flooring reads the neighbour, so a street wall would have taken the room's
+ambient along one of its two sides and not the other. The walk beside it already
+took the carried tile, and says why at its own `first`. And
+`StaticGeometry::absorb` is one place for joining the map's furniture to the
+server's dropped items, because **three of the four lists are addressed by
+index** — which turned up a live defect the phase did not go looking for: the
+mesh rows were concatenated without shifting the vertices that name them, so a
+climbable *item* drew its faces against whichever of the map's rows its own
+numbering landed on. It needs a climbable item to show, which is why nothing had.
+
+Two world claims were re-taken, and both were the same claim: **a face lies on
+its own edge, exactly.** They asserted `120/127` of a tile — one step of the
+retired clamp short of it — and the reason was that `blit.wgsl` found a cell by
+flooring a position. Neither half survives: the walk takes the cell from the
+tile the instance carries, and what a fragment is exempt from has been primitive
+identity since phase 4. So the number is the plane the geometry states, asserted
+to the float.
+
+*What is left of phase 6, and it is not small.* The mesh pass still runs over
+every fitted climbable (6d is where it comes off real statics and gains a colour
+target, which is phase 2's albedo). The corner's two panels are still told apart
+by the **screen half** rather than by the box the ray met — the impostor picks
+between them for the normal, but the id has to follow `split_corners`' twin row
+and a box carries no row number. `own_solid` still scans a cell to name a
+sprite's solid, where the box the fragment met already carries one. And the
+phase's own second number — how far a *real* static's art overhangs its own
+fitted prism — is still unmeasured: the gate's fixture is a plain rectangle
+nobody fitted to anything, so its overhang is a property of the fixture. **No
+person has looked at a lit frame of this yet**, which is what *How this is
+judged* says the instrument is; what has been looked at is `View::Normal` over a
+real place, where every fragment now carries a facing and a wall reads as a
+green face, a red end cap and a blue top.
+
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
 in a frame a human being has looked at.
@@ -1080,7 +1172,7 @@ may not still matter:
 | `WIDTH_OVERLAP`'s border | **done, phase 6** — there is no second silhouette for a border to reach across |
 | the riser penumbra graded over a third of a face | **done, phase 5** — there is no band; a penumbra is eight rays disagreeing |
 | the wire's span rounding to nearest; the exact-tangent definition | **phase 4** — a primitive is not a byte range any more |
-| `boxes.rs` reading `Unreached` as shadowed; `two_cubes.rs`'s old idiom; the projection idiom stated five times; `mesh::Face`/`facing::Face` colliding | **survive** — instrument work, still worth doing |
+| `boxes.rs` reading `Unreached` as shadowed; `two_cubes.rs`'s old idiom; the projection idiom stated five times; `mesh::Face`/`facing::Face` colliding | **survive** — instrument work, still worth doing. One of the five spellings of the projection went at phase 6c: `statics.wesl`'s inverse of it is `impostor::ray_from` now, which is a forward ray rather than an unprojection |
 | `Occlusion::owner_at`'s linear scan; `selected`/`outlined` stamping `OwnerId::NONE` | **survive**, reshaped by phase 4's ids |
 | `tests/cost.rs` measuring three planes of five; `plan::Wall::top` as an `i32`; hand-copies of the third channel | **survive** — the third channel's copies went with the channel, and the other two are still work |
 
@@ -1194,21 +1286,54 @@ Things noticed while writing this, not blocking any phase:
   pipeline draws a flight through and what can carry a `SolidId` outright; it is
   a third row table in a function that already has two, which is why it was not
   done in the phase that found it.
-- **`statics.wesl` still clamps a face fragment to `INSIDE`, and the mesh pass no
-  longer does.** Phase 4 removed the clamp from `mesh_face.wesl`'s position and
-  left the sprite pass's, so an *east* or *south* face pixel still sits a
-  hundred-and-twenty-seventh of a tile behind its own panel's outer plane — inside
-  its own slab — while a north or west one sits exactly on it. Identity makes that
-  harmless for the panel itself and it is not harmless in principle: it is eight
-  thousandths of a tile of error in the ray's origin, on the two sides of every
-  wall in the world, and the asymmetry between the four is the part that will not
-  be guessable later. The `sub` it feeds also decides that fragment's *height*, so
-  moving it moves a face's `z` by a fortieth of a unit.
-- **Two scans a drawn static now, where there was one.** `statics::collect` asks
-  `Occlusion::owner_at` for the quad and `Occlusion::id_of` per mesh face, and
-  both are linear scans of the cell — see `owner_at`'s own note about the join
-  this design pays for. A static with a six-face mesh scans its cell seven times.
-  Nothing measures it as a cost yet; `tests/cost.rs` is where it would show.
+- ~~**`statics.wesl` still clamps a face fragment to `INSIDE`.**~~ **Done, phase
+  6c** — there is no clamp and no inverse projection to clamp: a face fragment is
+  the point where its own view ray leaves its own panel's box, which is that
+  panel's camera-facing plane exactly. The asymmetry the entry worried about is
+  gone in the direction it did not expect — a *south* or *east* face lies on the
+  tile boundary and a north or west one a `PANEL_THICKNESS` inside it, because
+  that is where the slab's visible side is. See the next entry.
+- **A north or west panel's visible face is a fifth of a tile inside its own
+  tile, and that is the geometry rather than a bug.** `Solid::box_of` fattens a
+  panel *inward* from the plane the art draws it on, so the camera-facing side of
+  a north panel is at `y + PANEL_THICKNESS` while a south panel's is at `y + 1`.
+  Phase 6c answers the picture with the volume, so a north wall's fragments moved
+  a fifth of a tile into the room. Nothing compensates and nothing should — but
+  the *geometry* has a better shape available: two neighbouring walls on a shared
+  edge are two 0.2 slabs meeting, a doubled wall, where one 0.2 slab straddling
+  the boundary would be one wall and would put both faces on the plane the art
+  draws. `PANEL_THICKNESS`'s own doc argues the inward choice from the doubling
+  it was avoiding, which the straddling form avoids better. Worth measuring
+  before it is changed: it moves every panel in the grid.
+- **Three scans a drawn static now, where there was one.** `statics::collect`
+  asks `Occlusion::owner_at` for the quad, `Occlusion::id_of` per mesh face and —
+  since phase 6c — `id_of` again per *box*, all linear scans of the cell; see
+  `owner_at`'s own note about the join this design pays for. A four-tread flight
+  scans its cell thirteen times. Nothing measures it as a cost yet, and
+  `tests/cost.rs` cannot: it builds its frame against `Occlusion::EMPTY`, so no
+  static there has a box to meet and the statics pass it times is the billboard
+  fallback. **Both halves of that are work** — the scans, and a cost harness that
+  prices the pass the client actually runs.
+- **A corner is told apart by the screen half, and the boxes could say it.**
+  `statics.wesl` still resolves a corner's two panels by `across > 0.0` — the
+  half of the picture a pixel was drawn on — where the impostor already meets
+  both boxes and picks between them for the *normal*. What stops the box from
+  deciding is the **id**: the left half takes `in.twin`, the row
+  `split_corners` appended, and a `Volume` carries a `SolidId` and no row
+  number. Two answers to one question, and today they can disagree — the box in
+  front and the screen half are not the same test near the tile's own corner,
+  where the two slabs overlap. What would close it is the volume carrying which
+  *instance row* it belongs to, which is one word in a struct that has a spare
+  one.
+- **`own_solid` scans a cell to name a solid the fragment already met.**
+  `blit.wesl` narrows a sprite instance's owner by the fragment's stance, once
+  per fragment, walking the cell's list — and `impostor::Volume::solid` is the
+  answer outright, carried by the very box the ray met and written on the wire
+  since phase 6b. What is missing is a way to get it from the pass that knows it
+  to the pass that asks: the id word is full (kind, stance, twenty-six bits of
+  row) and a `SolidId` will not fit beside them. It is also the *exact* answer
+  where `own_solid` is a guess — a fitted climbable's treads are one owner and
+  one shape, which that function's own doc calls the case it cannot answer.
 - **A run of wall wants to be one solid, and until it is, `same_run` stands in.**
   Phase 4 measured that identity cannot retire it — the panel next along a run is
   a different static — which makes "merge coplanar panels of a run into one solid"
@@ -1242,18 +1367,14 @@ Things noticed while writing this, not blocking any phase:
   test`. The claim it makes is small enough to state as a unit test of
   `walk_cells_*` on a two-solid fixture (a lid whose edge is another solid's own
   plane, a ray leaving that edge), and that is what would catch it being deleted.
-- **A north or west face's normal contradicts the argument `outward` itself
-  makes for it.** `place_format.wesl`'s own doc says the direction is "the
-  *drawn* one… the art only ever draws the two faces an isometric camera can
-  see… so a south face looks towards `+y` and an east face towards `+x`" — and
-  then answers `(0, −1, 0)` for `STANCE_FACE_NORTH`, which is the side turned
-  *away* from the viewer. A north-edge panel's visible surface is its `+y` one:
-  it is the interior of the room, which is exactly what a house's north wall
-  shows. Five graphics out of 1197, which is why nothing has caught it. **Phase
-  6 fixes it by construction and not by editing the table** — the impostor names
-  the face the ray met, and a ray from the camera can only ever meet `+x`, `+y`
-  or `+z` — so what is left is to check whether anything else still reads
-  `outward`, and delete it if not.
+- ~~**A north or west face's normal contradicts the argument `outward` itself
+  makes for it.**~~ **Done, phase 6c.** The impostor names the face the ray met
+  and a ray from the camera can only meet `+x`, `+y` or `+z`, so there is no row
+  left to be wrong; `place_format.wesl`'s `outward` is **deleted**, nothing else
+  read it. `crate::place::Stance::normal` keeps the same table on the Rust side
+  with the defect written down at its definition — its readers are hand-built
+  G-buffers stating a scene by naming a stance, which is a question about the
+  edge rather than about the picture.
 - **Two pixels at flame height `1` survive the light oracle, and both sit where
   the reshaped tread put them.** `[tread 2's riser] at (100.80, 100.33, z 3.10)`
   — the engine reads it fully blocked and the geometry gives it `0.022`, a tenth

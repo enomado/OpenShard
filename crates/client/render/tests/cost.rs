@@ -330,16 +330,22 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     let quads = ground::collect(&map, &camera, &land, &texmaps, &Cutaway::OPEN);
     let static_atlas = StaticAtlas::build(&art, statics::visible_graphics(&map, &camera, &animations))
         .expect("a screen of statics fits");
-    let static_quads = statics::collect(
+    let static_geometry = statics::collect(
         &map,
         &camera,
         &tiledata,
         &animations,
         &static_atlas,
         &Cutaway::OPEN,
+        // **Empty, and that is why this harness does not price the impostor.**
+        // A static's boxes come out of the grid, so with none there is no box to
+        // meet and every fragment of the statics pass takes the billboard
+        // fallback — see `statics.wesl`. What is measured below is the *lighting*
+        // pass, which reads the planes rather than writing them; a real grid here
+        // is what would put the meeting on the clock too.
         &openshard_client_render::occlusion::Occlusion::EMPTY,
-    )
-    .quads;
+    );
+    let static_quads = static_geometry.quads;
     // `docs/gbuffer.md` step 2: the id width has to be sized against a real
     // frame's *face* count, not the object count decision 3 replaces. Quads are
     // objects — one per static, one per land cell — and every one of them is
@@ -397,6 +403,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         &mut encoder,
         target,
         &static_instances.rows,
+        &static_geometry.boxes,
         Some(static_instances.drawn),
     );
     queue.submit([encoder.finish()]);

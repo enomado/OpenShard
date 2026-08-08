@@ -7,22 +7,31 @@
 // a sprite is a picture with a shape rather than a diamond with a known one, so
 // the fragment shader discards on alpha.
 //
-// Vertex-buffer instancing, one uniform block, one sampled texture — which was
-// once here because it is inside WebGL2's ceiling, and is now simply what this
-// pass needs. The crate's ceiling is **WebGPU** (see `crate` docs, and
-// `docs/lighting.md` decision 30.5): `blit.wgsl` beside this reads eleven
-// storage buffers, so a pass here that wants one is allowed one. Phase 6's
-// impostor is the one that will — it needs a prism's own boxes per fragment.
+// **The picture is the artist's and the geometry is ours.**
+// `docs/lighting_rebuild.md` phase 6: where a fragment *is* and which way its
+// surface looks are not guessed back from the stance the art was read as — they
+// are found by meeting this pixel's own view ray with the boxes the occlusion
+// grid holds for **this instance**. See `package::impostor` for the meeting and
+// `statics::push_volumes` for the association. So there is one silhouette, the
+// sprite's; a pixel is already one instance's, because that instance's own quad
+// drew it; and a static whose art overhangs its own volume produces a *number*
+// (`Meeting::outside`) rather than a hole for a border constant to cover.
+//
+// Vertex-buffer instancing, one uniform block, one sampled texture and one
+// storage buffer — which the header once said was kept out for WebGL2's ceiling,
+// a stale objection: the crate's ceiling is **WebGPU** (see `crate` docs, and
+// `docs/lighting.md` decision 30.5) and `blit.wgsl` beside this reads eleven of
+// them.
 //
 // The depth comes in per instance and is written whole. It is not derived here
 // because it is one ordering shared with the ground pass, and a second copy of
 // the formula is a second chance to disagree with it — see `crate::depth`.
 
 import package::place_format::{
-    KIND_MASK, SUB_TILE, STANCE_FLAT, STANCE_FACE_NORTH, STANCE_FACE_EAST,
-    STANCE_FACE_SOUTH, STANCE_FACE_WEST, STANCE_CORNER, pack_ids, outward,
+    KIND_MASK, STANCE_FACE_NORTH, STANCE_FACE_SOUTH, STANCE_CORNER, pack_ids,
 };
 import package::normal_format::pack_normal;
+import package::impostor::{hit, meets, ray_from};
 
 struct Viewport {
     // The target's size in *real* pixels — see `ground.wgsl`, which documents
@@ -47,6 +56,25 @@ struct Viewport {
 // channel instead of a second one.
 @group(0) @binding(3) var hue_ramp: texture_2d<f32>;
 @group(0) @binding(4) var hue_sampler: sampler;
+
+// One box a static stands as — `crate::impostor::Volume`, and the frame's whole
+// list of them: every drawn instance names its own run of this by the two words
+// at the tail of its row. A fragment is met against **its own** run and no
+// other, which is what makes the silhouettes agree by construction rather than
+// by a border.
+//
+// `pad` is the vector's own alignment rather than a spare field, and `solid` is
+// there because the row it fills is paid for either way — nothing in this pass
+// reads it yet. See `crate::impostor::Volume::write`, which is the one place
+// this layout is spelled on the other side.
+struct Volume {
+    lo: vec3<f32>,
+    pad: f32,
+    hi: vec3<f32>,
+    solid: u32,
+};
+
+@group(0) @binding(5) var<storage, read> volumes: array<Volume>;
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
@@ -83,44 +111,26 @@ struct VertexOut {
     // for anything else. See `crate::sprite::SpriteQuad::twin` and
     // `docs/gbuffer.md` step 4.
     @location(8) @interpolate(flat) twin: u32,
+    // Which run of `volumes` is this instance's own: `(offset, count)`, and
+    // `(_, 0)` for a picture the grid holds no shape for. See
+    // `crate::impostor::Range`.
+    @location(9) @interpolate(flat) volumes: vec2<u32>,
 };
 
 // Virtual pixels one unit of height lifts a sprite up the screen —
 // `camera::Z_STEP`, and the same number `ground.wgsl` is handed in its uniform
 // block. A constant here because this pass is not given the world's grid, only
 // rectangles somebody else placed in it.
+//
+// Read by the *no volume* case alone now: a picture nothing measured a shape for
+// is a billboard, and what runs down a billboard is height. Everything with a
+// box gets its height from the box.
 const Z_STEP: f32 = 4.0;
 
-// The largest fraction that still names *this* tile.
-//
-// `blit.wgsl` finds a fragment's cell with `floor(tile + fraction)`, so a
-// fraction of exactly one lands in the *neighbour* — and the shadow walk exempts
-// the fragment's own cell from occluding it, because a wall's own face must be
-// the brightest thing beside a torch. A wall's face lies **on** the tile
-// boundary, so writing a clean 1 there hands the walk the wrong cell: the wall's
-// own tile stops being exempt and every faced wall is shadowed by the very wall
-// it is the face of. It comes out at ambient, which is what a measurement of the
-// first version of this said — a run of walls at 249 dropping to 65.
-//
-// One step of the seven-bit fraction is a hundred-and-twenty-seventh of a tile,
-// 0.35 pixels of world. The seam does not notice and the cell is right.
-const INSIDE: f32 = (SUB_TILE - 1.0) / SUB_TILE;
-
-// A tile's width in virtual pixels, which in this projection is also the number
-// of pixels a whole tile of `x - y` covers: one step of world `x` moves the
-// picture 22 pixels right and 22 down, one step of `y` moves it 22 left and 22
-// down, so the two axes each cover half of a 44-pixel cell in both directions.
-const TILE_WIDTH: f32 = 44.0;
-
-// Half of it, which is how far the diamond reaches either side of the column its
-// sprite is centred on — and therefore how wide *one edge* of the diamond is on
-// the screen. A wall stands on one edge, so this is the whole horizontal extent
-// of a wall's face. Numerically the same 22 as `HALF_TILE_HEIGHT` and a different
-// question: one is how far across, the other how far down.
-const HALF_TILE_WIDTH: f32 = TILE_WIDTH * 0.5;
-
 // Half a tile's height: how far above the sprite's bottom edge the tile's own
-// centre is, since that edge stands on the diamond's bottom vertex.
+// centre is, since that edge stands on the diamond's bottom vertex. The one
+// thing this pass still spells about the projection — `impostor::ray_from` is
+// the rest of it.
 const HALF_TILE_HEIGHT: f32 = 22.0;
 
 // `crate::place::Stance`, in the four bits `Place::packed` writes it to — the
@@ -171,6 +181,9 @@ fn vs_main(
     @location(6) place: vec2<u32>,
     // Per instance: a corner's paired shadow row, or `0`.
     @location(7) twin: u32,
+    // Per instance: which run of `volumes` is its own, as
+    // `crate::impostor::Range` wrote it.
+    @location(8) volumes: vec2<u32>,
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOut {
     let pixel = origin + corner * size;
@@ -203,6 +216,7 @@ fn vs_main(
     out.middle_x = origin.x + size.x * 0.5;
     out.id = instance_index;
     out.twin = twin;
+    out.volumes = volumes;
     return out;
 }
 
@@ -258,10 +272,18 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // building's corner that way — and which of them a pixel is a pixel *of* is
     // which half of the tile's column it was drawn on. So the corner is resolved
     // here, per fragment, and nothing downstream ever sees one: what goes into
-    // the attachment is a single face with a single outward normal, which is what
-    // `blit.wgsl` knows how to light. Before this a corner was `Upright` — a flat
-    // 44-pixel band between two continuous runs of wall, lit identically on the
-    // side turned away from the flame. See `crate::facing::Facing::on_half`.
+    // the id word is a single face, which is the side of the tile `blit.wgsl`'s
+    // own-run test and `own_solid` ask about. Before this a corner was `Upright`
+    // — a flat 44-pixel band between two continuous runs of wall, lit
+    // identically on the side turned towards the flame and the side turned away.
+    // See `crate::facing::Facing::on_half`.
+    //
+    // **The screen half and not the box the ray met**, which is the one join
+    // this phase left standing: the two panels of a corner are two boxes and the
+    // impostor does pick between them for the *normal*, so a fragment could name
+    // its own panel outright. What stops it is the id — the left half takes
+    // `in.twin`, the row `split_corners` appended, and the box carries no row
+    // number to choose one by. See `docs/lighting_rebuild.md` phase 6c.
     // A corner's two faces need two ids, not one shared between them — see
     // `docs/gbuffer.md` decision 3 and step 4. The right half (`across > 0.0`)
     // keeps this instance's own id; the left half takes `in.twin`, the row
@@ -278,102 +300,91 @@ fn fs_main(in: VertexOut) -> FragmentOut {
             id = in.twin;
         }
     }
+    // How far this pixel is below the row its tile's own centre projects to.
+    // With `across` beside it, the two numbers `impostor::ray_from` needs.
     let down = in.pixel_y - (in.bottom_y - HALF_TILE_HEIGHT);
-    // How far along a *face's* edge this pixel is, before the face says which
-    // direction that edge runs in. One division, shared by the four cases.
-    let run = across / HALF_TILE_WIDTH;
 
-    // Where this pixel is in its tile.
+    // The tile the picture stands on, off the instance's own first word — the
+    // one `blit.wgsl` fetches back out of `face_instances[id]`.
+    let tile = vec2<f32>(f32(in.place.x & 0xFFFFu), f32(in.place.x >> 16u));
+
+    // **Where this fragment is, and which way its surface looks.**
     //
-    // A picture that *lies* in the tile is the tile's diamond, so both fractions
-    // come out of the pixel's offset from the tile's centre by inverting the
-    // projection — `screen = ((x - y) * 22, (x + y) * 22)`, whose forward
-    // direction is `camera::project`.
+    // Both come from meeting this pixel's own view ray with the boxes *this
+    // instance* stands as. What that replaced was an inverse projection guessed
+    // from the stance the art was read as: a floor's two fractions taken from the
+    // pixel's offset from the tile's centre, a wall's one fraction pinned to the
+    // edge its face names and the other run along it, a height recovered from
+    // `pixel_y` at four pixels a unit — five branches, each stating a plane the
+    // geometry already knew, and every one of them clamped a
+    // hundred-and-twenty-seventh of a tile inside the tile so that a reader
+    // flooring the result would not land in the neighbour. Nothing floors it: the
+    // walk starts from the tile the instance carries, which is a whole number a
+    // pass knew exactly.
     //
-    // A **wall** is a billboard rising from one edge of that diamond, so one of
-    // its two fractions is fixed at the edge and the other runs along it. Which
-    // edge is measured from the art and arrives here as the stance — see
-    // `crate::facing`. The point of it is the seam: the next tile along the run
-    // starts its fraction at 0 where this one ended at 1, so a row of wall tiles
-    // is one continuous surface rather than a row of separately lit sprites.
-    //
-    // An **upright** picture with no face is the middle of its tile, and that is
-    // a statement about what is *not* known rather than a shortcut: a tree, a
-    // post, a wall the detector would not guess at. Reading the
-    // horizontal offset as `x - y` for those, as this did for one commit, spreads
-    // their pixels along the one direction no wall ever runs.
-    //
-    // Clamped rather than wrapped in every case: the attachment holds one tile
-    // per pixel, and it is the one the thing stands on. For a face that matters
-    // for a real reason — a wall sprite draws a sliver of its own thickness past
-    // the edge it stands on, and those pixels belong to the near end of the edge.
-    var sub = vec2<f32>(0.5);
-    switch stance {
-        case STANCE_FLAT: {
-            let local = vec2<f32>(across + down, down - across) / TILE_WIDTH + vec2<f32>(0.5);
-            sub = clamp(local, vec2<f32>(0.0), vec2<f32>(INSIDE));
+    // The default is the **no volume** case, and it is the one reading that is
+    // not geometry: a picture the grid holds no shape for — a mobile, a text
+    // glyph, a static the grid refused — stands in the middle of its tile with
+    // its height running down the picture at four pixels a unit, and has no
+    // facing at all. That is what `Stance::Upright` has always meant, said once
+    // here instead of five times below, and phase 7 is what gives a billboard a
+    // normal.
+    var at = vec3<f32>(tile + vec2<f32>(0.5), base - down / Z_STEP);
+    var normal = vec3<f32>(0.0);
+    if in.volumes.y != 0u {
+        let start = ray_from(tile, base, across, down);
+        // `impostor::nearest`, spelled here because the boxes are a binding: the
+        // box in *front* wins among those the ray genuinely goes through — the
+        // largest `t` along the view direction — and if it goes through none of
+        // them, the one it passes closest to. That last case is the sprite
+        // overhanging its own volume, and `met.outside` is how far.
+        var best = meets(start, volumes[in.volumes.x].lo, volumes[in.volumes.x].hi);
+        for (var k = 1u; k < in.volumes.y; k = k + 1u) {
+            let volume = volumes[in.volumes.x + k];
+            let met = meets(start, volume.lo, volume.hi);
+            // A real hit always beats a miss, however near the miss came; two
+            // hits are decided by which is in front, and two misses by which came
+            // closer. Ties go to the box the list holds first, which for a flight
+            // is the grid's own order — a tread's top before the tread above it.
+            var better = false;
+            if hit(best) == hit(met) {
+                if hit(met) {
+                    better = met.t > best.t;
+                } else {
+                    better = met.outside < best.outside;
+                }
+            } else {
+                better = hit(met);
+            }
+            if better {
+                best = met;
+            }
         }
-        case STANCE_FACE_NORTH: {
-            sub = vec2<f32>(clamp(run, 0.0, INSIDE), 0.0);
-        }
-        case STANCE_FACE_EAST: {
-            sub = vec2<f32>(INSIDE, clamp(1.0 - run, 0.0, INSIDE));
-        }
-        case STANCE_FACE_SOUTH: {
-            sub = vec2<f32>(clamp(1.0 + run, 0.0, INSIDE), INSIDE);
-        }
-        case STANCE_FACE_WEST: {
-            sub = vec2<f32>(0.0, clamp(-run, 0.0, INSIDE));
-        }
-        default: {}
+        at = best.at;
+        normal = best.normal;
     }
 
-    // The height this pixel stands at.
-    //
-    // For anything standing up it is how far the pixel is above the point of the
-    // tile its picture rises from, at four pixels a unit of `z`. That point is
-    // `(sub.x + sub.y - 1) * 22` pixels below the tile's centre row — which is
-    // the forward projection of the fraction just computed, so the four faces and
-    // the faceless upright case are one line rather than five. With `sub` at the
-    // tile's middle the term is zero and this is exactly what it was before faces
-    // existed; with a face it is what makes a wall's base sit at the static's own
-    // `z` all the way along the edge instead of only at the tile's centre.
-    //
-    // A floor is the tile's height everywhere, because what runs down a floor's
-    // picture is the tile, which `down` has already spent. Its own branch rather
-    // than the line above, which would read a *clamped* fraction back out through
-    // the projection and give the corners of a 44-pixel floor sprite — which lie
-    // outside the diamond — a height nobody drew them at.
-    var z = base;
-    if stance != STANCE_FLAT {
-        z = base + ((sub.x + sub.y - 1.0) * HALF_TILE_HEIGHT - down) / Z_STEP;
-    }
-
-    // The stance rides into the id word above the kind, and it is not a
-    // duplicate of what the position below already says: a position says
-    // *where in its tile* a pixel is, and a face says **which way that surface
-    // looks** — which the lighting cannot recover from a point, because a
-    // wall's two faces are one tile and one plane. It is read for two things
-    // now and neither is a normal: which instance buffer a mesh face's id
-    // addresses, and the shadow walk's own-run test. See `crate::place::Place`.
+    // The stance rides into the id word above the kind, and **it is not a
+    // facing any more.** The normal is measured now — it is the face of the box
+    // the view ray met — and what is left of the stance is the thing no geometry
+    // states: *which side of its own tile* a panel stands on. `blit.wgsl` reads
+    // it for exactly that, twice — `own_side` for the shadow walk's own-run test,
+    // and `own_solid`, which narrows a corner instance's owner to one of its two
+    // panels — plus the sentinel that routes a mesh face's id to its own buffer.
+    // See `crate::place::Place`.
     //
     // Nothing else rides here. The **tile**'s `x`/`y` went to this pass's own
     // instance buffer at `docs/gbuffer.md` step 3, read back by `blit.wgsl` as
     // `face_instances[id]`, since the whole tile is the same two numbers on
-    // every one of a sprite's pixels; `z` and `sub` went to the position plane
-    // at `docs/lighting_rebuild.md` phase 2, since both are this fragment's own
-    // and both were being quantised on the way.
+    // every one of a sprite's pixels; the height and the fraction went to the
+    // position plane at `docs/lighting_rebuild.md` phase 2, since both are this
+    // fragment's own and both were being quantised on the way.
     out.ids = pack_ids(id, stance, (in.place.y >> 8u) & KIND_MASK);
-    // And the same fragment as a point. The tile comes off the instance's own
-    // first word — the one `blit.wgsl` fetches back out of `face_instances[id]`
-    // — so this is what that pass reconstructs, computed where the two halves
-    // are still both exact instead of after each has been through a field.
-    let tile = vec2<f32>(f32(in.place.x & 0xFFFFu), f32(in.place.x >> 16u));
-    out.position = vec4<f32>(tile + sub, z, 1.0);
-    // And the normal, off the stance the corner branch above already resolved.
+    out.position = vec4<f32>(at, 1.0);
     // `pack_normal` carries the two bits that separate the three answers: a zero
-    // vector is a real one here — an upright picture has no side — so "nothing
-    // drew this pixel" needs a bit of its own to be distinguishable from it.
-    out.normal = pack_normal(outward(stance));
+    // vector is a real one here — a picture with no measured volume has no side
+    // — so "nothing drew this pixel" needs a bit of its own to be
+    // distinguishable from it.
+    out.normal = pack_normal(normal);
     return out;
 }

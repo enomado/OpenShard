@@ -142,6 +142,49 @@ pub struct Volume {
     pub solid: u32,
 }
 
+impl Volume {
+    /// One of the grid's own boxes as a volume a fragment can be met against.
+    ///
+    /// The only conversion between the two, so that
+    /// [`crate::statics::push_volumes`] and a fixture stating a wall by hand
+    /// cannot disagree about which end of a `Solid` is which — see
+    /// [`crate::occlusion::Occlusion::box_of`], which is the one place a kind
+    /// becomes geometry.
+    pub fn of(space: &crate::solid::Solid, solid: u32) -> Self {
+        Self {
+            lo: [space.min.x as f32, space.min.y as f32, space.min.z as f32],
+            hi: [space.max.x as f32, space.max.y as f32, space.max.z as f32],
+            solid,
+        }
+    }
+
+    /// What one box costs on the wire, and the stride `statics.wesl`'s own
+    /// `Volume` has.
+    ///
+    /// Thirty-two rather than the twenty-eight the fields add up to: a
+    /// `vec3<f32>` aligns to sixteen, so the shader's struct has a word of
+    /// padding after `lo` whatever this side writes — and `solid` rides in the
+    /// word after `hi` that the same rule would leave empty. It is free, which
+    /// is why it is carried before anything reads it.
+    pub const STRIDE: u64 = 32;
+
+    /// This box as the shader's `Volume`, appended to `out`.
+    ///
+    /// The one place the layout is spelled on this side; the other is the struct
+    /// in `statics.wesl`, and `a_volume_is_thirty_two_bytes_the_shader_can_read`
+    /// is what holds the two together.
+    pub fn write(&self, out: &mut Vec<u8>) {
+        for value in self.lo {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&0f32.to_le_bytes());
+        for value in self.hi {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&self.solid.to_le_bytes());
+    }
+}
+
 /// Where the view ray meets one box, and which of its faces that is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Meeting {
@@ -295,6 +338,30 @@ mod tests {
     /// The unit cube on tile `(100, 101)`, ten `z` tall.
     fn cube() -> ([f32; 3], [f32; 3]) {
         ([100.0, 101.0, 0.0], [101.0, 102.0, 10.0])
+    }
+
+    #[test]
+    fn a_volume_is_thirty_two_bytes_the_shader_can_read() {
+        // The two spellings of one layout: this side's `write` and
+        // `statics.wesl`'s `struct Volume`. Nothing but a person reading both
+        // compares the *order*, so what is asserted here is every field's own
+        // offset — a row that grew a byte would silently read every box past the
+        // first at the wrong place, which is the failure `SpriteQuad::write`'s
+        // own test was written from.
+        let mut out = Vec::new();
+        Volume {
+            lo: [100.0, 101.0, 3.0],
+            hi: [101.0, 102.0, 7.0],
+            solid: 9,
+        }
+        .write(&mut out);
+        assert_eq!(out.len() as u64, Volume::STRIDE);
+        assert_eq!(&out[0..4], &100f32.to_le_bytes(), "lo.x");
+        assert_eq!(&out[8..12], &3f32.to_le_bytes(), "lo.z");
+        assert_eq!(&out[12..16], &0f32.to_le_bytes(), "the vector's own padding");
+        assert_eq!(&out[16..20], &101f32.to_le_bytes(), "hi.x");
+        assert_eq!(&out[24..28], &7f32.to_le_bytes(), "hi.z");
+        assert_eq!(&out[28..32], &9u32.to_le_bytes(), "and which solid it is");
     }
 
     #[test]

@@ -276,6 +276,137 @@ pub fn edges_of(facing: Option<crate::facing::Facing>) -> u8 {
     facing.faces().map(edge_of).fold(0, |mask, side| mask | side)
 }
 
+/// **What shape one static standing at one place is**: its boxes, each with the
+/// side of its tile it stands on and the [`Part`] number that names it.
+///
+/// One question with two readers, which is why it is a function of its own and
+/// not a branch inside [`Builder::add`]. That method asks a *second* question
+/// beside it — does this thing stop light — and answers "no" for everything the
+/// tiledata does not mark `NO_SHOOT` or `WINDOW`, which is most of what a frame
+/// draws: a floorboard, a rug, a fence rail, half the walls of a Britain street.
+/// `docs/lighting_rebuild.md` phase 6c is where those two questions came apart,
+/// because the impostor needs the first and not the second: **a pane of glass has
+/// a shape whether or not it casts a shadow**, and a fragment met against nothing
+/// is a fragment with no position and no normal.
+///
+/// The boxes come out in push order, so `n`th here is `Part::nth(n)` in a grid
+/// that took them — which is the join [`Occlusion::id_of`] answers and
+/// `statics::push_volumes` uses to give a volume the name the shadow walk
+/// compares.
+///
+/// `z` is where this instance stands; the height comes off the tiledata, halved
+/// for a climbable by [`calc_height`] for the reason that function gives.
+pub fn boxes_of(
+    x: i32,
+    y: i32,
+    z: i8,
+    tile: &StaticTile,
+    shape: &Shape,
+    mut each: impl FnMut(Part, u8, crate::solid::Solid),
+) {
+    let bottom = i32::from(z);
+    let top = bottom + calc_height(tile);
+    // **A climbable static is a solid, and the art says which one.**
+    //
+    // A stair's base is two 45° runs meeting at the tile's south corner, which is
+    // pixel for pixel what two walls meeting at a corner leave — so `facing_of`
+    // reads a flight of steps as a corner of a house, and read that way the grid
+    // stands two opaque panels on its east and south edges. A staircase then
+    // shadows a street like a run of wall, and its own treads shadow each other.
+    //
+    // The client's own `CLIMBABLE` bit is what admits the other reading, and it
+    // is asked *first* for the reason `is_background` is: a fit alone cannot
+    // decide it, because the measure scores a plain wall at 0.81 against its best
+    // prism. See `facing::PRISM_FITS`.
+    //
+    // The height comes off the art with it. `tiledata` states ten for the landing
+    // at `0x071E` and the artist drew five; it states five for the flight at
+    // `0x0736` and the artist drew five. The same field means the full height on
+    // one and the drawn height on the other — `Sphere` halves it,
+    // `movement::scene::stair` stands a walker half way up it — so the
+    // measurement is what this believes.
+    if let (true, Some(prism)) = (tile.flags.is_climbable(), &shape.prism) {
+        // **One box a tread, in climb order, and it is a body.**
+        //
+        // This was two — a lid at the tread's own height and a panel for the rise
+        // below it — and `gbuffer.md` step 4b says outright what that was for:
+        // "the representation **the render pass (step 4c) needs to walk**". The
+        // grid was reshaped to hand a mesh pass one polygon per visible surface,
+        // because at the time a fragment's normal was derived from a solid's
+        // *kind* and there was nowhere else for a normal to come from.
+        //
+        // Both halves of that reason are gone. `docs/lighting_rebuild.md` phase 2
+        // gave the G-buffer a normal plane, written by the pass that knows the
+        // normal; phase 6 takes the mesh pass off every real static. What is left
+        // needs the opposite — a *view* ray has to land on something for every
+        // pixel the art drew, and a union of two degenerate boxes encloses
+        // nothing to land on.
+        //
+        // So a tread is its own strip of the tile, from the static's base to its
+        // own height. `EDGE_ANY` because a stair is solid: a body, whose
+        // occlusion is `ray_vs_solid`'s exact slab test rather than a lid's
+        // crossing test and a panel's run masking.
+        let treads = prism.treads();
+        for (tread, &height) in treads.iter().enumerate() {
+            each(
+                Part::nth(tread),
+                EDGE_ANY,
+                Solid::tread_box_of(
+                    x,
+                    y,
+                    bottom,
+                    bottom + i32::from(height),
+                    prism.up(),
+                    tread,
+                    treads.len(),
+                ),
+            );
+        }
+        return;
+    }
+    // **A climbable static the prism search could not fit is still a climbable
+    // static, not a wall.** Falling through to `edges_of` would read its
+    // silhouette exactly as the doc above says a stair's base reads — a corner of
+    // a house — and narrow it by `PANEL_THICKNESS` on two sides for nothing: the
+    // flight is already half-height (`calc_height`), so what a panel reading
+    // loses is not "this looks like solid stone", it is a seam short of the tile
+    // the neighbour occludes from. One whole-tile body, `EDGE_ANY`'s un-inset
+    // case of `box_of`, is the answer for the 37.7% the fit still misses.
+    if tile.flags.is_climbable() {
+        each(Part::ONLY, EDGE_ANY, Solid::box_of(x, y, bottom, top, EDGE_ANY));
+        return;
+    }
+    // A floor or a rug is a **lid**: what it is is the `z` it lies at, and no
+    // vertical side of the tile describes it, so it names no edge. Everything
+    // that stands up names the edge the art gave it, or all four where the art
+    // would not say — see `edges_of`.
+    //
+    // The client's own `FLOOR` bit decides which, exactly as it does for
+    // `place::Stance`, and asking it here rather than trusting the face to be
+    // `None` is deliberate: a floor whose silhouette happened to read as a wall
+    // would otherwise be given one edge out of four.
+    let edges = match tile.flags.is_background() {
+        true => 0,
+        false => edges_of(shape.facing),
+    };
+    match edges {
+        // A lid, or a body: one surface, and the mask is the whole of what says
+        // which of the walk's two rules it takes.
+        0 | EDGE_ANY => each(Part::ONLY, edges, Solid::box_of(x, y, bottom, top, edges)),
+        named => {
+            // A corner's panels are numbered in the order they are pushed, which
+            // is the order this array names the sides in — see [`Part`].
+            let mut part = 0;
+            for side in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
+                if named & side != 0 {
+                    each(Part::nth(part), side, Solid::box_of(x, y, bottom, top, side));
+                    part += 1;
+                }
+            }
+        }
+    }
+}
+
 /// What the art said about one graphic's geometry: which edge it stands on, and
 /// the hole in it.
 ///
@@ -741,7 +872,13 @@ impl Solid {
     /// is bit-for-bit what built the real `space` in the first place, so the
     /// reconstruction is only lossy for `Builder::add_raw`'s sub-tile boxes,
     /// which is the one gap this doc already has a name for.
-    pub(crate) fn box_of(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> crate::solid::Solid {
+    /// `pub` since `docs/lighting_rebuild.md` phase 6c for a second reader with
+    /// the same argument: a test fixture that wants the box a wall *is* has to
+    /// state it the way the grid does, or it asserts about a slab of its own
+    /// invention — and the panel that is a fifth of a tile deep on the inside of
+    /// the edge it stands on is exactly the sort of thing a second spelling gets
+    /// wrong. See `crate::impostor::Volume::of`.
+    pub fn box_of(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> crate::solid::Solid {
         use crate::camera::WorldSpot;
 
         let (x, y) = (f64::from(x), f64::from(y));
@@ -1985,197 +2122,51 @@ impl Builder {
             return;
         };
         let bottom = i32::from(z);
-        let top = bottom + calc_height(tile);
         // One `add` is one owner, and every solid below carries it — the two
-        // panels of a corner, a flight's tread tops and risers, a body. See
-        // [`Owner`], and `docs/lighting_height.md` phase 3.
+        // panels of a corner, a flight's treads, a body. See [`Owner`], and
+        // `docs/lighting_height.md` phase 3.
         let owner = Owner::new(z, graphic);
-        // **A climbable static is a solid, and the art says which one.**
-        //
-        // A stair's base is two 45° runs meeting at the tile's south corner,
-        // which is pixel for pixel what two walls meeting at a corner leave — so
-        // `facing_of` reads a flight of steps as a corner of a house and the grid
-        // used to stand two opaque panels on its east and south edges. A
-        // staircase then shadowed a street like a run of wall, and its own treads
-        // shadowed each other.
-        //
-        // The client's own `CLIMBABLE` bit is what admits the other reading, and
-        // it is asked *first* for the reason `is_background` is: a fit alone
-        // cannot decide it, because the measure scores a plain wall at 0.81
-        // against its best prism. See `facing::PRISM_FITS`.
-        //
-        // The height comes off the art with it. `tiledata` states ten for the
-        // landing at `0x071E` and the artist drew five; it states five for the
-        // flight at `0x0736` and the artist drew five. The same field means the
-        // full height on one and the drawn height on the other — `Sphere` halves
-        // it, `movement::scene::stair` stands a walker half way up it — so the
-        // measurement is what this believes.
-        if let (true, Some(prism)) = (tile.flags.is_climbable(), shape.prism) {
-            // Step 23.5: one body per tread, not one body for the whole flight —
-            // stopped by *its own tread's* height over *its own tread's* strip,
-            // so the shape on screen is the stair rather than a ziggurat to the
-            // landing's height.
-            //
-            // gbuffer.md step 4b: that one body is now two faces, a lid and a
-            // panel, not a body a ray travels through. A tread's own top and
-            // riser are honest per-face geometry (decision 3) rather than one
-            // box standing in for both — the top's normal is `[0,0,1]`, exactly
-            // what a lid already is, and the riser's is `up`'s own outward
-            // direction, exactly what a named-edge panel already is. Nothing
-            // about *how* a lid or a panel stops a ray is new; only the shape
-            // fed to `box_of`'s two existing rules changes.
-            let treads = prism.treads();
-            // **One solid a tread, in climb order, and it is a body.**
-            //
-            // This was two — a lid at the tread's own height and a panel for the
-            // rise below it — and `gbuffer.md` step 4b says outright what that
-            // was for: "the representation **the render pass (step 4c) needs to
-            // walk**". The occlusion grid was reshaped to hand a mesh pass one
-            // polygon per visible surface, because at the time a fragment's
-            // normal was derived from a solid's *kind* — a lid looks up, a
-            // panel looks out of its named edge — and there was nowhere else for
-            // a normal to come from.
-            //
-            // Both halves of that reason are gone. `docs/lighting_rebuild.md`
-            // phase 2 gave the G-buffer a normal plane, written by the pass that
-            // knows the normal rather than inferred from an edge mask; phase 6
-            // takes the mesh pass off every real static, so nothing is left that
-            // needs a surface list. What is left needs the opposite — a *view*
-            // ray has to land on something for every pixel the art drew, and a
-            // union of two degenerate boxes encloses nothing to land on.
-            //
-            // So a tread is its own strip of the tile, from the static's base to
-            // its own height: exactly the shape step 23.5 pushed before 4b split
-            // it, and exactly what [`crate::impostor`] meets. `EDGE_ANY` because
-            // a stair is solid — a body, whose occlusion is `ray_vs_solid`'s
-            // exact slab test rather than a lid's crossing test and a panel's
-            // run masking. One [`Part`] a tread now, not two.
-            for (tread, &height) in treads.iter().enumerate() {
-                self.push(
-                    index,
-                    Solid {
-                        space: Solid::tread_box_of(
-                            place.0,
-                            place.1,
-                            bottom,
-                            bottom + i32::from(height),
-                            prism.up(),
-                            tread,
-                            treads.len(),
-                        ),
-                        opacity,
-                        edges: EDGE_ANY,
-                        aperture: None,
-                        roof: tile.flags.is_roof(),
-                        owner,
-                        part: Part::nth(tread),
-                    },
-                );
-            }
-            return;
-        }
-        // **A climbable static the prism search could not fit is still a
-        // climbable static, not a wall.** Falling through to `edges_of` would
-        // read its silhouette exactly as the doc above says a stair's base
-        // reads — a corner of a house — and narrow it by `PANEL_THICKNESS` on
-        // two sides for nothing: the flight is already half-height
-        // (`calc_height`), so what a panel reading loses is not "this looks
-        // like solid stone", it is a seam short of the tile the neighbour
-        // occludes from. One whole-tile body, `EDGE_ANY`'s un-inset case of
-        // `box_of`, is the same answer step 23.1 gave every climbable static
-        // before decision 34 taught the grid to read a *fitted* one as its own
-        // treads — this is that answer for the 37.7% the fit still misses.
-        // `docs/lighting.md`'s backlog, "measured rather than argued".
-        if tile.flags.is_climbable() {
+        // **What shape this static is, is not this function's question** — see
+        // [`boxes_of`], which answers it for the impostor as well. What is left
+        // here is what belongs to a grid *of occluders*: whether the thing stops
+        // light at all (the `CLEAR` gate above, and the opacity every box
+        // carries), whether it is a roof, whose it is, and where the hole in it
+        // sits at this instance's own `z`.
+        boxes_of(place.0, place.1, z, tile, &shape, |part, edges, space| {
             self.push(
                 index,
                 Solid {
-                    space: Solid::box_of(place.0, place.1, bottom, top, EDGE_ANY),
-                    opacity,
-                    edges: EDGE_ANY,
-                    aperture: None,
-                    roof: tile.flags.is_roof(),
-                    owner,
-                    part: Part::ONLY,
-                },
-            );
-            return;
-        }
-        // A floor or a rug is a **lid**: its occlusion is the `z` it lies at and
-        // no vertical side of the tile describes it, so it names no edge.
-        // Everything that stands up names the edge the art gave it, or all four
-        // where the art would not say — see `edges_of`.
-        //
-        // The client's own `FLOOR` bit decides which, exactly as it does for
-        // `place::Stance`, and asking it here rather than trusting the face to be
-        // `None` is deliberate: a floor whose silhouette happened to read as a
-        // wall would otherwise be given one edge out of four and stop three
-        // quarters less light than it does today.
-        let edges = match tile.flags.is_background() {
-            true => 0,
-            false => edges_of(shape.facing),
-        };
-        match edges {
-            // A lid, or a body: one surface, and the mask is the whole of what
-            // says which of the walk's two rules it takes.
-            //
-            // **And no hole**, whatever was offered. A hole is a rectangle in the
-            // plane of a panel, and neither of these two has a plane: a lid is
-            // horizontal, and a body is the fallback for a picture whose facing
-            // the art would not name — so there is no run for a `near` and a `far`
-            // to be measured along. Dropping it is the same refusal decision 3
-            // makes about the edge itself; the alternative is a window in a
-            // direction nobody measured.
-            0 | EDGE_ANY => self.push(
-                index,
-                Solid {
-                    space: Solid::box_of(place.0, place.1, bottom, top, edges),
+                    space,
                     opacity,
                     edges,
-                    aperture: None,
+                    // A corner's two panels are two faces of one picture, and a
+                    // hole measured off that picture is a hole in both of them:
+                    // the same window seen from the two sides of the tile it is
+                    // cut into. There is nothing in a silhouette that would say
+                    // which half a hole belonged to, so the honest answer is the
+                    // one that does not invent a difference.
+                    //
+                    // **And none at all for a lid or a body**, whatever was
+                    // offered. A hole is a rectangle in the plane of a panel, and
+                    // neither of those two has a plane: a lid is horizontal, and
+                    // a body is the fallback for a picture whose facing the art
+                    // would not name — so there is no run for a `near` and a
+                    // `far` to be measured along. Dropping it is the same refusal
+                    // decision 3 makes about the edge itself.
+                    //
+                    // The placement happens here because here is where `z` is:
+                    // the art measured a rectangle above the picture's own base
+                    // and this static is standing at one.
+                    aperture: match edges {
+                        0 | EDGE_ANY => None,
+                        _ => shape.hole.map(|hole| Aperture::above(bottom, hole)),
+                    },
                     roof: tile.flags.is_roof(),
                     owner,
-                    part: Part::ONLY,
+                    part,
                 },
-            ),
-            named => {
-                // A corner's panels are numbered in the order they are pushed,
-                // which is the order this array names the sides in — see
-                // [`Part`]. Nothing draws a panel from a mesh today, so no join
-                // rests on it yet; the numbering is total because the field is.
-                let mut part = 0;
-                for side in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
-                    if named & side != 0 {
-                        self.push(
-                            index,
-                            Solid {
-                                space: Solid::box_of(place.0, place.1, bottom, top, side),
-                                opacity,
-                                edges: side,
-                                // A corner's two panels are two faces of one
-                                // picture, and a hole measured off that picture
-                                // is a hole in both of them: the same window seen
-                                // from the two sides of the tile it is cut into.
-                                // There is nothing in a silhouette that would say
-                                // which half a hole belonged to, so the honest
-                                // answer is the one that does not invent a
-                                // difference.
-                                //
-                                // And the placement happens here, because here
-                                // is where `z` is: the art measured a rectangle
-                                // above the picture's own base and this static
-                                // is standing at one.
-                                aperture: shape.hole.map(|hole| Aperture::above(bottom, hole)),
-                                roof: tile.flags.is_roof(),
-                                owner,
-                                part: Part::nth(part),
-                            },
-                        );
-                        part += 1;
-                    }
-                }
-            }
-        }
+            );
+        });
     }
 
     /// Put one solid on a tile, unless the tile already has it or is full.
@@ -2510,7 +2501,10 @@ fn place(
 /// The hole and the prism come off the same lookup and for the same reasons: a
 /// graphic the atlas does not hold has neither, which is a solid wall, which is
 /// what all but fifty-eight of the install's pictures are.
-fn shape_of(atlas: Option<&crate::atlas::StaticAtlas>, graphic: Graphic) -> Shape {
+/// `pub` since `docs/lighting_rebuild.md` phase 6c: the impostor asks the same
+/// question of the same atlas, because a fragment's own shape is what
+/// [`boxes_of`] needs and this is where the art's answer to it lives.
+pub fn shape_of(atlas: Option<&crate::atlas::StaticAtlas>, graphic: Graphic) -> Shape {
     Shape {
         facing: atlas
             .and_then(|atlas| atlas.sprite(graphic))

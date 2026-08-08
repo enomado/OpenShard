@@ -624,11 +624,9 @@ fn main() {
         quads: item_quads,
         mesh_vertices,
         mesh_rows,
-        // The impostor's boxes — `docs/lighting_rebuild.md` phase 6 — which
-        // nothing uploads until the statics pass declares the attribute that
-        // reads them. Named rather than skipped with `..` so that this scene
-        // fails to compile the day it should be passing them on.
-        boxes: _,
+        // The impostor's boxes — `docs/lighting_rebuild.md` phase 6c — which
+        // this scene's own pixels are met against below.
+        boxes,
     } = items::collect(
         &items,
         &camera,
@@ -673,7 +671,7 @@ fn main() {
     // would leave the items pass drawing over whatever the textures happened
     // to hold.
     ground_pass.render(&device, &queue, &mut encoder, target, &ground_quads);
-    items_pass.render(&device, &queue, &mut encoder, target, &item_quads, None);
+    items_pass.render(&device, &queue, &mut encoder, target, &item_quads, &boxes, None);
     // Right after, into the same pixels its own billboard just drew — the same
     // order `lib.rs`'s real frame loop uses and for the same reason
     // (`docs/gbuffer.md` step 4c): without this, a climbable, prism-fit item
@@ -705,6 +703,27 @@ fn main() {
         lighting.lights.len(),
         lighting.occlusion.boxes().count(),
     );
+    // **How many drawn pictures the impostor has no shape for** —
+    // `docs/lighting_rebuild.md` phase 6c, and the census the `View::Normal`
+    // grey is read against. A picture with no box is a billboard: it stands in
+    // the middle of its tile with its height running down the sprite and no
+    // facing at all, so it is lit from every side. That is the honest answer
+    // for a thing the grid holds nothing for, and it is the *wrong* answer for
+    // a surface the grid simply refused — which is what this counts, by the
+    // stance the art was read as, so the two can be told apart.
+    {
+        let mut without = std::collections::BTreeMap::new();
+        for quad in &item_quads {
+            if quad.volumes.count == 0 {
+                *without.entry(format!("{:?}", quad.place.stance)).or_insert(0u32) += 1;
+            }
+        }
+        eprintln!(
+            "  {} of {} pictures stand as no box at all: {without:?}",
+            without.values().sum::<u32>(),
+            item_quads.len(),
+        );
+    }
     // Every solid `_AT`'s own tile holds, in real coordinates — the geometry a
     // profile below is walking across, printed once so the segment it is given
     // does not have to be guessed from the picture.

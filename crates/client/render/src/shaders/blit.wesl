@@ -20,6 +20,10 @@ import package::place_format::{
 
 import package::normal_format::unpack_normal;
 
+// The world's one metric, declared where the view ray needs it and imported
+// here rather than restated — `docs/lighting_rebuild.md`'s *One metric*.
+import package::impostor::Z_PER_TILE;
+
 import package::tonemap::shade;
 
 struct VertexOut {
@@ -340,10 +344,6 @@ fn lit_from(normal: vec3<f32>, toward: vec3<f32>) -> f32 {
     }
     return clamp(dot(normal, toward / span), 0.0, 1.0);
 }
-
-// How many `z` units make one tile — `light::Z_PER_TILE`, and the same
-// derivation: 44 virtual pixels of tile over 4 pixels a unit of height.
-const Z_PER_TILE: f32 = 11.0;
 
 // How many cells of the grid one ray may look at.
 //
@@ -1754,16 +1754,27 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // The distinction between land and a wall's flat cap — both `STANCE_FLAT`,
     // and only one of them wanting the retired half-space gate — used to be made
     // here, by testing the kind. It is made by the *producer* now: `ground.wesl`
-    // writes the bilinear patch's own normal and `statics.wesl` writes `outward`
-    // of the stance it resolved. See `ground.wesl`'s own comment for the
-    // measurement behind that split.
+    // writes the bilinear patch's own normal, and `statics.wesl` writes the face
+    // of the box this fragment's own view ray met (`package::impostor`,
+    // `docs/lighting_rebuild.md` phase 6c). Neither is a table any more, which is
+    // what retired `place_format.wesl`'s `outward` and the two rows of it that
+    // were wrong.
     let normal = unpack_normal(textureLoad(normal_of, texel, 0).x);
 
     // The ambient this *tile* has: the sky's share of it scaled by how much of
     // the sky the column over the tile can see, plus the floor everything gets.
     // `docs/lighting_world.md`, decision 1, and it is the whole of why a room is
     // darker than the road outside it before anything burns.
-    let share = sky_at(i32(floor(at.x)), i32(floor(at.y)));
+    //
+    // **The tile the pass carried, not `floor(at.x/y)`** — the same reason
+    // `first` below is, and the same class of defect: a surface may lie exactly
+    // on a tile boundary, and since `docs/lighting_rebuild.md` phase 6c meets a
+    // fragment with its own volume rather than clamping it a
+    // hundred-and-twenty-seventh of a tile inside, a south or east wall's face
+    // does. Flooring one of those reads the *neighbour* tile's sky, so a street
+    // wall would take the room's ambient along one of its two sides and not the
+    // other.
+    let share = sky_at(i32(tile.x), i32(tile.y));
     var lit = lighting.ground.rgb + lighting.sky.rgb * share;
     // What the diagnostics are made of, gathered while the frame is lit rather
     // than computed a second time: how many flames actually reached this

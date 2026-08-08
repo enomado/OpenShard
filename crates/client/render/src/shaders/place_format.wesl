@@ -71,49 +71,29 @@ const STANCE_CORNER: u32 = 6u;
 // the mesh-face pass writes instead of one of the five above.
 const STANCE_MESH_FACE: u32 = 10u;
 
-// Which way a face looks, in tiles. Zero for everything that has no face.
+// **A stance was once a facing too, and is not one any more.**
 //
-// The direction is the *drawn* one, which is the same thing: the art only ever
-// draws the two faces an isometric camera can see — a wall stands on its tile's
-// `y1` or `x1` edge and its picture is the surface turned towards the viewer —
-// so a south face looks towards `+y` and an east face towards `+x`. North and
-// west are five graphics out of 1197 and are here because the geometry has four
-// edges. `docs/lighting.md`, step 15.
+// `outward(stance)` lived here — a table turning each of the five named stances
+// into the direction its surface looks, read by `statics.wesl` to write the
+// G-buffer's normal plane. `docs/lighting_rebuild.md` phase 6c deleted it: a
+// fragment's normal is the face of the box its own view ray met
+// (`package::impostor`), which is a measurement rather than a table, and the
+// table was *wrong* for two of its five rows — it answered `(0, -1, 0)` for a
+// north face, the side turned away from the viewer, where what a camera sees of
+// a north wall is its `+y` surface. Five graphics out of 1197 stand on a north
+// or west edge, which is why nothing caught it; the impostor cannot spell it,
+// because a ray from the camera only ever leaves a box through `+x`, `+y` or
+// `+z`.
 //
-// A **flat** surface looks up, and that is where this was once missing: a
-// wall's top cap is a `Flat` static, so nothing tested which way it looked and
-// a lamp beside a wall lit its top as fully as one standing over it — decision
-// 27. Land carries the same stance and is a different surface, which is why
-// `ground.wesl` does not call this at all: it writes the bilinear patch's own
-// normal per fragment, so a hillside catches a flame the way the hill it is
-// faces it. (It wrote a deliberate *zero* here until phase 3, when the shading
-// term stopped being a half-space — see that file's own comment for the
-// measurement.) `crate::place::Stance::normal` states the same table once more
-// on the Rust side.
+// What is left of a stance is the thing no geometry states: **which side of its
+// own tile a panel stands on**. `blit.wesl` reads it for the shadow walk's
+// own-run test and to narrow a corner instance's owner to one of its two panels,
+// and for the sentinel that routes a mesh face's id to its own instance buffer.
+// `crate::place::Stance` is the Rust side of the same word.
 //
-// `STANCE_UPRIGHT` looks nowhere: a billboard has no side, so every flame that
-// reaches it lights it. That is a statement about what is not known, and
-// `light::Surface::normal` returns nothing for the same reason. A **corner**
-// never arrives here — `statics.wesl` has already resolved it to the face of
-// the half the fragment was drawn on — and `STANCE_MESH_FACE` never does
-// either: the mesh pass carries `crate::mesh::Face`'s own normal on its
-// vertices.
-//
-// **This lives here and not in `blit.wesl`, where it used to.** A normal is now
-// something a world pass *writes* — `docs/lighting_rebuild.md` phase 2, the
-// G-buffer's normal plane — and the pass that writes it is `statics.wesl`,
-// which is the file that already resolved the corner. The lighting reads the
-// plane and has no case for a stance at all.
-fn outward(stance: u32) -> vec3<f32> {
-    switch stance {
-        case STANCE_FACE_NORTH: { return vec3<f32>(0.0, -1.0, 0.0); }
-        case STANCE_FACE_EAST: { return vec3<f32>(1.0, 0.0, 0.0); }
-        case STANCE_FACE_SOUTH: { return vec3<f32>(0.0, 1.0, 0.0); }
-        case STANCE_FACE_WEST: { return vec3<f32>(-1.0, 0.0, 0.0); }
-        case STANCE_FLAT: { return vec3<f32>(0.0, 0.0, 1.0); }
-        default: { return vec3<f32>(0.0); }
-    }
-}
+// `crate::place::Stance::normal` still states the old table, and deliberately:
+// its readers are the hand-built G-buffers of `plan.rs` and the test fixtures,
+// which state their own scenes rather than reproduce this pass. See its own doc.
 
 // What `ground.wgsl`/`statics.wgsl`/`mesh_face.wgsl` each built by hand, one
 // literal per file, before this. Sharing it closes half of session 23's bug

@@ -550,10 +550,14 @@ impl Fragment {
 
     /// The one word of [`NORMAL_FORMAT`]'s texel. See [`pack_normal`].
     ///
-    /// Derived from the stance rather than carried as a fifth field, because
-    /// that is what the sprite pass itself does: `statics.wesl` writes
-    /// `outward` of the stance it just resolved a corner into, and there is no
-    /// producer of a *sprite* that knows a facing this enum cannot name.
+    /// Derived from the stance rather than carried as a fifth field, and **the
+    /// real pass stopped doing that at `docs/lighting_rebuild.md` phase 6c**:
+    /// `statics.wesl` writes the face of the box a fragment's own view ray met
+    /// now, not a table read off the stance. This is a *fixture's* producer —
+    /// `plan.rs`'s diagnostic pictures and the scenes in `tests/`, which have no
+    /// boxes and state a surface by naming it — so it keeps the table, with
+    /// [`crate::place::Stance::normal`]'s own doc for what that table gets wrong
+    /// and why it does not matter here.
     ///
     /// The one place the two part company is **land**, which carries
     /// [`crate::place::Stance::Flat`] and answers no facing here — where
@@ -567,9 +571,9 @@ impl Fragment {
     /// this plane existed at all, and what keeps a margin from moving for a
     /// reason that is not under test.
     ///
-    /// The day the mesh pass is not the only producer with geometry of its own
-    /// — phase 6's impostor, phase 7's billboard — this grows a field and the
-    /// derivation goes.
+    /// The day a *fixture* wants a surface this enum cannot name — a hillside, a
+    /// billboard rounded off by phase 7 — this grows a field and the derivation
+    /// goes.
     pub fn normal(self) -> u32 {
         match self.kind {
             crate::place::Kind::Land => NORMAL_DRAWN,
