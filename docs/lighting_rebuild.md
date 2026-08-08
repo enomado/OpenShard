@@ -47,9 +47,12 @@ the bias to zero and dissolved `exemption`; two of that apparatus survived it an
 the phase's own account says which, and why each was kept by a measurement.
 
 **3. A static is drawn twice** — as a sprite, and as a mesh over it — so their
-silhouettes differ, so the mesh is grown to hide the gap. `WIDTH_OVERLAP = 0.03`
-of a tile is a **1355-pixel border** around a single flight at `4:1`, measured by
-zeroing it; and in a scene with no sprite it buys nothing at all.
+silhouettes differ, so the mesh is grown to hide the gap *(the border retired at
+phase 6; the second draw goes with the rest of that phase)*.
+`WIDTH_OVERLAP = 0.03` of a tile was a **1355-pixel border** around a single
+flight at `4:1`, measured by zeroing it; and in a scene with no sprite it bought
+nothing at all. It is the case `docs/style.md`'s *No fudge constants* was written
+from.
 
 ## The target
 
@@ -89,7 +92,7 @@ Named, so the plan can be checked against the tree:
 | ~~`STAND_OFF`, `ON_TOP`~~ **gone, phase 4** | exact position + self-hit by primitive id, bias `0` |
 | ~~`exemption`~~ **gone, phase 4**; `on_surface` and `own_run` **stay, measured** | the same id test, once — inline, in both walks. The other two are `same_run`, which is a *different* claim: see phase 4 |
 | ~~`mounted_at`'s height test~~ **gone, phase 4**; `mounted_at` and `MOUNTED_CLEARANCE` **stay, measured** | a sconce burns where it hangs, which the map does not say and the art does — see phase 4 |
-| `WIDTH_OVERLAP` | one silhouette — see the impostor phase |
+| ~~`WIDTH_OVERLAP`~~ **gone, phase 6**; `Prism::mesh`'s `widen_footprint` went with it | one silhouette: a static is drawn once and its geometry met by the view ray — see phase 6 |
 | ~~`FLAME_DEPTH`, `pierces`, `crosses`'s softening, `SOFT_CROSSING_*`~~ **gone, phase 5**; `inside` and the `spread` parameter went with them | an area light and eight shadow rays at `FLAME_RADIUS` |
 | `(1 − d)²` falloff | windowed inverse square |
 | `knee()` | a tonemap on HDR |
@@ -934,18 +937,37 @@ against the path tracer there still runs on the invented `Albedos::body`. That
 is phase 2's leftover closed at the diagnostic layer, where it actually lives —
 not, as this document first had it, as a side effect of deleting a pass.
 
-*And a finding about the grid the phase has to work around rather than fix.* A
-fitted climbable's occluders are **surfaces, not a volume**: `Builder::add`
-pushes a lid per tread (degenerate in `z`) and a riser per tread (degenerate on
-the climb axis), and their union encloses nothing. For a flight climbing *away*
-from the camera that is enough — every visible surface is one of them. For a
-flight climbing *towards* it, every riser faces away and is hidden behind its own
-tread, so the grid holds no vertical surface at all where the art draws the whole
-front of the staircase. The impostor therefore meets the **prism's own volume**
-— one box a tread, its strip from the static's base to that tread's height —
-and names the grid's solid through `occlusion::Part`, the join `statics::
-push_mesh` already makes. Making the grid itself hold that volume is
-`lighting_geometry.md`'s question, and it is now a named one.
+*And the grid's own climbable geometry was wrong for this, so it was fixed rather
+than worked around.* A fitted climbable's occluders were **surfaces, not a
+volume**: a lid per tread (degenerate in `z`) and a riser per tread (degenerate
+on the climb axis), whose union encloses nothing. For a flight climbing *away*
+from the camera that happens to cover the visible side; for one climbing
+*towards* it every riser faces away and is hidden behind its own tread, so the
+grid held no vertical surface at all where the art draws the whole front of the
+staircase.
+
+The impostor spent one commit meeting a volume rebuilt from the `Prism` and
+joining back to the grid by `occlusion::Part` — which is a second statement of
+one shape, and therefore the thing this phase's own rule forbids. **`Builder::
+add` pushes one body a tread now**, its strip from the static's base to its own
+height, and `push_volumes` is the grid's boxes copied. The split's reason is on
+the record in `gbuffer_archive.md` step 4b — "the representation the render pass
+(step 4c) needs to walk" — and both halves of it are retired: phase 2 gave the
+normal a plane of its own, and this phase takes the mesh pass off every real
+static.
+
+Three things came with it. `WIDTH_OVERLAP` and `widen_footprint` are **deleted**,
+since there is no second silhouette left for a border to reach across. The
+**vertical-ray shortcut** in both walks and in `blit.wesl` now looks at bodies as
+well as lids — it skipped everything with an `edges`, which was already a gap for
+every body in the world (a ray straight up out of a tree's box left it
+unstopped), and treads-as-bodies is what exposed it. And one world claim was
+**retired by the geometry rather than re-taken**: a fragment on a tread's top
+used to be shadowed by "the riser that tread stands against", which is a surface
+of the tread's own body — a surface cannot shadow a point of itself, and that
+assertion was measuring the split. What replaced it is a fragment on the flight's
+front shadowed by the tread above, and a fragment on the bottom tread shadowed by
+the two climbing away from it.
 
 **Phase 7 — billboards.** Normals for mobiles, chosen by looking at both.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
@@ -1010,7 +1032,7 @@ is here, in one list.
 | [`lighting.md`](lighting.md) | the current system, end to end: place attachment, occlusion grid, ray walk, sun, beams, doors, art measurement | **the thing being replaced.** Its mechanisms are retired phase by phase; its *content* work (below) survives untouched |
 | [`lighting_world.md`](lighting_world.md) | ambient, the sky field, the day curve, tonal response | **mostly survives.** The sky field is ambient occlusion by another name and phase 8 adopts it; the day curve and the tonal response become phase 1's and phase 8's business |
 | [`lighting_raymarch.md`](lighting_raymarch.md) | the DDA walk, CPU/GPU parity, the tile-boundary hazard | **survives as the walk.** Phase 4 changes what a hit *means* (identity, no bias), not how cells are stepped. Its corner-tie parity gap outlives the rebuild |
-| [`lighting_geometry.md`](lighting_geometry.md) | box → mesh occluders, never started | **cheaper after phase 4**, which makes primitives addressable by id. The choice of primitive shape stays its own question |
+| [`lighting_geometry.md`](lighting_geometry.md) | box → mesh occluders, never started | **cheaper after phase 4**, which makes primitives addressable by id, and **started at phase 6**: a tread is one body rather than two degenerate surfaces, which is the first time the grid's own shape was chosen for what a *view* ray needs as well as a shadow ray. `facing::Blocks` — an authored list of up to four boxes, written and wired to nothing — is where the generic form continues |
 | [`lighting_height.md`](lighting_height.md) | the height track: four landed phases and a long backlog | **the backlog is mostly deleted rather than fixed** — see the mapping below |
 | [`lighting_reference.md`](lighting_reference.md) | the path tracer, a third opinion with no shared arithmetic | **becomes phase 0**, the oracle everything else is judged by |
 | [`gbuffer.md`](gbuffer.md) | the `place` attachment's format, ids, per-face mesh geometry | **phase 2 replaced the format** and inherited every one of its readers. Its open question — how to encode a normal for a non-axis-aligned face — is answered there: an octahedral pair packed as integers into an `R32Uint`, with two bits over for the two answers that are not directions. (`Rg16Snorm`, which this document first named, is not a format wgpu will render to under WebGPU's core set; the plane spent one phase as three floats before it was packed) |
@@ -1028,7 +1050,7 @@ may not still matter:
 | risers excused as a group; `flame_end`'s height test; a mobile shadowed by its own wall | **done, phase 4** — identity answers all three |
 | `own_run` | **survives phase 4, measured** — a run of wall is N statics, which no identity merges. `lighting_geometry.md`'s, when a run becomes one solid |
 | the `ground < 1e-6` shortcut ignoring a lid's footprint | **fixed** — it was worth fixing alone, and was |
-| `WIDTH_OVERLAP`'s border | **phase 6** |
+| `WIDTH_OVERLAP`'s border | **done, phase 6** — there is no second silhouette for a border to reach across |
 | the riser penumbra graded over a third of a face | **done, phase 5** — there is no band; a penumbra is eight rays disagreeing |
 | the wire's span rounding to nearest; the exact-tangent definition | **phase 4** — a primitive is not a byte range any more |
 | `boxes.rs` reading `Unreached` as shadowed; `two_cubes.rs`'s old idiom; the projection idiom stated five times; `mesh::Face`/`facing::Face` colliding | **survive** — instrument work, still worth doing |
