@@ -68,6 +68,22 @@ impl ClientVersion {
     pub const HS: Self = Self::new(7, 0, 9, 0);
     /// 7.0.45.65 — Time of Legends.
     pub const TOL: Self = Self::new(7, 0, 45, 65);
+    /// 4.0.11d — Felucca and Trammel grow from 6144 to 7168 tiles wide.
+    ///
+    /// **Not a [`Feature`](crate::feature::Feature) boundary**, unlike every
+    /// other named version here: `Feature::since` is pinned to a Sphere
+    /// `MINCLIVER_*` constant by a test that requires one for every entry
+    /// (`every_boundary_matches_spheres_constant_verbatim`), and Sphere's own
+    /// `grayproto.h` has no map-width constant at all — a Sphere-run shard
+    /// never served both map generations to differently-versioned clients
+    /// from one deployment, so it never needed one. This boundary comes from
+    /// ClassicUO instead: `MapLoader.cs`'s `MapsDefaultSize` is overridden to
+    /// 6144 for Felucca and Trammel alone (facets `0` and `1`) when
+    /// `FileManager.Version < ClientVersion.CV_4011D`
+    /// (`ClientVersion.cs`, commented "Adds elven race" — the client that
+    /// shipped it). Height stays 4096 on both sides of the boundary; only
+    /// width moved.
+    pub const WIDE_MAP: Self = Self::new(4, 0, 11, 4);
 
     /// Which expansion era this version belongs to.
     pub const fn era(self) -> Era {

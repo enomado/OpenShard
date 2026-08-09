@@ -432,13 +432,12 @@ impl World {
         // The size of the facet this character is actually on, not Britannia's.
         // The facets are not all the same shape — Ilshenar is 2304×1600 and
         // Tokuno 1448×1448 — and a client told the world is 7168×4096 when it is
-        // not draws the edge of it wherever it likes.
+        // not draws the edge of it wherever it likes. On Felucca and Trammel that
+        // is also true of the *client's own version* — see
+        // `MapSize::for_client`/`ClientVersion::WIDE_MAP`.
         let map = {
             let state = self.state.facet_state(facet);
-            MapSize {
-                width: state.width as u16,
-                height: state.height as u16,
-            }
+            MapSize::for_client(facet, state.width, state.height, version)
         };
         self.state.send_packet(
             connection,

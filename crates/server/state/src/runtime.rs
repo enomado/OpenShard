@@ -1312,18 +1312,17 @@ impl WorldState {
 
         if from != facet {
             if let Some(&Client { connection, .. }) = self.registry.get::<Client>(entity) {
-                let size = {
-                    let state = self.facet_state(facet);
-                    MapSize {
-                        width: state.width as u16,
-                        height: state.height as u16,
-                    }
-                };
-                // Which map to draw, then where on it and how big it is. No
-                // `0x1B`: that is the "entering the world" packet, and neither
-                // reference re-sends it mid-session.
-                self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
-                self.send(connection, encode_server_change(to, size));
+                if let Some(version) = self.version_of(connection) {
+                    let size = {
+                        let state = self.facet_state(facet);
+                        MapSize::for_client(facet, state.width, state.height, version)
+                    };
+                    // Which map to draw, then where on it and how big it is. No
+                    // `0x1B`: that is the "entering the world" packet, and neither
+                    // reference re-sends it mid-session.
+                    self.send_packet(connection, &ServerPacket::MapChange(MapChange { map: facet }));
+                    self.send(connection, encode_server_change(to, size));
+                }
             }
         }
 

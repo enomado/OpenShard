@@ -467,6 +467,31 @@ impl MapSize {
         width: 0x1800,
         height: 0x1000,
     };
+
+    /// The size to tell `version` about `facet`, given its real width and
+    /// height off the file.
+    ///
+    /// Every facet but two is told the truth outright: Ilshenar and Tokuno are
+    /// not Britannia's shape either, and a client told the wrong one draws the
+    /// world's edge wherever it likes. Felucca (`Facet(0)`) and Trammel
+    /// (`Facet(1)`) are the one place a client's own version changes what
+    /// "true" is — see [`ClientVersion::WIDE_MAP`]: below it, those two facets
+    /// were 6144 tiles wide, not 7168, and a client told the modern number
+    /// draws a world a thousand tiles wider than the one its own files hold.
+    /// `width.min(6144)` rather than a flat substitution because a shard's
+    /// files may already be the old 6144-wide generation, in which case there
+    /// is nothing to clamp. Height never moved on either facet.
+    #[must_use]
+    pub fn for_client(facet: Facet, width: u32, height: u32, version: ClientVersion) -> Self {
+        let width = match facet {
+            Facet(0) | Facet(1) if version < ClientVersion::WIDE_MAP => width.min(6144),
+            _ => width,
+        };
+        Self {
+            width: width as u16,
+            height: height as u16,
+        }
+    }
 }
 
 /// `0x1B` — put a body in the world. 37 bytes.
@@ -1143,6 +1168,55 @@ mod tests {
 
     fn facing() -> Facing {
         Facing::running(Direction::SouthEast)
+    }
+
+    /// A client below [`ClientVersion::WIDE_MAP`] is told Felucca and Trammel are
+    /// 6144 wide even when the shard's own files are the modern 7168 generation —
+    /// the gap `MapSize::for_client` closes. A modern client, and every other
+    /// facet regardless of version, gets the file's own truth unchanged.
+    #[test]
+    fn an_old_client_is_told_felucca_and_trammel_are_the_old_width() {
+        let old = ClientVersion::new(4, 0, 11, 3);
+        assert_eq!(
+            MapSize::for_client(Facet(0), 7168, 4096, old),
+            MapSize {
+                width: 6144,
+                height: 4096
+            },
+            "Felucca, one patch below the boundary"
+        );
+        assert_eq!(
+            MapSize::for_client(Facet(1), 7168, 4096, old),
+            MapSize {
+                width: 6144,
+                height: 4096
+            },
+            "Trammel, the same rule"
+        );
+        assert_eq!(
+            MapSize::for_client(Facet(0), 7168, 4096, ClientVersion::WIDE_MAP),
+            MapSize {
+                width: 7168,
+                height: 4096
+            },
+            "the boundary itself is the new width, not the old one"
+        );
+        assert_eq!(
+            MapSize::for_client(Facet(2), 7168, 4096, old),
+            MapSize {
+                width: 7168,
+                height: 4096
+            },
+            "Ilshenar has no old-width rule to fall under"
+        );
+        assert_eq!(
+            MapSize::for_client(Facet(0), 6144, 4096, old),
+            MapSize {
+                width: 6144,
+                height: 4096
+            },
+            "a shard already on the old map files has nothing to clamp"
+        );
     }
 
     #[test]

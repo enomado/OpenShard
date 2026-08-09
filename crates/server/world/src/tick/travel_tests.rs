@@ -197,6 +197,81 @@ fn login_sends_the_dimensions_of_the_facet_the_character_is_on() {
     assert_eq!(u16::from_be_bytes([start[29], start[30]]), ILSHENAR.1 as u16,);
 }
 
+/// The same gap as above, one client version older: below
+/// [`ClientVersion::WIDE_MAP`], Felucca's own 7168-wide files are not what the
+/// login packet may say — see `MapSize::for_client`.
+#[test]
+fn a_pre_wide_map_client_is_told_felucca_is_the_old_width() {
+    let now = Instant::now();
+    let mut world = world();
+    add_empty_facet_sized(&mut world, 0, 7168, 4096);
+    let connection = ConnectionId::from_raw(78);
+    world.queue(Command::Enter(Entering {
+        connection,
+        version: ClientVersion::new(4, 0, 11, 3),
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Lord British".to_owned()),
+        access: AccessLevel::Player,
+        character: Character::fresh(Facet(0)),
+    }));
+    world.tick(now);
+
+    let start = packets_for(&mut world, connection)
+        .into_iter()
+        .find(|p| p[0] == 0x1B)
+        .expect("the world-entry packet");
+    assert_eq!(
+        u16::from_be_bytes([start[27], start[28]]),
+        6144,
+        "the file is 7168 wide but this client predates that generation"
+    );
+    assert_eq!(
+        u16::from_be_bytes([start[29], start[30]]),
+        4096,
+        "height never moved"
+    );
+}
+
+/// The same rule again at the other call site: a mid-session facet change
+/// (`0x76`, not `0x1B`) reads the traveller's version off the connection row
+/// rather than a local the login path already had in hand.
+#[test]
+fn a_pre_wide_map_client_moving_onto_trammel_is_told_the_old_width() {
+    let now = Instant::now();
+    let mut world = world();
+    add_empty_facet_sized(&mut world, 1, 7168, 4096);
+    let connection = ConnectionId::from_raw(79);
+    world.queue(Command::Enter(Entering {
+        connection,
+        version: ClientVersion::new(4, 0, 11, 3),
+        account: AccountName("admin".to_owned()),
+        name: CharacterName("Lord British".to_owned()),
+        access: AccessLevel::Player,
+        character: Character::fresh(Facet(0)),
+    }));
+    world.tick(now);
+    let traveller = world.state.players[&connection];
+    let _ = packets_for(&mut world, connection);
+
+    world.state.move_to(traveller, Facet(1), arrival());
+    let sent = packets_for(&mut world, connection);
+
+    let change = sent
+        .iter()
+        .find(|p| p[0] == 0x76)
+        .expect("told how big the new world is");
+    assert_eq!(
+        u16::from_be_bytes([change[12], change[13]]),
+        6144,
+        "Trammel's own files are 7168 wide but this client predates that generation"
+    );
+    assert_eq!(
+        u16::from_be_bytes([change[14], change[15]]),
+        4096,
+        "height never moved"
+    );
+}
+
 #[test]
 fn the_same_region_id_on_two_facets_is_still_a_crossing() {
     // Every facet numbers its regions from zero, so an id alone is not an
