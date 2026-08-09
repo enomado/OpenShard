@@ -55,6 +55,15 @@
 //!   (`two_cubes.rs`'s own session 13 lesson), so treat either default as a
 //!   starting point to override rather than a fact about which way is
 //!   "screen right".
+//! - `OPENSHARD_FLAME_RADIUS=t` — how big the flame's own **body** is, in tiles,
+//!   which is what decides how soft a shadow's edge is. Not `_LIGHT_RADIUS`,
+//!   which is how far the pool *reaches*; the two were one word for a while and
+//!   the confusion is worth spelling out at the knob. Default is
+//!   `light::FLAME_RADIUS`, an eighth of a tile, off the art. **Zero is a point
+//!   source and a razor edge** — the same knob `tests/traced.rs`'s gates use to
+//!   ask the walk a question with no estimate in it — and the reference emitter
+//!   follows it, so a run at zero compares two hard shadows rather than a hard
+//!   one against a soft one. See [`flame_radius`].
 //! - `OPENSHARD_TREE_H1`/`_H2`/`_W1`/`_W2` — the `tree` scene's own two
 //!   heights and two footprint widths (tile fractions), default `3`/`3`/
 //!   `0.5`/`0.33333`. For pushing the shapes further apart than the default
@@ -484,6 +493,27 @@ fn scene_flat() -> Vec<BoxSpec> {
     Vec::new()
 }
 
+/// How big the flame is for this run, in tiles — `light::Lighting::flame_radius`,
+/// and `OPENSHARD_FLAME_RADIUS` is the knob.
+///
+/// **Read here and nowhere else, because four things have to agree about it.**
+/// The frame's own `Lighting`, [`oracle_visible`]'s sample points, and the
+/// reference tracer's emitter are three renderings of one body, and a run where
+/// they disagree reports the difference as the walk's — which is exactly what
+/// happened the hour the radius became a field and one call site had not
+/// followed (`tests/traced.rs`'s own note: forty-seven pixels).
+///
+/// `0` is a point source and a hard shadow: no penumbra on any side, and the
+/// reference goes exact rather than sampled. The default is
+/// [`light::FLAME_RADIUS`], which is what a frame draws.
+fn flame_radius() -> f32 {
+    env_opt("OPENSHARD_FLAME_RADIUS").map_or(openshard_client_render::light::FLAME_RADIUS, |value| {
+        value
+            .parse()
+            .expect("OPENSHARD_FLAME_RADIUS is a number of tiles")
+    })
+}
+
 /// How much of `light` `point` can see, geometrically — every box but `skip` (the
 /// one `point` itself rests on, which must not shadow itself) tested by
 /// [`segment_clear_of_box`], once per point of the flame.
@@ -495,6 +525,10 @@ fn scene_flat() -> Vec<BoxSpec> {
 /// This is where. `light::flame_points` names where the engine's rays end, so the
 /// two are asked about the same body; the segment test is still this file's own
 /// and shares no arithmetic with any walk.
+///
+/// The radius is [`flame_radius`] and not the constant, for the reason that
+/// function exists: a run that asked the frame for a point source and this oracle
+/// for a sphere would report the whole penumbra as a disagreement.
 fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), boxes: &[BoxSpec], skip: usize) -> f64 {
     let spot = light::Spot::at(
         Vec2::new(point.0 as f32, point.1 as f32),
@@ -504,7 +538,7 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), boxes: &[BoxSp
     let points = light::flame_points(
         spot,
         [light.0 as f32, light.1 as f32, light.2 as f32],
-        openshard_client_render::light::FLAME_RADIUS,
+        flame_radius(),
     );
     let clear = points
         .iter()
@@ -896,7 +930,7 @@ fn main() {
         occlusion,
         sun: None,
         view: View::Lit,
-        flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        flame_radius: flame_radius(),
     };
     // Where the flame itself is, in the one place every consumer of it reads:
     // the crosshair on the dumped frames, the two visibility oracles, and the
@@ -1510,9 +1544,20 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
     // holds a body reports the whole penumbra as a disagreement; and a scene with
     // no occluder in it has no penumbra to report, so the sixty-four samples buy
     // nothing there but a slower picture.
-    let body = match boxes.is_empty() {
+    //
+    // And a point where the *frame* was asked for one, which is the third reader
+    // of [`flame_radius`]: at `OPENSHARD_FLAME_RADIUS=0` the engine casts eight
+    // rays at one place and a sphere on this side would be the only soft edge in
+    // the comparison.
+    let body = match boxes.is_empty() || flame_radius() == 0.0 {
         true => oracle::pathtrace::Body::Point,
-        false => oracle::pathtrace::ENGINE_FLAME,
+        false => oracle::pathtrace::Body::Sphere {
+            radius: f64::from(flame_radius()),
+            samples: match oracle::pathtrace::ENGINE_FLAME {
+                oracle::pathtrace::Body::Sphere { samples, .. } => samples,
+                oracle::pathtrace::Body::Point => 1,
+            },
+        },
     };
     let mirror = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
         boxes,

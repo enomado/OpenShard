@@ -1567,6 +1567,16 @@ Things noticed while writing this, not blocking any phase:
   of exactly zero and is never traced; if that is a theorem rather than a
   coincidence of the fixtures, the rule is dead code with a proof and should be
   deleted with the proof written at its grave.
+- **A flame of radius zero costs eight identical rays.** `flame_radius` is a knob
+  now — `Lighting`'s field, and `examples/boxes.rs`'s `OPENSHARD_FLAME_RADIUS`
+  since a person wanted to see how hard a shadow can be — and at zero every one of
+  the eight sample points *is* the centre, so both walks and the shader walk one
+  segment eight times and average it with itself. Nothing shipped asks for zero, so
+  this is a diagnostic paying eight times over rather than a frame doing it; the
+  fix is one branch, and the reason to write it down rather than add it is that a
+  branch on a radius is a second code path through the hot loop and wants a
+  measurement before it earns one. `pathtrace::Body::Point` already makes exactly
+  this distinction on the reference's side, and `Image::is_exact` is how it says so.
 - **A flame's eight rays are now in the brightness, and near the flame that is
   visible grain.** Phase 5b's accepted cost: where a fragment stands inside the
   sphere, how many of its samples clear its own plane is a coin flip, and 126 of
