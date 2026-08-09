@@ -878,6 +878,106 @@ and a lid the ray genuinely crosses is found at the `t` of its own plane, so
 neither is touched. The face oracle reads `0 of 11,469` after it, against 88
 before, and the light oracle stays at zero on every flame height.
 
+**Phase 5b — a flame has no centre.** Every term of a flame's contribution is a
+function of the *sample point*: visibility, the cosine, the falloff and the beam.
+`light.at` stops appearing in the shading loop at all.
+
+*Why it is a phase and not a backlog line.* Phase 5 gave the flame a body for
+one term and left it a point for the others, and the backlog entry below has the
+pictures: a lamp lower than `FLAME_RADIUS` above a floor puts half its sphere
+below that floor's own plane, those rays are traced, and near a join they leave
+the fragment's own primitive and come back "blocked" — a **wedge** of shadow on a
+surface that is flush and continuous. The cure is the physical form and it is
+exact rather than a mitigation, because the set of rays a join can block and the
+set of rays below the horizon are *the same set*.
+
+So one number replaces two:
+
+```
+Λ = (1 / N) · Σ_p  V(p) · max(N · L_p, 0) · fall(p)² · cone(p)
+```
+
+and **the outer `facing` multiply is deleted rather than kept** — a cosine
+applied twice is the same defect wearing the fix's clothes.
+
+*The decisions, pinned so the step has none left in it.*
+
+- **The construction is "the sample point is the only place a flame has a
+  position", not "the cosine moves inside the loop".** Fixing the cosine alone
+  removes this defect; removing the centre removes the *class*, and the class is
+  the shape this repo has a name for — one state in two shapes. `fall` has no
+  kink and would not have shown, and `cone` has a hard rim and would have shown
+  eventually. Both are one line each here and a second incident later.
+- **The one thing that stays at the centre is the cull, and it is therefore
+  conservative.** `d >= 1.0` skips a light before any ray is walked; that is a
+  **broad phase** and it is forbidden to change the answer, so it culls on the
+  near side of the sphere: `distance - FLAME_RADIUS >= light.radius`. A fragment
+  the centre says is out of reach can be reached by the near edge of a body that
+  has one.
+- **A sample with `cos <= 0` is not traced.** Its contribution is exactly zero
+  whatever stands in its way, so this is an exact skip and not a tolerance — and
+  it is up to *half the rays* in exactly the grazing configurations that cost the
+  most today. The step is expected to be a cost win, and `tests/cost.rs` says so
+  or it does not.
+- **`View::Shadow` stays visibility.** It is the ordinary meaning of a shadow
+  term, and it is the one instrument that separates "the walk is wrong" from "the
+  cosine is wrong" — this defect and the black emitter below were both diagnosed
+  by reading it. So the loop carries two accumulators, one ray each, and the
+  debug view walks every sample including the skipped ones. That is not two
+  answers to one question: the skip is separately gated as a proven no-op, so the
+  rays it drops contribute zero to the number the lit path returns. **No new
+  view** is added.
+- **The name goes with the meaning.** `shadow()` no longer returns a share of a
+  flame, so it is not called `shadow` and does not return `through`. It returns
+  the share the flame *delivers* and, beside it, the share it is *visible* over,
+  and every diagnostic that wanted the second one asks for it by name.
+
+*Done when:* the wedge is gone at a measured count, and the frame has moved
+towards the reference rather than away from it.
+
+*Gates, each fault-injected to red in the same session that trusts it* — the
+habit `docs/occluders.md`'s S3 paid for:
+
+- **The reference path tracer**, which is the honest oracle here: it samples an
+  area light over 64 paths with a real Lambert term, so it already computes this
+  sum and the engine is the side that was wrong.
+  `the_frame_and_the_path_tracer_agree_about_every_interior_pixel` must not
+  regress, and the wedge fixture's disagreement must *fall*, printed as a number.
+- **`a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces`** —
+  S3's own gate, on `Stopper::solid`. After this it should pass with `same_run`
+  neutralised **and** with S3's exemption neutralised, which is the measurement
+  that says what those two rules were really for.
+- **Injection: the centre cosine, restored.** The wedges come back and the gate
+  goes red with a count. A green gate and a vacuum gate look alike.
+- **Injection: the skip, removed.** Not one pixel moves. That is what makes the
+  debug view's extra rays a cost rather than a second answer.
+- **Injection: the cull, tightened** to `distance >= light.radius`. Pixels at the
+  rim of every pool change, counted — which is what says the conservative form is
+  load-bearing rather than decorative.
+
+*What this is expected to settle, and each wants measuring rather than
+assuming.* `docs/occluders.md`'s `same_run` is broad precisely because it was
+papering over these below-horizon rays, so it should become deletable **without
+the merge** — S4 gets its licence back. S3's exemption is reachable only by a ray
+lying in the surface's own plane, which is a ray whose cosine is exactly zero, so
+it should become unreachable outright; whether it is then deleted or kept as a
+proven no-op is decided *after* that measurement and not in this step. And the
+side-lit artefact — a lamp beside a wall lighting the face it grazes — is the
+configuration a centre cosine cannot hide, so it is checked here, on a fixture
+built for it.
+
+*What it does not fix, named so nothing claims it.* The black emitter below: a
+flame an eighth of a tile across, standing inside its own lamp post's box, is
+still inside it at every sample. And the sun has no cosine at all today — it is
+added straight, with no `N·L` anywhere — which is phase 8's "the same BRDF" and
+not this step's.
+
+*And a correction this step owes phase 5's own paragraph*, in both copies of it —
+`light::shadow`'s doc comment and `blit.wesl`'s: "moving the sample point moves
+either term by well under a byte" is true of the falloff and true of the cosine's
+*magnitude*, and false at the horizon, where `max(N · L, 0)` has a kink. The
+error there is not a share of the radius, it is the whole clamp.
+
 **Phase 6 — the impostor.** Sprite silhouette, analytic prism for depth and
 normal, one draw. `WIDTH_OVERLAP` is deleted.
 *Done when:* the difference frame's "drawn by one side only" classes are zero
@@ -1348,6 +1448,8 @@ Things noticed while writing this, not blocking any phase:
 
 - 🚩 **The flame has extent for the shadow term and no extent for the cosine, and
   that is the wedge of shadow at every join.** Measured 2026-08-09, with pictures.
+  **This is phase 5b now** — the decisions, the gates and the injections live
+  there; what follows is the measurement that produced it, kept whole.
 
   `shadow()` averages visibility over `SHADOW_RAYS` stratified points of a sphere
   of `FLAME_RADIUS`; `lit_from()` then multiplies by **one** cosine taken from the

@@ -24,7 +24,14 @@ stair-stepping between solids.** That sentence is the acceptance criterion, and
 
 **Which step delivers it: S3**, and it is the only one that moves this number.
 S1 lifted the ceiling that made the shape unstateable, S2 is the ruler, S4/S5 and
-S3b are deletions and optimisations that must move nothing. So acceptance for the
+S3b are deletions and optimisations that must move nothing. **S3 has since landed
+and moved nothing either** — its exemption needs a ray in the surface's own plane
+and the renderer has none, which is measured at S3's own acceptance. The seam a
+person reports is a *shading* defect and it belongs to
+[`lighting_rebuild.md`](lighting_rebuild.md)'s **phase 5b**, which is where this
+track's next session starts; nothing here is blocked on it, and everything here is
+easier to judge after it, because the below-horizon rays it removes are the ones
+that make a wall's own run look like an occluder question. So acceptance for the
 sentence above is § *Acceptance for S3* — six things to run, each with a figure
 to read, none of them resting on anybody's description of a picture.
 
@@ -114,6 +121,15 @@ two cases close themselves — `d·N < 0` is a light behind the surface and `N·
 already zero there, and `d·N = 0` is measure zero and is precisely the graze the
 exemption exists for.
 
+⚠ **That middle clause was false when it was written and phase 5b is what makes
+it true.** "`N·L` is already zero there" is a statement about the *shaded* frame;
+the shadow term is compared without a cosine on either side, so a ray behind the
+plane was traced and its crossing was real — which is why S3 had to take the ray's
+direction as a parameter (`d·N >= 0`) rather than wave the case away, and why
+`same_run` is broader than the theorem. Once every sample carries its own cosine
+the clause is true by construction: a sample behind the plane is not traced at
+all.
+
 **What it subsumes**, so the step is a deletion rather than an addition:
 `mine == reference.x` (a fragment's own box ends at its own face — the special
 case), `same_run` **with** its row/column cell test and its `on_surface` height
@@ -124,7 +140,14 @@ reason and says so.
 **Two halves, and the order between them is the decision.**
 
 - **D2a — the identity.** The rule above. It moves no geometry and needs no
-  merge. **This is what cures the seam.**
+  merge. ~~**This is what cures the seam.**~~ **It is not — measured at S3, and
+  neither is D2b.** The exemption is reachable only by a ray lying in the
+  surface's own plane, and the shipped renderer has no such ray: S3 moves **0
+  pixels** on the flights, 0 of 29,696 on the wall run, 0 of 262,144 on the stair
+  under a front light. What cures the seam is `docs/lighting_rebuild.md`'s phase
+  5b — see this plan's backlog, where all three arguments are written out. D2a is
+  the rule that says *why* a surface may not shadow itself, and that is worth
+  having stated whether or not a frame today can reach it.
 - **D2b — the merge.** Contiguous same-surface neighbours become one box at build
   time. A **pure optimisation** once D2a holds: fewer primitives, no pixel moved.
   Last, not first.
@@ -681,13 +704,17 @@ moment one exists — see the backlog's first entry, which is this step's own
 precondition and not a nuisance.
 
 **S4 — delete the cell rules.** D5, in this order and each behind its own
-measurement: `same_run` (🔴 **not licensed by S3 after all, and it waits on the
-merge again** — S3 landed and measured that the exemption is *narrower* than this
+measurement: `same_run` (🔴 **not licensed by S3, and licensed by phase 5b rather than by the
+merge** — S3 landed and measured that the exemption is *narrower* than this
 function, which excuses a neighbouring panel of the run for rays that dip behind the
 surface's plane as well as for rays leaving it. The theorem cannot license those and
-the path tracer will not allow them, so what retires `same_run` is S3b's merge: with
-one primitive per surface there is no neighbour to excuse. See S3's own list of what
-it learned), the per-cell `max` (there is no cell to group
+the path tracer will not allow them. What was written here was that the merge
+retires it; what actually does is that **those rays stop being traced**: a sample
+behind the fragment's own plane has a zero cosine and contributes nothing, so there
+is no crossing left for `same_run` to excuse. That is
+`docs/lighting_rebuild.md`'s phase 5b, it is measured rather than argued, and this
+deletion waits on it — not on S3b. See S3's own list of what it learned), the
+per-cell `max` (there is no cell to group
 by; the corner double-count it existed for outlives the merge's departure to S3b,
 so this one carries its own measurement rather than inheriting one), the vertical
 shortcut (a hierarchy has no reason for a special case, and
@@ -784,11 +811,28 @@ question rather than a geometry one. **Measure that before spending S3b on this*
 because the merge's own argument then falls back to what it always was — one
 primitive per surface is cheaper and simpler, not a cure.
 
-Only the merge answers it, and it answers it completely: one primitive per surface
-means the ray that dips behind the plane starts *inside its own solid*, which
-identity has always excused. So S3b is not an optimisation that happens to help a
-seam — it is the other half of the cure, and the plan's own ordering (the merge last,
-after S5) should be read knowing that the seam is not fully closed until it lands.
+**Decided 2026-08-09, and it reverses the paragraph that used to stand here.** That
+paragraph read "only the merge answers it, and it answers it completely", and it was
+written before the shading side was measured. Three things say otherwise, and each is
+enough on its own:
+
+- **The merge does not reach the fixture the wedge was measured on.** S3b merges
+  primitives that share a whole face *and have an equal span*, which is why this plan
+  already writes down that a flight's treads do not merge. The wedge was measured at
+  the joins of three flights that are geometrically one landing. They stay separate
+  primitives, so the join stays, so the wedge stays.
+- **Even where it merges, it cures a neighbour and not a set of rays.** A ray below
+  the horizon can end on anything — a wall's base, the step below, a body. The merge
+  removes the neighbour *of the same surface*; only `max(N · L, 0)` removes the set,
+  because the set is "everything behind the plane".
+- **The defect is not only seams.** The prototype moved 21,177 pixels and darkened
+  20,308 of them: the centre cosine over-pays every grazed surface, join or no join.
+  No step of this plan may touch that — D4 is "not one pixel moves". **A step
+  forbidden to move a pixel cannot fix a defect whose symptom is moved pixels.**
+
+So: `docs/lighting_rebuild.md`'s **phase 5b is the cure**, S3b is an optimisation —
+one primitive per surface is cheaper and simpler — and it keeps its place last,
+after S5, with its own gate unchanged: not one pixel moves.
 
 ✅ **The pinned corner graze: the walks were right and the oracle was wrong —
 closed 2026-08-09.** `lighting.proptest-regressions`' newest line, found by a
