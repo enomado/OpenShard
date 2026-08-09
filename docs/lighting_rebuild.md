@@ -324,14 +324,16 @@ table being stale.
 
 **Where a session starts, as of 6f landing on 2026-08-10:** phase 6e is closed
 and there is no live sub-plan under this document any more — `occluders.md` is a
-record like the seven above it. **6d is closed, and so is 6f, which is the bill
-6d ran up**: a person playing the shard saw staircases artefacting with polygons,
-and it was the sprite path naming the wrong tread of a flight the moment the mesh
-pass stopped covering for it. Read 6f's account before touching anything a
-fragment *carries* — it is a worked example of removing a pass by what it
-computed rather than by what it delivered. What 6f leaves behind is one dashed
-hairline at every tread/riser join, and its cause is named: the **stance**.
-**Phase 7 is half-open,
+record like the seven above it. **6d is closed, and 6f, 6g and 6h are the bill it
+ran up** — three defects in a row, each reported by a person looking at a lit
+frame and none caught by anything under `cargo test`: the sprite path naming the
+wrong tread of a flight, then carrying a corner panel's stance across a tread,
+then being met against a face buried inside a merged solid. **Start at
+[phase 6i](#), which is the account of why nothing caught them and the three
+gates that would have** — it is written as the next session's work and it is
+cheaper than any of the three fixes was. Read 6f's account beside it: it is a
+worked example of removing a pass by what it *computed* rather than by what it
+*delivered*. **Phase 7 is half-open,
 its own account is above, and what it is waiting on is now named rather than
 generic**: `examples/isolated_scene.rs` needs a mobile pass before there is a
 picture of a figure beside a torch to look at, the inflated-silhouette
@@ -1447,6 +1449,68 @@ day this crate wants one: ambient-free, one box, `body_albedo` on both sides,
 the same shape `the_frame_and_the_path_tracer_agree_about_brightness_on_open_
 ground` already is for the ground plane.
 
+**Phase 6i — the gates 6f, 6g and 6h cost, and why three in a row got through.**
+⬜ *Not started. This is where the next session on this track starts.*
+
+Three defects, one after another, all of them found by **a person looking at a
+lit frame** and none by anything under `cargo test`. They are one failure and it
+is worth naming before the gates are listed: 6d removed a pass by checking what
+it **computed** — a position and a normal, both of which the impostor genuinely
+answers better — and not what it **delivered**. A `MeshFaceRow` was also carrying
+the *name of the primitive* (6f), the *stance of the surface* (6g), and a
+*silhouette wide enough to cover the sprite* (the fringe, still open). Three
+facts came off with the pass and nothing said so.
+
+*Why nothing caught them.* Three structural reasons, each with its own fix, and
+none of them is "somebody forgot a test".
+
+1. **Every stair instrument in this tree drives the mesh pass.**
+   `examples/synthetic_stair.rs`, `examples/boxes.rs`, `examples/two_cubes.rs`
+   and `tests/traced.rs` each build a `MeshFaceVertex` list by hand — that is
+   how they came to be `pub` rather than routed through the retired
+   `push_mesh`. The client draws a staircase through the **sprite and the
+   impostor**. So the four instruments built for stairs are blind to the path a
+   stair actually takes, by construction, and were green through all three
+   defects. *Done when:* one fixture drives `statics::collect` over a fitted
+   climbable and compares against the tracer. `tests/frame.rs` already has two
+   `statics::collect` call sites to build on, and `tests/cost.rs` a third.
+
+2. **The one gate that states the invariant filters it out.**
+   `traced.rs`'s `a_face_fragments_own_plane_is_the_primitives_own_number` —
+   the test whose whole subject is "a fragment's plane is its primitive's own
+   number, bit for bit" — opens with `if texel.stance != Stance::MeshFace {
+   continue }`. It cannot see a sprite fragment, and 6f, 6g and 6h are each a
+   fragment whose plane is not its primitive's own number. *Done when:* the same
+   sweep runs over sprite fragments, which is the same loop with the filter
+   inverted and `mine` read off the position plane's fourth channel.
+
+3. **Nothing compares a fragment's four facts against each other.** Position,
+   normal, solid and stance are each checked against the *producer's* own
+   arithmetic — `a_sprite_pixel_meets_the_same_box_on_both_sides` against
+   `impostor::nearest`, `a_direction_survives_the_normal_packing` against
+   `pack_normal` — and never against one another. They are not four independent
+   measurements: three of them are properties of one box. *Done when:* one
+   sweep, three lines, over a scene carrying a merged run, a fitted climbable, a
+   corner, a wall and a floor:
+   - the position lies on the boundary of `primitives[mine]` — **6f fails this**
+     (a fragment on the third tread naming the first);
+   - the normal names a camera-facing face *of that primitive*,
+     `at[axis] == primitives[mine].hi[axis]` — **6h fails this** (the buried
+     face is interior to the merged box);
+   - the stance is `stance_of(normal)` — **6g fails this**.
+   Each defect fails exactly one line, and the sweep reads three planes that are
+   already read back. This is the cheapest of the three items and the one that
+   generalises: it is the statement that a fragment is a point *of* something.
+
+*And a fourth item, which is a tool that stopped working and nobody noticed.*
+`examples/synthetic_stair.rs` panics outright for `OPENSHARD_STAIR_RUN>1` —
+`gate_against_grid` derives one body per flight per tread and asserts it against
+the grid, and S3b has merged the run into one primitive spanning every flight
+(`this oracle says 101, the grid's own solid says 103`). The **one knob in the
+tree that poses the two-abutting-statics question** — the question 6h turned out
+to be about — has been unusable since the merge landed. Either it learns about
+merging or it states the merged extent; what it must not do is stay red.
+
 **Phase 6h — the impostor meets the *merged* primitive.** *(Landed 2026-08-10.
 `docs/occluders.md`'s D6, which that plan decided and did not do.)* With 6f and
 6g in, the person who reported the wedges reported what was left: **bright,
@@ -1987,6 +2051,38 @@ Things noticed while writing this, not blocking any phase:
   candidate for anything tile-shaped — and the knobs may be off their defaults.
   Pinning it wants the client's own `View::Normal` of the same frame, which
   separates a geometry answer from a walk answer, plus the tab's numbers.
+- 🚩 **Light comes through a floor at the *corner points* between its tiles, and
+  it is one line of `primitive_stopped`.** Seen from under a ceiling at
+  Britain's `(1492, 1642)`, `z 28` under statics at `z 40` and `z 23`: a regular
+  lattice of bright dots, one per tile **corner**, and nothing along the joins
+  between them. The lattice is the tell — a leak along a join is an interval
+  problem and a leak at a join's *point* is a degenerate one.
+  <br>
+  The rule is read rather than guessed. `primitive_stopped`'s lid arm asks
+  `ray_vs_solid` for the run the ray spends inside the lid's **horizontal
+  footprint** (an infinite-`z` box) and hands `crosses` the `z` at the two ends
+  of that run. A ray threading the exact corner of the footprint enters and
+  leaves it at one `t`, so those two `z`s are **the same number** — and
+  `crosses`, which asks whether the ray went from one side of the lid's plane to
+  the other, correctly answers "it did not", because over an interval of zero
+  length nothing travels anywhere. Every one of the four lids sharing that
+  corner answers the same way, so the point is a hole through a continuous
+  floor. Along a join *line* the ray still crosses the interior of one footprint
+  on the other axis, `entered < leaves`, and it is caught — which is exactly the
+  shape a person sees.
+  <br>
+  **The fix is to state the lid rule directly rather than as an interval.** A lid
+  is a plane: pierce it once — `t = (lid_z − from.z) / delta.z` — and ask whether
+  `(x(t), y(t))` is inside the footprint, inclusively. At a corner that test says
+  *yes*, which is the honest answer for a point interior to the floor as a whole;
+  a ray running along the lid's own plane has no `t` in `(0, 1)` and stays
+  unblocked, which is the strictness `crosses`'s doc argues for (a candle
+  standing on the floor it lights). It is also **smaller** than what it replaces:
+  one intersection instead of a slab test plus a crossing test, and the
+  `-1.0e6`/`1.0e6` sentinel box goes with it. `light::crosses` is the CPU twin
+  and moves with it; the gates are `tests/lighting.rs`'s floor scenes and
+  `scene::storey_over_a_torch`, which is the fixture the *opposite* defect (a
+  floor stopping nothing at all) was found on.
 - 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
   showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the
