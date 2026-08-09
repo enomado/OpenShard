@@ -89,6 +89,103 @@ impl GumpPixel {
     }
 }
 
+/// A box outside which nothing is drawn and nothing is picked.
+///
+/// A scissor rectangle, applied on the processor rather than by the pass: a
+/// quad that straddles the edge is *cut* — its rectangle shortened and its
+/// region moved by the same fraction — which is exact for an axis-aligned
+/// sprite and needs no second draw call, no depth and no shader of its own.
+///
+/// What it is for is a list that scrolls. A window with more rows than it is
+/// tall draws the rows at their true positions and hands every one of them the
+/// same box; the rows that fall outside it vanish, and the two that straddle the
+/// edge are half-drawn, which is what a scrollbar's user expects and what a
+/// list stepping a whole row at a time cannot do.
+///
+/// **Not** [`crate::text::GumpLabel::clip`], which is a different idea with a
+/// different rule: that one is `{ croppedtext }`, where a line too long for its
+/// plate loses whole *characters* off the end (`FontsLoader.GetTextByWidthASCII`
+/// even appends an ellipsis). This one cuts pixels and knows nothing about what
+/// it is cutting.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Scissor {
+    /// The box's top-left corner, in the same gump pixels the pictures are in.
+    pub at: GumpPixel,
+    /// How wide it is.
+    pub width: i32,
+    /// How tall it is.
+    pub height: i32,
+}
+
+impl Scissor {
+    /// Whether a point is inside — the hit test's half of the same box.
+    ///
+    /// Right and bottom edges are outside, which is the same half-open box
+    /// [`crop`](Self::crop) cuts to: a point at `at.x + width` is the first
+    /// column not drawn.
+    #[must_use]
+    pub const fn contains(self, point: GumpPixel) -> bool {
+        point.x >= self.at.x
+            && point.y >= self.at.y
+            && point.x < self.at.x + self.width
+            && point.y < self.at.y + self.height
+    }
+
+    /// A rectangle and its region cut to this box, or `None` if nothing of it is
+    /// inside.
+    ///
+    /// The region moves by the same *fraction* the rectangle lost, which is what
+    /// makes this a cut and not a squeeze: an art pixel stays one art pixel wide
+    /// wherever the edge falls.
+    #[must_use]
+    fn crop(self, rect: Rect, region: crate::atlas::Region) -> Option<(Rect, crate::atlas::Region)> {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return None;
+        }
+        let left = rect.x.max(self.at.x as f32);
+        let top = rect.y.max(self.at.y as f32);
+        let right = (rect.x + rect.width).min((self.at.x + self.width) as f32);
+        let bottom = (rect.y + rect.height).min((self.at.y + self.height) as f32);
+        if right <= left || bottom <= top {
+            return None;
+        }
+        let cut = crate::atlas::Region {
+            u: region.u + region.du * (left - rect.x) / rect.width,
+            v: region.v + region.dv * (top - rect.y) / rect.height,
+            du: region.du * (right - left) / rect.width,
+            dv: region.dv * (bottom - top) / rect.height,
+        };
+        Some((
+            Rect {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+            },
+            cut,
+        ))
+    }
+
+    /// Every quad cut to this box, dropping the ones wholly outside it.
+    ///
+    /// The door for the quads a scissor cannot be carried on: a glyph is
+    /// collected into the font atlas's own pass, so a window's text is cut here
+    /// after the fact rather than per label. Pictures carry theirs on
+    /// [`Picture::scissor`] instead, because a picture is also *picked*, and a
+    /// hit test reading a different box from the one that drew would answer for
+    /// a row that is not on the screen.
+    pub fn cut(self, quads: &mut Vec<SpriteQuad>) {
+        quads.retain_mut(|quad| match self.crop(quad.rect, quad.region) {
+            Some((rect, region)) => {
+                quad.rect = rect;
+                quad.region = region;
+                true
+            }
+            None => false,
+        });
+    }
+}
+
 /// Which of the client's two art files a picture in a window comes out of.
 ///
 /// A window is not built from one file. Its frame, its buttons and its
@@ -390,6 +487,15 @@ pub struct Picture {
     /// which is what keeps a border's pixels its own size in a window of any
     /// width.
     pub tiled: Option<(i32, i32)>,
+    /// The box outside which this picture is neither drawn nor picked, or `None`
+    /// to let it stand wherever it was placed.
+    ///
+    /// On the picture rather than applied to the finished quads because a
+    /// picture is *picked* as well as drawn, and [`pick`] walks this list: a hit
+    /// test that read a different box — or none — would answer for a row
+    /// scrolled out of its own window, which is a click landing on something
+    /// nobody can see.
+    pub scissor: Option<Scissor>,
 }
 
 impl Picture {
@@ -400,6 +506,15 @@ impl Picture {
             at,
             hue: Hue::NONE,
             tiled: None,
+            scissor: None,
+        }
+    }
+
+    /// The same picture, drawn and picked only inside `scissor`.
+    pub const fn inside(self, scissor: Scissor) -> Self {
+        Self {
+            scissor: Some(scissor),
+            ..self
         }
     }
 
@@ -448,22 +563,35 @@ pub fn collect(pictures: &[Picture], atlas: &GumpAtlas) -> Vec<SpriteQuad> {
             let mut x = 0;
             while x < width {
                 let columns = (width - x).min(art_width);
+                let rect = Rect {
+                    x: (picture.at.x + x) as f32,
+                    y: (picture.at.y + y) as f32,
+                    width: columns as f32,
+                    height: rows as f32,
+                };
+                // The clipped part of the region, from the same corner: a
+                // half-drawn repetition shows the *left* of the art, which
+                // is what a scissor rectangle would have left of it.
+                let region = crate::atlas::Region {
+                    u: sprite.region.u,
+                    v: sprite.region.v,
+                    du: sprite.region.du * columns as f32 / art_width as f32,
+                    dv: sprite.region.dv * rows as f32 / art_height as f32,
+                };
+                // Cut per repetition rather than per picture, which is what
+                // lets a tiled background be cut too: each repetition is its
+                // own quad and meets the edge in its own place.
+                let cut = match picture.scissor {
+                    Some(scissor) => scissor.crop(rect, region),
+                    None => Some((rect, region)),
+                };
+                let Some((rect, region)) = cut else {
+                    x += art_width;
+                    continue;
+                };
                 quads.push(SpriteQuad {
-                    rect: Rect {
-                        x: (picture.at.x + x) as f32,
-                        y: (picture.at.y + y) as f32,
-                        width: columns as f32,
-                        height: rows as f32,
-                    },
-                    // The clipped part of the region, from the same corner: a
-                    // half-drawn repetition shows the *left* of the art, which
-                    // is what a scissor rectangle would have left of it.
-                    region: crate::atlas::Region {
-                        u: sprite.region.u,
-                        v: sprite.region.v,
-                        du: sprite.region.du * columns as f32 / art_width as f32,
-                        dv: sprite.region.dv * rows as f32 / art_height as f32,
-                    },
+                    rect,
+                    region,
                     // No depth test in this pass; see the module docs.
                     depth: 0.0,
                     hue,
@@ -502,6 +630,11 @@ pub fn collect(pictures: &[Picture], atlas: &GumpAtlas) -> Vec<SpriteQuad> {
 /// texel taken modulo the art's own size, which is where the repetition puts it.
 pub fn pick(pictures: &[Picture], cursor: GumpPixel, atlas: &GumpAtlas) -> Option<usize> {
     pictures.iter().enumerate().rev().find_map(|(index, picture)| {
+        // Outside the box that drew it is outside the picture, whatever its own
+        // corner says: half a row is on the screen and the other half is not.
+        if picture.scissor.is_some_and(|scissor| !scissor.contains(cursor)) {
+            return None;
+        }
         let sprite = atlas.sprite(picture.graphic)?;
         let (art_width, art_height) = (i32::from(sprite.width), i32::from(sprite.height));
         if art_width <= 0 || art_height <= 0 {
@@ -1311,6 +1444,129 @@ mod tests {
             }
         }
         Image::new(side, side, pixels)
+    }
+
+    /// A picture cut by a scissor keeps its scale: what is drawn is the part
+    /// inside the box, at one screen pixel per art pixel, and the region moves
+    /// by exactly the fraction the rectangle lost. A squeeze would keep the
+    /// whole art and shrink it, which is the bug this arithmetic exists to
+    /// avoid — it is the same rule tiling already follows.
+    #[test]
+    fn a_scissor_cuts_a_picture_rather_than_squeezing_it() {
+        let atlas = atlas_of([(Graphic(1), block(20, 20))]);
+        let scissor = Scissor {
+            at: GumpPixel::new(100, 110),
+            width: 100,
+            height: 100,
+        };
+        let whole = collect(
+            &[Picture::plain(
+                GumpArt::Gump(Graphic(1)),
+                GumpPixel::new(100, 100),
+            )],
+            &atlas,
+        );
+        let cut = collect(
+            &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(100, 100)).inside(scissor)],
+            &atlas,
+        );
+        assert_eq!(cut.len(), 1);
+        assert_eq!(cut[0].rect.y, 110.0, "the top ten rows are gone");
+        assert_eq!(cut[0].rect.height, 10.0);
+        assert_eq!(cut[0].rect.width, whole[0].rect.width, "and nothing else moved");
+        // Half the rows dropped from the top means half the region dropped from
+        // the top, so the art pixel under a given screen pixel is unchanged.
+        assert!((cut[0].region.dv - whole[0].region.dv / 2.0).abs() < 1e-6);
+        assert!((cut[0].region.v - (whole[0].region.v + whole[0].region.dv / 2.0)).abs() < 1e-6);
+    }
+
+    /// A picture wholly outside its box is not drawn at all — the ordinary case
+    /// for a list of fifty-eight rows in a window ten tall.
+    #[test]
+    fn a_picture_outside_its_scissor_is_not_drawn() {
+        let atlas = atlas_of([(Graphic(1), block(20, 20))]);
+        let scissor = Scissor {
+            at: GumpPixel::new(100, 100),
+            width: 50,
+            height: 50,
+        };
+        let quads = collect(
+            &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(100, 400)).inside(scissor)],
+            &atlas,
+        );
+        assert!(quads.is_empty());
+    }
+
+    /// The half of the box that matters more: a row scrolled out of its window
+    /// is not pickable, or a click lands on something nobody can see. The
+    /// picture is *still there*, at its own coordinates — this is the one test
+    /// that says the hit test reads the same box the drawing did.
+    #[test]
+    fn a_scrolled_out_row_is_not_picked_where_it_is_not_drawn() {
+        let atlas = atlas_of([(Graphic(1), block(20, 20))]);
+        let scissor = Scissor {
+            at: GumpPixel::new(100, 100),
+            width: 50,
+            height: 50,
+        };
+        let row = [Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(100, 140)).inside(scissor)];
+        assert_eq!(
+            pick(&row, GumpPixel::new(105, 145), &atlas),
+            Some(0),
+            "the part inside the box is the row"
+        );
+        assert_eq!(
+            pick(&row, GumpPixel::new(105, 155), &atlas),
+            None,
+            "and the part below the box is not, though the picture covers it"
+        );
+    }
+
+    /// A tiled picture is cut per repetition, because each repetition is its own
+    /// quad and meets the edge in its own place — the case a per-picture cut
+    /// would get wrong by dropping the whole strip.
+    #[test]
+    fn a_tiled_picture_is_cut_repetition_by_repetition() {
+        let atlas = atlas_of([(Graphic(1), block(10, 10))]);
+        let scissor = Scissor {
+            at: GumpPixel::new(0, 0),
+            width: 25,
+            height: 10,
+        };
+        let quads = collect(
+            &[Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 0))
+                .tiled(40, 10)
+                .inside(scissor)],
+            &atlas,
+        );
+        let widths: Vec<f32> = quads.iter().map(|quad| quad.rect.width).collect();
+        assert_eq!(
+            widths,
+            [10.0, 10.0, 5.0],
+            "four repetitions, cut to two and a half"
+        );
+    }
+
+    /// Glyphs are cut after the fact, not per label: they are collected into the
+    /// font atlas's own pass, and nothing picks a letter.
+    #[test]
+    fn cutting_quads_is_the_same_box_from_the_other_side() {
+        let atlas = atlas_of([(Graphic(1), block(20, 20))]);
+        let scissor = Scissor {
+            at: GumpPixel::new(0, 0),
+            width: 100,
+            height: 15,
+        };
+        let mut quads = collect(
+            &[
+                Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 0)),
+                Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 40)),
+            ],
+            &atlas,
+        );
+        scissor.cut(&mut quads);
+        assert_eq!(quads.len(), 1, "the second is wholly outside");
+        assert_eq!(quads[0].rect.height, 15.0, "and the first is cut to the box");
     }
 
     /// Painter's order is picking order: the last picture drawn over a point is
