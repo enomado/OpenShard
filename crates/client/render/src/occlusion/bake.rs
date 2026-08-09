@@ -54,7 +54,7 @@ use openshard_protocol::wire::Graphic;
 use openshard_uofiles::map::{BLOCK_SIZE, Map};
 use openshard_uofiles::tiledata::TileData;
 
-use super::{Builder, NO_SOLID, Occlusion, SKY_OPEN, Solid};
+use super::{Builder, Link, Occlusion, SKY_OPEN, Solid};
 use crate::atlas::StaticAtlas;
 use crate::camera::TileBounds;
 use crate::cutaway::Cutaway;
@@ -143,8 +143,8 @@ impl Baked {
         for cell in 0..CELLS {
             let first = solids.len();
             let mut at = grid.heads[cell];
-            while at != NO_SOLID {
-                let (solid, next) = grid.arena[at as usize];
+            while at != Link::NONE {
+                let (solid, next) = grid.arena[at.raw() as usize];
                 solids.push((cell as u8, solid));
                 at = next;
             }

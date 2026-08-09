@@ -1996,9 +1996,30 @@ impl Occlusion {
     }
 }
 
-/// The end of a tile's list of solids, in [`Builder::heads`] and in
-/// [`Builder::arena`]'s links.
-const NO_SOLID: u32 = u32::MAX;
+/// A place in [`Builder::arena`] — one tile's linked list of solids, one link
+/// at a time.
+///
+/// [`Builder::push`] and [`Builder::finish`] both hold this beside two other
+/// bare `u32`s at once — a tile slot in [`Builder::heads`]/[`Builder::sky`]
+/// and a place in the output list [`finish`](Builder::finish) is packing —
+/// and before this type existed all three were one type with nothing to tell
+/// them apart at the call site.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Link(u32);
+
+impl Link {
+    /// The end of a tile's list — [`Builder::heads`]'s answer for open ground,
+    /// and every arena entry's own answer for "no next".
+    const NONE: Self = Self(u32::MAX);
+
+    fn new(at: u32) -> Self {
+        Self(at)
+    }
+
+    fn raw(self) -> u32 {
+        self.0
+    }
+}
 
 /// How many solids one tile may reference: the format's own ceiling and not a
 /// number anybody chose.
@@ -2027,16 +2048,16 @@ pub const MAX_SOLIDS_PER_CELL: usize = 255;
 pub struct Builder {
     bounds: TileBounds,
     /// The first solid of each tile, row-major over `bounds`, or
-    /// [`NO_SOLID`] for open ground.
-    heads: Vec<u32>,
-    /// Every solid added this frame, each with the index of the next one on
+    /// [`Link::NONE`] for open ground.
+    heads: Vec<Link>,
+    /// Every solid added this frame, each with the link to the next one on
     /// its own tile.
     ///
     /// A solid a *tile* holds, still, and that is the honest state of step 23.1:
     /// the ownership has moved into [`Occlusion`], where a cell references what
     /// the frame owns, and the builder above it has not been asked to hold a
     /// solid two tiles reference. Decision 38.2's spill is the step that asks.
-    arena: Vec<(Solid, u32)>,
+    arena: Vec<(Solid, Link)>,
     /// How much of the sky each tile can see, in the same order as `heads`.
     sky: Vec<u8>,
     /// How many solids were refused because their tile was already full — see
@@ -2051,7 +2072,7 @@ impl Builder {
         let tiles = (bounds.width() * bounds.height()) as usize;
         Self {
             bounds,
-            heads: vec![NO_SOLID; tiles],
+            heads: vec![Link::NONE; tiles],
             arena: Vec::new(),
             sky: vec![SKY_OPEN; tiles],
             dropped: 0,
@@ -2148,8 +2169,8 @@ impl Builder {
     fn push(&mut self, index: usize, solid: Solid) {
         let mut count = 0;
         let mut at = self.heads[index];
-        while at != NO_SOLID {
-            let (had, next) = self.arena[at as usize];
+        while at != Link::NONE {
+            let (had, next) = self.arena[at.raw() as usize];
             if had == solid {
                 return;
             }
@@ -2161,7 +2182,7 @@ impl Builder {
             return;
         }
         self.arena.push((solid, self.heads[index]));
-        self.heads[index] = self.arena.len() as u32 - 1;
+        self.heads[index] = Link::new(self.arena.len() as u32 - 1);
     }
 
     /// One raw occluder: exactly the box given, opaque, with no shape or
@@ -2338,8 +2359,8 @@ impl Builder {
             // the newest first; reversing what one tile contributed is what puts
             // the solids in the order the map walk found them.
             let mut at = *head;
-            while at != NO_SOLID {
-                let (solid, next) = self.arena[at as usize];
+            while at != Link::NONE {
+                let (solid, next) = self.arena[at.raw() as usize];
                 if solid.drawn(cutaway) {
                     solids.push(solid);
                 }

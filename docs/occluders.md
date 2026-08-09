@@ -1465,11 +1465,26 @@ the module sees them, so the fix stayed contained.
 
 The same sweep taken wider, one item at a time: `bvh.rs`'s split axis (`0`/
 `1`/`2`) is now a private three-variant `Axis` too, same reasoning, same
-containment. `Solid::footprint`'s `i32` ranges are **not** done here — closing
-that one properly means a real tile-coordinate type, and that type's call
-sites reach into `bake.rs`'s whole coordinate system (`origin`, `tile_of`,
-`spill_of`, block/cell indices), which is D7's ground, named "not in scope,
-deliberately" above. Left as the one open item of this backlog entry.
+containment. `Builder`'s per-tile linked list (`occlusion.rs`) had the same
+shape: `heads`/`arena` carried a place in the arena as a bare `u32` sentinel
+`NO_SOLID`, sitting beside two *other* bare-`u32` domains in the same two
+functions — a tile slot in `heads`/`sky` and a place in the output `solids`
+list `finish` packs — with nothing to stop one being passed where another was
+meant. A private `Link` newtype (mirroring `bvh::NodeIdx`) now covers it, and
+`bake.rs`'s own read of the same arena — the one place outside `occlusion.rs`
+that ever touched it — takes the type instead of the raw value.
+
+Two things stayed open on purpose, surveyed and set aside rather than missed:
+
+- `Solid::footprint`'s `i32` ranges. Closing that one properly means a real
+  tile-coordinate type, and that type's call sites reach into `bake.rs`'s
+  whole coordinate system (`origin`, `tile_of`, `spill_of`, block/cell
+  indices), which is D7's ground, named "not in scope, deliberately" above.
+- The `edges: u8` bitmask (`EDGE_NORTH`/`EAST`/`SOUTH`/`WEST`/`EDGE_ANY`) on
+  `Solid`, `Cell` and `merge::Surface` — a genuine choice from a small finite
+  set by the same rule, but one shared across four files and mirrored in
+  `blit.wesl`'s own wire layout, unlike the private, single-module fixes
+  above. Worth a pass of its own rather than folding into this one.
 
 🔴 **Nothing in the crate gates a corner-grazing candidate, and that is measured
 rather than suspected.** `blit.wesl`'s `walk` carried an *unconditional* diagonal
