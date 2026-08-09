@@ -49,6 +49,7 @@ fn main() {
         &tiledata,
         &Cutaway::OPEN,
         light::NIGHT,
+        &light::Tuning::DEFAULT,
         0.0,
         Some(&atlas),
         None,

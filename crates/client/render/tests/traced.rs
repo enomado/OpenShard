@@ -409,6 +409,11 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         sun: None,
         view,
         flame_radius,
+        // The default, which is the count the shader's own header will carry:
+        // this gate is about where the rays go, and a fixture that cast a
+        // different number than the client does would be measuring a different
+        // estimate.
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {

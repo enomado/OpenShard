@@ -41,6 +41,12 @@
 //! - `OPENSHARD_SCENE_VIEWPORT=960x720` — must keep `width * 4` a multiple of
 //!   256 (`wgpu`'s row-copy alignment) or the readback panics; the default is
 //!   already aligned.
+//! - `OPENSHARD_FLAME_RADIUS`, `OPENSHARD_SHADOW_RAYS`,
+//!   `OPENSHARD_LIGHT_BRIGHTNESS`, `OPENSHARD_LIGHT_REACH`,
+//!   `OPENSHARD_LIGHT_SKY`, `OPENSHARD_LIGHT_GROUND` — the client's own Light
+//!   tab, as environment variables. See [`env_tuning`]: what a person is looking
+//!   at in the client is reproducible here, which is where it can be dumped and
+//!   diffed.
 //! - `OPENSHARD_SCENE_ZOOM=n` — `n` notches of [`Zoom::scale_up`] past
 //!   [`Zoom::ONE`], the live client's own wheel-in ladder (`2:1`, `3:1`,
 //!   `4:1`, nearest-sampled so a texel still lands on a whole number of real
@@ -151,6 +157,34 @@ fn env(name: &str) -> String {
 
 fn env_opt(name: &str) -> Option<String> {
     std::env::var(name).ok()
+}
+
+/// The Light tab's own knobs, as environment variables — so that a picture a
+/// person is looking at in the client can be reproduced here, where it can be
+/// dumped, diffed and bisected.
+///
+/// The same fields and the same clamp as the tab: this builds a
+/// [`light::Tuning`] and lets [`light::Tuning::clamped`] have the last word, so
+/// a number refused here is refused there.
+fn env_tuning() -> light::Tuning {
+    let number = |name: &str, default: f32| -> f32 {
+        env_opt(name).map_or(default, |value| {
+            value.parse().unwrap_or_else(|_| panic!("{name}: {value:?}"))
+        })
+    };
+    light::Tuning {
+        flame_radius: number("OPENSHARD_FLAME_RADIUS", light::Tuning::DEFAULT.flame_radius),
+        shadow_rays: light::ShadowRays::new(number(
+            "OPENSHARD_SHADOW_RAYS",
+            light::Tuning::DEFAULT.shadow_rays.raw() as f32,
+        ) as u32),
+        brightness: number("OPENSHARD_LIGHT_BRIGHTNESS", 1.0),
+        reach: number("OPENSHARD_LIGHT_REACH", 1.0),
+        sky: number("OPENSHARD_LIGHT_SKY", 1.0),
+        ground: number("OPENSHARD_LIGHT_GROUND", 1.0),
+        sun: light::Tuning::DEFAULT.sun,
+    }
+    .clamped()
 }
 
 fn env_flag(name: &str, default: bool) -> bool {
@@ -615,7 +649,16 @@ fn main() {
         &camera,
         &tiledata,
         &Cutaway::OPEN,
-        light::NIGHT.flattened(),
+        // Flat by default, as the client is: what a roof does to the light under
+        // it is a second thing changing every tile of the picture. The client's
+        // own F6 is `OPENSHARD_SCENE_SKY_FIELD=1` here, and it is a knob because
+        // the field is drawn **per tile with no interpolation** — a candidate
+        // whenever what a person is looking at is a tile-shaped step.
+        match env_flag("OPENSHARD_SCENE_SKY_FIELD", false) {
+            true => light::NIGHT,
+            false => light::NIGHT.flattened(),
+        },
+        &env_tuning(),
         0.0,
         Some(&static_atlas),
         None,

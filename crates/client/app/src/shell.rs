@@ -47,6 +47,7 @@ use openshard_client_render::bench::{Metrics, Reading};
 use openshard_client_render::blit::ViewportRect;
 use openshard_client_render::camera::Camera;
 use openshard_client_render::follow::Rig;
+use openshard_client_render::light;
 use openshard_client_render::solid::Cut;
 use openshard_uofiles::hues::Hues;
 use winit::window::Window;
@@ -541,6 +542,17 @@ impl Shell {
         }
     }
 
+    /// What the lighting is turned to right now — the Light tab's own numbers,
+    /// as the renderer wants them.
+    ///
+    /// Read once a frame by the thing that collects the lighting, and read from
+    /// *this* `Desk` and not the app's for the same reason [`Shell::toggle_dev`]
+    /// writes to this one: the app's copy is what was loaded at startup and what
+    /// will be saved at exit, and the sliders a person is dragging are here.
+    pub fn tuning(&self) -> light::Tuning {
+        self.desk.light.tuning()
+    }
+
     /// Show or hide the dev window — the strip's `dev` toggle, reached from a key.
     ///
     /// It has to come through here, and not through the app's own [`Desk`]: the
@@ -801,6 +813,7 @@ fn layout(
                 Tab::Frames => frames_panel(ui, hud),
                 Tab::World => world_panel(ui, hud),
                 Tab::Tile => tile_tab(ui, hud, &mut request),
+                Tab::Light => light_panel(ui, &mut desk.light),
             });
     });
     desk.open = open;
@@ -826,6 +839,114 @@ fn layout(
     request.gump = gumps.show(&context, &hud.gumps, hues);
 
     request
+}
+
+/// Every number the lighting is turned by, live.
+///
+/// **The values themselves and not a request.** Every other tab reads a `Hud`
+/// and posts what it wants done into [`Request`], because what it is asking for
+/// belongs to the app — a camera to move, a tile to walk to. These are the
+/// [`Desk`]'s own fields: they are saved with the layout, read straight off it
+/// when the next frame's lighting is collected, and there is nothing for the app
+/// to decide in between. A round trip through `Request` would be a second copy
+/// of each number and one more place for them to disagree.
+///
+/// The ranges are [`light::Tuning::MOST`] where the number is a factor, so a
+/// slider cannot ask for what [`light::Tuning::clamped`] would take back — a
+/// control that can be dragged to a value the frame refuses is a control that
+/// lies. What is *not* here is a switch for night, the sun, the lantern or the
+/// sky field: those are F10, F8, F7 and F6 and have been since before this tab,
+/// and two ways to spell one state is how the two come to disagree.
+fn light_panel(ui: &mut egui::Ui, light: &mut crate::desk::Light) {
+    let most = light::Tuning::MOST;
+    // What the numbers mean where they mean something in the world's own units,
+    // rather than as a bare factor: a person turning "reach" up is asking how
+    // far a torch throws, and the answer is a distance in tiles.
+    let torch = light::flame(openshard_protocol::wire::Graphic(0x0A0F));
+
+    ui.label("Shadows");
+    ui.add(
+        egui::Slider::new(&mut light.flame_radius, 0.0..=1.0)
+            .text("flame size (tiles)")
+            .fixed_decimals(3),
+    );
+    ui.label(
+        egui::RichText::new("0 is a point source and a razor edge; wider is a softer penumbra.")
+            .small()
+            .weak(),
+    );
+    ui.add(egui::Slider::new(&mut light.shadow_rays, 1..=light::ShadowRays::MOST).text("rays per flame"));
+    ui.label(
+        egui::RichText::new("More rays cost the frame and take the grain out of a soft edge.")
+            .small()
+            .weak(),
+    );
+
+    ui.separator();
+    ui.label("Flames");
+    ui.add(
+        egui::Slider::new(&mut light.brightness, 0.0..=most)
+            .text("brightness")
+            .fixed_decimals(2),
+    );
+    ui.add(
+        egui::Slider::new(&mut light.reach, 0.0..=most)
+            .text("reach")
+            .fixed_decimals(2),
+    );
+    ui.label(
+        egui::RichText::new(format!("a torch reaches {:.1} tiles", torch.radius * light.reach))
+            .small()
+            .weak(),
+    );
+
+    ui.separator();
+    ui.label("Ambient");
+    ui.add(
+        egui::Slider::new(&mut light.sky, 0.0..=most)
+            .text("sky")
+            .fixed_decimals(2),
+    );
+    ui.add(
+        egui::Slider::new(&mut light.ground, 0.0..=most)
+            .text("ground")
+            .fixed_decimals(2),
+    );
+    ui.label(
+        egui::RichText::new(
+            "Sky is what an open column gets; ground is the floor a windowless \
+             cellar still has.",
+        )
+        .small()
+        .weak(),
+    );
+
+    ui.separator();
+    ui.label("Sun (F8)");
+    ui.add(
+        egui::Slider::new(&mut light.sun_azimuth, 0.0..=360.0)
+            .text("azimuth (°)")
+            .fixed_decimals(0),
+    );
+    ui.add(
+        egui::Slider::new(&mut light.sun_rise, 0.0..=most)
+            .text("rise per tile")
+            .fixed_decimals(2),
+    );
+    ui.add(
+        egui::Slider::new(&mut light.sun_intensity, 0.0..=most)
+            .text("intensity")
+            .fixed_decimals(3),
+    );
+
+    ui.separator();
+    // The way back. Every number above is remembered across launches, which is
+    // what makes this necessary rather than tidy: a client left at somebody's
+    // experiment reopens as that experiment, and "what does this look like
+    // untouched" has to be one click and not nine numbers typed in.
+    if ui.button("back to the defaults").clicked() {
+        *light = crate::desk::Light::new();
+    }
 }
 
 /// Where the eye is, what it is looking at, and whether it is following.

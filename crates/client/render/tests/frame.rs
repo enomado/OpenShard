@@ -939,6 +939,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         sun: None,
         view: View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
     let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
@@ -1175,6 +1176,7 @@ fn a_wall_stops_the_light_behind_it() {
             sun: None,
             view: View::Lit,
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         blit.render(
@@ -4955,6 +4957,7 @@ fn the_shader_reads_a_primitive_at_no_fraction_a_byte_could_name() {
             sun: Some(sun),
             view: View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
         };
         let fixture = Fixture {
             surface: Surface::Upright,
@@ -4988,6 +4991,75 @@ fn the_shader_reads_a_primitive_at_no_fraction_a_byte_could_name() {
 /// was never run. The gap was in the harness, not in the sweep's size.
 ///
 /// The frame is read **directly**, and that is the whole of it now. This used to
+/// **The ray count on the wire is the count the shader casts.**
+///
+/// `light::ShadowRays` is a number a person turns in the Light tab, and it
+/// travels as one word of the blit's own header — `blit.rs`'s `lighting_bytes`,
+/// read back by `blit.wesl`'s `shadow_rays`. Everything between the slider and
+/// the loop is untyped: a word written at the wrong offset, or a shader that
+/// went on reading a constant, is a knob that moves nothing and says nothing.
+///
+/// So the claim is the *difference*: one ray and eight, over one scene at one
+/// instant, must not draw the same frame. They cannot — one ray is a hard
+/// shadow with no penumbra at all, eight is a gradient — and a shader ignoring
+/// the header draws the same picture twice. The second half is that eight and
+/// eight *do* draw the same frame, which is what says the first half found a ray
+/// count rather than a frame that wobbles on its own.
+///
+/// `scene::room` is the fixture for the reason every parity test here uses it: a
+/// torch inside a walled ring, so the frame has a wall's own shadow edge across
+/// it rather than an open pool where every ray of a flame arrives whatever the
+/// count.
+#[test]
+fn the_shader_casts_as_many_rays_as_the_frame_asks_for() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let (width, height) = (64, 64);
+    let mut lighting = openshard_client_render::scene::room().lighting(0.0);
+    // A flame a tile across, against the art's own eighth of one: the penumbra a
+    // shadow's edge has *is* the disagreement between the rays, so a body too
+    // small to disagree over makes this test about nothing — measured, at the
+    // real `FLAME_RADIUS` the two frames are seventeen pixels apart, which is a
+    // shadow edge one fixture-pixel wide and no bar worth setting. It is the same
+    // knob the Light tab's "flame size" is, turned to where the thing under test
+    // is visible.
+    lighting.flame_radius = 1.0;
+
+    let draw = |rays: u32| {
+        let lighting = Lighting {
+            shadow_rays: openshard_client_render::light::ShadowRays::new(rays),
+            ..lighting.clone()
+        };
+        parity_frame(&device, &queue, &lighting, width, height, Fixture::ground())
+    };
+    let one = draw(1);
+    let eight = draw(8);
+    let again = draw(8);
+
+    let differing = |a: &Frame, b: &Frame| {
+        (0..height)
+            .flat_map(|py| (0..width).map(move |px| (px, py)))
+            .filter(|&(px, py)| a.pixel(px, py) != b.pixel(px, py))
+            .count()
+    };
+    assert_eq!(
+        differing(&eight, &again),
+        0,
+        "one frame drawn twice is not the same frame, so the comparison below \
+         cannot mean anything",
+    );
+    // A hundred of four thousand is far below what a whole penumbra is and far
+    // above the nothing a dead knob draws — the bar is "this is not noise".
+    // Measured: 2,601 pixels move between one ray and eight.
+    let moved = differing(&one, &eight);
+    assert!(
+        moved > 100,
+        "one ray and eight drew the same picture but for {moved} pixels: the \
+         count is not reaching the shader",
+    );
+}
+
 /// stand beside a parity sweep of the shader against `light::sample`, and the
 /// sweep was the circular half: both sides were fixed together, so it reported
 /// agreement whether or not either was right. What is left is the claim neither
@@ -5074,6 +5146,7 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
         sun: None,
         view: View::default(),
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
     let fixture = Fixture {
         surface: Surface::Flat,
@@ -5182,6 +5255,7 @@ fn a_fragment_a_hair_inside_a_wall_is_shadowed_by_the_cell_it_drifted_into() {
         sun: None,
         view: View::default(),
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
     let fixture = Fixture {
         surface: Surface::Upright,

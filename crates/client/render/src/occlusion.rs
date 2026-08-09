@@ -4314,7 +4314,7 @@ mod tests {
             crate::statics::visible_graphics(&map, &camera, &animations),
         )
         .expect("a screen of statics fits");
-        let bounds = crate::light::lit_tiles(&camera);
+        let bounds = crate::light::lit_tiles(&camera, &crate::light::Tuning::DEFAULT);
 
         let shape = |graphic: Graphic| Shape {
             facing: atlas.sprite(graphic).and_then(|s| s.facing),

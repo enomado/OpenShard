@@ -408,6 +408,16 @@ pub struct Lighting {
     /// a per-light radius would be a second meaning for [`Light::radius`], which
     /// is a *reach* and not a size.
     pub flame_radius: f32,
+    /// How many rays this frame casts at each flame — [`ShadowRays`], and
+    /// [`Tuning::shadow_rays`] is where it comes from.
+    ///
+    /// A field for the same reason [`Lighting::flame_radius`] is one, and one
+    /// more besides: the count is now a *person's* number, and the shader reads
+    /// it off this frame's header. Both walks read this field, so a frame asked
+    /// about by [`sample`] and drawn by `blit.wgsl` casts the same rays at the
+    /// same points — which is what keeps every parity oracle comparing two
+    /// answers rather than two sample counts.
+    pub shadow_rays: ShadowRays,
 }
 
 impl Lighting {
@@ -427,6 +437,7 @@ impl Lighting {
         sun: None,
         view: crate::debug::View::Lit,
         flame_radius: FLAME_RADIUS,
+        shadow_rays: ShadowRays::DEFAULT,
     };
 
     /// Whether this would change a single pixel.
@@ -656,23 +667,37 @@ pub const FLAME_LIFT: f32 = Z_PER_TILE / 2.0;
 /// one for the rounding. It is also the margin the occlusion grid is built over:
 /// a wall outside it could not shadow anything the frame draws, because no flame
 /// inside it reaches that far.
-const LIGHT_MARGIN_TILES: i32 = CAMPFIRE.radius as i32 + 1;
+///
+/// **A function of the frame's own [`Tuning::reach`]**, and not a constant, for
+/// exactly that reason: the sentence above is only true while the widest pool
+/// really is `CAMPFIRE.radius` wide. A person who turns the reach up and leaves
+/// this where it was gets flames collected from too small a rectangle — a pool
+/// that pops in as its own tile enters the margin — over a grid that holds no
+/// walls that far out, so the light beyond the old margin falls unshadowed. Both
+/// are edges of the frame rather than of the world, which is what makes them a
+/// bug and not a look.
+fn light_margin_tiles(tuning: &Tuning) -> i32 {
+    (CAMPFIRE.radius * tuning.reach).ceil() as i32 + 1
+}
 
 /// The cells a frame's flames can come from: what is drawn, grown by the reach
-/// of the widest pool. See [`LIGHT_MARGIN_TILES`].
+/// of the widest pool. See [`light_margin_tiles`].
 ///
 /// Public because it is the rectangle *the grid is*, and a second caller that
 /// wants the same grid must not guess at it: the app's occluder overlay
 /// (`docs/lighting.md`, step 14) rebuilds the grid to draw it, and a wireframe
 /// over a rectangle the shader did not walk is an instrument that lies about
-/// exactly the edge it exists to show.
-pub fn lit_tiles(camera: &Camera) -> crate::camera::TileBounds {
+/// exactly the edge it exists to show. Which is also why the tuning is an
+/// argument here rather than read from somewhere: the overlay and the frame have
+/// to be handed the same one.
+pub fn lit_tiles(camera: &Camera, tuning: &Tuning) -> crate::camera::TileBounds {
     let bounds = camera.visible_tiles();
+    let margin = light_margin_tiles(tuning);
     crate::camera::TileBounds {
-        min_x: bounds.min_x - LIGHT_MARGIN_TILES,
-        max_x: bounds.max_x + LIGHT_MARGIN_TILES,
-        min_y: bounds.min_y - LIGHT_MARGIN_TILES,
-        max_y: bounds.max_y + LIGHT_MARGIN_TILES,
+        min_x: bounds.min_x - margin,
+        max_x: bounds.max_x + margin,
+        min_y: bounds.min_y - margin,
+        max_y: bounds.max_y + margin,
     }
 }
 
@@ -703,11 +728,16 @@ pub fn lit_tiles(camera: &Camera) -> crate::camera::TileBounds {
 /// across frames. `None` builds the grid from nothing, which is the same grid —
 /// see [`occlusion::bake`](crate::occlusion::bake), whose first test is that the
 /// two are equal.
-// Nine, and every one of them is a different thing the frame knows: the world,
+/// `tuning` is what a person has turned — see [`Tuning`], and its own note for
+/// why it is read here rather than applied to the result: the reach is what this
+/// walk's rectangle is grown by, so a frame collected without it and scaled
+/// afterwards has already lost the flames and the walls outside the old margin.
+// Ten, and every one of them is a different thing the frame knows: the world,
 // what the server has put in it, where the eye is, what the client's files say,
-// what the frame has cut away, what the sky is doing, when, the pictures, and
-// what was built for the last frame. Grouping them into a struct would be one
-// more type to keep in step with the call sites for no fewer facts.
+// what the frame has cut away, what the sky is doing, what the person looking at
+// it has turned, when, the pictures, and what was built for the last frame.
+// Grouping them into a struct would be one more type to keep in step with the
+// call sites for no fewer facts.
 #[allow(clippy::too_many_arguments)]
 pub fn collect(
     map: &Map,
@@ -716,11 +746,12 @@ pub fn collect(
     tiledata: &TileData,
     cutaway: &Cutaway,
     ambient: Ambient,
+    tuning: &Tuning,
     time: f32,
     atlas: Option<&crate::atlas::StaticAtlas>,
     bake: Option<&mut crate::occlusion::bake::Bake>,
 ) -> Lighting {
-    let bounds = lit_tiles(camera);
+    let bounds = lit_tiles(camera, tuning);
     let mut lights = Vec::new();
 
     crate::statics::for_each_static_in(map, bounds, |item| {
@@ -728,11 +759,11 @@ pub fn collect(
         if !burns(Graphic(item.tile), tile) || !cutaway::shows(cutaway, item.z, tile) {
             return;
         }
-        lights.push(place(
+        lights.push(tuning.applied(place(
             Point::new(item.x, item.y, item.z),
             flame(Graphic(item.tile)),
             time,
-        ));
+        )));
     });
 
     for item in items {
@@ -740,7 +771,7 @@ pub fn collect(
         if !burns(item.graphic, tile) || !cutaway::shows(cutaway, item.at.z, tile) {
             continue;
         }
-        lights.push(place(item.at, flame(item.graphic), time));
+        lights.push(tuning.applied(place(item.at, flame(item.graphic), time)));
     }
 
     // The grid before the flames are placed, because where a mounted flame burns
@@ -772,7 +803,7 @@ pub fn collect(
     }
 
     Lighting {
-        ambient,
+        ambient: tuning.ambient(ambient),
         lights,
         occlusion,
         // No sky here. What the sun is doing is not a property of the tiles this
@@ -783,7 +814,11 @@ pub fn collect(
         // the way to the blit: which view is on is a property of the person
         // looking, not of the world walked here.
         view: crate::debug::View::Lit,
-        flame_radius: FLAME_RADIUS,
+        // The two knobs the frame itself carries, rather than ones already spent
+        // on the lights above: both are read per fragment, by this walk and by
+        // the shader, and neither can be applied to a `Light`.
+        flame_radius: tuning.flame_radius,
+        shadow_rays: tuning.shadow_rays,
     }
 }
 
@@ -955,8 +990,264 @@ pub const FLAME_RADIUS: f32 = 0.125;
 ///
 /// There is no temporal accumulation behind it and deliberately none yet — the
 /// moment eight is too noisy or too slow is the moment to add one, and not
-/// before. `blit.wgsl`'s `SHADOW_RAYS`, and the two are one number.
+/// before. The default of [`ShadowRays`], which is what a frame actually reads:
+/// `blit.wgsl` takes the count off the header now rather than off a `const`, so
+/// this number is the picture this client draws and no longer the only picture
+/// it can draw.
 pub const SHADOW_RAYS: usize = 8;
+
+/// How many rays *this frame* casts at each flame — [`SHADOW_RAYS`] unless a
+/// person has turned the knob.
+///
+/// A type and not a bare `u32` because both ends of the range are a real
+/// failure: zero rays is a division by zero and a black frame, and a count past
+/// [`ShadowRays::MOST`] overruns the array [`flame_points`] fills. Both are
+/// clamped in [`ShadowRays::new`], which is the only way to build one, so the
+/// walk and the shader can index without asking.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ShadowRays(u32);
+
+impl ShadowRays {
+    /// What the client draws with unless told otherwise: [`SHADOW_RAYS`].
+    pub const DEFAULT: Self = Self(SHADOW_RAYS as u32);
+
+    /// The most a frame may ask for.
+    ///
+    /// The bound is [`flame_points`]'s array and nothing else — the shader's own
+    /// loop has no ceiling at all and would happily walk a thousand. Thirty-two
+    /// is four times the default, which is enough for the one thing more rays
+    /// are *for*: a person looking at the grain phase 5b put into the brightness
+    /// of a fragment standing right beside a flame, and deciding whether the
+    /// answer is more rays or a different arrangement. Raising it is one number
+    /// here and nothing else.
+    pub const MOST: u32 = 32;
+
+    /// A count, clamped into `1..=MOST`. Takes anything, including what a
+    /// hand-edited file offers, because that is where hostile numbers come from.
+    pub fn new(rays: u32) -> Self {
+        Self(rays.clamp(1, Self::MOST))
+    }
+
+    /// How many, for a loop.
+    pub fn count(self) -> usize {
+        self.0 as usize
+    }
+
+    /// And for the header the shader reads.
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for ShadowRays {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Where the sun stands and how hard it burns, as the numbers a person turns
+/// rather than as the direction the walk wants.
+///
+/// [`Sun`] carries a *normalised* direction, which is the right thing for a walk
+/// and the wrong thing for a slider: two of its three components move together,
+/// and a person dragging one of them sideways has changed the elevation as well.
+/// This is the pair that does not — an angle around the compass and a slope —
+/// and [`SunTuning::sun`] is the one place they become a direction.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SunTuning {
+    /// Which way it is, in degrees, measured from `+x` towards `+y`. The map's
+    /// own axes and not the screen's: the projection turns them 45°, so a sun at
+    /// zero comes from the lower right of the picture.
+    pub azimuth_degrees: f32,
+    /// How steeply it climbs, in tiles up per tile along — [`Sun::rise_per_tile`],
+    /// which is the number this exists to be able to state directly. `1.0` is
+    /// 45°.
+    pub rise_per_tile: f32,
+    /// Its colour, linear.
+    pub color: [f32; 3],
+    /// How much it adds where it reaches. Zero is "no sun" and the shader never
+    /// walks a ray for it, which is what `App::sunlit` writes when the sun is
+    /// switched off.
+    pub intensity: f32,
+}
+
+impl SunTuning {
+    /// The sun this client stands under until there is a time of day on the wire:
+    /// [`midday`], stated as the two numbers a person turns.
+    ///
+    /// `the_default_sun_tuning_is_midday` is what holds the pair together — the
+    /// constants are here in one spelling and there in another, and nothing but
+    /// that test says they are the same sun.
+    pub const MIDDAY: Self = Self {
+        azimuth_degrees: 0.0,
+        rise_per_tile: 1.0,
+        color: [1.0, 0.933_107, 0.748_414],
+        intensity: 0.263_273,
+    };
+
+    /// The direction the walk wants, built from the two numbers a person turns.
+    pub fn sun(self) -> Sun {
+        let radians = self.azimuth_degrees.to_radians();
+        Sun::towards(
+            radians.cos(),
+            radians.sin(),
+            self.rise_per_tile,
+            self.color,
+            self.intensity,
+        )
+    }
+}
+
+impl Default for SunTuning {
+    fn default() -> Self {
+        Self::MIDDAY
+    }
+}
+
+/// Every number about the light a person may turn while the client is running.
+///
+/// **A knob is not a second opinion about a constant.** `TORCH`, [`NIGHT`],
+/// [`FLAME_RADIUS`] and the rest are what this world's light *is*, measured or
+/// authored and argued for where they stand; this is what the person looking at
+/// the frame does to them. So all but two fields are plain factors against
+/// exactly one of those numbers, `1.0` is the untouched frame everywhere, and
+/// [`Tuning::DEFAULT`] is the picture this client drew before there was a menu —
+/// which is what makes "put it back" a thing a person can read off the page.
+///
+/// The two that are not factors say so, because there is nothing sensible to
+/// multiply: a flame is not one and a half [`FLAME_RADIUS`]es, it is a size in
+/// tiles or it is nothing, and a ray count is a count.
+///
+/// **Where it is read is where it has to be applied.** Two of these are not
+/// cosmetic scalings of the frame's output: [`Tuning::reach`] widens every pool,
+/// and the rectangle the occlusion grid is built over is grown by the widest pool
+/// ([`lit_tiles`]) — so a reach turned up after the grid was built lights tiles
+/// out of a grid that holds no walls for them, and the shadows simply stop at an
+/// invisible line. [`Tuning::shadow_rays`] is the same shape of thing in the
+/// other direction: it is read by the shader and by [`sample`], and the two
+/// answering with different counts is the parity oracle reporting noise as a
+/// defect. Hence one struct, threaded through [`collect`], rather than a handful
+/// of fields set on the way past.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Tuning {
+    /// How big a flame's body is, in tiles: the softness of every shadow it
+    /// casts, and the one knob a person means by "hardness". [`FLAME_RADIUS`] is
+    /// the world's answer; `0.0` is a point source and a razor edge, and larger
+    /// than a tile is a bonfire the size of a room.
+    pub flame_radius: f32,
+    /// How many rays each fragment casts at each flame — [`ShadowRays`].
+    pub shadow_rays: ShadowRays,
+    /// What every flame's own [`Flame::intensity`] is multiplied by: how hard the
+    /// fire burns.
+    pub brightness: f32,
+    /// And what its [`Flame::radius`] is: how far the pool reaches, in tiles.
+    ///
+    /// Read *before* the frame's lights are collected, because [`lit_tiles`] is
+    /// grown by it — see the struct's own note.
+    pub reach: f32,
+    /// What [`Ambient::sky`] is multiplied by: how bright the open sky is over a
+    /// tile that can see it.
+    pub sky: f32,
+    /// And [`Ambient::ground`]: the floor under the darkness, which is what a
+    /// windowless cellar gets. Turning this to nothing is what makes an unlit
+    /// room pure black.
+    pub ground: f32,
+    /// Where the sun stands and how hard it burns — [`SunTuning`]. Read only by a
+    /// frame that has a sun at all; night never asks.
+    pub sun: SunTuning,
+}
+
+impl Tuning {
+    /// The frame this client draws with nothing turned: every factor `1.0`, the
+    /// flame the size the art says, eight rays, and [`midday`] overhead.
+    pub const DEFAULT: Self = Self {
+        flame_radius: FLAME_RADIUS,
+        shadow_rays: ShadowRays::DEFAULT,
+        brightness: 1.0,
+        reach: 1.0,
+        sky: 1.0,
+        ground: 1.0,
+        sun: SunTuning::MIDDAY,
+    };
+
+    /// The largest any factor may be set to, and the largest a flame may be.
+    ///
+    /// Not a matter of taste: a reach of eight widens [`lit_tiles`] to eighty
+    /// tiles a side, which is the grid, the bake and every walk over it — the
+    /// frame stops being drawn at interactive rates well before the number stops
+    /// meaning anything. Four is generous and still affordable, and a person who
+    /// wants more is asking for a different plan rather than a wider slider.
+    pub const MOST: f32 = 4.0;
+
+    /// The same numbers with every one of them inside the domain its field
+    /// documents: factors in `0..=`[`Tuning::MOST`], the flame no larger than
+    /// that many tiles, and no `NaN` anywhere.
+    ///
+    /// The door this type has, and the reason it has one is that its fields
+    /// arrive from a *file* — `client_ui.toml`, hand-editable on purpose. A
+    /// negative brightness is a flame that darkens what it reaches and a `NaN`
+    /// radius is a frame with no lit pixels at all; both are silent, and both are
+    /// one typo away. Clamping is stated here, in the crate that owns what these
+    /// numbers mean, rather than in the deserializer that happens to be first to
+    /// see them.
+    ///
+    /// `f32::clamp` panics on a `NaN`, so a `NaN` becomes the default of its own
+    /// field rather than propagating — the same rule `desk::Zoom` follows, and
+    /// for the same reason: a light nobody can see is not worth a crash on
+    /// startup.
+    pub fn clamped(self) -> Self {
+        let factor = |value: f32, default: f32| match value.is_nan() {
+            true => default,
+            false => value.clamp(0.0, Self::MOST),
+        };
+        Self {
+            flame_radius: factor(self.flame_radius, FLAME_RADIUS),
+            shadow_rays: self.shadow_rays,
+            brightness: factor(self.brightness, 1.0),
+            reach: factor(self.reach, 1.0),
+            sky: factor(self.sky, 1.0),
+            ground: factor(self.ground, 1.0),
+            sun: SunTuning {
+                azimuth_degrees: match self.sun.azimuth_degrees.is_nan() {
+                    true => SunTuning::MIDDAY.azimuth_degrees,
+                    false => self.sun.azimuth_degrees % 360.0,
+                },
+                rise_per_tile: factor(self.sun.rise_per_tile, SunTuning::MIDDAY.rise_per_tile),
+                color: std::array::from_fn(|channel| {
+                    factor(self.sun.color[channel], SunTuning::MIDDAY.color[channel])
+                }),
+                intensity: factor(self.sun.intensity, SunTuning::MIDDAY.intensity),
+            },
+        }
+    }
+
+    /// One flame with this frame's brightness and reach in it.
+    ///
+    /// Every [`Light`] a frame carries goes through here — the map's own fires
+    /// inside [`collect`], and the one in the player's hand where the caller
+    /// holds it, since [`Lighting::hold`] takes a light that was never collected.
+    pub fn applied(self, light: Light) -> Light {
+        Light {
+            radius: light.radius * self.reach,
+            intensity: light.intensity * self.brightness,
+            ..light
+        }
+    }
+
+    /// The ambient with this frame's sky and floor in it.
+    pub fn ambient(self, ambient: Ambient) -> Ambient {
+        Ambient {
+            sky: ambient.sky.map(|channel| channel * self.sky),
+            ground: ambient.ground.map(|channel| channel * self.ground),
+        }
+    }
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 /// Below this, a ray has been stopped: `blit.wgsl`'s early exit, and under a
 /// byte's worth of light either way.
@@ -1987,7 +2278,14 @@ fn sample_with(
         // ends on, so there is nothing left out here to multiply the result by.
         // See [`arrival`], and phase 5b for why a flame with a centre drew a
         // wedge of shadow at every join.
-        let arrival = arrival(spot, light, &lighting.occlusion, lighting.flame_radius, &walk);
+        let arrival = arrival(
+            spot,
+            light,
+            &lighting.occlusion,
+            lighting.flame_radius,
+            lighting.shadow_rays,
+            &walk,
+        );
         let added = light
             .color
             .map(|channel| channel * light.intensity * arrival.delivered);
@@ -2164,7 +2462,7 @@ const GOLDEN_ANGLE: f32 = 2.399_963_2;
 /// difference as the walk's — see `tests/lighting.rs`'s fuzz, which is where that
 /// happened. What it shares with the thing under test is the scene, not the
 /// answer.
-pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32) -> [[f32; 3]; SHADOW_RAYS] {
+pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32, rays: ShadowRays) -> FlamePoints {
     let toward = [
         flame[0] - spot.at.x,
         flame[1] - spot.at.y,
@@ -2175,7 +2473,10 @@ pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32) -> [[f32; 3]; SHAD
         // The spot is inside the flame. Every point of the sphere is as good as
         // any other and none of them has a direction, so every ray is the one to
         // the centre — the ray that has no length.
-        return [flame; SHADOW_RAYS];
+        return FlamePoints {
+            points: [flame; ShadowRays::MOST as usize],
+            rays,
+        };
     }
     let normal = toward.map(|axis| axis / span);
     // Two directions across the ray, built the textbook branching way: away from
@@ -2199,16 +2500,59 @@ pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32) -> [[f32; 3]; SHAD
     let up = cross(normal, across);
 
     let phase = dither([spot.at.x, spot.at.y, spot.z]) * std::f32::consts::TAU;
-    std::array::from_fn(|ray| {
+    // Every slot of the array is filled, and only the first `rays` of them are
+    // ever read — see [`FlamePoints`]. The spiral's own radius is what the count
+    // is in, so the points past it are not the points a shorter walk would have
+    // used, and answering with them would be a different flame.
+    let points = std::array::from_fn(|ray| {
         let angle = phase + GOLDEN_ANGLE * ray as f32;
-        let radius = radius * ((ray as f32 + 0.5) / SHADOW_RAYS as f32).sqrt();
+        let radius = radius * ((ray as f32 + 0.5) / rays.count() as f32).sqrt();
         let (sin, cos) = angle.sin_cos();
         [
             flame[0] + (across[0] * cos + up[0] * sin) * radius,
             flame[1] + (across[1] * cos + up[1] * sin) * radius,
             flame[2] + (across[2] * cos + up[2] * sin) * radius * Z_PER_TILE,
         ]
-    })
+    });
+    FlamePoints { points, rays }
+}
+
+/// The points [`flame_points`] named: a fixed array with a count, and the count
+/// is what a reader is allowed to look at.
+///
+/// A type and not a `Vec`, because this is called once per flame per fragment in
+/// the walk that every oracle in the tree runs — an allocation there is the whole
+/// cost of the answer. A type and not a bare `[[f32; 3]; MOST]` because the
+/// slots past the count hold *a different flame's* sample: the spiral spaces its
+/// points by `sqrt(i / rays)`, so the ninth point of an eight-ray flame is not a
+/// point of that flame at all, and an array with no count is an invitation to
+/// average it in.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct FlamePoints {
+    points: [[f32; 3]; ShadowRays::MOST as usize],
+    rays: ShadowRays,
+}
+
+impl FlamePoints {
+    /// The points, in the spiral's own order.
+    pub fn iter(&self) -> impl Iterator<Item = [f32; 3]> + '_ {
+        self.points[..self.rays.count()].iter().copied()
+    }
+
+    /// How many there are — [`ShadowRays::count`] of the flame they are of.
+    pub fn count(&self) -> usize {
+        self.rays.count()
+    }
+}
+
+impl IntoIterator for FlamePoints {
+    type Item = [f32; 3];
+    type IntoIter = std::iter::Take<std::array::IntoIter<[f32; 3], { ShadowRays::MOST as usize }>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let rays = self.rays.count();
+        self.points.into_iter().take(rays)
+    }
 }
 
 /// What one flame's body sends to one spot, and how much of that body the spot
@@ -2283,6 +2627,11 @@ fn arrival(
     // than read off the constant so that the shader and this walk can be asked
     // about the same frame.
     radius: f32,
+    // And how many rays to cast at it — [`Lighting::shadow_rays`], carried down
+    // for exactly the same reason and with a sharper edge: two walks that agree
+    // about every rule and sample a different number of points disagree about
+    // every soft pixel, and an oracle cannot tell that from a defect.
+    rays: ShadowRays,
     walk: impl Fn(Spot, [f32; 3], &Occlusion) -> (f32, Option<Stopper>),
 ) -> Arrival {
     let normal = spot.surface.normal();
@@ -2290,7 +2639,7 @@ fn arrival(
     let mut delivered = 0.0;
     let mut visible = 0.0;
     let mut worst: Option<(f32, Stopper)> = None;
-    for at in flame_points(spot, [light.at.x, light.at.y, light.z], radius) {
+    for at in flame_points(spot, [light.at.x, light.at.y, light.z], radius, rays) {
         // From the spot to *this point of the flame*, in the one metric: `z`
         // divided into tiles, which is what the cosine, the falloff and the beam
         // are all stated in.
@@ -2329,8 +2678,8 @@ fn arrival(
         }
     }
     Arrival {
-        delivered: delivered / SHADOW_RAYS as f32,
-        visible: visible / SHADOW_RAYS as f32,
+        delivered: delivered / rays.count() as f32,
+        visible: visible / rays.count() as f32,
         stopped_by: worst.map(|(_, stopper)| stopper),
     }
 }
@@ -3391,6 +3740,193 @@ mod tests {
         tiledata
     }
 
+    /// The default tuning is the client this had before there were knobs: the
+    /// two spellings of the sun are one sun.
+    ///
+    /// [`SunTuning::MIDDAY`] states an azimuth and a slope, [`midday`] states a
+    /// direction; nothing but this says they agree, and the day a time of day
+    /// arrives on the wire it is what catches one of the two being updated.
+    #[test]
+    fn the_default_sun_tuning_is_midday() {
+        assert_eq!(Tuning::DEFAULT.sun.sun(), midday());
+    }
+
+    /// A frame with nothing turned is the frame this drew before the knobs
+    /// existed — every factor is the identity on the numbers it multiplies.
+    #[test]
+    fn the_default_tuning_changes_no_number() {
+        let torch = Light {
+            at: Vec2::new(100.5, 100.5),
+            z: FLAME_LIFT,
+            radius: TORCH.radius,
+            color: TORCH.color,
+            intensity: TORCH.intensity,
+            beam: None,
+        };
+        assert_eq!(Tuning::DEFAULT.applied(torch), torch);
+        assert_eq!(Tuning::DEFAULT.ambient(NIGHT), NIGHT);
+        assert_eq!(Tuning::DEFAULT.flame_radius, FLAME_RADIUS);
+        assert_eq!(Tuning::DEFAULT.shadow_rays.count(), SHADOW_RAYS);
+    }
+
+    /// And a turned one is turned everywhere it is read: the flame's own two
+    /// numbers, and both halves of the ambient.
+    #[test]
+    fn a_turned_tuning_reaches_the_flame_and_the_ambient() {
+        let tuning = Tuning {
+            brightness: 2.0,
+            reach: 0.5,
+            sky: 0.0,
+            ground: 3.0,
+            ..Tuning::DEFAULT
+        };
+        let torch = Light {
+            at: Vec2::new(100.5, 100.5),
+            z: FLAME_LIFT,
+            radius: 6.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 0.5,
+            beam: None,
+        };
+        let turned = tuning.applied(torch);
+        assert_eq!(turned.radius, 3.0, "half the reach");
+        assert_eq!(turned.intensity, 1.0, "twice the brightness");
+        assert_eq!(turned.color, torch.color, "and nothing else moved");
+        let ambient = tuning.ambient(Ambient {
+            sky: [0.4, 0.4, 0.4],
+            ground: [0.1, 0.1, 0.1],
+        });
+        assert_eq!(ambient.sky, [0.0; 3], "no sky at all");
+        assert_eq!(ambient.ground, [0.3, 0.3, 0.3], "three times the floor");
+    }
+
+    /// **The reach is what the grid's rectangle is grown by**, and that is the
+    /// whole reason [`Tuning`] is threaded into [`collect`] rather than applied
+    /// to what it returns.
+    ///
+    /// A pool twice as wide over the old margin is a flame that starts lighting
+    /// the frame only once its own tile is nearly on screen, over a grid holding
+    /// no walls that far out — light with no shadows, ending at a line that
+    /// belongs to the camera and not to the world.
+    #[test]
+    fn a_wider_reach_grows_the_rectangle_the_grid_is_built_over() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let ordinary = lit_tiles(&camera, &Tuning::DEFAULT);
+        let wide = lit_tiles(
+            &camera,
+            &Tuning {
+                reach: 2.0,
+                ..Tuning::DEFAULT
+            },
+        );
+        assert!(
+            wide.min_x < ordinary.min_x && wide.max_x > ordinary.max_x,
+            "{wide:?} is not wider than {ordinary:?}",
+        );
+        // And exactly by the widest pool's own growth, which is what makes this a
+        // rule rather than a nudge: nine tiles at the default, eighteen at twice.
+        assert_eq!(ordinary.min_x - wide.min_x, CAMPFIRE.radius as i32);
+        let narrow = lit_tiles(
+            &camera,
+            &Tuning {
+                reach: 0.0,
+                ..Tuning::DEFAULT
+            },
+        );
+        assert_eq!(
+            narrow.min_x,
+            camera.visible_tiles().min_x - 1,
+            "a pool of nothing still leaves the tile of rounding",
+        );
+    }
+
+    /// A count is clamped at both ends, because both are a broken frame: zero
+    /// rays divides by nothing, and more than the array holds is a walk reading
+    /// points of a flame nobody sampled.
+    #[test]
+    fn a_ray_count_is_clamped_to_something_a_walk_survives() {
+        assert_eq!(ShadowRays::new(0).count(), 1);
+        assert_eq!(ShadowRays::new(9_000).raw(), ShadowRays::MOST);
+        assert_eq!(ShadowRays::new(4).count(), 4);
+        assert_eq!(ShadowRays::DEFAULT.count(), SHADOW_RAYS);
+    }
+
+    /// And the points a flame is sampled at are as many as were asked for — the
+    /// array is full either way, and the count is what says which of it is this
+    /// flame's.
+    #[test]
+    fn a_flame_is_sampled_at_as_many_points_as_were_asked_for() {
+        let spot = Spot::flat(Vec2::new(100.5, 100.5), 0.0, (100, 100));
+        let flame = [103.5, 100.5, FLAME_LIFT];
+        for rays in [1u32, 3, 8, ShadowRays::MOST] {
+            let points = flame_points(spot, flame, FLAME_RADIUS, ShadowRays::new(rays));
+            assert_eq!(points.count(), rays as usize);
+            assert_eq!(points.iter().count(), rays as usize);
+            assert_eq!(points.into_iter().count(), rays as usize);
+        }
+        // The spacing is stated in the count, so a shorter walk is a *pattern* of
+        // its own and not the first few points of a longer one: every count fills
+        // the same disc, out to `radius * sqrt((n - 0.5) / n)` at its widest.
+        // Measured in **tile space**, which is the metric the sphere is round in
+        // — a spread taken with `z` in its own units is an ellipse's, and reads
+        // as two different flames for two counts of one.
+        let spread = |points: FlamePoints| {
+            points
+                .iter()
+                .map(|point| {
+                    let away = [
+                        point[0] - flame[0],
+                        point[1] - flame[1],
+                        (point[2] - flame[2]) / Z_PER_TILE,
+                    ];
+                    away.iter().map(|axis| axis * axis).sum::<f32>().sqrt()
+                })
+                .fold(0.0_f32, f32::max)
+        };
+        for rays in [2u32, 4, 8, 16] {
+            let widest = FLAME_RADIUS * ((rays as f32 - 0.5) / rays as f32).sqrt();
+            let measured = spread(flame_points(spot, flame, FLAME_RADIUS, ShadowRays::new(rays)));
+            // A rounding's worth of slack and no more: the two are the same
+            // expression evaluated through a sine and a square root, so they
+            // agree to a few `f32` bits rather than exactly.
+            assert!(
+                (measured - widest).abs() < 1e-5,
+                "{rays} rays: {measured} is not {widest}",
+            );
+        }
+    }
+
+    /// A hand-edited file is an input, so every number has a door: out of range
+    /// comes back at the edge of it, and a `NaN` comes back as the default of
+    /// its own field rather than blackening the frame.
+    #[test]
+    fn hostile_numbers_are_clamped_rather_than_drawn() {
+        let clamped = Tuning {
+            flame_radius: f32::NAN,
+            shadow_rays: ShadowRays::DEFAULT,
+            brightness: -1.0,
+            reach: 1e9,
+            sky: f32::NAN,
+            ground: 0.5,
+            sun: SunTuning {
+                azimuth_degrees: 400.0,
+                rise_per_tile: -2.0,
+                color: [f32::NAN; 3],
+                intensity: 99.0,
+            },
+        }
+        .clamped();
+        assert_eq!(clamped.flame_radius, FLAME_RADIUS);
+        assert_eq!(clamped.brightness, 0.0);
+        assert_eq!(clamped.reach, Tuning::MOST);
+        assert_eq!(clamped.sky, 1.0);
+        assert_eq!(clamped.ground, 0.5, "and what was already sane is untouched");
+        assert_eq!(clamped.sun.azimuth_degrees, 40.0, "the compass wraps");
+        assert_eq!(clamped.sun.rise_per_tile, 0.0);
+        assert_eq!(clamped.sun.color, SunTuning::MIDDAY.color);
+        assert_eq!(clamped.sun.intensity, Tuning::MOST);
+    }
+
     /// A map with ground and nothing standing on it: the statics in these tests
     /// come from the item list, which is the half a test can build without a
     /// client install.
@@ -3760,7 +4296,7 @@ mod tests {
                     direction[2] * span * Z_PER_TILE,
                 ];
                 let centre = span * (direction.iter().map(|a| a * a).sum::<f32>()).sqrt();
-                for point in flame_points(spot, flame, FLAME_RADIUS) {
+                for point in flame_points(spot, flame, FLAME_RADIUS, ShadowRays::DEFAULT) {
                     let away = [point[0] - 100.0, point[1] - 100.0, point[2] / Z_PER_TILE];
                     let distance = away.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
                     assert!(
@@ -3791,6 +4327,7 @@ mod tests {
             sun: None,
             view: crate::debug::View::Lit,
             flame_radius: FLAME_RADIUS,
+            shadow_rays: ShadowRays::DEFAULT,
         };
         // Along `x` and at the flame's own height, so the distance is the offset
         // and nothing has to be derived. `Spot::at` has no facing, so the cosine
@@ -3848,6 +4385,7 @@ mod tests {
             &lit(graphic.0),
             &Cutaway::OPEN,
             NIGHT,
+            &Tuning::DEFAULT,
             0.0,
             None,
             None,
@@ -3881,6 +4419,7 @@ mod tests {
             &lit(0x0A12),
             &Cutaway::OPEN,
             NIGHT,
+            &Tuning::DEFAULT,
             0.0,
             None,
             None,
@@ -3917,6 +4456,7 @@ mod tests {
                 &tiledata,
                 &Cutaway::OPEN,
                 NIGHT,
+                &Tuning::DEFAULT,
                 0.0,
                 None,
                 None,
@@ -3970,7 +4510,7 @@ mod tests {
         }
         loop {
             camera.zoom_about(400, 300, zoom);
-            let bounds = lit_tiles(&camera);
+            let bounds = lit_tiles(&camera, &Tuning::DEFAULT);
             let drawn = camera.visible_tiles();
 
             let mut reaching = 0;
@@ -4038,11 +4578,12 @@ mod tests {
             &tiledata,
             &Cutaway::OPEN,
             NIGHT,
+            &Tuning::DEFAULT,
             0.0,
             None,
             None,
         );
-        assert_eq!(lighting.occlusion.bounds(), lit_tiles(&camera));
+        assert_eq!(lighting.occlusion.bounds(), lit_tiles(&camera, &Tuning::DEFAULT));
         assert!(
             lighting.occlusion.at(101, 100).is_some(),
             "the wall the frame walked past is not in the grid",
@@ -4068,7 +4609,7 @@ mod tests {
             zoom = zoom.scale_down();
         }
         camera.zoom_about(960, 540, zoom);
-        let bounds = lit_tiles(&camera);
+        let bounds = lit_tiles(&camera, &Tuning::DEFAULT);
         let bytes = bounds.width() * bounds.height() * 4;
         assert!(
             bytes < 512 * 1024,
@@ -4102,6 +4643,7 @@ mod tests {
                 ..Cutaway::OPEN
             },
             NIGHT,
+            &Tuning::DEFAULT,
             0.0,
             None,
             None,
@@ -4189,6 +4731,7 @@ mod tests {
             sun: None,
             view: crate::debug::View::default(),
             flame_radius: FLAME_RADIUS,
+            shadow_rays: ShadowRays::DEFAULT,
         };
 
         let sample = sample(spot, &lighting);
@@ -4304,6 +4847,7 @@ mod tests {
                 sun: None,
                 view: crate::debug::View::default(),
                 flame_radius: FLAME_RADIUS,
+                shadow_rays: ShadowRays::DEFAULT,
             };
             let streaming = sample(spot, &lighting).reaches[0].through;
             let exact = sample_exact(spot, &lighting).reaches[0].through;
@@ -4427,6 +4971,7 @@ mod tests {
                 sun: None,
                 view: crate::debug::View::default(),
                 flame_radius: FLAME_RADIUS,
+                shadow_rays: ShadowRays::DEFAULT,
             };
             (
                 sample(spot, &lighting).reaches[0].through,
@@ -4514,6 +5059,7 @@ mod tests {
             sun: None,
             view: crate::debug::View::default(),
             flame_radius: FLAME_RADIUS,
+            shadow_rays: ShadowRays::DEFAULT,
         };
 
         // `blocked`: whether the straight segment from `(102.5, y)` to the

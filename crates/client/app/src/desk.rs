@@ -24,6 +24,7 @@
 
 use std::path::Path;
 
+use openshard_client_render::light;
 use serde::{Deserialize, Serialize};
 
 /// Where the state lives: beside `openshard.toml`, in the working directory.
@@ -52,6 +53,8 @@ pub enum Tab {
     World,
     /// The tile under the cursor, the overlays, and what a click would take.
     Tile,
+    /// Every number the lighting is turned by — [`Light`].
+    Light,
 }
 
 impl Tab {
@@ -59,7 +62,14 @@ impl Tab {
     ///
     /// One list, so the bar and anything that iterates the pages cannot come to
     /// disagree about which tabs exist.
-    pub const ALL: [Tab; 5] = [Tab::Camera, Tab::Rig, Tab::Frames, Tab::World, Tab::Tile];
+    pub const ALL: [Tab; 6] = [
+        Tab::Camera,
+        Tab::Rig,
+        Tab::Frames,
+        Tab::World,
+        Tab::Tile,
+        Tab::Light,
+    ];
 
     /// What the bar calls it.
     pub fn title(self) -> &'static str {
@@ -69,7 +79,106 @@ impl Tab {
             Tab::Frames => "Frames",
             Tab::World => "World",
             Tab::Tile => "Tile",
+            Tab::Light => "Light",
         }
+    }
+}
+
+/// The lighting's own knobs, as they are written to the file.
+///
+/// **A second spelling of [`light::Tuning`] and deliberately so.** The renderer
+/// never opens a file — that is the whole of what keeps it runnable against an
+/// offscreen texture in a test and a canvas in a browser — so it carries no
+/// `serde`, and giving it one to save four numbers would be paying for the
+/// dependency in every build of the crate that draws. What is duplicated here is
+/// the *field list* and nothing else: every number's meaning, its domain and its
+/// clamp live over there, and [`Light::tuning`] is the one place the two meet.
+/// `the_saved_light_is_the_renderers_own_default` is what holds them together —
+/// it is what goes red when a field is added on one side only.
+///
+/// `#[serde(default)]` per the struct, as [`Desk`] itself has: a file written by
+/// a build that predates a knob is missing that line and nothing else, and the
+/// rest of the page must survive it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Light {
+    /// How big a flame's body is, in tiles — the softness of every shadow.
+    pub flame_radius: f32,
+    /// How many rays each fragment casts at each flame.
+    pub shadow_rays: u32,
+    /// What every flame's brightness is multiplied by.
+    pub brightness: f32,
+    /// And its reach.
+    pub reach: f32,
+    /// What the ambient's sky term is multiplied by,
+    pub sky: f32,
+    /// and its floor.
+    pub ground: f32,
+    /// Where the sun stands, in degrees around the map's own axes,
+    pub sun_azimuth: f32,
+    /// how steeply it climbs, in tiles up per tile along,
+    pub sun_rise: f32,
+    /// and how much it adds where it reaches.
+    pub sun_intensity: f32,
+}
+
+impl Light {
+    /// The numbers the renderer draws with when nothing has been turned.
+    pub fn new() -> Self {
+        Self::from_tuning(light::Tuning::DEFAULT)
+    }
+
+    /// The renderer's own knobs, with everything the file said inside the domain
+    /// the renderer states for it.
+    ///
+    /// **Clamped here rather than in a hand-written `Deserialize`**, unlike
+    /// [`Zoom`]: the clamp is [`light::Tuning::clamped`], which belongs to the
+    /// crate that knows what these numbers mean, and calling it on the way out
+    /// covers the file *and* anything a slider could be talked into. What a
+    /// per-field `Deserialize` would buy is a clamped value in the struct
+    /// itself, and the struct itself is never read except through here.
+    pub fn tuning(self) -> light::Tuning {
+        light::Tuning {
+            flame_radius: self.flame_radius,
+            shadow_rays: light::ShadowRays::new(self.shadow_rays),
+            brightness: self.brightness,
+            reach: self.reach,
+            sky: self.sky,
+            ground: self.ground,
+            sun: light::SunTuning {
+                azimuth_degrees: self.sun_azimuth,
+                rise_per_tile: self.sun_rise,
+                // Not a knob. A sun's colour is three numbers and a person asking
+                // for a warmer afternoon is asking for a time of day, which is
+                // the shard's to say and is not on the wire yet — see
+                // `light::midday`. Kept at whatever that is rather than at a
+                // literal, so the day this becomes a slider it is one field.
+                color: light::SunTuning::MIDDAY.color,
+                intensity: self.sun_intensity,
+            },
+        }
+        .clamped()
+    }
+
+    /// And back: what the file writes, from the renderer's own numbers.
+    fn from_tuning(tuning: light::Tuning) -> Self {
+        Self {
+            flame_radius: tuning.flame_radius,
+            shadow_rays: tuning.shadow_rays.raw(),
+            brightness: tuning.brightness,
+            reach: tuning.reach,
+            sky: tuning.sky,
+            ground: tuning.ground,
+            sun_azimuth: tuning.sun.azimuth_degrees,
+            sun_rise: tuning.sun.rise_per_tile,
+            sun_intensity: tuning.sun.intensity,
+        }
+    }
+}
+
+impl Default for Light {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -175,6 +284,14 @@ pub struct Desk {
     /// ignored when it names a screen that is no longer there — see
     /// [`Desk::fits`].
     pub window: Option<Frame>,
+    /// What the lighting has been turned to — [`Light`].
+    ///
+    /// Remembered for the same reason the window's own place is: a person who
+    /// has found the shadow hardness they want should not have to find it again
+    /// every launch. It is also what makes the file the honest record of *why*
+    /// a frame looks the way it does — a screenshot of a client with the sky
+    /// turned to nothing is otherwise indistinguishable from a bug report.
+    pub light: Light,
 }
 
 impl Default for Desk {
@@ -186,6 +303,7 @@ impl Default for Desk {
             open: true,
             panel: None,
             zoom: Zoom::default(),
+            light: Light::new(),
             window: None,
         }
     }
@@ -295,6 +413,17 @@ mod tests {
                 height: 900,
                 maximized: true,
             }),
+            light: Light {
+                flame_radius: 0.25,
+                shadow_rays: 16,
+                brightness: 1.5,
+                reach: 0.5,
+                sky: 2.0,
+                ground: 0.0,
+                sun_azimuth: 90.0,
+                sun_rise: 0.5,
+                sun_intensity: 0.4,
+            },
         };
         desk.save(&path).unwrap();
         let back = Desk::load(&path).unwrap();
@@ -303,7 +432,34 @@ mod tests {
         assert_eq!(back.panel, desk.panel);
         assert_eq!(back.zoom, desk.zoom);
         assert_eq!(back.window, desk.window);
+        assert_eq!(back.light, desk.light);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// The file's own defaults are the renderer's own, field for field.
+    ///
+    /// The one statement that holds the two spellings of [`light::Tuning`]
+    /// together — see [`Light`]'s own note. A field added on one side and not
+    /// the other either fails to compile here or comes back with a number the
+    /// renderer never chose, and both are this assertion.
+    #[test]
+    fn the_saved_light_is_the_renderers_own_default() {
+        assert_eq!(Light::new().tuning(), light::Tuning::DEFAULT);
+    }
+
+    /// And a hand-edited file is an input: every number in it goes through the
+    /// renderer's own clamp on the way to a frame, so a negative brightness or a
+    /// ray count of nothing cannot reach the walk.
+    #[test]
+    fn a_hand_edited_light_is_clamped_on_the_way_out() {
+        let desk: Desk =
+            toml::from_str("[light]\nbrightness = -3.0\nshadow_rays = 0\nreach = 1e9\n").unwrap();
+        let tuning = desk.light.tuning();
+        assert_eq!(tuning.brightness, 0.0);
+        assert_eq!(tuning.shadow_rays, light::ShadowRays::new(1));
+        assert_eq!(tuning.reach, light::Tuning::MOST);
+        // And what the file did not say is what the renderer draws with.
+        assert_eq!(tuning.sky, light::Tuning::DEFAULT.sky);
     }
 
     /// A file is something a person edits, so the number in it is an input and

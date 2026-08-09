@@ -3174,6 +3174,24 @@ impl App {
         }
     }
 
+    /// What the Light tab has been turned to.
+    ///
+    /// [`light::Tuning::DEFAULT`] before there is a shell, which is every frame
+    /// drawn with the HUD switched off and every frame of a test that drives
+    /// this type without a window: the numbers a person turns live in the dev
+    /// window's own [`Desk`](crate::desk::Desk), and where there is no window
+    /// there is nothing turned.
+    ///
+    /// Read once and threaded through the frame rather than fetched wherever it
+    /// is wanted: the occluder overlay's rectangle and the frame's own lighting
+    /// have to be built from *one* answer, or the wireframe is a picture of a
+    /// grid the shader did not walk.
+    fn tuning(&self) -> light::Tuning {
+        self.shell
+            .as_ref()
+            .map_or(light::Tuning::DEFAULT, shell::Shell::tuning)
+    }
+
     fn terrain_overlay(&self, camera: Camera, hover: Option<&shell::PickedTile>) -> shell::TerrainOverlay {
         use openshard_movement::{PLAYER_HEIGHT, Tile, find_path, step_allowed};
 
@@ -3462,7 +3480,7 @@ impl App {
                 occlusion::collect(
                     &self.map,
                     &self.items,
-                    light::lit_tiles(&camera),
+                    light::lit_tiles(&camera, &self.tuning()),
                     &self.tiledata,
                     cutaway,
                     // The same atlas the frame's own grid is built from, or the
@@ -4204,6 +4222,10 @@ impl App {
         // Likewise: the cut the solids view is drawn under reads the player, and
         // the pass that uses it runs inside the window's borrow.
         let solid_cut = self.solid_cut();
+        // And likewise the Light tab's own numbers, which live in the shell —
+        // read here for the same reason, and once for the whole frame: the
+        // flames, the ambient and the sun below are all turned by them.
+        let tuning = self.tuning();
 
         let Some(window) = self.window.as_mut() else {
             return;
@@ -4439,6 +4461,7 @@ impl App {
                 &self.tiledata,
                 &cutaway,
                 ambient,
+                &tuning,
                 self.flame_clock.as_secs_f32(),
                 // The pictures, which is where an occluder's *facing* comes from:
                 // a wall stops a ray only where the ray crosses the side the wall
@@ -4733,7 +4756,9 @@ impl App {
         // here rather than inside the walk — and never at night, where a second
         // source lighting every roof would undo the whole point of the dark.
         if self.sunlit && !self.night {
-            lighting.sun = Some(light::midday());
+            // Where the Light tab put it, which is `light::midday` until somebody
+            // moves a slider — see `light::SunTuning`.
+            lighting.sun = Some(tuning.sun.sun());
         }
         // And the flame in the player's own hand, which no walk of the map could
         // have found — see `light::carried`. Only where the frame has a sky at
@@ -4742,11 +4767,14 @@ impl App {
         // nothing. It goes in after the sort, and `hold` is what says it is never
         // the flame dropped when a tavern's candles fill the array.
         if self.lantern && sky.is_some() {
-            lighting.hold(light::carried(
+            // Through the tuning as every collected flame is: the lantern is a
+            // flame, and a brightness knob that left the one light the player
+            // actually carries alone would read as having no effect at all.
+            lighting.hold(tuning.applied(light::carried(
                 self.player.at,
                 self.player.facing,
                 self.flame_clock.as_secs_f32(),
-            ));
+            )));
         }
         // The view is the looker's, not the world's: a diagnostic draws from the
         // values this frame was lit with, and in daylight those are the ambient

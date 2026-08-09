@@ -784,6 +784,7 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), bodies: &[Body
         spot,
         [light.0 as f32, light.1 as f32, light.2 as f32],
         openshard_client_render::light::FLAME_RADIUS,
+        openshard_client_render::light::ShadowRays::DEFAULT,
     );
     let clear = points
         .iter()
@@ -796,7 +797,7 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), bodies: &[Body
                 .all(|(_, body)| segment_clear_of_box(point, to, body.min, body.max))
         })
         .count();
-    clear as f64 / points.len() as f64
+    clear as f64 / points.count() as f64
 }
 
 /// Runs of adjacent non-empty bands, as `(first, past_the_last, points)`.
@@ -1704,6 +1705,7 @@ fn main() {
         sun: None,
         view: selected,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
     // The CPU twin of a pixel, on demand. A picture says a fragment came out
     // black; this says *what* took its ray, by name — and after

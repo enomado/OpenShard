@@ -445,6 +445,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             // decision 20. It costs the pass nothing either way — the grid is
             // built and uploaded whichever ambient reads it.
             light::NIGHT.flattened(),
+            &light::Tuning::DEFAULT,
             time,
             Some(&static_atlas),
             // Uncached on purpose: `cpu` below is the frame this pass costs
@@ -473,7 +474,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         let grid = openshard_client_render::occlusion::collect(
             &map,
             &[],
-            light::lit_tiles(&camera),
+            light::lit_tiles(&camera, &light::Tuning::DEFAULT),
             &tiledata,
             &Cutaway::OPEN,
             Some(&static_atlas),
@@ -485,7 +486,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             &mut bake,
             &map,
             &[],
-            light::lit_tiles(&camera),
+            light::lit_tiles(&camera, &light::Tuning::DEFAULT),
             &tiledata,
             &Cutaway::OPEN,
             Some(&static_atlas),

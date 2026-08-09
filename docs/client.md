@@ -703,6 +703,27 @@ reading them:
 Deliberately absent: the journal, the paperdoll, containers. Those are M4, and
 building them in egui now would decide M4 without arguing it.
 
+A **Light** tab joined them, and it is the same kind of thing: every number the
+lighting is turned by — the flame's own size (which is how hard a shadow is), how
+many rays a fragment casts at it, the brightness and reach of every flame, the
+two halves of the ambient, and where the sun stands. `light::Tuning` is the type,
+`desk::Light` is the file's copy of it, and `light::Tuning::clamped` is the one
+place a number's domain lives, so a slider and a hand-edited `client_ui.toml`
+cannot disagree about what is allowed.
+
+Two things about it are not taste. The knobs are **read where they are applied**
+rather than scaled onto a finished frame: the reach is what the occlusion grid's
+own rectangle is grown by (`light::lit_tiles`), so a pool widened afterwards
+would light tiles out of a grid that holds no walls for them. And the ray count
+now travels **on the wire**, in a word of the blit's own header that was padding
+— `the_shader_casts_as_many_rays_as_the_frame_asks_for` is what says it arrives,
+by drawing one ray against eight and requiring the two frames to differ.
+
+What is deliberately *not* there: night, the sun's own switch, the lantern, the
+sky field and the debug views. Those are F10, F8, F7, F6 and F11 and have been
+since before the tab, and a second way to spell one state is how the two come to
+disagree.
+
 ### Done when
 
 `cargo run -p openshard-client-app -- --client …` opens on Britain, the

@@ -380,8 +380,18 @@ fn flame_radius() -> f32 {
     return lighting.ground.w;
 }
 
-// How many rays a fragment casts at each flame. `light::SHADOW_RAYS`.
-const SHADOW_RAYS: u32 = 8u;
+// How many rays a fragment casts at each flame.
+//
+// **On the wire and no longer a constant**, exactly as `flame_radius` above is
+// and for the same reason: it is a number a person turns while looking at the
+// frame. It rides in the second word of `view`, which was three words of
+// padding the block needed anyway — `light::Lighting::shadow_rays`, and
+// `light::ShadowRays` is what clamps it to something a loop can survive. The
+// spiral's spacing is stated in it (`sqrt((ray + 0.5) / rays)`), so the count is
+// not a truncation of one pattern but a pattern of its own.
+fn shadow_rays() -> u32 {
+    return lighting.view.y;
+}
 
 // Turns of the sample spiral between one point of a flame and the next: the
 // golden angle, `π(3 − √5)`, which is what makes a Vogel spiral of any length
@@ -1494,8 +1504,9 @@ fn arrival(
         up = cross(axis, across);
     }
     let phase = dither(at) * TAU;
+    let rays = shadow_rays();
     var result = Arrival(0.0, 0.0);
-    for (var ray = 0u; ray < SHADOW_RAYS; ray = ray + 1u) {
+    for (var ray = 0u; ray < rays; ray = ray + 1u) {
         var point = to;
         if span >= 1.0e-6 {
             // The fragment is inside the flame when this is false. Every point of
@@ -1503,7 +1514,7 @@ fn arrival(
             // direction, so every ray is the ray to the centre — the one with no
             // length.
             let angle = phase + GOLDEN_ANGLE * f32(ray);
-            let radius = flame_radius() * sqrt((f32(ray) + 0.5) / f32(SHADOW_RAYS));
+            let radius = flame_radius() * sqrt((f32(ray) + 0.5) / f32(rays));
             let offset = (across * cos(angle) + up * sin(angle)) * radius;
             point = vec3<f32>(to.x + offset.x, to.y + offset.y, to.z + offset.z * Z_PER_TILE);
         }
@@ -1537,8 +1548,8 @@ fn arrival(
         }
         result.delivered = result.delivered + through * cosine * fall * fall * lit_by;
     }
-    result.delivered = result.delivered / f32(SHADOW_RAYS);
-    result.visible = result.visible / f32(SHADOW_RAYS);
+    result.delivered = result.delivered / f32(rays);
+    result.visible = result.visible / f32(rays);
     return result;
 }
 

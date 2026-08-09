@@ -539,6 +539,7 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), boxes: &[BoxSp
         spot,
         [light.0 as f32, light.1 as f32, light.2 as f32],
         flame_radius(),
+        light::ShadowRays::DEFAULT,
     );
     let clear = points
         .iter()
@@ -551,7 +552,7 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), boxes: &[BoxSp
                 .all(|(_, b)| segment_clear_of_box(point, to, b.min, b.max))
         })
         .count();
-    clear as f64 / points.len() as f64
+    clear as f64 / points.count() as f64
 }
 
 /// A flat grayscale raster, `sampler` called once per pixel with the world
@@ -931,6 +932,7 @@ fn main() {
         sun: None,
         view: View::Lit,
         flame_radius: flame_radius(),
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
     // Where the flame itself is, in the one place every consumer of it reads:
     // the crosshair on the dumped frames, the two visibility oracles, and the

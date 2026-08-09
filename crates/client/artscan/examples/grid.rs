@@ -21,7 +21,8 @@ fn main() {
     let x: u16 = args[0].parse().expect("x");
     let y: u16 = args[1].parse().expect("y");
     let camera = Camera::new(Point::new(x, y, 0), 1200, 900);
-    let bounds = openshard_client_render::light::lit_tiles(&camera);
+    let bounds =
+        openshard_client_render::light::lit_tiles(&camera, &openshard_client_render::light::Tuning::DEFAULT);
 
     let mut wanted = Vec::new();
     for tx in bounds.min_x..=bounds.max_x {

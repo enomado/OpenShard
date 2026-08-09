@@ -183,6 +183,7 @@ fn what_the_lighting_knows_about_a_place() {
         &tiledata,
         &Cutaway::OPEN,
         light::NIGHT,
+        &light::Tuning::DEFAULT,
         0.0,
         Some(&atlas),
         // No bake: one frame, and the instrument reports what the plain walk

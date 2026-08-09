@@ -1580,6 +1580,7 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
         sun: None,
         view: openshard_client_render::debug::View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
 
     // Due east of the wall, level with the flame: the ray runs straight through
@@ -1691,6 +1692,7 @@ fn ray(grid: &occlusion::Occlusion, from: (f32, f32, f32), to: (f32, f32, f32)) 
         sun: None,
         view: debug::View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
     let tile = (from.0.floor() as i32, from.1.floor() as i32);
     light::sample(Spot::at(Vec2::new(from.0, from.1), from.2, tile), &lighting).reaches[0].through
@@ -1938,6 +1940,7 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
         sun: None,
         view: debug::View::default(),
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
 
     // The tile's own middle in `y`, and its far edge: both are points of the
@@ -2242,6 +2245,7 @@ fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
             sun: None,
             view: debug::View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
         };
         for &(at, z) in &spots {
             let spot = Spot::flat(at, z, (100, 100));
@@ -2259,12 +2263,13 @@ fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
                 spot,
                 [light_at.x, light_at.y, light_z],
                 openshard_client_render::light::FLAME_RADIUS,
+                openshard_client_render::light::ShadowRays::DEFAULT,
             )
             .iter()
             .all(|point| {
                 brute_force_blocked(
                     [at.x, at.y, z],
-                    *point,
+                    point,
                     (100, 100),
                     (point[0].floor() as i32, point[1].floor() as i32),
                     true,
@@ -2386,6 +2391,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
             sun: None,
             view: debug::View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
         };
 
         let spot = Spot::flat(spot_at, spot_z, spot_tile);
@@ -2403,12 +2409,17 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
         // tile's far corner and most of the eight miss it. `light::flame_points`
         // is where the rays end, shared so that the *scene* is shared and the
         // answer is not — this oracle still walks the segment its own dumb way.
-        let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, flame_z], openshard_client_render::light::FLAME_RADIUS)
+        let brute_blocked = light::flame_points(
+                    spot,
+                    [light_at.x, light_at.y, flame_z],
+                    openshard_client_render::light::FLAME_RADIUS,
+                    openshard_client_render::light::ShadowRays::DEFAULT,
+                )
             .iter()
             .all(|point| {
                 brute_force_blocked(
                     [spot_at.x, spot_at.y, spot_z],
-                    *point,
+                    point,
                     spot_tile,
                     (point[0].floor() as i32, point[1].floor() as i32),
                     true,
@@ -2498,6 +2509,7 @@ fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
             sun: None,
             view: debug::View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
         };
         for &(at, z) in &spots {
             let spot = Spot::flat(at, z, (100, 100));
@@ -2515,12 +2527,13 @@ fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
                 spot,
                 [light_at.x, light_at.y, light_z],
                 openshard_client_render::light::FLAME_RADIUS,
+                openshard_client_render::light::ShadowRays::DEFAULT,
             )
             .iter()
             .all(|point| {
                 brute_force_blocked(
                     [at.x, at.y, z],
-                    *point,
+                    point,
                     (100, 100),
                     (point[0].floor() as i32, point[1].floor() as i32),
                     true,
@@ -2624,6 +2637,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
             sun: None,
             view: debug::View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
         };
 
         let spot = Spot::flat(spot_at, spot_z, spot_tile);
@@ -2641,12 +2655,17 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
         // tile's far corner and most of the eight miss it. `light::flame_points`
         // is where the rays end, shared so that the *scene* is shared and the
         // answer is not — this oracle still walks the segment its own dumb way.
-        let brute_blocked = light::flame_points(spot, [light_at.x, light_at.y, flame_z], openshard_client_render::light::FLAME_RADIUS)
+        let brute_blocked = light::flame_points(
+                    spot,
+                    [light_at.x, light_at.y, flame_z],
+                    openshard_client_render::light::FLAME_RADIUS,
+                    openshard_client_render::light::ShadowRays::DEFAULT,
+                )
             .iter()
             .all(|point| {
                 brute_force_blocked(
                     [spot_at.x, spot_at.y, spot_z],
-                    *point,
+                    point,
                     spot_tile,
                     (point[0].floor() as i32, point[1].floor() as i32),
                     true,
@@ -2790,6 +2809,7 @@ fn a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces() {
             // and § *Backlog* of `docs/occluders.md` carries it. At radius zero
             // every ray is the one ray lying in the plane, which is D2's own.
             flame_radius: 0.0,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
         };
         // Across the tread's own lid, right up to the seam its flight shares with
         // the next: the last hundredth of a tile is where the crossing point of a
@@ -2909,6 +2929,7 @@ fn the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so() {
         sun: None,
         view: debug::View::default(),
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
 
     // 1. The exact answer, per ray, in double precision and over the frame's own
@@ -2923,6 +2944,7 @@ fn the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so() {
         spot,
         [light_at.x, light_at.y, flame_z],
         openshard_client_render::light::FLAME_RADIUS,
+        openshard_client_render::light::ShadowRays::DEFAULT,
     )
     .iter()
     .enumerate()
@@ -2970,12 +2992,13 @@ fn the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so() {
         spot,
         [light_at.x, light_at.y, flame_z],
         openshard_client_render::light::FLAME_RADIUS,
+        openshard_client_render::light::ShadowRays::DEFAULT,
     )
     .iter()
     .all(|point| {
         brute_force_blocked(
             [spot_at.x, spot_at.y, spot_z],
-            *point,
+            point,
             spot_tile,
             (point[0].floor() as i32, point[1].floor() as i32),
             true,

@@ -223,6 +223,13 @@ impl Scene {
                 Some(_) => light::SKYLIGHT,
                 None => light::NIGHT,
             },
+            // Nothing turned. A scene is the world as this client draws it by
+            // default, which is what makes it an oracle: a fixture built under
+            // somebody's slider would assert about that slider. A test that
+            // *is* about a knob sets the field on the frame afterwards — the two
+            // this carries are per-fragment and change no rectangle — and
+            // `examples/boxes.rs` does exactly that for its own flame radius.
+            &light::Tuning::DEFAULT,
             time,
             self.art.as_ref(),
             // No bake. A scene is asked for its lighting once and its map is a
