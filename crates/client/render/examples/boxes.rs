@@ -319,11 +319,13 @@ fn scene_tree() -> Vec<BoxSpec> {
             tile: (tx, ty),
             min: (cx - w1 / 2.0, cy - w1 / 2.0, 0.0),
             max: (cx + w1 / 2.0, cy + w1 / 2.0, h1),
+            graphic: 0,
         },
         BoxSpec {
             tile: (tx, ty),
             min: (cx - w2 / 2.0, cy - w2 / 2.0, h1),
             max: (cx + w2 / 2.0, cy + w2 / 2.0, h1 + h2),
+            graphic: 1,
         },
     ]
 }
@@ -359,12 +361,14 @@ fn scene_pair() -> Vec<BoxSpec> {
             tile: (tx, ty),
             min: (x0 + 0.05, y0 + 0.65, 0.0),
             max: (x0 + 0.05 + w, y0 + 0.65 + w, h),
+            graphic: 0,
         },
         // And the near one, south-east, standing between it and the flame.
         BoxSpec {
             tile: (tx, ty),
             min: (x0 + 0.65, y0 + 0.05, 0.0),
             max: (x0 + 0.65 + w, y0 + 0.05 + w, h),
+            graphic: 1,
         },
     ]
 }
@@ -381,11 +385,16 @@ fn scene_line() -> Vec<BoxSpec> {
             tile: (ax, ay),
             min: (f64::from(ax), f64::from(ay), 0.0),
             max: (f64::from(ax) + 1.0, f64::from(ay) + 1.0, h),
+            graphic: 0,
         },
         BoxSpec {
             tile: (bx, by),
             min: (f64::from(bx), f64::from(by), 0.0),
             max: (f64::from(bx) + 1.0, f64::from(by) + 1.0, h),
+            // Two graphics and not one: these are two statics standing in a
+            // line, and `occlusion::merge` would fold one graphic's run into a
+            // single primitive — which is a scene of its own and not this one.
+            graphic: 1,
         },
     ]
 }
@@ -446,6 +455,9 @@ fn scene_stair() -> Vec<BoxSpec> {
     let run: u16 = env_or("OPENSHARD_STAIR_RUN", "1").parse().expect("a count");
     assert!(run >= 1, "a run of no flights is not a scene");
     let n = treads.len() as f64;
+    // How many graphics a flight uses up, so the next flight's treads carry
+    // numbers of their own — see the `graphic` below.
+    let per_flight = treads.len() as u16;
     let y0 = f64::from(ty);
     (0..run)
         .flat_map(|flight| {
@@ -460,6 +472,11 @@ fn scene_stair() -> Vec<BoxSpec> {
                     tile: (tx + flight, ty),
                     min: (x0, y0 + 1.0 - hi, 0.0),
                     max: (x0 + 1.0, y0 + 1.0 - lo, h),
+                    // One graphic per tread of per flight: every tread of this
+                    // scene is its own static, so a landing continuous across
+                    // the run stays three primitives — which is the geometry
+                    // `docs/occluders.md`'s D2 is argued on.
+                    graphic: flight * per_flight + i as u16,
                 }
             })
         })
@@ -653,8 +670,8 @@ fn main() {
     };
 
     let mut builder = Builder::new(bounds);
-    for (index, b) in boxes.iter().enumerate() {
-        builder.add_raw(b.tile.0, b.tile.1, b.solid(), box_owner(index, b));
+    for b in boxes.iter() {
+        builder.add_raw(b.tile.0, b.tile.1, b.solid(), box_owner(b));
     }
     let occlusion = builder.finish(&Cutaway::OPEN);
     // Which *solid* of the grid each box is — what a fragment of that box has to
@@ -668,12 +685,7 @@ fn main() {
         .enumerate()
         .map(|(index, b)| {
             occlusion
-                .id_of(
-                    i32::from(b.tile.0),
-                    i32::from(b.tile.1),
-                    box_owner(index, b),
-                    Part::ONLY,
-                )
+                .id_of(i32::from(b.tile.0), i32::from(b.tile.1), box_owner(b), Part::ONLY)
                 .unwrap_or_else(|| {
                     panic!(
                         "box {index} is not in the grid this tool just built — every oracle \

@@ -1331,7 +1331,8 @@ green**. For `traced.rs` the reason is that its scenes are built by
 them ever merges**; for `frame.rs` it is that the shader sweep compares the shader
 against `light::sample` and both walk the same broken geometry. So the two
 instruments this track leans on hardest cannot see this step at all, and what
-gates it is the CPU suite and the twin oracle. In the backlog.
+gates it is the CPU suite and the twin oracle. In the backlog — and the tracer's
+half of it is closed by the section below.
 
 **Two fixtures lost their subject, and both were repaired rather than deleted.**
 
@@ -1351,6 +1352,75 @@ gates it is the CPU suite and the twin oracle. In the backlog.
   coordinate floors into the tile next door. That is § *The oracle*'s own defect,
   walked into again on the way to this fix and caught by two tests that name a
   wall by where it stands.
+
+### ✅ The merge under the reference tracer, and what it costs exactly
+
+The blind spot above is closed on the tracer's side, by the fixture the backlog
+item itself named — and the fixture found something the ten CPU gates could not,
+which is the whole argument for having an arbiter that shares no arithmetic with
+us.
+
+**Identity became a field.** `oracle::boxes::BoxSpec` carries its own `graphic`
+and `box_owner` reads it, where it used to be the box's place in a list. A list
+position can only ever say *everyone is different*, so every scene in
+`tests/traced.rs` and `examples/boxes.rs` was a scene in which nothing could merge
+under any circumstances. One field, ten literals, and a run of one wall becomes
+sayable: `wall_run_scene(&|_| 7)` is three whole-tile boxes of one static, folded
+into a single primitive spanning three tiles; `&|x| x` is the same geometry as
+three statics, which folds nothing.
+
+**The gate that is not circular.** `the_frame_and_the_path_tracer_agree_about_a_
+merged_run_of_wall` hands the frame **one** primitive and the reference **three**
+— the same point set, since the merge is a componentwise union of boxes sharing
+whole faces — and asks for every interior pixel to come out the same. 261,400
+pixels compared, 0 interior disagreements. Under the "union does not grow"
+injection it is **60,960**, where before this fixture the whole file was green.
+The flame stands off the run's east end so that rays run *along* the length of the
+merged box, which is the arrangement a union that grew too far or not far enough
+answers differently from three boxes.
+
+**And the GPU twin, which is the other half.** `a_merged_run_of_wall_draws_the_
+same_frame_as_its_own_pieces` renders both scenes and compares the two frames
+**byte for byte** — no tolerance, because an opaque primitive stops a ray or does
+not and each of the eight rays lands the same way, so a partly lit fragment comes
+out the same eighth. Both sides are ours, so it is not evidence that the merge is
+*right*; what it adds is reach, since it covers the silhouettes, the edges and the
+penumbra that `compare` deliberately excludes. The injection moves 64,746 pixels
+of it.
+
+🚨 **The merge is not free, and the fixture is what found where.** The module
+header says the one thing a merge changes is identity — a fragment of a piece is a
+point of the whole run, so it is exempt from the volume its neighbour used to be —
+and adds that "after phase 5b there is measurably no ray left that reaches it".
+**That is true of the frame a player sees and false of the walk.** With the flame
+in the run's own line, half a tile north of the drawn south faces, **5,742 pixels**
+of `View::Shadow` differ between a merged run and its pieces. The tracer, holding
+three bodies, agrees with the *pieces*: those fragments really are shadowed by the
+rest of the run, and the merged frame calls them lit.
+
+Every one of them is a face **turned away from the flame**, and that is what makes
+it a cost rather than a defect: phase 3's cosine is nothing on such a face, so the
+lit frame is byte-identical. Both halves are now a gate —
+`a_merged_run_is_exempt_from_itself_only_where_the_cosine_is_already_nothing`
+surveys every moved pixel and fails if one of them faces the light (under the
+injection, 117,756 of 123,498 do), then renders the same scene in `View::Lit` and
+demands the same bytes. So the claim in the header is pinned in the form it is
+actually true in: *a merged run is exempt from itself only where nothing was going
+to be lit anyway*.
+
+It also decided where the tracer gate's flame stands. Half a tile **clear of the
+south face's plane** — not cosmetic: with the flame north of it the comparison
+would be measuring the exemption's reach rather than the merged box's geometry,
+and the two gates would be the same gate.
+
+**What the second injection says about the split.** Dropping the graphic from the
+merge key leaves the tracer gate **green** — the run of one wall still merges into
+the right box, so the picture is right — and turns the twin red on its own
+precondition, "the run of three graphics merged, so this twin is not a twin". That
+is the correct division of labour: the tracer gates geometry, and the `Owner`
+condition is about the *join*, which is `Occlusion::id_of`'s business and is
+checked where the join is (the traced gate asserts the three boxes name one
+primitive; `render` panics outright if a box cannot find its own solid).
 
 ### ✅ The rename: neither walk has a cell in it
 
@@ -1432,25 +1502,24 @@ Named so that a later session does not adopt them by accident:
 Findings from this track that do not block a step. Kept here so the plan can be
 read as work.
 
-🔴 **The two instruments this track leans on hardest cannot see the merge, and
-that is measured rather than suspected.** With a deliberately wrong union in
-`occlusion::merge` — the merged box left at its first piece's, ten of
-`tests/lighting.rs` red — `tests/frame.rs`, `tests/pictures.rs` and
-`tests/traced.rs` stayed **fully green**. Two different reasons, and neither is
-comfortable:
+~~🔴 **The two instruments this track leans on hardest cannot see the merge, and
+that is measured rather than suspected.**~~ **The tracer's half is closed** — see
+§ *The merge under the reference tracer* — and it closed the way the item said it
+would: `oracle::boxes::BoxSpec` states a box's `graphic` instead of taking it from
+its place in a list, and a run of one graphic is a scene the merge folds. What is
+left of the item is the second bullet, which is a different instrument:
 
-- `traced.rs` and `examples/boxes.rs` build their scenes through
-  `oracle::boxes::box_owner`, which gives **every box its own graphic**, so
-  nothing in any of them merges. The path tracer is this plan's one non-circular
-  arbiter and it has never been shown a merged frame.
-- `frame.rs`'s shader sweep compares the shader against `light::sample`, and both
-  read the same primitives — so it gates the *port* and cannot gate the
-  *geometry*, exactly as S5 recorded when it built the sweep.
-
-What would close it is a traced fixture whose boxes share an owner: the same run
-of wall the twin oracle uses, drawn and compared against the tracer. It is one
-scene, and it would put the merge under the instrument that has no `Occlusion` in
-it at all.
+- ~~`traced.rs` and `examples/boxes.rs` build their scenes through
+  `oracle::boxes::box_owner`, which gives **every box its own graphic**~~ — a
+  field now, and `wall_run_scene` is the run of one.
+- 🔴 `frame.rs`'s shader sweep compares the shader against `light::sample`, and
+  both read the same primitives — so it gates the *port* and cannot gate the
+  *geometry*, exactly as S5 recorded when it built the sweep. Unchanged: what a
+  merged frame is now checked against is the path tracer and the GPU twin below,
+  neither of which is the sweep. Whether the sweep should also carry a merged
+  scene is a question about *coverage of the port*, and the honest answer may be
+  that it should not.
+- 🔴 `pictures.rs` is untouched by this and still draws nothing that merges.
 
 ~~🔧 **The merge's own indices are bare `u32`s and its axis is a bare
 `usize`.**~~ Fixed in `occlusion::merge`: a private `Prim` newtype now carries

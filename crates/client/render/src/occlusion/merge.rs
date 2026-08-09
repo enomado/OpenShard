@@ -80,9 +80,19 @@
 //!
 //! The one thing that *does* change is identity: a fragment of one piece is a
 //! point of the merged primitive, so it is exempt from the volume its neighbour
-//! used to be. That is D6 arriving, it is the seam this plan was written for, and
-//! after phase 5b there is measurably no ray left that reaches it — which is what
-//! the gate reports rather than what this module claims.
+//! used to be. That is D6 arriving, and it is the seam this plan was written for.
+//!
+//! **It is not free, and where it costs something is measured.** A flame in a
+//! run's own line, just behind the plane of the faces the camera draws, moves
+//! **5,742 pixels** of `View::Shadow` between a merged run and its own pieces —
+//! the reference tracer, holding the pieces, agrees with them. Every one of those
+//! fragments is a face **turned away from the flame**, where phase 3's cosine is
+//! already nothing, so the frame a player sees is byte-identical. Both halves are
+//! gated by `tests/traced.rs`'s
+//! `a_merged_run_is_exempt_from_itself_only_where_the_cosine_is_already_nothing`,
+//! and `docs/occluders.md` § *The merge under the reference tracer* has the
+//! reading. So the claim this module may make is the narrow one: a merged run is
+//! exempt from itself **only where nothing was going to be lit anyway**.
 
 use crate::occlusion::{Edges, Solid, SolidId};
 

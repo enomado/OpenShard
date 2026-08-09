@@ -90,11 +90,17 @@ fn line_scene() -> Vec<BoxSpec> {
             tile: (100, 100),
             min: (100.0, 100.0, 0.0),
             max: (101.0, 101.0, h),
+            graphic: 0,
         },
         BoxSpec {
             tile: (101, 100),
             min: (101.0, 100.0, 0.0),
             max: (102.0, 101.0, h),
+            // A second graphic, so these stay two primitives: the point of this
+            // scene is an occluder that is *not* the one the fragment stands on,
+            // and one graphic would make `occlusion::merge` fold the two into a
+            // single box — which is [`wall_run_scene`]'s subject, not this one.
+            graphic: 1,
         },
     ]
 }
@@ -145,10 +151,161 @@ fn stair_scene() -> Vec<BoxSpec> {
                 tile: (100 + flight as u16, 100),
                 min: (x, near, 0.0),
                 max: (x + 1.0, near + third, height),
+                // Every tread of every flight is its own static, so the landings
+                // stay three primitives each and this scene keeps asking what it
+                // has always asked: whether the walk is right about nine abutting
+                // boxes. A run of one graphic is [`wall_run_scene`]'s question.
+                graphic: boxes.len() as u16,
             });
         }
     }
     boxes
+}
+
+/// The tiles a run of wall stands on — three, side by side due east on one row.
+const WALL_RUN: std::ops::Range<u16> = 100..103;
+
+/// **A run of one wall, which is the one shape every scene in this file was
+/// unable to be** — whole-tile boxes standing in a row, four `z` tall, each
+/// naming the graphic `graphic` gives it.
+///
+/// `&|_| 7` is a run of *one* static: one `Owner` over three tiles, which is
+/// exactly what `occlusion::merge` folds into a single primitive whose box is
+/// the union of the three. `&|x| x` is the same geometry as three statics, which
+/// merges nothing at all. The two are the twin `tests/lighting.rs`'s
+/// `a_merged_run_answers_every_ray_the_way_its_own_pieces_did` is built on, said
+/// here in the geometry the *frame* and the reference tracer can both be handed.
+///
+/// **Why the file needed it.** `box_owner` used to key a box by its place in the
+/// list, so every scene here had a graphic per box and nothing could merge under
+/// any circumstances — which is how S3b landed with its ten CPU gates red under
+/// injection and `tests/traced.rs`, `tests/frame.rs` and `tests/pictures.rs` all
+/// green. The only non-circular arbiter this track has had never saw a merged
+/// frame. `docs/occluders.md` records that as the merge's own blind spot, with
+/// this fixture as the recipe.
+///
+/// Whole tiles and one height, so the union of the three boxes *is* their
+/// componentwise union — a convex slab. That is what makes the comparison fair
+/// rather than lenient: the tracer is handed three boxes and the walk one, and if
+/// the merge invented or lost any volume at all the two pictures are about
+/// different geometry.
+fn wall_run_scene(graphic: &dyn Fn(u16) -> u16) -> Vec<BoxSpec> {
+    let h = 4.0;
+    WALL_RUN
+        .map(|x| BoxSpec {
+            tile: (x, 100),
+            min: (f64::from(x), 100.0, 0.0),
+            max: (f64::from(x) + 1.0, 101.0, h),
+            graphic: graphic(x),
+        })
+        .collect()
+}
+
+/// Off the run's east end, half a tile clear of its south face and two `z` above
+/// its top.
+///
+/// **Off the end so that rays run *along* the length of the merged box** — the
+/// arrangement a union that grew too far or not far enough answers differently
+/// from three boxes, and the same third flame the CPU twin picked for the same
+/// reason. Above the top so that the ground either side of the run is lit and
+/// only the strip behind it is not: a frame that is all shadow agrees with
+/// anything.
+///
+/// **And clear of the south face's own plane, which is not cosmetic.**
+/// [`box_mesh`] draws a box's top, `+x` and `+y` faces, so a flame *north* of
+/// `y = 101` leaves the drawn south faces turned away from it — and a fragment
+/// turned away is where the merge's own exemption reaches further than the
+/// reference's. `a_merged_run_is_exempt_from_itself_only_where_the_cosine_is_
+/// already_nothing` is that case, measured, on this very scene; here the light is
+/// on the same side as every face it is compared over, so what is being compared
+/// is the merged box's *geometry*.
+fn wall_run_flame() -> WorldSpot {
+    WorldSpot {
+        x: 103.5,
+        y: 101.5,
+        z: 6.0,
+    }
+}
+
+/// The same run lit from **inside the row's own line**, where every drawn south
+/// face is turned away from the flame — see
+/// [`a_merged_run_is_exempt_from_itself_only_where_the_cosine_is_already_nothing`].
+fn wall_run_grazing_flame() -> WorldSpot {
+    WorldSpot {
+        x: 103.5,
+        y: 100.5,
+        z: 6.0,
+    }
+}
+
+/// Which way a box face drawn by [`box_mesh`] looks: the axis of its own normal,
+/// and the sign along it.
+///
+/// Only the three faces that tool draws occur — a lid and the two the isometric
+/// camera can see — and a scene that grew a fourth should say so rather than be
+/// guessed at.
+fn face_normal(stance: Stance) -> (usize, f64) {
+    match stance {
+        Stance::Flat => (2, 1.0),
+        Stance::FaceSouth => (1, 1.0),
+        Stance::FaceEast => (0, 1.0),
+        other => panic!("a box's face came back as {other:?}"),
+    }
+}
+
+/// Where the two frames of a twin differ, pixel by pixel.
+///
+/// A whole `RGBA8` texel compared at once and no tolerance anywhere: an opaque
+/// primitive stops a ray or does not, so each of the eight rays lands the same
+/// way on both sides and a partly lit fragment comes out the same eighth.
+fn moved_pixels(one: &Rendered, other: &Rendered) -> Vec<usize> {
+    (0..(SIDE * SIDE) as usize)
+        .filter(|pixel| one.surface[pixel * 4..pixel * 4 + 4] != other.surface[pixel * 4..pixel * 4 + 4])
+        .collect()
+}
+
+/// One geometry stated twice — as a run of one graphic, which merges into a
+/// single primitive, and as the same three boxes under three graphics, which
+/// merges into nothing — drawn into two frames that may differ in nothing else.
+///
+/// One [`Shot`] said once and handed to both, since a second literal is where a
+/// camera or a flame quietly stops being the same one.
+fn wall_run_twin(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    at: WorldSpot,
+    view: View,
+) -> (Rendered, Rendered) {
+    fn shot(boxes: &[BoxSpec], at: WorldSpot, view: View) -> Shot<'_> {
+        Shot {
+            boxes,
+            flame: at,
+            radius: 8.0,
+            intensity: 1.0,
+            ambient: NIGHT,
+            view,
+            // Three tiles across, the same footprint as the run of flights and
+            // the same argument: at 4:1 the far end of the run would be off the
+            // picture, and the far end is what a wrong union moves.
+            zoom: 2,
+            // **The shipped sphere, and it is the sensitive choice.** A soft edge
+            // is a grey level a pixel — eighths of a flame — where a hard shadow
+            // is one bit, so a union off by a fraction of a tile shows up here as
+            // a moved grey rather than as nothing at all.
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        }
+    }
+    let one = wall_run_scene(&|_| 7);
+    let three = wall_run_scene(&|x| x);
+    let merged = render(device, queue, shot(&one, at, view));
+    let pieces = render(device, queue, shot(&three, at, view));
+    assert_eq!(merged.primitives, 1, "the run of one graphic did not merge");
+    assert_eq!(
+        pieces.primitives,
+        WALL_RUN.len(),
+        "the run of three graphics merged, so this twin is not a twin",
+    );
+    (merged, pieces)
 }
 
 /// Up and to the boxes' `+x`, `-y` side, above them — the tool's own default for
@@ -182,6 +339,17 @@ struct Rendered {
     /// Which box and stance each mesh-face row is, recorded as the rows were
     /// pushed rather than re-derived.
     face_rows: Vec<(usize, Stance, u32)>,
+    /// Which primitive of the grid each box's own fragments are met against —
+    /// `Occlusion::id_of`'s answer, box by box.
+    ///
+    /// Out here because after S3b's merge **two boxes can name one primitive**,
+    /// and a gate about the merge has to be able to say that they do without
+    /// building a second grid to look at: a fixture that asserted on its own
+    /// second copy of the build would be asserting about the copy.
+    solids: Vec<SolidId>,
+    /// How many primitives the frame's grid came out holding, which is the
+    /// merge's own count for the scene above.
+    primitives: usize,
     /// The frame's own world-to-pixel map. Boxed because the tracer's camera is
     /// recovered from it as a black box and this fixture is what owns the
     /// camera it closes over.
@@ -257,8 +425,8 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         ..StaticTile::default()
     };
     let mut builder = Builder::new(bounds);
-    for (index, b) in boxes.iter().enumerate() {
-        builder.add_raw(b.tile.0, b.tile.1, b.solid(), box_owner(index, b));
+    for b in boxes {
+        builder.add_raw(b.tile.0, b.tile.1, b.solid(), box_owner(b));
     }
     let occlusion = builder.finish(&Cutaway::OPEN);
     // Which *solid* of the grid each box is — `add_raw` pushes exactly one per
@@ -271,12 +439,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         .enumerate()
         .map(|(index, b)| {
             occlusion
-                .id_of(
-                    i32::from(b.tile.0),
-                    i32::from(b.tile.1),
-                    box_owner(index, b),
-                    Part::ONLY,
-                )
+                .id_of(i32::from(b.tile.0), i32::from(b.tile.1), box_owner(b), Part::ONLY)
                 .unwrap_or_else(|| {
                     panic!(
                         "box {index} is not in the grid this test just built — the comparison would \
@@ -395,6 +558,9 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
     // in the world that surface's own fragment is.
     let drawn = oracle::read_gbuffer(device, queue, &gbuffer, SIDE, SIDE);
 
+    // Read off before the grid is handed to the frame, since the frame owns it
+    // from here on.
+    let primitives = occlusion.solids().len();
     let lighting = Lighting {
         ambient,
         lights: vec![Light {
@@ -463,6 +629,8 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         surface: oracle::read_surface(device, queue, &surface, SIDE, SIDE),
         world: oracle::read_surface(device, queue, &world, SIDE, SIDE),
         face_rows,
+        solids,
+        primitives,
         to_pixel: Box::new(to_pixel),
     }
 }
@@ -819,6 +987,316 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
          no surface disagreement explains\n{}",
         verdict.interior,
         verdict.report(),
+    );
+}
+
+/// **The same gate on a run of wall that is one primitive** — [`wall_run_scene`]
+/// of a single graphic, folded by `occlusion::merge` into one box spanning three
+/// tiles, against a tracer holding the three boxes it was folded from.
+///
+/// **What makes this non-circular, which is the whole reason it exists.** Every
+/// other scene in this file hands both renderers the same list of boxes, so a
+/// disagreement is the *walk* being wrong about a model both sides hold. Here
+/// the two sides hold **different lists**: the frame's walk meets one merged
+/// primitive, the reference meets three. They are the same point set — the merge
+/// is a componentwise union of boxes sharing whole faces — so every pixel must
+/// still come out the same, and any pixel that does not is the merge having
+/// invented or lost volume. That is the one claim the ten CPU gates on the merge
+/// cannot make: they compare the walk against itself.
+///
+/// A point flame and not the shipped sphere, for
+/// [`the_frame_and_the_path_tracer_agree_about_a_run_of_flights`]'s own reason:
+/// at a radius the comparison also asks whether eight rays estimate a soft edge
+/// the way sixty-four paths do, and reports the difference as a disagreement.
+/// The soft edge has its own gate on the `line` scene.
+#[test]
+fn the_frame_and_the_path_tracer_agree_about_a_merged_run_of_wall() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let boxes = wall_run_scene(&|_| 7);
+    let at = wall_run_flame();
+    let radius = 8.0_f32;
+    let frame = render(
+        &device,
+        &queue,
+        Shot {
+            boxes: &boxes,
+            flame: at,
+            radius,
+            intensity: 1.0,
+            ambient: NIGHT,
+            view: View::Shadow,
+            // Three tiles across, the same footprint as the run of flights and
+            // the same argument: at 4:1 the far end of the run would be off the
+            // picture, and the far end is what a wrong union moves.
+            zoom: 2,
+            flame_radius: 0.0,
+        },
+    );
+
+    // **The precondition, asserted rather than assumed.** A scene where nothing
+    // merged would pass every assertion below while asking the same question the
+    // rest of this file already asks — which is exactly the state this fixture
+    // was written to get out of, so it is stated in the frame's own numbers and
+    // not in a second build of the grid.
+    assert_eq!(
+        frame.primitives, 1,
+        "the run of one wall came out as {} primitives: this gate is about a merged frame and \
+         nothing here merged",
+        frame.primitives,
+    );
+    assert!(
+        frame.solids.windows(2).all(|pair| pair[0] == pair[1]),
+        "the three boxes name {:?} — a merged run is one primitive named from every cell it \
+         spans, and `Occlusion::id_of` is the join that has to survive the merge",
+        frame.solids,
+    );
+
+    let mirror = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
+        boxes: &boxes,
+        light_at: at,
+        light_radius: f64::from(radius),
+        colour: [1.0, 1.0, 1.0],
+        intensity: 1.0,
+        albedos: oracle::pathtrace::Albedos::INVENTED,
+        body: oracle::pathtrace::Body::Point,
+        to_pixel: frame.to_pixel.as_ref(),
+    });
+    let seen = |brdf, seed| mirror.render(brdf, seed, SIDE, SIDE);
+    let exact = seen(pt_trace::Brdf::Flat, oracle::pathtrace::FIRST_SEED);
+    assert!(
+        exact.is_exact(),
+        "a point emitter came back an estimate: this gate's whole claim is that neither side is one",
+    );
+    let verdict = oracle::pathtrace::compare(
+        &exact,
+        &seen(pt_trace::Brdf::Lambert, oracle::pathtrace::FIRST_SEED),
+        oracle::pathtrace::Frame {
+            width: SIDE,
+            height: SIDE,
+            drawn: &frame.drawn,
+            picture: &frame.surface,
+            face_rows: &frame.face_rows,
+        },
+    );
+    eprint!("{}", verdict.report());
+    dump_masks(&verdict, "merged run of wall");
+
+    // The same three-sided non-triviality guard every gate here carries.
+    assert!(
+        verdict.compared > 50_000,
+        "only {} of {} pixels were compared — a detector that compares nothing reads exactly like a \
+         detector that found nothing",
+        verdict.compared,
+        SIDE * SIDE,
+    );
+    let lit = verdict.traced_lit.iter().flatten().filter(|lit| **lit).count();
+    let dark = verdict.traced_lit.iter().flatten().filter(|lit| !**lit).count();
+    assert!(
+        lit > 5_000 && dark > 5_000,
+        "the tracer saw {lit} lit and {dark} shadowed pixels: a scene that is all one or the other \
+         agrees with anything"
+    );
+
+    assert_eq!(
+        verdict.interior,
+        0,
+        "the path tracer and the frame disagree about {} pixels of a merged run of wall that no edge \
+         and no surface disagreement explains — the frame's walk met one primitive where the tracer \
+         met the three it was folded from\n{}",
+        verdict.interior,
+        verdict.report(),
+    );
+}
+
+/// **A merged run draws the frame its own pieces draw, pixel for pixel** — the
+/// merge's own "not one pixel moves", said about the shipped renderer.
+///
+/// One geometry, stated twice through the same [`render`]: three whole-tile boxes
+/// of one graphic, which merge into a single primitive, against the same three as
+/// three graphics, which merge into nothing. `tests/lighting.rs`'s
+/// `a_merged_run_answers_every_ray_the_way_its_own_pieces_did` is this twin on
+/// the CPU walk; this is the same claim about the **shader's** walk, over a whole
+/// frame, and it is the half that was missing: `tests/frame.rs` sweeps the shader
+/// against `light::sample`, and both read one primitive list, so it gates the
+/// *port* and cannot see a list that merged wrongly.
+///
+/// **Both sides are ours, so this is not evidence that the merge is right** — the
+/// gate above is, against a renderer that shares no arithmetic with either. What
+/// this adds is reach: it compares whole pictures rather than a comparison's own
+/// interior pixels, so it also covers the silhouettes, the edges and the
+/// penumbra that `compare` deliberately excludes.
+///
+/// The shipped flame radius, and that is the sensitive part: a soft edge is a
+/// grey level per pixel — eighths of a flame — where a hard shadow is one bit, so
+/// a union off by a fraction of a tile shows up here as a moved grey rather than
+/// as nothing at all.
+#[test]
+fn a_merged_run_of_wall_draws_the_same_frame_as_its_own_pieces() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    // The walk's own output rather than a lit picture: it is what the merge could
+    // move, and it is a grey level a pixel instead of a tonemapped colour.
+    let (merged, pieces) = wall_run_twin(&device, &queue, wall_run_flame(), View::Shadow);
+
+    // **The picture has to be one a merge could have moved.** Shadow, light and
+    // the soft edge between them are three different readings of the walk, and a
+    // frame missing any of them would agree with a wrong union about the ones it
+    // has. The penumbra count is the strictest of the three: it is where the
+    // answer is a fraction rather than a bit.
+    let (mut blocked, mut clear, mut soft) = (0_usize, 0_usize, 0_usize);
+    for pixel in 0..(SIDE * SIDE) as usize {
+        let rgb = [
+            merged.surface[pixel * 4],
+            merged.surface[pixel * 4 + 1],
+            merged.surface[pixel * 4 + 2],
+        ];
+        match oracle::Shade::of(rgb) {
+            oracle::Shade::Blocked => blocked += 1,
+            oracle::Shade::Through(value) if value > 250 => clear += 1,
+            oracle::Shade::Through(_) => soft += 1,
+            oracle::Shade::Unreached => {}
+        }
+    }
+    eprintln!(
+        "merged run of wall: {} primitives against {}, {blocked} blocked, {clear} clear and {soft} \
+         partly lit pixels",
+        merged.primitives, pieces.primitives,
+    );
+    assert!(
+        blocked > 5_000 && clear > 5_000,
+        "the frame has {blocked} blocked and {clear} clear pixels: a picture that is all one of them \
+         agrees with any geometry",
+    );
+    assert!(
+        soft > 1_000,
+        "only {soft} pixels of the frame are partly lit — the soft edge is where a union off by a \
+         fraction of a tile shows, and this frame has none of it",
+    );
+
+    // And the gate: the same bytes.
+    let moved = moved_pixels(&merged, &pieces);
+    assert!(
+        moved.is_empty(),
+        "{} of {} pixels differ between a merged run and its own pieces — first at {:?}, where the \
+         merged frame is {:?} and the pieces are {:?}",
+        moved.len(),
+        SIDE * SIDE,
+        moved
+            .iter()
+            .take(8)
+            .map(|pixel| ((*pixel as u32) % SIDE, (*pixel as u32) / SIDE))
+            .collect::<Vec<_>>(),
+        &merged.surface[moved[0] * 4..moved[0] * 4 + 4],
+        &pieces.surface[moved[0] * 4..moved[0] * 4 + 4],
+    );
+}
+
+/// **Where the merge is not free, exactly** — and it is where a lit frame has
+/// already thrown the difference away.
+///
+/// `occlusion::merge`'s own header says the one thing a merge changes is
+/// *identity*: a fragment of one piece is a point of the merged primitive, so it
+/// is exempt from the volume its neighbour used to be. This is that sentence with
+/// a number under it, and the number was found by the fixture above going red —
+/// a flame in the run's own line, half a tile north of the drawn south faces,
+/// moves **thousands** of pixels of `View::Shadow` between a merged run and its
+/// pieces. Not a defect in the merge: those are the fragments whose own face is
+/// turned away from the flame, where the walk's exemption is the only thing
+/// deciding anything at all.
+///
+/// So the gate is two claims and neither of them is "nothing happens":
+///
+/// - every pixel that moves is a **mesh face turned away from the flame** — the
+///   exemption's own reach and nothing else, which is what says the merged box
+///   did not grow;
+/// - the **lit** frame is the same bytes, because phase 3's cosine is nothing on
+///   a face turned away and the visibility behind it cannot matter.
+///
+/// The second is the claim that matters to a player: `View::Shadow` is an
+/// instrument, and what the client draws is the other picture.
+#[test]
+fn a_merged_run_is_exempt_from_itself_only_where_the_cosine_is_already_nothing() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let at = wall_run_grazing_flame();
+    let (merged, pieces) = wall_run_twin(&device, &queue, at, View::Shadow);
+    let moved = moved_pixels(&merged, &pieces);
+
+    // A fixture that moved nothing would pass the survey below vacuously, and
+    // would mean this scene no longer poses the case it is named for.
+    assert!(
+        !moved.is_empty(),
+        "a flame in the run's own line moved no pixel between a merged run and its pieces: the \
+         exemption's reach is what this measures, and this scene no longer reaches it",
+    );
+    let flame = [at.x, at.y, at.z];
+    let mut facing = Vec::new();
+    for pixel in &moved {
+        let texel = &merged.drawn[*pixel];
+        let at_pixel = ((*pixel as u32) % SIDE, (*pixel as u32) / SIDE);
+        let Some((box_index, stance, _)) = merged.face_rows.iter().find(|(_, _, id)| *id == texel.id) else {
+            facing.push(format!(
+                "  [pixel {at_pixel:?}] is not a mesh face at all: kind {} stance {} row {}",
+                texel.kind, texel.stance, texel.id,
+            ));
+            continue;
+        };
+        let (axis, sign) = face_normal(*stance);
+        let fragment = [texel.at.0, texel.at.1, texel.at.2];
+        // The normals here are axis-aligned, so the sign of `N·L` is the sign of
+        // one coordinate's difference — and that holds whatever scale each axis
+        // is in, which `z` units and tiles are not the same one of.
+        let towards = sign * (flame[axis] - fragment[axis]);
+        if towards > 0.0 {
+            facing.push(format!(
+                "  [pixel {at_pixel:?}] box {box_index}'s {stance:?} is turned towards the flame \
+                 ({towards:+.3} along axis {axis}), and the merged frame reads {:?} where its \
+                 pieces read {:?}",
+                &merged.surface[pixel * 4..pixel * 4 + 3],
+                &pieces.surface[pixel * 4..pixel * 4 + 3],
+            ));
+        }
+    }
+    eprintln!(
+        "a flame in the run's own line moves {} of {} pixels of the shadow view, every one of them \
+         a face turned away from it",
+        moved.len(),
+        SIDE * SIDE,
+    );
+    assert!(
+        facing.is_empty(),
+        "{} of the {} pixels the merge moved are not fragments turned away from the flame — the \
+         exemption reaching a surface that faces the light is the merged box having grown, which is \
+         a defect and not a cost:\n{}",
+        facing.len(),
+        moved.len(),
+        facing.iter().take(12).cloned().collect::<Vec<_>>().join("\n"),
+    );
+
+    // And the frame a player sees, on the same scene and the same flame.
+    let (merged, pieces) = wall_run_twin(&device, &queue, at, View::Lit);
+    let moved = moved_pixels(&merged, &pieces);
+    assert!(
+        moved.is_empty(),
+        "{} of {} pixels of the *lit* frame differ between a merged run and its pieces — first at \
+         {:?}, {:?} against {:?}. The shadow view differs on faces turned away from the flame, and \
+         the cosine is what makes that cost nothing; if it shows here, it does not.",
+        moved.len(),
+        SIDE * SIDE,
+        moved
+            .iter()
+            .take(8)
+            .map(|pixel| ((*pixel as u32) % SIDE, (*pixel as u32) / SIDE))
+            .collect::<Vec<_>>(),
+        &merged.surface[moved[0] * 4..moved[0] * 4 + 4],
+        &pieces.surface[moved[0] * 4..moved[0] * 4 + 4],
     );
 }
 

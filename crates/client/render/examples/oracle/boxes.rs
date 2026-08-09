@@ -23,6 +23,18 @@ pub struct BoxSpec {
     pub tile: (u16, u16),
     pub min: (f64, f64, f64),
     pub max: (f64, f64, f64),
+    /// Whose box this is — the graphic half of its [`Owner`], stated by the
+    /// scene rather than taken from its place in a list.
+    ///
+    /// **A field since S3b's merge, and the reason is that a list position can
+    /// only ever say "everyone is different".** `occlusion::merge` folds
+    /// neighbours that share an `Owner`, so a scene where every box is its own
+    /// graphic is a scene where nothing merges *ever* — which is what every
+    /// scene here was, and it left the reference tracer blind to the merge (the
+    /// blind spot `docs/occluders.md` records under § *The merge*). A run of one
+    /// wall says so here, in one number, and the scenes that want distinct boxes
+    /// say that just as explicitly.
+    pub graphic: u16,
 }
 
 impl BoxSpec {
@@ -45,12 +57,13 @@ impl BoxSpec {
 /// The key a hand-built scene gives one box, since it has no `tiledata` for the
 /// builder to derive one from — `occlusion::Builder::add_raw`'s own doc.
 ///
-/// The index is the graphic, which is the whole of what tells two boxes of the
-/// `pair` scene apart: they stand at one `z`, on one tile, spanning one height,
-/// so nothing about their geometry is a distinguishing key and nothing should
-/// be. Identity is stated, not measured.
-pub fn box_owner(index: usize, b: &BoxSpec) -> Owner {
-    Owner::new(b.min.2.floor() as i8, Graphic(index as u16))
+/// [`BoxSpec::graphic`] is the whole of what tells two boxes of the `pair` scene
+/// apart: they stand at one `z`, on one tile, spanning one height, so nothing
+/// about their geometry is a distinguishing key and nothing should be. Identity
+/// is stated, not measured — and since it is stated, a scene may also state that
+/// two boxes are pieces of **one** static, which is what a run of wall is.
+pub fn box_owner(b: &BoxSpec) -> Owner {
+    Owner::new(b.min.2.floor() as i8, Graphic(b.graphic))
 }
 
 /// The same three-face box `two_cubes.rs` builds by hand — top, `+x`,
