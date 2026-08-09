@@ -51,7 +51,6 @@ use openshard_client_render::light;
 use openshard_client_render::solid::Cut;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{Graphic, Hue};
-use openshard_uofiles::hues::Hues;
 use winit::window::Window;
 
 use crate::desk::{Desk, Tab};
@@ -229,16 +228,6 @@ pub struct Hud {
     /// the shard then refuses to walk to looks exactly like a click that was
     /// never registered, and this is what tells the two apart.
     pub goal: Option<PickedTile>,
-    /// The dialogs the server has open on this client, waiting to be answered.
-    pub gumps: Vec<openshard_client_net::view::OpenGump>,
-    /// The last few lines the shard has said, oldest first.
-    ///
-    /// Not the journal M4 will build — see [`layout`]'s docs. What it is for is
-    /// that a system message has no mobile behind it, so it is drawn over
-    /// nobody's head and a client with only overhead speech never shows it. A
-    /// refused `.admin` says "you are not a game master" and nothing else, and
-    /// without this strip that answer is invisible.
-    pub said: Vec<String>,
 }
 
 /// A tile, read straight from the map — for telling a rendering artifact apart
@@ -324,7 +313,7 @@ pub struct TerrainOverlay {
 
 /// What the panels asked for this frame.
 ///
-/// No longer `Copy`: two of these carry what the player typed. A request is
+/// No longer `Copy`: one of these carries what the player typed. A request is
 /// built fresh each frame and spent by the caller, so cloning it is not a thing
 /// that happens on any path.
 #[derive(Clone, Default, Debug)]
@@ -333,12 +322,6 @@ pub struct Request {
     pub relock: bool,
     /// Let go of the body.
     pub unlock: bool,
-    /// A line the player pressed Enter on. Sent as speech exactly as typed —
-    /// a `.`-prefixed line is a staff command *on the server*, and a client that
-    /// recognised its own would be deciding what a shard's commands are.
-    pub say: Option<String>,
-    /// A dialog the player answered. See [`crate::gump`].
-    pub gump: Option<crate::link::GumpReply>,
     /// Follow with these numbers from now on.
     ///
     /// Sent on the frame a slider moved or a preset was clicked, and not every
@@ -462,17 +445,10 @@ pub struct Shell {
     viewport: ViewportRect,
     /// What the last [`Shell::run`] asked to be woken after.
     repaint_after: std::time::Duration,
-    /// What is in the chat line and not yet said. Lives here rather than in the
-    /// app for the reason [`Windows`](crate::gump::Windows) does: it is what a
-    /// widget is holding between frames, and nothing outside the UI reads it.
-    typed: String,
-    /// The state of the open dialogs — which page, which switches.
-    gumps: crate::gump::Windows,
     /// What the HUD remembers between runs: the tab in front, where the dev
     /// window sits, whether it is open, and the scale.
     ///
-    /// Lives here for the same reason `typed` and `gumps` do — it is what the UI
-    /// is holding between frames — and is read back out by [`Shell::desk`] when
+    /// Lives here because it is what the UI is holding between frames — and is read back out by [`Shell::desk`] when
     /// the app has a file to write. The `window` field is the one part of it this
     /// never touches: the operating system's window is the app's, not the HUD's.
     desk: Desk,
@@ -526,8 +502,6 @@ impl Shell {
             // Until the first frame has run there is nothing to wait for; the
             // animation clock is what wakes the loop.
             repaint_after: std::time::Duration::MAX,
-            typed: String::new(),
-            gumps: crate::gump::Windows::default(),
             desk,
         }
     }
@@ -609,18 +583,16 @@ impl Shell {
     /// from the viewport this leaves *before* the world is drawn into it: a
     /// frame that laid out its UI after drawing the world would size the world
     /// from the previous frame's panels.
-    pub fn run(&mut self, window: &Window, hud: &Hud, hues: &Hues) -> (Request, egui::FullOutput) {
+    pub fn run(&mut self, window: &Window, hud: &Hud) -> (Request, egui::FullOutput) {
         let input = self.state.take_egui_input(window);
         let mut request = Request::default();
         // What the panels leave behind, taken from the root `Ui` *after* they
         // have claimed their edges. That rectangle is the world's viewport, so
         // a docked panel shrinks the world and a floating window sits over it.
         let mut free = egui::Rect::from_min_size(egui::Pos2::ZERO, self.context.content_rect().size());
-        let typed = &mut self.typed;
-        let gumps = &mut self.gumps;
         let desk = &mut self.desk;
         let output = self.context.run_ui(input, |ui| {
-            request = layout(ui, hud, typed, gumps, hues, desk);
+            request = layout(ui, hud, desk);
             free = ui.available_rect_before_wrap();
         });
         // The scale lives in egui — Ctrl+`+` is egui's own shortcut and writes it
@@ -653,11 +625,15 @@ impl Shell {
     /// Draw what [`Shell::run`] produced, over whatever is already on the
     /// surface.
     #[allow(clippy::too_many_arguments)]
-    /// The dialog state the *art* layer needs — see
-    /// [`crate::gump::Windows::state`]. Here rather than on `App` because a
-    /// page a button flipped to is the UI's own answer and this is the UI.
-    pub fn gumps(&self) -> &crate::gump::Windows {
-        &self.gumps
+    /// Real pixels per gump pixel: egui's own scale, which the interface's art
+    /// is drawn at too.
+    ///
+    /// Read back off the context rather than tracked, so it cannot drift from
+    /// what the panels were actually laid out at — and it is the same number the
+    /// gump pass is handed, because the cursor is measured in one space and both
+    /// halves of the interface are drawn in it. See `App::gump_scale`.
+    pub fn pixels_per_point(&self) -> f32 {
+        self.context.pixels_per_point()
     }
 
     pub fn paint(
@@ -707,21 +683,15 @@ impl Shell {
     }
 }
 
-/// The panels, the speech line, and the server's own dialogs.
+/// The panels, and the server's own dialogs.
 ///
-/// Deliberately absent: the paperdoll, containers, and a journal worth the name.
-/// Those are M4 — see `docs/client.md` — and building them here would decide M4
-/// without arguing it. The speech line is not one of them: it is the only way to
-/// reach a shard's staff commands, which are `.`-prefixed *speech*, and a client
-/// that cannot say `.admin` cannot open the menu the server already draws.
-fn layout(
-    root: &mut egui::Ui,
-    hud: &Hud,
-    typed: &mut String,
-    gumps: &mut crate::gump::Windows,
-    hues: &Hues,
-    desk: &mut Desk,
-) -> Request {
+/// Deliberately absent: the paperdoll, containers, and the speech line and
+/// journal, which are now `App::chat`'s and drawn through
+/// `openshard_client_render::gump::GumpRenderer` — see `App::draw` — rather
+/// than egui's. Building the paperdoll and containers here would decide M4
+/// without arguing it; the speech line already had that argument, in the
+/// commit that moved it off this file.
+fn layout(root: &mut egui::Ui, hud: &Hud, desk: &mut Desk) -> Request {
     let mut request = Request::default();
     // egui 0.35 hands the frame a root `Ui`: panels are shown inside it and
     // what is left of it is the world's viewport, while windows float over the
@@ -832,13 +802,7 @@ fn layout(
         });
     }
 
-    request.say = speech_line(root, hud, typed);
-
     overlays(root, hud);
-
-    // Over everything, and last: a dialog the shard opened is the one thing on
-    // screen that is waiting for an answer.
-    request.gump = gumps.show(&context, &hud.gumps, hues);
 
     request
 }
@@ -1724,49 +1688,6 @@ fn strips(ui: &mut egui::Ui, title: &str, series: &[Curve<'_>], span: f32) {
         let drawn = painter.text(at, egui::Align2::LEFT_TOP, curve.name, font.clone(), curve.colour);
         at.x = drawn.right() + 8.0;
     }
-}
-
-/// The speech line, docked at the bottom, with what the shard last said above
-/// it.
-///
-/// Answers with a line to say, once, on the frame Enter was pressed.
-///
-/// # Why the field is refocused by hand
-///
-/// egui drops focus on Enter, which is right for a form and wrong for a chat
-/// box: a player says two things in a row. So the field asks for focus back on
-/// the same frame it loses it — which also means the walk keys stay out of the
-/// way while typing, since a focused text field consumes them (see
-/// [`Shell::on_window_event`], and `App::window_event`, which lets go of every
-/// held direction when the UI takes a key).
-fn speech_line(root: &mut egui::Ui, hud: &Hud, typed: &mut String) -> Option<String> {
-    let mut said = None;
-    egui::Panel::bottom("speech").show(root, |ui| {
-        // What the shard has said lately, newest last, so the eye ends up beside
-        // the line it is about to type into.
-        for line in &hud.said {
-            ui.label(egui::RichText::new(line).weak());
-        }
-        ui.horizontal(|ui| {
-            ui.label("say");
-            let field = ui.add(
-                egui::TextEdit::singleline(typed)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("type, and Enter to speak — a shard's staff commands start with '.'"),
-            );
-            let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            if entered {
-                let line = std::mem::take(typed);
-                // An empty line is a stray Enter, not silence worth sending:
-                // the server would draw an empty message over the player's head.
-                if !line.trim().is_empty() {
-                    said = Some(line);
-                }
-                field.request_focus();
-            }
-        });
-    });
-    said
 }
 
 /// One tile's numbers, each beside a button that puts it on the clipboard —

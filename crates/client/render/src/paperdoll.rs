@@ -51,13 +51,17 @@
 //! **Buttons**, and picking a worn item out of the picture. Both are M5's, and
 //! both want the item's serial, which this end reaches through the mobile.
 
+use std::collections::BTreeMap;
+
 use openshard_protocol::direction::Direction;
+use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::gumpart::Gumps;
 
 use crate::gump::{GumpArt, GumpPixel, Picture};
 use crate::mobiles::EquipmentLayer;
+use crate::text::GumpLabel;
 
 /// Whose paperdoll a window is, which the frame is chosen by.
 ///
@@ -69,8 +73,19 @@ use crate::mobiles::EquipmentLayer;
 /// buttons a player gets over their own doll and nobody gets over a stranger's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Whose {
-    /// This client's own character.
-    Own,
+    /// This client's own character. Carries the one piece of state the frame is
+    /// drawn differently for: `war` swaps the peace/war toggle's picture, which
+    /// is `PaperDollGump.Update`'s `_isWarMode != mobile.InWarMode` check and
+    /// arrives here off the `0x88`'s own
+    /// [`PaperdollFlags`](openshard_protocol::mobile::PaperdollFlags).
+    ///
+    /// It lives on this variant rather than beside it because the toggle is
+    /// only ever drawn on our own doll: a stranger's frame has no room for it,
+    /// and a `war` we carried for one would be a field nothing reads.
+    Own {
+        /// Whether the toggle shows the war face.
+        war: bool,
+    },
     /// Anybody else — an NPC, another player.
     Another,
 }
@@ -87,9 +102,155 @@ pub enum Whose {
 /// [`BODY_AT`].
 pub fn frame(whose: Whose) -> Graphic {
     match whose {
-        Whose::Own => Graphic(0x07D0),
+        Whose::Own { .. } => Graphic(0x07D0),
         Whose::Another => Graphic(0x07D1),
     }
+}
+
+/// One of the pictures on a paperdoll's frame that answers the mouse.
+///
+/// Not a `{ button }` from any layout — no packet carries these. They are the
+/// reference client's own furniture, and every one of them means "open another
+/// window", which is why the enum names windows rather than actions.
+///
+/// The three scrolls are drawn on every doll and answer a **double** click in
+/// the reference (`GumpPic.MouseDoubleClick`), where the seven real buttons
+/// answer a single one. That difference is the caller's to honour: this end
+/// says which picture was hit and nothing about what the mouse did to it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum DollButton {
+    /// The help request.
+    Help,
+    /// The client's own options.
+    Options,
+    /// Log out.
+    LogOut,
+    /// The quest log. `PaperDollGump.BuildGump` draws the *journal* here on a
+    /// client older than 5.0.0a; this engine's clients are all newer — see
+    /// `docs/client_versions.md`.
+    Quests,
+    /// The skill list.
+    Skills,
+    /// The guild menu.
+    Guild,
+    /// The peace/war toggle, whose picture is [`Whose::Own`]'s `war`.
+    WarMode,
+    /// The status bar. The one button a stranger's doll has too.
+    Status,
+    /// The profile scroll.
+    Profile,
+    /// The party manifest, our own doll's only.
+    Party,
+    /// The virtue menu at the top of the frame.
+    Virtue,
+}
+
+/// Where the column of buttons starts and how far apart they sit —
+/// `X = 185, Y = 44 + 27 * n` in `PaperDollGump.BuildGump`, every one of them.
+const BUTTON_X: i32 = 185;
+/// The first button's row.
+const BUTTON_TOP: i32 = 44;
+/// One row to the next.
+const BUTTON_STEP: i32 = 27;
+
+/// The seven buttons only our own doll has, in the rows they occupy, with the
+/// picture each is drawn in up and pressed.
+///
+/// The third graphic in every one of the reference's `Button`s is its *hover*
+/// face, which this client does not draw: nothing here tracks a pointer resting
+/// on a picture, and a face that only ever appeared under the mouse is not a
+/// layout question. The row is the index, so the table's order is the column's.
+const OWN_BUTTONS: [(DollButton, u16, u16); 6] = [
+    (DollButton::Help, 0x07EF, 0x07F0),
+    (DollButton::Options, 0x07D6, 0x07D7),
+    (DollButton::LogOut, 0x07D9, 0x07DA),
+    (DollButton::Quests, 0x57B5, 0x57B7),
+    (DollButton::Skills, 0x07DF, 0x07E0),
+    (DollButton::Guild, 0x57B2, 0x57B4),
+];
+
+/// The peace face of the war toggle, up and pressed —
+/// `PaperDollGump.PeaceModeBtnGumps`.
+const PEACE_TOGGLE: (u16, u16) = (0x07E5, 0x07E6);
+/// Its war face — `WarModeBtnGumps`.
+const WAR_TOGGLE: (u16, u16) = (0x07E8, 0x07E9);
+/// The status button, which both frames carry, and which is the eighth row.
+const STATUS_BUTTON: (u16, u16) = (0x07EB, 0x07EC);
+/// Which row the war toggle and the status button are on: the seventh and the
+/// eighth, after [`OWN_BUTTONS`]' six.
+const WAR_ROW: i32 = 6;
+/// The status button's row.
+const STATUS_ROW: i32 = 7;
+
+/// The scroll that opens a profile, and where the first one sits — `new
+/// GumpPic(profileX, 196, 0x07D2, 0)` with `profileX` starting at 25.
+const SCROLL: Graphic = Graphic(0x07D2);
+/// The scrolls' row, and the step between two of them (`SCROLLS_STEP`).
+const SCROLL_AT: GumpPixel = GumpPixel::new(25, 196);
+/// How far the party manifest sits from the profile scroll.
+const SCROLL_STEP: i32 = 14;
+
+/// The virtue menu's picture and where it hangs — `new GumpPic(80, 4, 0x0071)`.
+const VIRTUE: Graphic = Graphic(0x0071);
+/// Its corner.
+const VIRTUE_AT: GumpPixel = GumpPixel::new(80, 4);
+
+/// Where the name is written, in the frame's own pixels — the `X = 39, Y = 262`
+/// of `PaperDollGump`'s title label.
+pub const NAME_AT: GumpPixel = GumpPixel::new(39, 262);
+
+/// The hue the name is written in — the reference's `0x0386`, and a **wire**
+/// hue already: `Label`'s constructor takes it as one, unlike a layout's own
+/// text hue, which is one less than the row it means (see
+/// [`crate::text::GumpLabel::hue`]).
+pub const NAME_HUE: Hue = Hue(0x0386);
+
+/// How wide the plate is before the name is cropped — `Label(..., 185, ...)`.
+const NAME_WIDTH: i32 = 185;
+
+/// How tall one line of it is. Not a number the reference states: its label
+/// grows to whatever the font needed, and this is the box [`crate::gump::Text`]
+/// crops to, so it has to be at least as tall as the face's tallest glyph.
+const NAME_HEIGHT: i32 = 20;
+
+/// The face the name is written in: `fonts.mul`'s font 1, and **not** a Unicode
+/// one — `new Label("", false, 0x0386, 185, font: 1)`, where the `false` is
+/// `isUnicode`. The one string in this client's interface whose face the
+/// reference states outright.
+pub const NAME_FONT: Font = Font(1);
+
+/// The mobile's name, placed on the plate at the bottom of the frame.
+///
+/// `at` is the window's own origin, the same one [`window`] is given: the plate
+/// is part of the frame, so its coordinate is the frame's and not the doll's.
+///
+/// A separate call from [`window`] because the string is the caller's — the
+/// `0x88` carries it and this crate has never heard of a `WorldView` — and
+/// because it is drawn through the other atlas: text and art are two draw calls
+/// (see [`crate::text::collect_gump`]).
+pub fn name(text: &str, at: GumpPixel) -> GumpLabel<'_> {
+    GumpLabel {
+        at: at.offset(NAME_AT),
+        hue: NAME_HUE,
+        clip: Some((NAME_WIDTH, NAME_HEIGHT)),
+        text,
+        font: NAME_FONT,
+    }
+}
+
+/// A paperdoll, laid out: what to draw and which of it answers the mouse.
+///
+/// [`crate::gump::Window`]'s counterpart for a window that is not a layout at
+/// all, and the same shape for the same reason: [`crate::gump::pick`] answers
+/// an index into `pictures`, and `hits` is what turns one into a meaning.
+///
+/// The name is not in it — see [`name`].
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Doll {
+    /// The art, in painter's order: the frame, its furniture, then the doll.
+    pub pictures: Vec<Picture>,
+    /// Which of those pictures is a button, by its index.
+    pub hits: BTreeMap<usize, DollButton>,
 }
 
 /// Where the body picture sits inside the frame.
@@ -589,14 +750,20 @@ pub fn gump_of(body: u16, anim_id: u16, female: bool, equip_conv: &EquipConv, gu
 pub fn window(
     wearer: Option<&Wearer<'_>>,
     whose: Whose,
+    held: Option<DollButton>,
     equip_conv: &EquipConv,
     gumps: &Gumps,
     at: GumpPixel,
-) -> Vec<Picture> {
-    let mut pictures = vec![Picture::plain(GumpArt::Gump(frame(whose)), at)];
-    let Some(wearer) = wearer else {
-        return pictures;
+) -> Doll {
+    let mut doll = Doll {
+        pictures: vec![Picture::plain(GumpArt::Gump(frame(whose)), at)],
+        hits: BTreeMap::new(),
     };
+    furniture(&mut doll, whose, held, at);
+    let Some(wearer) = wearer else {
+        return doll;
+    };
+    let pictures = &mut doll.pictures;
     let at = GumpPixel::new(at.x + BODY_AT.x, at.y + BODY_AT.y);
 
     let female = openshard_uofiles::anim::is_female(wearer.body);
@@ -622,13 +789,71 @@ pub fn window(
             continue;
         }
         if let Some(item) = worn(layer) {
-            draw(&mut pictures, item);
+            draw(pictures, item);
         }
     }
     if let Some(item) = worn(Layer::BACKPACK) {
-        draw(&mut pictures, item);
+        draw(pictures, item);
     }
-    pictures
+    doll
+}
+
+/// The frame's own furniture: the buttons down its side, the scrolls along its
+/// bottom and the virtue menu at its top.
+///
+/// Drawn between the frame and the doll, which is `BuildGump`'s own order —
+/// every button is added before the `PaperDollInteractable` is. It shows: a hat
+/// or a weapon drawn past the edge of the opening goes *over* the column, the
+/// way the reference draws it, rather than the column standing on top of the
+/// doll.
+///
+/// A stranger's frame has no column — there is no room for one, which is the
+/// whole difference between the two pictures — so it gets the status button, the
+/// profile scroll and the virtue menu, and nothing else. `PaperDollGump` adds
+/// exactly those three outside its `LocalSerial == World.Player` branch.
+fn furniture(doll: &mut Doll, whose: Whose, held: Option<DollButton>, at: GumpPixel) {
+    let button = |doll: &mut Doll, which: DollButton, faces: (u16, u16), row: i32| {
+        let face = match held == Some(which) {
+            true => faces.1,
+            false => faces.0,
+        };
+        doll.pictures.push(Picture::plain(
+            GumpArt::Gump(Graphic(face)),
+            at.offset(GumpPixel::new(BUTTON_X, BUTTON_TOP + BUTTON_STEP * row)),
+        ));
+        doll.hits.insert(doll.pictures.len() - 1, which);
+    };
+
+    if let Whose::Own { war } = whose {
+        for (row, (which, up, down)) in OWN_BUTTONS.iter().enumerate() {
+            button(doll, *which, (*up, *down), row as i32);
+        }
+        let toggle = match war {
+            true => WAR_TOGGLE,
+            false => PEACE_TOGGLE,
+        };
+        button(doll, DollButton::WarMode, toggle, WAR_ROW);
+    }
+    button(doll, DollButton::Status, STATUS_BUTTON, STATUS_ROW);
+
+    // The scrolls, which are pictures rather than buttons and have no pressed
+    // face at all — the reference draws one `GumpPic` and listens for a double
+    // click on it.
+    let scroll = |doll: &mut Doll, which: DollButton, x: i32| {
+        doll.pictures.push(Picture::plain(
+            GumpArt::Gump(SCROLL),
+            at.offset(GumpPixel::new(x, SCROLL_AT.y)),
+        ));
+        doll.hits.insert(doll.pictures.len() - 1, which);
+    };
+    scroll(doll, DollButton::Profile, SCROLL_AT.x);
+    if matches!(whose, Whose::Own { .. }) {
+        scroll(doll, DollButton::Party, SCROLL_AT.x + SCROLL_STEP);
+    }
+
+    doll.pictures
+        .push(Picture::plain(GumpArt::Gump(VIRTUE), at.offset(VIRTUE_AT)));
+    doll.hits.insert(doll.pictures.len() - 1, DollButton::Virtue);
 }
 
 /// Everything a paperdoll needs packed before it is drawn.

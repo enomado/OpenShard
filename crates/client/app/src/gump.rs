@@ -1,52 +1,34 @@
-//! The server's dialogs, drawn with egui.
+//! The shard's dialogs: the state a `0xB0` has that its layout does not.
 //!
 //! A gump is UO's windowing primitive, and the shard sends one as a *layout* —
 //! a list of elements at pixel coordinates, keyed to art in the client's files.
 //! `.admin` opens one; so does a shopkeeper, a quest and a book.
 //!
-//! # What this draws, and what it deliberately does not
+//! # Nothing here draws
 //!
-//! It draws the layout's *structure* with egui's own widgets: a frame is a
-//! window, a `{ button }` is a button, a `{ text }` is a label at the
-//! coordinate the server asked for. It does **not** draw the gump art those
-//! elements name — no `gumpart.mul` reader exists yet, and inventing one here
-//! would decide how this client renders art before the renderer has an opinion.
-//! An element whose whole content is a picture (`gumppic`, `tilepic`) is drawn
-//! as a placeholder naming the graphic, which is honest and, for a menu of
-//! labelled buttons like `.admin`'s, loses nothing: the words are in the text
-//! table and the words are what the buttons mean.
+//! This module held an egui rendering of a layout for as long as no gump art
+//! could be read. That is over: `client/render`'s
+//! [`gump`](openshard_client_render::gump) pass draws the pictures a layout
+//! names, out of the client's own `gumpartLegacyMUL.uop`, and
+//! [`letters`](openshard_client_render::gump::letters) draws its text out of
+//! `fonts.mul`. What is left here is the part that is not a picture: which page
+//! is showing, which switches the player has set, what has been typed into a
+//! field, and which button the finger is on.
 //!
-//! So this is the dev-HUD rendering of a gump, in the same spirit as the rest
-//! of `shell.rs` — enough to use the shard's dialogs and enough to tell a
-//! protocol bug from a drawing one. What the real interface is remains M4's
-//! decision, see `docs/client.md`.
+//! The egui window went with the drawing, and that was the *layout* fix rather
+//! than a tidy-up. A dialog drawn as an egui window was two windows: egui's
+//! frame, title bar and close box on the outside, and the shard's own
+//! background picture inside it — one of which the reference client has and the
+//! other of which it does not. Worse, every widget over the art was sized by a
+//! constant this module had invented (a 26 by 20 button, a 220-point label),
+//! because egui needs a size *before* the art is packed and the art's real size
+//! was only known afterwards. So the clickable rectangle and the picture under
+//! it were two different rectangles, and the window's own extent was a third.
+//! Now a window is exactly the list of pictures it drew, a click is an opaque
+//! texel of one of them ([`pick`](openshard_client_render::gump::pick)), and
+//! there is no second opinion to keep in step.
 //!
-//! # One gump pixel is one egui point, deliberately
-//!
-//! A layout's coordinates are the reference client's *pixels* — it draws gump
-//! art one for one and has no display scaling at all, so on a 4K screen its
-//! windows are postage stamps. egui lays out in logical *points*, which is a
-//! different space on any display whose scale factor is not 1. This module
-//! reads a layout coordinate as a point, and that is a decision rather than an
-//! oversight:
-//!
-//! - What is drawn here is egui's widgets, and a widget's size — its text, its
-//!   padding, the box a checkbox needs — is measured in points. Scaling the
-//!   *coordinates* to physical pixels while the widgets kept their point sizes
-//!   would pull the rows together underneath text that did not shrink with
-//!   them, which is worse than a window that is merely large.
-//! - The reference client is not the authority on this. It predates display
-//!   scaling entirely; "what it does" here is "nothing", and copying that gives
-//!   an unreadable window on the hardware people have.
-//!
-//! It stops being right the day gump *art* is drawn, because art is a bitmap of
-//! a fixed pixel size and cannot be reinterpreted. At that point the window
-//! wants one scale applied to the coordinates **and** to the font sizes
-//! together, and the two places to change are [`point`] and [`size`] — every
-//! number a layout carries passes through one of them, which is why they exist
-//! as functions returning what they are given.
-//!
-//! # Two things the wire does not say
+//! # Three things the wire does not say
 //!
 //! 1. **A window closes when it is answered.** No packet says so — the server
 //!    sends one `0xB0`, waits for one `0xB1`, and both ends assume the client
@@ -54,121 +36,48 @@
 //!    caller once the reply is on its way.
 //! 2. **A page button never reaches the server.** `{ button ... 0 N id }` flips
 //!    to page `N` inside the client, and only a reply button answers. So the
-//!    current page is state that lives here and nowhere else — which is why
-//!    this module holds any state at all.
+//!    current page is state that lives here and nowhere else.
+//! 3. **A button is pressed on the way down and answered on the way up.** The
+//!    layout carries two pictures for every button and nothing that says when
+//!    to draw the second one; it is the mouse, and [`Dialogs::held`] is where
+//!    the mouse is remembered between the two events.
 //!
 //! [`WorldView::gump_closed`]: openshard_client_net::view::WorldView::gump_closed
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use openshard_client_net::view::OpenGump;
-use openshard_protocol::gump::layout::{Element, Flag, Switch};
-use openshard_protocol::gump::{GumpButton, GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
-use openshard_protocol::wire::Hue;
-use openshard_uofiles::hues::Hues;
+use openshard_client_render::atlas::FontAtlas;
+use openshard_client_render::gump::{self, CAPTION_FONT, GumpAtlas, GumpPixel, Hit, Window};
+use openshard_client_render::text::{self, GumpLabel};
+use openshard_protocol::gump::layout::{Element, Flag};
+use openshard_protocol::gump::{GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 
 use crate::link::GumpReply;
 
-/// Which of a hue's 32-step ramp a `{ text }` element's colour is read from.
-///
-/// A hue applied to *art* retints every pixel through the whole ramp — see
-/// `client/render`'s `hue.rs` — because a sprite's own grey level is the
-/// column to read. A gump label has no such per-pixel input: the glyphs egui
-/// draws are not `fonts.mul`'s bitmaps, so there is nothing here to regrade
-/// pixel by pixel, and one solid colour is wanted instead.
-///
-/// `8` is not a guess: it is [ClassicUO's
-/// `HuesLoader.GetUnicodeFontColor`](https://github.com/ClassicUO/ClassicUO/blob/main/src/ClassicUO.Assets/HuesLoader.cs),
-/// the reference client's own answer to "what solid colour does this hue mean
-/// for a piece of text" —
-/// `HuesRange[g].Entries[e].ColorTable[8]`, verbatim. That function exists
-/// beside `GetColor`, which instead does `ColorTable[(c >> 10) & 0x1F]` to
-/// regrade an *already-coloured* glyph pixel — the ASCII font's own bitmap
-/// colour reused as the ramp index, the same trick statics are tinted with.
-/// Unicode-font text (what a gump draws through) has no such per-pixel colour
-/// to reuse, which is why it is answered by a fixed column instead.
-const TEXT_RAMP_STEP: usize = 8;
-
-/// The colour a `{ text }` or `{ croppedtext }` element's `hue` draws in, or
-/// `None` for "the layout asked for none".
-///
-/// `Hue(0)` is the server's "no colour", not `hues.mul`'s first row — see
-/// `Hues::get`'s docs — and that is a caller's cue to draw the surrounding
-/// theme's own text colour, not a lookup that merely came back empty. A hue
-/// past the end of the table (out of range, or corrupt data) answers the same
-/// way, for the same reason `Hues::get` does: a bad hue index off the wire is
-/// a thing to draw plainly, not a thing to crash the dialog over.
-fn text_color(hues: &Hues, hue: u32) -> Option<egui::Color32> {
-    let entry = hues.get(Hue(hue as u16))?;
-    let (r, g, b) = entry.colors[TEXT_RAMP_STEP].rgb8();
-    Some(egui::Color32::from_rgb(r, g, b))
-}
-
-/// How wide a label is allowed to run when the layout gives it no box.
-///
-/// `{ text }` carries no width — the client measures the string in the font it
-/// draws it in, and this end draws in a different font — so a bound is picked
-/// here. Generous, because the failure it prevents is a label wrapping into the
-/// row below it, and the failure it causes is a label overlapping one to its
-/// right, which is the less confusing of the two.
-const LABEL_WIDTH: f32 = 220.0;
-
-/// How tall a row of text is, for the same reason.
-const LABEL_HEIGHT: f32 = 18.0;
-
-/// The size a button is drawn at, in place of the art it names.
-const BUTTON_SIZE: egui::Vec2 = egui::vec2(26.0, 20.0);
-
-/// One coordinate out of a layout, in the space this module draws in.
-///
-/// The identity, and the module docs are why: a gump pixel is an egui point
-/// here. It is a function rather than a cast at each call site so that the day
-/// that stops being true has one place to change instead of thirty.
-fn point(value: i32) -> f32 {
-    value as f32
-}
-
-/// The same for a width and a height, which always travel together.
-fn size(width: i32, height: i32) -> egui::Vec2 {
-    egui::vec2(point(width), point(height))
-}
-
-/// What a window has that its layout does not: which page it is showing, and
-/// what the player has set on it.
+/// What every open dialog is holding that no packet carries.
 ///
 /// Keyed by dialog id rather than by index: the list of open windows is rebuilt
 /// from the [`WorldView`](openshard_client_net::view::WorldView) every frame, so
 /// a position in it is not an identity, and a redrawn dialog would otherwise
 /// silently inherit the state of whatever now stands where it used to.
 #[derive(Default)]
-pub struct Windows {
+pub struct Dialogs {
     by_dialog: HashMap<GumpId, Sheet>,
-    /// Real pixels per egui point, as of the last frame drawn.
+    /// The button the mouse is down on, and whose window it belongs to.
     ///
-    /// Recorded rather than asked for again, because the art pass has to be
-    /// handed *the same number egui laid out with* — a gump pixel is an egui
-    /// point here, so any disagreement between the two is a window whose art
-    /// slides off its buttons. Zero before the first frame, which is what
-    /// [`Windows::placement`] returning `None` protects.
-    pixels_per_point: f32,
-}
-
-/// Where a window's art goes, and the state it is drawn in.
-///
-/// What [`Windows`] hands the art pass every frame — see
-/// [`Windows::placement`]. All three fields are things no packet carries: the
-/// position is egui's (the player may have dragged the window), the page is a
-/// click this client answered itself, and the switches are what the player has
-/// set since the layout arrived.
-pub struct Placement {
-    /// The window's content origin in egui points, which is also its origin in
-    /// gump pixels — the two spaces are one here, and [`Windows::scale`] is
-    /// what keeps them that way.
-    pub at: (i32, i32),
-    /// The page showing.
-    pub page: u32,
-    /// Which switches are on.
-    pub on: std::collections::BTreeSet<RawSwitchId>,
+    /// One, not one per window: there is one pointer. It is a
+    /// [`Hit`] rather than a button id because that is what a press *is* —
+    /// [`gump::window`] draws the pressed face by comparing this against the
+    /// hit it computes, so what looks pressed and what the release will act on
+    /// are one value.
+    held: Option<(GumpId, Hit)>,
+    /// The field taking keystrokes, and whose window it belongs to.
+    ///
+    /// `None` is "the keyboard belongs to the world", which is the ordinary
+    /// state: a dialog with no field in it never takes one, and clicking off a
+    /// field gives the keyboard back.
+    focus: Option<(GumpId, u16)>,
 }
 
 /// One window's answers-in-progress.
@@ -181,140 +90,25 @@ struct Sheet {
     /// `initial` flags the first time an id is seen, and the player's after
     /// that — which is why absence and `false` are different here.
     switches: HashMap<RawSwitchId, bool>,
-    /// What has been typed into each field, by its id.
+    /// What has been typed into each field, by its id. Seeded the same way,
+    /// from the line the layout pointed the field at.
     entries: HashMap<u16, String>,
-    /// Where this window's *content* ended up on the screen last frame, in egui
-    /// points, or `None` before it has been drawn once.
-    ///
-    /// The seam between the two halves of a gump. The art is drawn by
-    /// `client/render`'s pass and the widgets by egui, and what makes them land
-    /// on each other is that the art is placed here — at the rectangle egui
-    /// allocated — rather than at the coordinate the server asked for. Which
-    /// means a dragged window drags its art with it, and neither half has to
-    /// know how egui decorates a frame.
-    origin: Option<(f32, f32)>,
-}
-
-impl Windows {
-    /// Where a window's art goes and what state it is in, or `None` for a
-    /// window egui has not laid out yet — which is every window on the frame
-    /// its packet arrived, and exactly the frame there is nowhere to put it.
-    ///
-    /// The two pieces of state this module holds that no packet carries — see
-    /// the module docs — handed out so that
-    /// [`openshard_client_render::gump::window`] can lay the same window out
-    /// through the client's own files. Both ends read one copy: a second page
-    /// counter beside this one would drift the moment a page button was pressed
-    /// and only one of them heard about it.
-    ///
-    /// A window this has never seen is on page 0 with nothing set, which is
-    /// exactly what a layout that has just arrived means.
-    pub fn placement(&self, gump_id: GumpId) -> Option<Placement> {
-        let sheet = self.by_dialog.get(&gump_id)?;
-        let (x, y) = sheet.origin?;
-        Some(Placement {
-            at: (x.round() as i32, y.round() as i32),
-            page: sheet.page,
-            on: sheet
-                .switches
-                .iter()
-                .filter(|(_, set)| **set)
-                .map(|(&id, _)| id)
-                .collect(),
-        })
-    }
-
-    /// Real pixels per point, for whoever draws this window's art at the same
-    /// scale egui laid its widgets out at. See [`Windows::pixels_per_point`].
-    pub fn scale(&self) -> f32 {
-        self.pixels_per_point
-    }
-
-    /// Draw every open dialog, and hand back the one answer this frame produced.
-    ///
-    /// At most one: a reply closes its window, and a player cannot press two
-    /// buttons in one frame. The caller sends it and calls
-    /// [`WorldView::gump_closed`](openshard_client_net::view::WorldView::gump_closed)
-    /// — see the module docs for why that is this end's job.
-    pub fn show(&mut self, context: &egui::Context, open: &[OpenGump], hues: &Hues) -> Option<GumpReply> {
-        self.pixels_per_point = context.pixels_per_point();
-        // The state of a window the server has taken away is not worth keeping:
-        // a dialog that comes back comes back as the server drew it.
-        self.by_dialog
-            .retain(|id, _| open.iter().any(|gump| gump.gump_id == *id));
-
-        let mut answer = None;
-        for gump in open {
-            if let Some(reply) = self.show_one(context, gump, hues) {
-                answer = Some(reply);
-            }
-        }
-        answer
-    }
-
-    /// One window.
-    fn show_one(&mut self, context: &egui::Context, gump: &OpenGump, hues: &Hues) -> Option<GumpReply> {
-        let sheet = self.by_dialog.entry(gump.gump_id).or_default();
-        seed_switches(sheet, gump);
-
-        let flags = window_flags(gump);
-        // A window with no close box has to be answered by one of its buttons —
-        // that is what `{ noclose }` means, and honouring it is the difference
-        // between a dialog a shard can rely on and one a player can walk away
-        // from.
-        let mut still_open = true;
-        let mut answer = None;
-
-        // A transparent frame, and this is not cosmetic: the art pass draws
-        // before egui does, so an opaque window background would be painted
-        // *over* the pictures it is supposed to be behind and the window would
-        // look exactly as it did before any of this existed. The shadow goes
-        // for the same reason — it is drawn under the frame and over the art.
-        // What is kept is the title bar and the close box, because until this
-        // client owns the mouse over a gump they are the only way to move or
-        // dismiss one.
-        let mut frame = egui::Frame::window(&context.style_of(context.theme()));
-        frame.fill = egui::Color32::TRANSPARENT;
-        frame.shadow = egui::epaint::Shadow::NONE;
-
-        let mut window = egui::Window::new(title(gump))
-            .frame(frame)
-            // The title is the layout's first label, which two dialogs may
-            // share; the dialog id is what actually distinguishes them.
-            .id(egui::Id::new(("gump", gump.gump_id)))
-            // Where on the screen the server asked for it, in the same space as
-            // everything inside it — see the module docs.
-            .default_pos([point(gump.at.x), point(gump.at.y)])
-            .movable(!flags.no_move)
-            .resizable(false)
-            .collapsible(false);
-        if !flags.no_close {
-            window = window.open(&mut still_open);
-        }
-        window.show(context, |ui| {
-            answer = draw(ui, gump, sheet, hues);
-        });
-
-        // The close box: an answer of button zero, and the shard is waiting for
-        // it exactly as much as it is waiting for a real button.
-        if !still_open && answer.is_none() {
-            answer = Some(RawButtonId(0));
-        }
-        answer.map(|button| reply(gump, sheet, button))
-    }
 }
 
 /// What the window flags in a layout ask for.
-#[derive(Default)]
-struct WindowFlags {
-    no_move: bool,
-    no_close: bool,
+#[derive(Default, Clone, Copy)]
+pub struct WindowFlags {
+    /// `{ nomove }`: the player may not drag it.
+    pub no_move: bool,
+    /// `{ noclose }`: the right button does not take it down, and it has to be
+    /// answered by one of its own buttons.
+    pub no_close: bool,
 }
 
 /// Read the flags out of a layout. `{ nodispose }` and `{ noresize }` have
-/// nothing to honour here: this window is never resizable, and there is no
-/// right-click dismissal to suppress.
-fn window_flags(gump: &OpenGump) -> WindowFlags {
+/// nothing to honour here: no window this client draws is resizable, and there
+/// is no separate dismissal to suppress.
+pub fn flags(gump: &OpenGump) -> WindowFlags {
     let mut flags = WindowFlags::default();
     for element in &gump.elements {
         match element {
@@ -326,370 +120,340 @@ fn window_flags(gump: &OpenGump) -> WindowFlags {
     flags
 }
 
-/// What to call the window: its first label, which is where every dialog this
-/// engine draws puts its heading, or the dialog id when it has none.
-fn title(gump: &OpenGump) -> String {
-    gump.elements
-        .iter()
-        .find_map(|element| match element {
-            Element::Label { line, .. } | Element::CroppedLabel { line, .. } => gump.line(*line),
-            _ => None,
-        })
-        .map_or_else(|| format!("gump 0x{:08X}", gump.gump_id.0), str::to_owned)
-}
-
-/// Give every switch a starting value the first time the window is drawn.
-///
-/// Only the first time: after that the map holds what the *player* set, and
-/// re-seeding would drag a checkbox back under their finger every frame.
-fn seed_switches(sheet: &mut Sheet, gump: &OpenGump) {
-    for element in &gump.elements {
-        if let Element::Check(switch) | Element::Radio(switch) = element {
-            sheet.switches.entry(switch.id).or_insert(switch.initial);
-        }
-    }
-}
-
-/// Lay the elements out at the coordinates the server gave them, and answer with
-/// the button pressed, if one was.
-fn draw(ui: &mut egui::Ui, gump: &OpenGump, sheet: &mut Sheet, hues: &Hues) -> Option<RawButtonId> {
-    let content = content_size(gump);
-    let (rect, _) = ui.allocate_exact_size(content, egui::Sense::hover());
-    let origin = rect.min;
-    // Where the art goes this frame — see `Sheet::origin`. Written every frame
-    // rather than once, because egui's own window is draggable and the art has
-    // to follow it.
-    sheet.origin = Some((origin.x, origin.y));
-    let at = |x: i32, y: i32, size: egui::Vec2| {
-        egui::Rect::from_min_size(origin + egui::vec2(point(x), point(y)), size)
-    };
-
-    let mut pressed = None;
-    // Which page the elements that follow belong to. Zero until the layout says
-    // otherwise, and page zero is drawn whatever page the window is on.
-    let mut page = 0;
-    for element in &gump.elements {
-        if let Element::Page(number) = element {
-            page = *number;
-            continue;
-        }
-        if page != 0 && page != sheet.page {
-            continue;
-        }
-        match element {
-            Element::Page(_) => unreachable!("handled above"),
-            Element::Flag(_) => {}
-            // The frame the window already is: egui has drawn it, and painting a
-            // second rectangle over it would only hide the elements inside.
-            Element::Background { .. } => {}
-            Element::AlphaRegion { x, y, width, height } => {
-                let region = at(*x, *y, size(*width, *height));
-                ui.painter()
-                    .rect_filled(region, 2.0, egui::Color32::from_black_alpha(96));
+impl Dialogs {
+    /// Forget the windows the shard has taken away, and give a new one's
+    /// switches and fields the values its layout asked for.
+    ///
+    /// Seeding is the *first time only*: after that the maps hold what the
+    /// player has done, and re-seeding would drag a checkbox back out from
+    /// under their finger every frame. Forgetting is the other direction of the
+    /// same idea — a dialog that comes back comes back as the server drew it.
+    pub fn sync(&mut self, open: &[OpenGump]) {
+        self.by_dialog
+            .retain(|id, _| open.iter().any(|gump| gump.gump_id == *id));
+        if let Some((id, _)) = self.held {
+            if !open.iter().any(|gump| gump.gump_id == id) {
+                self.held = None;
             }
-            Element::Button {
-                x,
-                y,
-                kind,
-                page: target,
-                id,
-                ..
-            } => {
-                // Transparent and unlabelled: the button's picture is drawn
-                // by the art pass underneath, and what is left for egui is the
-                // click. A filled widget here would hide the art it is
-                // standing on.
-                let face = egui::Button::new("")
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::NONE);
-                if ui.put(at(*x, *y, BUTTON_SIZE), face).clicked() {
-                    match kind {
-                        // Client-side, and the reason this module holds state:
-                        // no packet is sent and the server never learns the
-                        // player turned a page.
-                        GumpButton::Page => sheet.page = *target,
-                        GumpButton::Reply => pressed = Some(*id),
+        }
+        if let Some((id, _)) = self.focus {
+            if !open.iter().any(|gump| gump.gump_id == id) {
+                self.focus = None;
+            }
+        }
+        for gump in open {
+            let sheet = self.by_dialog.entry(gump.gump_id).or_default();
+            for element in &gump.elements {
+                match element {
+                    Element::Check(switch) | Element::Radio(switch) => {
+                        sheet.switches.entry(switch.id).or_insert(switch.initial);
                     }
-                }
-            }
-            Element::Check(switch) => draw_switch(ui, sheet, switch, at(switch.x, switch.y, BUTTON_SIZE)),
-            Element::Radio(switch) => {
-                let was = sheet.switches.get(&switch.id).copied().unwrap_or(switch.initial);
-                draw_switch(ui, sheet, switch, at(switch.x, switch.y, BUTTON_SIZE));
-                // A radio turns its neighbours off — that is the whole
-                // difference from a checkbox, and the client is what enforces
-                // it: the server is sent the ids that are left on and trusts
-                // that only one of a group is.
-                let now = sheet.switches.get(&switch.id).copied().unwrap_or(false);
-                if now && !was {
-                    let group: Vec<RawSwitchId> = gump
-                        .elements
-                        .iter()
-                        .filter_map(|other| match other {
-                            Element::Radio(other) if other.id != switch.id => Some(other.id),
-                            _ => None,
-                        })
-                        .collect();
-                    for id in group {
-                        sheet.switches.insert(id, false);
+                    Element::TextEntry { entry_id, line, .. } => {
+                        sheet
+                            .entries
+                            .entry(*entry_id)
+                            .or_insert_with(|| gump.line(*line).unwrap_or_default().to_owned());
                     }
+                    _ => {}
                 }
-            }
-            Element::Label { x, y, line, hue, .. } => {
-                let text = gump.line(*line).unwrap_or("<no such line>");
-                // `None` — the layout carried no hue, or asked for `Hue(0)` —
-                // leaves the `RichText` uncoloured, which is egui's own text
-                // colour for the current theme rather than a colour this
-                // module invented.
-                let mut rich = egui::RichText::new(text);
-                if let Some(color) = text_color(hues, *hue) {
-                    rich = rich.color(color);
-                }
-                ui.put(
-                    at(*x, *y, egui::vec2(LABEL_WIDTH, LABEL_HEIGHT)),
-                    egui::Label::new(rich).halign(egui::Align::LEFT).extend(),
-                );
-            }
-            Element::CroppedLabel {
-                x,
-                y,
-                width,
-                height,
-                line,
-                hue,
-                ..
-            } => {
-                let text = gump.line(*line).unwrap_or("<no such line>");
-                let mut rich = egui::RichText::new(text);
-                if let Some(color) = text_color(hues, *hue) {
-                    rich = rich.color(color);
-                }
-                ui.put(
-                    at(*x, *y, size(*width, *height)),
-                    egui::Label::new(rich).halign(egui::Align::LEFT).truncate(),
-                );
-            }
-            Element::Html {
-                x,
-                y,
-                width,
-                height,
-                line,
-                ..
-            } => {
-                // The tags are left in. Stripping them would be a second, worse
-                // HTML parser beside the client's own, and what this is for is
-                // reading what the shard sent.
-                let text = gump.line(*line).unwrap_or("<no such line>");
-                ui.put(
-                    at(*x, *y, size(*width, *height)),
-                    egui::Label::new(text).halign(egui::Align::LEFT),
-                );
-            }
-            Element::TextEntry {
-                x,
-                y,
-                width,
-                height,
-                entry_id,
-                line,
-                ..
-            } => {
-                let field = sheet
-                    .entries
-                    .entry(*entry_id)
-                    .or_insert_with(|| gump.line(*line).unwrap_or_default().to_owned());
-                ui.put(
-                    at(*x, *y, size(*width, *height)),
-                    egui::TextEdit::singleline(field),
-                );
-            }
-            // Gump art, drawn by the pass underneath this window and not
-            // here — see `Sheet::origin`. Nothing is allocated for them: they
-            // are already accounted for in `content_size`, which is what
-            // reserves the room the art needs.
-            Element::Image { .. } | Element::ImageTiled { .. } => {}
-            Element::Item { x, y, graphic, .. } => {
-                placeholder(ui, at(*x, *y, BUTTON_SIZE), &format!("[{graphic}]"));
-            }
-            Element::Localized {
-                x,
-                y,
-                width,
-                height,
-                cliloc,
-            } => placeholder(
-                ui,
-                at(*x, *y, size(*width, *height)),
-                // The string lives in the client's own `cliloc` file, which
-                // nothing here reads yet: the number is all there is to show.
-                &format!("cliloc {cliloc}"),
-            ),
-            Element::Unknown { keyword } => {
-                // Drawn nowhere in particular — an element that did not parse
-                // has no coordinates to trust. Reported rather than dropped, so
-                // a window that is missing a row says which one.
-                ui.painter().text(
-                    rect.left_bottom(),
-                    egui::Align2::LEFT_BOTTOM,
-                    format!("unhandled: {keyword}"),
-                    egui::FontId::monospace(10.0),
-                    ui.visuals().weak_text_color(),
-                );
             }
         }
     }
-    pressed
-}
 
-/// A checkbox, and the map entry it reads and writes.
-fn draw_switch(ui: &mut egui::Ui, sheet: &mut Sheet, switch: &Switch, rect: egui::Rect) {
-    let mut set = sheet.switches.get(&switch.id).copied().unwrap_or(switch.initial);
-    if ui.put(rect, egui::Checkbox::without_text(&mut set)).changed() {
-        sheet.switches.insert(switch.id, set);
+    /// Lay a dialog out at `at`, in the state the player has put it in.
+    ///
+    /// Every argument [`gump::window`] takes beyond the layout comes from here,
+    /// which is the point of this module: the page, the switches and the
+    /// pressed button are the three things the wire does not carry.
+    pub fn layout(&self, gump: &OpenGump, at: GumpPixel, atlas: &GumpAtlas) -> Window {
+        let sheet = self.by_dialog.get(&gump.gump_id);
+        let on: BTreeSet<RawSwitchId> = sheet
+            .map(|sheet| {
+                sheet
+                    .switches
+                    .iter()
+                    .filter(|(_, set)| **set)
+                    .map(|(&id, _)| id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let held = self
+            .held
+            .filter(|(id, _)| *id == gump.gump_id)
+            .map(|(_, hit)| hit);
+        let page = sheet.map_or(0, |sheet| sheet.page);
+        gump::window(&gump.elements, at, page, &on, held, atlas)
     }
-}
 
-/// An element this client has no picture for, drawn as what it names.
-fn placeholder(ui: &egui::Ui, rect: egui::Rect, label: &str) {
-    let painter = ui.painter();
-    painter.rect_stroke(
-        rect,
-        2.0,
-        egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
-        egui::StrokeKind::Inside,
-    );
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        egui::FontId::monospace(9.0),
-        ui.visuals().weak_text_color(),
-    );
-}
+    /// Every line of text a laid-out dialog draws: its captions, and what is in
+    /// its fields.
+    ///
+    /// The captions name rows of the text table that arrived beside the layout
+    /// and this is where they are resolved — `client/render` has never heard of
+    /// an [`OpenGump`] and should not. A row a layout names and the table does
+    /// not hold draws nothing, which is a shard bug and not a reason to drop
+    /// the window.
+    ///
+    /// A focused field is written with a caret after it. That is the only thing
+    /// this client draws that the layout did not ask for, and it is the one
+    /// thing a player cannot otherwise see: which of two boxes the keys are
+    /// going into.
+    pub fn lines<'a>(&'a self, gump: &'a OpenGump, window: &Window, fonts: &FontAtlas) -> Vec<GumpLabel<'a>> {
+        let mut lines: Vec<GumpLabel<'a>> = window
+            .captions
+            .iter()
+            .filter_map(|caption| {
+                Some(GumpLabel {
+                    at: caption.at,
+                    hue: caption.hue,
+                    clip: caption.clip,
+                    text: gump.line(caption.line)?,
+                    font: CAPTION_FONT,
+                })
+            })
+            .collect();
+        let sheet = self.by_dialog.get(&gump.gump_id);
+        for field in &window.fields {
+            let typed = sheet
+                .and_then(|sheet| sheet.entries.get(&field.id))
+                .map(String::as_str)
+                .unwrap_or_default();
+            lines.push(GumpLabel {
+                at: field.at,
+                hue: field.hue,
+                clip: Some(field.size),
+                text: typed,
+                font: CAPTION_FONT,
+            });
+            if self.focus == Some((gump.gump_id, field.id)) {
+                // A second line rather than a character appended to the first:
+                // the text is the player's and borrowed, and a caret glued onto
+                // it would be a `String` this frame owns. Where it goes is the
+                // one thing that has to be measured, which is what
+                // `gump::width` is for — the same walk `letters` advances by,
+                // so the caret lands where the next character will.
+                lines.push(GumpLabel {
+                    at: field
+                        .at
+                        .offset(GumpPixel::new(text::gump_width(typed, CAPTION_FONT, fonts), 0)),
+                    hue: field.hue,
+                    clip: None,
+                    text: CARET,
+                    font: CAPTION_FONT,
+                });
+            }
+        }
+        lines
+    }
 
-/// How big the window's content is: the furthest corner any element reaches.
-///
-/// Read from the elements rather than from the background frame alone, because
-/// a layout is free to draw outside its own frame and several do — and a
-/// content rect that is too small clips the elements that hang over it.
-fn content_size(gump: &OpenGump) -> egui::Vec2 {
-    let mut width = 0.0f32;
-    let mut height = 0.0f32;
-    // `w` and `h` are already in this module's space — some come out of a
-    // layout through `size`, some are this module's own constants — so only the
-    // position is converted here.
-    let mut extend = |x: i32, y: i32, w: f32, h: f32| {
-        width = width.max(point(x) + w);
-        height = height.max(point(y) + h);
-    };
-    for element in &gump.elements {
-        match element {
-            Element::Background {
-                x,
-                y,
-                width: w,
-                height: h,
-                ..
+    /// A left press over a laid-out dialog.
+    ///
+    /// Answers whether the press was *taken* by something in the window. A
+    /// press that lands on a picture that answers to nothing — the background,
+    /// a `{ gumppic }`, a label — is not taken, and the caller drags the window
+    /// with it, which is how a gump is moved without a title bar.
+    ///
+    /// A switch answers on the way *down*, and a button does not: that is the
+    /// reference's own split. A checkbox is its own answer and there is nothing
+    /// to wait for; a button has a pressed picture to show while the finger is
+    /// on it, and what it means happens when the finger comes off.
+    pub fn press(&mut self, gump: &OpenGump, window: &Window, cursor: GumpPixel, atlas: &GumpAtlas) -> bool {
+        // A field is a box and not a picture, and it is tested first for that
+        // reason: it lies over the background, which *is* a picture, and asking
+        // the pictures first would answer "the background" for every click into
+        // a field.
+        if let Some(id) = gump::field(&window.fields, cursor) {
+            self.focus = Some((gump.gump_id, id));
+            return true;
+        }
+        self.focus = None;
+        let Some(index) = gump::pick(&window.pictures, cursor, atlas) else {
+            return false;
+        };
+        let Some(hit) = window.hits.get(&index).copied() else {
+            return false;
+        };
+        match hit {
+            Hit::Reply(_) | Hit::Page(_) => {
+                self.held = Some((gump.gump_id, hit));
             }
-            | Element::ImageTiled {
-                x,
-                y,
-                width: w,
-                height: h,
-                ..
+            Hit::Check(id) => self.toggle(gump.gump_id, id),
+            Hit::Radio(id) => self.choose(gump, id),
+        }
+        true
+    }
+
+    /// The release that finishes a press, and the answer it produced if it was
+    /// a reply button.
+    ///
+    /// The pointer has to still be on the button it went down on, which is what
+    /// the second [`gump::pick`] is for: a press dragged off its button is a
+    /// press taken back, in this client as in every other.
+    ///
+    /// A page button never answers. It flips the page here and the server is
+    /// never told — see the module docs.
+    pub fn release(
+        &mut self,
+        gump: &OpenGump,
+        window: &Window,
+        cursor: GumpPixel,
+        atlas: &GumpAtlas,
+    ) -> Option<GumpReply> {
+        let (id, held) = self.held.take()?;
+        if id != gump.gump_id {
+            return None;
+        }
+        let under =
+            gump::pick(&window.pictures, cursor, atlas).and_then(|index| window.hits.get(&index).copied());
+        if under != Some(held) {
+            return None;
+        }
+        match held {
+            Hit::Page(page) => {
+                self.by_dialog.entry(gump.gump_id).or_default().page = page;
+                None
             }
-            | Element::AlphaRegion {
-                x,
-                y,
-                width: w,
-                height: h,
-            }
-            | Element::CroppedLabel {
-                x,
-                y,
-                width: w,
-                height: h,
-                ..
-            }
-            | Element::Html {
-                x,
-                y,
-                width: w,
-                height: h,
-                ..
-            }
-            | Element::Localized {
-                x,
-                y,
-                width: w,
-                height: h,
-                ..
-            }
-            | Element::TextEntry {
-                x,
-                y,
-                width: w,
-                height: h,
-                ..
-            } => {
-                let wanted = size(*w, *h);
-                extend(*x, *y, wanted.x, wanted.y);
-            }
-            Element::Label { x, y, .. } => extend(*x, *y, LABEL_WIDTH, LABEL_HEIGHT),
-            Element::Button { x, y, .. } | Element::Image { x, y, .. } | Element::Item { x, y, .. } => {
-                extend(*x, *y, BUTTON_SIZE.x, BUTTON_SIZE.y);
-            }
-            Element::Check(switch) | Element::Radio(switch) => {
-                extend(switch.x, switch.y, BUTTON_SIZE.x, BUTTON_SIZE.y);
-            }
-            Element::Page(_) | Element::Flag(_) | Element::Unknown { .. } => {}
+            Hit::Reply(button) => Some(self.reply(gump, button)),
+            // A switch is never held — see `press`.
+            Hit::Check(_) | Hit::Radio(_) => None,
         }
     }
-    // A layout with nothing positioned in it still needs somewhere to put the
-    // "unhandled" notes, and an empty window is indistinguishable from a hung
-    // one.
-    egui::vec2(width.max(120.0), height.max(40.0))
-}
 
-/// The answer to send: the button, and everything the player set on the way to
-/// pressing it.
-///
-/// The switches are sorted before they are sent. Nothing on the wire requires
-/// it — the server reads the ids as a set — but a `HashMap`'s order is not
-/// stable between runs, and a packet whose bytes depend on the iteration order
-/// of a hash map is one that cannot be compared against a recording.
-fn reply(gump: &OpenGump, sheet: &Sheet, button: RawButtonId) -> GumpReply {
-    let mut switches: Vec<RawSwitchId> = sheet
-        .switches
-        .iter()
-        .filter(|(_, &set)| set)
-        .map(|(&id, _)| id)
-        .collect();
-    switches.sort_unstable();
+    /// The button a press is waiting on, for whoever needs to know whether the
+    /// mouse is busy.
+    pub fn holding(&self) -> Option<GumpId> {
+        self.held.map(|(id, _)| id)
+    }
 
-    let mut text_entries: Vec<(u16, String)> = sheet
-        .entries
-        .iter()
-        .map(|(&id, text)| (id, text.clone()))
-        .collect();
-    text_entries.sort_unstable_by_key(|(id, _)| *id);
+    /// Take a keystroke into the focused field, and say whether one was taken.
+    ///
+    /// `text` is what the keyboard produced — `winit`'s own `KeyEvent::text`,
+    /// which is the layout's and the IME's answer rather than a key code, so
+    /// this is the one place in the client where a character is a character.
+    /// Control characters are refused: a newline in a `{ textentry }` is not a
+    /// character the reference lets in either.
+    pub fn typed(&mut self, text: &str) -> bool {
+        let Some((id, field)) = self.focus else {
+            return false;
+        };
+        let wanted: String = text.chars().filter(|c| !c.is_control()).collect();
+        if wanted.is_empty() {
+            return false;
+        }
+        self.by_dialog
+            .entry(id)
+            .or_default()
+            .entries
+            .entry(field)
+            .or_default()
+            .push_str(&wanted);
+        true
+    }
 
-    GumpReply {
-        key: RawGumpKey(gump.key.0),
-        gump_id: RawGumpId(gump.gump_id.0),
-        button,
-        switches,
-        text_entries,
+    /// Rub out the last character of the focused field. Answers whether there
+    /// was a field to rub out of.
+    pub fn backspace(&mut self) -> bool {
+        let Some((id, field)) = self.focus else {
+            return false;
+        };
+        if let Some(text) = self
+            .by_dialog
+            .get_mut(&id)
+            .and_then(|sheet| sheet.entries.get_mut(&field))
+        {
+            text.pop();
+        }
+        true
+    }
+
+    /// Whether a field is taking keys. What the caller asks before it lets a
+    /// key walk the character.
+    pub fn typing(&self) -> bool {
+        self.focus.is_some()
+    }
+
+    /// Give the keyboard back to the world.
+    pub fn unfocus(&mut self) {
+        self.focus = None;
+    }
+
+    /// The answer a window closed by the right button sends: button zero.
+    ///
+    /// The shard is waiting for it exactly as much as it is waiting for a real
+    /// button — one `0xB0` out, one `0xB1` back — which is why closing a dialog
+    /// is not the same as forgetting it. `None` for a `{ noclose }` layout,
+    /// which has to be answered by one of its own buttons.
+    pub fn dismiss(&mut self, gump: &OpenGump) -> Option<GumpReply> {
+        if flags(gump).no_close {
+            return None;
+        }
+        Some(self.reply(gump, RawButtonId(0)))
+    }
+
+    /// Turn a checkbox over.
+    fn toggle(&mut self, gump_id: GumpId, switch: RawSwitchId) {
+        let sheet = self.by_dialog.entry(gump_id).or_default();
+        let set = sheet.switches.entry(switch).or_default();
+        *set = !*set;
+    }
+
+    /// Turn a radio on and the rest of its group off.
+    ///
+    /// The client is what enforces that, not the server: the wire carries the
+    /// ids that are left on and trusts that only one of a group is among them.
+    /// Every other radio in the layout is the group, because the layout has no
+    /// way to say otherwise.
+    fn choose(&mut self, gump: &OpenGump, switch: RawSwitchId) {
+        let sheet = self.by_dialog.entry(gump.gump_id).or_default();
+        for element in &gump.elements {
+            if let Element::Radio(other) = element {
+                sheet.switches.insert(other.id, other.id == switch);
+            }
+        }
+    }
+
+    /// What travels back: the button, and everything the player set on the way
+    /// to pressing it.
+    ///
+    /// The switches and the fields are sorted before they are sent. Nothing on
+    /// the wire requires it — the server reads the ids as a set — but a
+    /// `HashMap`'s order is not stable between runs, and a packet whose bytes
+    /// depend on the iteration order of a hash map is one that cannot be
+    /// compared against a recording.
+    fn reply(&mut self, gump: &OpenGump, button: RawButtonId) -> GumpReply {
+        let sheet = self.by_dialog.entry(gump.gump_id).or_default();
+        let mut switches: Vec<RawSwitchId> = sheet
+            .switches
+            .iter()
+            .filter(|(_, &set)| set)
+            .map(|(&id, _)| id)
+            .collect();
+        switches.sort_unstable();
+
+        let mut text_entries: Vec<(u16, String)> = sheet
+            .entries
+            .iter()
+            .map(|(&id, text)| (id, text.clone()))
+            .collect();
+        text_entries.sort_unstable_by_key(|(id, _)| *id);
+
+        GumpReply {
+            key: RawGumpKey(gump.key.0),
+            gump_id: RawGumpId(gump.gump_id.0),
+            button,
+            switches,
+            text_entries,
+        }
     }
 }
+
+/// What a focused field draws after what has been typed into it.
+const CARET: &str = "|";
 
 #[cfg(test)]
 mod tests {
     use openshard_protocol::gump::layout::parse;
-    use openshard_protocol::gump::{ButtonId, GumpId, GumpKey, GumpLayout, GumpPoint, SwitchId};
-    use openshard_uofiles::color::Color16;
-    use openshard_uofiles::hues::COLORS_PER_HUE;
+    use openshard_protocol::gump::{ButtonId, GumpButton, GumpId, GumpKey, GumpLayout, GumpPoint, SwitchId};
 
     use super::*;
 
@@ -700,6 +464,9 @@ mod tests {
         layout.button(30, 54, 4005, 4007, GumpButton::Reply, 0, ButtonId(13));
         layout.label(66, 56, 1153, "Populate Felucca");
         layout.check(30, 100, 210, 211, false, SwitchId(1));
+        layout.radio(30, 130, 208, 209, false, SwitchId(2));
+        layout.radio(30, 150, 208, 209, true, SwitchId(3));
+        layout.text_entry(30, 180, 120, 20, 1153, 7, "Britain");
         let (string, lines) = layout.finish();
         OpenGump {
             key: GumpKey(0x2A),
@@ -710,108 +477,136 @@ mod tests {
         }
     }
 
-    /// The window takes its name from the heading the layout draws, which is
-    /// what makes two open dialogs tellable apart on screen. The id is what
-    /// keeps them apart in egui — see `show_one`.
+    /// A switch starts where the layout said it starts, and only the first
+    /// time: re-seeding every frame would pull a checkbox back out from under
+    /// the player's finger. A field is seeded the same way, from the line the
+    /// layout pointed it at.
     #[test]
-    fn a_window_is_named_by_its_own_heading() {
-        assert_eq!(title(&admin_menu()), "Admin");
-    }
+    fn a_window_is_seeded_once_and_then_belongs_to_the_player() {
+        let gump = admin_menu();
+        let mut dialogs = Dialogs::default();
+        dialogs.sync(std::slice::from_ref(&gump));
+        let sheet = &dialogs.by_dialog[&gump.gump_id];
+        assert_eq!(sheet.switches.get(&RawSwitchId(1)), Some(&false));
+        assert_eq!(
+            sheet.entries.get(&7).map(String::as_str),
+            Some("Britain"),
+            "the field starts out holding the line the layout named"
+        );
 
-    /// The frame the server asked for is the size the window has to be: an
-    /// element hanging outside a content rect is an element the player cannot
-    /// click.
-    #[test]
-    fn the_content_is_as_big_as_the_frame_the_server_drew() {
-        let size = content_size(&admin_menu());
-        assert!(
-            size.x >= 300.0 && size.y >= 270.0,
-            "the 300x270 frame fits: {size:?}"
+        dialogs.toggle(gump.gump_id, RawSwitchId(1));
+        dialogs.sync(std::slice::from_ref(&gump));
+        assert_eq!(
+            dialogs.by_dialog[&gump.gump_id].switches.get(&RawSwitchId(1)),
+            Some(&true),
+            "and it stays where the player put it"
         );
     }
 
-    /// What travels back. The two things worth pinning: only the switches that
-    /// are *on* are sent, and they are sent in a stable order — a `HashMap`'s
-    /// own order is not one.
+    /// A window the shard has taken away takes its state with it — and the
+    /// mouse and the keyboard with that: a press held on a window that is gone
+    /// would answer for whatever opened next under the same finger.
     #[test]
-    fn an_answer_carries_the_switches_that_are_set_and_nothing_else() {
+    fn a_closed_window_forgets_everything_including_the_finger_on_it() {
         let gump = admin_menu();
-        let mut sheet = Sheet::default();
-        sheet.switches.insert(RawSwitchId(9), true);
-        sheet.switches.insert(RawSwitchId(1), false);
-        sheet.switches.insert(RawSwitchId(4), true);
+        let mut dialogs = Dialogs::default();
+        dialogs.sync(std::slice::from_ref(&gump));
+        dialogs.held = Some((gump.gump_id, Hit::Reply(RawButtonId(13))));
+        dialogs.focus = Some((gump.gump_id, 7));
 
-        let reply = reply(&gump, &sheet, RawButtonId(13));
+        dialogs.sync(&[]);
+        assert!(dialogs.by_dialog.is_empty());
+        assert!(dialogs.held.is_none());
+        assert!(!dialogs.typing());
+    }
+
+    /// A radio turns its neighbours off, and a checkbox does not. The whole
+    /// difference between the two, and the client is what enforces it: the wire
+    /// carries a set of ids and trusts that only one of a group is in it.
+    #[test]
+    fn a_radio_turns_its_group_off_and_a_checkbox_minds_its_own_business() {
+        let gump = admin_menu();
+        let mut dialogs = Dialogs::default();
+        dialogs.sync(std::slice::from_ref(&gump));
+
+        dialogs.choose(&gump, RawSwitchId(2));
+        let sheet = &dialogs.by_dialog[&gump.gump_id];
+        assert!(sheet.switches[&RawSwitchId(2)]);
+        assert!(
+            !sheet.switches[&RawSwitchId(3)],
+            "the other radio went off, initial or not"
+        );
+
+        dialogs.toggle(gump.gump_id, RawSwitchId(1));
+        let sheet = &dialogs.by_dialog[&gump.gump_id];
+        assert!(sheet.switches[&RawSwitchId(1)]);
+        assert!(
+            sheet.switches[&RawSwitchId(2)],
+            "a checkbox left the radios alone"
+        );
+    }
+
+    /// What travels back. Three things worth pinning: only the switches that
+    /// are *on* are sent, they are sent in a stable order, and what was typed
+    /// goes with them under the id the layout gave the field.
+    #[test]
+    fn an_answer_carries_what_the_player_set_and_nothing_else() {
+        let gump = admin_menu();
+        let mut dialogs = Dialogs::default();
+        dialogs.sync(std::slice::from_ref(&gump));
+        dialogs.toggle(gump.gump_id, RawSwitchId(1));
+        dialogs.choose(&gump, RawSwitchId(3));
+        dialogs.focus = Some((gump.gump_id, 7));
+        assert!(dialogs.typed("!"));
+
+        let reply = dialogs.reply(&gump, RawButtonId(13));
         assert_eq!(reply.gump_id, RawGumpId(0x00AD_0001));
         assert_eq!(reply.key, RawGumpKey(0x2A), "the key is echoed, not invented");
         assert_eq!(reply.button, RawButtonId(13));
-        assert_eq!(reply.switches, vec![RawSwitchId(4), RawSwitchId(9)]);
+        assert_eq!(reply.switches, vec![RawSwitchId(1), RawSwitchId(3)]);
+        assert_eq!(reply.text_entries, vec![(7, "Britain!".to_owned())]);
     }
 
-    /// A switch starts where the layout said it starts, and only the first time:
-    /// re-seeding every frame would pull a checkbox back out from under the
-    /// player's finger.
+    /// Keys go to the field the player clicked into and nowhere else — and
+    /// with nothing focused they are the world's, which is what lets a letter
+    /// walk the character while a dialog is open.
     #[test]
-    fn a_switch_is_seeded_once_and_then_belongs_to_the_player() {
+    fn a_keystroke_needs_a_field_to_go_into() {
         let gump = admin_menu();
-        let mut sheet = Sheet::default();
-        seed_switches(&mut sheet, &gump);
-        assert_eq!(
-            sheet.switches.get(&RawSwitchId(1)),
-            Some(&false),
-            "the layout's own initial"
-        );
+        let mut dialogs = Dialogs::default();
+        dialogs.sync(std::slice::from_ref(&gump));
+        assert!(!dialogs.typed("x"), "nothing focused, nothing taken");
+        assert!(!dialogs.backspace());
 
-        sheet.switches.insert(RawSwitchId(1), true);
-        seed_switches(&mut sheet, &gump);
-        assert_eq!(
-            sheet.switches.get(&RawSwitchId(1)),
-            Some(&true),
-            "and it stays where it was put"
+        dialogs.focus = Some((gump.gump_id, 7));
+        assert!(dialogs.typed("x"));
+        assert!(
+            !dialogs.typed("\n"),
+            "a control character is not a character a field takes"
         );
+        assert!(dialogs.backspace());
+        assert_eq!(dialogs.by_dialog[&gump.gump_id].entries[&7], "Britain");
     }
 
-    /// Bytes enough for one group of eight hues, hue 1's ramp set from
-    /// `colors` and the other seven entries left at zero — the same shape
-    /// `hues.rs`'s and `client/render`'s `hue.rs`'s own tests build, since
-    /// there is no public constructor for `Hues` that skips the file format.
-    fn one_hue_group(colors: [Color16; COLORS_PER_HUE]) -> Hues {
-        const GROUP_HEADER: usize = 4;
-        const ENTRY_BYTES: usize = COLORS_PER_HUE * 2 + 2 + 2 + 20;
-        const HUES_PER_GROUP: usize = 8;
-        let mut bytes = vec![0u8; GROUP_HEADER + HUES_PER_GROUP * ENTRY_BYTES];
-        for (index, color) in colors.iter().enumerate() {
-            let at = GROUP_HEADER + index * 2;
-            bytes[at..at + 2].copy_from_slice(&color.0.to_le_bytes());
-        }
-        Hues::parse(&bytes).expect("one whole group")
-    }
-
-    /// The colour pinned to a controlled ramp rather than a real `hues.mul`:
-    /// this is a claim about which *column* `text_color` reads, and the only
-    /// way a wrong column reads as a wrong colour instead of a coincidentally
-    /// plausible one is to put a different, known colour in every column.
+    /// `{ noclose }` means the window cannot be walked away from: the right
+    /// button gets no answer out of it, and the shard keeps waiting for one of
+    /// its own buttons.
     #[test]
-    fn a_hued_label_takes_the_ninth_step_of_its_ramp_not_the_first() {
-        let mut colors = [Color16::TRANSPARENT; COLORS_PER_HUE];
-        colors[0] = Color16(0b0_00000_00000_11111); // pure blue: the wrong answer
-        colors[TEXT_RAMP_STEP] = Color16(0b0_11111_00000_00000); // pure red: the right one
-        let hues = one_hue_group(colors);
+    fn a_noclose_window_is_not_dismissed_by_the_right_button() {
+        let mut layout = GumpLayout::new();
+        layout.no_close();
+        layout.background(0, 0, 100, 100, 5054);
+        let (string, lines) = layout.finish();
+        let gump = OpenGump {
+            key: GumpKey(1),
+            gump_id: GumpId(2),
+            at: GumpPoint::new(0, 0),
+            elements: parse(string),
+            lines: lines.to_vec(),
+        };
 
-        assert_eq!(
-            text_color(&hues, 1),
-            Some(egui::Color32::from_rgb(255, 0, 0)),
-            "hue 1's ninth step (GetUnicodeFontColor's ColorTable[8]), widened"
-        );
-    }
-
-    /// `Hue(0)` is the server's "draw no colour at all", not a request for
-    /// `hues.mul` row zero — see `Hues::get`'s own docs for the one-off this
-    /// guards. Answered with a ramp where every step is a real colour, so a
-    /// bug that treated `0` as an index would come back `Some`, not panic.
-    #[test]
-    fn hue_zero_is_no_colour_rather_than_a_row() {
-        let hues = one_hue_group([Color16(0b0_11111_00000_00000); COLORS_PER_HUE]);
-        assert_eq!(text_color(&hues, 0), None);
+        let mut dialogs = Dialogs::default();
+        dialogs.sync(std::slice::from_ref(&gump));
+        assert!(dialogs.dismiss(&gump).is_none());
     }
 }

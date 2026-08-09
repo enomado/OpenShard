@@ -49,6 +49,21 @@ fn anim_id(tiledata: &TileData, graphic: u16) -> u16 {
     tiledata.static_tile(graphic).anim_id
 }
 
+/// The doll itself: everything in a laid-out window that is neither the frame
+/// nor a piece of the frame's own furniture.
+///
+/// Told apart by [`paperdoll::Doll::hits`] rather than by counting, which is
+/// what keeps these tests about the doll when a button is added or moved: a
+/// button and a scroll answer the mouse and a garment does not.
+fn stack(doll: &paperdoll::Doll) -> Vec<openshard_client_render::gump::Picture> {
+    doll.pictures
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 0 && !doll.hits.contains_key(index))
+        .map(|(_, picture)| *picture)
+        .collect()
+}
+
 /// The window is the frame first, then the body, then what is worn, then the
 /// backpack — and every one of them is a gump the client ships.
 ///
@@ -74,28 +89,30 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
         equipment: &equipment,
     };
     let at = GumpPixel::new(100, 50);
-    let pictures = paperdoll::window(Some(&wearer), Whose::Own, &equip_conv, &gumps, at);
+    let whose = Whose::Own { war: false };
+    let doll = paperdoll::window(Some(&wearer), whose, None, &equip_conv, &gumps, at);
+    let stack = stack(&doll);
 
-    assert_eq!(pictures.len(), 5, "a frame, a body, two garments and a bag");
+    assert_eq!(stack.len(), 4, "a body, two garments and a bag");
     assert_eq!(
-        pictures[0].graphic,
-        GumpArt::Gump(paperdoll::frame(Whose::Own)),
+        doll.pictures[0].graphic,
+        GumpArt::Gump(paperdoll::frame(whose)),
         "the frame is the first picture, and it is our own doll's"
     );
-    assert_eq!(pictures[0].at, at, "the frame is the window");
+    assert_eq!(doll.pictures[0].at, at, "the frame is the window");
     assert_eq!(
-        pictures[1].graphic,
+        stack[0].graphic,
         GumpArt::Gump(Graphic(0x000C)),
         "the male body is drawn on it"
     );
-    for picture in &pictures[1..] {
+    for picture in &stack {
         assert_eq!(
             picture.at,
             GumpPixel::new(at.x + paperdoll::BODY_AT.x, at.y + paperdoll::BODY_AT.y),
             "every layer sits at the one origin inside the frame"
         );
     }
-    for picture in &pictures {
+    for picture in &doll.pictures {
         let GumpArt::Gump(graphic) = picture.graphic else {
             panic!("a paperdoll draws gump art and nothing else");
         };
@@ -107,10 +124,103 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
     }
     let backpack = paperdoll::gump_of(MALE, anim_id(&tiledata, 0x0E75), false, &equip_conv, &gumps);
     assert_eq!(
-        pictures[4].graphic,
+        stack[3].graphic,
         GumpArt::Gump(backpack),
         "the backpack is drawn last, outside the order"
     );
+}
+
+/// Every picture the frame's own furniture is drawn from is one the client
+/// ships, and the two frames carry different sets of it.
+///
+/// The claim the coordinates cannot make: a button at the right `y` drawn from
+/// a graphic `gumpart` has never heard of is a gap in the column, and
+/// [`openshard_client_render::gump::collect`] skips a missing picture without
+/// saying so. Both frames are asked, because the stranger's carries three of
+/// the eleven and a mistake there would hide behind our own doll's full column.
+#[test]
+#[ignore]
+fn every_button_on_a_frame_is_a_picture_the_client_ships() {
+    let Some((gumps, equip_conv, _)) = client() else {
+        return;
+    };
+    for whose in [
+        Whose::Own { war: false },
+        Whose::Own { war: true },
+        Whose::Another,
+    ] {
+        let doll = paperdoll::window(None, whose, None, &equip_conv, &gumps, GumpPixel::new(0, 0));
+        assert!(!doll.hits.is_empty(), "a frame has furniture on it: {whose:?}");
+        for index in doll.hits.keys() {
+            let GumpArt::Gump(graphic) = doll.pictures[*index].graphic else {
+                panic!("a paperdoll draws gump art and nothing else");
+            };
+            assert!(
+                gumps.has(graphic).expect("the container reads"),
+                "the client ships gump 0x{:04X} ({:?} on {whose:?})",
+                graphic.0,
+                doll.hits[index],
+            );
+        }
+        // And every one of them is pressable: a button drawn in a face the file
+        // has no pressed twin for would light up as a hole under the finger.
+        let pressed = paperdoll::window(
+            None,
+            whose,
+            doll.hits.values().next().copied(),
+            &equip_conv,
+            &gumps,
+            GumpPixel::new(0, 0),
+        );
+        for index in pressed.hits.keys() {
+            let GumpArt::Gump(graphic) = pressed.pictures[*index].graphic else {
+                panic!("a paperdoll draws gump art and nothing else");
+            };
+            assert!(
+                gumps.has(graphic).expect("the container reads"),
+                "the client ships the pressed gump 0x{:04X}",
+                graphic.0
+            );
+        }
+    }
+}
+
+/// Our own doll's column is the long one, and a stranger's is not: the frames
+/// differ by exactly the buttons there is no room for.
+#[test]
+#[ignore]
+fn a_stranger_gets_the_status_button_and_none_of_the_rest() {
+    let Some((gumps, equip_conv, _)) = client() else {
+        return;
+    };
+    let buttons = |whose| {
+        let doll = paperdoll::window(None, whose, None, &equip_conv, &gumps, GumpPixel::new(0, 0));
+        doll.hits.values().copied().collect::<Vec<_>>()
+    };
+    let stranger = buttons(Whose::Another);
+    assert!(stranger.contains(&paperdoll::DollButton::Status));
+    assert!(!stranger.contains(&paperdoll::DollButton::LogOut));
+    assert!(
+        !stranger.contains(&paperdoll::DollButton::Party),
+        "the party manifest is our own doll's"
+    );
+
+    let own = buttons(Whose::Own { war: false });
+    for wanted in [
+        paperdoll::DollButton::Help,
+        paperdoll::DollButton::Options,
+        paperdoll::DollButton::LogOut,
+        paperdoll::DollButton::Quests,
+        paperdoll::DollButton::Skills,
+        paperdoll::DollButton::Guild,
+        paperdoll::DollButton::WarMode,
+        paperdoll::DollButton::Status,
+        paperdoll::DollButton::Profile,
+        paperdoll::DollButton::Party,
+        paperdoll::DollButton::Virtue,
+    ] {
+        assert!(own.contains(&wanted), "our own doll carries {wanted:?}");
+    }
 }
 
 /// A layer with no `AnimID` draws nothing — a ring, an earring, anything the
@@ -128,18 +238,15 @@ fn a_layer_with_no_anim_id_draws_nothing() {
         hue: Hue::NONE,
         equipment: &equipment,
     };
-    let pictures = paperdoll::window(
+    let doll = paperdoll::window(
         Some(&wearer),
         Whose::Another,
+        None,
         &equip_conv,
         &gumps,
         GumpPixel::new(0, 0),
     );
-    assert_eq!(
-        pictures.len(),
-        2,
-        "the frame and the body, and nothing for the ring"
-    );
+    assert_eq!(stack(&doll).len(), 1, "the body, and nothing for the ring");
 }
 
 /// A paperdoll of a mobile this client has never been told the body of is a
@@ -155,10 +262,17 @@ fn a_paperdoll_of_an_unknown_body_is_still_a_frame() {
     let Some((gumps, equip_conv, _)) = client() else {
         return;
     };
-    let pictures = paperdoll::window(None, Whose::Another, &equip_conv, &gumps, GumpPixel::new(0, 0));
-    assert_eq!(pictures.len(), 1);
+    let doll = paperdoll::window(
+        None,
+        Whose::Another,
+        None,
+        &equip_conv,
+        &gumps,
+        GumpPixel::new(0, 0),
+    );
+    assert!(stack(&doll).is_empty(), "no body, and so no layers");
     assert_eq!(
-        pictures[0].graphic,
+        doll.pictures[0].graphic,
         GumpArt::Gump(paperdoll::frame(Whose::Another))
     );
 }
@@ -172,7 +286,7 @@ fn both_frames_are_pictures_the_client_ships_and_they_differ() {
     let Some((gumps, _, _)) = client() else {
         return;
     };
-    let own = paperdoll::frame(Whose::Own);
+    let own = paperdoll::frame(Whose::Own { war: false });
     let another = paperdoll::frame(Whose::Another);
     assert_ne!(own, another);
     assert!(gumps.has(own).expect("the container reads"));

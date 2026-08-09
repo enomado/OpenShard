@@ -994,13 +994,25 @@ answered with a gump. What landed is the whole path and none of the art —
   keyword is an `Element::Unknown`, never a lost window.
 - `WorldView::gumps` holds what is open, and `gump_closed` is the one thing the
   wire never says — a reply button closes a window client-side.
-- `client/app/src/gump.rs` draws a layout with egui's own widgets, and
-  `shell.rs` has a speech line. Both are the *dev HUD's* rendering, in the same
-  spirit as the rest of that file.
+- `client/app/src/gump.rs` draws a layout with egui's own widgets — still the
+  *dev HUD's* rendering, in the same spirit as the rest of that file.
+- **The speech line and journal are no longer egui's.** `App::chat` holds what
+  is typed and whether the keyboard is listening for it; `App::window_event`
+  gives it the keyboard ahead of every hotkey and walk key once focused
+  (opened by Enter, the reference client's own gesture); and `App::draw` reads
+  `WorldView::journal` directly and lays both out through
+  `openshard_client_render::text::{GumpLabel, collect_gump}` — a top-left
+  anchored, screen-space glyph layout bound to a second `GumpRenderer`
+  (`Screen::gump_text_pass`), over the picture and under egui, the same corner
+  the old `egui::Panel::bottom` claimed. `collect_gump` is written to be
+  reusable rather than single-purpose: it is where a gump dialog's own
+  `{ text }` / `{ croppedtext }` captions are meant to draw through too, once
+  that lands — see the next bullet.
 
 What is still M4 proper: the gump art (`gumpart.mul`), which is why a
 `{ gumppic }` is drawn as a placeholder naming its graphic; hue lookup for gump
-text; and the journal, of which the speech strip is a six-line stand-in.
+text; and the dialogs themselves, still egui's widgets over the client's own
+gump art.
 
 ### Containers — the wire and the memory, not yet the window
 
@@ -1226,8 +1238,76 @@ does not carry yet.
 
    What a paperdoll adds is *buttons* over its own art, which a container has
    none of. The hit test they want is now written — a button is a picture in the
-   list and `gump::pick`'s index names it — and what is left is the layout and
-   the `PaperdollFlags` behind it. See the backlog below.
+   list and `gump::pick`'s index names it — and the layout is written with it.
+
+6. **The frame's furniture is a table, and the name is a line of `fonts.mul`.**
+   `PaperDollGump.BuildGump` puts every one of its buttons at `x = 185`, `y = 44
+   + 27 * n`, and which button is on which row is the whole of the layout:
+   help, options, log out, quests, skills, guild and the peace/war toggle down
+   our own frame, then the status button on row seven — which is the only one a
+   *stranger's* frame carries, because `0x07D1` has no column to put the rest
+   in. Three pictures are not buttons at all: the profile scroll at `(25, 196)`,
+   the party manifest fourteen pixels along it, and the virtue menu at `(80,
+   4)`; the reference answers a **double** click on those and a single one on
+   the buttons, which is why `paperdoll::DollButton` names windows rather than
+   actions and leaves that difference to the caller.
+
+   The peace/war toggle is the one picture the frame is drawn differently for,
+   so `Whose::Own { war }` carries it: the flag comes off the `0x88`'s own
+   `PaperdollFlags`, and the toggle only exists on our own doll, which is why
+   the field is on that variant rather than beside it.
+
+   The name is `new Label("", false, 0x0386, 185, font: 1)` at `(39, 262)` —
+   and the `false` is `isUnicode`, which makes it the one string in this
+   client's interface whose face the reference states outright: `fonts.mul`'s
+   face 1, cropped to 185 pixels. It is drawn through `text::collect_gump` like
+   every other line of interface text, so the plate is a `GumpLabel` and not a
+   window kind of its own.
+
+7. **A `0xB0` dialog is a window of ours now, not an egui one.** This is the
+   layout fix, and it is worth writing down what was wrong: a dialog used to be
+   an egui window with the shard's own background art drawn underneath it. That
+   is two frames — egui's title bar and close box around the picture of a frame
+   the shard sent — and, worse, two opinions about where everything in it is.
+   egui needs a widget's size *before* the art is packed, so `client/app`'s
+   gump module had invented one: a 26 by 20 button, a 220-point label, and a
+   content rectangle measured from those. The clickable rectangle, the picture
+   under it and the window's own extent were three different rectangles.
+
+   All three are one list now. `gump::window` answers a `Window` — pictures,
+   captions, `hits` and `fields` — and every question is asked of it:
+   `gump::pick` for what was clicked, `Window::hits` for what that means,
+   `gump::field` for the one thing in a window that is a box rather than a
+   picture. Position, drag, z-order and closing are `App::own_windows`', the
+   same machinery a container and a paperdoll have used since decision 5, so
+   `WindowSubject` grew a third variant and nothing else about it changed.
+
+   Four things fall out of it, and each was a defect before:
+
+   - **A dialog opens where the shard put it.** A `0xB0` carries a coordinate,
+     unlike a `0x24`, so dialogs are not cascaded — the client no longer
+     second-guesses a layout it was handed.
+   - **A button presses on the way down and answers on the way up**, with the
+     pointer still on it. The layout has carried two pictures per button all
+     along and nothing said when to draw the second; it is the mouse, and
+     `Dialogs::held` is where the mouse lives between the two events. It is a
+     `Hit` rather than a button id so that what is drawn pressed and what the
+     release acts on cannot be two values.
+   - **Text is the client's own.** A caption is drawn from `fonts.mul` through
+     the gump pass, tinted by the same hue ramp every picture is, at the
+     coordinate the layout named — and the layout's text hue is **one less**
+     than the wire hue it means (`Label`'s and `CroppedText`'s constructors both
+     add one), which the egui path had never done. `{ croppedtext }` crops
+     character by character, which is what the reference's `FontStyle.Cropped`
+     does and what a wrapping label did not.
+   - **`{ textentry }` works without a widget.** A field is a box with an id;
+     clicking one takes the keyboard, `winit`'s own `KeyEvent::text` fills it,
+     and a caret is drawn at `text::gump_width` past the last character. The
+     keyboard is given back on Escape, on Enter and on a press outside the
+     window, so a letter is a letter typed only while a field is asking for one.
+
+   What is still egui's is the dev HUD and the panels around the world. Nothing
+   the shard sends is drawn by it any more.
 
 Done: double-clicking a mobile — or ourselves — opens a framed window that draws
 its body and its equipment in the reference's order and hues, with the backpack
@@ -1235,7 +1315,27 @@ last; the window drags, raises and closes like a container's; a unit test says a
 female body's order differs from a male one where the reference says it does;
 and the client-file tests say a layer with `anim_id == 0` draws nothing, that
 every gump a dressed body asks for is one the client ships, and that the female
-fallback is exercised rather than merely available.
+fallback is exercised rather than merely available. The frame carries its own
+buttons and its name plate, and the client-file tests say every one of those
+pictures — up and pressed, on both frames — is one the client ships.
+
+Done for dialogs: a `0xB0` opens where the shard asked, drags by its own
+background, closes on the right button with an answer of button zero (unless
+`{ noclose }`), presses its buttons in their pressed art, flips its pages, keeps
+its switches, takes typing into its fields, and draws its own text — with no
+egui window anywhere in it.
+
+**Seeing a window's layout without running the client**:
+`crates/client/render/tests/gumpshot.rs` composites a laid-out window out of the
+same quads the GPU pass draws and writes it to `target/gumps/`. It is
+`artshot.rs` one layer up — that one answers what the artist drew, this one
+answers where we put it — and it is how the paperdoll's buttons and the
+nine-slice's seams were argued rather than guessed:
+
+```sh
+OPENSHARD_CLIENT=… cargo test -p openshard-client-render --test gumpshot \
+    -- --ignored --nocapture
+```
 
 ## M5 — interaction
 
@@ -2755,55 +2855,95 @@ Each is a seam the work made visible. None blocks the next milestone.
   whole window: no dialog this engine draws has two groups, so nothing shows the
   difference yet. The client's own rule is per page, and a pack's gump with two
   groups on one page would answer with both set.
-- **`{ nodispose }` is not honoured and right-click dismisses nothing.** There
-  is no right-click dismissal on this side to suppress, so the flag is read and
-  dropped. It becomes real the moment the window gets one.
+- **`{ nodispose }` is not honoured.** The right button dismisses a dialog now —
+  with an answer of button zero, which is what the reference's close box sends —
+  and `{ noclose }` refuses it. `{ nodispose }` is a *server*-side "do not let
+  this be closed even by that", and this client reads it and drops it: the two
+  flags want telling apart before either is honoured properly.
 - **The speech line has no history and no modes.** No up-arrow recall, and
   everything is said as `TalkMode::Regular`: emote, whisper and yell are the
   same packet with another mode byte, and there is nothing in the UI to pick one.
-
+  Still true after the line moved off egui — `App::Chat` only holds what is
+  typed, the caret and whether it is focused.
+- ~~**The speech line and journal are egui's.**~~ Fixed: `App::chat`,
+  `App::window_event`'s keyboard routing and `App::draw`'s use of
+  `text::{GumpLabel, collect_gump}` replace `shell::speech_line` and
+  `shell::Hud::said` — see the M4 section above. What did not move with it:
+  no IME composition (a `KeyEvent`'s own `text` is enough for `fonts.mul`'s
+  ASCII table, and a face with no Cyrillic or CJK glyphs has nothing an IME
+  popup would help read anyway); no text selection or clipboard cut/copy/paste;
+  no mouse hit test to focus it — Enter is the only way in, matching the
+  reference client's own gesture.
 
 ### Found while drawing the art
 
-- **`tilepic` and `tilepichue` still draw a placeholder.** They name *static*
-  art, which lives in the world's `StaticAtlas`, so a gump window that shows an
-  item needs a second gump pass bound to that texture — the same `GumpRenderer`
-  with different pixels, not a new kind of pass. This is the piece a container
-  and a shop both stop at, and the paperdoll's equipment layers are a third
-  caller of it.
-- **Gump text is still egui's font, not the client's.** `Caption` comes out of
-  `gump::window` with the index into the gump's text table and nowhere to go:
-  drawing it wants a third `GumpRenderer` bound to `App::font_atlas`, at which
-  point `{ text }`, `{ croppedtext }` and the hue lookup all move out of
-  `client/app/src/gump.rs`. Until then the two halves disagree about what a
-  window's letters look like.
+- ~~**`tilepic` and `tilepichue` still draw a placeholder.**~~ Fixed twice
+  over: the picture came first — `GumpArt::Item` puts static art in the *gump*
+  atlas beside the gump art, keyed so the two overlapping index spaces cannot
+  answer for each other — and the placeholder that used to be drawn on top of it
+  went with the egui half. A `{ tilepic }` is one picture in the window's list
+  now, like every other.
+- ~~**Gump text is still egui's font, not the client's.**~~ Fixed. A `Caption`
+  is resolved against the gump's own text table by `Dialogs::lines` and drawn
+  through `text::collect_gump` on the pass bound to `App::font_atlas`, tinted by
+  the same ramp the pictures are. Two things came out of it that the egui path
+  had wrong: the layout's text hue is one *less* than the wire hue it means, and
+  `{ croppedtext }` crops rather than wraps. What is left is the face — see the
+  `unifont.mul` entry below.
 - **`{ checkertrans }` is not drawn at all.** It is a translucent darkening and
   the pass discards rather than blends, deliberately (`gump.wgsl`). Drawing it
   wants either a blend state on a second pipeline or the client's own
   checkerboard, which is what the reference actually uses — a 50% dither, not an
   alpha.
-- **The window is still egui's, and that is the next decision, not a bug.** The
-  frame is transparent, the buttons are invisible click targets over their own
-  art, and the art is placed at the rectangle egui allocated. What egui still
-  owns is dragging, the close box, z-order between two open gumps, and the
-  click. Owning those here means the hit test (`gump::pick`, written and in use
-  by this client's own windows — decision 5 in M4), a window list with an order,
-  and `{ nomove }` / `{ noclose }` honoured by us. A server gump is a laid-out
-  list of pictures like any other window, so what is missing is not the picking
-  but the list: `App::own_windows` holding a third kind of subject, and the
-  layout built where egui's rectangle is built today.
-- **A button's click target is `BUTTON_SIZE`, not its art.** egui is put at a
-  fixed rectangle because this half does not know how big the picture is; the
-  atlas does. Wrong in both directions on a big button, and it will be right for
-  free once the hit test is ours.
+- ~~**The window is still egui's, and that is the next decision, not a bug.**~~
+  Taken, and it went the way this entry guessed: `WindowSubject::Dialog` is the
+  third kind of subject in `App::own_windows`, the layout is built where egui's
+  rectangle used to be, and dragging, z-order, the close gesture, `{ nomove }`
+  and `{ noclose }` are all ours. See decision 7 in M4 for what the egui window
+  was actually costing — three rectangles for one button.
+- ~~**A button's click target is `BUTTON_SIZE`, not its art.**~~ Fixed, and for
+  free as predicted: a button is a picture in the window's list, and a click on
+  one is an opaque texel of that picture (`gump::pick`). There is no rectangle
+  left to be wrong.
 - **Nothing bounds the gump atlas.** It grows as windows open and never shrinks,
   and `AtlasError::Full` is reported per window and then drawn without whatever
   is missing. A session that opens hundreds of distinct dialogs is not a case
   anyone has yet, but the eviction question is the same one `StaticAtlas` has
   and neither has an answer.
-- **`content_size` is estimated, so art can overflow its window.** The egui half
-  sizes a window from constants per element; the art's real extent is in the
-  atlas. They agree closely enough for `.admin` and will not for a paperdoll.
+- ~~**`content_size` is estimated, so art can overflow its window.**~~ Gone with
+  the thing that needed it: a window has no size at all now, only the list of
+  pictures it drew — the same answer `container::size` losing its caller gave in
+  decision 5.
+
+### Found while giving the windows their layout
+
+- **Gump text is `fonts.mul`'s face 1, and the reference's is `unifont.mul`.**
+  `Label`'s constructor for a `{ text }` passes `isUnicode = true`, so the real
+  face is a Unicode one this engine has no reader for. `gump::CAPTION_FONT` is
+  the nearest thing shipped — the same face `PaperDollGump` names for its own
+  title — and the cost is the character set: a shard writing a dialog in
+  anything past Latin-1 gets those glyphs skipped rather than drawn. A
+  `unifont.mul` reader is the fix, beside `font.rs`, and the same one the
+  journal will want the day a shard says something in Cyrillic.
+- **A paperdoll's buttons press and do nothing.** The layout, the hit table and
+  the pressed art are all there (`paperdoll::DollButton`), and not one of the
+  eleven is wired to anything: there is no status bar, no skill list, no options
+  window and no log-out path to open. The three scrolls want a *double* click
+  rather than a single one, which is a distinction `App` does not draw for a
+  window's own pictures yet.
+- **Nothing remembers where a window was.** The reference keeps a per-container
+  and per-paperdoll position across sessions (`UIManager.SavePosition`); this
+  cascades containers from a constant and puts a dialog where the shard asked,
+  every time. The `Desk` file is where such a thing would live.
+- **`{ html }` and `{ htmlgump }` draw nothing.** They parse and are dropped:
+  the tags want a parser, a scrollbar and a background flag, which is three
+  features and not one. A shard's book and its quest text are the callers.
+- **A gump's own scale is egui's `pixels_per_point`.** With the dialogs off egui
+  that is no longer a shared space that must agree — it is only what makes the
+  interface the same size as the panels around it. The day the panels go, this
+  becomes a setting of the client's own, and `App::gump_scale` is the one place
+  it is read.
+
 ## Backlog, found while chasing a slow debug build
 
 - ~~**A frame walks the visible rectangle four times.**~~ Twice now, and the two

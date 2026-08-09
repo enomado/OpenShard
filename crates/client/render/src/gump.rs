@@ -41,7 +41,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use openshard_protocol::gump::layout::Element;
-use openshard_protocol::gump::{RawButtonId, RawSwitchId};
+use openshard_protocol::gump::{GumpButton, RawButtonId, RawSwitchId};
+use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::art::{Art, ArtError};
 use openshard_uofiles::gumpart::{GumpError, Gumps};
@@ -631,6 +632,22 @@ pub fn art_of(elements: &[Element]) -> BTreeSet<GumpArt> {
     wanted
 }
 
+/// The face a layout's `{ text }` and `{ croppedtext }` are drawn in.
+///
+/// **An approximation, and the only one in this module.** The reference draws
+/// both through a *Unicode* face — `new Label(text, true, hue, 0, ...)`, where
+/// the `true` is `isUnicode` and the `0` is the face — which lives in
+/// `unifont.mul`, a file `openshard_uofiles` has no reader for. `fonts.mul`'s
+/// face 1 is the nearest thing the client ships: the same face `PaperDollGump`
+/// names outright for its own title (see [`crate::paperdoll::NAME_FONT`]), and
+/// small enough that a caption laid out for the real one still fits its box.
+///
+/// What it costs is the character set: `fonts.mul` is single-byte, so a shard
+/// that writes a dialog in anything past Latin-1 gets those glyphs skipped
+/// rather than drawn — see [`crate::text::collect_gump`]. `docs/client.md`
+/// carries the backlog entry.
+pub const CAPTION_FONT: Font = Font(1);
+
 /// One line of a window's text, resolved to where it goes.
 ///
 /// The line itself is *not* here: a layout names a row of the text table that
@@ -652,12 +669,74 @@ pub struct Caption {
     pub clip: Option<(i32, i32)>,
 }
 
-/// A window, laid out: what to draw and what to write on it.
+/// What a click on one of a window's pictures means.
 ///
-/// Two lists and not one, because they are drawn through two atlases — gump art
-/// and a font — and a draw call binds one texture. Their order relative to each
-/// other is fixed rather than interleaved: every picture, then every caption,
-/// which is what the reference does by drawing text controls after the
+/// The whole of a `0xB0`'s interactivity, and deliberately a *fourth* list
+/// beside the pictures rather than a field on [`Picture`]: what is drawn and
+/// what answers the mouse are two different questions about the same list, and
+/// only some of the answers are on the wire at all. Two of these four never
+/// reach the server — see [`Window::hits`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hit {
+    /// A reply button. The server hears this one, and the window closes on it.
+    Reply(RawButtonId),
+    /// A page button: show this page instead. `{ button ... 0 N id }`, which is
+    /// answered inside the client and which the server is never told about.
+    Page(u32),
+    /// A checkbox, which answers for itself.
+    Check(RawSwitchId),
+    /// A radio, which turns the rest of its group off on the way on. Which
+    /// switches *are* its group is the layout's, not this crate's: the wire has
+    /// no group id, and the client that sends two of one group set is the one
+    /// at fault.
+    Radio(RawSwitchId),
+}
+
+/// A `{ textentry }`: a box the player types into.
+///
+/// The one thing in a window that is a rectangle and not a picture, and so the
+/// one thing [`pick`] cannot answer about — there is no art to test a texel of.
+/// It is picked by its box instead ([`field`]), which is exactly what the
+/// reference does with it: an `StbTextBox` is a control with bounds and no
+/// texture of its own.
+///
+/// What is *in* it is not here. A field starts out holding a line of the gump's
+/// text table and holds whatever has been typed since, and both of those belong
+/// to whoever owns the keyboard — see `client/app`'s `Dialogs`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Field {
+    /// Its top-left corner, in the window's own gump pixels.
+    pub at: GumpPixel,
+    /// How wide and how tall the box is.
+    pub size: (i32, i32),
+    /// The id its contents come back to the server under.
+    pub id: u16,
+    /// Which line of the gump's text table it starts out holding.
+    pub line: usize,
+    /// The hue its text is drawn in, already a wire hue — see [`text_hue`].
+    pub hue: Hue,
+}
+
+/// Which field the cursor is in, if any.
+///
+/// A box and not a texel, for the reason [`Field`] gives, and the *last* one
+/// wins for [`pick`]'s reason: later in the list is later drawn. Two fields that
+/// overlap are a layout the shard should not have sent, and answering with the
+/// topmost is the same answer the picture walk would give.
+pub fn field(fields: &[Field], cursor: GumpPixel) -> Option<u16> {
+    fields.iter().rev().find_map(|field| {
+        let (x, y) = (cursor.x - field.at.x, cursor.y - field.at.y);
+        (x >= 0 && y >= 0 && x < field.size.0 && y < field.size.1).then_some(field.id)
+    })
+}
+
+/// A window, laid out: what to draw, what to write on it, and what answers the
+/// mouse.
+///
+/// Three lists and not one. The first two are drawn through two atlases — gump
+/// art and a font — and a draw call binds one texture; their order relative to
+/// each other is fixed rather than interleaved: every picture, then every
+/// caption, which is what the reference does by drawing text controls after the
 /// background they sit on. A layout that put a picture *over* a label would
 /// draw it under one here, and no gump in the wild does.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -666,6 +745,18 @@ pub struct Window {
     pub pictures: Vec<Picture>,
     /// The text on top of it.
     pub captions: Vec<Caption>,
+    /// Which pictures answer the mouse, by their index in `pictures`.
+    ///
+    /// Keyed by index rather than carried on the picture itself, because
+    /// [`pick`] answers an index and this is the table that turns one into a
+    /// meaning — the two halves of one lookup, and a window whose art and hit
+    /// test came from two different walks is exactly what
+    /// [`crate::container::pick`]'s docs refuse. A background's nine pieces, a
+    /// `{ gumppic }` and a caption are simply not in it.
+    pub hits: BTreeMap<usize, Hit>,
+    /// The boxes the player can type into, which are not pictures at all — see
+    /// [`Field`].
+    pub fields: Vec<Field>,
 }
 
 /// Lay a parsed layout out at `at`, showing `page`.
@@ -680,7 +771,10 @@ pub struct Window {
 /// - `on` — which switches are set. `{ checkbox }` carries its *initial* state
 ///   and nothing else; after the player has touched one, the layout is stale.
 /// - `held` — which button is being pressed right now, drawn in its second
-///   picture. Nothing sends this and nothing records it: it is the mouse.
+///   picture. Nothing sends this and nothing records it: it is the mouse. It
+///   is a [`Hit`] and not a button id because that is what a press *is* here —
+///   the same value [`pick`] and [`Window::hits`] answer with, so what is drawn
+///   pressed and what the release will act on cannot be two different things.
 ///
 /// `{ checkertrans }` is not drawn. It is a darkened translucent rectangle and
 /// this pass has no blending — see [`GumpRenderer`] — so it is left out rather
@@ -690,7 +784,7 @@ pub fn window(
     at: GumpPixel,
     page: u32,
     on: &BTreeSet<RawSwitchId>,
-    held: Option<RawButtonId>,
+    held: Option<Hit>,
     atlas: &GumpAtlas,
 ) -> Window {
     let mut drawn = Window::default();
@@ -738,13 +832,22 @@ pub fn window(
                 y,
                 normal,
                 pressed,
+                kind,
+                page: target,
                 id,
-                ..
             } => {
-                let face = if held == Some(*id) { *pressed } else { *normal };
+                // The two kinds are two different ends of a click, and the
+                // difference is not cosmetic: one packet leaves and one does
+                // not. See [`Hit`].
+                let hit = match kind {
+                    GumpButton::Page => Hit::Page(*target),
+                    GumpButton::Reply => Hit::Reply(*id),
+                };
+                let face = if held == Some(hit) { *pressed } else { *normal };
                 drawn
                     .pictures
                     .push(Picture::plain(art(face), at.offset(GumpPixel::new(*x, *y))));
+                drawn.hits.insert(drawn.pictures.len() - 1, hit);
             }
             Element::Check(switch) | Element::Radio(switch) => {
                 let set = if on.contains(&switch.id) {
@@ -756,6 +859,11 @@ pub fn window(
                     art(set),
                     at.offset(GumpPixel::new(switch.x, switch.y)),
                 ));
+                let hit = match element {
+                    Element::Radio(_) => Hit::Radio(switch.id),
+                    _ => Hit::Check(switch.id),
+                };
+                drawn.hits.insert(drawn.pictures.len() - 1, hit);
             }
             // A static from the world's art, laid on a window: an item in a
             // container, a reagent on a shopping list, the picture beside a
@@ -770,7 +878,7 @@ pub fn window(
             ),
             Element::Label { x, y, hue, line } => drawn.captions.push(Caption {
                 at: at.offset(GumpPixel::new(*x, *y)),
-                hue: Hue(*hue as u16),
+                hue: text_hue(*hue),
                 line: *line,
                 clip: None,
             }),
@@ -783,17 +891,50 @@ pub fn window(
                 line,
             } => drawn.captions.push(Caption {
                 at: at.offset(GumpPixel::new(*x, *y)),
-                hue: Hue(*hue as u16),
+                hue: text_hue(*hue),
                 line: *line,
                 clip: Some((*width, *height)),
             }),
+            Element::TextEntry {
+                x,
+                y,
+                width,
+                height,
+                hue,
+                entry_id,
+                line,
+            } => drawn.fields.push(Field {
+                at: at.offset(GumpPixel::new(*x, *y)),
+                size: (*width, *height),
+                id: *entry_id,
+                line: *line,
+                hue: text_hue(*hue),
+            }),
             // Everything else is either state the caller already read (a flag),
-            // text this crate cannot lay out yet (html, an input box), or the
-            // translucent rectangle the module docs above account for.
+            // text this crate cannot lay out yet (html), or the translucent
+            // rectangle the module docs above account for.
             _ => {}
         }
     }
     drawn
+}
+
+/// The wire hue a layout's text hue means.
+///
+/// **One more than the number in the layout**, and this is not an off-by-one to
+/// be tidied away: a wire hue is one-based, with zero meaning "no tint at all"
+/// (see [`openshard_uofiles::hues::Hues::get`]), and a gump's text hue is an
+/// index into the same table written the other way round. The reference does
+/// exactly this — `UInt16Converter.Parse(parts[3]) + 1` in both `Label`'s and
+/// `CroppedText`'s constructors — and reading the layout's number as a wire hue
+/// draws every line of every dialog in the colour of the row above the one the
+/// shard asked for.
+///
+/// Only text. A `{ gumppic }`'s hue is already a wire hue and is passed through
+/// as it stands, which is the asymmetry the reference has and not one invented
+/// here.
+fn text_hue(hue: u32) -> Hue {
+    Hue((hue as u16).wrapping_add(1))
 }
 
 /// Where a gump frame is being drawn, and how big its pixels are.
@@ -1368,7 +1509,7 @@ mod tests {
             GumpPixel::default(),
             0,
             &BTreeSet::new(),
-            Some(RawButtonId(2)),
+            Some(Hit::Reply(RawButtonId(2))),
             &atlas,
         );
         let graphics: Vec<GumpArt> = showing.pictures.iter().map(|picture| picture.graphic).collect();
@@ -1451,6 +1592,91 @@ mod tests {
             .expect("one small block fits an atlas 2048 on a side");
         assert!(atlas.sprite(GumpArt::Item(Graphic(1))).is_none());
         assert!(atlas.sprite(GumpArt::Gump(Graphic(2))).is_none());
+    }
+
+    /// A window's hit table names the pictures a click means something on, and
+    /// the two kinds of button are two different meanings: one leaves on the
+    /// wire and one never does. A background's nine pieces are in neither.
+    #[test]
+    fn a_button_says_whether_its_click_reaches_the_server() {
+        let atlas = atlas_of((0..9).map(|piece| (Graphic(100 + piece), block(8, 8))));
+        let button = |normal, kind, page, id| Element::Button {
+            x: 0,
+            y: 0,
+            normal,
+            pressed: normal + 1,
+            kind,
+            page,
+            id: RawButtonId(id),
+        };
+        let elements = vec![
+            Element::Background {
+                x: 0,
+                y: 0,
+                width: 40,
+                height: 40,
+                gump: 100,
+            },
+            button(100, openshard_protocol::gump::GumpButton::Reply, 0, 13),
+            button(102, openshard_protocol::gump::GumpButton::Page, 2, 0),
+        ];
+        let showing = window(&elements, GumpPixel::default(), 0, &BTreeSet::new(), None, &atlas);
+        assert_eq!(
+            showing.pictures.len(),
+            11,
+            "a background's nine pieces and the two buttons"
+        );
+        assert_eq!(showing.hits.get(&9), Some(&Hit::Reply(RawButtonId(13))));
+        assert_eq!(showing.hits.get(&10), Some(&Hit::Page(2)));
+        assert_eq!(
+            showing.hits.len(),
+            2,
+            "no piece of the background answers a click"
+        );
+    }
+
+    /// A checkbox and a radio are drawn the same way and answered differently:
+    /// one turns its neighbours off and the other does not, and the hit is where
+    /// that difference is carried.
+    #[test]
+    fn a_switch_says_which_kind_of_switch_it_is() {
+        let atlas = atlas_of((0..2).map(|piece| (Graphic(30 + piece), block(4, 4))));
+        let switch = |id| Switch {
+            x: 0,
+            y: 0,
+            off: 30,
+            on: 31,
+            initial: false,
+            id: RawSwitchId(id),
+        };
+        let elements = vec![Element::Check(switch(1)), Element::Radio(switch(2))];
+        let showing = window(&elements, GumpPixel::default(), 0, &BTreeSet::new(), None, &atlas);
+        assert_eq!(showing.hits.get(&0), Some(&Hit::Check(RawSwitchId(1))));
+        assert_eq!(showing.hits.get(&1), Some(&Hit::Radio(RawSwitchId(2))));
+    }
+
+    /// A layout's text hue is one *less* than the wire hue it means, and reading
+    /// it as a wire hue draws every dialog in the colour of the row above the
+    /// one the shard asked for. See [`text_hue`].
+    #[test]
+    fn a_caption_takes_the_hue_the_layout_asked_for_plus_one() {
+        let atlas = atlas_of([]);
+        let elements = vec![Element::Label {
+            x: 3,
+            y: 4,
+            hue: 0x0480,
+            line: 0,
+        }];
+        let showing = window(
+            &elements,
+            GumpPixel::new(10, 20),
+            0,
+            &BTreeSet::new(),
+            None,
+            &atlas,
+        );
+        assert_eq!(showing.captions[0].hue, Hue(0x0481));
+        assert_eq!(showing.captions[0].at, GumpPixel::new(13, 24));
     }
 
     /// `{ tilepic }` is the one element whose picture comes out of the world's

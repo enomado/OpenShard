@@ -1,0 +1,344 @@
+//! A laid-out window, written out where a person can look at it.
+//!
+//! [`artshot`](../artshot.rs)'s twin, one layer up. That tool answers "what did
+//! the artist draw"; this one answers "where did we put it" — which is the only
+//! way to argue about a window's layout at all. A paperdoll's frame, its doll
+//! and its buttons are three pictures whose *relationship* is the whole subject,
+//! and a hex id says nothing about it.
+//!
+//! What is composited is [`gump::collect`]'s own quads over
+//! [`GumpAtlas`]'s own pixels — the list the GPU pass draws, sampled from the
+//! texture it samples — so a placement bug shows up here exactly as it shows up
+//! on the screen. What is *not* here is the hue lookup and the text: a caption
+//! is drawn as a cross at its origin, because where a line of text starts is a
+//! layout fact and which glyphs it is made of is not.
+//!
+//! Ignored and gated on `OPENSHARD_CLIENT`, like every other test that reads an
+//! install:
+//!
+//! ```sh
+//! OPENSHARD_CLIENT=… cargo test -p openshard-client-render --test gumpshot \
+//!     -- --ignored --nocapture
+//! ```
+//!
+//! The pictures land under `target/gumps/`, or wherever `OPENSHARD_GUMP_OUT`
+//! points, at `OPENSHARD_GUMP_SCALE` screen pixels per gump pixel.
+
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use openshard_client_render::atlas::FontAtlas;
+use openshard_client_render::gump::{self, ArtFiles, GumpAtlas, GumpPixel, Picture};
+use openshard_client_render::mobiles::EquipmentLayer;
+use openshard_client_render::paperdoll::{self, Wearer, Whose};
+use openshard_client_render::text::{self, GumpLabel};
+use openshard_client_render::{container, renderer};
+use openshard_protocol::containers::{ContainedItem, GridSlot};
+use openshard_protocol::gump::layout::parse;
+use openshard_protocol::gump::{ButtonId, GumpButton, GumpLayout, GumpPoint, SwitchId};
+use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::{Graphic, Hue, Layer};
+use openshard_uofiles::art::Art;
+use openshard_uofiles::equipconv::EquipConv;
+use openshard_uofiles::font::AsciiFonts;
+use openshard_uofiles::gumpart::Gumps;
+use openshard_uofiles::tiledata::TileData;
+
+/// The colour behind the window: one no gump pixel can be, so that "transparent"
+/// and "black" are two different things in the picture — [`artshot`]'s own
+/// backdrop, for the same reason.
+const BACKDROP: [u8; 3] = [64, 0, 96];
+
+/// A male human and a female one.
+const MALE: u16 = 0x0190;
+const FEMALE: u16 = 0x0191;
+
+/// The files every scene below is drawn out of, or `None` where no client is
+/// installed.
+struct Client {
+    gumps: Gumps,
+    art: Art,
+    equip_conv: EquipConv,
+    tiledata: TileData,
+    /// `fonts.mul`, packed: the face a window's own text is drawn in.
+    fonts: FontAtlas,
+}
+
+fn client() -> Option<Client> {
+    let dir = PathBuf::from(std::env::var_os("OPENSHARD_CLIENT")?);
+    let fonts = AsciiFonts::open(&dir).expect("fonts.mul");
+    Some(Client {
+        gumps: Gumps::open(&dir).expect("gumpartLegacyMUL.uop"),
+        art: Art::open(&dir).expect("artLegacyMUL.uop"),
+        // Optional in an install, and its absence resolves nothing — which is
+        // the ordinary case for most rows anyway.
+        equip_conv: EquipConv::load(dir.join("Equipconv.def")).unwrap_or_default(),
+        tiledata: TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul"),
+        fonts: FontAtlas::build(&fonts).expect("ten faces of small glyphs fit an atlas"),
+    })
+}
+
+impl Client {
+    fn files(&self) -> ArtFiles<'_> {
+        ArtFiles {
+            gumps: &self.gumps,
+            items: &self.art,
+        }
+    }
+
+    /// The `AnimID` a worn item draws by, which is what a paperdoll layer
+    /// carries: the wire graphic is `tiledata`'s key and never reaches one.
+    fn worn(&self, layer: Layer, graphic: u16) -> EquipmentLayer {
+        EquipmentLayer {
+            graphic: self.tiledata.static_tile(graphic).anim_id,
+            hue: Hue::NONE,
+            layer,
+        }
+    }
+}
+
+fn out_dir() -> PathBuf {
+    match std::env::var_os("OPENSHARD_GUMP_OUT") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target/gumps"),
+    }
+}
+
+/// Screen pixels per gump pixel. Two by default: gump art is small, and a
+/// one-pixel seam between two pieces of a background is the defect this tool
+/// exists to show.
+fn scale() -> u32 {
+    std::env::var("OPENSHARD_GUMP_SCALE")
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(2)
+}
+
+/// Every window in this file, side by side on disk.
+#[test]
+#[ignore = "reads a real install and writes pictures for a person"]
+fn what_the_layout_puts_where() {
+    let Some(client) = client() else {
+        return;
+    };
+    let out = out_dir();
+    fs::create_dir_all(&out).expect("a place to write");
+
+    paperdolls(&client, &out);
+    bag(&client, &out);
+    dialog(&client, &out);
+}
+
+/// Our own doll and a stranger's, dressed the same.
+///
+/// The two frames differ — `0x07D0` has room down its right-hand side for the
+/// buttons a player gets over their own — and drawing both is what makes the
+/// difference visible rather than asserted.
+fn paperdolls(client: &Client, out: &Path) {
+    // A shirt, a pair of pants, a robe, boots and the backpack every character
+    // wears: enough layers that an ordering mistake shows.
+    let equipment = [
+        client.worn(Layer::SHIRT, 0x1517),
+        client.worn(Layer::PANTS, 0x152E),
+        client.worn(Layer::SHOES, 0x170B),
+        client.worn(Layer::ROBE, 0x1F03),
+        client.worn(Layer::BACKPACK, 0x0E75),
+    ];
+    for (body, whose, who, name) in [
+        (
+            MALE,
+            Whose::Own { war: false },
+            "Lord British",
+            "paperdoll-male-own",
+        ),
+        (
+            FEMALE,
+            Whose::Another,
+            "Sarah the tailor",
+            "paperdoll-female-another",
+        ),
+    ] {
+        let wearer = Wearer {
+            body,
+            hue: Hue::NONE,
+            equipment: &equipment,
+        };
+        let at = GumpPixel::new(0, 0);
+        let doll = paperdoll::window(
+            Some(&wearer),
+            whose,
+            // Nothing held: what a pressed button looks like is a question for
+            // the app, which is the only thing that has a mouse.
+            None,
+            &client.equip_conv,
+            &client.gumps,
+            at,
+        );
+        shoot(client, &doll.pictures, &[paperdoll::name(who, at)], out, name);
+    }
+}
+
+/// A container: one background out of `gumpart` with the world's own art on it.
+fn bag(client: &Client, out: &Path) {
+    const BACKPACK: Graphic = Graphic(0x003C);
+    let item = |serial: u32, graphic: u16, x: i32, y: i32| ContainedItem {
+        serial: Serial::new(serial).unwrap(),
+        graphic: Graphic(graphic),
+        amount: 1,
+        at: GumpPoint::new(x, y),
+        grid: GridSlot(0),
+        hue: Hue::NONE,
+    };
+    let contents = [
+        item(0x4000_0001, 0x0E75, 40, 40),
+        item(0x4000_0002, 0x0F0E, 90, 60),
+        item(0x4000_0003, 0x0EED, 60, 90),
+    ];
+    let pictures = container::window(BACKPACK, &contents, GumpPixel::new(0, 0));
+    shoot(client, &pictures, &[], out, "container-backpack");
+}
+
+/// A `0xB0` dialog, laid out through the same path the shard's own reach: a
+/// background to nine-slice, buttons, a switch and a `{ tilepic }`.
+fn dialog(client: &Client, out: &Path) {
+    let mut layout = GumpLayout::new();
+    layout.background(0, 0, 300, 270, 5054);
+    layout.label(105, 14, 2100, "Admin");
+    layout.button(30, 54, 4005, 4007, GumpButton::Reply, 0, ButtonId(13));
+    layout.label(66, 56, 1153, "Populate Felucca");
+    layout.button(30, 84, 4005, 4007, GumpButton::Reply, 0, ButtonId(14));
+    layout.label(66, 86, 1153, "Wipe spawners");
+    layout.check(30, 120, 210, 211, false, SwitchId(1));
+    layout.label(66, 122, 1153, "Include dungeons");
+    layout.item(200, 150, 0x0E75, 0);
+    layout.cropped_label(30, 200, 120, 20, 1153, "cropped to its own box");
+    let (string, lines) = layout.finish();
+    let lines: Vec<String> = lines.to_vec();
+    let elements = parse(string);
+
+    // Every page's art, packed before the window is laid out: where a
+    // background's edges go is decided by how big its corners turned out to be.
+    let mut atlas = GumpAtlas::build(client.files(), gump::art_of(&elements)).expect("the layout's art");
+    let window = gump::window(&elements, GumpPixel::new(0, 0), 0, &BTreeSet::new(), None, &atlas);
+    // `shoot` grows an atlas of its own from the pictures; this one only
+    // answered the nine-slice's sizes.
+    atlas.take_dirty();
+    // A caption names a *row* of the table that arrived beside the layout, and
+    // resolving one is the caller's job — see `gump::Caption`. This is that
+    // resolution, and in the app it is the same three lines.
+    let text: Vec<GumpLabel<'_>> = window
+        .captions
+        .iter()
+        .map(|caption| GumpLabel {
+            at: caption.at,
+            hue: caption.hue,
+            clip: caption.clip,
+            text: lines[caption.line].as_str(),
+            font: gump::CAPTION_FONT,
+        })
+        .collect();
+    shoot(client, &window.pictures, &text, out, "dialog-admin");
+}
+
+/// Composite a laid-out window and write it out.
+///
+/// The pictures are placed by whoever laid the window out, so the extent drawn
+/// here is theirs too: the bounding box of every quad, plus a margin, and *not*
+/// a size anything asked the window for — see `container::size`'s docs for why
+/// a window has no size to ask about.
+///
+/// The text is composited from the *other* atlas, which is the one thing here
+/// that a single GPU pass could not do either: two textures, two draw calls,
+/// and the letters over the art in both.
+fn shoot(client: &Client, pictures: &[Picture], lines: &[GumpLabel<'_>], out: &Path, name: &str) {
+    let mut atlas = GumpAtlas::empty();
+    atlas
+        .add(client.files(), pictures.iter().map(|picture| picture.graphic))
+        .expect("the window's art");
+    let mut quads = gump::collect(pictures, &atlas);
+    assert!(!quads.is_empty(), "{name} drew nothing at all");
+    let glyphs = text::collect_gump(lines, &client.fonts);
+    let art_quads = quads.len();
+    quads.extend(glyphs);
+
+    const MARGIN: i32 = 8;
+    let (mut left, mut top, mut right, mut bottom) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    for quad in &quads {
+        left = left.min(quad.rect.x as i32);
+        top = top.min(quad.rect.y as i32);
+        right = right.max((quad.rect.x + quad.rect.width) as i32);
+        bottom = bottom.max((quad.rect.y + quad.rect.height) as i32);
+    }
+    let (left, top) = (left - MARGIN, top - MARGIN);
+    let (width, height) = ((right - left + MARGIN) as u32, (bottom - top + MARGIN) as u32);
+
+    let mut rgb = vec![BACKDROP; (width * height) as usize];
+    let side = renderer::SPRITE_ATLAS_SIDE;
+    for (index, quad) in quads.iter().enumerate() {
+        // Which texture this quad samples: the art up to `art_quads`, the font
+        // after it. The GPU says the same thing by binding one and then the
+        // other, and the split is what a draw call is.
+        let texels = match index < art_quads {
+            true => atlas.pixels(),
+            false => client.fonts.pixels(),
+        };
+        // The region is normalised over the atlas; the quad is drawn one texel
+        // to one gump pixel, which is what the pass does with `Nearest` and no
+        // camera. So the copy is a rectangle, not a sample.
+        let (u, v) = (
+            (quad.region.u * side as f32).round() as i32,
+            (quad.region.v * side as f32).round() as i32,
+        );
+        for row in 0..quad.rect.height as i32 {
+            for column in 0..quad.rect.width as i32 {
+                let at = ((v + row) as usize * side as usize + (u + column) as usize) * 4;
+                // Transparent where nothing was packed: the pass discards those
+                // texels rather than blending them.
+                if texels[at + 3] == 0 {
+                    continue;
+                }
+                let x = quad.rect.x as i32 + column - left;
+                let y = quad.rect.y as i32 + row - top;
+                if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+                    continue;
+                }
+                rgb[(y as u32 * width + x as u32) as usize] = [texels[at], texels[at + 1], texels[at + 2]];
+            }
+        }
+    }
+
+    // The corner every line of text was placed from, so that a caption sitting
+    // a pixel off its box can be seen to be doing so rather than read as the
+    // font's own bearing.
+    for line in lines {
+        mark(
+            &mut rgb,
+            width,
+            height,
+            line.at.x - left,
+            line.at.y - top,
+            [255, 255, 64],
+        );
+    }
+
+    let scale = scale();
+    let (sw, sh) = (width * scale, height * scale);
+    let mut scaled = Vec::with_capacity((sw * sh * 3) as usize);
+    for y in 0..sh {
+        for x in 0..sw {
+            scaled.extend_from_slice(&rgb[((y / scale) * width + (x / scale)) as usize]);
+        }
+    }
+    let path = out.join(format!("{name}.png"));
+    openshard_client_render::png::write(&path, sw, sh, &scaled).expect("the picture writes");
+    println!("{name}: {width}x{height} gump pixels -> {}", path.display());
+}
+
+/// One pixel of overlay, in gump coordinates already shifted to the picture.
+fn mark(rgb: &mut [[u8; 3]], width: u32, height: u32, x: i32, y: i32, colour: [u8; 3]) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    rgb[(y as u32 * width + x as u32) as usize] = colour;
+}

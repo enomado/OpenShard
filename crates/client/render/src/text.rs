@@ -18,6 +18,7 @@ use openshard_protocol::wire::Hue;
 use crate::atlas::{FontAtlas, TtfAtlas};
 use crate::camera::ViewPixel;
 use crate::geometry::Rect;
+use crate::gump::GumpPixel;
 use crate::sprite::SpriteQuad;
 
 /// One line of overhead text, already resolved to where it hangs.
@@ -139,6 +140,133 @@ pub fn collect_ttf(labels: &[Label<'_>], atlas: &TtfAtlas) -> Vec<SpriteQuad> {
         }
     }
     quads
+}
+
+/// One line of screen-space text — a chat line, a journal row — already
+/// resolved to where it hangs in the interface's own pixels rather than the
+/// world's.
+///
+/// Top-left anchored and not centred, unlike [`Label`]: [`GumpPixel`] is
+/// [`crate::gump::Picture`] and [`crate::gump::Caption`]'s own space, and both
+/// already anchor at a top-left corner, so this keeps one convention across
+/// the gump-pixel family instead of introducing a second.
+#[derive(Clone, Copy, Debug)]
+pub struct GumpLabel<'a> {
+    /// The line's top-left corner, in gump pixels.
+    pub at: GumpPixel,
+    /// The line itself — see [`Label::text`] for the byte-table contract.
+    pub text: &'a str,
+    /// Which face to draw it in.
+    pub font: Font,
+    /// The wire hue to tint it with, or [`Hue::NONE`].
+    pub hue: Hue,
+    /// The box the line is cropped to, or `None` to let it overflow.
+    ///
+    /// `{ croppedtext }` and a paperdoll's name plate are the two things that
+    /// have one; a chat line and a `{ text }` do not. See [`collect_gump`] for
+    /// what cropping means, which is not what wrapping would.
+    pub clip: Option<(i32, i32)>,
+}
+
+/// How far down a lowercase letter hangs from the top of its line, per face —
+/// `FontsLoader._offsetCharTable`.
+const LOWERCASE_DROP: [i32; openshard_uofiles::font::FONT_COUNT] = [2, 0, 2, 2, 0, 0, 2, 2, 0, 0];
+
+/// The same for punctuation and digits — `FontsLoader._offsetSymbolTable`. One
+/// face lifts them by a pixel, which is why this is signed.
+const SYMBOL_DROP: [i32; openshard_uofiles::font::FONT_COUNT] = [1, 0, 1, 1, -1, 0, 1, 1, 0, 0];
+
+/// How far below the top of a line a glyph's own picture starts —
+/// `FontsLoader.GetFontOffsetY`.
+///
+/// A line of `fonts.mul` is drawn from its **top**, and every glyph's picture is
+/// only as tall as its own ink: the file carries no metrics beyond that, so what
+/// keeps `Toy` from stepping up and down is this table — capitals sit flush with
+/// the top of the line and everything else is nudged down a pixel or two, per
+/// face. Without it a lowercase `o` is drawn where a capital `O` would be, which
+/// reads as a line whose small letters float.
+fn glyph_drop(font: Font, char: u8) -> i32 {
+    // The one character with an offset of its own, ahead of every rule below.
+    if char == 0xB8 {
+        return 1;
+    }
+    // Capitals — Latin and Cyrillic — and the dieresis sit flush with the top.
+    if (0x41..=0x5A).contains(&char) || (0xC0..=0xDF).contains(&char) || char == 0xA8 {
+        return 0;
+    }
+    let Some(lowercase) = LOWERCASE_DROP.get(usize::from(font.0)) else {
+        // A face past the file's ten, which nothing should ask for.
+        return 2;
+    };
+    match (0x61..=0x7A).contains(&char) {
+        true => *lowercase,
+        false => SYMBOL_DROP[usize::from(font.0)],
+    }
+}
+
+/// Every [`GumpLabel`] as quads, glyph by glyph, left to right from `at`.
+///
+/// [`collect`]'s screen-space twin: no centring, and the line is anchored by its
+/// **top** rather than growing upward from a baseline — `fonts.mul` carries no
+/// separate baseline, and a top-aligned row is what
+/// [`crate::gump::Picture`]'s own corner already means. Within that line each
+/// glyph sits where [`glyph_drop`] puts it. A byte the atlas never packed is
+/// skipped and does not advance the line, [`collect`]'s contract.
+///
+/// A [`GumpLabel::clip`] box **crops**, character by character, which is what
+/// `{ croppedtext }` means and what the reference's `FontStyle.Cropped` does: a
+/// line that does not fit loses its tail, and is never squeezed or wrapped.
+/// Height is honoured the same way — a glyph that would hang below the box is
+/// where the line stops — so a one-line box stays one line.
+pub fn collect_gump(labels: &[GumpLabel<'_>], atlas: &FontAtlas) -> Vec<SpriteQuad> {
+    let mut quads = Vec::new();
+    for label in labels {
+        let mut x = label.at.x;
+        for byte in label.text.bytes() {
+            let Some(sprite) = atlas.glyph(label.font, byte) else {
+                continue;
+            };
+            let drop = glyph_drop(label.font, byte);
+            if let Some((width, height)) = label.clip {
+                if x + i32::from(sprite.width) > label.at.x + width
+                    || drop + i32::from(sprite.height) > height
+                {
+                    break;
+                }
+            }
+            if sprite.width > 0 && sprite.height > 0 {
+                quads.push(SpriteQuad {
+                    rect: Rect {
+                        x: x as f32,
+                        y: (label.at.y + drop) as f32,
+                        width: f32::from(sprite.width),
+                        height: f32::from(sprite.height),
+                    },
+                    region: sprite.region,
+                    // No depth test in this pass; see `crate::gump`'s module
+                    // docs for why an interface has none.
+                    depth: 0.0,
+                    hue: u32::from(label.hue.0),
+                    place: crate::place::Place::NOWHERE,
+                    twin: 0,
+                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                    volumes: crate::impostor::Range::default(),
+                });
+            }
+            x += i32::from(sprite.width);
+        }
+    }
+    quads
+}
+
+/// The pixel width of `text` set in `font`, the same per-byte advance
+/// [`collect_gump`] walks by — what places a caret at a byte offset into a
+/// line rather than always at its end.
+pub fn gump_width(text: &str, font: Font, atlas: &FontAtlas) -> i32 {
+    text.bytes()
+        .filter_map(|byte| atlas.glyph(font, byte))
+        .map(|sprite| i32::from(sprite.width))
+        .sum()
 }
 
 #[cfg(test)]
@@ -367,5 +495,103 @@ mod tests {
             let without = collect_ttf(&[label(ViewPixel { x: 100, y: 50 }, "Hi")], &atlas);
             assert_eq!(with_gap, without, "the missing '!' left no trace");
         }
+    }
+
+    /// The face every claim below is made about — one with a non-zero drop, so
+    /// that a lowercase letter landing flush with the top would be visible.
+    const GUMP_FACE: Font = Font(1);
+
+    /// A glyph atlas of solid blocks, so that a line's arithmetic can be tested
+    /// without a client's `fonts.mul`.
+    fn font_of(glyphs: impl IntoIterator<Item = (u8, u16, u16)>) -> FontAtlas {
+        FontAtlas::pack(glyphs.into_iter().map(|(char, width, height)| {
+            (
+                GlyphKey {
+                    font: GUMP_FACE,
+                    char,
+                },
+                glyph(width, height),
+            )
+        }))
+        .expect("a handful of small blocks fit an atlas 2048 on a side")
+    }
+
+    /// A line is laid out from its top-left corner, one glyph's own width at a
+    /// time, and a lowercase letter hangs a pixel or two lower than a capital —
+    /// which is the whole of `fonts.mul`'s vertical metrics.
+    #[test]
+    fn a_line_advances_by_each_glyph_and_drops_the_lowercase() {
+        let font = font_of([(b'A', 6, 10), (b'b', 5, 8)]);
+        let quads = collect_gump(
+            &[GumpLabel {
+                at: GumpPixel::new(10, 20),
+                hue: Hue::NONE,
+                clip: None,
+                text: "Ab",
+                font: GUMP_FACE,
+            }],
+            &font,
+        );
+        assert_eq!(quads.len(), 2);
+        assert_eq!(
+            (quads[0].rect.x, quads[0].rect.y),
+            (10.0, 20.0),
+            "a capital is flush"
+        );
+        assert_eq!(
+            (quads[1].rect.x, quads[1].rect.y),
+            (16.0, 20.0 + LOWERCASE_DROP[GUMP_FACE.0 as usize] as f32),
+            "the next glyph starts where the first ended, and hangs lower"
+        );
+    }
+
+    /// `{ croppedtext }` crops and never wraps or squeezes: the glyph that would
+    /// cross the box's right edge is the last one, and the tail is simply gone.
+    #[test]
+    fn a_cropped_line_loses_its_tail_at_the_box() {
+        let font = font_of([(b'M', 8, 10)]);
+        let line = |clip| GumpLabel {
+            at: GumpPixel::new(0, 0),
+            hue: Hue::NONE,
+            clip,
+            text: "MMMM",
+            font: GUMP_FACE,
+        };
+        assert_eq!(
+            collect_gump(&[line(None)], &font).len(),
+            4,
+            "nothing to crop against"
+        );
+        assert_eq!(
+            collect_gump(&[line(Some((20, 20)))], &font).len(),
+            2,
+            "two whole glyphs fit in twenty pixels, and the third is dropped"
+        );
+        assert!(
+            collect_gump(&[line(Some((20, 4)))], &font).is_empty(),
+            "a line taller than its box is not drawn at all"
+        );
+    }
+
+    /// A byte the atlas never packed is skipped and does not advance the line —
+    /// there is no glyph to draw and no width to advance by, and a gap would
+    /// misalign every character after it.
+    #[test]
+    fn a_byte_with_no_glyph_leaves_no_gap() {
+        let font = font_of([(b'A', 6, 10)]);
+        let quads = collect_gump(
+            &[GumpLabel {
+                at: GumpPixel::default(),
+                hue: Hue::NONE,
+                clip: None,
+                // The middle byte is a UTF-8 lead, which `fonts.mul` has no
+                // entry for at all.
+                text: "AжA",
+                font: GUMP_FACE,
+            }],
+            &font,
+        );
+        assert_eq!(quads.len(), 2);
+        assert_eq!(quads[1].rect.x, 6.0, "the second A follows the first");
     }
 }

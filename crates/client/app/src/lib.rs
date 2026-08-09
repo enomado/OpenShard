@@ -145,11 +145,13 @@ use openshard_client_render::select::{self, Select, Selection};
 use openshard_client_render::solids::{self, SolidsRenderer};
 use openshard_client_render::sprite::{SpriteQuad, split_corners};
 use openshard_client_render::statics::PickedStatic;
-use openshard_client_render::text::{self, Label};
+use openshard_client_render::text::{self, GumpLabel, Label};
 use openshard_client_render::{ground, statics};
 use openshard_movement::{Heading, Lean, Leeway, Terrain};
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::gump::GumpId;
+use openshard_protocol::mobile::PaperdollFlags;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
@@ -296,12 +298,29 @@ const FRAMES_SPAN: std::time::Duration = std::time::Duration::from_secs(4);
 /// seconds is ten steps at a walk.
 const SCOPE_SPAN: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// How many of the shard's last lines the speech panel shows.
+/// How many of the journal's last lines are drawn above the speech line.
 ///
-/// Small on purpose: this is not the journal — see [`shell::Hud::said`] — it is
-/// enough to read the answer to what was just typed. The journal itself is kept
-/// whole in the [`WorldView`], capped there, and M4 is what displays it.
-const SPEECH_LINES: usize = 6;
+/// Small on purpose, the same way the egui strip this replaced was: the whole
+/// journal is kept in the [`WorldView`], capped there at
+/// [`openshard_client_net::view::JOURNAL_LINES`], and what is worth *showing*
+/// every frame is enough to read the answer to what was just typed, not a
+/// session's worth of scrollback — there is no scrollback UI yet to read more
+/// of it with.
+const CHAT_LINES: usize = 6;
+
+/// The vertical step between one drawn line of chat text and the next, in
+/// gump pixels.
+///
+/// A fixed approximation and not a per-glyph measurement: `fonts.mul` has no
+/// exposed line-height, its faces run roughly 8 to 14 pixels tall (the same
+/// range [`TTF_BASE_PIXEL_HEIGHT`]'s doc cites), and 16 leaves a line of air
+/// above the tallest of them.
+const CHAT_LINE_HEIGHT: i32 = 16;
+
+/// Where the speech line's own left edge sits, in gump pixels from the
+/// surface's corners — the same margin on every side a status strip would
+/// leave, so the line does not draw into the window's own frame.
+const CHAT_MARGIN: i32 = 4;
 
 /// The pixel height [`TtfAtlas`] rasterizes at, before the window's own
 /// [`winit::window::Window::scale_factor`] scales it up for a dense display —
@@ -431,12 +450,10 @@ pub fn run<D: Dial + Send + 'static>(
     // Built once: `hues.mul` does not change while the camera walks, unlike
     // the sprite atlases it is bound alongside.
     let hue_ramp = HueRamp::build(&hues);
-    // `hues` itself is kept too, alongside the ramp built from it: the ramp is
-    // an RGBA8 texture for the GPU passes, and `gump.rs` wants the same table
-    // read as `Color16`s to pick a *solid* colour for hued text — see
-    // `gump::text_color`. Building a second reader of `hues.mul` to avoid
-    // holding both would be the duplication `docs/style.md` warns against, not
-    // less of it.
+    // The table itself is not kept past this point. It used to be, so that
+    // `gump.rs` could pick one solid `egui::Color32` per hue for a `{ text }`
+    // element; a caption is drawn through the gump pass now and is tinted the
+    // way every other picture is — by the ramp, on the GPU, per pixel.
     let fonts = match AsciiFonts::open(dir) {
         Ok(fonts) => fonts,
         Err(error) => {
@@ -568,7 +585,6 @@ pub fn run<D: Dial + Send + 'static>(
         surfaces,
         texmaps,
         tiledata,
-        hues,
         hue_ramp,
         font_atlas,
         gumps,
@@ -679,6 +695,8 @@ pub fn run<D: Dial + Send + 'static>(
         own_windows: Vec::new(),
         drawn_windows: Vec::new(),
         dragging: None,
+        chat: Chat::default(),
+        dialogs: gump::Dialogs::default(),
         show_terrain: false,
         show_occluders: false,
         show_solids: solids,
@@ -987,6 +1005,15 @@ struct Screen {
     /// *surface's* format: it draws over the finished frame, not into the world
     /// image. `None` exactly when `App::gumps` is.
     gump_pass: Option<GumpRenderer>,
+    /// The interface's text, drawn the same way `gump_pass` draws its art —
+    /// bound to the surface's format, over the finished frame — but through
+    /// [`App::font_atlas`] instead of the gump atlas. Not an `Option`, and not
+    /// tied to `App::gumps` the way `gump_pass` is: `font_atlas` is built at
+    /// startup unconditionally (see `text_pass`, its world-space twin), so
+    /// there is nothing this has to wait for. The speech line and the journal
+    /// are its first callers; a gump dialog's own captions are its next one,
+    /// per `docs/client.md`'s "a third `GumpRenderer` bound to `App::font_atlas`".
+    gump_text_pass: GumpRenderer,
 }
 
 /// One of this client's own windows, and the one thing about it the shard never
@@ -1006,15 +1033,20 @@ struct OwnWindow {
     at: GumpPixel,
 }
 
-/// What a window is over: a bag's contents, or a body.
+/// What a window is over: a bag's contents, a body, or a dialog the shard drew.
 ///
-/// One list holds both, because dragging, raising, hit-testing and closing are
-/// the same gesture over either — decision 5 in `docs/client.md`, and the
-/// reason the container's window machinery was written in this client's own
-/// gump pixels rather than as an egui window. The two differ in exactly two
-/// places, and each is a `match` two arms long: what is laid out for it (see
+/// One list holds all three, because dragging, raising, hit-testing and closing
+/// are the same gesture over any of them — decision 5 in `docs/client.md`, and
+/// the reason the container's window machinery was written in this client's own
+/// gump pixels rather than as an egui window. They differ in exactly two
+/// places, and each is a `match` three arms long: what is laid out for it (see
 /// [`App::drawn_windows`], which is also what the pointer is tested against),
-/// and what closing one means to the [`WorldView`].
+/// and what closing one means.
+///
+/// The dialog is the newest of the three and the one that had to *leave*
+/// somewhere to get here: a `0xB0` was an egui window with the shard's art
+/// drawn underneath it, which is two windows' worth of frame and two opinions
+/// about where every button is. See `crate::gump`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum WindowSubject {
     /// A container the shard has opened, by its serial.
@@ -1023,6 +1055,111 @@ enum WindowSubject {
     /// serial may name a container *and* a paperdoll — a player is both — which
     /// is why this is the identity and not the serial alone.
     Paperdoll(Serial),
+    /// A `0xB0` dialog, by the id the shard filed it under.
+    Dialog(GumpId),
+}
+
+/// What the last frame drew for one window, and what it answers to.
+///
+/// Three shapes because the three window kinds answer different questions about
+/// a click: a dialog's picture may be a button or a switch, a paperdoll's may be
+/// one of the frame's own buttons, and a container's is an item or the bag. What
+/// they have in common is the list of pictures, which is what the pointer is
+/// tested against — see [`App::window_under_pointer`].
+enum Drawn {
+    /// A dialog: pictures, captions, hits and fields.
+    Dialog(gump_art::Window),
+    /// A container: the background and every icon in it.
+    Container(Vec<gump_art::Picture>),
+    /// A paperdoll: the frame, its furniture and the doll.
+    Paperdoll(paperdoll::Doll),
+}
+
+impl Drawn {
+    /// What was drawn, in painter's order — the one question every window kind
+    /// answers the same way.
+    fn pictures(&self) -> &[gump_art::Picture] {
+        match self {
+            Self::Dialog(window) => &window.pictures,
+            Self::Container(pictures) => pictures,
+            Self::Paperdoll(doll) => &doll.pictures,
+        }
+    }
+}
+
+/// The speech line: what has not been said yet, and whether the keyboard is
+/// listening for it.
+///
+/// Lives on `App` rather than the HUD now — see `shell::Shell`'s old `typed`
+/// field — because typing into it has to win the keyboard *before* a letter
+/// is read as a hotkey or a walk key, which is a decision `App::window_event`
+/// makes and the HUD no longer does.
+#[derive(Default, Debug)]
+struct Chat {
+    /// What has been typed and not yet sent, in bytes: `fonts.mul` is drawn
+    /// per byte (see `text::collect`), and every cursor and edit position here
+    /// is a byte offset into this string for exactly that reason — a `char`
+    /// index would have to be translated back at every glyph anyway.
+    typed: String,
+    /// Where the caret sits: a byte offset into `typed`, always on a `char`
+    /// boundary.
+    cursor: usize,
+    /// Whether a keystroke that is not a hotkey reaches this line rather than
+    /// the character. Opened by Enter, the reference client's own gesture —
+    /// there is no mouse hit test for it, so nothing else about picking has
+    /// to change for this to work.
+    focused: bool,
+}
+
+impl Chat {
+    /// Insert typed text at the caret and move the caret past it.
+    fn insert(&mut self, text: &str) {
+        self.typed.insert_str(self.cursor, text);
+        self.cursor += text.len();
+    }
+
+    /// Delete the `char` before the caret, if any.
+    fn backspace(&mut self) {
+        let Some(before) = self.typed[..self.cursor].chars().next_back() else {
+            return;
+        };
+        let start = self.cursor - before.len_utf8();
+        self.typed.replace_range(start..self.cursor, "");
+        self.cursor = start;
+    }
+
+    /// Delete the `char` after the caret, if any.
+    fn delete(&mut self) {
+        let Some(after) = self.typed[self.cursor..].chars().next() else {
+            return;
+        };
+        let end = self.cursor + after.len_utf8();
+        self.typed.replace_range(self.cursor..end, "");
+    }
+
+    /// Move the caret one `char` left, if it is not already at the start.
+    fn left(&mut self) {
+        if let Some(before) = self.typed[..self.cursor].chars().next_back() {
+            self.cursor -= before.len_utf8();
+        }
+    }
+
+    /// Move the caret one `char` right, if it is not already at the end.
+    fn right(&mut self) {
+        if let Some(after) = self.typed[self.cursor..].chars().next() {
+            self.cursor += after.len_utf8();
+        }
+    }
+
+    /// Take the typed line and close it back to empty, or `None` for a stray
+    /// Enter on nothing worth sending — the same rule `shell::speech_line` had:
+    /// an empty message is not silence worth sending, it is the server drawing
+    /// nothing over the player's head.
+    fn take(&mut self) -> Option<String> {
+        let line = std::mem::take(&mut self.typed);
+        self.cursor = 0;
+        (!line.trim().is_empty()).then_some(line)
+    }
 }
 
 /// Where the first container window opens, and how far each one after it is
@@ -1059,11 +1196,6 @@ struct App {
     /// deck now, not only the land, and that needs `tiledata.mul` on both ends
     /// of the channel.
     tiledata: Arc<TileData>,
-    /// Every hue the client ships, read as `hues.mul` stores it — a 32-step
-    /// `Color16` ramp per hue. `hue_ramp` beside it is the same table packed
-    /// for the GPU; this is what `gump.rs` reads to colour a `{ text }`
-    /// element, which wants one CPU-side `egui::Color32` and not a texture row.
-    hues: Hues,
     /// Every hue the client ships, packed once: unlike the sprite atlases it
     /// tints, nothing about it depends on where the camera is standing.
     hue_ramp: HueRamp,
@@ -1398,7 +1530,7 @@ struct App {
     /// A frame behind, therefore: a window that has just opened is not pickable
     /// until it has been drawn once, which is also the frame its art is packed
     /// on and so the frame it first has any pixels to be picked by.
-    drawn_windows: Vec<(WindowSubject, Vec<gump_art::Picture>)>,
+    drawn_windows: Vec<(WindowSubject, Drawn)>,
     /// The window being dragged and where inside it the player grabbed it, or
     /// `None` when nothing is being dragged.
     ///
@@ -1406,6 +1538,12 @@ struct App {
     /// reorders the list, so an index taken at the press names a different
     /// window by the time the mouse moves.
     dragging: Option<(WindowSubject, GumpPixel)>,
+    /// The speech line — see [`Chat`].
+    chat: Chat,
+    /// What every open `0xB0` dialog is holding that no packet carries: the
+    /// page it is showing, the switches the player has set, what has been typed
+    /// into its fields and which button the finger is on. See [`crate::gump`].
+    dialogs: gump::Dialogs,
     /// Whether the HUD is drawing what `common/movement` thinks of the ground —
     /// see [`App::terrain_overlay`].
     ///
@@ -1631,6 +1769,74 @@ impl ApplicationHandler<link::Update> for App {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
                 };
+                // The speech line, ahead of every hotkey and every walk key:
+                // once it has the keyboard, a letter is a letter typed and not
+                // a body walked. Arrows move the caret here rather than the
+                // player, which is why this comes before `direction_of` below
+                // and not after it, and Escape closes the line rather than
+                // reaching the `KeyCode::Escape` arm further down that quits
+                // the client.
+                if self.chat.focused {
+                    if event.state == ElementState::Pressed {
+                        match code {
+                            KeyCode::Enter | KeyCode::NumpadEnter => {
+                                if let Some(line) = self.chat.take() {
+                                    self.say(line);
+                                }
+                            }
+                            KeyCode::Escape => {
+                                self.chat.typed.clear();
+                                self.chat.cursor = 0;
+                                self.chat.focused = false;
+                            }
+                            KeyCode::Backspace => self.chat.backspace(),
+                            KeyCode::Delete => self.chat.delete(),
+                            KeyCode::ArrowLeft => self.chat.left(),
+                            KeyCode::ArrowRight => self.chat.right(),
+                            KeyCode::Home => self.chat.cursor = 0,
+                            KeyCode::End => self.chat.cursor = self.chat.typed.len(),
+                            _ => {
+                                if let Some(text) = event.text.as_deref() {
+                                    self.chat.insert(text);
+                                }
+                            }
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.window.request_redraw();
+                        }
+                    }
+                    return;
+                }
+                // A `{ textentry }` the player has clicked into, on the same
+                // terms and ahead of the same keys: while a field has the
+                // keyboard, a letter is a letter typed. Below the speech line
+                // rather than above it because the two cannot both be focused —
+                // Enter opens one and a click opens the other — and the order
+                // only decides which is asked first.
+                //
+                // Escape gives the keyboard back rather than quitting the
+                // client, which is what the arm further down would do.
+                if self.dialogs.typing() {
+                    if event.state == ElementState::Pressed {
+                        match code {
+                            KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter => {
+                                self.dialogs.unfocus();
+                            }
+                            KeyCode::Backspace => {
+                                self.dialogs.backspace();
+                            }
+                            _ => {
+                                if let Some(text) = event.text.as_deref() {
+                                    self.dialogs.typed(text);
+                                }
+                            }
+                        }
+                        if let Some(window) = self.window.as_ref() {
+                            window.window.request_redraw();
+                        }
+                    }
+                    return;
+                }
                 // An arrow is *held*, not pressed: while it is down a step is
                 // due every step's length, and that clock is ours rather than
                 // the operating system's repeat rate. See `keys.rs`.
@@ -1675,9 +1881,10 @@ impl ApplicationHandler<link::Update> for App {
                     // you have to know is there. A key is what you reach for
                     // without knowing anything.
                     //
-                    // F1 and not a letter: letters go to the character. There is
-                    // no chat line yet that would swallow one, and when there is,
-                    // a key that walked the body would be the bug.
+                    // F1 and not a letter: a letter reaching here means the
+                    // chat line was not focused, and one that walked the body
+                    // instead of opening it would be the bug — see the
+                    // `self.chat.focused` branch above.
                     KeyCode::F1 => {
                         // The shell's `Desk` and not this one: see
                         // `Shell::toggle_dev`. Before there is a shell there is no
@@ -1685,6 +1892,19 @@ impl ApplicationHandler<link::Update> for App {
                         if let Some(shell) = self.shell.as_mut() {
                             shell.toggle_dev();
                         }
+                        true
+                    }
+                    // Opens the speech line — the reference client's own
+                    // gesture, and unbound until now: movement is arrows only
+                    // (`keys::Held::direction_of`), so no key is taken from it.
+                    // `steer.clear()` for the same reason the UI-consumed path
+                    // above does: an arrow held down when this fires would
+                    // otherwise never see its `Released` and walk forever,
+                    // since arrows move the caret and not the body once
+                    // `chat.focused` is true.
+                    KeyCode::Enter | KeyCode::NumpadEnter => {
+                        self.chat.focused = true;
+                        self.steer.clear();
                         true
                     }
                     KeyCode::Home => {
@@ -1883,6 +2103,14 @@ impl ApplicationHandler<link::Update> for App {
                 // above already sent every click the UI wanted to it.
                 if button == winit::event::MouseButton::Left && state == ElementState::Released {
                     self.dragging = None;
+                    // And a button that was pressed on a dialog is answered on
+                    // the way up, if the pointer is still on it — see
+                    // `gump::Dialogs::release`.
+                    if self.release_on_own_window() {
+                        if let Some(window) = self.window.as_ref() {
+                            window.window.request_redraw();
+                        }
+                    }
                 }
                 // A container window takes the press before the world sees it,
                 // the same way a panel does: the click that raises a bag must
@@ -2382,7 +2610,7 @@ impl App {
     fn gump_scale(&self) -> f32 {
         self.shell
             .as_ref()
-            .map(|shell| shell.gumps().scale())
+            .map(|shell| shell.pixels_per_point())
             .unwrap_or(1.0)
     }
 
@@ -2409,7 +2637,12 @@ impl App {
         self.own_windows.retain(|window| match window.subject {
             WindowSubject::Container(serial) => view.containers.contains_key(&serial),
             WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
+            WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
         });
+        // The state a dialog holds that no packet does, kept in step with the
+        // same list: a window the shard has taken away forgets its page, its
+        // switches and the finger on it — see `gump::Dialogs::sync`.
+        self.dialogs.sync(&view.gumps);
         // Containers first and paperdolls after, and both in the view's own
         // iteration order — which is a `HashMap`'s and therefore not stable.
         // That decides only where two windows opened on the *same frame*
@@ -2437,6 +2670,23 @@ impl App {
                 ),
             });
         }
+        // A dialog is placed where the shard asked for it, and it is the only
+        // window kind that is: a `0xB0` carries a coordinate and a `0x24` does
+        // not. So no cascade — two dialogs the shard put in one place are two
+        // dialogs the shard put in one place, and moving them would be this
+        // client second-guessing a layout it was handed.
+        let dialogs: Vec<(GumpId, GumpPixel)> = view
+            .gumps
+            .iter()
+            .map(|gump| (gump.gump_id, GumpPixel::new(gump.at.x, gump.at.y)))
+            .collect();
+        for (gump_id, at) in dialogs {
+            let subject = WindowSubject::Dialog(gump_id);
+            if self.own_windows.iter().any(|window| window.subject == subject) {
+                continue;
+            }
+            self.own_windows.push(OwnWindow { subject, at });
+        }
     }
 
     /// Which window the cursor is over, topmost first, or `None`.
@@ -2456,13 +2706,38 @@ impl App {
     fn window_under_pointer(&self) -> Option<WindowSubject> {
         let cursor = self.pointer_gump;
         self.own_windows.iter().rev().find_map(|window| {
-            let pictures = self
-                .drawn_windows
-                .iter()
-                .find(|(subject, _)| *subject == window.subject)
-                .map(|(_, pictures)| pictures.as_slice())?;
-            gump_art::pick(pictures, cursor, &self.gump_atlas).map(|_| window.subject)
+            let drawn = self.drawn(window.subject)?;
+            // A dialog's fields are the one part of a window that is a box
+            // rather than a picture — see `gump::Field` — and a click in one is
+            // still a click on the window. It sits over the background, which is
+            // a picture, so this only matters for a field the layout hung
+            // outside its own frame; asking is cheaper than being wrong there.
+            if let Drawn::Dialog(laid_out) = drawn {
+                if gump_art::field(&laid_out.fields, cursor).is_some() {
+                    return Some(window.subject);
+                }
+            }
+            gump_art::pick(drawn.pictures(), cursor, &self.gump_atlas).map(|_| window.subject)
         })
+    }
+
+    /// What the last frame drew for one window, or `None` for a window that has
+    /// not been drawn yet — every window on the frame its packet arrived.
+    fn drawn(&self, subject: WindowSubject) -> Option<&Drawn> {
+        self.drawn_windows
+            .iter()
+            .find(|(drawn, _)| *drawn == subject)
+            .map(|(_, drawn)| drawn)
+    }
+
+    /// The dialog a subject names, out of the view, or `None` if the shard has
+    /// taken it away since.
+    fn open_gump(&self, gump_id: GumpId) -> Option<&openshard_client_net::view::OpenGump> {
+        self.view
+            .as_ref()?
+            .gumps
+            .iter()
+            .find(|gump| gump.gump_id == gump_id)
     }
 
     /// Raise a window to the top of the pile, so that the one just clicked is
@@ -2484,11 +2759,53 @@ impl App {
     /// Answers whether the press belonged to a window, so the caller can leave
     /// the world's own click alone when it did — a press that raised a bag must
     /// not also select the tile behind it.
+    ///
+    /// A dialog's own widgets take the press first, and take it away from the
+    /// drag: pressing a button must not also start moving the window under it.
+    /// Everything else in a dialog — its background, a `{ gumppic }`, a label —
+    /// drags it, which is how a gump is moved when it has no title bar to move
+    /// it by. See `gump::Dialogs::press`.
     fn press_on_own_window(&mut self) -> bool {
         let Some(subject) = self.window_under_pointer() else {
+            // A press that missed every window gives the keyboard back: a field
+            // stays focused only while the player is still in the dialog.
+            self.dialogs.unfocus();
             return false;
         };
         self.raise_window(subject);
+        if let WindowSubject::Dialog(gump_id) = subject {
+            // Both halves of the question are last frame's: the window the
+            // pointer is over and the layout it was drawn as. Laying the dialog
+            // out again here would ask the atlas and the view a second time and
+            // could answer differently from what is on the screen — the rule
+            // `drawn_windows` exists for.
+            let taken = match (self.open_gump(gump_id), self.drawn(subject)) {
+                (Some(gump), Some(Drawn::Dialog(window))) => {
+                    // Cloned because `press` needs the dialogs mutably and the
+                    // window is borrowed out of `self`. A laid-out window is a
+                    // few hundred bytes and this happens once per click.
+                    let window = window.clone();
+                    let cursor = self.pointer_gump;
+                    let gump = gump.clone();
+                    self.dialogs.press(&gump, &window, cursor, &self.gump_atlas)
+                }
+                _ => false,
+            };
+            if taken {
+                self.dragging = None;
+                return true;
+            }
+            // `{ nomove }`: the press is still the window's — it must not reach
+            // the world behind it — but it does not pick the window up. A shard
+            // that pins a dialog somewhere means it.
+            if self
+                .open_gump(gump_id)
+                .is_some_and(|gump| gump::flags(gump).no_move)
+            {
+                self.dragging = None;
+                return true;
+            }
+        }
         let grab = self
             .own_windows
             .last()
@@ -2500,6 +2817,34 @@ impl App {
             })
             .unwrap_or_default();
         self.dragging = Some((subject, grab));
+        true
+    }
+
+    /// The release that finishes a press on a dialog's button, and the answer it
+    /// sent if it was a reply button.
+    ///
+    /// Answers whether anything happened, so the caller can ask for a redraw:
+    /// the button comes back up on the way out either way, and a page button
+    /// changes what the window is showing without a packet leaving.
+    fn release_on_own_window(&mut self) -> bool {
+        let Some(gump_id) = self.dialogs.holding() else {
+            return false;
+        };
+        let subject = WindowSubject::Dialog(gump_id);
+        let (Some(gump), Some(Drawn::Dialog(window))) = (self.open_gump(gump_id), self.drawn(subject)) else {
+            return false;
+        };
+        let window = window.clone();
+        let gump = gump.clone();
+        let cursor = self.pointer_gump;
+        let reply = self.dialogs.release(&gump, &window, cursor, &self.gump_atlas);
+        if let Some(reply) = reply {
+            // A reply takes the window down with it: the shard sends one `0xB0`
+            // and waits for one `0xB1`, and nothing ever arrives to say the
+            // dialog is gone. `answer_gump` is what tells the view.
+            self.answer_gump(reply);
+            self.own_windows.retain(|window| window.subject != subject);
+        }
         true
     }
 
@@ -2535,10 +2880,30 @@ impl App {
     /// `WorldView::container_closed`, which drops the contents with the window,
     /// and `WorldView::paperdoll_closed`, which drops nothing else at all
     /// because the equipment belongs to the body.
+    /// A dialog is the one kind that *does* send something: the shard is
+    /// waiting for a `0xB1` and gets button zero, which is what the reference
+    /// client's close box answers with. A `{ noclose }` layout has no such
+    /// answer to give — `dismiss` refuses it — and the window stays up, which is
+    /// what that flag is for.
     fn close_window_under_pointer(&mut self) -> bool {
         let Some(subject) = self.window_under_pointer() else {
             return false;
         };
+        if let WindowSubject::Dialog(gump_id) = subject {
+            let Some(gump) = self.open_gump(gump_id).cloned() else {
+                return false;
+            };
+            let Some(reply) = self.dialogs.dismiss(&gump) else {
+                // Answered by its own buttons or not at all. The press is still
+                // the window's — it must not steer the body — so this says the
+                // window took it.
+                return true;
+            };
+            self.answer_gump(reply);
+            self.own_windows.retain(|window| window.subject != subject);
+            self.dragging = None;
+            return true;
+        }
         let Some(view) = self.view.as_mut() else {
             return false;
         };
@@ -2549,6 +2914,7 @@ impl App {
             WindowSubject::Paperdoll(serial) => {
                 view.paperdoll_closed(serial);
             }
+            WindowSubject::Dialog(_) => unreachable!("answered above"),
         }
         self.own_windows.retain(|window| window.subject != subject);
         self.dragging = None;
@@ -3334,12 +3700,6 @@ impl App {
             Some(shell::ScriptRequest::Stop) => self.replay = None,
             None => {}
         }
-        if let Some(line) = request.say {
-            self.say(line);
-        }
-        if let Some(reply) = request.gump {
-            self.answer_gump(reply);
-        }
     }
 
     /// What the panels are allowed to know, gathered each frame.
@@ -3496,27 +3856,6 @@ impl App {
             selected: self.selected_tile.map(|(x, y)| self.tile_info(x, y)),
             selected_static: self.selected_static,
             goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
-            gumps: self
-                .view
-                .as_ref()
-                .map(|view| view.gumps.clone())
-                .unwrap_or_default(),
-            said: self
-                .view
-                .as_ref()
-                .map(|view| {
-                    view.journal
-                        .iter()
-                        .rev()
-                        .take(SPEECH_LINES)
-                        .rev()
-                        .map(|line| match line.name.is_empty() {
-                            true => line.text.clone(),
-                            false => format!("{}: {}", line.name, line.text),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
         }
     }
 
@@ -3878,6 +4217,11 @@ impl App {
             .gumps
             .as_ref()
             .map(|_| GumpRenderer::new(&device, &queue, format, self.gump_atlas.pixels(), &self.hue_ramp));
+        // The interface's text, built once and unconditionally for the same
+        // reason `text_pass` is: `font_atlas` is the whole of `fonts.mul`,
+        // packed at startup, and never goes stale.
+        let gump_text_pass =
+            GumpRenderer::new(&device, &queue, format, self.font_atlas.pixels(), &self.hue_ramp);
         // The HUD, with the surface's own format: egui picks its fragment entry
         // point from whether that format is sRGB, and this one deliberately is
         // not.
@@ -3907,6 +4251,7 @@ impl App {
             select,
             solids,
             gump_pass,
+            gump_text_pass,
         })
     }
 
@@ -4205,7 +4550,7 @@ impl App {
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {
-                let (request, output) = shell.run(window, &hud, &self.hues);
+                let (request, output) = shell.run(window, &hud);
                 let viewport = shell.viewport();
                 Some((request, output, viewport))
             }
@@ -4927,6 +5272,15 @@ impl App {
         // and it is asked for on the frame the window is drawn on because that
         // is the frame that knows the window is open at all.
         if let (Some(files), Some(pass)) = (self.gumps.as_ref(), window.gump_pass.as_mut()) {
+            // Every open dialog's art, packed before anything is laid out.
+            //
+            // Before, and not on the way, for two reasons. A `{ resizepic }`
+            // cannot be placed until its nine pieces have been packed — where
+            // its edges go is decided by how big its corners turned out to be —
+            // and a page button flips pages inside the client, so what a window
+            // needs is *every* page's art rather than the showing one's.
+            // `gump::art_of` is that list, asked for on the frame the window is
+            // drawn on because that is the frame that knows it is open at all.
             let open = self
                 .view
                 .as_ref()
@@ -4945,40 +5299,13 @@ impl App {
                     // would take the shard's staff commands down with it.
                     eprintln!("packing gump art for {:?}: {error}", gump.gump_id);
                 }
-                // Where egui put it, not where the server asked for it: the
-                // player may have dragged the window since, and the art has to
-                // arrive at the same rectangle the buttons did. A window egui
-                // has not laid out yet — the frame its packet arrived on — has
-                // nowhere to put its art and waits one frame.
-                let Some(place) = self
-                    .shell
-                    .as_ref()
-                    .and_then(|shell| shell.gumps().placement(gump.gump_id))
-                else {
-                    continue;
-                };
-                pictures.extend(
-                    gump_art::window(
-                        &gump.elements,
-                        GumpPixel::new(place.at.0, place.at.1),
-                        place.page,
-                        &place.on,
-                        // Nothing is drawn held: the button the mouse is on is
-                        // egui's widget, and it draws its own press.
-                        None,
-                        &self.gump_atlas,
-                    )
-                    .pictures,
-                );
             }
-            // This client's own windows, over the dialogs. Not egui windows at
-            // all, unlike the `0xB0`s above: a container has no widget in it to
-            // answer with — no button, no field, nothing that would need
-            // egui's hit test — so its position, its drag and its z-order are
-            // this client's, in gump pixels, and there is nothing left for a
-            // frame to be laid out by. A paperdoll is the same machinery's
-            // second caller, which is decision 5 in `docs/client.md`. See
-            // `own_windows`, `openshard_client_render::container` and
+            // This client's own windows — a dialog, a container, a paperdoll —
+            // all three through one machinery. None of them is an egui window:
+            // their position, their drag, their z-order and their hit test are
+            // this client's, in gump pixels, which is decision 5 in
+            // `docs/client.md`. See `own_windows`, `crate::gump`,
+            // `openshard_client_render::container` and
             // `openshard_client_render::paperdoll`.
             //
             // Bottom to top, which is the list's own order: the pass has no
@@ -4991,17 +5318,34 @@ impl App {
             // skipped below, and an index into one list would then name the
             // wrong window in the other. This list is what the pointer is
             // tested against next frame — see `App::drawn_windows`.
-            let mut windows: Vec<(WindowSubject, Vec<gump_art::Picture>)> = Vec::new();
+            let mut windows: Vec<(WindowSubject, Drawn)> = Vec::new();
             if let Some(view) = self.view.as_ref() {
                 for open in &self.own_windows {
                     match open.subject {
+                        WindowSubject::Dialog(gump_id) => {
+                            let Some(gump) = view.gumps.iter().find(|gump| gump.gump_id == gump_id) else {
+                                continue;
+                            };
+                            // The page, the switches and the pressed button are
+                            // the three things the wire does not carry, and all
+                            // three come out of `Dialogs` — which is also what
+                            // the press that set them wrote to, so what is drawn
+                            // pressed is what the release will act on.
+                            windows.push((
+                                open.subject,
+                                Drawn::Dialog(self.dialogs.layout(gump, open.at, &self.gump_atlas)),
+                            ));
+                        }
                         WindowSubject::Container(serial) => {
                             let Some(gump) = view.containers.get(&serial).copied() else {
                                 continue;
                             };
                             let contents: Vec<ContainedItem> =
                                 view.contents.get(&serial).cloned().unwrap_or_default();
-                            windows.push((open.subject, container::window(gump, &contents, open.at)));
+                            windows.push((
+                                open.subject,
+                                Drawn::Container(container::window(gump, &contents, open.at)),
+                            ));
                         }
                         WindowSubject::Paperdoll(serial) => {
                             // Whose body and whose equipment, read off the view
@@ -5037,13 +5381,35 @@ impl App {
                                 hue,
                                 equipment: &equipment,
                             });
+                            // War mode comes off the `0x88` itself — it is the
+                            // one thing `PaperdollFlags` carries that the frame
+                            // is drawn differently for, and the toggle only
+                            // exists on our own doll.
                             let whose = match own {
-                                true => paperdoll::Whose::Own,
+                                true => paperdoll::Whose::Own {
+                                    war: view
+                                        .paperdolls
+                                        .get(&serial)
+                                        .is_some_and(|doll| doll.flags.has(PaperdollFlags::WARMODE)),
+                                },
                                 false => paperdoll::Whose::Another,
                             };
                             windows.push((
                                 open.subject,
-                                paperdoll::window(wearer.as_ref(), whose, &self.equip_conv, files, open.at),
+                                Drawn::Paperdoll(paperdoll::window(
+                                    wearer.as_ref(),
+                                    whose,
+                                    // Nothing is drawn held yet: what a
+                                    // paperdoll's buttons *do* is the next
+                                    // step — see `docs/client.md` — and a
+                                    // button that pressed and did nothing
+                                    // would be a worse answer than one that
+                                    // does not press.
+                                    None,
+                                    &self.equip_conv,
+                                    files,
+                                    open.at,
+                                )),
                             ));
                         }
                     }
@@ -5058,10 +5424,13 @@ impl App {
                 // a picture the atlas grew on the *next* frame would draw the
                 // window with a hole in it once. Said and drawn anyway on a
                 // failure, for `gump::art_of`'s reason above.
-                if let Err(error) = self.gump_atlas.add(art_files, paperdoll::art_of(window)) {
+                if let Err(error) = self
+                    .gump_atlas
+                    .add(art_files, paperdoll::art_of(window.pictures()))
+                {
                     eprintln!("packing window art: {error}");
                 }
-                pictures.extend(window.iter().copied());
+                pictures.extend(window.pictures().iter().copied());
             }
             // What the pointer is tested against from here on, and the atlas it
             // is tested in is the one just grown for it: the hit test and the
@@ -5091,8 +5460,176 @@ impl App {
                     scale: self
                         .shell
                         .as_ref()
-                        .map(|shell| shell.gumps().scale())
+                        .map(|shell| shell.pixels_per_point())
                         .unwrap_or(1.0),
+                },
+                &quads,
+            );
+        }
+        // What the windows have written on them: a dialog's captions and
+        // fields, and a paperdoll's name.
+        //
+        // A second pass over the same surface rather than more quads in the one
+        // above, because a draw call binds one texture and a glyph lives in the
+        // font atlas. After the art and therefore over it, which is the order
+        // the reference draws a window's text controls in — and after the block
+        // above rather than inside it, because that one holds the gump pass
+        // mutably and this needs the text pass.
+        //
+        // Read off `drawn_windows` — the list the frame was just drawn from and
+        // the one the pointer will be tested against — so a caption cannot end
+        // up on a window laid out differently from the pictures under it.
+        {
+            let mut labels: Vec<openshard_client_render::text::GumpLabel<'_>> = Vec::new();
+            for (subject, drawn) in &self.drawn_windows {
+                match (subject, drawn) {
+                    (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
+                        if let Some(gump) = self
+                            .view
+                            .as_ref()
+                            .and_then(|view| view.gumps.iter().find(|gump| gump.gump_id == *gump_id))
+                        {
+                            labels.extend(self.dialogs.lines(gump, laid_out, &self.font_atlas));
+                        }
+                    }
+                    (WindowSubject::Paperdoll(serial), Drawn::Paperdoll(_)) => {
+                        // The name the `0x88` carried, which is the only place
+                        // this string exists — see `view::Paperdoll::name`. The
+                        // window's own origin comes off `own_windows` rather
+                        // than the doll, for the reason the plate is part of the
+                        // frame: it moves with the window and not with the body.
+                        let at = self
+                            .own_windows
+                            .iter()
+                            .find(|window| window.subject == *subject)
+                            .map(|window| window.at);
+                        if let (Some(at), Some(doll)) = (
+                            at,
+                            self.view.as_ref().and_then(|view| view.paperdolls.get(serial)),
+                        ) {
+                            labels.push(paperdoll::name(&doll.name, at));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !labels.is_empty() {
+                let quads = openshard_client_render::text::collect_gump(&labels, &self.font_atlas);
+                window.gump_text_pass.render(
+                    &window.device,
+                    &window.queue,
+                    &mut encoder,
+                    gump_art::Frame {
+                        target: &view,
+                        width: window.config.width,
+                        height: window.config.height,
+                        scale: self
+                            .shell
+                            .as_ref()
+                            .map(|shell| shell.pixels_per_point())
+                            .unwrap_or(1.0),
+                    },
+                    &quads,
+                );
+            }
+        }
+        // The speech line and the journal above it, over the finished picture
+        // and under egui's, the same corner `shell::speech_line`'s
+        // `egui::Panel::bottom` used to claim before this moved to the
+        // client's own rendering. Always drawn, unlike the block above: the
+        // font atlas needs no shard-sent gump art to exist, so there is
+        // nothing here to be `None` until.
+        {
+            let scale = self
+                .shell
+                .as_ref()
+                .map(|shell| shell.pixels_per_point())
+                .unwrap_or(1.0);
+            // The surface's size in gump pixels rather than real ones —
+            // `Frame::scale`'s doc is what the one below multiplies out, and
+            // this is that arithmetic done once for where the corner is
+            // rather than for every quad in it.
+            let canvas = GumpPixel::new(
+                (window.config.width as f32 / scale) as i32,
+                (window.config.height as f32 / scale) as i32,
+            );
+            let font = Font::DEFAULT;
+            let input_at = GumpPixel::new(CHAT_MARGIN, canvas.y - CHAT_MARGIN - CHAT_LINE_HEIGHT);
+
+            // Owned before it is borrowed into `GumpLabel`s: the journal's own
+            // strings are formatted here (name and text joined the way
+            // `shell::Hud::said` used to) and the prompt is built from
+            // `self.chat`, so both need somewhere to live for the length of
+            // `collect_gump`'s borrow.
+            let mut rows: Vec<(GumpPixel, Hue, Font, String)> = Vec::new();
+            if let Some(view) = self.view.as_ref() {
+                for (row, line) in view.journal.iter().rev().take(CHAT_LINES).enumerate() {
+                    let at = GumpPixel::new(CHAT_MARGIN, input_at.y - CHAT_LINE_HEIGHT * (row as i32 + 1));
+                    let text = match line.name.is_empty() {
+                        true => line.text.clone(),
+                        false => format!("{}: {}", line.name, line.text),
+                    };
+                    rows.push((at, line.hue, line.font, text));
+                }
+            }
+            let prompt = match self.chat.focused {
+                true => format!("say: {}", self.chat.typed),
+                // A hint and not an empty line: there is no mouse click to
+                // discover this by any more (see `App::window_event`'s
+                // `KeyCode::Enter` arm), so the one thing worth saying here is
+                // the key that opens it.
+                false => "[Enter] say".to_owned(),
+            };
+            let mut labels: Vec<GumpLabel<'_>> = rows
+                .iter()
+                .map(|(at, hue, font, text)| GumpLabel {
+                    at: *at,
+                    text,
+                    font: *font,
+                    hue: *hue,
+                    clip: None,
+                })
+                .collect();
+            labels.push(GumpLabel {
+                at: input_at,
+                text: &prompt,
+                font,
+                hue: Hue::NONE,
+                clip: None,
+            });
+            // The caret, a lone glyph rather than a new quad primitive: the
+            // gump pass draws through an atlas of packed sprites and has
+            // nothing that paints a solid rectangle, and `fonts.mul` already
+            // has a `|` to stand in for one. Blinks off wall-clock time rather
+            // than a stored `Instant`, so nothing on `Chat` has to track when
+            // focus began.
+            let prefix_width = text::gump_width("say: ", font, &self.font_atlas);
+            let caret_text = "|";
+            let blink_on = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| (elapsed.as_millis() / 500) % 2 == 0)
+                .unwrap_or(true);
+            if self.chat.focused && blink_on {
+                let caret_x = prefix_width
+                    + text::gump_width(&self.chat.typed[..self.chat.cursor], font, &self.font_atlas);
+                labels.push(GumpLabel {
+                    at: GumpPixel::new(input_at.x + caret_x, input_at.y),
+                    text: caret_text,
+                    font,
+                    hue: Hue::NONE,
+                    clip: None,
+                });
+            }
+            let quads = text::collect_gump(&labels, &self.font_atlas);
+            window.gump_text_pass.render(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                gump_art::Frame {
+                    target: &view,
+                    width: window.config.width,
+                    height: window.config.height,
+                    scale,
                 },
                 &quads,
             );

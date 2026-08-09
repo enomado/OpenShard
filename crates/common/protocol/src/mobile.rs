@@ -306,6 +306,17 @@ impl PaperdollFlags {
     pub const fn with(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+
+    /// Whether every bit of `other` is set here.
+    ///
+    /// [`with`](Self::with)'s counterpart, and named for the same reason: a
+    /// reader that spelled `flags.0 & PaperdollFlags::WARMODE.0 != 0` would be
+    /// reaching through the newtype to do it, which is exactly what the newtype
+    /// is for.
+    #[must_use]
+    pub const fn has(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
 }
 
 /// `0x88` — open a mobile's paperdoll. 66 bytes.
