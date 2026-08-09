@@ -1096,6 +1096,55 @@ is `traced.rs` against the path tracer, `pictures.rs`, and the shader's own
 hand-built fixtures. A sweep of the shader against `light::sample` is what this
 step should add, and it is the first thing the next session needs.
 
+### ✅ The sweep that gates the port: **the shader against `light::sample`, on visibility alone**
+
+Built first, before a line of `blit.wesl` moved, because the hole above is
+exactly a missing gate: `shader_sweep` in `tests/frame.rs`, six scenes, 4,096
+pixels each.
+
+**The subject is `View::Shadow` and not the lit frame**, and that is what keeps
+it about the walk. The shadow view draws `Arrival::visible` — visibility alone,
+linear, no cosine, no falloff, no tone map — so a ray the broad phase stops
+handing over is a whole **eighth** of the number. The lit frame would put that
+same eighth through a cosine, a falloff and a curve that saturates on the white
+art these fixtures are drawn with.
+
+Nine `the_shader_..._agrees_with_light_sample` sweeps were **deleted on
+2026-08-08** (`969c735`, "a test that compares us with ourselves has no
+subject"), and that reasoning still holds for what it was about: both sides of
+those were the shading model phases 2–5 were replacing. This one is the opposite
+case and is why the shape came back — the *narrow* phase is settled and shared by
+construction, and what is being replaced under it is one side's **broad** phase,
+which D4 forbids to change any answer. Two spellings of one traversal with no
+compiler between them is precisely S5's own stated gate.
+
+Three states and not one number, because the view paints two of them a colour on
+purpose: no flame in reach, a flame reaching and wholly stopped, and a
+visibility. A sweep that let the first two collapse would agree about which
+pixels are out of range and about nothing else.
+
+*The census is asserted, not printed*, and it is the fixture's own
+anti-vacuity: a scene must put pixels **both** behind something and in front of
+a flame. It fired immediately — an earlier version also demanded a penumbra
+pixel and four of the six scenes have none, because a flame is a twentieth of a
+tile and a fixture pixel an eighth of one, so a shadow's edge legitimately falls
+between pixels. Measured, per scene: 1,308–2,400 pixels in shadow and
+1,192–2,683 seeing a flame; the house corner and the holed wall have 155 and 47
+penumbra pixels between them and the other four have none.
+
+*Fault injection, run:* a leaf dropping its first primitive — `if k == 0u
+{ continue; }` in `cell_stopped` — turns **all six red**, 1,355 to 2,400 pixels
+apiece. That is the failure the port can actually have, and it is now loud.
+
+🔴 **And a second injection found the blind spot, which is worth more than the
+green.** Deleting the shader's own unconditional diagonal probe — the DDA's
+corner-tie candidate, the one thing in `walk` that exists for a ray that grazes a
+neighbouring cell — changes **not one pixel of these six scenes, and not one test
+in the whole crate**. So the suite has never gated that probe, and this sweep
+cannot see a broad phase that misses a corner-grazing candidate either. The port
+deletes the probe with the grid (a tree has no ties to break), and this says the
+deletion is unmeasurable rather than measured — see § *Backlog*.
+
 **What is left of S5**, in order:
 
 1. **`blit.wesl`**: the tree as two storage buffers (the nodes and the
@@ -1171,6 +1220,24 @@ Named so that a later session does not adopt them by accident:
 
 Findings from this track that do not block a step. Kept here so the plan can be
 read as work.
+
+🔴 **Nothing in the crate gates a corner-grazing candidate, and that is measured
+rather than suspected.** `blit.wesl`'s `walk` carried an *unconditional* diagonal
+probe — a second `cell_stopped` on the neighbour the step does not take — put
+there so a ray that grazes a corner without entering the cell's interior still
+meets what stands on it. Replace its result with `0.0` and **the entire crate
+stays green**: 526 tests, both path-tracer gates, the new shader sweep, all of
+it. The grid's own trajectory never needed it on any scene the suite draws.
+
+Two things follow, and only the first is comfortable. The port deletes the probe
+along with the grid — a tree is hit or missed by one slab test and has no tie to
+break — so nothing is *lost*. But the suite's silence also means no fixture here
+puts a ray through a corner in a way that a broad phase can get wrong, so the
+one geometry a hierarchy could plausibly mishandle is the one nothing would
+catch. What would close it is a fixture built for it: a segment whose straight
+line passes exactly through the shared corner of two occupied tiles, with the
+brute-force oracle — which is `no cells` and therefore blind to tiles — as the
+arbiter.
 
 🚩 **The merge inherits the seam, and what it inherits is a sphere's own half.**
 S3 cures a surface shadowing itself for every ray *leaving* that surface, which is

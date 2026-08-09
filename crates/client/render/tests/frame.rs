@@ -5859,6 +5859,329 @@ fn the_exact_walk_agrees_with_light_sample_about_a_carried_beam() {
     assert_no_exact_walk_bugs(&report);
 }
 
+/// What one pixel of `View::Shadow` says, as the fact the view draws rather
+/// than as a colour.
+///
+/// Three states and not one number, because two of the three are painted a
+/// *colour* on purpose — `blit.wesl`'s own `debug_color` says why: "no flame
+/// reaches here at all" and "a flame reaches and every ray of it was stopped"
+/// are different facts, and a view that drew both as black would answer two
+/// questions with one shade. A comparison between the two backends has to
+/// separate them for the same reason: a fragment nothing reaches agreeing with a
+/// fragment behind a wall would be the sweep agreeing about nothing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Shadow {
+    /// No flame's own pool holds this fragment — nothing was walked.
+    Unreached,
+    /// A flame reaches it and the walk let none of it through.
+    Blocked,
+    /// The share of the nearest flame's own body this fragment can see:
+    /// `Arrival::visible`, with no cosine, no falloff and no beam in it.
+    Through(f32),
+}
+
+/// [`Shadow`] read off a pixel of the rendered shadow view.
+///
+/// The three colours `blit.wesl` paints, inverted. A grey is the value itself,
+/// and the two flat colours are recognised by their *shape* — a channel that is
+/// zero where a grey's would not be — rather than by their exact byte, so this
+/// does not restate the constants and cannot drift into agreeing with them.
+fn shadow_drawn(pixel: [u8; 4]) -> Shadow {
+    match pixel {
+        // `(0, 0, 0.35)`: the blue that says no flame reaches.
+        [0, 0, blue, _] if blue > 0 => Shadow::Unreached,
+        // `(0.2, 0, 0)`: the dark red that says one does and was stopped.
+        [red, 0, 0, _] if red > 0 => Shadow::Blocked,
+        [red, green, blue, _] => {
+            assert_eq!(
+                (red, red),
+                (green, blue),
+                "the shadow view paints visibility as a grey, and {pixel:?} is not one",
+            );
+            Shadow::Through(f32::from(red) / 255.0)
+        }
+    }
+}
+
+/// And [`Shadow`] as `light::sample` answers it: the same three states off the
+/// [`Reach`](openshard_client_render::light::Reach)es of one spot.
+///
+/// **The nearest flame by its own share of its own reach**, which is the one
+/// rule of the shadow view this side has to restate — `blit.wesl` keeps `d =
+/// |offset| / reach` while it lights the fragment and this recomputes it from
+/// the numbers a `Reach` carries. Everything else compared here is a number both
+/// sides already have a name for.
+///
+/// A flame outside its own pool by the centre — `d >= 1` — is the shader's blue
+/// as much as no flame at all is: the near-side cull that let it into the loop is
+/// deliberately wider than the pool (`docs/lighting_rebuild.md` phase 5b), so
+/// "within the cull" and "within the pool" are two different questions and the
+/// view answers the second.
+fn shadow_wanted(sample: &openshard_client_render::light::Sample, lighting: &Lighting) -> (Shadow, f32) {
+    let mut nearest: Option<(f32, f32)> = None;
+    for reach in &sample.reaches {
+        if !reach.within {
+            continue;
+        }
+        let share = reach.distance / lighting.lights[reach.light].radius.max(0.001);
+        if nearest.is_none_or(|(seen, _)| share < seen) {
+            nearest = Some((share, reach.through));
+        }
+    }
+    match nearest {
+        None => (Shadow::Unreached, f32::INFINITY),
+        Some((share, _)) if share >= 1.0 => (Shadow::Unreached, share),
+        Some((share, through)) if through <= EXACT_WALK_BLOCKED => (Shadow::Blocked, share),
+        Some((share, through)) => (Shadow::Through(through), share),
+    }
+}
+
+/// What a sweep of the **shader** against `light::sample` found over one scene.
+///
+/// The counts are printed whatever happens, the same discipline
+/// [`assert_no_exact_walk_bugs`] keeps: a sweep that says only "0 failures" has
+/// not said how much it looked at.
+struct ShaderSweep {
+    /// Pixels where the two backends said different things and neither boundary
+    /// below excuses it.
+    bugs: Vec<String>,
+    /// How many pixels were compared at all.
+    compared: usize,
+    /// Pixels sitting on the rim of a pool — `d` within [`RIM`] of `1.0`, where
+    /// "inside the pool" is decided by an `f32` comparison the two backends
+    /// compute separately. A flip there is the rim being drawn a hair wider on
+    /// one side, not a primitive going missing.
+    rim: usize,
+    /// And pixels sitting on the cutoff, where `Blocked` and `Through` are the
+    /// same answer to within a rounding of the same product.
+    cutoff: usize,
+    /// How many pixels `light::sample` says are behind something — every ray of
+    /// the nearest flame stopped.
+    ///
+    /// **The census that keeps this sweep from being vacuous**, and it is
+    /// asserted rather than printed: a fixture where nothing is in shadow
+    /// compares four thousand pixels of "no flame reaches" and agrees about the
+    /// walk on none of them. `docs/occluders.md`'s own "a gate can be vacuous
+    /// three times over" is what this is here for.
+    blocked: usize,
+    /// And how many see the nearest flame at all — the other half of the same
+    /// census: a fixture where *everything* is behind a wall compares one answer
+    /// as surely as one where nothing is.
+    lit: usize,
+    /// Of those, how many see part of a flame and not all of it: a penumbra
+    /// pixel, where visibility is a count of eighths rather than nought or one.
+    /// Printed and not asserted — a flame is a twentieth of a tile across and a
+    /// fixture pixel an eighth of one, so a scene whose shadow edges fall
+    /// between pixels legitimately has none.
+    partly: usize,
+}
+
+/// How near `d = 1` a fragment has to be for a `Unreached`/`Through` flip to be
+/// the pool's own rim rather than a disagreement about geometry.
+///
+/// A pool is three tiles across and a fixture pixel is an eighth of a tile, so
+/// this is a ten-thousandth of the *pixel* — far tighter than anything a lost
+/// primitive could hide behind, and wider than the last bits of an `f32`
+/// division at these magnitudes.
+const RIM: f32 = 1.0e-4;
+
+/// How far apart two visibilities may be and still be one answer: a byte of the
+/// view they are drawn into, plus one for the rounding either side of it.
+///
+/// **Not a tolerance for a lost primitive to hide in.** Eight rays make
+/// visibility a multiple of an eighth wherever occlusion is opaque, so a
+/// primitive the broad phase drops moves this by `0.125` at the very least —
+/// thirty times what this allows.
+const VIEW_BYTE: f32 = 2.0 / 255.0;
+
+/// The **shader** against `light::sample`, pixel by pixel, over the shadow view.
+///
+/// `docs/occluders.md`'s S5, and the reason it exists is written there: the
+/// surviving CPU comparisons in this file are the exact walk against the
+/// streaming one, and since the tree landed those two *share* their broad phase —
+/// so a broad phase that loses a primitive is invisible to them. This compares
+/// the two things that do not share one: `blit.wesl`'s traversal and
+/// `light::candidates`.
+///
+/// **The shadow view and not the lit frame**, which is what makes the subject the
+/// walk rather than the whole shading model. What it draws is `Arrival::visible`
+/// — visibility alone, linear, un-tone-mapped, in a byte — so a ray the tree
+/// stopped handing over is a full eighth of the number, where the lit frame would
+/// put it through a cosine, a falloff and a curve that saturates on white art.
+fn shader_sweep(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    lighting: &Lighting,
+    fixture: Fixture,
+) -> ShaderSweep {
+    let (width, height) = (64, 64);
+    let mut shown = lighting.clone();
+    shown.view = View::Shadow;
+    let frame = parity_frame(device, queue, &shown, width, height, fixture);
+    let mut sweep = ShaderSweep {
+        bugs: Vec::new(),
+        compared: 0,
+        rim: 0,
+        cutoff: 0,
+        blocked: 0,
+        lit: 0,
+        partly: 0,
+    };
+    for py in 0..height {
+        for px in 0..width {
+            let (x, y, sub_x, sub_y) = parity_place(px, py);
+            let spot = openshard_client_render::light::Spot {
+                surface: fixture.surface,
+                ..openshard_client_render::light::Spot::at(
+                    Vec2::new(f32::from(x) + sub_x, f32::from(y) + sub_y),
+                    f32::from(fixture.z),
+                    (i32::from(x), i32::from(y)),
+                )
+            };
+            let sample = openshard_client_render::light::sample(spot, lighting);
+            let (wanted, share) = shadow_wanted(&sample, lighting);
+            let drawn = shadow_drawn(frame.pixel(px, py));
+            sweep.compared += 1;
+            match wanted {
+                Shadow::Blocked => sweep.blocked += 1,
+                Shadow::Through(through) => {
+                    sweep.lit += 1;
+                    if through < 1.0 {
+                        sweep.partly += 1;
+                    }
+                }
+                Shadow::Unreached => {}
+            }
+            match (wanted, drawn) {
+                (Shadow::Through(a), Shadow::Through(b)) if (a - b).abs() <= VIEW_BYTE => continue,
+                (a, b) if a == b => continue,
+                // The pool's own rim, where which side of `d = 1` a fragment
+                // falls on is an `f32` division each backend does for itself.
+                (Shadow::Unreached, _) | (_, Shadow::Unreached) if (share - 1.0).abs() <= RIM => {
+                    sweep.rim += 1;
+                }
+                // And the cutoff, where `Blocked` and a very dim `Through` are
+                // the same product read either side of one comparison.
+                (Shadow::Blocked, Shadow::Through(through)) | (Shadow::Through(through), Shadow::Blocked)
+                    if (through - EXACT_WALK_BLOCKED).abs() <= VIEW_BYTE =>
+                {
+                    sweep.cutoff += 1;
+                }
+                (wanted, drawn) => sweep.bugs.push(format!(
+                    "({px}, {py}) at ({:.4}, {:.4}, z {}): light::sample says {wanted:?}, the \
+                     shader drew {drawn:?}",
+                    spot.at.x, spot.at.y, spot.z,
+                )),
+            }
+        }
+    }
+    sweep
+}
+
+/// Asserts a [`shader_sweep`] found nothing, and prints what it looked at either
+/// way — see [`assert_no_exact_walk_bugs`], whose discipline this keeps.
+fn assert_the_shader_agrees(sweep: &ShaderSweep, about: &str) {
+    println!(
+        "{about}: {} pixels compared, {} of them in shadow, {} seeing a flame ({} partly), \
+         {} on a pool's rim, {} on the cutoff",
+        sweep.compared, sweep.blocked, sweep.lit, sweep.partly, sweep.rim, sweep.cutoff,
+    );
+    // The census first, because a sweep that agreed about nothing agrees.
+    assert!(
+        sweep.blocked > 0 && sweep.lit > 0,
+        "the fixture for {about} put {} pixels behind something and left {} seeing a flame: \
+         with either at zero this sweep compares which pixels are out of reach and \
+         nothing about the walk",
+        sweep.blocked,
+        sweep.lit,
+    );
+    assert!(
+        sweep.bugs.is_empty(),
+        "{} of {} pixels: the shader and light::sample disagree about {about}\n{}",
+        sweep.bugs.len(),
+        sweep.compared,
+        sweep.bugs.join("\n"),
+    );
+}
+
+#[test]
+fn the_shader_and_light_sample_agree_about_what_a_room_stops() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::room();
+    let sweep = shader_sweep(&device, &queue, &scene.lighting(0.0), Fixture::ground());
+    assert_the_shader_agrees(&sweep, "a room");
+}
+
+/// And over panels standing on named edges — the shape whose rule is
+/// `pierced`'s, not a body's opacity.
+#[test]
+fn the_shader_and_light_sample_agree_about_which_side_a_wall_is_on() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::wall_with_a_torch_beside_it();
+    let sweep = shader_sweep(&device, &queue, &scene.lighting(0.0), Fixture::ground());
+    assert_the_shader_agrees(&sweep, "which side a wall is on");
+}
+
+/// And at a house corner: a run of panels meeting a faceless whole tile, which
+/// is where two primitives of one tile overlap and the retired per-cell `max`
+/// used to group them.
+#[test]
+fn the_shader_and_light_sample_agree_at_the_corner_of_a_house() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::house_corner();
+    let sweep = shader_sweep(&device, &queue, &scene.lighting(0.0), Fixture::ground());
+    assert_the_shader_agrees(&sweep, "a house corner");
+}
+
+/// And through a hole in one — the aperture, which is the one per-primitive rule
+/// with a fetch of its own behind it.
+#[test]
+fn the_shader_and_light_sample_agree_about_a_hole_in_a_wall() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::wall_with_a_hole_in_it();
+    let sweep = shader_sweep(&device, &queue, &scene.lighting(0.0), Fixture::ground());
+    assert_the_shader_agrees(&sweep, "a hole in a wall");
+}
+
+/// And for a carried beam, whose cone is the one term no static flame here has.
+#[test]
+fn the_shader_and_light_sample_agree_about_a_carried_beam() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let scene = openshard_client_render::scene::lantern_in_a_room();
+    let sweep = shader_sweep(&device, &queue, &scene.lighting(0.0), Fixture::ground());
+    assert_the_shader_agrees(&sweep, "a carried beam");
+}
+
+/// And over a surface that looks up, at the floor and at a height above the
+/// flame — where the lid rule decides and the fragment's own normal turns half
+/// the flame's sphere off.
+#[test]
+fn the_shader_and_light_sample_agree_about_a_surface_that_looks_up() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let lighting = openshard_client_render::scene::room().lighting(0.0);
+    for z in [0, 20] {
+        let fixture = Fixture {
+            surface: Surface::Flat,
+            z,
+            ..Fixture::ground()
+        };
+        let sweep = shader_sweep(&device, &queue, &lighting, fixture);
+        assert_the_shader_agrees(&sweep, &format!("a surface looking up at z {z}"));
+    }
+}
+
 /// The light view has no plateau in the middle of a pool.
 ///
 /// The failure this protects against is the one it was written for: the view
