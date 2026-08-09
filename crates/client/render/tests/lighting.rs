@@ -1077,10 +1077,13 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
             .reaches
             .iter()
             .find(|reach| reach.within)
-            .map_or(0.0, |reach| reach.through * reach.cone)
+            .map_or(0.0, |reach| reach.delivered)
     };
-    // `cone` is where a surface's facing lands — the same number a beam does,
-    // because both are "how much of this flame is turned this way".
+    // `delivered` is where a surface's facing lands, together with everything
+    // else about this flame that is a function of where on its own body a ray
+    // ends — `docs/lighting_rebuild.md` phase 5b. It used to be `through × cone`,
+    // two numbers taken at the flame's centre and multiplied here; the centre is
+    // gone from the shading and so is the multiplication.
     let towards = reach(Vec2::new(cx + 0.5, cy + inside), Face::South);
     let away = reach(Vec2::new(cx + inside, cy + 0.5), Face::East);
 

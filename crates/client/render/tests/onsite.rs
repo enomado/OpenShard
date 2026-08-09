@@ -266,8 +266,8 @@ fn what_the_lighting_knows_about_a_place() {
         match sample.reaches.iter().find(|reach| reach.within) {
             None => println!("lid at z {}: no flame reaches it", cell.top),
             Some(reach) => println!(
-                "lid at z {}: through {:.3}  facing {:.3}  from the flame {:.1} tiles away",
-                cell.top, reach.through, reach.cone, reach.distance,
+                "lid at z {}: visible {:.3}  delivers {:.3}  from the flame {:.1} tiles away",
+                cell.top, reach.through, reach.delivered, reach.distance,
             ),
         }
     }
@@ -302,8 +302,8 @@ fn what_the_lighting_knows_about_a_place() {
         match nearest {
             None => println!("{face:?}: no flame reaches it"),
             Some(reach) => println!(
-                "{face:?}: through {:.3}  facing {:.3}  from the flame {:.1} tiles away",
-                reach.through, reach.cone, reach.distance,
+                "{face:?}: visible {:.3}  delivers {:.3}  from the flame {:.1} tiles away",
+                reach.through, reach.delivered, reach.distance,
             ),
         }
     }

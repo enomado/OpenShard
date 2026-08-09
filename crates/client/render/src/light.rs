@@ -391,7 +391,7 @@ pub struct Lighting {
     /// the same shader is a second thing to keep in step.
     pub view: crate::debug::View,
     /// How big every flame in this frame is, in tiles — the radius of the sphere
-    /// [`shadow`] casts its [`SHADOW_RAYS`] at.
+    /// [`arrival`] casts its [`SHADOW_RAYS`] at.
     ///
     /// **[`FLAME_RADIUS`] is the answer, and this is a field so that a
     /// *comparison* can ask for zero.** A sphere is what a penumbra is made of
@@ -919,7 +919,7 @@ pub const MAX_WALK_STEPS: i32 = 72;
 // fragment can still see. `pierces`'s band, `crosses`'s band, `inside`'s band and
 // the `spread` parameter every walk threaded went with them.
 
-/// How big a flame is: the radius of the sphere [`shadow`] samples, in tiles.
+/// How big a flame is: the radius of the sphere [`arrival`] samples, in tiles.
 ///
 /// **An eighth of a tile, and the art is what says so.** The projection draws
 /// four screen pixels to one `z` ([`crate::camera::Z_STEP`]), and the flame a
@@ -1767,25 +1767,30 @@ pub struct Reach {
     /// Whether that distance is inside the flame's radius. `false` means the
     /// spot is outside the pool and nothing else was computed.
     pub within: bool,
-    /// How much of the flame survived the walk: `1.0` for an open path, `0.0` for
-    /// a wall, and between for a partial occluder. Only meaningful when
-    /// [`Reach::within`].
+    /// How much of the flame's own body survived the walk: `1.0` for an open
+    /// path, `0.0` for a wall, and between for a partial occluder. Only
+    /// meaningful when [`Reach::within`].
+    ///
+    /// **Visibility and nothing else** — no cosine, no falloff, no beam. This is
+    /// what `View::Shadow` draws, and it is the one number that separates "the
+    /// walk is wrong" from "the cosine is wrong", which is why phase 5b kept it
+    /// beside [`Reach::delivered`] rather than folding the two together.
     pub through: f32,
-    /// How much of the flame's [`Beam`] falls here, **and how much of it the
-    /// surface is turned towards**: `1.0` for a fire that lights every direction
-    /// falling on a floor, [`BEAM_SPILL`] for a spot behind a carried lantern, and
-    /// `0.0` for a wall's face with the flame behind it.
+    /// What the flame actually delivered here, as a share of what it would
+    /// deliver to a surface squarely facing it at no distance at all: the mean
+    /// over the flame's body of `visibility × max(N · L, 0) × falloff² × beam`.
     ///
-    /// The two are one number because they are the same question asked of the two
-    /// ends — which way the light points, and which way the surface looks — and a
-    /// dark tile that is neither is what the shadow term is for.
+    /// [`Reach::added`] is this times the flame's colour and intensity, and that
+    /// holds for the sun's own [`Reach`] as well — one invariant, one arithmetic.
     ///
-    /// A separate number from [`Reach::through`] and not folded into it, because
-    /// the two answer the questions a person asks in the order they ask them:
-    /// "is the light pointing at me" comes before "is something in the way", and
-    /// a report that gave one number could not tell a spot behind the player
-    /// from a spot behind a wall.
-    pub cone: f32,
+    /// **This is what [`Reach::cone`] was, and it is a different number.** That
+    /// field was "how much of the beam falls here, and how squarely the surface
+    /// looks at it", both taken at the flame's *centre*; phase 5b took the centre
+    /// out of the shading, so there is no single direction left for either term
+    /// to be evaluated along. A sum over the body is the honest replacement, and
+    /// a report that still printed one cosine would be printing a number the
+    /// renderer no longer computes.
+    pub delivered: f32,
     /// What stopped the ray, where anything did.
     ///
     /// The *first* cell that took the survival to zero and the solid on it that
@@ -1875,9 +1880,10 @@ impl std::fmt::Display for Sample {
         for reach in &self.reaches {
             write!(f, "  light {}: {:.2} tiles", reach.light, reach.distance)?;
             // In the order the questions are asked: is it near enough, is
-            // anything in between, and how much of its beam this spot is in —
-            // see [`Reach::cone`], which is the number that says whether a dark
-            // tile is behind a wall or behind the character.
+            // anything in between, and how much of the flame this surface was
+            // turned towards in the end — see [`Reach::delivered`], which is the
+            // number that says whether a dark tile is behind a wall or facing
+            // away from the fire.
             match (reach.within, reach.stopped_by) {
                 (false, _) => writeln!(f, ", outside its radius")?,
                 (true, Some(stopper)) => {
@@ -1885,9 +1891,9 @@ impl std::fmt::Display for Sample {
                 }
                 (true, None) => writeln!(
                     f,
-                    ", through {:.2}, beam {:.2}, adds {:.3}",
+                    ", visible {:.2}, delivers {:.3}, adds {:.3}",
                     reach.through,
-                    reach.cone,
+                    reach.delivered,
                     reach.added.iter().sum::<f32>() / 3.0,
                 )?,
             }
@@ -1958,44 +1964,33 @@ fn sample_with(
             (light.z - spot.z) / Z_PER_TILE,
         ];
         let distance = offset.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
-        let d = distance / light.radius.max(0.001);
-        if d >= 1.0 {
+        // **The one thing still asked about the flame's centre, and it is
+        // therefore conservative.** This is a broad phase: it decides which
+        // flames to walk rays for and is forbidden to change the answer. A
+        // fragment the centre says is out of reach can be reached by the *near
+        // side* of a body that has one, so the near side is what is tested —
+        // `docs/lighting_rebuild.md` phase 5b.
+        if distance - lighting.flame_radius >= light.radius.max(0.001) {
             reaches.push(Reach {
                 light: index,
                 distance,
                 within: false,
                 through: 0.0,
-                cone: 0.0,
+                delivered: 0.0,
                 stopped_by: None,
                 added: [0.0; 3],
             });
             continue;
         }
-        // Which way the light is pointing, before anything is asked about what
-        // stands in the way: a beam that misses this spot has nothing to be
-        // stopped by. The offset is from the spot to the flame, and a beam's
-        // axis points the other way, so the sign flips here.
-        let cone = match light.beam {
-            Some(beam) => beam.lights(offset.map(|axis| -axis)),
-            None => 1.0,
-        };
-        // And how squarely this surface looks at the flame — geometry and nothing
-        // else. `blit.wgsl` argues why there is no longer an exemption for a
-        // flame standing in the wall's own line, and [`mounted_at`] is what
-        // replaced it.
-        let facing = match spot.surface.normal() {
-            None => 1.0,
-            Some(normal) => lit_from(normal, offset),
-        };
-        // Eight rays at the flame's own sphere, and the share of them that
-        // arrived — `docs/lighting_rebuild.md` phase 5. It is the only term here
-        // that is an estimate rather than a formula, which is why it is the only
-        // one with a ray count behind it.
-        let (through, stopped_by) = shadow(spot, light, &lighting.occlusion, lighting.flame_radius, &walk);
-        let fall = 1.0 - d;
+        // Eight rays at the flame's own sphere, and what they brought: the
+        // cosine, the falloff and the beam are all taken at the point each ray
+        // ends on, so there is nothing left out here to multiply the result by.
+        // See [`arrival`], and phase 5b for why a flame with a centre drew a
+        // wedge of shadow at every join.
+        let arrival = arrival(spot, light, &lighting.occlusion, lighting.flame_radius, &walk);
         let added = light
             .color
-            .map(|channel| channel * light.intensity * fall * fall * through * cone * facing);
+            .map(|channel| channel * light.intensity * arrival.delivered);
         for (total, channel) in multiplier.iter_mut().zip(added) {
             *total += channel;
         }
@@ -2003,9 +1998,9 @@ fn sample_with(
             light: index,
             distance,
             within: true,
-            through,
-            cone: cone * facing,
-            stopped_by,
+            through: arrival.visible,
+            delivered: arrival.delivered,
+            stopped_by: arrival.stopped_by,
             added,
         });
     }
@@ -2025,9 +2020,12 @@ fn sample_with(
             distance: f32::INFINITY,
             within: true,
             through,
-            // The sun is a direction and not a beam: it lights everything it can
-            // see, and there is nothing for a cone to exclude.
-            cone: 1.0,
+            // The sun is a direction and not a beam, and it has no cosine at all
+            // yet — `docs/lighting_rebuild.md` phase 8 is where it gets the same
+            // BRDF as everything else. So what it delivers *is* what it is
+            // visible over, and [`Reach::added`] is that times the colour, which
+            // is the same invariant every flame above keeps.
+            delivered: through,
             stopped_by,
             added,
         }
@@ -2091,7 +2089,7 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper
 /// two ends of it.
 ///
 /// **`at` and not `light.at`**, because phase 5 asks this [`SHADOW_RAYS`] times
-/// per flame with that many points of the flame's own sphere — see [`shadow`],
+/// per flame with that many points of the flame's own sphere — see [`arrival`],
 /// which is what callers want.
 ///
 /// There is nothing left in here that a sun's ray does not also have: the
@@ -2102,7 +2100,7 @@ fn walk(spot: Spot, at: [f32; 3], occlusion: &Occlusion) -> (f32, Option<Stopper
 }
 
 /// A number in `0.0..1.0` that belongs to a point of the world and to no other:
-/// the rotation [`shadow`] turns its sample pattern by.
+/// the rotation [`arrival`] turns its sample pattern by.
 ///
 /// **World space and integers, so that both backends produce the same number.**
 /// The obvious thing — a hash of the pixel — cannot be spelled identically on
@@ -2142,7 +2140,7 @@ fn dither(at: [f32; 3]) -> f32 {
 /// than computed, so that `blit.wgsl`'s copy is the same bits.
 const GOLDEN_ANGLE: f32 = 2.399_963_2;
 
-/// Where the rays of [`shadow`] end: [`SHADOW_RAYS`] points of the sphere a
+/// Where the rays of [`arrival`] end: [`SHADOW_RAYS`] points of the sphere a
 /// flame at `flame` is, as `spot` sees it.
 ///
 /// A position and not a [`Light`], because that is all it is about: two points
@@ -2213,25 +2211,71 @@ pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32) -> [[f32; 3]; SHAD
     })
 }
 
-/// How much of a flame a spot can see: [`SHADOW_RAYS`] rays at the points of it
-/// [`flame_points`] names, and the share of them that got there.
+/// What one flame's body sends to one spot, and how much of that body the spot
+/// can see — the two answers [`arrival`] returns, and they are different
+/// questions.
 ///
-/// **This is the whole of the soft shadow** — `docs/lighting_rebuild.md` phase 5.
-/// A shadow's edge is a gradient because a fragment in it can see part of the
-/// flame and not the rest, which is what a penumbra *is*; nothing here softens
-/// anything, and every one of the rays is the hard, exact walk the sun's ray is.
+/// `docs/lighting_rebuild.md` phase 5b named the split: a flame is a body for
+/// *every* term now, so what it delivers is a sum over its own surface and no
+/// longer a visibility share that something outside the loop scales. The share
+/// it is visible over survives as its own number because a diagnostic asks for
+/// it by name — `View::Shadow` is visibility and nothing else, and it is the one
+/// instrument that separates "the walk is wrong" from "the cosine is wrong".
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Arrival {
+    /// Λ — the mean over the flame's sample points of
+    /// `visibility × max(N · L, 0) × falloff² × beam`.
+    ///
+    /// Everything a flame's colour and intensity are multiplied by, in one
+    /// number, because every one of those terms is a function of the *sample
+    /// point* and none of them of the flame's centre.
+    delivered: f32,
+    /// The share of the flame's body this spot can see: the mean of the same
+    /// rays' visibility alone, with no cosine, no falloff and no beam in it.
+    visible: f32,
+    /// What took the most from any single ray **that had light to lose**.
+    ///
+    /// A ray from below the spot's own horizon delivers exactly zero whatever
+    /// stands in its way, so naming what stopped it would be blaming an occluder
+    /// for a darkness the cosine had already decided. That is the whole of what
+    /// phase 5b's wedge was: rays that could not have lit anything, reported as
+    /// shadow.
+    stopped_by: Option<Stopper>,
+}
+
+/// What a flame at `light` delivers to `spot`, and how much of it the spot sees:
+/// [`SHADOW_RAYS`] rays at the points of the flame [`flame_points`] names, with
+/// **every term of the sum taken at the sample point**.
 ///
-/// Only the *visibility* is sampled. The falloff and the cosine are taken at the
-/// flame's own centre, which is the ordinary split — at an eighth of a tile
-/// across and at any distance a torch reaches, moving the sample point moves
-/// either term by well under a byte, and it keeps a flame's brightness from
-/// carrying this function's noise.
+/// **This is `docs/lighting_rebuild.md` phase 5b**, and the construction is not
+/// "the cosine moved inside the loop" — it is that *the sample point is the only
+/// place a flame has a position*. Visibility, the cosine, the falloff and the
+/// beam are all functions of `p`, and `light.at` appears nowhere below except as
+/// the centre [`flame_points`] lays its disc around:
 ///
-/// The [`Stopper`] handed back is the one that took the most from any single ray,
-/// so a diagnostic naming "what stopped this" names something that genuinely did.
+/// ```text
+/// Λ = (1 / N) · Σ_p  V(p) · max(N · L_p, 0) · fall(p)² · cone(p)
+/// ```
 ///
-/// `blit.wgsl`'s own loop over `walk`, and the two are one arrangement.
-fn shadow(
+/// What that fixes, and it is exact rather than a mitigation: a lamp lower than
+/// the flame's own radius above a floor puts half its sphere **below** that
+/// floor's plane. Those rays were traced, and near a join they left the
+/// fragment's own primitive and came back blocked — a wedge of shadow on a
+/// surface that is flush and continuous. The set of rays a join can block and
+/// the set of rays below the horizon are *the same set*, so `max(N · L_p, 0)`
+/// removes the wedge entirely instead of dimming it.
+///
+/// **A sample whose cosine is not positive is not accumulated at all**, and that
+/// is an exact skip rather than a tolerance: its contribution is zero whatever
+/// stands in its way. The walk still runs for it here, because this is the
+/// diagnostic twin and [`Arrival::visible`] is read as a complete answer by every
+/// oracle in the tree — `blit.wgsl` skips the ray itself in the lit path, which
+/// is where the cost is, and walks every sample in a debug view. The two agree
+/// about [`Arrival::delivered`] to the bit either way, which is what makes the
+/// shader's skip a cost and not a second answer.
+///
+/// `blit.wgsl`'s `arrival`, and the two are one arrangement.
+fn arrival(
     spot: Spot,
     light: &Light,
     occlusion: &Occlusion,
@@ -2240,19 +2284,55 @@ fn shadow(
     // about the same frame.
     radius: f32,
     walk: impl Fn(Spot, [f32; 3], &Occlusion) -> (f32, Option<Stopper>),
-) -> (f32, Option<Stopper>) {
-    let mut reached = 0.0;
+) -> Arrival {
+    let normal = spot.surface.normal();
+    let reach = light.radius.max(0.001);
+    let mut delivered = 0.0;
+    let mut visible = 0.0;
     let mut worst: Option<(f32, Stopper)> = None;
     for at in flame_points(spot, [light.at.x, light.at.y, light.z], radius) {
+        // From the spot to *this point of the flame*, in the one metric: `z`
+        // divided into tiles, which is what the cosine, the falloff and the beam
+        // are all stated in.
+        let toward = [
+            at[0] - spot.at.x,
+            at[1] - spot.at.y,
+            (at[2] - spot.z) / Z_PER_TILE,
+        ];
+        let cosine = match normal {
+            None => 1.0,
+            Some(normal) => lit_from(normal, toward),
+        };
         let (through, stopped_by) = walk(spot, at, occlusion);
-        reached += through;
+        visible += through;
+        if cosine <= 0.0 {
+            continue;
+        }
+        // The falloff of *this* ray, and it is clamped where the centre's never
+        // had to be: the cull below is conservative, so a spot inside the pool by
+        // the near edge of the sphere can be past the reach of its far side, and
+        // `(1 - d)²` of a negative `1 - d` is a bright ring at the rim.
+        let distance = toward.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+        let fall = (1.0 - distance / reach).max(0.0);
+        // And which way the flame is pointing at this point of itself. The offset
+        // runs from the spot to the flame and a beam's axis runs the other way,
+        // so the sign flips here.
+        let cone = match light.beam {
+            Some(beam) => beam.lights(toward.map(|axis| -axis)),
+            None => 1.0,
+        };
+        delivered += through * cosine * fall * fall * cone;
         if let Some(stopper) = stopped_by {
             if worst.is_none_or(|(lost, _)| through < lost) {
                 worst = Some((through, stopper));
             }
         }
     }
-    (reached / SHADOW_RAYS as f32, worst.map(|(_, stopper)| stopper))
+    Arrival {
+        delivered: delivered / SHADOW_RAYS as f32,
+        visible: visible / SHADOW_RAYS as f32,
+        stopped_by: worst.map(|(_, stopper)| stopper),
+    }
 }
 
 /// One segment of the world, cell by cell: how much of a ray survives it, and
@@ -3636,6 +3716,105 @@ mod tests {
         );
     }
 
+    /// **The cull is conservative, and the silhouette is why that costs nothing
+    /// today** — the one term `docs/lighting_rebuild.md`'s phase 5b left at the
+    /// flame's centre, and a correction to what that phase expected of it.
+    ///
+    /// The cull is a **broad phase**: it decides which flames to walk rays for,
+    /// and a broad phase that changes the answer is a defect rather than an
+    /// optimisation. So it culls on the near side of the body —
+    /// `distance - flame_radius >= reach` — because a *sphere* centred a hair past
+    /// a spot's reach still has half of itself inside it.
+    ///
+    /// **And no sample of it is ever nearer than its centre**, which is the first
+    /// half of this test and the reason the conservatism currently moves no pixel.
+    /// [`flame_points`] samples the disc the sphere *presents* to the spot — the
+    /// silhouette, which is the set a receiver can be occluded from — and every
+    /// point of that disc is `sqrt(d² + r²)` away. Phase 5b predicted that
+    /// tightening the cull to `distance >= reach` would move "pixels at the rim of
+    /// every pool"; it moves none, and this is why.
+    ///
+    /// So the rule is a guard rather than a behaviour, and it is a guard with a
+    /// gate: the day a sampler reaches for the *volume* instead of the silhouette,
+    /// the first half of this goes red and the conservative form starts earning
+    /// its keep. Deleting it and keeping the lemma would be the same picture with
+    /// nothing standing between a future sampler and a pool with a bite out of its
+    /// rim.
+    #[test]
+    fn the_cull_is_conservative_and_no_sample_is_nearer_than_the_flames_centre() {
+        // Every direction that matters, at three distances: along each axis,
+        // diagonally, and steeply up — the branch in `flame_points`'s own basis is
+        // on `normal.x`, so a sweep that never crossed it would test one arm.
+        for direction in [
+            [1.0_f32, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.6, 0.8, 0.0],
+            [0.3, 0.2, 0.93],
+        ] {
+            for span in [0.2_f32, 1.0, 7.0] {
+                let spot = Spot::at(Vec2::new(100.0, 100.0), 0.0, (100, 100));
+                let flame = [
+                    100.0 + direction[0] * span,
+                    100.0 + direction[1] * span,
+                    direction[2] * span * Z_PER_TILE,
+                ];
+                let centre = span * (direction.iter().map(|a| a * a).sum::<f32>()).sqrt();
+                for point in flame_points(spot, flame, FLAME_RADIUS) {
+                    let away = [point[0] - 100.0, point[1] - 100.0, point[2] / Z_PER_TILE];
+                    let distance = away.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+                    assert!(
+                        distance >= centre - 1e-5,
+                        "a sample at {distance} is nearer than the flame's own centre at {centre}: \
+                         the disc is no longer a silhouette, and the cull's conservatism has become \
+                         load-bearing"
+                    );
+                }
+            }
+        }
+
+        let reach = 1.0_f32;
+        let lighting = Lighting {
+            ambient: Ambient {
+                sky: [0.0; 3],
+                ground: [0.0; 3],
+            },
+            lights: vec![Light {
+                at: Vec2::new(100.5, 100.5),
+                z: 0.0,
+                radius: reach,
+                color: [1.0, 1.0, 1.0],
+                intensity: 1.0,
+                beam: None,
+            }],
+            occlusion: Occlusion::EMPTY,
+            sun: None,
+            view: crate::debug::View::Lit,
+            flame_radius: FLAME_RADIUS,
+        };
+        // Along `x` and at the flame's own height, so the distance is the offset
+        // and nothing has to be derived. `Spot::at` has no facing, so the cosine
+        // is one everywhere and what is being read is the falloff alone.
+        let brightness = |east: f32| {
+            let at = Vec2::new(100.5 + east, 100.5);
+            sample(Spot::at(at, 0.0, (100, 100)), &lighting).brightness()
+        };
+        let inside = brightness(reach - 0.01);
+        let near_edge = brightness(reach + FLAME_RADIUS / 2.0);
+        assert!(
+            inside > 0.0,
+            "a spot inside the centre's own reach is dark: {inside}"
+        );
+        // And the consequence of the lemma above, stated as the picture: the rays
+        // the conservative cull keeps alive all land past the reach, so they
+        // deliver exactly nothing. The two culls draw one frame.
+        assert_eq!(
+            near_edge, 0.0,
+            "a spot past the flame's centre but inside its near edge came out lit: some sample is \
+             nearer than the centre after all"
+        );
+    }
+
     /// The identity is exactly that: the blit has a case where it must not touch
     /// a single byte, and this is what says so.
     #[test]
@@ -4648,8 +4827,18 @@ mod tests {
 
             // And the carried tile still wins every tie it exists to break: a
             // point anywhere in its closure, both edges included, walks from it.
-            let inside_x = (0.0..=1.0).contains(&off_x);
-            let inside_y = (0.0..=1.0).contains(&off_y);
+            //
+            // **The offset is read back off the point and not taken from the
+            // generator**, and a fresh seed is what found the difference: at
+            // `tile_y = -6`, `-6.0 + 1.0000002` is not representable and rounds
+            // to exactly `-5.0`, whose offset from its own tile is exactly `1.0`.
+            // So the point the function is handed really *is* on the edge, the
+            // carried tile really is the answer, and only the expectation was
+            // wrong — it was describing a point nobody had built. A generator's
+            // number and the number a function sees are two different values
+            // wherever the sum between them rounds.
+            let inside_x = (0.0..=1.0).contains(&(from[0] - tile_x as f32));
+            let inside_y = (0.0..=1.0).contains(&(from[1] - tile_y as f32));
             prop_assert_eq!(inside_x, cell.0 == tile_x, "x: carried {}, got {}, off {}", tile_x, cell.0, off_x);
             prop_assert_eq!(inside_y, cell.1 == tile_y, "y: carried {}, got {}, off {}", tile_y, cell.1, off_y);
         });

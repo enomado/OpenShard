@@ -335,8 +335,16 @@ pub struct Frame<'a> {
     pub height: u32,
     /// The `place` attachment, decoded — who drew each pixel.
     pub drawn: &'a [Drawn],
-    /// The `View::Shadow` picture, `RGBA8`.
-    pub shadow: &'a [u8],
+    /// The frame's own debug view, read back, `RGBA8` — **and which view it is
+    /// depends on the question**.
+    ///
+    /// [`compare`] and [`penumbra`] read `View::Shadow`, whose greys are a
+    /// visibility share and whose two other colours [`Shade`] names. [`shading`]
+    /// reads `View::Flames`, which is the light the flames added with the art
+    /// thrown away. One field rather than one per view because a comparison reads
+    /// exactly one picture, and because a `Frame` carrying two would let a caller
+    /// hand a gate the view it was not written for.
+    pub picture: &'a [u8],
     /// Which box and stance each mesh-face instance row is, as the tool that
     /// pushed the rows recorded it rather than as anybody's guess about the
     /// order they went in.
@@ -727,7 +735,7 @@ pub fn penumbra(
         width,
         height,
         drawn,
-        shadow,
+        picture,
         face_rows,
     } = frame;
     let mut found = Penumbra {
@@ -759,7 +767,7 @@ pub fn penumbra(
             continue;
         }
         let Shade::Through(grey) =
-            Shade::of([shadow[pixel * 4], shadow[pixel * 4 + 1], shadow[pixel * 4 + 2]])
+            Shade::of([picture[pixel * 4], picture[pixel * 4 + 1], picture[pixel * 4 + 2]])
         else {
             // `Blocked` and `Unreached` are the two the engine says in a colour
             // rather than in a level — see `Shade`. Neither is a fraction, and a
@@ -796,6 +804,177 @@ pub fn penumbra(
     found
 }
 
+/// How much light each side says landed on a pixel, compared where both agree
+/// what surface is there.
+///
+/// **`docs/lighting_rebuild.md`'s phase 5b, as a measurement.** [`compare`] and
+/// [`penumbra`] both read *visibility*, and visibility is exactly the term phase
+/// 5b does not touch — a flame was already a body for it. What that phase moves
+/// is everything else: the cosine, the falloff and the beam stop being taken at
+/// the flame's centre and become functions of the sample point. So a gate that
+/// reads a shadow view cannot see the change at all, in either direction, and the
+/// only picture that can is one with the light in it.
+///
+/// `View::Flames` and not `View::Lit`: the flames' own contribution with the art
+/// thrown away, which is what makes the comparison possible on a scene of boxes
+/// at all. `mesh_face.wesl` writes no colour, so a box's albedo exists only on
+/// the reference's side — see [`Albedos::body`] — and a *shaded* comparison here
+/// would be judging an invented number. With the reference's albedos set to one
+/// and the engine's ambient to nothing, both sides are the same quantity: the sum
+/// over the flame of `visibility × cosine × falloff² × beam`, times colour and
+/// intensity.
+pub struct Shading {
+    /// Pixels both sides had an opinion about and neither was clipping at.
+    pub compared: usize,
+    /// And the ones dropped because one side or the other was at full scale. A
+    /// clamped pixel agrees with anything brighter than itself, so counting one
+    /// as agreement would let a frame that is twice too bright read as perfect
+    /// wherever it is bright enough.
+    pub clamped: usize,
+    /// The largest and the mean difference over the compared pixels, in shares of
+    /// a channel's full scale.
+    pub worst: f64,
+    pub worst_at: (u32, u32),
+    pub mean: f64,
+    /// The mean difference **with its sign**: how much brighter the engine is
+    /// than the reference, on average.
+    ///
+    /// **The sharp number, for the reason [`Penumbra::bias`] is.** Both sides are
+    /// estimates and their noise is symmetric, so it cancels over thousands of
+    /// pixels; a wrong *model* does not. A cosine taken at the flame's centre
+    /// rather than at each sample point is precisely a wrong model, and it is
+    /// signed — it overestimates, because it credits every ray with the cosine of
+    /// the one direction the flame's middle happens to lie in.
+    pub bias: f64,
+    /// What the reference disagrees with *itself* by over the same pixels, one
+    /// seed against another. The scale everything above is read against.
+    pub noise_mean: f64,
+    /// How many compared pixels are past `allowed` plus the reference's own
+    /// measured noise at that pixel.
+    pub over: usize,
+}
+
+impl Shading {
+    /// The whole finding as the line a run prints.
+    pub fn report(&self, allowed: f64) -> String {
+        format!(
+            "flames vs path tracer: {} pixels compared ({} dropped as clipping), worst {:.4} of full \
+             scale at {:?}, mean {:.4}, signed mean {:+.4}; the reference against itself over the same \
+             pixels is mean {:.4}; {} past {:.4} plus that pixel's own reference noise\n",
+            self.compared,
+            self.clamped,
+            self.worst,
+            self.worst_at,
+            self.mean,
+            self.bias,
+            self.noise_mean,
+            self.over,
+            allowed,
+        )
+    }
+}
+
+/// [`Shading`], measured.
+///
+/// `traced` and `second` are the same scene in [`pt_trace::Brdf::Lambert`] under
+/// two seeds — the second is the error bar and nothing else. `frame.picture` is
+/// the engine's `View::Flames`, which is written into an `Rgba8Unorm` target
+/// without a tone curve, so a byte over 255 is the *only* processing between the
+/// number the shader summed and the number read here.
+///
+/// Silhouettes are excluded the way [`compare`] excludes them: a pixel whose
+/// eight-neighbourhood holds a different surface on either side is one where half
+/// a pixel decides which surface a ray meets, and the light on two different
+/// surfaces is two different numbers.
+///
+/// # Panics
+///
+/// If it compared nothing. A brightness gate over a picture with no light in it
+/// is green for every renderer there is.
+pub fn shading(
+    traced: &pt_trace::Image,
+    second: &pt_trace::Image,
+    frame: Frame<'_>,
+    allowed: f64,
+) -> Shading {
+    let Frame {
+        width,
+        height,
+        drawn,
+        picture,
+        face_rows,
+    } = frame;
+    let mut engine_surface: Vec<Option<pt_scene::Surface>> = vec![None; (width * height) as usize];
+    let mut traced_surfaces: Vec<Option<pt_scene::Surface>> = vec![None; (width * height) as usize];
+    for pixel in 0..(width * height) as usize {
+        engine_surface[pixel] = traced_surface(&drawn[pixel], face_rows);
+        traced_surfaces[pixel] = traced.pixels[pixel].seen.map(|seen| seen.surface);
+    }
+
+    let mut found = Shading {
+        compared: 0,
+        clamped: 0,
+        worst: 0.0,
+        worst_at: (0, 0),
+        mean: 0.0,
+        bias: 0.0,
+        noise_mean: 0.0,
+        over: 0,
+    };
+    let (mut total, mut signed, mut noise_total) = (0.0, 0.0, 0.0);
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = (y * width + x) as usize;
+            if engine_surface[pixel].is_none() || engine_surface[pixel] != traced_surfaces[pixel] {
+                continue;
+            }
+            if on_an_edge(&engine_surface, width, height, x, y)
+                || on_an_edge(&traced_surfaces, width, height, x, y)
+            {
+                continue;
+            }
+            let engine = (0..3)
+                .map(|channel| f64::from(picture[pixel * 4 + channel]) / 255.0)
+                .fold(0.0_f64, f64::max);
+            let of = |image: &pt_trace::Image| {
+                image.pixels[pixel]
+                    .radiance
+                    .iter()
+                    .fold(0.0_f64, |most, channel| most.max(*channel))
+            };
+            let reference = of(traced);
+            // Either side at full scale says "at least this much" and nothing
+            // more, so a difference read there is a difference between two
+            // bounds. The engine's own byte saturates a hair under one.
+            if engine >= 254.5 / 255.0 || reference >= 1.0 {
+                found.clamped += 1;
+                continue;
+            }
+            let difference = engine - reference;
+            let apart = difference.abs();
+            let own = (of(second) - reference).abs();
+            found.compared += 1;
+            total += apart;
+            signed += difference;
+            noise_total += own;
+            found.over += usize::from(apart > allowed + own);
+            if apart > found.worst {
+                found.worst = apart;
+                found.worst_at = (x, y);
+            }
+        }
+    }
+    assert!(
+        found.compared > 0,
+        "no pixel of this scene was compared: a brightness gate over a picture with no light in it is \
+         green for every renderer there is"
+    );
+    found.mean = total / found.compared as f64;
+    found.bias = signed / found.compared as f64;
+    found.noise_mean = noise_total / found.compared as f64;
+    found
+}
+
 /// Two scanlines through one pixel, in words: what each renderer says is there,
 /// **where in the world it is**, and what each says about the light on it.
 ///
@@ -816,7 +995,7 @@ pub fn probe(traced: &pt_trace::Image, frame: Frame<'_>, at: (u32, u32), radius:
         width,
         height,
         drawn,
-        shadow,
+        picture,
         face_rows,
     } = frame;
     let mut out = format!(
@@ -829,7 +1008,7 @@ pub fn probe(traced: &pt_trace::Image, frame: Frame<'_>, at: (u32, u32), radius:
         }
         let pixel = (y * width + x) as usize;
         let texel = &drawn[pixel];
-        let lit = Shade::of([shadow[pixel * 4], shadow[pixel * 4 + 1], shadow[pixel * 4 + 2]]).lit();
+        let lit = Shade::of([picture[pixel * 4], picture[pixel * 4 + 1], picture[pixel * 4 + 2]]).lit();
         let seen = traced.pixels[pixel].seen;
         out.push_str(&format!(
             "  ({x:3}, {y:3}) frame: {:28} at ({:8.3}, {:8.3}, {:6.3}) {:7} | tracer: {:12} at {}\n",
@@ -952,7 +1131,7 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
         width,
         height,
         drawn,
-        shadow,
+        picture,
         face_rows,
     } = frame;
 
@@ -1005,7 +1184,7 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
             // where the neighbourhood is available to say which kind it is.
             continue;
         }
-        let frame_lit = Shade::of([shadow[pixel * 4], shadow[pixel * 4 + 1], shadow[pixel * 4 + 2]]).lit();
+        let frame_lit = Shade::of([picture[pixel * 4], picture[pixel * 4 + 1], picture[pixel * 4 + 2]]).lit();
         let (x, y) = ((pixel as u32) % width, (pixel as u32) / width);
         let visibility = engine_model.visibility(x, y, 0);
         let lit = |seen: pt_trace::Visibility| seen.within_reach && seen.reached > 0.5;

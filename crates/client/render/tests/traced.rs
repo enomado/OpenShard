@@ -519,7 +519,7 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
             width: SIDE,
             height: SIDE,
             drawn: &frame.drawn,
-            shadow: &frame.surface,
+            picture: &frame.surface,
             face_rows: &frame.face_rows,
         },
     );
@@ -539,7 +539,7 @@ fn the_frame_and_the_path_tracer_agree_about_every_interior_pixel() {
             width: SIDE,
             height: SIDE,
             drawn: &frame.drawn,
-            shadow: &frame.surface,
+            picture: &frame.surface,
             face_rows: &frame.face_rows,
         },
         allowed,
@@ -755,7 +755,7 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
             width: SIDE,
             height: SIDE,
             drawn: &frame.drawn,
-            shadow: &frame.surface,
+            picture: &frame.surface,
             face_rows: &frame.face_rows,
         },
     );
@@ -779,7 +779,7 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
                     width: SIDE,
                     height: SIDE,
                     drawn: &frame.drawn,
-                    shadow: &frame.surface,
+                    picture: &frame.surface,
                     face_rows: &frame.face_rows,
                 },
                 (numbers[0], numbers[1]),
@@ -814,6 +814,166 @@ fn the_frame_and_the_path_tracer_agree_about_a_run_of_flights() {
          no surface disagreement explains\n{}",
         verdict.interior,
         verdict.report(),
+    );
+}
+
+/// How much brighter than the reference the frame may be, on average, over the
+/// wedge scene — in shares of a channel's full scale.
+///
+/// **A bound on a signed mean over a quarter of a million pixels, which is a
+/// bound on the model and not on the noise.** Both sides estimate — the engine
+/// with eight rays, the reference with sixty-four — and that noise is symmetric,
+/// so it cancels here: the reference disagrees with *itself* by `0.0067` a pixel
+/// over these very pixels, and the standard error of a mean of a quarter of a
+/// million such is `1.3e-5`. So this bound is a hundred and fifty times the
+/// resolution of the instrument and nowhere near the size of a real defect.
+///
+/// **Fault-injected rather than argued.** With the cosine restored to the flame's
+/// centre — the model phase 5b replaced — the frame reads `-0.0044`, twice this
+/// and two hundred times the standard error, and the gate is red. With the phase
+/// in, it reads `-0.0002`. That twentyfold fall is the phase's own "the frame has
+/// moved towards the reference", measured rather than asserted; both numbers are
+/// in `docs/lighting_rebuild.md`.
+///
+/// The sign is worth keeping in mind when this next moves: the wedge makes the
+/// engine **darker** than the truth, because it is rays that could not have lit
+/// anything being counted as shadow.
+const WEDGE_BIAS: f64 = 0.002;
+
+/// **A flame with a body has no centre, and a landing lit by one from just above
+/// its own plane is where that used to show** — `docs/lighting_rebuild.md`'s
+/// phase 5b, against the reference.
+///
+/// The scene is [`stair_scene`] again and the flame is barely clear of the top
+/// landing: half a `z`, which is under [`light::FLAME_RADIUS`] in tiles, so **half
+/// the flame's sphere is below the surface it is standing on**. Rays to that half
+/// are traced, and near a join between two flights they leave the fragment's own
+/// primitive and enter the neighbour's — so they came back blocked and darkened a
+/// surface that is flush and continuous, in a wedge widest at the join. A cosine
+/// taken at the flame's centre cannot cancel them, because at the centre the
+/// cosine is positive.
+///
+/// **Why this gate reads `View::Flames` and not `View::Shadow`.** Visibility is
+/// the one term phase 5b does not touch: a flame was already a body for it, so
+/// [`the_frame_and_the_path_tracer_agree_about_a_run_of_flights`] and the
+/// penumbra gate beside it are invariant to this phase in *both* directions, and
+/// neither could have caught the defect or can now witness the fix. What changes
+/// is the cosine, the falloff and the beam, and only a picture with light in it
+/// shows them. See [`oracle::pathtrace::shading`].
+///
+/// The albedos are **one** on the reference's side and the ambient is nothing on
+/// the engine's, which makes both pictures the same quantity: the sum over the
+/// flame's body of `visibility × cosine × falloff²`, times colour and intensity.
+/// That is what lets a scene of *boxes* be judged for brightness at all —
+/// `mesh_face.wesl` writes no colour, so a shaded comparison here would be
+/// judging [`oracle::pathtrace::Albedos::body`], which is invented.
+#[test]
+fn a_flame_just_over_a_landing_does_not_wedge_it_with_its_own_below_horizon_rays() {
+    let Some((device, queue)) = gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let boxes = stair_scene();
+    // Over the middle flight's third of the top landing, half a `z` above it.
+    // `light::FLAME_RADIUS` is an eighth of a tile, which is `1.375` of a `z`, so
+    // the sphere's lower half is inside the landing's own boxes — which is the
+    // whole fixture. Off-centre along `x` so that the joins at `x = 101` and
+    // `x = 102` are at two different distances and a wedge at either has room to
+    // be seen.
+    let at = WorldSpot {
+        x: 101.3,
+        y: 100.167,
+        z: 5.5,
+    };
+    let radius = 8.0_f32;
+    const BRIGHTNESS: f32 = 1.0;
+    let frame = render(
+        &device,
+        &queue,
+        Shot {
+            boxes: &boxes,
+            flame: at,
+            radius,
+            intensity: BRIGHTNESS,
+            // Nothing, so that `View::Flames` and the reference's radiance are the
+            // same number: a degenerate path trace is direct light and has no
+            // ambient term to match.
+            ambient: openshard_client_render::light::Ambient {
+                sky: [0.0; 3],
+                ground: [0.0; 3],
+            },
+            view: View::Flames,
+            zoom: 2,
+            // **The shipped sphere, and the fixture is nothing without it.** At
+            // radius zero there is no below-horizon half and no wedge to measure.
+            flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        },
+    );
+
+    let mirror = oracle::pathtrace::Mirror::of(oracle::pathtrace::Mirrored {
+        boxes: &boxes,
+        light_at: at,
+        light_radius: f64::from(radius),
+        colour: [1.0, 1.0, 1.0],
+        intensity: f64::from(BRIGHTNESS) * oracle::pathtrace::LAMBERT_PI,
+        // One, on both surfaces: this comparison is about the light and the
+        // engine's side has thrown the art away, so a reflectance on the
+        // reference's side alone would be a constant factor between two pictures
+        // that are otherwise the same sum.
+        albedos: oracle::pathtrace::Albedos {
+            ground: [1.0; 3],
+            body: [1.0; 3],
+        },
+        body: oracle::pathtrace::ENGINE_FLAME,
+        to_pixel: frame.to_pixel.as_ref(),
+    });
+    let seen = |seed| mirror.render(pt_trace::Brdf::Lambert, seed, SIDE, SIDE);
+    let traced = seen(oracle::pathtrace::FIRST_SEED);
+    let allowed = oracle::pathtrace::PENUMBRA_ALLOWED;
+    let found = oracle::pathtrace::shading(
+        &traced,
+        &seen(oracle::pathtrace::SECOND_SEED),
+        oracle::pathtrace::Frame {
+            width: SIDE,
+            height: SIDE,
+            drawn: &frame.drawn,
+            picture: &frame.surface,
+            face_rows: &frame.face_rows,
+        },
+        allowed,
+    );
+    eprint!("{}", found.report(allowed));
+    // **The raw picture, where a run asks for it — for comparing two runs against
+    // each other rather than against the reference.** Two of phase 5b's three
+    // fault injections are claims that *nothing moves*: the below-horizon skip is
+    // a cost and not a second answer, and tightening the cull changes no pixel
+    // because no sample of the flame is nearer than its centre. An aggregate
+    // agreeing to four decimal places is not that claim; `cmp` over two dumps is,
+    // and both came back zero bytes apart. Raw `RGBA8` and not a PNG: the point is
+    // that the bytes are the bytes.
+    if let Some(path) = std::env::var_os("OPENSHARD_WEDGE_DUMP") {
+        std::fs::write(path, &frame.surface).expect("writing the frame dump");
+    }
+
+    // The same non-triviality guard every gate in this file carries: a comparison
+    // that reached a handful of pixels would pass this for any renderer.
+    assert!(
+        found.compared > 20_000,
+        "only {} pixels were compared ({} dropped as clipping) — a detector that compares nothing \
+         reads exactly like one that found nothing\n{}",
+        found.compared,
+        found.clamped,
+        found.report(allowed),
+    );
+    assert!(
+        found.bias.abs() < WEDGE_BIAS,
+        "the frame differs from the reference by {:+.4} of full scale on average — positive is \
+         brighter, negative is the wedge — past the {WEDGE_BIAS} a difference of estimators \
+         explains, which makes it a model difference. The reference disagrees with itself by \
+         {:.4} over the same pixels.\n{}",
+        found.bias,
+        found.noise_mean,
+        found.report(allowed),
     );
 }
 

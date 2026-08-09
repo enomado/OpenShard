@@ -302,8 +302,8 @@ fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
                 (false, _) => print!("  | light {}: outside radius", reach.light),
                 (true, Some(stopper)) => print!("  | light {}: stopped by {stopper}", reach.light),
                 (true, None) => print!(
-                    "  | light {}: through {:.3} cone {:.3}",
-                    reach.light, reach.through, reach.cone
+                    "  | light {}: visible {:.3} delivers {:.3}",
+                    reach.light, reach.through, reach.delivered
                 ),
             }
         }

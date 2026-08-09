@@ -878,9 +878,9 @@ and a lid the ray genuinely crosses is found at the `t` of its own plane, so
 neither is touched. The face oracle reads `0 of 11,469` after it, against 88
 before, and the light oracle stays at zero on every flame height.
 
-**Phase 5b — a flame has no centre.** Every term of a flame's contribution is a
-function of the *sample point*: visibility, the cosine, the falloff and the beam.
-`light.at` stops appearing in the shading loop at all.
+**Phase 5b — a flame has no centre.** *(Landed.)* Every term of a flame's
+contribution is a function of the *sample point*: visibility, the cosine, the
+falloff and the beam. `light.at` stops appearing in the shading loop at all.
 
 *Why it is a phase and not a backlog line.* Phase 5 gave the flame a body for
 one term and left it a point for the others, and the backlog entry below has the
@@ -933,38 +933,122 @@ applied twice is the same defect wearing the fix's clothes.
   and every diagnostic that wanted the second one asks for it by name.
 
 *Done when:* the wedge is gone at a measured count, and the frame has moved
-towards the reference rather than away from it.
+towards the reference rather than away from it. **Both done**, and the gate is
+new: `the_frame_and_the_path_tracer_agree_about_every_interior_pixel` could not
+have carried it. That gate reads `View::Shadow`, and visibility is the one term
+this phase does not touch — a flame was already a body for it — so both shadow
+gates are invariant to phase 5b in *either* direction and neither could have
+caught the defect or can now witness the fix. What can is a picture with light in
+it: `a_flame_just_over_a_landing_does_not_wedge_it_with_its_own_below_horizon_
+rays` renders the stair scene in `View::Flames` with a flame **half a `z` above
+the top landing** — against a `FLAME_RADIUS` of `1.375` `z`, so half the sphere
+is inside the boxes — and lays it against the tracer with every albedo set to
+one, which is what makes a scene of boxes judgeable for brightness at all while
+`mesh_face.wesl` still writes no colour. `oracle::pathtrace::shading` is the
+comparison.
 
-*Gates, each fault-injected to red in the same session that trusts it* — the
-habit `docs/occluders.md`'s S3 paid for:
+**The number is the signed mean, and it fell twentyfold: `-0.0044` of full scale
+to `-0.0002`, over 256,711 pixels.** The reference disagrees with *itself* by
+`0.0067` a pixel over those same pixels, so the standard error of that mean is
+`1.3e-5` — the residual is fifteen of those and the defect was three hundred.
+`WEDGE_BIAS` is `0.002`, between them and near neither.
 
-- **The reference path tracer**, which is the honest oracle here: it samples an
-  area light over 64 paths with a real Lambert term, so it already computes this
-  sum and the engine is the side that was wrong.
-  `the_frame_and_the_path_tracer_agree_about_every_interior_pixel` must not
-  regress, and the wedge fixture's disagreement must *fall*, printed as a number.
-- **`a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces`** —
-  S3's own gate, on `Stopper::solid`. After this it should pass with `same_run`
-  neutralised **and** with S3's exemption neutralised, which is the measurement
-  that says what those two rules were really for.
-- **Injection: the centre cosine, restored.** The wedges come back and the gate
-  goes red with a count. A green gate and a vacuum gate look alike.
-- **Injection: the skip, removed.** Not one pixel moves. That is what makes the
-  debug view's extra rays a cost rather than a second answer.
-- **Injection: the cull, tightened** to `distance >= light.radius`. Pixels at the
-  rim of every pool change, counted — which is what says the conservative form is
-  load-bearing rather than decorative.
+*And a person looked at it*, which is what *How this is judged* asks for. Before,
+the top landing is **three flat blocks with a hard step at each join** — the
+middle one holding the pool, the two either side plainly darker, the step running
+the landing's whole width. After, it is one gradient across all three and the
+steps are gone. 163,492 of 262,144 pixels move, worst channel `122` of 255.
 
-*What this is expected to settle, and each wants measuring rather than
-assuming.* `docs/occluders.md`'s `same_run` is broad precisely because it was
-papering over these below-horizon rays, so it should become deletable **without
-the merge** — S4 gets its licence back. S3's exemption is reachable only by a ray
-lying in the surface's own plane, which is a ray whose cosine is exactly zero, so
-it should become unreachable outright; whether it is then deleted or kept as a
-proven no-op is decided *after* that measurement and not in this step. And the
-side-lit artefact — a lamp beside a wall lighting the face it grazes — is the
-configuration a centre cosine cannot hide, so it is checked here, on a fixture
-built for it.
+**162,921 of them are brighter and 571 darker, which is the opposite of what the
+prototype recorded**, and the correction is worth more than the tidiness of
+deleting the claim. The backlog entry this phase came from says "21,177 pixels
+move on the stair fixture, 20,308 of them darker, which is the overestimate the
+centre cosine was paying out". There is no overestimate to pay out: `max(·, 0)`
+is convex, so `mean_p max(N·L_p, 0) ≥ max(N·L_centre, 0)` for every configuration
+there is — an average over the body is never dimmer than the centre's own cosine.
+What the centre cosine cost was *darkness*: rays below the horizon, counted as
+shadow at every join. Whatever the prototype measured, it was not this.
+
+*Gates, each fault-injected to red — or to zero — in the same session that trusts
+it*, the habit `docs/occluders.md`'s S3 paid for. Two of the three came back with
+an answer the phase had not predicted:
+
+- **Injection: the centre cosine, restored.** The gate is red at `-0.0044` and
+  the three blocks are back in the picture. Both numbers above are that run.
+- **Injection: the skip, removed** — `every_sample` forced true, so a
+  below-horizon ray is walked in the lit path too. The frame is **byte for byte
+  identical**: `cmp` over the two `512×512` dumps reports `0` of 1,048,576 bytes
+  apart. That is the claim stated as a claim rather than as four decimal places of
+  an aggregate, and `OPENSHARD_WEDGE_DUMP` is the hook that made it available.
+- **Injection: the cull, tightened** to `distance >= light.radius`. Also byte for
+  byte identical, and **the phase's own prediction here was wrong.** "Pixels at
+  the rim of every pool change" assumes some sample of a flame can be nearer than
+  its centre, and none can: `flame_points` samples the disc the sphere *presents*
+  to the fragment — the silhouette — and every point of it is `sqrt(d² + r²)`
+  away. So the tight cull is already exact for the sampler we have, and the
+  conservative form is a **guard rather than a behaviour**. It is kept, with the
+  lemma that makes it free pinned as its own test:
+  `the_cull_is_conservative_and_no_sample_is_nearer_than_the_flames_centre` sweeps
+  five directions at three distances, and the day a sampler reaches for the volume
+  instead of the silhouette it goes red and the guard starts earning its keep.
+
+*What it cost, measured on Britain by holding the frame still and moving the
+model alone* — `tests/cost.rs`, seven flames, at the widest zoom:
+
+| | centre cosine, eight rays | per-sample, below-horizon rays skipped |
+|---|---|---|
+| `night` (the seven flames) | 1.94 ms | 1.51 ms |
+| above the `dark` floor of 0.71 ms | 1.23 ms | 0.80 ms |
+| `sun` (the control) | 0.90 ms | 1.00 ms |
+
+A third off the flame work, which is the cost win the skip was expected to be.
+**The control moved, and it is reported rather than absorbed**: the sun's path is
+untouched by this phase and its row still rose by a tenth of a millisecond, so
+something outside the flame loop — register pressure across one shader, most
+likely — is in the reading too. Taking the control's drift out of the flame row
+by hand leaves a quarter rather than a third, and a quarter is the number to
+believe.
+
+*What it settled about the two rules below it, and one of the two went the other
+way.*
+
+- **S3's exemption is unreachable, exactly as predicted.**
+  `a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces` passes
+  with `on_the_lit_surface` neutralised — `0` of 720 fragments blamed — where the
+  same neutralisation with the centre cosine restored reports **480 of 720**. So
+  it is this phase and not the fixture. The whole of `tests/lighting.rs` passes
+  with that rule neutralised besides. **The price is that the gate is now vacuous
+  with respect to D2**: its flame lies exactly in the landing's own plane, which
+  is a ray whose cosine is exactly zero, so nothing is traced and nothing is
+  blamed. Deleting the rule or keeping it as a proven no-op is the decision the
+  plan deferred to *after* this measurement; what has to come first is a fixture
+  that can still reach it, and there may not be one.
+- **`same_run` is not retired, and S4 does not get its licence back.**
+  Neutralised, `light_runs_along_a_wall_and_stops_across_it` and
+  `the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at` go red exactly
+  as phase 4 measured them. **But the reading is about the fixture as much as the
+  rule**: both build their spots with `Spot::face` and no `part_of`, so
+  `spot.solid` is `None`, `own_box` is `None`, and D2 — the thing that would
+  answer for a coplanar neighbour — cannot be asked at all. The question is open
+  and its next step is in the backlog.
+
+*The side-lit case was checked and the fixture does not show it.* On
+`a-wall-run-with-a-lamp-along-it`'s elevation — the one fixture in the tree built
+for it — 7,572 of 29,696 pixels move, 3,080 brighter and 4,492 darker, **worst
+channel 3 of 255**, and there is no wedge and no seam in either picture. So this
+phase neither confirms nor refutes the reporter's hypothesis that the artefact
+goes the same way; what it confirms is `ebfe83c`'s own sentence, that the side-lit
+seam is present whether or not a fixture shows it.
+
+*A new accepted cost, and it is the estimator's.* The eight rays are now in the
+**brightness** and not only in the visibility, because the cosine joined the sum.
+Where a fragment stands inside the flame's own sphere — within about a tenth of a
+tile — how many of its eight samples clear its plane is a coin flip, and the
+result is grain in a bright region rather than in a penumbra. On the wedge scene
+the worst pixel is `0.4896` of full scale from the reference and 126 of 256,711
+are past an eighth, every one of them in that hot spot. The old model had zero
+variance in the cosine because it evaluated it once. Temporal accumulation is the
+answer if it ever matters, which is the same answer phase 5 parked.
 
 *What it does not fix, named so nothing claims it.* The black emitter below: a
 flame an eighth of a tile across, standing inside its own lamp post's box, is
@@ -976,7 +1060,21 @@ not this step's.
 `light::shadow`'s doc comment and `blit.wesl`'s: "moving the sample point moves
 either term by well under a byte" is true of the falloff and true of the cosine's
 *magnitude*, and false at the horizon, where `max(N · L, 0)` has a kink. The
-error there is not a share of the radius, it is the whole clamp.
+error there is not a share of the radius, it is the whole clamp. Both copies are
+gone with the function: `light::shadow` is `light::arrival` and returns
+`Arrival { delivered, visible, stopped_by }`, `blit.wesl`'s is `arrival` returning
+the first two, and `Reach::cone` — "how much of the beam falls here and how
+squarely the surface looks at it", both at the centre — is `Reach::delivered`,
+which is the sum. `Reach::added` is `delivered` times the colour and the
+intensity, for the sun's own `Reach` as well, which is the one invariant left
+where two numbers used to be multiplied at the call site.
+
+*One thing the phase changed that is not the model.* `Reach::stopped_by` now names
+only what a ray **with light to lose** was stopped by. A below-horizon ray
+delivers zero whatever stands in its way, so blaming an occluder for it is
+crediting the walk with a darkness the cosine had already decided — which is the
+wedge stated as a diagnostic rather than as a picture, and it is why the S3 gate
+above reads zero.
 
 **Phase 6 — the impostor.** Sprite silhouette, analytic prism for depth and
 normal, one draw. `WIDTH_OVERLAP` is deleted.
@@ -1446,10 +1544,47 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
-- 🚩 **The flame has extent for the shadow term and no extent for the cosine, and
-  that is the wedge of shadow at every join.** Measured 2026-08-09, with pictures.
-  **This is phase 5b now** — the decisions, the gates and the injections live
-  there; what follows is the measurement that produced it, kept whole.
+- 🚩 **Two world claims are asked about a fragment that is a point of no solid,
+  and that is why `same_run` still reads as load-bearing.**
+  `light_runs_along_a_wall_and_stops_across_it` and
+  `the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at` build their
+  spots with `Spot::face` and never call `Spot::part_of`, so `spot.solid` is
+  `None` — and `on_the_lit_surface`, the rule that would excuse a coplanar
+  neighbour along a run, needs the fragment's *own* box and so is never even
+  consulted. Phase 5b measured those two red under `same_run` neutralised and
+  could not tell whether that is the rule earning its keep or the fixture being
+  unable to ask. **Naming the solid is one call each** — the grid is right there,
+  and `a_landing_cut_into_three_primitives_…` already does it — and until it is
+  made, `docs/occluders.md`'s S4 has no measurement to act on. It is the cheapest
+  open item on the whole occluder track.
+- 🚩 **S3's surface exemption is now unreachable, and its gate is vacuous rather
+  than green.** Phase 5b's own account has the numbers: `0` of 720 blamed with the
+  rule neutralised, against 480 with the pre-5b cosine restored, and the whole of
+  `tests/lighting.rs` passing without it. The plan deferred "delete it or keep it
+  as a proven no-op" to *after* that measurement, and the measurement is in — but
+  the thing to settle first is whether a fixture can reach it at all. It fires
+  only for a ray lying in a surface's own plane, and such a ray now has a cosine
+  of exactly zero and is never traced; if that is a theorem rather than a
+  coincidence of the fixtures, the rule is dead code with a proof and should be
+  deleted with the proof written at its grave.
+- **A flame's eight rays are now in the brightness, and near the flame that is
+  visible grain.** Phase 5b's accepted cost: where a fragment stands inside the
+  sphere, how many of its samples clear its own plane is a coin flip, and 126 of
+  256,711 pixels of the wedge scene are more than an eighth of full scale from the
+  reference — worst `0.4896`, all within about a tenth of a tile of the flame.
+  Nothing in the tree gates it, and the two things that would are the ones phase 5
+  parked: more rays, or temporal accumulation. Worth a picture at a real lamp
+  before either is built.
+
+- ~~🚩 **The flame has extent for the shadow term and no extent for the cosine,
+  and that is the wedge of shadow at every join.**~~ **Done — phase 5b, and its
+  own account is up there.** Two of the claims below did not survive the landing:
+  the prototype's "20,308 of them darker" is the wrong sign (163,492 pixels move
+  on the gate's own fixture and 162,921 of them are *brighter* — an average of
+  `max(N·L, 0)` over a body is never dimmer than the centre's cosine), and
+  `same_run` was **not** retired by it. What follows is the measurement that
+  produced the phase, kept whole, because the reasoning is what made the phase
+  right even where its numbers were not.
 
   `shadow()` averages visibility over `SHADOW_RAYS` stratified points of a sphere
   of `FLAME_RADIUS`; `lit_from()` then multiplies by **one** cosine taken from the
@@ -1523,6 +1658,16 @@ Things noticed while writing this, not blocking any phase:
   geometry underneath: a run of coplanar floors is still N solids on N tiles,
   which is the merge `same_run`'s own backlog entry wants and would have made
   this class of boundary rarer rather than answered it.
+- **`starting_cell`'s own proptest was describing a point nobody had built**, and
+  a fresh seed found it during phase 5b. It asked the generator for an offset,
+  handed `starting_cell` the sum `tile + off`, and then judged the answer against
+  the offset it had *asked for*: at `tile_y = -6`, `-6.0 + 1.0000002` is not
+  representable and rounds to exactly `-5.0`, whose offset from its own tile is
+  exactly `1.0` — on the edge, where the carried tile is the right answer. Fixed
+  by reading the offset back off the point. The shape is the one worth keeping: a
+  generator's number and the number the function sees are two different values
+  wherever the sum between them rounds, and an oracle built on the first is
+  testing arithmetic it did not perform.
 - 🚩 **`starting_cell` is a repair and not a construction, and the difference is
   worth being plain about.** It carries no constant and no tolerance, and three
   fault injections say it is load-bearing — but what it *is* is a rule for what

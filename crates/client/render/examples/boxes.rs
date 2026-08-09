@@ -230,6 +230,11 @@
 //!     cargo run --release -p openshard-client-render --example boxes
 //! ```
 
+// The judging module is shared with `tests/traced.rs`, and each side reaches for
+// a different part of it: `pathtrace::shading` is a gate's comparison and this
+// tool has no dump for it yet. Not every rule needs both readers on the day it is
+// written — what the sharing is for is that there is only ever one of it.
+#[allow(dead_code)]
 mod oracle;
 
 use std::path::PathBuf;
@@ -1564,7 +1569,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
             width,
             height,
             drawn,
-            shadow: shadow_pixels,
+            picture: shadow_pixels,
             face_rows,
         },
     );
@@ -1589,7 +1594,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
                     width,
                     height,
                     drawn,
-                    shadow: shadow_pixels,
+                    picture: shadow_pixels,
                     face_rows,
                 },
                 (numbers[0], numbers[1]),
@@ -1618,7 +1623,7 @@ fn pathtrace_comparison(inputs: PathtraceInputs<'_>) {
                 width,
                 height,
                 drawn,
-                shadow: shadow_pixels,
+                picture: shadow_pixels,
                 face_rows,
             },
             allowed,

@@ -79,10 +79,10 @@ fn main() {
                 .filter(|reach| reach.within)
                 .map(|reach| {
                     format!(
-                        "[{}] through {:.2} cone {:.2}{}",
+                        "[{}] visible {:.2} delivers {:.2}{}",
                         reach.light,
                         reach.through,
-                        reach.cone,
+                        reach.delivered,
                         match reach.stopped_by {
                             Some(cell) => format!(" stopped by {cell:?}"),
                             None => String::new(),

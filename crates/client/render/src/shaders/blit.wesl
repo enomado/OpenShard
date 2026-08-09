@@ -1384,56 +1384,6 @@ fn dither(at: vec3<f32>) -> f32 {
     return f32(hash >> 8u) / 16777216.0;
 }
 
-// How much of a flame the fragment at `at` can see: `SHADOW_RAYS` rays at its
-// sphere, and the share of them that got there.
-//
-// **This is the whole of the soft shadow** — `docs/lighting_rebuild.md` phase 5.
-// A shadow's edge is a gradient because a fragment in it can see part of the
-// flame and not the rest, which is what a penumbra *is*; nothing here softens
-// anything, and every one of the rays is the hard, exact walk the sun's ray is.
-//
-// The points are a Vogel spiral on the disc the sphere presents to this fragment
-// — the silhouette, not the surface, which is the same choice
-// `pathtrace::Emitter::Sphere` makes and for the same reason: what a receiver can
-// be occluded from is the disc it sees. `sqrt` of the index spaces them by equal
-// *area* rather than equal radius, so the middle of the flame is not sampled
-// eight times over. The disc is laid out in **tile space**, `z` divided by
-// `Z_PER_TILE` and multiplied back on the way out — the metric the sphere is
-// round in, and the one the falloff and the cosine are already stated in.
-//
-// Only visibility is sampled: the falloff and the cosine are taken at the flame's
-// own centre. At an eighth of a tile across, moving the sample point moves either
-// of them by well under a byte, and it keeps a flame's brightness free of this
-// function's noise. `light::shadow`.
-fn shadow(at: vec3<f32>, to: vec3<f32>, tile: vec2<f32>, stance: u32, mine: u32) -> f32 {
-    let toward = vec3<f32>(to.x - at.x, to.y - at.y, (to.z - at.z) / Z_PER_TILE);
-    let span = length(toward);
-    if span < 1.0e-6 {
-        // The fragment is inside the flame. Every point of the sphere is as good
-        // as any other and none of them has a direction; one ray to the centre is
-        // the honest answer, and it is the ray with no length.
-        return walk(at, to, tile, stance, mine);
-    }
-    let normal = toward / span;
-    // Two directions across the ray, built the textbook branching way: away from
-    // whichever axis the ray is most nearly along, so the cross product is never
-    // near zero. Any consistent pair does — the pattern is rotated per fragment
-    // anyway — and what matters is that `light::shadow` builds the same one.
-    let aside = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(normal.x) > 0.9);
-    let across = normalize(cross(aside, normal));
-    let up = cross(normal, across);
-    let phase = dither(at) * TAU;
-    var reached = 0.0;
-    for (var ray = 0u; ray < SHADOW_RAYS; ray = ray + 1u) {
-        let angle = phase + GOLDEN_ANGLE * f32(ray);
-        let radius = flame_radius() * sqrt((f32(ray) + 0.5) / f32(SHADOW_RAYS));
-        let offset = (across * cos(angle) + up * sin(angle)) * radius;
-        let point = vec3<f32>(to.x + offset.x, to.y + offset.y, to.z + offset.z * Z_PER_TILE);
-        reached = reached + walk(at, point, tile, stance, mine);
-    }
-    return reached / f32(SHADOW_RAYS);
-}
-
 // How far in from the rim of a beam its edge finishes softening, as a share of
 // the way from the rim to the axis. `light::BEAM_EDGE`, and the two are one
 // number — a cone with a hard rim reads as a stencil laid over the scene rather
@@ -1465,6 +1415,131 @@ fn cone(beam: vec4<f32>, offset: vec3<f32>) -> f32 {
     let inner = beam.w + (1.0 - beam.w) * BEAM_EDGE;
     let t = clamp((along - beam.w) / max(inner - beam.w, 1.0e-6), 0.0, 1.0);
     return BEAM_SPILL + (1.0 - BEAM_SPILL) * t * t * (3.0 - 2.0 * t);
+}
+
+// What one flame's body sends to one fragment, and how much of that body the
+// fragment can see — `light::Arrival`, and the two are one pair of answers.
+struct Arrival {
+    // Λ: the mean over the flame's sample points of
+    // `visibility × max(N · L, 0) × falloff² × beam`. Everything the flame's
+    // colour and intensity are multiplied by, in one number.
+    delivered: f32,
+    // The share of the flame's body this fragment can see, with no cosine, no
+    // falloff and no beam in it. `VIEW_SHADOW` is this and nothing else.
+    visible: f32,
+}
+
+// What the flame at `to` delivers to the fragment at `at`, and how much of it
+// the fragment sees: `SHADOW_RAYS` rays at the flame's sphere, with **every term
+// of the sum taken at the sample point**.
+//
+// **This is the whole of the soft shadow** — `docs/lighting_rebuild.md` phase 5 —
+// **and the whole of the shading of a flame besides**, which is its phase 5b. A
+// shadow's edge is a gradient because a fragment in it can see part of the flame
+// and not the rest, which is what a penumbra *is*; nothing here softens
+// anything, and every one of the rays is the hard, exact walk the sun's ray is.
+//
+// The points are a Vogel spiral on the disc the sphere presents to this fragment
+// — the silhouette, not the surface, which is the same choice
+// `pathtrace::Emitter::Sphere` makes and for the same reason: what a receiver can
+// be occluded from is the disc it sees. `sqrt` of the index spaces them by equal
+// *area* rather than equal radius, so the middle of the flame is not sampled
+// eight times over. The disc is laid out in **tile space**, `z` divided by
+// `Z_PER_TILE` and multiplied back on the way out — the metric the sphere is
+// round in, and the one the falloff and the cosine are stated in.
+//
+// **The sample point is the only place this flame has a position.** The cosine,
+// the falloff and the beam are functions of it, and `to` appears below only as
+// the centre the disc is laid around. A flame that had a body for visibility and
+// a point for the cosine drew a *wedge* of shadow at every join: a lamp lower
+// than its own radius above a floor puts half its sphere below that floor's
+// plane, those rays leave the fragment's own primitive near a join and come back
+// blocked, and one centre cosine cannot cancel them. `max(N · L_p, 0)` does,
+// exactly, because the set of rays a join blocks and the set below the horizon
+// are the same set.
+//
+// **A sample whose cosine is not positive is not walked**, unless `every_sample`
+// asks for it. That is an exact skip and not a tolerance — such a sample
+// contributes zero to `delivered` whatever stands in its way — and it is up to
+// half the rays in the grazing configurations that cost the most. What
+// `every_sample` is for is `visible`: a debug view reads it as a complete answer
+// and pays the rays for one, while the lit path spends nothing on a number it
+// does not use. `delivered` is the same either way, to the bit.
+//
+// `light::arrival`, and the two are one arrangement.
+fn arrival(
+    at: vec3<f32>,
+    to: vec3<f32>,
+    tile: vec2<f32>,
+    stance: u32,
+    mine: u32,
+    normal: vec3<f32>,
+    beam: vec4<f32>,
+    reach: f32,
+    every_sample: bool,
+) -> Arrival {
+    let toward = vec3<f32>(to.x - at.x, to.y - at.y, (to.z - at.z) / Z_PER_TILE);
+    let span = length(toward);
+    var across = vec3<f32>(1.0, 0.0, 0.0);
+    var up = vec3<f32>(0.0, 1.0, 0.0);
+    if span >= 1.0e-6 {
+        let axis = toward / span;
+        // Two directions across the ray, built the textbook branching way: away
+        // from whichever axis the ray is most nearly along, so the cross product
+        // is never near zero. Any consistent pair does — the pattern is rotated
+        // per fragment anyway — and what matters is that `light::arrival` builds
+        // the same one.
+        let aside = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(axis.x) > 0.9);
+        across = normalize(cross(aside, axis));
+        up = cross(axis, across);
+    }
+    let phase = dither(at) * TAU;
+    var result = Arrival(0.0, 0.0);
+    for (var ray = 0u; ray < SHADOW_RAYS; ray = ray + 1u) {
+        var point = to;
+        if span >= 1.0e-6 {
+            // The fragment is inside the flame when this is false. Every point of
+            // the sphere is then as good as any other and none of them has a
+            // direction, so every ray is the ray to the centre — the one with no
+            // length.
+            let angle = phase + GOLDEN_ANGLE * f32(ray);
+            let radius = flame_radius() * sqrt((f32(ray) + 0.5) / f32(SHADOW_RAYS));
+            let offset = (across * cos(angle) + up * sin(angle)) * radius;
+            point = vec3<f32>(to.x + offset.x, to.y + offset.y, to.z + offset.z * Z_PER_TILE);
+        }
+        let along = vec3<f32>(point.x - at.x, point.y - at.y, (point.z - at.z) / Z_PER_TILE);
+        // The zero vector means "no facing at all" — a billboard, the ground
+        // before phase 3 — and it is a value a producer writes on purpose rather
+        // than an absence. Such a surface is lit from every side.
+        var cosine = 1.0;
+        if any(normal != vec3<f32>(0.0)) {
+            cosine = lit_from(normal, along);
+        }
+        if cosine <= 0.0 && !every_sample {
+            continue;
+        }
+        let through = walk(at, point, tile, stance, mine);
+        result.visible = result.visible + through;
+        if cosine <= 0.0 {
+            continue;
+        }
+        // The falloff of *this* ray, clamped where the centre's never had to be:
+        // the cull is conservative, so a fragment inside the pool by the near
+        // edge of the sphere can be past the reach of its far side, and
+        // `(1 - d)²` of a negative `1 - d` would be a bright ring at the rim.
+        let fall = max(1.0 - length(along) / reach, 0.0);
+        // And which way the flame is pointing at this point of itself. `along`
+        // runs from the fragment to the flame and a beam's axis runs the other
+        // way, so the sign flips here.
+        var lit_by = 1.0;
+        if beam.w > -1.0 {
+            lit_by = cone(beam, -along);
+        }
+        result.delivered = result.delivered + through * cosine * fall * fall * lit_by;
+    }
+    result.delivered = result.delivered / f32(SHADOW_RAYS);
+    result.visible = result.visible / f32(SHADOW_RAYS);
+    return result;
 }
 
 // How far along the ground one sunbeam may run, in tiles. `light::MAX_SUN_TILES`.
@@ -1843,72 +1918,48 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // reaches as far up and down as it does sideways. Without it the screen's
         // own folding comes back — a cellar lighting the street.
         let offset = vec3<f32>(to.x - at.x, to.y - at.y, (to.z - at.z) / Z_PER_TILE);
-        let d = length(offset) / max(light.place.w, 0.001);
-        if d >= 1.0 {
-            // Outside the pool entirely, which most fragments are for most
-            // flames: no ray is walked and nothing is sampled. This is why the
-            // grid walk below is affordable at all.
+        let reach = max(light.place.w, 0.001);
+        let d = length(offset) / reach;
+        // **The one thing still asked about the flame's centre, and it is
+        // therefore conservative.** Outside the pool entirely, which most
+        // fragments are for most flames: no ray is walked and nothing is sampled,
+        // which is why the grid walk below is affordable at all. That makes it a
+        // *broad phase*, and a broad phase is forbidden to change the answer — so
+        // it culls on the **near side** of the sphere, since a fragment the centre
+        // says is out of reach can be reached by the near edge of a body that has
+        // one. `docs/lighting_rebuild.md` phase 5b.
+        if length(offset) - flame_radius() >= reach {
             continue;
         }
-        // Which way it is pointing, where it points one way at all. A dot
-        // product and a branch: a fire standing in the world writes a rim below
-        // every cosine there is and never reaches the arithmetic.
+        // Eight rays at the flame's own sphere, and what they brought back:
+        // visibility, the cosine, the falloff and the beam, each taken at the
+        // point its own ray ends on. There is nothing left out here to multiply
+        // the result by — a cosine at the flame's *centre* is what drew a wedge of
+        // shadow at every join, and `docs/lighting_rebuild.md` phase 5b is that
+        // removed by construction rather than compensated for.
         //
-        // `offset` runs from the fragment to the flame and with `z` already
-        // divided into tiles, which is the space the axis is stated in; a beam's
-        // axis runs the other way, so the sign flips here.
-        var lit_by = 1.0;
-        if light.beam.w > -1.0 {
-            lit_by = cone(light.beam, -offset);
-        }
-        // And how squarely this surface looks at the flame. A wall is one-sided
-        // and its two faces are one tile, so this is the only thing that keeps a
-        // torch in a room from lighting the outside of the house.
-        //
-        // Geometry and nothing else. This used to exempt a flame standing in the
-        // wall's own row or column, because a lamp mounted on a house sits at its
-        // tile's centre — behind the plane of the face it is bolted to — and
-        // testing it blacked out the very wall it hangs on. But a *line* is the
-        // whole length of a street: a lamp post standing south of a house is in
-        // the column of its east wall, and that wall's faces came out fully lit
-        // from a flame half a tile behind their plane, for the length of the run.
-        // Reported from the client at Britain's `(1441, 1692)`. What answers it is
-        // moving the mounted flame instead of excusing it — `light::mounted_at`,
-        // and `docs/lighting.md`'s decision 26.
-        // `offset` is already the flame less the fragment with `z` divided into
-        // tiles, which is the space the normal is stated in — so a lid and a wall
-        // go through one formula, and since it is normalised the answer is the
-        // same angle on both.
-        //
-        // The zero vector still means "no facing at all", and it is a value a
-        // producer writes on purpose rather than an absence — see
-        // `docs/lighting_rebuild.md` phase 2 on why the plane is not octahedral.
-        if any(normal != vec3<f32>(0.0)) {
-            lit_by = lit_by * lit_from(normal, offset);
-        }
-        // Eight rays at the flame's own sphere, and the share of them that
-        // arrived — `docs/lighting_rebuild.md` phase 5. It is the only term in
-        // this loop that is an estimate rather than a formula, which is why it is
-        // the only one with a ray count behind it.
-        let through = shadow(at, vec3<f32>(to.x, to.y, to.z), tile, stance, mine);
-        // Recorded before the shadow is tested, so that a fragment inside a pool
+        // A debug view asks for every sample, because `VIEW_SHADOW` is visibility
+        // and a ray the lit path has no use for is one that view still has to
+        // report. `Arrival::delivered` is the same number either way.
+        let sent = arrival(
+            at, vec3<f32>(to.x, to.y, to.z), tile, stance, mine,
+            normal, light.beam, reach, view != VIEW_LIT,
+        );
+        // Recorded before the delivery is tested, so that a fragment inside a pool
         // and behind a wall is *nearest, stopped* rather than indistinguishable
         // from open ground nothing reaches. That difference is the one the whole
-        // shadow view exists to show.
+        // shadow view exists to show — and it is `visible` and not `delivered`,
+        // because a shadow view that dimmed with the cosine would answer two
+        // questions with one grey.
         if d < nearest {
             nearest = d;
-            nearest_through = through;
+            nearest_through = sent.visible;
         }
-        if through <= 0.0 {
+        if sent.delivered <= 0.0 {
             continue;
         }
         reached = reached + 1u;
-        // Linear distance, squared falloff: `1 - d` alone gives a cone with a
-        // visible straight edge in the gradient, and an inverse-square law with
-        // no cutoff has no radius at all and tints the whole frame. This is the
-        // soft pool with a hard end — the shape the reference isometrics draw.
-        let fall = 1.0 - d;
-        let added = light.color.rgb * (light.color.w * fall * fall * through * lit_by);
+        let added = light.color.rgb * (light.color.w * sent.delivered);
         lit = lit + added;
         flames = flames + added;
     }

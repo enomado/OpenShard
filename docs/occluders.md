@@ -128,7 +128,11 @@ plane was traced and its crossing was real — which is why S3 had to take the r
 direction as a parameter (`d·N >= 0`) rather than wave the case away, and why
 `same_run` is broader than the theorem. Once every sample carries its own cosine
 the clause is true by construction: a sample behind the plane is not traced at
-all.
+all. **Landed, and it took the exemption's own reachability with it**: after
+phase 5b, S3's gate reports `0` of 720 fragments blamed *with the rule
+neutralised*, where the same neutralisation under the old centre cosine reports
+480. The theorem is still the right statement of why a surface may not shadow
+itself; what no fixture in the tree can now do is reach it.
 
 **What it subsumes**, so the step is a deletion rather than an addition:
 `mine == reference.x` (a fragment's own box ends at its own face — the special
@@ -713,7 +717,15 @@ retires it; what actually does is that **those rays stop being traced**: a sampl
 behind the fragment's own plane has a zero cosine and contributes nothing, so there
 is no crossing left for `same_run` to excuse. That is
 `docs/lighting_rebuild.md`'s phase 5b, it is measured rather than argued, and this
-deletion waits on it — not on S3b. See S3's own list of what it learned), the
+deletion waits on it — not on S3b. ⚠ **Phase 5b landed and did *not* license it.**
+Neutralised after it, `light_runs_along_a_wall_and_stops_across_it` and
+`the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at` still go red,
+exactly as phase 4 measured them. The reading is inconclusive rather than
+negative, and the reason is a *fixture*: both build their spots with `Spot::face`
+and no `part_of`, so `spot.solid` is `None` and D2 — which needs the fragment's
+own box — is never consulted. Naming the solid in those two fixtures is one call
+each and is what this deletion actually waits on now; it is the first entry of
+`lighting_rebuild.md`'s backlog. See S3's own list of what it learned), the
 per-cell `max` (there is no cell to group
 by; the corner double-count it existed for outlives the merge's departure to S3b,
 so this one carries its own measurement rather than inheriting one), the vertical
@@ -829,6 +841,15 @@ enough on its own:
   20,308 of them: the centre cosine over-pays every grazed surface, join or no join.
   No step of this plan may touch that — D4 is "not one pixel moves". **A step
   forbidden to move a pixel cannot fix a defect whose symptom is moved pixels.**
+
+  ⚠ **The sign in that sentence is wrong, and the conclusion survives it.** Phase
+  5b landed and moved 163,492 pixels of its own gate's fixture — 162,921 of them
+  **brighter**, 571 darker. There is nothing for a centre cosine to over-pay: an
+  average of `max(N·L, 0)` over a body is never *less* than the centre's own
+  cosine, because the clamp is convex. What it under-pays is exactly the wedge —
+  darkness, at the joins. The argument above is unchanged either way: a step that
+  may not move a pixel cannot fix a defect measured in moved pixels, and the count
+  is now eight times larger than the one quoted.
 
 So: `docs/lighting_rebuild.md`'s **phase 5b is the cure**, S3b is an optimisation —
 one primitive per surface is cheaper and simpler — and it keeps its place last,
