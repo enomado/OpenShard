@@ -1629,6 +1629,19 @@ for:*
   `frame.rs`, all 6 of `pictures.rs` and all 8 of `traced.rs` stay green, the
   shader sweep and both path-tracer gates among them.
 
+🔧 **And the two spellings of the slab test are not the same test at exactly this
+geometry**, which is worth knowing now that something gates it. `blit.wesl`'s
+`ray_vs_solid` rejects at `entered > leaves + RAY_TANGENT_TOLERANCE` where
+`light::ray_vs_solid` rejects at `entered > leaves` outright — the shader's own
+comment has the story, and it is a deliberate one-sided widening. So at a corner
+graze the shader is **more** generous than the CPU by construction: it cannot
+lose a candidate the CPU keeps, which is the safe direction and why the two gates
+above pass together. What it does mean is that a *future* narrowing of either
+side is a change to a comparison the other does not make, and the pair of
+fixtures above is where that would show. Not a defect and not scheduled — written
+down because "the two are one traversal" is true of the tree and not quite true
+of the box test under it.
+
 🚩 **The merge inherits the seam, and what it inherits is a sphere's own half.**
 S3 cures a surface shadowing itself for every ray *leaving* that surface, which is
 what its theorem licenses. What it cannot touch: a flame is a sphere, so a lamp
