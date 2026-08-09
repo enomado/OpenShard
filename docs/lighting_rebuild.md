@@ -1643,19 +1643,44 @@ Things noticed while writing this, not blocking any phase:
   anything: at `FLAME_RADIUS` the grain is small, and it was only ever a person's
   complaint at a flame size eight times that.
 
-- 🚩 **Two world claims are asked about a fragment that is a point of no solid,
-  and that is why `same_run` still reads as load-bearing.**
-  `light_runs_along_a_wall_and_stops_across_it` and
-  `the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at` build their
-  spots with `Spot::face` and never call `Spot::part_of`, so `spot.solid` is
-  `None` — and `on_the_lit_surface`, the rule that would excuse a coplanar
-  neighbour along a run, needs the fragment's *own* box and so is never even
-  consulted. Phase 5b measured those two red under `same_run` neutralised and
-  could not tell whether that is the rule earning its keep or the fixture being
-  unable to ask. **Naming the solid is one call each** — the grid is right there,
-  and `a_landing_cut_into_three_primitives_…` already does it — and until it is
-  made, `docs/occluders.md`'s S4 has no measurement to act on. It is the cheapest
-  open item on the whole occluder track.
+- ~~🚩 **Two world claims are asked about a fragment that is a point of no solid,
+  and that is why `same_run` still reads as load-bearing.**~~ **Done, and it was
+  three places rather than two.** `light_runs_along_a_wall_and_stops_across_it`
+  and `the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at` built their
+  spots with `Spot::face` and never called `Spot::part_of`, so `spot.solid` was
+  `None` and `on_the_lit_surface` — the rule that would excuse a coplanar
+  neighbour along a run — was never even consulted. Both now name their own solid
+  out of the grid the same frame built: the run's panel by
+  `Occlusion::id_of`, the corner's by its **edge mask** rather than by a `Part`
+  number, since which panel is pushed first is `boxes_of`'s business and not a
+  fixture's.
+
+  **The third was an instrument, and it is the one that mattered.**
+  `plan::elevation` — what `pictures.rs`'s two wall tests are pictures *of* —
+  wrote `OwnerId::NONE` into every row it built, under a comment saying a
+  diagnostic picture is never walked for shadows. `View::Flames` **is** a walk, so
+  every pixel of an elevation was a point of nothing: exempt from nothing,
+  shadowed by its own panel. A `Wall` now carries `of`, the static the run is made
+  of, and `drawn` asks the caller for the owner where it builds the row — the
+  same shape `statics::quad_of` has in a real frame. Stated by the caller and not
+  searched for: a tile holds several occluders, and picking the wall-shaped one
+  would be the instrument deciding what it is a picture of.
+
+  **The measurement S4 was waiting for, on the whole crate, both sides
+  neutralised:** with `same_run` returning zero in `light.rs` *and* in
+  `blit.wesl`, all 510 tests of `openshard-client-render` pass except
+  `same_run`'s own unit test — the brute-force oracles, the GPU parity sweep and
+  both wall pictures included. Before the three fixes the same injection turned
+  four tests red. The controls both ways: with `on_the_lit_surface` neutralised
+  instead and `same_run` live, the crate is **also** green; with both neutralised,
+  `a_room_lights_its_own_wall_and_not_the_storey_over_it` and
+  `a_wall_lit_from_one_end_has_no_dark_stroke_at_its_seam` go red. So the pair is
+  genuinely load-bearing and the two rules are **mutually redundant on every
+  fixture in the tree** — which is a licence for S4's deletion and not a proof
+  that the tree can choose between them. What chooses is the argument, and it was
+  already written: D2 is a theorem about a box and a plane, `same_run` is cell
+  arithmetic that excuses more than the theorem allows — a tile's *north* panel on
+  the same row is excused by `same_run` and correctly is not by D2.
 - 🚩 **S3's surface exemption is now unreachable, and its gate is vacuous rather
   than green.** Phase 5b's own account has the numbers: `0` of 720 blamed with the
   rule neutralised, against 480 with the pre-5b cosine restored, and the whole of

@@ -725,7 +725,19 @@ negative, and the reason is a *fixture*: both build their spots with `Spot::face
 and no `part_of`, so `spot.solid` is `None` and D2 — which needs the fragment's
 own box — is never consulted. Naming the solid in those two fixtures is one call
 each and is what this deletion actually waits on now; it is the first entry of
-`lighting_rebuild.md`'s backlog. See S3's own list of what it learned), the
+`lighting_rebuild.md`'s backlog. See S3's own list of what it learned.
+✅ **Made, and the deletion is licensed.** It was three places, not two — the
+third being `plan::elevation`, which wrote `OwnerId::NONE` into every row of the
+two wall *pictures* under a comment that a diagnostic is never walked for
+shadows, while `View::Flames` is exactly a walk. With all three naming their own
+solid, neutralising `same_run` on **both** sides leaves all 510 tests of the
+crate green but `same_run`'s own unit test; the same injection turned four red
+before. The controls: D2 neutralised with `same_run` live is also green, and both
+neutralised turns two red, so the pair is load-bearing and the two are mutually
+redundant on every fixture. The tie is broken by the argument rather than by the
+suite — D2 is a theorem, `same_run` excuses more than the theorem allows, a
+tile's north panel on the same row among it. `lighting_rebuild.md`'s backlog has
+the numbers), the
 per-cell `max` (there is no cell to group
 by; the corner double-count it existed for outlives the merge's departure to S3b,
 so this one carries its own measurement rather than inheriting one), the vertical

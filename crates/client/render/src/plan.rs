@@ -282,28 +282,41 @@ pub fn draw(
     // through `Place` because there is no quad and no instance — this is the
     // attachment a world pass *would* have written for a floor covering
     // everything.
-    let pixels = drawn(device, queue, lighting, view, width, height, |px, py| {
-        crate::gbuffer::Fragment {
-            tile: (
-                (bounds.min_x + (px / scale) as i32) as u16,
-                (bounds.min_y + (py / scale) as i32) as u16,
-            ),
-            sub: (
-                (px % scale) as f32 / scale as f32,
-                (py % scale) as f32 / scale as f32,
-            ),
-            z: 0.0,
-            kind: crate::place::Kind::Land,
-            // A floor **says** it is one, in the stance above the height. It said
-            // `Upright` while this comment said "flat ground" — which cost
-            // nothing while a stance was only read for a wall's facing, and
-            // stopped being free the day a flat surface got a normal of its own
-            // and its tile's panels got the right to shadow it. An instrument
-            // that does not write what the world pass writes answers about
-            // itself. Decisions 27 and 28.
-            stance: crate::place::Stance::Flat,
-        }
-    });
+    // A plan view is all ground, and the ground is a point of no occluder — the
+    // same answer `ground.rs` gives a real frame's `GroundQuad`, not an absence
+    // this instrument is skipping over. `drawn` never asks it here: no fragment
+    // below is a `Kind::Static`.
+    let owner_of = |_| crate::occlusion::OwnerId::NONE;
+    let pixels = drawn(
+        device,
+        queue,
+        lighting,
+        view,
+        (width, height),
+        owner_of,
+        |px, py| {
+            crate::gbuffer::Fragment {
+                tile: (
+                    (bounds.min_x + (px / scale) as i32) as u16,
+                    (bounds.min_y + (py / scale) as i32) as u16,
+                ),
+                sub: (
+                    (px % scale) as f32 / scale as f32,
+                    (py % scale) as f32 / scale as f32,
+                ),
+                z: 0.0,
+                kind: crate::place::Kind::Land,
+                // A floor **says** it is one, in the stance above the height. It said
+                // `Upright` while this comment said "flat ground" — which cost
+                // nothing while a stance was only read for a wall's facing, and
+                // stopped being free the day a flat surface got a normal of its own
+                // and its tile's panels got the right to shadow it. An instrument
+                // that does not write what the world pass writes answers about
+                // itself. Decisions 27 and 28.
+                stance: crate::place::Stance::Flat,
+            }
+        },
+    );
     Picture {
         bounds,
         scale,
@@ -339,50 +352,77 @@ pub fn elevation(
     let width = wall.tiles * scale;
     let height = (wall.top.max(1) as u32 * scale) / crate::light::Z_PER_TILE as u32;
     let along_x = matches!(wall.face, Face::North | Face::South);
-    let pixels = drawn(device, queue, lighting, view, width, height, |px, py| {
-        // How far along the run, in tiles, and the height — the picture's two
-        // axes, turned back into a point on the face.
-        let along = px as f32 / scale as f32;
-        let z = wall.top as f32 * (1.0 - py as f32 / height as f32);
-        let (tile, run) = (along.floor() as u16, along.fract());
-        // The face's own fraction, held one step of the seven-bit grid inside the
-        // tile: decision 16, and the same `INSIDE` clamp `statics.wgsl` applies —
-        // a fraction of exactly one names the tile beyond the wall.
-        let inside = 126.0 / 127.0;
-        let (sub_x, sub_y) = match wall.face {
-            Face::North => (run, 0.0),
-            Face::South => (run, inside),
-            Face::West => (0.0, run),
-            Face::East => (inside, run),
-        };
-        let (tile_x, tile_y) = match along_x {
-            true => (wall.from.0 + tile, wall.from.1),
-            false => (wall.from.0, wall.from.1 + tile),
-        };
-        // The stance rides above the height, exactly as `statics.wgsl` writes it
-        // — this picture is of a *wall's face*, and a face that did not say which
-        // way it looks would be lit from behind. `crate::place::STANCE_SHIFT`.
-        let stance = match wall.face {
-            Face::North => crate::place::Stance::FaceNorth,
-            Face::East => crate::place::Stance::FaceEast,
-            Face::South => crate::place::Stance::FaceSouth,
-            Face::West => crate::place::Stance::FaceWest,
-        };
-        // Through [`crate::gbuffer::Fragment`], which keeps the height's
-        // fraction and the tile's: this picture's whole vertical axis *is*
-        // height down a face, so a packing that rounded it to whole units — as
-        // this closure did, with its own copy of the format — drew the one-unit
-        // treads `docs/lighting_height.md` is about, in the instrument meant to
-        // show them. An instrument that does not write what the world pass
-        // writes answers about itself.
-        crate::gbuffer::Fragment {
-            tile: (tile_x, tile_y),
-            sub: (sub_x, sub_y),
-            z,
-            kind: crate::place::Kind::Static,
-            stance,
-        }
-    });
+    // **And which occluder of its own tile each pixel of the run is a point of.**
+    //
+    // This was [`crate::occlusion::OwnerId::NONE`] for every row, under a comment
+    // saying a diagnostic picture is never walked for shadows — and `View::Flames`
+    // is a walk, so the two tests this instrument exists for were measuring a face
+    // that is a point of nothing: exempt from nothing, shadowed by its own panel.
+    // What stood in for the exemption was `light::same_run`'s row arithmetic, and
+    // that is the whole reason that function still reads as load-bearing.
+    // `docs/lighting_rebuild.md`'s backlog, the same finding as the two fixtures in
+    // `tests/lighting.rs` that never called `Spot::part_of`.
+    //
+    // The stance the closure below writes is what narrows this owner to one panel
+    // per fragment — `blit.wesl`'s `own_solid` — so a run drawn face-on names the
+    // panel it is the face of and nothing else.
+    let owner_of = |tile: (u16, u16)| {
+        lighting
+            .occlusion
+            .owner_at(i32::from(tile.0), i32::from(tile.1), wall.of.z, wall.of.graphic)
+    };
+    let pixels = drawn(
+        device,
+        queue,
+        lighting,
+        view,
+        (width, height),
+        owner_of,
+        |px, py| {
+            // How far along the run, in tiles, and the height — the picture's two
+            // axes, turned back into a point on the face.
+            let along = px as f32 / scale as f32;
+            let z = wall.top as f32 * (1.0 - py as f32 / height as f32);
+            let (tile, run) = (along.floor() as u16, along.fract());
+            // The face's own fraction, held one step of the seven-bit grid inside the
+            // tile: decision 16, and the same `INSIDE` clamp `statics.wgsl` applies —
+            // a fraction of exactly one names the tile beyond the wall.
+            let inside = 126.0 / 127.0;
+            let (sub_x, sub_y) = match wall.face {
+                Face::North => (run, 0.0),
+                Face::South => (run, inside),
+                Face::West => (0.0, run),
+                Face::East => (inside, run),
+            };
+            let (tile_x, tile_y) = match along_x {
+                true => (wall.from.0 + tile, wall.from.1),
+                false => (wall.from.0, wall.from.1 + tile),
+            };
+            // The stance rides above the height, exactly as `statics.wgsl` writes it
+            // — this picture is of a *wall's face*, and a face that did not say which
+            // way it looks would be lit from behind. `crate::place::STANCE_SHIFT`.
+            let stance = match wall.face {
+                Face::North => crate::place::Stance::FaceNorth,
+                Face::East => crate::place::Stance::FaceEast,
+                Face::South => crate::place::Stance::FaceSouth,
+                Face::West => crate::place::Stance::FaceWest,
+            };
+            // Through [`crate::gbuffer::Fragment`], which keeps the height's
+            // fraction and the tile's: this picture's whole vertical axis *is*
+            // height down a face, so a packing that rounded it to whole units — as
+            // this closure did, with its own copy of the format — drew the one-unit
+            // treads `docs/lighting_height.md` is about, in the instrument meant to
+            // show them. An instrument that does not write what the world pass
+            // writes answers about itself.
+            crate::gbuffer::Fragment {
+                tile: (tile_x, tile_y),
+                sub: (sub_x, sub_y),
+                z,
+                kind: crate::place::Kind::Static,
+                stance,
+            }
+        },
+    );
     Picture {
         // The run, as a rectangle one tile deep: `Picture::tile` is meaningless
         // for an elevation and `at` is about the plan's axes, so what this carries
@@ -421,21 +461,39 @@ pub struct Wall {
     pub tiles: u32,
     /// The height at the top of the picture. The bottom is `z = 0`.
     pub top: i32,
+    /// **The static the run is made of** — the `z` it stands at and its graphic,
+    /// which is the key [`crate::occlusion::Occlusion::owner_at`] turns into the
+    /// number the grid gave that static on each of the run's tiles.
+    ///
+    /// Stated by the caller rather than searched for, and the whole of why: a
+    /// tile carries several occluders and a run of wall is one of them. Picking
+    /// "the one that looks like a wall" out of a cell would be this instrument
+    /// deciding what it is a picture *of* — which is the caller's fact, and the
+    /// caller is drawing a run it built.
+    pub of: crate::occlusion::Owner,
 }
 
 /// Run the blit over a G-buffer this caller writes, and read the surface back.
 ///
 /// The half [`draw`] and [`elevation`] share: everything except *where a pixel
 /// says it is*, which is the only thing either of them invents.
+///
+/// `owner_of` is asked once per distinct tile a *static* fragment names — where
+/// the instance row is built, which is the one place an owner can be written —
+/// and never for the ground, which is a point of no occluder by construction.
+///
+/// `size` is the picture's, as one pair: the two are never chosen apart, and
+/// splitting them was what put this over clippy's argument count.
 fn drawn(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     lighting: &Lighting,
     view: View,
-    width: u32,
-    height: u32,
+    size: (u32, u32),
+    owner_of: impl Fn((u16, u16)) -> crate::occlusion::OwnerId,
     place_of: impl Fn(u32, u32) -> crate::gbuffer::Fragment,
 ) -> Vec<u8> {
+    let (width, height) = size;
     let world = crate::blit::world_texture(device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
     let gbuffer = crate::gbuffer::Gbuffer::new(device, width, height);
@@ -496,9 +554,10 @@ fn drawn(
                     // point at — see `crate::sprite::split_corners` for the real
                     // pass's version of this row, which does set it.
                     twin: 0,
-                    // A diagnostic picture is never walked for shadows, so there
-                    // is no occluder for a row of it to be a point of.
-                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                    // **Which occluder of this tile the picture is of**, from the
+                    // caller — see [`elevation`]'s `owner_of`, and the comment
+                    // there for what this said before and what it cost.
+                    owner: u32::from(owner_of(tile).raw()),
                     volumes: crate::impostor::Range::default(),
                 }
                 .write(&mut face_rows);

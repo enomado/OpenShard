@@ -1071,8 +1071,26 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
     // `INSIDE`, and decision 16 for what a clean 1 would do to the walk.
     let inside = 1.0 - 1.0 / 127.0;
     let corner = (CENTRE.0 as i32, CENTRE.1 as i32);
-    let reach = |at: Vec2, face: Face| {
-        let spot = Spot::face(at, f32::from(scene::WALL_HEIGHT) / 2.0, corner, face);
+    // A corner is one static and **a panel per named side**, so which of the two
+    // the sample is a point of is a fact the fixture has to state — the same fact a
+    // real fragment carries out of `statics.wgsl`. Named by the panel's own edge
+    // mask rather than by its `Part` number, because the order the panels are
+    // pushed in is `occlusion::boxes_of`'s and not this test's business.
+    //
+    // Without it `spot.solid` is `None` and `on_the_lit_surface` is never
+    // consulted, which is `docs/lighting_rebuild.md`'s backlog item: the two
+    // fixtures that measured `same_run` load-bearing were the two that could not
+    // ask the other rule at all.
+    let panel = |edge: u8| {
+        lighting
+            .occlusion
+            .pieces_of(corner.0, corner.1, occlusion::Owner::new(0, scene::CORNER))
+            .find(|(_, solid)| solid.edges == edge)
+            .map(|(id, _)| id)
+            .expect("the corner stands as one panel per face its art names")
+    };
+    let reach = |at: Vec2, face: Face, edge: u8| {
+        let spot = Spot::face(at, f32::from(scene::WALL_HEIGHT) / 2.0, corner, face).part_of(panel(edge));
         light::sample(spot, &lighting)
             .reaches
             .iter()
@@ -1084,8 +1102,12 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
     // ends — `docs/lighting_rebuild.md` phase 5b. It used to be `through × cone`,
     // two numbers taken at the flame's centre and multiplied here; the centre is
     // gone from the shading and so is the multiplication.
-    let towards = reach(Vec2::new(cx + 0.5, cy + inside), Face::South);
-    let away = reach(Vec2::new(cx + inside, cy + 0.5), Face::East);
+    let towards = reach(
+        Vec2::new(cx + 0.5, cy + inside),
+        Face::South,
+        occlusion::EDGE_SOUTH,
+    );
+    let away = reach(Vec2::new(cx + inside, cy + 0.5), Face::East, occlusion::EDGE_EAST);
 
     assert!(
         towards > 0.5,
@@ -1445,9 +1467,8 @@ fn every_scene_prints_a_diagram_that_is_not_blank() {
 fn light_runs_along_a_wall_and_stops_across_it() {
     let scene = scene::wall_with_a_torch_beside_it();
     let (cx, cy) = CENTRE;
-    let through = |scene: &Scene, spot: Spot| {
-        let lighting = scene.lighting(STILL);
-        let sample = light::sample(spot, &lighting);
+    let through = |lighting: &Lighting, spot: Spot| {
+        let sample = light::sample(spot, lighting);
         let reach = sample.reaches[0];
         assert!(reach.within, "{spot:?} is outside the torch's radius: {sample}");
         reach.through
@@ -1456,18 +1477,42 @@ fn light_runs_along_a_wall_and_stops_across_it() {
     // The fraction is held one step inside its own tile, which is where
     // `statics.wgsl` writes it — decision 16.
     let inside = 1.0 - 1.0 / 127.0;
-    let face = |x: u16| {
+    // And a point **of the panel standing on that tile**, named out of the grid
+    // the same frame built. A real fragment carries the solid its own picture came
+    // from and `Spot::part_of` is how a fixture says so; without it `spot.solid` is
+    // `None`, `on_the_lit_surface` — the rule that would excuse a coplanar
+    // neighbour along a run — is never even consulted, and what this test measures
+    // is `same_run` alone rather than the two rules a frame really runs.
+    // `docs/lighting_rebuild.md`'s backlog, and `docs/occluders.md`'s S4 has no
+    // measurement to act on until both fixtures ask the question a fragment asks.
+    //
+    // The lookup is by graphic and `z` because that is what the scene placed: one
+    // `WALL` at `z 0` a tile, one panel each, so `Part::ONLY`. It answers in the
+    // art-blind scene too, where the same static is a whole-tile body instead.
+    let face = |lighting: &Lighting, x: u16| {
+        let tile = (i32::from(x), i32::from(cy));
+        let panel = lighting
+            .occlusion
+            .id_of(
+                tile.0,
+                tile.1,
+                occlusion::Owner::new(0, scene::WALL),
+                occlusion::Part::ONLY,
+            )
+            .expect("every tile of the run stands in this scene's grid");
         Spot::face(
             Vec2::new(f32::from(x) + 0.5, f32::from(cy) + inside),
             f32::from(scene::WALL_HEIGHT) / 2.0,
-            (i32::from(x), i32::from(cy)),
+            tile,
             openshard_client_render::facing::Face::South,
         )
+        .part_of(panel)
     };
 
     // Along: three tiles west of the torch, on the wall's own face, with four
     // tiles of the same wall in between.
-    let along = through(&scene, face(cx));
+    let lighting = scene.lighting(STILL);
+    let along = through(&lighting, face(&lighting, cx));
     assert!(
         along > 0.99,
         "{}: the wall shadows the light running along it — {along:.3} of it arrives",
@@ -1480,7 +1525,7 @@ fn light_runs_along_a_wall_and_stops_across_it() {
     // from the lamp is the room and not the street it hangs over. Two tiles back
     // and one tile west, so the ray crosses a panel that is not the flame's own
     // cell's — a flame's own tile never shadows it.
-    let across = through(&scene, spot((cx - 1, cy - 2), 0.0));
+    let across = through(&lighting, spot((cx - 1, cy - 2), 0.0));
     assert!(
         across < 0.5,
         "{}: the wall let light through its own face — {across:.3} of it arrives",
@@ -1494,7 +1539,8 @@ fn light_runs_along_a_wall_and_stops_across_it() {
         art: None,
         ..scene::wall_with_a_torch_beside_it()
     };
-    let along_blind = through(&blind, face(cx));
+    let blind_lighting = blind.lighting(STILL);
+    let along_blind = through(&blind_lighting, face(&blind_lighting, cx));
     assert!(
         along_blind < 0.01,
         "with no art an occluder is the whole tile and the along-ray must die — {along_blind:.3} \
