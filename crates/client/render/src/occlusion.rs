@@ -241,33 +241,19 @@ pub const PRESENT: u8 = 0x80;
 /// See [`Occlusion::aperture_bytes`] and [`Aperture`].
 pub const HOLED: u8 = 0x40;
 
-/// The lowest `z` anything on the wire can name, and the highest whole one.
-///
-/// A map's own `z` is an `i8`, so measuring from [`Z_FLOOR`] makes it fit an
-/// unsigned field — but `z + height` is not an `i8`: a 255-tall static based at
-/// 100 has a top no field here holds, and a wall that reaches past the top of
-/// the world may as well stop there. Named rather than spelled at each place
-/// that clamps, so that a span and a hole are pinned to the same ends.
-/// `docs/lighting_height.md` phase 2.
-///
-/// Nothing clamps a *span* to these any more: since `docs/occluders.md`'s D1 a
-/// primitive's `z` is an `f32` like its other four coordinates, and a spire
-/// through the top of the world reaches exactly as far on the wire as it does
-/// in the record. What is left here is the [`Aperture`], whose ends are whole
-/// units measured off the art — see [`z_byte`].
-pub const Z_FLOOR: i32 = -128;
-
-/// See [`Z_FLOOR`].
-pub const Z_CEILING: i32 = 127;
-
-/// One whole `z` as the byte an [`Aperture`] carries it in: clamped to
-/// [`Z_FLOOR`]`..=`[`Z_CEILING`] and offset by 128.
-///
-/// A hole's own two ends only, and no longer a span's: a hole is measured off
-/// the art as whole units, and nothing has asked it for a fraction.
-fn z_byte(z: i32) -> u8 {
-    (z.clamp(Z_FLOOR, Z_CEILING) + 128) as u8
-}
+// **`Z_FLOOR`, `Z_CEILING` and `z_byte` lived here**, and `docs/occluders.md`'s
+// S6 was the last of them. They were the ends a `z` could be *named* between on
+// a wire that carried heights as bytes: `-128` and `127`, the map's own `i8`,
+// with `z_byte` clamping into them and offsetting by 128.
+//
+// D1 took the *span* off that encoding — a primitive's `z` is an `f32` like its
+// other four coordinates, so a spire through the top of the world reaches as far
+// on the wire as in the record — and left the hole behind, since a hole is
+// measured off the art in whole units and there was nothing under the step to
+// lose. What there *was* to lose was at the top: `Aperture::placed` adds the
+// art's own offset to the static's base, so a window on a storey at `z = 120`
+// has a top the byte could not name and the clamp shut it. The buffer carries
+// four floats now and neither end is bounded by anything but the world.
 
 /// The side of the neighbouring tile that touches this one's `side`.
 ///
@@ -658,35 +644,53 @@ fn calc_height(tile: &StaticTile) -> i32 {
 /// both read the same byte and divide it by the same number.
 pub const RUN_STEPS: f32 = 255.0;
 
-/// A rectangular hole in a surface, in that surface's own coordinates.
+/// A rectangular hole in a surface, in **the world's** coordinates.
 ///
 /// `docs/lighting.md`'s decision 30.2 and step 21.3: a window is a hole *in* a
 /// wall, so a real one is a rectangle in the plane of a panel and not a dimmer
 /// tile. What a ray crossing the panel inside this rectangle meets is nothing.
 ///
-/// Two coordinates, and they are the surface's rather than the world's:
+/// Two coordinates, and both of them absolute:
 ///
-/// - `near` and `far` run **along** the panel, from the low corner of the axis
-///   it runs along to the high one — `x` for a north or south face, `y` for an
-///   east or west one — in [`RUN_STEPS`]ths of a tile. A hole from a quarter to
-///   three quarters of the way along is `(64, 191)`.
-/// - `bottom` and `top` are `z`, in the map's own units and absolute, exactly as
-///   [`Surface`]'s are. Not relative to the surface's own base, because every
-///   other height in this pass is absolute and one relative number in the middle
-///   of them is a conversion somebody will get the sign of wrong.
+/// - `near` and `far` are where the hole starts and ends **along** the panel, on
+///   whichever world axis the panel runs along — `x` for a north or south face,
+///   `y` for an east or west one. A window in the middle half of the tile at
+///   `x = 105` is `(105.25, 105.75)`.
+/// - `bottom` and `top` are `z`, in the map's own units, exactly as
+///   [`Surface`]'s are.
+///
+/// **They were a fraction of the tile until `docs/occluders.md`'s S6**, in
+/// [`RUN_STEPS`]ths of one, which made this the last rule in the pass still
+/// stated in a tile — `light::run_v` recovered the fraction with
+/// `along - along.floor()` and so answered about whichever tile the *crossing*
+/// landed in rather than about the panel. Two things that costs, and the first
+/// of them is a defect: a crossing exactly on a tile boundary floors into the
+/// next tile, so a hole reaching the far end of its own tile read as a hole at
+/// the near end of the one beyond it; and a panel wider than a tile — which D1
+/// made expressible and `facing::Blocks` will author — would have repeated its
+/// window in every tile of its run. Neither is a tolerance's job. The fix is the
+/// one D1 made for the box: state it where the shape is, and let no reader need
+/// a `floor`.
 ///
 /// **Only a named panel may have one**, and that is a refusal rather than an
 /// omission: a lid is horizontal and a body is "it stands up and the art would
 /// not say which way", so neither has a plane for a rectangle to be stated in.
 /// [`Builder::add`] drops an aperture offered for either.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+///
+/// `f32` and not `f64`, which is the one place in this record that departs from
+/// D10, and deliberately: a hole's ends arrive as a byte over [`RUN_STEPS`] —
+/// a number no float holds exactly — so a wider record would carry no more
+/// truth, and what it *would* carry is a second number for the two walks to
+/// round differently. Both walks and the wire read one aperture, which is what
+/// they did when it was a byte.
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Aperture {
-    /// Where the hole starts along the run, in [`RUN_STEPS`]ths of a tile.
-    pub near: u8,
+    /// Where the hole starts along the run, in world coordinates.
+    pub near: f32,
     /// And where it ends. A `far` at or below `near` is a hole of no width,
     /// which stops nothing from being stopped — the same degenerate case a `z`
     /// span of zero already is.
-    pub far: u8,
+    pub far: f32,
     /// The lowest `z` the hole reaches.
     pub bottom: i32,
     /// And the highest.
@@ -694,33 +698,25 @@ pub struct Aperture {
 }
 
 impl Aperture {
-    /// A hole stated as fractions of the tile's run, quantised once here.
-    ///
-    /// The one place a fraction becomes a byte, so that nothing downstream has
-    /// two numbers for one edge: a caller says `0.25`, the grid stores `64`, and
-    /// both walks read `64 / 255`.
-    pub fn new(near: f32, far: f32, bottom: i32, top: i32) -> Self {
-        let step = |v: f32| (v.clamp(0.0, 1.0) * RUN_STEPS).round() as u8;
-        Self {
-            near: step(near),
-            far: step(far),
-            bottom,
-            top,
-        }
-    }
-
     /// The hole the art measured off a picture, placed on the static that is
-    /// standing at `base`.
+    /// standing at `base` with its run starting at `along`.
     ///
     /// **The one conversion between the two**, and it is where it is because
-    /// `base` is a fact about an *instance*: the same window graphic stands on
-    /// the ground floor and on the storey above it, and a measurement that had
-    /// been made absolute anywhere earlier would have had to pick one of them.
-    /// See [`Hole`].
-    pub fn above(base: i32, hole: Hole) -> Self {
+    /// both of those are facts about an *instance*: the same window graphic
+    /// stands on a hundred tiles at a hundred heights, and a measurement made
+    /// absolute anywhere earlier would have had to pick one of them. See
+    /// [`Hole`], which is the measurement, and [`Builder::add`], which is the
+    /// only caller that knows both numbers.
+    ///
+    /// `along` is the low corner of the panel's own tile on the axis it runs
+    /// along, so `near` and `far` land inside `along ..= along + 1` — which is
+    /// where a hole measured off one picture belongs, whatever the panel it is
+    /// cut into grows into later.
+    pub fn placed(base: i32, along: i32, hole: Hole) -> Self {
+        let run = |step: u8| along as f32 + f32::from(step) / RUN_STEPS;
         Self {
-            near: hole.near,
-            far: hole.far,
+            near: run(hole.near),
+            far: run(hole.far),
             bottom: base + i32::from(hole.bottom),
             top: base + i32::from(hole.top),
         }
@@ -1371,6 +1367,17 @@ pub const LIST_ROW: u32 = 1024;
 /// test has ever existed, which is this file's own decay pattern one more time.)
 pub const PRIMITIVE_BYTES: usize = 32;
 
+/// How many bytes one hole is on the wire — [`Occlusion::aperture_bytes`]'s own
+/// stride, and `blit.wesl`'s `Aperture` struct size.
+///
+/// Four `f32` and no padding at all, a `vec4<f32>`'s own size and alignment. It
+/// was **four bytes** until `docs/occluders.md`'s S6, a texel of an `Rgba8Uint`
+/// plane: two run coordinates quantised to a two-hundred-and-fifty-fifth of a
+/// tile and two `z` ends clamped into a signed byte. Four times the wire for the
+/// last quantisation in the pass, on a list with one entry per primitive and
+/// almost never a hole in it.
+pub const APERTURE_BYTES: usize = 16;
+
 /// How many bytes one node of the tree is on the wire —
 /// [`Occlusion::node_bytes`]'s own stride, and `blit.wesl`'s `Node` struct size.
 ///
@@ -1918,39 +1925,42 @@ impl Occlusion {
         bytes
     }
 
-    /// The **holes** as the texture the shader reads: `Rgba8Uint`, one texel a
-    /// solid, in [`Occlusion::primitive_bytes`]'s own order, folded into rows
-    /// [`LIST_ROW`] wide.
+    /// The **holes** as the storage buffer the shader reads: one
+    /// [`APERTURE_BYTES`]-byte struct a solid, in [`Occlusion::primitive_bytes`]'s
+    /// own order and indexed by the same [`SolidId`].
     ///
-    /// `(near, far, bottom + 128, top + 128)` — [`Aperture`], with [`z_byte`]'s
-    /// own offset and clamp. **The last quantised number in the pass**, and no
-    /// defect: a hole is measured off the art as whole units, so there is nothing
-    /// under the step to lose. See `docs/occluders.md`'s backlog.
+    /// `(near, far, bottom, top)` — four `f32`, little-endian, which is
+    /// `blit.wesl`'s `Aperture` and its WGSL layout exactly. **Nothing here is
+    /// quantised and nothing is clamped**, which is `docs/occluders.md`'s S6 and
+    /// the end of a list this pass has been shortening since D1: the run
+    /// coordinates are the world's, and the two `z` ends are the whole units the
+    /// art measured rather than a byte offset by 128. What that byte cost was a
+    /// hole above `z = 127` — a window on an upper storey — coming out of the
+    /// wire with its top shut, where the record and both CPU walks read it open.
     ///
-    /// A parallel plane and **not** four more channels of the solid, nor a
-    /// second texel interleaved into the list, and the reason is the shape of the
-    /// walk: the solid list is what a ray reads cell after cell in a loop, and
-    /// a hole is what almost nothing has. Interleaving would halve the list's
-    /// texture cache to carry zeros; a plane indexed by the same number is read
-    /// only where [`HOLED`] says there is something to read, which is the way
-    /// every other miss in this pass is paid for.
+    /// A parallel list and **not** four more fields of the primitive, and the
+    /// reason is the shape of the walk: the primitives are what a ray reads in a
+    /// loop and a hole is what almost nothing has. Widening the struct would
+    /// carry zeros through every traversal; a second buffer indexed by the same
+    /// number is read only where [`HOLED`] says there is something to read, which
+    /// is the way every other miss in this pass is paid for.
     ///
     /// A solid with no hole is four zeros, which is a hole of no width at
-    /// `z = -128`: degenerate, and never looked at, because the bit above gates
-    /// it.
+    /// `z = 0`: degenerate, and never looked at, because the bit above gates it.
     pub fn aperture_bytes(&self) -> Vec<u8> {
-        let row = LIST_ROW as usize;
-        let rows = self.solids.len().div_ceil(row).max(1);
-        let mut bytes = Vec::with_capacity(rows * row * 4);
+        let mut bytes = Vec::with_capacity(self.solids.len().max(1) * APERTURE_BYTES);
         for solid in &self.solids {
-            match solid.aperture {
-                Some(hole) => {
-                    bytes.extend_from_slice(&[hole.near, hole.far, z_byte(hole.bottom), z_byte(hole.top)])
-                }
-                None => bytes.extend_from_slice(&[0, 0, 0, 0]),
+            let hole = solid.aperture.unwrap_or(Aperture {
+                near: 0.0,
+                far: 0.0,
+                bottom: 0,
+                top: 0,
+            });
+            for value in [hole.near, hole.far, hole.bottom as f32, hole.top as f32] {
+                bytes.extend_from_slice(&value.to_le_bytes());
             }
         }
-        bytes.resize(rows * row * 4, 0);
+        bytes.resize(bytes.len().max(APERTURE_BYTES), 0);
         bytes
     }
 
@@ -2038,16 +2048,15 @@ impl Occlusion {
     pub fn any_aperture(&self) -> bool {
         self.solids.iter().any(|solid| solid.aperture.is_some())
     }
-
-    /// How many rows the planes indexed by a [`SolidId`] are folded into — the
-    /// apertures alone, now that the primitives are a buffer.
-    ///
-    /// At least one: a frame with no occluder in it still binds a plane, and a
-    /// texture of no size is not a thing wgpu will make.
-    pub fn list_rows(&self) -> u32 {
-        (self.solids.len().div_ceil(LIST_ROW as usize).max(1)) as u32
-    }
 }
+
+// **`Occlusion::list_rows` lived here**, and `docs/occluders.md`'s S6 took it
+// with the last plane it was for. It answered how many rows of [`LIST_ROW`] the
+// planes indexed by a [`SolidId`] were folded into; the primitives became a
+// buffer at S1 and the apertures at S6, and nothing is indexed by a `SolidId`
+// through a texture any more. What is still folded that way is
+// [`Occlusion::id_bytes`] — indexed by a *reference*, not by a solid — and the
+// upload takes its height off its own byte count.
 
 /// A place in [`Builder::arena`] — one tile's linked list of solids, one link
 /// at a time.
@@ -2203,12 +2212,23 @@ impl Builder {
                     // `far` to be measured along. Dropping it is the same refusal
                     // decision 3 makes about the edge itself.
                     //
-                    // The placement happens here because here is where `z` is:
-                    // the art measured a rectangle above the picture's own base
-                    // and this static is standing at one.
+                    // The placement happens here because here is where the two
+                    // numbers it needs are: the art measured a rectangle above
+                    // the picture's own base and a fraction along its own run,
+                    // and this static is standing at a `z` on a tile. Which axis
+                    // the run is on is the panel's own side — a north or south
+                    // face lies in a plane of constant `y`, so what runs along it
+                    // is `x`. `light::along_the_run` is the same sentence said
+                    // about a crossing.
                     aperture: match edges {
                         Edges::NONE | Edges::ANY => None,
-                        _ => shape.hole.map(|hole| Aperture::above(bottom, hole)),
+                        named => shape.hole.map(|hole| {
+                            let along = match named.contains(Edges::NORTH.union(Edges::SOUTH)) {
+                                true => place.0,
+                                false => place.1,
+                            };
+                            Aperture::placed(bottom, along, hole)
+                        }),
                     },
                     roof: tile.flags.is_roof(),
                     owner,
@@ -3062,16 +3082,17 @@ mod tests {
     fn only_a_named_panel_carries_a_hole() {
         use crate::facing::{Face, Facing};
 
-        // Measured off the picture, so it is a height above the static's base —
-        // and every static here stands at `z = 0`, which is what makes the
-        // placed `Aperture` below the same four numbers.
+        // Measured off the picture, so it is a height above the static's base
+        // and a fraction along its own run — and the static that keeps it stands
+        // at `z = 0` on the tile at `x = 100`, which is what the placement below
+        // adds.
         let hole = Hole {
             near: 64,
             far: 191,
             bottom: 0,
             top: 10,
         };
-        let placed = Aperture::above(0, hole);
+        let placed = Aperture::placed(0, 100, hole);
         let wall = tile(TileFlags::NO_SHOOT, 20);
         let mut occlusion = Builder::new(bounds());
         // A named panel keeps it.
@@ -3154,20 +3175,38 @@ mod tests {
         );
         let corner = aperture_at(103, 100);
         assert_eq!(corner.len(), 2);
-        assert!(
-            corner.iter().all(|hole| *hole == Some(placed)),
+        // **The same rectangle, and since S6 not the same four numbers.** A
+        // corner's two panels are perpendicular, so their runs are two different
+        // world axes: the east face is measured along `y` from the tile's own
+        // `y = 100` and the south face along `x` from its `x = 103`. The hole is
+        // "a quarter to three quarters of the way along this face" on both of
+        // them, which is what one picture says about two faces — it was one pair
+        // of bytes while a run coordinate was a fraction of a tile, and it is two
+        // pairs of coordinates now that it is the world's.
+        assert_eq!(
+            corner,
+            [
+                Some(Aperture::placed(0, 100, hole)),
+                Some(Aperture::placed(0, 103, hole)),
+            ],
             "a corner's two faces are one picture and the hole is in both of them",
         );
     }
 
-    /// The two planes are one list: a hole is at the same index its surface is,
+    /// The two lists are one list: a hole is at the same index its surface is,
     /// and the `HOLED` bit is what says to look.
     ///
     /// The format, pinned, because it is the one thing here no picture can catch:
-    /// a shader reading the hole plane at the wrong index would draw *something*
+    /// a shader reading the hole list at the wrong index would draw *something*
     /// everywhere and be wrong only where a window is. The bit matters as much as
     /// the bytes — a surface with no hole writes four zeros, which is a hole of no
-    /// width at `z = -128`, and only the bit distinguishes that from a real one.
+    /// width at `z = 0`, and only the bit distinguishes that from a real one.
+    ///
+    /// **The four numbers are `f32` and absolute** since `docs/occluders.md`'s
+    /// S6, so the placement is checked here as coordinates rather than as a byte
+    /// and an offset: the run pair is the tile the panel stands on plus the art's
+    /// own fraction, and the two `z` ends are the static's base plus the art's
+    /// own whole units, with nothing clamped on the way.
     #[test]
     fn a_hole_is_uploaded_at_its_own_surface_s_index() {
         use crate::facing::{Face, Facing};
@@ -3217,19 +3256,30 @@ mod tests {
             0,
             "the solid panel claims a hole, so the shader will read one",
         );
-        assert_eq!(&holes[0..4], &[0, 0, 0, 0], "and it has no bytes to read");
+        // Read back from the offsets rather than through the writer, which is
+        // what makes this the wire and not a second call of the same function.
+        let cut = |nth: usize| {
+            let at = nth * APERTURE_BYTES;
+            std::array::from_fn::<f32, 4, _>(|k| {
+                f32::from_le_bytes(holes[at + k * 4..at + k * 4 + 4].try_into().unwrap())
+            })
+        };
+        assert_eq!(cut(0), [0.0; 4], "and it has no numbers to read");
         assert_eq!(
             wire(&surfaces, 1).1 & u32::from(HOLED),
             u32::from(HOLED),
             "the holed panel does not claim one",
         );
+        // An east face runs along `y`, so the tile this one stands on contributes
+        // its `y = 100`; the static stands at `z = 5` and the art measured 1 and
+        // 9 above its own base.
         assert_eq!(
-            &holes[4..8],
-            &[64, 191, 6 + 128, 14 + 128],
+            cut(1),
+            [100.0 + 64.0 / 255.0, 100.0 + 191.0 / 255.0, 6.0, 14.0],
             "the hole is not where its surface is",
         );
 
-        // And a grid with no hole in it says so, which is what keeps the plane
+        // And a grid with no hole in it says so, which is what keeps the list
         // off the queue on every frame of a map that has none.
         let mut solid = Builder::new(bounds());
         solid.add(
@@ -3241,6 +3291,56 @@ mod tests {
             Shape::faced(Facing::One(Face::South)),
         );
         assert!(!solid.finish(&Cutaway::OPEN).any_aperture());
+    }
+
+    /// **A window on the top storey of the world arrives with its top open** —
+    /// `docs/occluders.md`'s S6, and the half of that step no CPU walk can see.
+    ///
+    /// Both walks read the record, so a quantisation that lived in the *upload*
+    /// was invisible to them and showed on the shader alone: `z_byte` clamped a
+    /// hole's two ends into the map's own `i8`, and a hole's ends are not an
+    /// `i8`. [`Aperture::placed`] adds the art's own whole units to the static's
+    /// base, so a window measured 5 to 20 above a wall standing at 120 reaches
+    /// 140 — thirteen `z` past anything a byte offset by 128 could name, and the
+    /// wire shut them.
+    ///
+    /// The base here is the highest a static can stand at, which is what makes
+    /// this the ordinary top of a tall building rather than a case invented for
+    /// the test: `Builder::add` takes an `i8` because the map does.
+    #[test]
+    fn a_hole_above_the_map_s_own_ceiling_is_not_clamped_on_the_wire() {
+        use crate::facing::{Face, Facing};
+
+        let mut occlusion = Builder::new(bounds());
+        occlusion.add(
+            100,
+            100,
+            i8::MAX - 7,
+            NOT_A_DOOR,
+            &tile(TileFlags::NO_SHOOT, 20),
+            Shape {
+                facing: Some(Facing::One(Face::South)),
+                hole: Some(Hole {
+                    near: 0,
+                    far: 255,
+                    bottom: 5,
+                    top: 20,
+                }),
+                prism: None,
+                blocks: crate::facing::Blocks::EMPTY,
+            },
+        );
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+        let holes = occlusion.aperture_bytes();
+        let ends = std::array::from_fn::<f32, 2, _>(|k| {
+            let at = 8 + k * 4;
+            f32::from_le_bytes(holes[at..at + 4].try_into().unwrap())
+        });
+        assert_eq!(
+            ends,
+            [125.0, 140.0],
+            "the wire is holding the hole's own two ends against the map's ceiling",
+        );
     }
 
     /// **Every solid the builder makes comes back off its own wire where it

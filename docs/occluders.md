@@ -13,10 +13,12 @@ and an order.
 
 ✅ **All six steps are green as of 2026-08-09, and this document is a record from
 here on.** A session looking for work does not start here: what is still live out
-of this track is the § *Backlog* below, and the three items that outlive it — the
-aperture still measured in a tile, `PANEL_THICKNESS`'s inward fattening, and the
-instruments that cannot see a merge — are carried in
-[`lighting_rebuild.md`](lighting_rebuild.md)'s own backlog, which is the one list.
+of this track is the § *Backlog* below, and the items that outlive it are carried
+in [`lighting_rebuild.md`](lighting_rebuild.md)'s own backlog, which is the one
+list. **S6 is one of them come back closed** — the aperture, which was the first
+of those three and is written up in § *The aperture*; a step landed after the
+table was full, because a record of a finished track is still where a finding
+about it belongs.
 
 ## What we are fixing
 
@@ -479,6 +481,7 @@ one whose gate is not green.
 | S4 | delete the cell rules | ✅ **all four gone.** `same_run`, the vertical shortcut, `starting_cell` — and the per-cell `max`, which S5 deleted with the cell it was a statement about; `first` went with the grid at the same time |
 | S5 | the hierarchy | ✅ **landed 2026-08-09** — both backends walk the tree, the grid is out of the walk everywhere, and the two walks are named for the boxes they read. The one number left is the cost harness's, and it is the user's to run. See § *The hierarchy* |
 | S3b | the merge | ✅ **landed 2026-08-09** — a run of wall is one primitive, a floor is one slab, and the crate's own scenes fold 73 pieces to 9. Not one pixel moved. See § *The merge* |
+| S6 | the aperture in the primitive's own coordinates | ✅ **landed 2026-08-09** — the last rule stated in a tile, the last plane indexed by a `SolidId` and the last quantised number, in one change to one record. It fixed two live defects and did **not** buy the merge relaxation it looked like it would. See § *The aperture* |
 
 And S5 is the same shape a fourth time: the plan asked for a node budget and
 there is nothing to size, because the traversal's own monotonicity is the bound.
@@ -521,6 +524,8 @@ What it took, so a reader does not have to diff for it:
 - `Z_FLOOR`/`Z_CEILING` no longer bound a *span* — a spire through the top of the
   world reaches its own height on the wire now. They are the `Aperture`'s alone,
   which makes a hole's two whole-unit ends the last quantised number in the pass.
+  (✅ **And S6 deleted all three**, having measured that the ends a hole is
+  clamped between are not the ends a hole *has*: see § *The aperture*.)
 - `solid::drawn` stops clamping a drawn box's `z` into an `i8`. It did that to
   draw where the *shader* believed a box was rather than where the map said, and
   with the pin gone from the wire the clamp had become the one thing an
@@ -739,7 +744,8 @@ keeps pointing every instance at the solid it is now a part of (D6).
 🔴 **That list was three fields short, and the missing three are what keep the
 join and the arithmetic**: the `Owner` and the `Part` themselves (D6's join is a
 scan for the pair, so a merged primitive may not disagree about either), an
-aperture (a hole is a fraction of *one tile* of its run), and opacity being
+aperture (a hole is a fraction of *one tile* of its run — ⚠ true when this was
+written, and S6's own correction is under § *The merge*), and opacity being
 `OPAQUE` rather than merely equal (two panes dim twice, one merged pane dims
 once). See § *The merge* for what each would have broken.
 
@@ -1292,6 +1298,13 @@ the merge would otherwise break, and each is written up in `merge.rs`'s header:
   **one tile** of its panel's run. It is the last rule in the pass still stated in
   a tile — D1 removed every other one — and a merged windowed run would put the
   window in every tile of it. In the backlog.
+
+  🔴 **The refusal is right and this reason for it is not** — S6 states the hole
+  in world coordinates, and a merged run would carry its window exactly where the
+  window stands. What keeps the refusal is that a primitive has **one** aperture
+  field and a run of windows is one hole per tile; and the relaxation that
+  suggests itself is unreachable, because an equal `Owner` names one graphic and a
+  hole is read off the graphic. See § *The aperture*.
 - **Opacity equal is not enough; it must be `OPAQUE`.** Two panes crossed by one
   ray are dimmed twice and one merged pane dims once. That is a moved pixel, so a
   translucent primitive is left alone. S5's own fixture,
@@ -1431,6 +1444,80 @@ is the correct division of labour: the tracer gates geometry, and the `Owner`
 condition is about the *join*, which is `Occlusion::id_of`'s business and is
 checked where the join is (the traced gate asserts the three boxes name one
 primitive; `render` panics outright if a box cannot find its own solid).
+
+### ✅ The aperture: **the last rule stated in a tile, and it was hiding two defects**
+
+Landed 2026-08-09, after all six steps were green — this document's own last
+`floor`, taken out of the one record that still had one. `Aperture`'s `near` and
+`far` are world coordinates on the panel's own run axis, `light::run_v` is
+`along_the_run` with nothing to recover, and `Occlusion::aperture_bytes` is a
+storage buffer of four `f32` a solid.
+
+**What went with it**, so a reader does not have to diff for it: `z_byte`,
+`Z_FLOOR` and `Z_CEILING`; `Occlusion::list_rows`, which existed for this plane
+alone; `blit.wesl`'s `RUN_STEPS` and `aperture_at`. `occlusion::RUN_STEPS`
+survives where it belongs — on the CPU, at build time, as the quantum the *art*
+measures a `facing::Hole` in. `Aperture::above` becomes `Aperture::placed`, which
+takes the static's base **and** the tile its run starts on, because those are the
+two facts about an instance a measurement off a picture is missing.
+
+**The item asked for this to unblock a merge, and it does not.** That is the
+finding, and it is the fifth time on this track that a step's decision held while
+its stated reason did not. A merge already requires an equal `Owner`; an `Owner`
+is a `(z, graphic)`; a hole is read off the *graphic* — `occlusion::shape_of` is a
+lookup and nothing else. So two mergeable pieces are windowed together or plain
+together, never one of each, and the relaxation that looks available ("merge when
+at most one has a hole") **cannot fire**. A wall with one window in it is a wall
+of two graphics, and what refuses it is the `Owner`, before and after. The
+refusal in `occlusion::merge` stays with its true reason: a primitive carries one
+hole, and a run of windows is one per tile.
+
+**What it does buy is two defects, both live and neither in the entry that asked
+for the change.**
+
+- **A crossing exactly on a tile boundary floored into the next tile.** A window
+  running to the far end of its own tile — `far: 255` off the art — was open up to
+  `x = 106.0` and shut *at* it, because `floor(106.0)` is 106 and the fraction
+  came back `0.0`, which is the near end of the tile beyond. That is § *The
+  oracle*'s own defect, the one that cost a day and convicted two walks that were
+  right, arriving one level up in a rule instead of in a lookup.
+- **`z_byte` clamped a hole's two ends into the map's own `i8`, and a hole's ends
+  are not an `i8`.** `Aperture::placed` adds the art's whole units to the static's
+  base, so a window measured 5 to 20 above a wall standing at `z = 120` reaches
+  140 — thirteen past anything a byte offset by 128 can name — and the wire shut
+  the top of it. The record and both CPU walks read it open, which is why this one
+  was invisible to everything but the shader: the quantisation lived in the
+  *upload*, and `light::pierced` reads the record on both walks. The backlog entry
+  that called this "no defect, a hole is measured in whole units" was right about
+  the step and wrong about the range.
+
+*Gates, and each fault-injected in this session:*
+
+- `light::a_windowed_panel_wider_than_a_tile_has_one_window` — a panel spanning
+  `x` 105 to 108 with a window in its first tile, asked at five points along the
+  run. Injected with the old arithmetic (the crossing's fraction against the
+  hole's own tile fraction, which is what a byte was): the far end at `106.0`
+  reads **wall** where the geometry says open, and `106.5`, `107.25` and `107.5`
+  — three points of solid stone in the second and third tiles — read **open**,
+  which is the window repeated in every tile of its own panel.
+- `occlusion::a_hole_above_the_map_s_own_ceiling_is_not_clamped_on_the_wire` —
+  the bytes read back from their own offsets, on a wall at `i8::MAX - 7`. With
+  `z_byte`'s clamp put back it reports `127` where the art says `140`.
+- `occlusion::a_hole_is_uploaded_at_its_own_surface_s_index` gains the placement
+  as coordinates: an east face's run comes from its tile's `y`, a south face's
+  from its `x`, and a corner's two panels carry the same rectangle as two
+  different pairs of numbers — which is what one picture says about two
+  perpendicular faces.
+- **The port is gated by something that already existed**, and it was checked
+  rather than assumed: `frame.rs`'s `the_shader_and_light_sample_agree_about_a_
+  hole_in_a_wall` moves **187 of 4,096 pixels** both when the shader's `hole` is
+  narrowed by half a tile and when it reads `apertures[0]` instead of
+  `apertures[id]`. So the buffer's layout and its index are both measured.
+
+The whole crate is green after it — 425 lib tests and every integration suite,
+both path-tracer gates and the shader sweep among them — and no fixture in the
+tree moved a pixel, because every aperture a `Builder` has ever made is exactly
+one tile wide and every one of them sits under `z = 127`.
 
 ### ✅ The rename: neither walk has a cell in it
 
@@ -1863,12 +1950,14 @@ its own tile has nothing to do with it. The shader's port closed the same two on
 its side, which is what met S3b's precondition — and S3b has since built the first
 primitive wider than its own tile without either half being reachable.
 
-**The apertures are the last texture indexed by a `SolidId`.** The primitives are
-a storage buffer now and the holes beside them are still `Rgba8Uint` folded into
-`LIST_ROW` rows, with `Occlusion::list_rows` existing for that plane alone. One
-list in two shapes; D8's argument covers it and S1 left it deliberately, because
-a hole is read behind a bit test and moving it buys nothing until something else
-touches it. It should go with the reference list in S5.
+~~**The apertures are the last texture indexed by a `SolidId`.**~~ ✅ **Closed at
+S6**, with the run coordinate and in the same record: the holes are a storage
+buffer of four `f32`, `Occlusion::list_rows` is deleted and no plane is indexed by
+a `SolidId` any more. It did not go "with the reference list in S5" as this entry
+guessed — the references are indexed by a *reference* and are still an
+`Rgba8Uint` folded into `LIST_ROW` rows, which is the one texture of this kind
+left. What moved the aperture was not tidiness but the run coordinate needing a
+`f32`, which is the same reason D1 moved the box at S1.
 
 **Grey in a dumped mask meant three different things, and that cost a session —
 fixed.** The two mask strips drew `None` as one grey level, and `None` is
@@ -1919,22 +2008,10 @@ Worth stating as a habit beside the flame-position one above: **an injection tha
 fails is not yet a gate that fires — read *why* it failed.** Three of these four
 readings were red, and only the last one was red about the rule.
 
-🔴 **An aperture is the last rule in the pass still stated in a tile**, and S3b is
-what made that cost something. `light::run_v` is `along - along.floor()`: a hole's
-`near`/`far` are fractions of **one tile** of the panel's run, so a merged windowed
-run would draw the window in every tile of it. The merge therefore refuses to fold
-anything carrying an aperture — exact, and it costs a wall with one window in it
-three primitives instead of one.
-
-What would close it is the aperture stated in the primitive's own coordinates,
-the way D1 did for the box: a `near`/`far` measured along the primitive rather
-than along whichever tile a crossing lands in. That is also what the *other*
-aperture item below wants — the holes are still an `Rgba8Uint` plane indexed by
-`SolidId`, and both are one change to the same record. Until then, a run of
-windows is a run of primitives, which is the safe direction and not a defect.
-
-**A hole's own `z` is still quantised**, to whole units offset by 128
-(`occlusion::z_byte`), and it is now the only quantised number left in the pass.
-No defect: a hole is measured off the art as whole units, so there is nothing
-below the step to lose. Written down because "everything here is exact except
-this" is the sort of fact a later reader should find stated rather than discover.
+~~🔴 **An aperture is the last rule in the pass still stated in a tile**~~ and
+~~**a hole's own `z` is still quantised**~~ — ✅ **both closed at S6, and both of
+them were carrying a defect the entries denied.** The reasoning that stood here
+is kept in § *The aperture*, beside what measuring it actually found: the run
+coordinate cost a boundary crossing rather than only a merge, the `z` byte was
+*not* the harmless quantisation this entry called it, and the merge it was
+supposed to unblock is refused by a different field entirely.

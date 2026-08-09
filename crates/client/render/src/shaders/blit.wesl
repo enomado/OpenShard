@@ -108,13 +108,29 @@ struct Primitive {
 };
 
 @group(0) @binding(6) var<storage, read> primitives: array<Primitive>;
-// The hole in each of those solids, indexed by the same number:
-// (near, far, z_bottom + 128, z_top + 128) — `occlusion::Aperture`. A plane
-// beside the list rather than four more channels of it, because the list is what
-// the walk reads cell after cell in a loop and a hole is what almost nothing
-// has: the `HOLED` bit is what makes this read at all, so an ordinary wall pays
-// one bit test and no fetch.
-@group(0) @binding(7) var apertures: texture_2d<u32>;
+// The hole in each of those solids, indexed by the same number —
+// `occlusion::Aperture`. A list beside the primitives rather than four more
+// fields of one, because the primitives are what the walk reads in a loop and a
+// hole is what almost nothing has: the `HOLED` bit is what makes this read at
+// all, so an ordinary wall pays one bit test and no fetch.
+//
+// **Absolute world coordinates and nothing quantised**, `docs/occluders.md`'s
+// S6. It was an `Rgba8Uint` texel — `(near, far, z_bottom + 128, z_top + 128)`,
+// the run pair in two-hundred-and-fifty-fifths of a tile and the two heights
+// clamped into a signed byte — which made this the last plane indexed by a
+// `SolidId` and the last quantised number in the pass.
+struct Aperture {
+    // Where the hole starts and ends along the panel's own run, on whichever
+    // world axis that is: `x` for a north or south face, `y` for an east or west
+    // one. `along_the_run` picks between them.
+    near: f32,
+    far: f32,
+    // And its two `z` ends, absolute, in the map's own whole units.
+    bottom: f32,
+    top: f32,
+};
+
+@group(0) @binding(7) var<storage, read> apertures: array<Aperture>;
 // And the references between the cells and the solids, one texel each and folded
 // the same way: (id & 255, id >> 8, id >> 16, unused). A cell counts through a
 // run of these and each one names a solid — decision 38's ownership, which is
@@ -442,14 +458,17 @@ const EDGE_EAST: u32 = 2u;
 const EDGE_SOUTH: u32 = 4u;
 const EDGE_WEST: u32 = 8u;
 const EDGE_MASK: u32 = 15u;
-// And the bit that says this surface has a hole in it, so that its texel in the
-// aperture plane means something. `occlusion::HOLED`.
+// And the bit that says this surface has a hole in it, so that its entry in the
+// aperture list means something. `occlusion::HOLED`.
 const HOLED: u32 = 64u;
-// How many parts of a tile one step of a hole's run coordinate is worth.
-// `occlusion::RUN_STEPS`, and the two are one number: both sides read the same
-// byte and divide it by this, so the two implementations agree exactly rather
-// than to a tolerance.
-const RUN_STEPS: f32 = 255.0;
+
+// **`RUN_STEPS` stood here** — 255, how many parts of a tile one step of a
+// hole's run coordinate was worth — and went with the quantisation at
+// `docs/occluders.md`'s S6. Both sides read the same byte and divided it by this
+// number, which is what made them agree exactly; they read the same `f32` now,
+// which is the same guarantee with nothing to divide. The constant still exists
+// as `occlusion::RUN_STEPS`, where the *art* measures a hole off a picture —
+// `facing::Hole`'s own quantum, on the CPU, once, at build time.
 
 // How far past an exact tangent `ray_vs_solid`'s own `entered > leaves`
 // rejection still counts as a hit — a cross-implementation tolerance, and
@@ -544,15 +563,19 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
 // softened both ways where a wall's own top softened one way. Both bands are
 // eight rays now.
 
-// Where along a panel's own run a point of it lies, 0 to 1 across the tile.
+// Which world coordinate runs **along** a panel: a point of it, on the axis its
+// own hole is measured in.
 //
 // A panel on a north or south side lies in a plane of constant `y`, so what runs
 // along it is `x`; an east or west one is the other way round. That is the whole
 // of a surface's own coordinate system, and it is why only a *named* panel may
-// have a hole: a lid and a body have no run to measure one along. `light::run_v`.
-fn run_v(edges: u32, px: f32, py: f32) -> f32 {
-    let along = select(py, px, (edges & (EDGE_NORTH | EDGE_SOUTH)) != 0u);
-    return along - floor(along);
+// have a hole: a lid and a body have no run to measure one along.
+//
+// It was `run_v` and returned `along - floor(along)`, the fraction of whichever
+// tile the crossing landed in — `docs/occluders.md`'s S6, and the last `floor`
+// in this file. `light::along_the_run`.
+fn along_the_run(edges: u32, px: f32, py: f32) -> f32 {
+    return select(py, px, (edges & (EDGE_NORTH | EDGE_SOUTH)) != 0u);
 }
 
 // Whether a surface is **missing** where a ray goes through it: 1 inside the
@@ -563,9 +586,9 @@ fn run_v(edges: u32, px: f32, py: f32) -> f32 {
 // product, so that a point halfway into the hole across *and* halfway up read as
 // one corner's own softening rather than as a quarter of a hole. With no band on
 // either span the `min` is a conjunction and says so. `light::hole`.
-fn hole(texel: vec4<u32>, v: f32, z: f32) -> f32 {
-    let across = v >= f32(texel.x) / RUN_STEPS && v <= f32(texel.y) / RUN_STEPS;
-    let up = z >= f32(texel.z) - 128.0 && z <= f32(texel.w) - 128.0;
+fn hole(cut: Aperture, along: f32, z: f32) -> f32 {
+    let across = along >= cut.near && along <= cut.far;
+    let up = z >= cut.bottom && z <= cut.top;
     return select(0.0, 1.0, across && up);
 }
 
@@ -589,8 +612,8 @@ fn pierced(stands: Primitive, id: u32, cross: vec3<f32>) -> f32 {
     if (stands.flags & HOLED) == 0u {
         return 1.0;
     }
-    let v = run_v(stands.flags & EDGE_MASK, cross.x, cross.y);
-    return 1.0 - hole(aperture_at(id), v, cross.z);
+    let along = along_the_run(stands.flags & EDGE_MASK, cross.x, cross.y);
+    return 1.0 - hole(apertures[id], along, cross.z);
 }
 
 // Which of a cell's sides are **the same wall the lit end is part of**, and
@@ -706,13 +729,12 @@ fn solid_at(id: u32) -> Primitive {
     return primitives[id];
 }
 
-// And its hole: (near, far, z_bottom + 128, z_top + 128). The same id and the
-// same folding, which is what makes the two planes one list — read only where
-// the solid's `HOLED` bit says there is one.
-fn aperture_at(id: u32) -> vec4<u32> {
-    let at = vec2<i32>(i32(id % LIST_ROW), i32(id / LIST_ROW));
-    return textureLoad(apertures, at, 0);
-}
+// **`aperture_at` stood here**, and `docs/occluders.md`'s S6 deleted it with the
+// folding it was for: the holes were an `Rgba8Uint` plane `LIST_ROW` wide, so a
+// `SolidId` had to be taken apart into a row and a column and the four numbers
+// put back together from channels. They are a storage buffer now, indexed by the
+// same `SolidId` as the primitives, so `apertures[id]` is the whole of it — the
+// same thing D8 did for the box at S1, arriving at the last plane a solid had.
 
 // **Which solid of the grid a *sprite* fragment is a point of**, or
 // `SOLID_NOBODY` where the grid holds none.

@@ -2189,18 +2189,35 @@ Things noticed while writing this, not blocking any phase:
 **Inherited from `occluders.md`, which is a record now.** Three of its findings
 outlive the track and belong in this list, since this is the live one:
 
-- 🚩 **An aperture is the last rule in the pass still stated in a tile, and it
-  now costs a merge.** `light::run_v` is `along - along.floor()`, so a hole's
-  `near`/`far` are fractions of *one tile* of the panel's run — a merged windowed
-  run would draw the window in every tile of it. S3b's merge therefore refuses to
-  fold anything carrying an aperture, which is exact and safe and costs a wall
-  with one window in it three primitives instead of one. What closes it is the
-  aperture stated in the primitive's own coordinates, the way D1 did for the box.
-  The same change answers the other half: the holes are still an `Rgba8Uint`
-  plane indexed by `SolidId` (`Occlusion::list_rows` exists for that plane
-  alone), the last texture the primitives left behind when they became a storage
-  buffer. One record, one change. A hole's own `z` stays quantised to whole units
-  and that is no defect — it is measured off the art in whole units.
+- ✅ ~~**An aperture is the last rule in the pass still stated in a tile, and it
+  now costs a merge.**~~ **Closed 2026-08-09 — `occluders.md`'s S6**, and both
+  halves went together as the entry said they would: `Aperture`'s `near`/`far`
+  are world coordinates on the panel's own run axis, `light::run_v` is
+  `along_the_run` with no `floor` in it, and the holes are a storage buffer of
+  four `f32` indexed by `SolidId` rather than an `Rgba8Uint` texel folded into
+  `LIST_ROW` rows. `Occlusion::list_rows`, `z_byte`, `Z_FLOOR`, `Z_CEILING` and
+  the shader's `RUN_STEPS` and `aperture_at` are all deleted. **It fixed two
+  live defects and refused the payoff this entry expected** — see
+  `occluders.md` § *The aperture* for the readings:
+  - a crossing exactly on a tile boundary floored into the *next* tile, so a
+    window running to the far end of its own tile read as one at the near end of
+    the tile beyond it — § *The oracle*'s own defect, one level up;
+  - `z_byte` clamped a hole's two ends into the map's `i8`, and a hole's ends
+    are not an `i8`: `Aperture::placed` adds the art's whole units to the
+    static's base, so a window on a wall standing at 120 reaches 140 and the
+    wire shut it at 127. The record and both CPU walks read it open, so this
+    one showed on the shader alone. **The claim that a hole's `z` is quantised
+    "and that is no defect" was wrong about the top end**, which is why it is
+    written out here rather than merely ticked.
+  - and **the merge gains nothing**, which the entry above assumed it would. Two
+    pieces may only merge with an equal `Owner`, an `Owner` is a `(z, graphic)`
+    and a hole is read off the *graphic* — so two mergeable pieces are windowed
+    together or plain together, never one of each, and a wall with one window in
+    it is a wall of two graphics that the `Owner` refuses whatever the aperture
+    says. The refusal in `occlusion::merge` stays and its reason is now the true
+    one: a primitive carries one hole and a run of windows is one per tile.
+    That is the fifth time on this track that a step's decision held while its
+    stated reason did not.
 - ✅ ~~**Two instruments still cannot see a merge.**~~ **Closed, and "cannot see"
   was the wrong diagnosis for both** — measured 2026-08-09 under
   `occlusion::merge`'s own "the union does not grow" injection, live in a build

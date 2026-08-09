@@ -1369,8 +1369,8 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
 // wall's own top softened in one. Both bands are eight rays now, and a plain
 // interval is what is left of the question.
 
-/// Where along a panel's own run a point of it lies, `0.0` to `1.0` across the
-/// tile.
+/// Which world coordinate runs **along** a panel: a point of it, on the axis its
+/// own hole is measured in.
 ///
 /// A panel on a north or south side lies in a plane of constant `y`, so what
 /// runs along it is `x`; an east or west one is the other way round. That is the
@@ -1378,13 +1378,21 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
 /// [`Aperture`](crate::occlusion::Aperture) belongs only to a *named* panel: a
 /// lid and a body have no run for this to be measured along.
 ///
-/// `blit.wgsl`'s `run_v`.
-fn run_v(edges: Edges, px: f32, py: f32) -> f32 {
-    let along = match edges.contains(Edges::NORTH.union(Edges::SOUTH)) {
+/// **It was `run_v` and it took `along - along.floor()`**, a fraction of the
+/// tile the crossing landed in, because the hole's own ends were fractions of a
+/// tile — `docs/occluders.md`'s S6 is where that went. The `floor` was the last
+/// one in this pass and it decided the answer twice over: a crossing exactly on
+/// a boundary floors into the next tile, and a panel wider than one tile has no
+/// single tile for the fraction to be of. The aperture is stated in world
+/// coordinates now, so both sides of the comparison are the same kind of number
+/// and there is nothing to recover.
+///
+/// `blit.wesl`'s `along_the_run`.
+fn along_the_run(edges: Edges, px: f32, py: f32) -> f32 {
+    match edges.contains(Edges::NORTH.union(Edges::SOUTH)) {
         true => px,
         false => py,
-    };
-    along - along.floor()
+    }
 }
 
 /// Whether a surface is **missing** where a ray goes through it: `1.0` inside the
@@ -1397,13 +1405,17 @@ fn run_v(edges: Edges, px: f32, py: f32) -> f32 {
 /// corner's own softening rather than as a quarter of a hole. With no band left
 /// on either span the `min` is a conjunction and says so.
 ///
-/// `blit.wgsl`'s `hole`.
-fn hole(aperture: Option<crate::occlusion::Aperture>, v: f32, z: f32) -> f32 {
+/// `along` and the hole's own two ends are world coordinates on the same axis
+/// since S6, so this is four comparisons of numbers of one kind — where it used
+/// to compare a fraction of a tile against a byte over
+/// [`RUN_STEPS`](crate::occlusion::RUN_STEPS).
+///
+/// `blit.wesl`'s `hole`.
+fn hole(aperture: Option<crate::occlusion::Aperture>, along: f32, z: f32) -> f32 {
     let Some(hole) = aperture else {
         return 0.0;
     };
-    let across = v >= f32::from(hole.near) / crate::occlusion::RUN_STEPS
-        && v <= f32::from(hole.far) / crate::occlusion::RUN_STEPS;
+    let across = along >= hole.near && along <= hole.far;
     match across && z >= hole.bottom as f32 && z <= hole.top as f32 {
         true => 1.0,
         false => 0.0,
@@ -1432,7 +1444,13 @@ fn hole(aperture: Option<crate::occlusion::Aperture>, v: f32, z: f32) -> f32 {
 fn pierced(stands: &crate::occlusion::Solid, cross: [f32; 3]) -> f32 {
     match stands.aperture {
         None => 1.0,
-        Some(_) => 1.0 - hole(stands.aperture, run_v(stands.edges, cross[0], cross[1]), cross[2]),
+        Some(_) => {
+            1.0 - hole(
+                stands.aperture,
+                along_the_run(stands.edges, cross[0], cross[1]),
+                cross[2],
+            )
+        }
     }
 }
 
@@ -3438,19 +3456,21 @@ mod tests {
     // Their subject was a band's own shape, and there is no band; the rule from
     // *How this is judged* is the one that retired them.
 
-    /// Which axis [`run_v`] reads is the edge mask, and the fractional part
-    /// is `along - along.floor()` rather than [`f32::fract`] — the two
-    /// differ in sign for a negative coordinate, and a wall running through
-    /// negative world space (west or north of the map's own origin) is a
-    /// real scene, not a corner case invented for this test.
+    /// Which axis [`along_the_run`] reads is the edge mask, and what it returns
+    /// is the coordinate **itself**.
+    ///
+    /// It took `along - along.floor()` until `docs/occluders.md`'s S6, and the
+    /// case that made the `floor` a deliberate spelling rather than
+    /// [`f32::fract`] is still here as the third pair: a wall running through
+    /// negative world space is a real scene, `(-3.25).fract()` is `-0.25` and
+    /// the run fraction of it was `0.75`. Neither number is asked for now — a
+    /// hole's own ends are world coordinates, so both sides of the comparison
+    /// are negative together and the sign takes care of itself.
     #[test]
-    fn run_v_reads_the_axis_the_edges_name_and_floors_rather_than_fracts() {
-        assert!((run_v(crate::occlusion::Edges::NORTH, 3.75, 9.25) - 0.75).abs() < 1e-6);
-        assert!((run_v(crate::occlusion::Edges::EAST, 3.75, 9.25) - 0.25).abs() < 1e-6);
-        // `(-3.25).fract()` is `-0.25` in Rust; the correct run fraction is
-        // `0.75`, which is what a floor-based fraction gives and `fract`
-        // does not.
-        assert!((run_v(crate::occlusion::Edges::NORTH, -3.25, 0.0) - 0.75).abs() < 1e-6);
+    fn along_the_run_reads_the_axis_the_edges_name() {
+        assert_eq!(along_the_run(crate::occlusion::Edges::NORTH, 3.75, 9.25), 3.75);
+        assert_eq!(along_the_run(crate::occlusion::Edges::EAST, 3.75, 9.25), 9.25);
+        assert_eq!(along_the_run(crate::occlusion::Edges::NORTH, -3.25, 0.0), -3.25);
     }
 
     /// [`hole`]'s two claims: nothing without an aperture, and — with one — the
@@ -3459,15 +3479,33 @@ mod tests {
     ///
     /// The rectangle is a *hard* one since phase 5, so the three points that were
     /// chosen to be well clear of a band are now merely inside and outside, and
-    /// the tolerances they were read to are exact equalities.
+    /// the tolerances they were read to are exact equalities. Since S6 the run
+    /// pair is stated where the panel stands — the tile at `x = 105` here — and
+    /// the point asked about is a world coordinate rather than a fraction.
     #[test]
     fn hole_is_zero_with_no_aperture_and_the_rectangle_with_one() {
-        assert_eq!(hole(None, 0.5, 10.0), 0.0);
+        assert_eq!(hole(None, 105.5, 10.0), 0.0);
 
-        let aperture = crate::occlusion::Aperture::new(0.25, 0.75, 5, 15);
-        assert_eq!(hole(Some(aperture), 0.5, 10.0), 1.0);
-        assert_eq!(hole(Some(aperture), 0.9, 10.0), 0.0);
-        assert_eq!(hole(Some(aperture), 0.5, 30.0), 0.0);
+        let aperture = window_at(105);
+        assert_eq!(hole(Some(aperture), 105.5, 10.0), 1.0);
+        assert_eq!(hole(Some(aperture), 105.9, 10.0), 0.0);
+        assert_eq!(hole(Some(aperture), 105.5, 30.0), 0.0);
+    }
+
+    /// The middle half of the tile at `along`, open from `z` 5 to 15 — the
+    /// aperture the two tests below ask about, placed the way [`Builder::add`]
+    /// places one.
+    fn window_at(along: i32) -> crate::occlusion::Aperture {
+        crate::occlusion::Aperture::placed(
+            0,
+            along,
+            crate::facing::Hole {
+                near: 64,
+                far: 191,
+                bottom: 5,
+                top: 15,
+            },
+        )
     }
 
     /// [`pierced`] with no aperture is the whole surface — a ray that reached it
@@ -3477,12 +3515,62 @@ mod tests {
     #[test]
     fn pierced_is_the_whole_surface_with_no_hole_and_open_where_the_hole_is() {
         let wall = test_solid(0, 20, crate::occlusion::Edges::NORTH);
-        assert_eq!(pierced(&wall, [0.5, 0.0, 10.0]), 1.0);
+        assert_eq!(pierced(&wall, [105.5, 0.0, 10.0]), 1.0);
 
         let mut windowed = wall;
-        windowed.aperture = Some(crate::occlusion::Aperture::new(0.25, 0.75, 5, 15));
-        assert_eq!(pierced(&windowed, [0.5, 0.0, 10.0]), 0.0);
-        assert_eq!(pierced(&windowed, [0.9, 0.0, 10.0]), 1.0);
+        windowed.aperture = Some(window_at(105));
+        assert_eq!(pierced(&windowed, [105.5, 0.0, 10.0]), 0.0);
+        assert_eq!(pierced(&windowed, [105.9, 0.0, 10.0]), 1.0);
+    }
+
+    /// **A window is one window, wherever along the panel the ray crosses** —
+    /// `docs/occluders.md`'s S6, and the gate on the rule that step is.
+    ///
+    /// Two claims, and neither is expressible while a hole is a fraction of the
+    /// tile a *crossing* landed in:
+    ///
+    /// - **A panel wider than one tile has one hole and not one per tile.** D1
+    ///   made such a primitive expressible, `facing::Blocks` will author one and
+    ///   the merge would build one the day two windowed pieces could fold; under
+    ///   `along - along.floor()` this panel is a wall with a window in every
+    ///   tile of itself, which is light through three tiles of stone.
+    /// - **A crossing exactly on a tile boundary belongs to the hole that
+    ///   reaches it.** `floor` sends such a point into the *next* tile, so a
+    ///   window running to the far end of its own tile read as a window at the
+    ///   near end of the one beyond — § *The oracle*'s own defect, which is a
+    ///   `floor` landing on the wrong side of a whole coordinate, one level up.
+    ///
+    /// The coordinates are exact in `f32` on purpose: whole tiles and quarters,
+    /// so what the assertions read is the rule and not a rounding.
+    #[test]
+    fn a_windowed_panel_wider_than_a_tile_has_one_window() {
+        let mut run = test_solid(0, 20, crate::occlusion::Edges::NORTH);
+        // Three tiles of one wall, `x` from 105 to 108 — the shape a merge of
+        // three panels makes, and the shape a `Blocks` list can author.
+        run.space.min.x = 105.0;
+        run.space.max.x = 108.0;
+        // A window in the first tile of it, from a quarter of the way along to
+        // the far end of that tile.
+        run.aperture = Some(crate::occlusion::Aperture {
+            near: 105.25,
+            far: 106.0,
+            bottom: 5,
+            top: 15,
+        });
+
+        assert_eq!(pierced(&run, [105.5, 0.0, 10.0]), 0.0, "the window is open");
+        assert_eq!(
+            pierced(&run, [106.0, 0.0, 10.0]),
+            0.0,
+            "and it is open at its own far end, which is a whole coordinate",
+        );
+        for along in [106.5, 107.25, 107.5] {
+            assert_eq!(
+                pierced(&run, [along, 0.0, 10.0]),
+                1.0,
+                "a second tile of this run is wall, and {along} is a point of it",
+            );
+        }
     }
 
     // **`same_run_keeps_only_the_sides_on_the_same_row_or_column_as_the_start`

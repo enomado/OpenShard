@@ -45,12 +45,25 @@
 //!   and that is a real refusal, written down in `docs/occluders.md` rather than
 //!   hidden here.
 //!
-//! - **An [`Aperture`](super::Aperture), which stops a merge outright.** A hole
-//!   is measured along its panel's run as a fraction of **one tile** —
-//!   `light::run_v` is `along - along.floor()` — so it is the last rule in the
-//!   pass that is still stated in a tile. Merge two windowed panels and the hole
-//!   appears in every tile of the run. Refusing is exact; carrying the hole would
-//!   need the aperture stated in the primitive's own coordinates first.
+//! - **An [`Aperture`](super::Aperture), which stops a merge outright.** A
+//!   primitive carries **one** hole, and two windowed panels of a run are two
+//!   holes standing a tile apart, so there is nowhere for the second to go.
+//!
+//!   The reason used to be a different one and it was retired by
+//!   `docs/occluders.md`'s S6: a hole was a fraction of **one tile** of the run
+//!   (`light::run_v` was `along - along.floor()`), so a merged windowed run would
+//!   have drawn its window in every tile of itself. That is fixed — an aperture
+//!   is stated in world coordinates now and a merged run would carry it exactly
+//!   where it stands — and the refusal above outlives it.
+//!
+//!   **What S6 did not buy is a relaxation, and the reason is worth writing down
+//!   rather than trying.** The tempting one is "merge when at most one of the two
+//!   has a hole", and it cannot fire: the merge already requires an equal
+//!   [`Owner`](super::Owner), which is a `(z, graphic)`, and a hole is read off
+//!   the *graphic* — `occlusion::shape_of` is a lookup and nothing else — so two
+//!   mergeable pieces are windowed together or plain together, never one of
+//!   each. A wall with one window in it is a wall of two graphics, and it is the
+//!   `Owner` that refuses it, here and before S6 alike.
 //!
 //! - **Opacity is compared, and being *equal* is not enough for a translucent
 //!   one.** Two panes crossed by one ray are dimmed twice —
@@ -182,9 +195,10 @@ pub fn merged(solids: Vec<Solid>) -> (Vec<Solid>, Vec<SolidId>) {
 /// Whether a primitive may be folded into a surface at all, before anything
 /// about its neighbours is asked.
 ///
-/// Both refusals are the header's, and both are about a rule stated somewhere
-/// other than in the box: an [`Aperture`](super::Aperture) is measured in its own
-/// tile, and a partial opacity is applied once per primitive a ray crosses.
+/// Both refusals are the header's, and both are about something a merged
+/// primitive could only carry once: one [`Aperture`](super::Aperture) field for
+/// what would be two holes, and one opacity for what a ray crossing two panes is
+/// dimmed by twice.
 fn mergeable(solid: &Solid) -> bool {
     solid.aperture.is_none() && solid.opacity == super::OPAQUE
 }
@@ -467,23 +481,33 @@ mod tests {
         assert_eq!(solids.len(), 4, "two dimmings are not one dimming");
     }
 
-    /// Nor is a windowed panel, and that is the aperture being measured in a tile.
+    /// Nor is a windowed panel: a primitive carries one hole and a run of them is
+    /// one per tile.
     ///
-    /// `light::run_v` is `along - along.floor()`, so a hole is a fraction of
-    /// **one** tile of the run. Merge two windowed panels and the window appears
-    /// in every tile of the result. Refusing costs a slab test; carrying the hole
-    /// would need it stated in the primitive's own coordinates first, which is
-    /// this plan's backlog and not this step.
+    /// The run is stated the way `Builder::add` states it — each panel's hole in
+    /// **its own** tile's coordinates, which is what `docs/occluders.md`'s S6
+    /// made expressible. That is the half of the old reason this test lost: a
+    /// merged run would now carry its window exactly where the window is, and
+    /// what still refuses is that there is one field for four of them.
     #[test]
     fn a_run_of_windows_is_never_folded() {
         let run: Vec<Solid> = (100..104)
             .map(|x| Solid {
-                aperture: Some(Aperture::new(0.25, 0.75, 5, 15)),
+                aperture: Some(Aperture::placed(
+                    0,
+                    x,
+                    crate::facing::Hole {
+                        near: 64,
+                        far: 191,
+                        bottom: 5,
+                        top: 15,
+                    },
+                )),
                 ..stands_at(x, 100, 20, Edges::SOUTH, 7)
             })
             .collect();
         let (solids, _) = merged(run);
-        assert_eq!(solids.len(), 4, "a hole is measured in its own tile");
+        assert_eq!(solids.len(), 4, "one primitive holds one hole");
     }
 
     /// A frame with nothing to merge comes back exactly as it went in.

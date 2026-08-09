@@ -145,19 +145,23 @@ pub struct Blit {
     /// rectangle, and this is a list whose length is what the camera happens to
     /// be looking at.
     primitives: wgpu::Buffer,
-    /// The hole in each of those primitives, one texel a solid and in the
+    /// The hole in each of those primitives, one struct a solid and in the
     /// [`Occlusion::primitive_bytes`](crate::occlusion::Occlusion::primitive_bytes)
     /// order — see
     /// [`Occlusion::aperture_bytes`](crate::occlusion::Occlusion::aperture_bytes).
     ///
-    /// Still a texture, and still a plane beside the list rather than four more
-    /// fields of it: `Occlusion::aperture_bytes` argues why, and the argument is
-    /// about how often a hole is read rather than about what a texture can hold.
-    /// **Written only when something in the frame has a hole**: the primitive's
-    /// own `HOLED` bit is what makes the shader read this at all, so a frame
-    /// with no window in it neither lays these bytes out nor sends them, which
-    /// is every frame of a real map until step 16 lands.
-    apertures: wgpu::Texture,
+    /// **A storage buffer since `docs/occluders.md`'s S6**, and the last thing
+    /// indexed by a `SolidId` to stop being an `Rgba8Uint` plane. Still a list
+    /// beside the primitives rather than four more fields of one:
+    /// `Occlusion::aperture_bytes` argues why, and the argument is about how
+    /// often a hole is read rather than about what a texture can hold.
+    ///
+    /// Grown with [`Blit::primitives`] and by its count, since the two are
+    /// indexed by one number. **Written only when something in the frame has a
+    /// hole**: the primitive's own `HOLED` bit is what makes the shader read this
+    /// at all, so a frame with no window in it neither lays these bytes out nor
+    /// sends them, which is every frame of a real map until step 16 lands.
+    apertures: wgpu::Buffer,
     /// The broad phase, as the shader traverses it: the tree's nodes, depth
     /// first, the root first. See
     /// [`Occlusion::node_bytes`](crate::occlusion::Occlusion::node_bytes) and
@@ -280,17 +284,17 @@ impl Blit {
                     count: None,
                 },
                 // And the hole in each of those solids, indexed by the same
-                // number. A plane beside the list rather than four more channels
-                // of it: `Occlusion::aperture_bytes` argues why, and the short
-                // form is that the list is what the walk reads in a loop and a
-                // hole is what almost nothing has.
+                // number. A list beside the primitives rather than four more
+                // fields of one: `Occlusion::aperture_bytes` argues why, and the
+                // short form is that the primitives are what the walk reads in a
+                // loop and a hole is what almost nothing has.
                 wgpu::BindGroupLayoutEntry {
                     binding: 7,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Uint,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -487,10 +491,12 @@ impl Blit {
             // One row, which is a list of no solids: the grid above says every
             // tile stands nothing, so nothing indexes into it.
             ids: grid_texture(device, "solid ids", crate::occlusion::LIST_ROW, 1),
-            apertures: grid_texture(device, "apertures", crate::occlusion::LIST_ROW, 1),
             // And room for one primitive nothing points at, for the same
-            // reason: a buffer of no size is not a thing wgpu will bind.
+            // reason: a buffer of no size is not a thing wgpu will bind. The
+            // hole beside it is the same one primitive's, unread — nothing
+            // carries the `HOLED` bit that would make the shader look.
             primitives: primitive_buffer(device, 1),
+            apertures: aperture_buffer(device, 1),
             // One node and one word of permutation: the empty tree, whose root
             // escapes to zero, so a traversal over it ends before its first
             // node. See `Occlusion::node_bytes`.
@@ -579,11 +585,7 @@ impl Blit {
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,
-                    resource: wgpu::BindingResource::TextureView(
-                        &self
-                            .apertures
-                            .create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
+                    resource: self.apertures.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 8,
@@ -822,6 +824,22 @@ fn primitive_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
     })
 }
 
+/// Room for the holes in `count` primitives — [`Blit::apertures`].
+///
+/// The same `count` as [`primitive_buffer`] and never its own, because the two
+/// are indexed by one [`SolidId`](crate::occlusion::SolidId): an aperture at an
+/// index this buffer does not reach would be a hole read off the end of the
+/// list. Sized whether or not the frame has a hole in it, since the bind group
+/// needs a resource either way and only the *write* is conditional.
+fn aperture_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("apertures"),
+        size: (count.max(1) * crate::occlusion::APERTURE_BYTES) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 /// Room for `bytes` of the broad phase — [`Blit::nodes`] and [`Blit::order`].
 ///
 /// One function for both because they are grown by one rule: whatever the frame
@@ -936,20 +954,16 @@ impl Blit {
         // And the lists the grid indexes into. Their lengths are the frame's own
         // counts and not the camera's rectangle, so they are grown on their own
         // terms: a camera that has not moved keeps the same rows, and walking
-        // into a city grows them. `id_bytes` and `aperture_bytes` pad to a whole
-        // row, which is what makes the upload's `bytes_per_row` exact.
+        // into a city grows them. `id_bytes` pads to a whole row, which is what
+        // makes the upload's `bytes_per_row` exact.
         let row = crate::occlusion::LIST_ROW;
         let primitives = lighting.occlusion.primitive_bytes();
-        // Grown and never shrunk, and never grown *below* what it holds: the
-        // hole plane is indexed by the same number as this buffer, so an
-        // aperture texel at an index the buffer does not reach would be a hole
-        // read off a primitive that is not there.
-        let rows = lighting.occlusion.list_rows();
-        if self.apertures.height() != rows {
-            self.apertures = grid_texture(device, "apertures", row, rows);
-        }
+        // The two are grown together and by one count, since one `SolidId`
+        // indexes both: a hole at an index the aperture buffer does not reach
+        // would be read off the end of it.
         if (self.primitives.size() as usize) < primitives.len() {
             self.primitives = primitive_buffer(device, lighting.occlusion.solid_count());
+            self.apertures = aperture_buffer(device, lighting.occlusion.solid_count());
         }
         // The references are their own height: equal to the solids' until
         // something is shared, and *not* assumed equal, because the day the two
@@ -990,9 +1004,9 @@ impl Blit {
         // rather than a stale read is the `HOLED` bit: it is written into the
         // primitive above, on this frame, and the shader reads a hole only
         // where it is set — so a frame with no window in it leaves whatever these
-        // texels held and nothing looks at them.
+        // bytes held and nothing looks at them.
         if lighting.occlusion.any_aperture() {
-            list(&self.apertures, &lighting.occlusion.aperture_bytes());
+            queue.write_buffer(&self.apertures, 0, &lighting.occlusion.aperture_bytes());
         }
     }
 
