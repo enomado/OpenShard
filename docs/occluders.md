@@ -470,9 +470,13 @@ one whose gate is not green.
 | S1 | absolute coordinates on the wire | ✅ landed |
 | S2 | the detector, before the fix | ✅ built and read |
 | S3 | the surface exemption | ✅ landed 2026-08-09 |
-| S4 | delete the cell rules | 🚧 `same_run` ✅, the vertical shortcut ✅ and `starting_cell` ✅ are gone; the per-cell `max` is 🔴 **blocked** — the suite is blind to it and the licence arrives with S5, and `first` goes with the grid itself, also at S5. **Nothing here is left to pick up** |
-| S5 | the hierarchy | ⬜ not started — and it carries the cost harness, which cannot price a frame with real occluders today |
+| S4 | delete the cell rules | ✅ **all four gone.** `same_run`, the vertical shortcut, `starting_cell` — and the per-cell `max`, which S5 deleted with the cell it was a statement about; `first` went with the grid at the same time |
+| S5 | the hierarchy | 🚧 **the tree is built and both CPU walks read it**; `blit.wesl` still walks the grid, and the cost harness is untouched. See § *The hierarchy* |
 | S3b | the merge | ⬜ last, after S5 — and a **pure optimisation** since phase 5b took its cure away |
+
+And S5 is the same shape a fourth time: the plan asked for a node budget and
+there is nothing to size, because the traversal's own monotonicity is the bound.
+A step's *decisions* holding does not mean its *reasons* do.
 
 None of S4's three deletions went the way this plan expected: `same_run` was
 retired by three fixtures learning to name their own solid, the vertical
@@ -956,7 +960,7 @@ meets the *open* segment — is the one statement that covers a slab and a plane
 alike. Same shape as the corner graze in § *The oracle*: an oracle arbitrates, so
 a wrong one convicts the walk that was right.
 
-### 🔴 The per-cell `max`: the suite is **blind** to it, not indifferent
+### ✅ The per-cell `max`: the suite was **blind** to it, and S5 removed what it grouped by
 
 Neutralised the way `same_run` was — the `max` within a cell replaced by a
 product, `1 - (1-stopped)(1-by_surface)`, in both CPU walks *and* in `blit.wesl`
@@ -981,9 +985,28 @@ the grouping becoming *by surface* rather than disappearing. S3b does not supply
 it either — a corner's two panels are perpendicular, so no merge joins them, as
 § *Not in scope* already says.
 
-⇒ **This deletion waits**, and what it waits on is a fixture with two partial
-stoppers on one cell and a decision about what the right answer there is. Written
-here rather than in the backlog because it is a precondition of a step.
+⇒ ~~**This deletion waits**, and what it waits on is a fixture with two partial
+stoppers on one cell and a decision about what the right answer there is.~~
+✅ **Both arrived with S5, and the answer is that there is no grouping.** A cell
+was the only thing that ever grouped two primitives, and the tree does not have
+one — so what a segment crossing two volumes gets is a product, because it is
+stopped by both. The fixture is `lighting.rs`'s
+`a_segment_through_two_panes_on_one_tile_is_dimmed_by_both_of_them`: two `WINDOW`
+statics on one tile, one ray through both, and the assertion is `0.8 · 0.8`.
+Restoring the `max` turns it red **and nothing else in the crate** — which is the
+blindness above measured rather than asserted, one phase later.
+
+⚠ **The corner is not what that fixture answers, and it stays open.** Two
+independent panes are the case where a product is unambiguously right: two
+sheets of glass, two dimmings. A corner's two panels *overlap* in the square
+where they meet, so a ray through that square crosses one wall's material twice
+and the `max` had a real argument there — this is the one place the deletion
+changes an answer rather than an arithmetic. It is unreachable today (it needs a
+corner static carrying `WINDOW` and a ray through a fifth of a tile squared), and
+what would close it is D6's join one level finer: a volume that knows which
+instance it is part of can be counted once without a cell. Filed in § *Not in
+scope*'s neighbour rather than answered by a fixture built to whichever rule
+shipped.
 
 **Two false readings on the way, both worth the line they cost.** The first
 census read **0** — `eprintln!` inside a test is swallowed by libtest without
@@ -994,6 +1017,94 @@ census read **0** — `eprintln!` inside a test is swallowed by libtest without
 prints where nobody reads and one that counts its own arithmetic are the same
 defect as a vacuous gate — **it must count what it checked, and be shown a case
 it is known to fire on.**
+
+### 🚧 The hierarchy: **the tree is built and the CPU walks read it**
+
+Landed 2026-08-09, in two commits, with the shader still on the grid.
+
+**What is in the tree.** `occlusion::bvh` — median split on the longest axis,
+leaves of up to four, depth-first layout with an escape index a node. Built in
+`Builder::finish`, held **beside** the tile index rather than instead of it: the
+grid keeps the job it is good at, which is answering about a *tile*
+(`Occlusion::at`'s merged view, `owner_at`'s join, the wireframe, the plan view).
+What moved to the tree is the walk, whose question was never about tiles.
+
+**What went with it.** `dda_walk`, `candidate_tiles`, `DdaCell`, the
+`from.floor()` each walk seeded itself with, and `MAX_WALK_STEPS`.
+
+**And the two walks became one function.** After S1 they differed by exactly
+which box a primitive is — `space` or `wire_box` — so a second copy of a hundred
+and fifty lines was two chances for one rule to drift. `walk_cells_exact` and
+`walk_cells_streaming` are one call each into `walk_primitives` now, with that
+one difference as a parameter. (Their names still say *cells*; the rename is
+outstanding.)
+
+**Three of this plan's backlog entries close on this side by construction**, and
+they are the reason D3 says the hierarchy is not about speed:
+
+- a cell listed a primitive **once**, so the first box wider than its own tile
+  would have been invisible to a ray crossing only the overhang;
+- listing one from **two** cells would have double-counted it, since `through`
+  was multiplied cell after cell. A primitive is under exactly one leaf;
+- a `floor()` decided which cell a boundary point was in.
+
+They close on the CPU only — `blit.wesl` still walks the grid, so S3b's own
+precondition is not met until the shader moves too.
+
+**No node budget, and that departs from this plan's letter** (below), which asks
+for one "in the same role" as `MAX_WALK_STEPS`. There is nothing to size: a
+traversal moves to `at + 1` on a hit and to that node's escape on a miss, and
+**both are strictly forward**, so it visits each node at most once and is bounded
+by the tree the frame has — which no radius can widen, where a cell count was the
+*ray's* length. What could break that is a malformed tree out of a buffer this
+side did not write, and the loop stops on exactly that rather than looping: a
+constant-free guard where a budget would have been a number to defend. Measured
+anyway, because the shape of a loop is not an argument: **the deepest traversal
+over the whole suite visits 33 nodes of a 49-node tree.**
+
+**Blame had to be computed rather than arrived at.** `walk_cells_exact` used to
+sort its candidate cells by nearest crossing and blame the one that tripped the
+cutoff, which was the first blocking cell in ray order. A tree hands its leaves
+back in its own order, so `Stopper` is now the **earliest crossing** among the
+primitives that stopped anything, and the cutoff is applied after the traversal
+instead of exiting it — which is what makes the blame independent of traversal
+order at all. `Stopper::cell` is derived from the blamed primitive's own low
+corner: a report's coordinate, not a rule's.
+
+*Gates, all run:*
+
+- The whole crate green — **526 tests**, the brute-force oracles, both fuzzers
+  and both path-tracer gates among them — with the CPU on the tree and the shader
+  on the grid. So the two broad phases agree on every fixture the crate draws.
+- *Positive control*: a leaf dropping one primitive turns **21 of
+  `tests/lighting.rs`** red, both brute-force sweeps and both fuzzers among them,
+  plus 2 unit tests.
+- *Identity*: the self-shadow injection turns exactly the **same four CPU tests**
+  red as S4 records. The other two of its six are the path-tracer gates, which a
+  CPU-side injection cannot reach while `blit.wesl` is unchanged.
+- The tree's own eight structural gates, each fault-injected in the session that
+  wrote them — and **two of them were vacuous first**, which is recorded above
+  the tests: "built twice, equal twice" cannot fail, because `Bvh::of` takes
+  nothing but the list; and its replacement's first fixture was forty primitives
+  at one place, which an unstable sort leaves exactly as it found them.
+
+⚠ **`tests/frame.rs` stayed fully green under the leaf injection**, and that
+decides what can gate the shader port. Its surviving CPU comparisons are the
+exact walk against the streaming walk — which now *share* the traversal — so
+they cannot see a broad phase losing primitives. What is left to gate the shader
+is `traced.rs` against the path tracer, `pictures.rs`, and the shader's own
+hand-built fixtures. A sweep of the shader against `light::sample` is what this
+step should add, and it is the first thing the next session needs.
+
+**What is left of S5**, in order:
+
+1. **`blit.wesl`**: the tree as two storage buffers (the nodes and the
+   permutation), `candidates` as the same stackless traversal, and `cell_stopped`
+   becoming a per-*primitive* rule. Bindings 15 and 16 are the free ones.
+2. **`tests/cost.rs`**, which builds against `Occlusion::EMPTY` and therefore
+   cannot price this at all.
+3. The rename: `walk_cells_exact`/`walk_cells_streaming` are the **record's** walk
+   and the **wire's**, and neither has a cell in it.
 
 **S5 — the hierarchy.** D3. A CPU build over the primitives and a
 stackless traversal on both sides.
@@ -1014,9 +1125,11 @@ Pinned so the step has no decisions left in it:
   walk over an array with no stack at all.
 - **Leaves hold up to four primitives.** A cost knob under D4, which is why it is
   a number here rather than a question.
-- **A node budget replaces `MAX_WALK_STEPS`**, in the same role and for the same
+- ~~**A node budget replaces `MAX_WALK_STEPS`**, in the same role and for the same
   reason: a loop over data must not become unbounded because somebody widened a
-  radius.
+  radius.~~ 🔴 **There is no budget, and the reason is above**: the traversal is
+  monotone in the node index, so it is bounded by the tree's own size and a
+  number would have been one to defend rather than one to derive.
 
 *Gate:* the brute-force oracle over the whole sweep, on the real place and on
 every hand-built scene; a CPU-against-GPU test in the shape of
@@ -1206,6 +1319,11 @@ Opaque either way, wrong for anything translucent (a pane, a `PANE` opacity of
 51). Whichever way the item above is answered, this is the second half of it, and
 D5's deletion of the per-cell `max` is where it lands.
 
+⇒ ✅ **Both halves are closed on the CPU by S5 and neither by a rule**: a
+primitive is under exactly one leaf whatever its size, so it is offered once and
+its own tile has nothing to do with it. 🔴 **The shader still walks the grid**,
+so both are live on that side and S3b's precondition is not met until it moves.
+
 **The apertures are the last texture indexed by a `SolidId`.** The primitives are
 a storage buffer now and the holes beside them are still `Rgba8Uint` folded into
 `LIST_ROW` rows, with `Occlusion::list_rows` existing for that plane alone. One
@@ -1246,6 +1364,21 @@ shifts every strip after the first by a pixel per ruler, and a one-pixel shift
 between two renders reads exactly like a camera that is off. It was reported as
 "a systematic 3 px offset" once; there is no offset. Slice at
 `k * (SIDE + RULE)`.
+
+**A gate can be vacuous three times over, and each time for a different
+reason.** S5's tie-break gate — that primitives sharing a centre are leafed in
+their own name order — took three versions to fire. First it asserted that two
+builds of one list are equal, which cannot fail because the build takes nothing
+but the list. Then it put forty primitives at one place, and an unstable sort
+handed nothing but equal keys leaves them exactly as it found them. Then it split
+on the wrong axis: a ten-tall body's longest axis is `z`, where all forty sat at
+one height, so the sort never read the axis the ties were on — and it failed, for
+that reason, which would have read as the tie-break working. What makes it a gate
+is ties *inside* a list the sort genuinely partitions.
+
+Worth stating as a habit beside the flame-position one above: **an injection that
+fails is not yet a gate that fires — read *why* it failed.** Three of these four
+readings were red, and only the last one was red about the rule.
 
 **A hole's own `z` is still quantised**, to whole units offset by 128
 (`occlusion::z_byte`), and it is now the only quantised number left in the pass.
