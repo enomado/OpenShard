@@ -2989,7 +2989,10 @@ impl App {
         let statics = self
             .map
             .statics_at(x, y)
-            .map(|item| (item.tile, item.z, item.hue))
+            // Wrapped here rather than in `uofiles`: `StaticItem` holds bare
+            // `u16`s, and typing the format reader is a `common/` decision of
+            // its own. This is the boundary the HUD's own types start at.
+            .map(|item| (Graphic(item.tile), item.z, Hue(item.hue)))
             .collect();
         // The height anything drawn *on* this tile belongs at: the surface a body
         // would stand on, not the ground under it. On a pier those are thirteen
@@ -3059,7 +3062,7 @@ impl App {
         shell::PickedTile {
             x,
             y,
-            land: land.map(|cell| cell.tile),
+            land: land.map(|cell| Graphic(cell.tile)),
             land_z: land.map_or(0, |cell| cell.z),
             stand_z,
             corners,
@@ -3387,7 +3390,7 @@ impl App {
                 let mut mobiles: Vec<_> = view
                     .mobiles
                     .iter()
-                    .map(|(serial, mobile)| (serial.raw(), mobile.body.0, mobile.position))
+                    .map(|(serial, mobile)| (*serial, mobile.body, mobile.position))
                     .collect();
                 // Sorted, so a `HashMap`'s iteration order does not reshuffle
                 // the list under the reader's eyes every frame.
@@ -3395,7 +3398,7 @@ impl App {
                 let mut items: Vec<_> = view
                     .items
                     .iter()
-                    .map(|(serial, item)| (serial.raw(), item.graphic.0, item.position))
+                    .map(|(serial, item)| (*serial, item.graphic, item.position))
                     .collect();
                 items.sort_unstable_by_key(|(serial, _, _)| *serial);
                 (mobiles, items)
@@ -3405,7 +3408,7 @@ impl App {
         shell::Hud {
             ease: self.crowd.ease(),
             connection: self.connection.clone(),
-            serial: self.view.as_ref().map(|view| view.player.serial.raw()),
+            serial: self.view.as_ref().map(|view| view.player.serial),
             position: self.player.at,
             camera,
             locked: self.control.follow() == Follow::Body,
@@ -4950,7 +4953,7 @@ impl App {
                 let Some(place) = self
                     .shell
                     .as_ref()
-                    .and_then(|shell| shell.gumps().placement(gump.gump_id.0))
+                    .and_then(|shell| shell.gumps().placement(gump.gump_id))
                 else {
                     continue;
                 };

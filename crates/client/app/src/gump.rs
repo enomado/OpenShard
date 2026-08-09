@@ -63,7 +63,7 @@ use std::collections::HashMap;
 
 use openshard_client_net::view::OpenGump;
 use openshard_protocol::gump::layout::{Element, Flag, Switch};
-use openshard_protocol::gump::{GumpButton, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
+use openshard_protocol::gump::{GumpButton, GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::wire::Hue;
 use openshard_uofiles::hues::Hues;
 
@@ -142,7 +142,7 @@ fn size(width: i32, height: i32) -> egui::Vec2 {
 /// silently inherit the state of whatever now stands where it used to.
 #[derive(Default)]
 pub struct Windows {
-    by_dialog: HashMap<u32, Sheet>,
+    by_dialog: HashMap<GumpId, Sheet>,
     /// Real pixels per egui point, as of the last frame drawn.
     ///
     /// Recorded rather than asked for again, because the art pass has to be
@@ -180,7 +180,7 @@ struct Sheet {
     /// Which switches are on, by their id. Seeded from the layout's own
     /// `initial` flags the first time an id is seen, and the player's after
     /// that — which is why absence and `false` are different here.
-    switches: HashMap<u32, bool>,
+    switches: HashMap<RawSwitchId, bool>,
     /// What has been typed into each field, by its id.
     entries: HashMap<u16, String>,
     /// Where this window's *content* ended up on the screen last frame, in egui
@@ -209,7 +209,7 @@ impl Windows {
     ///
     /// A window this has never seen is on page 0 with nothing set, which is
     /// exactly what a layout that has just arrived means.
-    pub fn placement(&self, gump_id: u32) -> Option<Placement> {
+    pub fn placement(&self, gump_id: GumpId) -> Option<Placement> {
         let sheet = self.by_dialog.get(&gump_id)?;
         let (x, y) = sheet.origin?;
         Some(Placement {
@@ -219,7 +219,7 @@ impl Windows {
                 .switches
                 .iter()
                 .filter(|(_, set)| **set)
-                .map(|(id, _)| RawSwitchId(*id))
+                .map(|(&id, _)| id)
                 .collect(),
         })
     }
@@ -241,7 +241,7 @@ impl Windows {
         // The state of a window the server has taken away is not worth keeping:
         // a dialog that comes back comes back as the server drew it.
         self.by_dialog
-            .retain(|id, _| open.iter().any(|gump| gump.gump_id.0 == *id));
+            .retain(|id, _| open.iter().any(|gump| gump.gump_id == *id));
 
         let mut answer = None;
         for gump in open {
@@ -254,7 +254,7 @@ impl Windows {
 
     /// One window.
     fn show_one(&mut self, context: &egui::Context, gump: &OpenGump, hues: &Hues) -> Option<GumpReply> {
-        let sheet = self.by_dialog.entry(gump.gump_id.0).or_default();
+        let sheet = self.by_dialog.entry(gump.gump_id).or_default();
         seed_switches(sheet, gump);
 
         let flags = window_flags(gump);
@@ -281,7 +281,7 @@ impl Windows {
             .frame(frame)
             // The title is the layout's first label, which two dialogs may
             // share; the dialog id is what actually distinguishes them.
-            .id(egui::Id::new(("gump", gump.gump_id.0)))
+            .id(egui::Id::new(("gump", gump.gump_id)))
             // Where on the screen the server asked for it, in the same space as
             // everything inside it — see the module docs.
             .default_pos([point(gump.at.x), point(gump.at.y)])
@@ -345,7 +345,7 @@ fn title(gump: &OpenGump) -> String {
 fn seed_switches(sheet: &mut Sheet, gump: &OpenGump) {
     for element in &gump.elements {
         if let Element::Check(switch) | Element::Radio(switch) = element {
-            sheet.switches.entry(switch.id.0).or_insert(switch.initial);
+            sheet.switches.entry(switch.id).or_insert(switch.initial);
         }
     }
 }
@@ -414,23 +414,19 @@ fn draw(ui: &mut egui::Ui, gump: &OpenGump, sheet: &mut Sheet, hues: &Hues) -> O
             }
             Element::Check(switch) => draw_switch(ui, sheet, switch, at(switch.x, switch.y, BUTTON_SIZE)),
             Element::Radio(switch) => {
-                let was = sheet
-                    .switches
-                    .get(&switch.id.0)
-                    .copied()
-                    .unwrap_or(switch.initial);
+                let was = sheet.switches.get(&switch.id).copied().unwrap_or(switch.initial);
                 draw_switch(ui, sheet, switch, at(switch.x, switch.y, BUTTON_SIZE));
                 // A radio turns its neighbours off — that is the whole
                 // difference from a checkbox, and the client is what enforces
                 // it: the server is sent the ids that are left on and trusts
                 // that only one of a group is.
-                let now = sheet.switches.get(&switch.id.0).copied().unwrap_or(false);
+                let now = sheet.switches.get(&switch.id).copied().unwrap_or(false);
                 if now && !was {
-                    let group: Vec<u32> = gump
+                    let group: Vec<RawSwitchId> = gump
                         .elements
                         .iter()
                         .filter_map(|other| match other {
-                            Element::Radio(other) if other.id != switch.id => Some(other.id.0),
+                            Element::Radio(other) if other.id != switch.id => Some(other.id),
                             _ => None,
                         })
                         .collect();
@@ -548,13 +544,9 @@ fn draw(ui: &mut egui::Ui, gump: &OpenGump, sheet: &mut Sheet, hues: &Hues) -> O
 
 /// A checkbox, and the map entry it reads and writes.
 fn draw_switch(ui: &mut egui::Ui, sheet: &mut Sheet, switch: &Switch, rect: egui::Rect) {
-    let mut set = sheet
-        .switches
-        .get(&switch.id.0)
-        .copied()
-        .unwrap_or(switch.initial);
+    let mut set = sheet.switches.get(&switch.id).copied().unwrap_or(switch.initial);
     if ui.put(rect, egui::Checkbox::without_text(&mut set)).changed() {
-        sheet.switches.insert(switch.id.0, set);
+        sheet.switches.insert(switch.id, set);
     }
 }
 
@@ -672,7 +664,7 @@ fn reply(gump: &OpenGump, sheet: &Sheet, button: RawButtonId) -> GumpReply {
         .switches
         .iter()
         .filter(|(_, &set)| set)
-        .map(|(&id, _)| RawSwitchId(id))
+        .map(|(&id, _)| id)
         .collect();
     switches.sort_unstable();
 
@@ -745,9 +737,9 @@ mod tests {
     fn an_answer_carries_the_switches_that_are_set_and_nothing_else() {
         let gump = admin_menu();
         let mut sheet = Sheet::default();
-        sheet.switches.insert(9, true);
-        sheet.switches.insert(1, false);
-        sheet.switches.insert(4, true);
+        sheet.switches.insert(RawSwitchId(9), true);
+        sheet.switches.insert(RawSwitchId(1), false);
+        sheet.switches.insert(RawSwitchId(4), true);
 
         let reply = reply(&gump, &sheet, RawButtonId(13));
         assert_eq!(reply.gump_id, RawGumpId(0x00AD_0001));
@@ -764,12 +756,16 @@ mod tests {
         let gump = admin_menu();
         let mut sheet = Sheet::default();
         seed_switches(&mut sheet, &gump);
-        assert_eq!(sheet.switches.get(&1), Some(&false), "the layout's own initial");
+        assert_eq!(
+            sheet.switches.get(&RawSwitchId(1)),
+            Some(&false),
+            "the layout's own initial"
+        );
 
-        sheet.switches.insert(1, true);
+        sheet.switches.insert(RawSwitchId(1), true);
         seed_switches(&mut sheet, &gump);
         assert_eq!(
-            sheet.switches.get(&1),
+            sheet.switches.get(&RawSwitchId(1)),
             Some(&true),
             "and it stays where it was put"
         );

@@ -6,6 +6,23 @@
 
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+/// Which of the three world axes — the thing every `0..3` loop and
+/// `match axis { 0 => .., 1 => .., _ => .. }` in this crate has secretly
+/// meant, spelled out so a stray fourth arm fails to compile instead of
+/// panicking at runtime.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+impl Axis {
+    /// All three, in `x, y, z` order — the order every fixed-size `[_; 3]` in
+    /// this crate is implicitly indexed by.
+    pub const ALL: [Axis; 3] = [Axis::X, Axis::Y, Axis::Z];
+}
+
 /// A point in the world, or a direction through it.
 ///
 /// One type for both, deliberately: the distinction is in what a function does
@@ -74,14 +91,13 @@ impl Vec3 {
         Self::new(self.x.max(other.x), self.y.max(other.y), self.z.max(other.z))
     }
 
-    /// The axis, `0..3`, this vector is largest on — how a normal picks the
-    /// slab that produced it.
-    pub fn axis(self, axis: usize) -> f64 {
+    /// The component named by `axis` — how a normal picks the slab that
+    /// produced it.
+    pub fn axis(self, axis: Axis) -> f64 {
         match axis {
-            0 => self.x,
-            1 => self.y,
-            2 => self.z,
-            other => panic!("axis {other} of three"),
+            Axis::X => self.x,
+            Axis::Y => self.y,
+            Axis::Z => self.z,
         }
     }
 

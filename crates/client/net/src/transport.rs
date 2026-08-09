@@ -297,7 +297,7 @@ fn step(login: &mut Login, event: Event) -> Result<Option<Step>, TransportError>
             // sends around the login that this crate has no decoder for. They
             // are logged and stepped over, because framing already told us
             // where the next one starts.
-            debug!(id = format_args!("0x{id:02X}"), "no decoder yet");
+            debug!(id = format_args!("{id}"), "no decoder yet");
             Ok(None)
         }
     }

@@ -49,6 +49,8 @@ use openshard_client_render::camera::Camera;
 use openshard_client_render::follow::Rig;
 use openshard_client_render::light;
 use openshard_client_render::solid::Cut;
+use openshard_protocol::serial::Serial;
+use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::hues::Hues;
 use winit::window::Window;
 
@@ -63,7 +65,7 @@ pub struct Hud {
     /// The shard, if there is one, and what it is doing.
     pub connection: String,
     /// Our own serial, once a shard has given us one.
-    pub serial: Option<u32>,
+    pub serial: Option<Serial>,
     /// Where our body stands, as the server last said.
     pub position: openshard_protocol::world::Point,
     /// The camera, read for its zoom, eye and viewport.
@@ -114,9 +116,9 @@ pub struct Hud {
     /// two clients fighting over one character.
     pub offline: bool,
     /// Everyone else on screen: serial, body, position.
-    pub mobiles: Vec<(u32, u16, openshard_protocol::world::Point)>,
+    pub mobiles: Vec<(Serial, Graphic, openshard_protocol::world::Point)>,
     /// The ground items the view is holding: serial, graphic, position.
-    pub items: Vec<(u32, u16, openshard_protocol::world::Point)>,
+    pub items: Vec<(Serial, Graphic, openshard_protocol::world::Point)>,
     /// What tile the cursor is over right now, if it is over the world and on
     /// the map. Live, and gone the instant the cursor leaves — see `selected`
     /// for what a click keeps.
@@ -250,7 +252,7 @@ pub struct PickedTile {
     /// The tile coordinate's other half.
     pub y: u16,
     /// The land tile's graphic id, if the block loaded.
-    pub land: Option<u16>,
+    pub land: Option<Graphic>,
     /// The ground's height here — what the land block stores, and nothing else.
     /// Shown in the panel as a fact about the map; it is *not* where a body
     /// stands, and nothing is drawn at it. See [`PickedTile::stand_z`].
@@ -296,7 +298,7 @@ pub struct PickedTile {
     /// says nothing about the room it is in.
     pub ceiling: Option<i8>,
     /// Everything standing on top of the ground here: graphic id, height, hue.
-    pub statics: Vec<(u16, i8, u16)>,
+    pub statics: Vec<(Graphic, i8, Hue)>,
 }
 
 /// The walkability of what is on screen, and the way through it.
@@ -731,7 +733,7 @@ fn layout(
             ui.label(&hud.connection);
             ui.separator();
             match hud.serial {
-                Some(serial) => ui.label(format!("serial 0x{serial:08X}")),
+                Some(serial) => ui.label(format!("serial {serial}")),
                 None => ui.label("no serial"),
             };
             ui.separator();
@@ -1000,18 +1002,15 @@ fn world_panel(ui: &mut egui::Ui, hud: &Hud) {
         hud.items.len()
     ));
     for (serial, body, at) in &hud.mobiles {
-        ui.label(format!(
-            "0x{serial:08X}  body {body}  {}, {}, {}",
-            at.x, at.y, at.z
-        ));
+        ui.label(format!("{serial}  body {}  {}, {}, {}", body.0, at.x, at.y, at.z));
     }
     if !hud.items.is_empty() {
         ui.separator();
     }
     for (serial, graphic, at) in &hud.items {
         ui.label(format!(
-            "0x{serial:08X}  item {graphic}  {}, {}, {}",
-            at.x, at.y, at.z
+            "{serial}  item {}  {}, {}, {}",
+            graphic.0, at.x, at.y, at.z
         ));
     }
 }
@@ -1826,21 +1825,24 @@ fn tile_rows(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
         }
     });
     ui.horizontal(|ui| match tile.land {
-        Some(graphic) => {
-            ui.label(format!("land {graphic} (0x{graphic:04X})  z {}", tile.land_z));
+        // `.0` here and below because this is the presentation seam: a panel
+        // printing an id in decimal *and* hex is exactly the place a newtype is
+        // supposed to be unwrapped, the same licence the wire and SQL get.
+        Some(Graphic(id)) => {
+            ui.label(format!("land {id} (0x{id:04X})  z {}", tile.land_z));
             if ui.small_button("copy").clicked() {
-                ui.ctx().copy_text(graphic.to_string());
+                ui.ctx().copy_text(id.to_string());
             }
         }
         None => {
             ui.label("land: block not loaded");
         }
     });
-    for (graphic, z, hue) in &tile.statics {
+    for &(Graphic(id), z, Hue(hue)) in &tile.statics {
         ui.horizontal(|ui| {
-            ui.label(format!("static {graphic} (0x{graphic:04X})  z {z}  hue {hue}"));
+            ui.label(format!("static {id} (0x{id:04X})  z {z}  hue {hue}"));
             if ui.small_button("copy").clicked() {
-                ui.ctx().copy_text(graphic.to_string());
+                ui.ctx().copy_text(id.to_string());
             }
         });
     }
@@ -1878,13 +1880,13 @@ fn tile_text(tile: &PickedTile) -> String {
     }
     text.push('\n');
     match tile.land {
-        Some(graphic) => {
-            let _ = writeln!(text, "land {graphic} (0x{graphic:04X})  z {}", tile.land_z);
+        Some(Graphic(id)) => {
+            let _ = writeln!(text, "land {id} (0x{id:04X})  z {}", tile.land_z);
         }
         None => text.push_str("land: block not loaded\n"),
     }
-    for &(graphic, z, hue) in &tile.statics {
-        let _ = writeln!(text, "static {graphic} (0x{graphic:04X})  z {z}  hue {hue}");
+    for &(Graphic(id), z, Hue(hue)) in &tile.statics {
+        let _ = writeln!(text, "static {id} (0x{id:04X})  z {z}  hue {hue}");
     }
     text
 }

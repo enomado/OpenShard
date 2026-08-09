@@ -9,7 +9,7 @@
 //! the fourth is that nobody reconciled it with the others, so what it is held
 //! to instead is a set of crossings worked out by hand, below.
 
-use crate::vector::Vec3;
+use crate::vector::{Axis, Vec3};
 
 /// Where a ray meets a box, as two distances along it.
 ///
@@ -28,12 +28,12 @@ pub struct Crossing {
     /// box at a single point — a corner, or a box with no extent on the axis
     /// the line crosses.
     pub far: f64,
-    /// Which of the three slabs decided `near`, `0..3`.
-    pub near_axis: usize,
+    /// Which of the three slabs decided `near`.
+    pub near_axis: Axis,
     /// And which decided `far`. Not the same one in general, and taking the
     /// entry axis for both is a normal that points off a face the ray never
     /// touched.
-    pub far_axis: usize,
+    pub far_axis: Axis,
 }
 
 /// An axis-aligned box: two opposite corners.
@@ -90,7 +90,7 @@ impl Aabb {
         );
         let (mut near, mut far) = (f64::NEG_INFINITY, f64::INFINITY);
         let (mut near_axis, mut far_axis) = (None, None);
-        for axis in 0..3 {
+        for axis in Axis::ALL {
             let (origin, step) = (from.axis(axis), direction.axis(axis));
             let (lo, hi) = (self.min.axis(axis), self.max.axis(axis));
             // Parallel to this pair of bounds: the axis cannot decide where the
@@ -150,22 +150,22 @@ impl Crossing {
 }
 
 /// The unit vector along `axis` that points against `direction`.
-fn facing(axis: usize, direction: Vec3) -> Vec3 {
+fn facing(axis: Axis, direction: Vec3) -> Vec3 {
     let sign = match direction.axis(axis) < 0.0 {
         true => 1.0,
         false => -1.0,
     };
     match axis {
-        0 => Vec3::new(sign, 0.0, 0.0),
-        1 => Vec3::new(0.0, sign, 0.0),
-        _ => Vec3::new(0.0, 0.0, sign),
+        Axis::X => Vec3::new(sign, 0.0, 0.0),
+        Axis::Y => Vec3::new(0.0, sign, 0.0),
+        Axis::Z => Vec3::new(0.0, 0.0, sign),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Aabb, Crossing};
-    use crate::vector::Vec3;
+    use crate::vector::{Axis, Vec3};
 
     /// The unit cube at the origin, which every case below is worked out
     /// against by hand.
@@ -180,7 +180,7 @@ mod tests {
             .expect("a ray straight at the box");
         assert_eq!(crossing.near, 1.0, "one unit of travel to reach x = 0");
         assert_eq!(crossing.far, 2.0, "and two to reach x = 1");
-        assert_eq!(crossing.near_axis, 0, "the x slab decided the entry");
+        assert_eq!(crossing.near_axis, Axis::X, "the x slab decided the entry");
         assert_eq!(
             crossing.entry_normal(Vec3::new(1.0, 0.0, 0.0)),
             Vec3::new(-1.0, 0.0, 0.0),
@@ -200,8 +200,8 @@ mod tests {
         let crossing = unit()
             .crossing(Vec3::new(-1.0, 0.1, 0.5), direction)
             .expect("in through x, out through y");
-        assert_eq!(crossing.near_axis, 0, "entered across x");
-        assert_eq!(crossing.far_axis, 1, "and left across y");
+        assert_eq!(crossing.near_axis, Axis::X, "entered across x");
+        assert_eq!(crossing.far_axis, Axis::Y, "and left across y");
         assert_eq!(
             crossing.exit_normal(direction),
             Vec3::new(0.0, -1.0, 0.0),
@@ -231,8 +231,8 @@ mod tests {
             .expect("a ray from inside still leaves");
         assert_eq!(crossing.near, -0.5, "half a unit back to the near face");
         assert_eq!(crossing.far, 0.5, "and half a unit on to the far one");
-        assert_eq!(crossing.near_axis, 0);
-        assert_eq!(crossing.far_axis, 0);
+        assert_eq!(crossing.near_axis, Axis::X);
+        assert_eq!(crossing.far_axis, Axis::X);
     }
 
     #[test]
@@ -381,11 +381,11 @@ mod tests {
             prop_assume!(far - near > 1e-6);
             let at = from + direction * (near + (far - near) * through);
             let cube = unit();
-            for axis in 0..3 {
+            for axis in Axis::ALL {
                 prop_assert!(
                     at.axis(axis) >= cube.min.axis(axis) - 1e-9
                         && at.axis(axis) <= cube.max.axis(axis) + 1e-9,
-                    "axis {axis} of {at:?} left the box between near {near} and far {far}"
+                    "axis {axis:?} of {at:?} left the box between near {near} and far {far}"
                 );
             }
         });

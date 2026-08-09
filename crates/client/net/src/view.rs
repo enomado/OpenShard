@@ -170,13 +170,21 @@ impl Heard {
     }
 }
 
+/// How many of an item are in a stack. `openshard_protocol::items` leaves this
+/// a bare `u16` — it is the wire's own currency there, one field among several
+/// a codec reads in sequence — but here, sitting beside the already-typed
+/// `graphic`/`position`/`hue`, an untyped count is the one field a reader
+/// cannot place at a glance.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct StackAmount(pub u16);
+
 /// An item on the ground, as `0x1A` last described it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Item {
     /// Its graphic.
     pub graphic: Graphic,
     /// How many are in the stack.
-    pub amount: u16,
+    pub amount: StackAmount,
     /// Where it lies.
     pub position: Point,
     /// Its hue, or [`Hue::NONE`] for none.
@@ -574,7 +582,7 @@ impl WorldView {
             ServerPacket::WorldItem(item) => {
                 let fresh = Item {
                     graphic: item.graphic,
-                    amount: item.amount,
+                    amount: StackAmount(item.amount),
                     position: item.position,
                     hue: item.hue,
                 };
@@ -1082,7 +1090,7 @@ mod tests {
             hue: Hue(0x0021),
         };
         assert!(view.apply(&ServerPacket::WorldItem(item)));
-        assert_eq!(view.items.get(&item.serial).unwrap().amount, 500);
+        assert_eq!(view.items.get(&item.serial).unwrap().amount, StackAmount(500));
     }
 
     #[test]

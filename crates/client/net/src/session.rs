@@ -29,6 +29,8 @@ use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::{AuthKey, RawCharacterSlot, RawClientIp};
 use openshard_protocol::world::{CharacterPlay, PlayerStart};
 
+use crate::connection::PacketId;
+
 /// Which of several offered things to take.
 ///
 /// A client picks a shard and a character, and both lists arrive from the
@@ -139,7 +141,7 @@ pub enum LoginError {
         /// Where the conversation was.
         stage: Stage,
         /// The id that arrived.
-        id: u8,
+        id: PacketId,
     },
     /// The shard list held nothing matching the pick.
     NoSuchShard(Pick),
@@ -153,7 +155,7 @@ impl std::fmt::Display for LoginError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OutOfTurn { stage, id } => {
-                write!(f, "0x{id:02X} arrived while {stage:?}")
+                write!(f, "{id} arrived while {stage:?}")
             }
             Self::NoSuchShard(pick) => write!(f, "no shard matching {pick:?} was offered"),
             Self::NoSuchCharacter(pick) => write!(f, "no character matching {pick:?} was offered"),
@@ -249,7 +251,7 @@ impl Login {
                 | ServerPacket::PlayerStart(_)
                 | ServerPacket::LoginComplete(_) => Err(LoginError::OutOfTurn {
                     stage,
-                    id: packet.id(),
+                    id: PacketId(packet.id()),
                 }),
                 _ => Ok(Step::Idle),
             },
@@ -509,7 +511,7 @@ mod tests {
             login.on_packet(&character_list()),
             Err(LoginError::OutOfTurn {
                 stage: Stage::AwaitingShards,
-                id: 0xA9,
+                id: PacketId(0xA9),
             })
         );
     }

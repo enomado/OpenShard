@@ -13,7 +13,7 @@
 //! checks that assumption on probes it did not measure from. Nothing here knows
 //! that a tile is 44 pixels across or that a `z` unit lifts a sprite four.
 
-use crate::vector::Vec3;
+use crate::vector::{Axis, Vec3};
 
 /// A line through the world: every point that projects to one pixel.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -85,13 +85,13 @@ impl Parallel {
     ///   standing on it.
     pub fn measure(map: impl Fn(Vec3) -> (f64, f64), about: Vec3, span: f64, tolerance: f64) -> Self {
         assert!(span > 0.0, "a measurement span of {span} probes one point twice");
-        let axis_step = |axis: usize| match axis {
-            0 => Vec3::new(span, 0.0, 0.0),
-            1 => Vec3::new(0.0, span, 0.0),
-            _ => Vec3::new(0.0, 0.0, span),
+        let axis_step = |axis: Axis| match axis {
+            Axis::X => Vec3::new(span, 0.0, 0.0),
+            Axis::Y => Vec3::new(0.0, span, 0.0),
+            Axis::Z => Vec3::new(0.0, 0.0, span),
         };
         let mut columns = [(0.0, 0.0); 3];
-        for (axis, column) in columns.iter_mut().enumerate() {
+        for (axis, column) in Axis::ALL.into_iter().zip(columns.iter_mut()) {
             let step = axis_step(axis);
             let ahead = map(about + step);
             let behind = map(about - step);
@@ -103,15 +103,15 @@ impl Parallel {
         let centre = map(about);
         let origin = (
             centre.0
-                - columns
-                    .iter()
-                    .enumerate()
+                - Axis::ALL
+                    .into_iter()
+                    .zip(columns.iter())
                     .map(|(a, c)| c.0 * about.axis(a))
                     .sum::<f64>(),
             centre.1
-                - columns
-                    .iter()
-                    .enumerate()
+                - Axis::ALL
+                    .into_iter()
+                    .zip(columns.iter())
                     .map(|(a, c)| c.1 * about.axis(a))
                     .sum::<f64>(),
         );
@@ -184,7 +184,7 @@ impl Parallel {
     /// knows which points its picture is actually about.
     pub fn pixel_of(&self, at: Vec3) -> (f64, f64) {
         let mut pixel = self.origin;
-        for (axis, column) in self.columns.iter().enumerate() {
+        for (axis, column) in Axis::ALL.into_iter().zip(self.columns.iter()) {
             pixel.0 += column.0 * at.axis(axis);
             pixel.1 += column.1 * at.axis(axis);
         }

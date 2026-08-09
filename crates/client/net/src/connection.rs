@@ -11,6 +11,23 @@ use openshard_protocol::packet::{Frame, FrameError, MAX_PACKET_SIZE};
 use openshard_protocol::server_packet::{ServerDecodeError, ServerPacket, frame_server_packet};
 use openshard_protocol::version::ClientVersion;
 
+/// A packet id this crate has no decoder for.
+///
+/// Distinct from the bare `u8` `openshard_protocol::packet`'s own framing
+/// functions take: that layer sizes a packet by its id before anything about
+/// it is known, so the id there is the wire's own currency. Here the id has
+/// already failed to become a [`ServerPacket`], and is being carried around —
+/// logged, compared, displayed — as an opaque fact about what arrived, which
+/// is what a newtype is for.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct PacketId(pub u8);
+
+impl std::fmt::Display for PacketId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "0x{:02X}", self.0)
+    }
+}
+
 /// A packet arrived.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
@@ -25,7 +42,7 @@ pub enum Event {
     /// one id from here to [`Event::Packet`].
     Undecoded {
         /// The packet id.
-        id: u8,
+        id: PacketId,
         /// The whole packet, id byte included, already decompressed.
         body: Vec<u8>,
     },
@@ -243,7 +260,7 @@ impl Connection {
 
     /// Decode one whole, uncompressed packet.
     fn interpret(&self, packet: Vec<u8>) -> Result<Event, ConnectionError> {
-        let id = packet[0];
+        let id = PacketId(packet[0]);
         match ServerPacket::decode(&packet, self.version)? {
             Some(decoded) => Ok(Event::Packet(decoded)),
             None => Ok(Event::Undecoded { id, body: packet }),
@@ -352,7 +369,7 @@ mod tests {
         assert_eq!(
             connection.poll().unwrap(),
             Some(Event::Undecoded {
-                id: 0x4F,
+                id: PacketId(0x4F),
                 body: light.encode(version()),
             })
         );

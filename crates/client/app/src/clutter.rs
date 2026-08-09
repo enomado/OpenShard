@@ -74,7 +74,7 @@ struct Blocker {
 /// bought a hundred times over.
 #[derive(Default, Debug)]
 pub struct Clutter {
-    tiles: HashMap<(u16, u16), Vec<Blocker>>,
+    tiles: HashMap<Tile, Vec<Blocker>>,
 }
 
 impl Clutter {
@@ -85,13 +85,14 @@ impl Clutter {
     /// swings, so the shut leaf blocks and the open one does not without either
     /// end tracking a door's state at all.
     pub fn of(items: &[GroundItem], tiles: &TileData) -> Self {
-        let mut blocked: HashMap<(u16, u16), Vec<Blocker>> = HashMap::new();
+        let mut blocked: HashMap<Tile, Vec<Blocker>> = HashMap::new();
         for item in items {
             let tile = tiles.static_tile(item.graphic.0);
             if !tile.flags.is_blocking() {
                 continue;
             }
-            blocked.entry((item.at.x, item.at.y)).or_default().push(Blocker {
+            let at = Tile::new(item.at.x, item.at.y);
+            blocked.entry(at).or_default().push(Blocker {
                 z: item.at.z,
                 height: tile.height,
             });
@@ -108,8 +109,8 @@ impl Clutter {
     /// tiledata gives plenty of impassable art a height of zero — a flat span
     /// would overlap nothing and block nowhere, which reads exactly like the bug
     /// this module exists to fix.
-    fn blocked_at(&self, x: u16, y: u16, stand_z: i32) -> bool {
-        self.tiles.get(&(x, y)).is_some_and(|blockers| {
+    fn blocked_at(&self, tile: Tile, stand_z: i32) -> bool {
+        self.tiles.get(&tile).is_some_and(|blockers| {
             blockers.iter().any(|blocker| {
                 let bottom = i32::from(blocker.z);
                 let top = bottom + i32::from(blocker.height).max(1);
@@ -159,7 +160,8 @@ impl<M: Terrain> Terrain for Cluttered<'_, M> {
         let landed = self.map.can_step(from, to)?;
         // At the height the body will stand at, not the height it asked for:
         // `to.z` is the caller's guess and `can_step` is what corrects it.
-        match self.clutter.blocked_at(to.x, to.y, i32::from(landed.z)) {
+        let onto = Tile::new(to.x, to.y);
+        match self.clutter.blocked_at(onto, i32::from(landed.z)) {
             true => None,
             false => Some(landed),
         }
@@ -186,7 +188,7 @@ impl<M: Terrain> Terrain for Cluttered<'_, M> {
     }
 
     fn can_fit(&self, tile: Tile, z: i32, height: i32) -> bool {
-        self.map.can_fit(tile, z, height) && !self.clutter.blocked_at(tile.x, tile.y, z)
+        self.map.can_fit(tile, z, height) && !self.clutter.blocked_at(tile, z)
     }
 
     fn item_blocks(&self, graphic: openshard_protocol::wire::Graphic) -> bool {
@@ -226,9 +228,9 @@ impl Clutter {
     /// covered against the real `tiledata.mul` below. Everything downstream of
     /// here, `blocked_at` included, is the one the shipping path uses.
     fn placed(blockers: &[(Point, u8)]) -> Self {
-        let mut tiles: HashMap<(u16, u16), Vec<Blocker>> = HashMap::new();
+        let mut tiles: HashMap<Tile, Vec<Blocker>> = HashMap::new();
         for (at, height) in blockers {
-            tiles.entry((at.x, at.y)).or_default().push(Blocker {
+            tiles.entry(Tile::new(at.x, at.y)).or_default().push(Blocker {
                 z: at.z,
                 height: *height,
             });
@@ -382,7 +384,7 @@ mod tests {
         assert!(!data.flags.is_blocking());
         let clutter = Clutter::of(&[item(100, 100, 0, water_barrel)], &tiles);
         assert!(
-            !clutter.blocked_at(100, 100, 0),
+            !clutter.blocked_at(Tile::new(100, 100), 0),
             "a water barrel was made solid here and the shard would still allow the step"
         );
     }
@@ -394,11 +396,11 @@ mod tests {
         };
         let clutter = Clutter::of(&[item(100, 100, 0, BARREL)], &tiles);
         assert!(
-            clutter.blocked_at(100, 100, 0),
+            clutter.blocked_at(Tile::new(100, 100), 0),
             "a barrel underfoot is not in the way"
         );
         assert!(
-            !clutter.blocked_at(101, 100, 0),
+            !clutter.blocked_at(Tile::new(101, 100), 0),
             "a barrel blocked a tile it is not on"
         );
     }
@@ -410,11 +412,11 @@ mod tests {
         };
         let clutter = Clutter::of(&[item(100, 100, 40, BARREL)], &tiles);
         assert!(
-            !clutter.blocked_at(100, 100, 0),
+            !clutter.blocked_at(Tile::new(100, 100), 0),
             "a crate on an upper floor sealed the floor beneath it"
         );
         assert!(
-            clutter.blocked_at(100, 100, 40),
+            clutter.blocked_at(Tile::new(100, 100), 40),
             "a crate did not block the floor it stands on"
         );
     }
@@ -433,7 +435,7 @@ mod tests {
         );
         let clutter = Clutter::of(&[item(100, 100, 0, gold)], &tiles);
         assert!(
-            !clutter.blocked_at(100, 100, 0),
+            !clutter.blocked_at(Tile::new(100, 100), 0),
             "a coin on the floor stopped a step"
         );
     }

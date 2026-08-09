@@ -2588,6 +2588,145 @@ missing for each, are in [`docs/client.md`](client.md).
 - [ ] M4 — the gump layer
 - [ ] M5 — interaction
 
+### Backlog from the client newtype sweep
+
+A pass over `crates/client/{app,artscan,net,pathtrace}` (`render` excluded on
+purpose — its own newtype pass is separate work) for bare numeric fields that
+carry domain meaning. The strongest cases are places where a newtype the
+protocol already defines (`Serial`, `Graphic`, `RawGumpId`, `RawSwitchId`) gets
+unpacked back to a primitive just to cross a struct boundary — fixed below.
+What is left is lower-priority: no existing type to reuse, or the fix reaches
+into a struct with enough call sites that it deserves its own pass rather than
+riding along with this one.
+
+- ~~**`app::shell::Hud` re-flattens `Serial`/`Graphic` into tuples of
+  primitives.**~~ Fixed: `mobiles`/`items`/`serial` carry `Serial` and
+  `Graphic` directly; `lib.rs` no longer calls `.raw()`/`.0` just to build the
+  HUD snapshot.
+- ~~**`app::gump::Windows` keys its maps on bare `u32`.**~~ Fixed:
+  `by_dialog` and `placement`'s parameter use `GumpId` — the type
+  `OpenGump::gump_id` already is, one field over — and `switches` uses
+  `RawSwitchId`, what a layout's own `Switch::id` already is.
+- ~~**Three copies of an implicit `Axis` enum in `pathtrace`.**~~ Fixed:
+  `aabb.rs`, `vector.rs` and `camera.rs` each had their own `usize` 0/1/2 with
+  a `match`-and-`panic!` on anything else. `pathtrace::Axis` replaces all
+  three.
+- ~~**`net`'s undecoded-packet id is a bare `u8`.**~~ Fixed: `PacketId` in
+  `connection.rs`, used by `Event::Undecoded` and `LoginError::OutOfTurn`.
+- ~~**`net::view::Item::amount` is the one untyped field next to
+  `graphic`/`position`/`hue`.**~~ Fixed: `StackAmount`.
+- **`app::shell::PickedTile`, the coordinate half** — `x`/`y: u16`. The
+  earlier note here said no `TileCoord` exists to reuse, and that was wrong:
+  `openshard_movement::Tile` is exactly it — "a tile's column and row, with no
+  height", already the argument type of `Terrain::{ground_z, land_tile,
+  statics_at, stand_z, spawn_z, can_fit}`. So this is class A after all, not a
+  new type. It still touches every caller of `App::tile_info`/`in_bounds`, so
+  it stays its own pass — but a reuse pass, which is a smaller thing.
+- ~~**`app::shell::PickedTile`, the graphic half.**~~ Fixed: `land` is
+  `Option<Graphic>` and `statics` is `Vec<(Graphic, i8, Hue)>` — the types the
+  neighbouring `Hud::mobiles`/`items` already carry, and no new type needed.
+  The values come out of `openshard_uofiles::map::{LandCell, StaticItem}`,
+  which hold bare `u16`s of their own; `uofiles` is `common/`, so typing the
+  format reader stays a separate decision and `App::tile_info` is the boundary
+  the wrap happens at. The two HUD formatters destructure (`Some(Graphic(id))`,
+  `for &(Graphic(id), z, Hue(hue))`) rather than reading `.0` inline: a panel
+  printing an id in decimal *and* hex is the presentation seam, the same
+  licence the wire and SQL get.
+- **`app::shell::PickedTile`, the Z half** — `land_z` / `stand_z` / `corners` /
+  `levels` / `ceiling: i8`, and the wider split behind them. `Point::z`,
+  `Terrain::ground_z` and every wire value say `i8`; `Terrain::{stand_z,
+  spawn_z, can_fit}` and `predict_z` say `i32`, because a height gets added to.
+  The cost is visible: `lib.rs` writes `z.clamp(i32::from(i8::MIN),
+  i32::from(i8::MAX)) as i8` four times (3006, 3032, 3133, 3224), twice as a
+  local closure named `drawn_z`, each with its own copy of the comment
+  explaining why a corrupt block must not panic a HUD. That duplicated clamp is
+  the argument for the type, and it is a better one than the field list —
+  whichever shape it takes, the narrowing should be written once and named.
+  Note this contradicts nothing in `protocol_newtypes.md`: N1 amendment 2
+  allowlists `Point`'s components because *nothing reaches them except through
+  a `Point`*, and a free-floating `stand_z: i32` is precisely a z that does.
+- **`(u16, u16)` is the client's ad-hoc `Tile`, in ten remaining places.** The
+  same reuse as `PickedTile`'s coordinate half, and the reason it deserves its
+  own line is that the tuple has spread past one struct:
+  `app::steer::{Steering::goal, plan}`, `app::lib::{Follow::at,
+  selected_tile, in_bounds, tile_info}`, `app::main::tile`, `app::dst`'s
+  `walls`, and `net::walk::send`'s `ground: impl Fn(Point, u16, u16) ->
+  Option<i8>`.
+
+  `app::clutter` was the sharpest of them and is **fixed**: it *imported*
+  `Tile` on line 41, used it in six trait methods, and then unpacked the `Tile`
+  it was handed into `self.clutter.blocked_at(tile.x, tile.y, z)` to feed its
+  own `HashMap<(u16, u16), _>`. `Clutter::tiles` is keyed on `Tile` now and
+  `blocked_at` takes one, which deleted that unpacking outright — the protocol
+  sweep's N2 amendment 1 result ("wrapping deleted `.raw()` calls"), arrived at
+  from the other direction. Note what it did *not* need: no `Point` → `Tile`
+  helper was added, because `Tile::new(p.x, p.y)` is already the idiom
+  `movement::path` and `movement::terrain` use, and a second spelling of it
+  would be the thing to avoid.
+- **`App::hud` takes two `Option<usize>` indices into different lists,
+  positionally.** `lit_item` and `lit_mobile` (lib.rs:3375–3376, called at
+  4201) index the item list and the mobile list; swapping the two arguments
+  compiles and produces a highlight on the wrong object, which is exactly the
+  failure the HUD fields exist to diagnose. The repo already made this argument
+  against itself: `Wanted`'s doc comment (lib.rs:780) says a land graphic and a
+  static graphic "are different index spaces, which is a mistake a positional
+  argument list would accept in silence" — and then takes the mistake three
+  thousand lines later.
+- **`Wanted::animations: BTreeSet<(u16, u8, u8)>`** (lib.rs:792) — body, group
+  and stored direction, sitting directly under the doc comment quoted above,
+  in the one field of that struct that is not a `BTreeSet<Graphic>`. `Graphic`
+  and `openshard_protocol::direction::Direction` cover two of the three; the
+  animation group has no named type yet and is the same missing type
+  `crowd::Tracked::group` names below. Blocked in part on `render`:
+  `render::mobiles::Mobile::body` is a `u16`, so `app` converts `Graphic` →
+  `u16` writing it and `u16` → `Graphic` reading it back (lib.rs:2692, 2718).
+  The round trip is the tell, and its far end is on the other side of this
+  sweep's boundary.
+- **`app::crowd::Tracked`** — `body: u16` could become `Graphic` (the type
+  `net::view::Mobile::body` already uses); `group: u8` is an animation group
+  with no named type yet.
+- **`app::desk`** — `Frame`'s `x`/`y`/`width`/`height` are physical window
+  pixels, `Panel`'s are logical egui points; same shape, different unit, no
+  type keeps them apart. Low priority — it's window-chrome geometry, not game
+  state, but it is exactly the space-mixing `docs/style.md` warns about.
+- **`app::gump`** — `Placement`/`Sheet::page: u32` (page id), `Sheet::entries`
+  keyed on bare `u16` (text-field id). Minor; same crate as the fixed items
+  above but not touched here to keep this change small.
+- **`net::walk`** — `Backlogged::in_flight` / `Walk::draining: usize` count
+  steps; `StepCounter` already exists in the same file for the step number
+  itself, so a `StepCount` for the tally would be symmetric. Small, internal,
+  left as-is.
+- **`app::gump::text_color(hues: &Hues, hue: u32)` narrows with `as`.** Its
+  body is `hues.get(Hue(hue as u16))` — a wire hue that arrived as a `u32`
+  because `GumpLayout`'s builder methods (`label`, `croppedtext`, …) declare
+  their hue parameter as `u32`, matching the layout language's decimal
+  arguments. The `as` silently keeps the low sixteen bits of anything larger.
+  Class A on this end (`Hue` exists); on the `protocol` end it is the same
+  shape as the four `u32` cliloc parameters on `GumpLayout` that
+  `protocol_newtypes.md`'s N-gump backlog already names, and probably wants
+  fixing there rather than here.
+- **`pathtrace::Image::visibility(x: u32, y: u32, light: usize)`** — three bare
+  indices in a row, over three different spaces, with two `assert!`s standing
+  in for what a type would refuse at compile time. Every call site passes bare
+  numbers (`image.visibility(LIT.0, LIT.1, 0)`), and the `lights: usize` field
+  one line above the accessor is a *count* of the space `light` indexes into,
+  which is the pair a `LightIdx` newtype exists to keep apart.
+- **`pathtrace`'s `width`/`height` travel as two loose `u32`s** — `Image`'s two
+  fields, `Trace`'s two, and `render(scene, camera, lights, settings, width,
+  height)`, whose tests call it as `render(&scene, &camera, lights, settings,
+  8, 8)`. Not per-axis newtypes: the precedent is `MapSize` (N1 amendment 3 of
+  `protocol_newtypes.md`) — one named pair, because half a resolution is not a
+  smaller number, it is a frame of the wrong shape.
+- **`app::desk::Desk::fits` throws away the struct it is about.** `monitors:
+  &[(i32, i32, u32, u32)]`, with the field order documented only in the doc
+  comment's prose ("each screen's physical rectangle as `(x, y, width,
+  height)`") — while `Frame`, three lines up, is those four fields named. A
+  `Monitor` struct (or `Frame` minus `maximized`) makes the prose unnecessary.
+  Same low priority as the `Frame`/`Panel` unit-mixing item above, and the same
+  pass.
+- `crates/client/artscan` had no candidates — its public API is already fully
+  typed. Re-checked in this pass: still true.
+
 ## Later
 
 LLM NPCs, quest generation, GM assistant, Discord integration. All optional, all
