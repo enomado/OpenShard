@@ -114,10 +114,12 @@ pub struct Mobile {
 
 /// One worn item, ready to place: an `AnimID`, not a picture.
 ///
-/// Drawn in this order and no other — there is no paperdoll layer-ordering
-/// table in this engine (see [`openshard_protocol::wire::Layer`]'s own doc
-/// comment), so items layer in the order the server listed them in, which is
-/// usually close to right and not guaranteed to be.
+/// The order this list is in says nothing about the order they are drawn in:
+/// that is [`crate::paperdoll::world_order`]'s answer, and [`drawn_layers`] is
+/// where this crate asks for it. The wire's own order was what the layers were
+/// once painted in, and it is wrong in the ordinary case — a shard lists a
+/// cloak before a tunic, and the cloak is then painted over the tunic on a body
+/// facing the camera, where it belongs behind the whole of it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct EquipmentLayer {
     /// The body-animation-space graphic this item draws with when
@@ -198,8 +200,8 @@ pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(u16
             mobile.group,
             direction,
         ));
-        for layer in &mobile.equipment {
-            if let Some((graphic, _)) = worn_graphic(mobile, *layer, equip_conv) {
+        for layer in drawn_layers(mobile) {
+            if let Some((graphic, _)) = worn_graphic(mobile, layer, equip_conv) {
                 wanted.push((graphic, mobile.group, direction));
             }
         }
@@ -207,6 +209,34 @@ pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(u16
     wanted.sort_unstable();
     wanted.dedup();
     wanted
+}
+
+/// What a mobile is wearing, back to front — the one answer to "which layers
+/// does this body draw, and in what order", and the only list any pass here
+/// walks.
+///
+/// Three passes read it and they must agree: [`needed_animations`] packs what
+/// it names, [`push_quads`] draws it, and [`pick`] tests the cursor against it.
+/// A layer packed and not drawn is waste; a layer drawn and not packed is a
+/// hole; a layer picked and not drawn is a creature you can click on through
+/// thin air.
+///
+/// The order is [`crate::paperdoll::world_order`]'s — the reference's table,
+/// not the wire's arrival order. That table also drops two layers outright: the
+/// mount, which is a body of its own on the ground rather than a picture on
+/// this one, and the backpack, which the reference draws on a doll and never on
+/// a walking body (`Filter(order, includeBackpack: false, ...)` in
+/// `PaperdollOrder.BuildInWorld`).
+///
+/// Returns owned items rather than layers: every caller wants the graphic and
+/// the hue, and the list is a garment or two long.
+fn drawn_layers(mobile: &Mobile) -> Vec<EquipmentLayer> {
+    let alt_torso =
+        openshard_uofiles::anim::is_female(mobile.body) || openshard_uofiles::anim::is_gargoyle(mobile.body);
+    crate::paperdoll::world_order(&mobile.equipment, alt_torso, mobile.facing)
+        .into_iter()
+        .filter_map(|layer| mobile.equipment.iter().copied().find(|item| item.layer == layer))
+        .collect()
 }
 
 /// What one worn layer draws with, and what hue — or `None` for a layer that
@@ -349,8 +379,8 @@ fn place(mobile: &Mobile, body: u16, camera: &Camera, atlas: &AnimAtlas) -> Opti
 /// A mobile's equipment draws over its body for free, without a second depth
 /// pass: every layer gets the *same* [`depth::Order`] as the body quad, and
 /// the sort below is stable, so pushing the body first and its layers after —
-/// in wire order, there being no layer-ordering table here — is what keeps
-/// them on top. A layer draws with its own `AnimID`
+/// in [`drawn_layers`]'s order — is what keeps them on top, and what keeps them
+/// in the right order among themselves. A layer draws with its own `AnimID`
 /// ([`EquipmentLayer::graphic`]) unless [`EquipConv`] overrides it for this
 /// body; only a resolved graphic the atlas has no frame for this frame is
 /// dropped, the same rule a missing body animation gets.
@@ -444,8 +474,8 @@ fn push_quads(
         },
     ));
 
-    for layer in &mobile.equipment {
-        let Some((graphic, worn_hue)) = worn_graphic(mobile, *layer, equip_conv) else {
+    for layer in drawn_layers(mobile) {
+        let Some((graphic, worn_hue)) = worn_graphic(mobile, layer, equip_conv) else {
             continue;
         };
         let Some(worn) = place(mobile, graphic, camera, atlas) else {
@@ -536,10 +566,9 @@ pub fn pick(
         }
         // The body first, then what it wears: any one of them is the creature.
         let body = openshard_uofiles::anim::animation_body(mobile.body);
-        let worn = mobile
-            .equipment
-            .iter()
-            .filter_map(|layer| worn_graphic(mobile, *layer, equip_conv).map(|(graphic, _)| graphic));
+        let worn = drawn_layers(mobile)
+            .into_iter()
+            .filter_map(|layer| worn_graphic(mobile, layer, equip_conv).map(|(graphic, _)| graphic));
         let mut touched = None;
         for graphic in std::iter::once(body).chain(worn) {
             let Some(placement) = place(mobile, graphic, camera, atlas) else {
@@ -1354,6 +1383,66 @@ mod tests {
             quads[0].depth, quads[1].depth,
             "a layer shares its body's depth so the stable sort keeps it on top"
         );
+    }
+
+    /// The layers are painted in the ordering table's order and not the wire's.
+    ///
+    /// The defect: a shard lists a cloak after a tunic — the wire's order is
+    /// whatever it equipped them in — and a body facing the camera then wears
+    /// the cloak painted over the front of the tunic. It belongs behind the
+    /// whole body. Told the layers in the wrong order on purpose, and the hues
+    /// are how the quads are told apart.
+    #[test]
+    fn the_worn_layers_are_painted_in_the_tables_order_and_not_the_wires() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let frame = |body: u16| {
+            (
+                FrameKey {
+                    body,
+                    group: 4,
+                    direction: 0,
+                    frame: 0,
+                },
+                AnimFrame {
+                    center_x: 12,
+                    center_y: -3,
+                    image: Image::new(40, 60, vec![Color16(0x7C00); 40 * 60]),
+                },
+            )
+        };
+        let atlas = AnimAtlas::pack([frame(400), frame(7017), frame(7018)]).expect("three frames fit");
+        let cloak = Hue(11);
+        let tunic = Hue(22);
+        let mobile = Mobile {
+            at: Point::new(100, 100, 0),
+            body: 400,
+            group: 4,
+            facing: Direction::SouthEast,
+            frame: 0,
+            from: None,
+            hue: Hue::NONE,
+            drawn: Gaze::on(Point::new(100, 100, 0)),
+            equipment: vec![
+                EquipmentLayer {
+                    graphic: 7017,
+                    hue: tunic,
+                    layer: Layer::TUNIC,
+                },
+                EquipmentLayer {
+                    graphic: 7018,
+                    hue: cloak,
+                    layer: Layer::CLOAK,
+                },
+            ],
+        };
+        let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
+        assert_eq!(quads.len(), 3, "the body and its two garments");
+        assert_eq!(
+            quads[1].hue,
+            u32::from(cloak.0),
+            "the cloak is painted first of the two, facing the camera"
+        );
+        assert_eq!(quads[2].hue, u32::from(tunic.0));
     }
 
     /// An item whose `AnimID` is zero wears nothing on the body, and is not

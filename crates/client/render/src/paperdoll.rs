@@ -23,13 +23,20 @@
 //!
 //! # 2. What order they go in, which is not the layer numbering
 //!
-//! On a walking body the layers rarely overlap wrongly and the wire's own order
-//! is tolerable. A paperdoll is one flat picture where every layer overlaps
-//! every other, so the order is a table: [`order`], ported from
-//! `PaperdollOrder.Build` — three base tables chosen by what is worn on the
-//! arms and torso, then a handful of per-graphic reorder rules. The backpack is
-//! not in it at all; it is drawn last, outside the pass, which is what
-//! [`window`] does with it.
+//! A paperdoll is one flat picture where every layer overlaps every other, so
+//! the order is a table: [`order`], ported from `PaperdollOrder.Build` — three
+//! base tables chosen by what is worn on the arms and torso, then a handful of
+//! per-graphic reorder rules. The backpack is not in it at all; it is drawn
+//! last, outside the pass, which is what [`window`] does with it.
+//!
+//! **The table is not the paperdoll's alone.** A walking body needs the same
+//! answer — it is the same garments over the same limbs — and the reference
+//! reaches for the same builder for it (`PaperdollOrder.BuildInWorld`, called
+//! from `MobileView.Draw`). The one thing a sprite adds is the cloak, whose
+//! place depends on which way the body is turned rather than on what it is:
+//! [`world_order`]. So the table lives here, in the module named for the window
+//! that made it necessary, and [`crate::mobiles`] reads it rather than keeping
+//! a second one that could disagree.
 //!
 //! # What this does not do yet
 //!
@@ -44,6 +51,7 @@
 //! **Buttons**, and picking a worn item out of the picture. Both are M5's, and
 //! both want the item's serial, which this end reaches through the mobile.
 
+use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::gumpart::Gumps;
@@ -263,6 +271,60 @@ pub fn order(equipment: &[EquipmentLayer], alt_torso: bool) -> Vec<Layer> {
         .into_iter()
         .filter(|layer| *layer != SENTINEL && *layer != Layer::MOUNT && *layer != Layer::BACKPACK)
         .collect()
+}
+
+/// The same, for a body walking around the world rather than standing on a
+/// doll: [`order`] with the cloak moved to where this facing wants it.
+///
+/// `PaperdollOrder.BuildInWorld`. Everything a doll decides, a sprite decides
+/// the same way — which garment is over which is a fact about the garments —
+/// and the cloak is the single exception, because it is the one thing that is
+/// *behind* the body from one side and in front of it from the other. A doll is
+/// only ever seen from the front and so has no opinion; a sprite is seen from
+/// eight.
+///
+/// The facing is the one the shard sent, not the mirrored stored direction
+/// [`openshard_uofiles::anim::facing`] answers with: the reference reads `dir`
+/// *before* `GetAnimDirection` folds the eight into five
+/// (`layerDir` in `MobileView.Draw`), and it must, because the two halves it
+/// folds together want the cloak in different places.
+pub fn world_order(equipment: &[EquipmentLayer], alt_torso: bool, facing: Direction) -> Vec<Layer> {
+    let mut layers = order(equipment, alt_torso);
+    place_cloak(&mut layers, facing);
+    layers
+}
+
+/// Move the cloak to where `facing` wants it — `PaperdollOrder.ApplyDirectionCloak`,
+/// which is `LayerOrder.UsedLayers`'s three distinct rows written as a rule.
+///
+/// Looking away ([`Direction::North`]) the cloak hangs over the back of
+/// everything, so it is painted last. Looking at the camera
+/// ([`Direction::SouthEast`]) it hangs *behind* the body and every garment on
+/// it, so it is painted first — this is the case a wire-ordered sprite gets
+/// wrong, and gets wrong most visibly, since it is the facing a standing
+/// character is drawn in. From every other side the body is edge-on and the
+/// cloak covers the shoulders but not the head: it goes immediately under the
+/// helmet, or last if nothing is worn on that layer.
+///
+/// This always fires, whether or not a cloak is worn: [`order`] answers with an
+/// *order*, every layer in it, and what is worn decides only what is drawn at
+/// each index. Which is also why it runs after the per-graphic rules and not
+/// instead of them — the quiver that borrows the cloak layer is moved by both,
+/// and the facing has the last word, exactly as the reference sequences them.
+fn place_cloak(layers: &mut Vec<Layer>, facing: Direction) {
+    let Some(worn) = layers.iter().position(|layer| *layer == Layer::CLOAK) else {
+        return;
+    };
+    layers.remove(worn);
+    let at = match facing {
+        Direction::North => layers.len(),
+        Direction::SouthEast => 0,
+        _ => layers
+            .iter()
+            .position(|layer| *layer == Layer::HELMET)
+            .unwrap_or(layers.len()),
+    };
+    layers.insert(at, Layer::CLOAK);
 }
 
 /// Which of the three base tables this outfit starts from.
@@ -705,6 +767,87 @@ mod tests {
         let others: Vec<Layer> = before.iter().copied().filter(|l| *l != Layer::CLOAK).collect();
         let moved: Vec<Layer> = after.iter().copied().filter(|l| *l != Layer::CLOAK).collect();
         assert_eq!(others, moved, "only the cloak moved");
+    }
+
+    /// The defect this pair of functions exists for: a body facing the camera
+    /// wears its cloak *behind* everything, including the body itself. Painted
+    /// in the wire's order — or in the doll's, which puts the cloak second — it
+    /// lands over the tunic instead, and a player sees a cloak worn inside out.
+    #[test]
+    fn a_body_facing_the_camera_wears_its_cloak_behind_every_other_layer() {
+        let outfit = [worn(Layer::CLOAK, 0x100), worn(Layer::TUNIC, 0x200)];
+        let layers = world_order(&outfit, false, Direction::SouthEast);
+        assert_eq!(layers.first(), Some(&Layer::CLOAK), "first is painted first");
+    }
+
+    /// Turned away, the same cloak hangs over the back of everything and is
+    /// painted last — the far end of the same rule.
+    #[test]
+    fn a_body_facing_away_wears_its_cloak_over_every_other_layer() {
+        let outfit = [worn(Layer::CLOAK, 0x100), worn(Layer::TUNIC, 0x200)];
+        let layers = world_order(&outfit, false, Direction::North);
+        assert_eq!(layers.last(), Some(&Layer::CLOAK));
+    }
+
+    /// Seen edge-on, the cloak covers the shoulders and not the head: it sits
+    /// immediately under the helmet, whichever of the six sideways facings it
+    /// is. Pinned on all six, because the reference's table is six identical
+    /// rows and a rule that only held for one of them would look right in the
+    /// facing it was written in.
+    #[test]
+    fn a_body_seen_from_the_side_wears_its_cloak_just_under_the_helmet() {
+        let sideways = [
+            Direction::NorthEast,
+            Direction::East,
+            Direction::South,
+            Direction::SouthWest,
+            Direction::West,
+            Direction::NorthWest,
+        ];
+        for facing in sideways {
+            let layers = world_order(&[worn(Layer::CLOAK, 0x100)], false, facing);
+            let cloak = at(&layers, Layer::CLOAK);
+            assert_eq!(
+                layers.get(cloak + 1),
+                Some(&Layer::HELMET),
+                "the helmet is the next thing painted, facing {facing:?}"
+            );
+        }
+    }
+
+    /// The facing has the last word over the per-graphic rules: a quiver rides
+    /// the cloak layer and [`order`] moves it past the robe, and then the
+    /// direction moves it again. Two rules on one layer, and the order they run
+    /// in is the answer.
+    #[test]
+    fn the_facing_moves_the_cloak_layer_after_the_quiver_rule_has() {
+        let outfit = [worn(Layer::CLOAK, 0x380), worn(Layer::ROBE, 0x200)];
+        let doll = order(&outfit, false);
+        assert!(
+            at(&doll, Layer::ROBE) < at(&doll, Layer::CLOAK),
+            "the quiver rule fired"
+        );
+
+        let facing = world_order(&outfit, false, Direction::SouthEast);
+        assert_eq!(facing.first(), Some(&Layer::CLOAK), "and the facing overruled it");
+    }
+
+    /// Nothing but the cloak moves, in any facing — the rest of the order is
+    /// what the doll's tables decided and the direction has no opinion on it.
+    #[test]
+    fn the_facing_moves_the_cloak_layer_and_nothing_else() {
+        let outfit = [worn(Layer::CLOAK, 0x100), worn(Layer::TUNIC, 0x200)];
+        let doll: Vec<Layer> = order(&outfit, false)
+            .into_iter()
+            .filter(|layer| *layer != Layer::CLOAK)
+            .collect();
+        for facing in Direction::ALL {
+            let moved: Vec<Layer> = world_order(&outfit, false, facing)
+                .into_iter()
+                .filter(|layer| *layer != Layer::CLOAK)
+                .collect();
+            assert_eq!(doll, moved, "only the cloak moved, facing {facing:?}");
+        }
     }
 
     /// Decision 4: the body picture is chosen from the body id, and one body

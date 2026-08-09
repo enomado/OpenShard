@@ -1147,10 +1147,18 @@ does not carry yet.
    `wire::Layer` now, because a table of hex bytes cannot be checked against the
    reference it came from.
 
-   The ordering on a *walking body* is still "as the shard listed them". That is
-   tolerable there — layers on a sprite rarely overlap wrongly — and the same
-   table would serve it (`PaperdollOrder.BuildInWorld` is `Build` plus one cloak
-   rule keyed on facing); it is a backlog entry, not a second table.
+   The walking body reads the same table now — `paperdoll::world_order`, which
+   is `PaperdollOrder.BuildInWorld`: `Build` plus the one cloak rule keyed on
+   facing. "As the shard listed them" was *not* tolerable after all, and the
+   case that showed it is the commonest one on screen: a cloak listed after a
+   tunic, on a character facing the camera, was painted over the front of the
+   tunic when it belongs behind the whole body. The rule has three arms and they
+   are `LayerOrder.UsedLayers`'s three distinct rows — away, the cloak is
+   painted last; facing the camera, first; edge-on, immediately under the
+   helmet. `mobiles::drawn_layers` is the one list the three passes that walk a
+   mobile's equipment share, so what is packed, what is drawn and what is
+   pickable cannot disagree; it also drops the backpack from a walking body, as
+   the reference does (`includeBackpack: false`).
 
    Not built: `MobileView.IsCovered`, which *hides* a layer an outer garment
    fully occludes — shoes under plate legs, arms under a closed robe. Every arm
@@ -1662,6 +1670,10 @@ own understanding had written.
     here — `Layer` is a bare `u8` on purpose (see its own doc comment), so
     layers draw in whatever order the server listed them in `0x78`, which is
     usually close to right and not guaranteed to be.
+    *Built since, in M4 — see decision 3 there: `paperdoll::order` for the
+    tables and `paperdoll::world_order` for the cloak the facing moves. "Usually
+    close to right" was wrong: a cloak listed after a tunic is drawn over the
+    front of it on a character facing the camera.*
   - **Incremental equip/unequip.** `Equipment` only ever changes as a
     full-list replacement inside a fresh `0x78`; there is still no `0x2E` or
     per-item wear/drop decoder, so a shard that only updates one worn slot
