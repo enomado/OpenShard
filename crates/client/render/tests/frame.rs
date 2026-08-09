@@ -2753,6 +2753,298 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
     assert!(outside > 0, "a rectangle over two strips should overhang them");
 }
 
+/// A real static's fragment is a point of the primitive it names: its position
+/// on that primitive's own boundary, its normal one of that primitive's
+/// camera-facing faces, and its stance that face's own — `docs/lighting_
+/// rebuild.md` phase 6i, item 3.
+///
+/// Position, normal, solid and stance are not four independent measurements
+/// once a static has a shape behind it: three of them are properties of one
+/// box, and nothing before this compared them against each other — each
+/// producer was checked against its own arithmetic
+/// (`a_sprite_pixel_meets_the_same_box_on_both_sides` against
+/// `impostor::nearest`, `a_direction_survives_the_normal_packing` against
+/// `pack_normal`) and never against a sibling plane. 6f, 6g and 6h were each a
+/// fragment whose plane was not its primitive's own number, and every one of
+/// them was found by a person looking at a lit frame rather than by a test —
+/// this is the sweep that would have caught each, over the one shape none of
+/// this crate's other GPU fixtures drives through the sprite path at all: a
+/// merged run of wall (`docs/occluders.md`'s D6, 6h's own bill), a fitted
+/// climbable (6f's own shape), a corner (6g's — `occlusion::boxes_of`'s own
+/// doc is why a stair's base reads as one), a lone wall panel and a floor.
+#[test]
+fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    use openshard_client_render::facing::{Face, Facing, Prism};
+    use openshard_client_render::place::Stance;
+
+    const SIZE: u32 = 640;
+    const GRAPHIC: Graphic = Graphic(1);
+    const WIDE: u16 = 70;
+    const TALL: u16 = 160;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let red = Color16(0b0_11111_00000_00000);
+    // Opaque everywhere, for the same reason the sibling sweep's is: every
+    // texel of every rectangle below has to be a fragment.
+    let statics = StaticAtlas::pack([(
+        GRAPHIC,
+        Image::new(WIDE, TALL, vec![red; usize::from(WIDE) * usize::from(TALL)]),
+    )])
+    .expect("fits");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+
+    let bounds = TileBounds {
+        min_x: 190,
+        max_x: 250,
+        min_y: 190,
+        max_y: 210,
+    };
+    let mut builder = Builder::new(bounds);
+
+    let wall_tile = StaticTile {
+        flags: TileFlags::new(TileFlags::NO_SHOOT),
+        height: 4,
+        ..StaticTile::default()
+    };
+    // The merged run: three tiles of one graphic, one owner, so
+    // `occlusion::merge` folds them into a single primitive.
+    const RUN_GRAPHIC: Graphic = Graphic(10);
+    for x in 200..203u16 {
+        builder.add(
+            x,
+            200,
+            0,
+            RUN_GRAPHIC,
+            &wall_tile,
+            Shape::faced(Facing::One(Face::South)),
+        );
+    }
+    // A fitted climbable, three treads under one owner.
+    const STAIR_GRAPHIC: Graphic = Graphic(11);
+    let stair_tile = StaticTile {
+        flags: TileFlags::new(TileFlags::CLIMBABLE | TileFlags::BLOCK | TileFlags::NO_SHOOT),
+        height: 5,
+        ..StaticTile::default()
+    };
+    let prism = Prism::new(Face::North, &[1, 3, 5]).expect("three treads is a legal profile");
+    builder.add(210, 200, 0, STAIR_GRAPHIC, &stair_tile, Shape::solid(prism));
+    // A corner: two panels of one picture.
+    const CORNER_GRAPHIC: Graphic = Graphic(12);
+    builder.add(
+        220,
+        200,
+        0,
+        CORNER_GRAPHIC,
+        &wall_tile,
+        Shape::faced(Facing::Corner {
+            right: Face::East,
+            left: Face::South,
+        }),
+    );
+    // A lone wall panel, unmerged: its own graphic, no neighbour to join.
+    const LONE_WALL_GRAPHIC: Graphic = Graphic(13);
+    builder.add(
+        230,
+        200,
+        0,
+        LONE_WALL_GRAPHIC,
+        &wall_tile,
+        Shape::faced(Facing::One(Face::East)),
+    );
+    // A floor: a lid, flat at its own height.
+    const FLOOR_GRAPHIC: Graphic = Graphic(14);
+    let floor_tile = StaticTile {
+        flags: TileFlags::new(TileFlags::FLOOR | TileFlags::NO_SHOOT),
+        height: 0,
+        ..StaticTile::default()
+    };
+    builder.add(240, 200, 0, FLOOR_GRAPHIC, &floor_tile, Shape::UNREAD);
+
+    let grid = builder.finish(&Cutaway::OPEN);
+
+    // Every static's own boxes, named through the grid exactly as
+    // `statics::push_volumes` does — `boxes_of` for the shape, `id_of` for the
+    // grid's own name of it. Restated rather than called: `push_volumes` is
+    // `pub(crate)`, and this file is outside the crate that defines it.
+    fn push_boxes(
+        boxes: &mut Vec<Volume>,
+        grid: &Occlusion,
+        x: u16,
+        y: u16,
+        graphic: Graphic,
+        tile: &StaticTile,
+        shape: &Shape,
+    ) -> Range {
+        let offset = boxes.len() as u32;
+        let owner = occlusion::Owner::new(0, graphic);
+        occlusion::boxes_of(i32::from(x), i32::from(y), 0, tile, shape, |part, _, space| {
+            let named = grid.id_of(i32::from(x), i32::from(y), owner, part);
+            let space = match named {
+                Some(id) => grid.solid(id).space,
+                None => space,
+            };
+            boxes.push(Volume::of(&space, SolidId::word(named)));
+        });
+        Range {
+            offset,
+            count: boxes.len() as u32 - offset,
+        }
+    }
+
+    let mut boxes: Vec<Volume> = Vec::new();
+    let mut quads = Vec::new();
+    let mut origin_x = 10.0f32;
+    let mut place =
+        |x: u16, graphic: Graphic, tile: &StaticTile, shape: &Shape, quads: &mut Vec<SpriteQuad>| {
+            let range = push_boxes(&mut boxes, &grid, x, 200, graphic, tile, shape);
+            quads.push(SpriteQuad {
+                rect: Rect {
+                    x: origin_x,
+                    y: 20.0,
+                    width: f32::from(sprite.width),
+                    height: f32::from(sprite.height),
+                },
+                region: sprite.region,
+                depth: 0.4,
+                hue: 0,
+                place: Place::of_static(Point::new(x, 200, 0)),
+                twin: 0,
+                owner: 0,
+                volumes: range,
+            });
+            origin_x += f32::from(WIDE) + 20.0;
+        };
+    for x in 200..203u16 {
+        place(
+            x,
+            RUN_GRAPHIC,
+            &wall_tile,
+            &Shape::faced(Facing::One(Face::South)),
+            &mut quads,
+        );
+    }
+    place(210, STAIR_GRAPHIC, &stair_tile, &Shape::solid(prism), &mut quads);
+    place(
+        220,
+        CORNER_GRAPHIC,
+        &wall_tile,
+        &Shape::faced(Facing::Corner {
+            right: Face::East,
+            left: Face::South,
+        }),
+        &mut quads,
+    );
+    place(
+        230,
+        LONE_WALL_GRAPHIC,
+        &wall_tile,
+        &Shape::faced(Facing::One(Face::East)),
+        &mut quads,
+    );
+    place(240, FLOOR_GRAPHIC, &floor_tile, &Shape::UNREAD, &mut quads);
+
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &quads,
+        &boxes,
+        &[],
+        &[],
+        SIZE,
+    );
+
+    // Which face's own value `stance_of` names — `statics.wesl`'s own function,
+    // restated because nothing on this side may call a shader. Only three
+    // cases occur, exactly as that function's own doc says: `meets` only ever
+    // names a camera-facing face.
+    let stance_of = |normal: [f32; 3]| -> Stance {
+        if normal[2] == 1.0 {
+            Stance::Flat
+        } else if normal[0] == 1.0 {
+            Stance::FaceEast
+        } else {
+            Stance::FaceSouth
+        }
+    };
+
+    const EPS: f32 = 1e-3;
+    let mut compared = 0u32;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let word = places.at(x, y);
+            if gbuffer::ids_kind(word) != Some(Kind::Static) {
+                continue;
+            }
+            let point = places.position_at(x, y);
+            let mine = gbuffer::unpack_solid(point[3]);
+            if mine == SolidId::NOBODY {
+                continue;
+            }
+            let solid = grid.solid(SolidId::new(mine));
+            let lo = [
+                solid.space.min.x as f32,
+                solid.space.min.y as f32,
+                solid.space.min.z as f32,
+            ];
+            let hi = [
+                solid.space.max.x as f32,
+                solid.space.max.y as f32,
+                solid.space.max.z as f32,
+            ];
+            let at = [point[0], point[1], point[2]];
+
+            // The position lies on the boundary of the primitive it names —
+            // 6f's own line: a fragment naming the wrong tread is a fragment
+            // whose position is nowhere on that tread's box.
+            let on_boundary =
+                (0..3).any(|axis| (at[axis] - lo[axis]).abs() < EPS || (at[axis] - hi[axis]).abs() < EPS);
+            assert!(
+                on_boundary,
+                "({x}, {y}) is not on the boundary of the primitive it names: {at:?} against \
+                 {lo:?}..{hi:?}",
+            );
+
+            // The normal names a camera-facing face of that same primitive —
+            // 6h's own line: a face buried inside a merged box is interior to
+            // it, not on its boundary in the normal's own axis.
+            let normal = gbuffer::unpack_normal(places.normal_at(x, y));
+            let axis = normal
+                .iter()
+                .position(|n| *n == 1.0)
+                .expect("only a camera-facing axis-aligned face is ever met");
+            assert!(
+                (at[axis] - hi[axis]).abs() < EPS,
+                "({x}, {y}) 's normal names axis {axis} but the fragment is not on that \
+                 primitive's high face there: {at:?} against {hi:?}",
+            );
+
+            // And the stance is that face's own — 6g's own line.
+            let stance = gbuffer::ids_stance(word);
+            assert_eq!(
+                stance,
+                stance_of(normal) as u32,
+                "({x}, {y})'s stance does not agree with its own normal: {normal:?}",
+            );
+            compared += 1;
+        }
+    }
+    // What the sweep actually reached: a pass that drew nothing, or named no
+    // solid for anything, would satisfy every assertion above by never
+    // running one.
+    assert!(
+        compared > 10_000,
+        "only {compared} fragments named a primitive: the sweep reached too little to say anything",
+    );
+}
+
 /// A mesh-face fragment's own `place.z` carries the routing sentinel,
 /// `Stance::MeshFace`, decoded the same direct way as the two sibling tests
 /// above — not the real face this fragment stands on, which

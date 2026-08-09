@@ -25,7 +25,7 @@
 //! not a move at all. Both are routed by serial in [`WorldView::apply`], so
 //! [`WorldView::mobiles`] holds only *other* mobiles, as its docs promise.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::Facing;
@@ -34,6 +34,7 @@ use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
 use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::skill::{SkillEntry, SkillLock};
 use openshard_protocol::speech::{Font, SpokenMessage, TalkMode, UnicodeMessage};
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::{MapSize, PlayerStart, Point};
@@ -89,6 +90,58 @@ pub struct Player {
     /// which a shard does exactly once, at world entry, because the pass that
     /// reveals a mobile sends it to everyone except itself.
     pub equipment: Vec<Equipment>,
+    /// What this character's skills stand at, by the wire's own skill id.
+    ///
+    /// On [`Player`] and nowhere else because a `0x3A` carries **no serial**:
+    /// the shard answers on the connection, so the only body it can be about is
+    /// the one at this end of it. A skill window opened over a stranger's
+    /// paperdoll would draw these numbers, which is a fact about the packet and
+    /// not a bug in the window.
+    ///
+    /// Keyed by the id rather than holding one, [`WorldView::containers`]'
+    /// reason: nothing can file a line under a skill other than its own. The
+    /// key is a bare `u8` because that is what the wire says and this crate has
+    /// no files to check it against — the client's own `skills.mul` numbering is
+    /// `openshard_uofiles::skills::SkillId`, and the join between the two
+    /// happens where a window is laid out and both are in hand.
+    ///
+    /// Sparse on purpose: a `0x3A` delta may name a skill no whole list ever
+    /// did, and a table pre-filled with zeroes would draw fifty-eight skills at
+    /// zero for a shard that had sent nothing at all.
+    pub skills: BTreeMap<u8, Skill>,
+}
+
+/// One skill's line, as the shard last stated it — every value in tenths, so
+/// 75.5 arrives as 755.
+///
+/// The wire's [`SkillEntry`] without its id, which is the key it is filed under.
+/// A view type rather than the packet's own for that reason alone: two copies of
+/// the id, one of them able to disagree with where the row is filed, is the
+/// shape this crate has already refused twice (see [`Paperdoll`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Skill {
+    /// What the skill is worth in play: trained, plus what the body's stats lend
+    /// it, capped. The number the window's right-hand column shows.
+    pub value: u16,
+    /// What is trained, before any of that.
+    pub base: u16,
+    /// Which way the shard is training it.
+    pub lock: SkillLock,
+    /// This character's own ceiling for it.
+    pub cap: u16,
+}
+
+impl Skill {
+    /// The line an entry states, minus the id it is filed under.
+    #[must_use]
+    fn of(entry: &SkillEntry) -> Self {
+        Self {
+            value: entry.value,
+            base: entry.base,
+            lock: entry.lock,
+            cap: entry.cap,
+        }
+    }
 }
 
 /// Another mobile, as `0x77` or `0x78` last described it.
@@ -364,6 +417,9 @@ impl WorldView {
                 position: start.position,
                 facing: start.facing,
                 equipment: Vec::new(),
+                // Nothing is trained until a `0x3A` says so — see
+                // `Player::skills` for why an empty table is the honest start.
+                skills: BTreeMap::new(),
             },
             map: start.map,
             mobiles: HashMap::new(),
@@ -544,6 +600,10 @@ impl WorldView {
                     // client that still knows its backpack and one that forgets
                     // it the first time the server nudges the body.
                     equipment: self.player.equipment.clone(),
+                    // Kept for the same reason, and a stronger one: `0x20` says
+                    // nothing about skills, and a fresh table here would empty a
+                    // standing window every time the body took a step.
+                    skills: self.player.skills.clone(),
                 };
                 let changed = self.player != fresh;
                 self.player = fresh;
@@ -592,6 +652,8 @@ impl WorldView {
                     position: incoming.position,
                     facing: incoming.facing,
                     equipment: incoming.equipment.clone(),
+                    // Kept, for `0x20`'s reason above.
+                    skills: self.player.skills.clone(),
                 };
                 let changed = self.player != fresh;
                 self.player = fresh;
@@ -705,6 +767,31 @@ impl WorldView {
             ServerPacket::WarMode(mode) => {
                 let changed = self.player.war != mode.war;
                 self.player.war = mode.war;
+                changed
+            }
+            // The whole skill list. It **replaces** rather than merges: this is
+            // the shard stating every skill it knows of, so a row that is not in
+            // it is a row this character no longer has — and a client that
+            // merged would keep drawing a skill a shard had dropped from its
+            // table, at the value it last had.
+            ServerPacket::SkillsFull(list) => {
+                let fresh: BTreeMap<u8, Skill> = list
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.id, Skill::of(entry)))
+                    .collect();
+                let changed = self.player.skills != fresh;
+                self.player.skills = fresh;
+                changed
+            }
+            // One line, after a gain — or after a loss, since a skill set to
+            // train down gives ground the moment another needs the room. Folded
+            // into the table rather than replacing it, which is the whole of the
+            // difference between the two packets on this side of the wire.
+            ServerPacket::SkillUpdate(update) => {
+                let fresh = Skill::of(&update.entry);
+                let changed = self.player.skills.get(&update.entry.id) != Some(&fresh);
+                self.player.skills.insert(update.entry.id, fresh);
                 changed
             }
             // Mobiles walking out of range and items being picked up arrive the
@@ -1460,5 +1547,111 @@ mod tests {
             !view.container_closed(chest()),
             "closing it twice is a stale click"
         );
+    }
+
+    fn entry(id: u8, value: u16) -> openshard_protocol::skill::SkillEntry {
+        openshard_protocol::skill::SkillEntry {
+            id,
+            value,
+            base: value,
+            lock: SkillLock::Up,
+            cap: 1000,
+        }
+    }
+
+    /// The whole list fills the table, keyed by the id the row carried.
+    #[test]
+    fn the_whole_skill_list_fills_the_table_by_id() {
+        let mut view = WorldView::entered(start());
+        assert!(view.player.skills.is_empty(), "nothing is trained before a 0x3A");
+        assert!(
+            view.apply(&ServerPacket::SkillsFull(openshard_protocol::skill::SkillsFull {
+                entries: vec![entry(0, 755), entry(45, 500)],
+            }))
+        );
+        assert_eq!(view.player.skills.len(), 2);
+        assert_eq!(view.player.skills[&45].value, 500);
+        assert_eq!(
+            view.player.skills[&0].lock,
+            SkillLock::Up,
+            "the lock rides with the line"
+        );
+    }
+
+    /// A second whole list *replaces*. The shard is stating every skill it has,
+    /// so a row missing from the new one is a row that is gone — a client that
+    /// merged would go on drawing it at the value it last had, for ever.
+    #[test]
+    fn a_second_whole_list_replaces_rather_than_merges() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::SkillsFull(openshard_protocol::skill::SkillsFull {
+            entries: vec![entry(0, 755), entry(45, 500)],
+        }));
+        assert!(
+            view.apply(&ServerPacket::SkillsFull(openshard_protocol::skill::SkillsFull {
+                entries: vec![entry(0, 755)],
+            }))
+        );
+        assert_eq!(view.player.skills.len(), 1);
+        assert!(!view.player.skills.contains_key(&45));
+    }
+
+    /// A delta folds into the table, which is the whole of the difference
+    /// between the two packets at this end.
+    #[test]
+    fn a_single_line_moves_one_skill_and_leaves_the_rest_standing() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::SkillsFull(openshard_protocol::skill::SkillsFull {
+            entries: vec![entry(0, 755), entry(45, 500)],
+        }));
+        assert!(view.apply(&ServerPacket::SkillUpdate(
+            openshard_protocol::skill::SkillUpdate {
+                entry: entry(45, 501),
+            }
+        )));
+        assert_eq!(view.player.skills[&45].value, 501);
+        assert_eq!(view.player.skills[&0].value, 755, "the rest stands");
+        assert!(
+            !view.apply(&ServerPacket::SkillUpdate(
+                openshard_protocol::skill::SkillUpdate {
+                    entry: entry(45, 501),
+                }
+            )),
+            "the same line twice moved nothing"
+        );
+    }
+
+    /// A skill a whole list never named still lands: the shard may train
+    /// something this client was not told about, and dropping the line would
+    /// leave the window a row short with no way to notice.
+    #[test]
+    fn a_delta_may_name_a_skill_no_list_did() {
+        let mut view = WorldView::entered(start());
+        assert!(view.apply(&ServerPacket::SkillUpdate(
+            openshard_protocol::skill::SkillUpdate {
+                entry: entry(25, 300),
+            }
+        )));
+        assert_eq!(view.player.skills[&25].value, 300);
+    }
+
+    /// The one thing a step must not do. `0x20` and `0x78` rebuild the whole
+    /// `Player`, and a fresh table there would empty a standing window every
+    /// time the body moved.
+    #[test]
+    fn a_step_does_not_empty_the_skill_table() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::SkillsFull(openshard_protocol::skill::SkillsFull {
+            entries: vec![entry(0, 755)],
+        }));
+        view.apply(&ServerPacket::PlayerUpdate(PlayerUpdate {
+            serial: view.player.serial,
+            body: view.player.body,
+            hue: Hue::NONE,
+            flags: StatusFlags::NONE,
+            position: Point::new(1476, 1770, 20),
+            facing: view.player.facing,
+        }));
+        assert_eq!(view.player.skills.len(), 1, "the step kept the table");
     }
 }

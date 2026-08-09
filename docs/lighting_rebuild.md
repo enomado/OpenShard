@@ -1450,7 +1450,8 @@ the same shape `the_frame_and_the_path_tracer_agree_about_brightness_on_open_
 ground` already is for the ground plane.
 
 **Phase 6i — the gates 6f, 6g and 6h cost, and why three in a row got through.**
-⬜ *Not started. This is where the next session on this track starts.*
+🟡 *Item 3 landed 2026-08-10, below. Items 1, 2 and the fourth (`synthetic_
+stair`) are where the next session on this track starts.*
 
 Three defects, one after another, all of them found by **a person looking at a
 lit frame** and none by anything under `cargo test`. They are one failure and it
@@ -1484,14 +1485,15 @@ none of them is "somebody forgot a test".
    sweep runs over sprite fragments, which is the same loop with the filter
    inverted and `mine` read off the position plane's fourth channel.
 
-3. **Nothing compares a fragment's four facts against each other.** Position,
-   normal, solid and stance are each checked against the *producer's* own
-   arithmetic — `a_sprite_pixel_meets_the_same_box_on_both_sides` against
-   `impostor::nearest`, `a_direction_survives_the_normal_packing` against
-   `pack_normal` — and never against one another. They are not four independent
-   measurements: three of them are properties of one box. *Done when:* one
-   sweep, three lines, over a scene carrying a merged run, a fitted climbable, a
-   corner, a wall and a floor:
+3. **Nothing compares a fragment's four facts against each other.** ✅ *Landed
+   2026-08-10, `a_sprite_fragment_is_a_point_of_the_primitive_it_names`,
+   `tests/frame.rs`.* Position, normal, solid and stance are each checked
+   against the *producer's* own arithmetic — `a_sprite_pixel_meets_the_same_
+   box_on_both_sides` against `impostor::nearest`, `a_direction_survives_the_
+   normal_packing` against `pack_normal` — and never against one another. They
+   are not four independent measurements: three of them are properties of one
+   box. *Done when:* one sweep, three lines, over a scene carrying a merged
+   run, a fitted climbable, a corner, a wall and a floor:
    - the position lies on the boundary of `primitives[mine]` — **6f fails this**
      (a fragment on the third tread naming the first);
    - the normal names a camera-facing face *of that primitive*,
@@ -1501,6 +1503,21 @@ none of them is "somebody forgot a test".
    Each defect fails exactly one line, and the sweep reads three planes that are
    already read back. This is the cheapest of the three items and the one that
    generalises: it is the statement that a fragment is a point *of* something.
+
+   Built rather than driven through `statics::collect`: that function needs a
+   real `Map`/`TileData`/`Cutaway` pipeline, and `push_volumes` — the thing
+   under test — is `pub(crate)`, unreachable from a `tests/` binary at all. The
+   fixture restates its eight lines instead, off the same two `pub` primitives
+   `push_volumes` itself is built from — `occlusion::boxes_of` for the shape,
+   `Occlusion::id_of`/`Occlusion::solid` for the grid's own name of it — so the
+   restatement cannot silently diverge from a formula, only from geometry the
+   grid disagrees with. A merged run (three tiles, one owner, `occlusion::
+   merge`'s fold), a fitted climbable (`facing::Prism`, three treads), a
+   corner (`Facing::Corner`), a lone wall panel and a floor lid, each its own
+   `SpriteQuad` against a shared `Occlusion`. Confirmed to have teeth by fault
+   injection: swapping `stance_of`'s `FACE_EAST`/`FACE_SOUTH` arms in
+   `statics.wesl` turns the third line red at the first mismatched pixel, then
+   reverted.
 
 *And a fourth item, which is a tool that stopped working and nobody noticed.*
 `examples/synthetic_stair.rs` panics outright for `OPENSHARD_STAIR_RUN>1` —
