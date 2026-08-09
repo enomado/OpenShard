@@ -476,4 +476,30 @@ fn a_wall_in_front_of_a_torch_darkens_the_ground_behind_it_and_not_beside_it() {
         beside > dark + 0.1,
         "the wall shadows the ground alongside it: {beside} against the ambient's {dark}",
     );
+
+    // **And the band is as long as the wall**, which is the claim above read
+    // across the run rather than down one column of it — `docs/occluders.md`'s
+    // backlog entry on what this instrument was short of. The nine panels of this
+    // scene are **one** primitive after `occlusion::merge`, so how far the shadow
+    // reaches is a statement about the merged box: a union that stopped growing
+    // leaves one tile of wall standing, and the assertion above reads exactly the
+    // column that tile is in.
+    //
+    // Each column carries its own control — lit in front, ambient behind — so a
+    // column the flame never reached cannot pass by being dark twice. That is
+    // what makes this a band and not nine repetitions of the reading above.
+    for x in cx - 4..=cx + 4 {
+        let ahead = drawn.tile(x, cy - 1);
+        let behind = drawn.tile(x, cy + 2);
+        assert!(
+            ahead > dark + 0.02,
+            "the flame does not reach the wall's own column {x}, so its shadow behind it says \
+             nothing: {ahead} against the ambient's {dark}",
+        );
+        assert!(
+            (behind - dark).abs() < 0.01,
+            "the wall's shadow is shorter than the wall: column {x} behind it reads {behind} \
+             against the ambient's {dark}",
+        );
+    }
 }

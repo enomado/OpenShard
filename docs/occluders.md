@@ -1338,7 +1338,11 @@ them ever merges**; for `frame.rs` it is that the shader sweep compares the shad
 against `light::sample` and both walk the same broken geometry. So the two
 instruments this track leans on hardest cannot see this step at all, and what
 gates it is the CPU suite and the twin oracle. In the backlog — and the tracer's
-half of it is closed by the section below.
+half of it is closed by the section below. ⚠ **"Cannot see" is the wrong word for
+the other two, measured afterwards**: both walk the merged geometry and one of
+them *drew* the defect, so what they were short of was an assertion rather than a
+scene. `pictures.rs` goes red under this injection now; the sweep never will, and
+why is measured under the backlog's § *Neither instrument is unreached*.
 
 **Two fixtures lost their subject, and both were repaired rather than deleted.**
 
@@ -1518,14 +1522,72 @@ left of the item is the second bullet, which is a different instrument:
 - ~~`traced.rs` and `examples/boxes.rs` build their scenes through
   `oracle::boxes::box_owner`, which gives **every box its own graphic**~~ — a
   field now, and `wall_run_scene` is the run of one.
-- 🔴 `frame.rs`'s shader sweep compares the shader against `light::sample`, and
+- ✅ `frame.rs`'s shader sweep compares the shader against `light::sample`, and
   both read the same primitives — so it gates the *port* and cannot gate the
   *geometry*, exactly as S5 recorded when it built the sweep. Unchanged: what a
   merged frame is now checked against is the path tracer and the GPU twin below,
-  neither of which is the sweep. Whether the sweep should also carry a merged
+  neither of which is the sweep. ~~Whether the sweep should also carry a merged
   scene is a question about *coverage of the port*, and the honest answer may be
-  that it should not.
-- 🔴 `pictures.rs` is untouched by this and still draws nothing that merges.
+  that it should not.~~ **It already carries five, and the question was the wrong
+  one** — see § *Neither instrument is unreached* below. **Settled: nothing to
+  add here.**
+- ✅ ~~`pictures.rs` is untouched by this and still draws nothing that merges.~~
+  **It draws six scenes that merge, and its picture already moved under the
+  injection** — what did not move was the tile its assertion read. Closed by
+  reading the band across the run instead of down one column of it; below, with
+  both numbers.
+
+### Neither instrument is unreached — they are *circular* and *unsampled*
+
+Both bullets above said the instruments do not reach the merge. Measured
+2026-08-09, and both were wrong in the same direction: the scenes merge heavily,
+the instruments walk the folded geometry, and what fails is the last step —
+turning what they see into something that can go red. Recorded as found, because
+"it never gets there" and "it gets there and has no opinion" are different
+repairs.
+
+**What the scenes fold**, printed by `lighting.rs`'s
+`the_merge_folds_the_scenes_this_crate_draws` over `scene::all()` — the sweep's
+own five and every scene `pictures.rs` draws are in it: a shut room with a torch
+24 → 4, a character holding a light in a shut room 24 → 4, a wall with a hole
+through its middle tile 9 → 3, the corner of a house 7 → 3, a torch two tiles in
+front of a straight wall 9 → 1, a wall run with a lamp along it 4 → 1.
+
+**The injection** is § *The merge*'s own first one — the union does not grow, so a
+merged group keeps its first piece's box — and it is live in the same build:
+`tests/lighting.rs` goes **12 red** (the ten that step recorded, plus the two the
+corner-graze fixture added since).
+
+- **The sweep** — six shader sweeps and seven exact-walk sweeps, **all green**,
+  while their own census moves by up to **934 pixels of 4,096**: a room 2,400 →
+  1,466 in shadow, a carried beam 2,400 → 1,466, a surface looking up at `z 20`
+  2,392 → 1,458, which side a wall is on 1,751 → 1,415, a hole in a wall 1,308 →
+  744, a house corner 2,070 → 2,012 — and the room's penumbra count 0 → 75. That
+  is circularity with a number on it: the sweep traverses geometry the injection
+  has wrecked, *counts* the wreck to a quarter of the frame, and cannot say so,
+  because both sides read the same primitives. A merged scene is not what it is
+  missing, so adding one buys nothing.
+- **`pictures.rs`** — 6 of 6 green, and the picture is **not** identical: in the
+  plan view of the torch before a straight wall the row behind the run reads
+  `0.063 0.063 0.094 0.111 0.063 0.111 0.094 0.063 0.063` under the injection
+  against a flat `0.063` — the ambient's own value — at every column before it.
+  The four that move sit **either side of the tile the assertion reads**, and
+  that tile does not move at all. So the picture holds the defect and the
+  assertion samples the one column of nine that the injection leaves standing.
+
+**The gate is the claim the picture was already for**, read across the run
+rather than down one column of it: the band of shadow behind a wall is **as long
+as the wall**. Built into
+`a_wall_in_front_of_a_torch_darkens_the_ground_behind_it_and_not_beside_it` —
+nine columns, each carrying its own control, and the control is what makes it a
+band rather than nine repetitions of the reading it already had: a column is
+asserted **lit in front and at the ambient behind**, so a column the flame never
+reached cannot pass by being dark on both sides.
+
+*Injection, run in the same session:* the union that does not grow turns it red
+at **column 98, reading `0.094` against the ambient's `0.063`** — where the whole
+file was green under that injection before. A shape claim on the instrument that
+is for shapes, and the first thing in `pictures.rs` that can fail on the merge.
 
 ~~🔧 **The merge's own indices are bare `u32`s and its axis is a bare
 `usize`.**~~ Fixed in `occlusion::merge`: a private `Prim` newtype now carries

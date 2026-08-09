@@ -318,7 +318,7 @@ table being stale.
 | 5 | area lights | ✅ landed | — |
 | 5b | a flame has no centre | ✅ landed | — |
 | 6 | the impostor | 🚧 6a and 6c landed | **6d** (the mesh pass off real statics, and its colour target); a corner's two panels still told apart by the **screen half**; `own_solid` still scanning a cell; and the phase's own second number — how far a real static's art overhangs its prism — still untaken |
-| 6e | the grid stops being a rule | ✅ landed [`occluders.md`](occluders.md) | **All six steps are green.** The grid is out of the walk on both backends, and S3b's merge folds a run of wall into one primitive — 73 pieces to 9 on the crate's own two-storey house, with no pixel moved. That document is a **record** now, and the four findings that outlive it — the aperture still measured in a tile, the instruments that cannot see a merge, `PANEL_THICKNESS`'s fattening the merge turned out **not** to answer, and `footprint`'s `i32` ranges — are in this document's backlog |
+| 6e | the grid stops being a rule | ✅ landed [`occluders.md`](occluders.md) | **All six steps are green.** The grid is out of the walk on both backends, and S3b's merge folds a run of wall into one primitive — 73 pieces to 9 on the crate's own two-storey house, with no pixel moved. That document is a **record** now, and the four findings that outlive it — the aperture still measured in a tile, the instruments that could not see a merge (closed since — one of them was drawing it), `PANEL_THICKNESS`'s fattening the merge turned out **not** to answer, and `footprint`'s `i32` ranges — are in this document's backlog |
 | 7 | billboards | 🚧 the position half landed | the **normal**, and its *done when* is a person looking at a lit frame |
 | 8 | the sun | ⬜ not started | all of it |
 
@@ -2201,13 +2201,26 @@ outlive the track and belong in this list, since this is the live one:
   alone), the last texture the primitives left behind when they became a storage
   buffer. One record, one change. A hole's own `z` stays quantised to whole units
   and that is no defect — it is measured off the art in whole units.
-- 🔴 **Two instruments still cannot see a merge.** The tracer's half is closed
-  (`BoxSpec` states a box's graphic, so a run of one graphic is a scene the merge
-  folds), but `frame.rs`'s shader sweep compares the shader against
-  `light::sample` and both read the same primitives — it gates the *port* and
-  cannot gate the *geometry* — and `pictures.rs` still draws nothing that merges.
-  Whether the sweep should carry a merged scene is a question about coverage of
-  the port, and the honest answer may be that it should not.
+- ✅ ~~**Two instruments still cannot see a merge.**~~ **Closed, and "cannot see"
+  was the wrong diagnosis for both** — measured 2026-08-09 under
+  `occlusion::merge`'s own "the union does not grow" injection, live in a build
+  where `tests/lighting.rs` goes 12 red. Neither instrument is unreached: the
+  sweep carries five scenes that fold (a room 24 → 4 pieces, a carried beam
+  24 → 4, a hole in a wall 9 → 3, a house corner 7 → 3) and `pictures.rs` draws
+  six, so both walk the broken geometry.
+  - `frame.rs`'s shader sweep stays green while its **own census** moves by up to
+    934 pixels of 4,096 — a room 2,400 → 1,466 in shadow, a hole in a wall
+    1,308 → 744, the room's penumbra 0 → 75. That is circularity with a number
+    on it: it counts the wreck and cannot report it, because both sides read the
+    same primitives. **Settled: a merged scene buys it nothing and none is
+    added.** What gates a merged frame on the GPU is `traced.rs`'s twin.
+  - `pictures.rs` was *drawing* the defect: the row behind the wall reads
+    `0.094`/`0.111` against a flat ambient `0.063`, at the four columns either
+    side of the one tile its assertion read. Closed by reading the band across
+    the run — the shadow behind a wall is as long as the wall, nine columns each
+    with its own lit-in-front control — which the injection now turns red at
+    column 98. `docs/occluders.md` § *Neither instrument is unreached* has both
+    readings.
 - **`Solid::footprint`'s `i32` ranges are the one newtype the occluder sweep set
   aside on purpose.** Closing it means a real tile-coordinate type, whose call
   sites reach into `bake.rs`'s whole coordinate system (`origin`, `tile_of`,
