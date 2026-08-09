@@ -1346,6 +1346,47 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
+- 🚩 **The flame has extent for the shadow term and no extent for the cosine, and
+  that is the wedge of shadow at every join.** Measured 2026-08-09, with pictures.
+
+  `shadow()` averages visibility over `SHADOW_RAYS` stratified points of a sphere
+  of `FLAME_RADIUS`; `lit_from()` then multiplies by **one** cosine taken from the
+  flame's *centre*. So the light is an area source for occlusion and a point source
+  for shading — one state in two shapes, and the difference lands on the screen.
+
+  What it draws: a lamp lower than `FLAME_RADIUS` above a floor puts half its
+  sphere **below** that floor's own plane. Rays to that half are traced, and near a
+  join they leave the fragment's own primitive and enter the neighbouring one — so
+  they come back "blocked" and darken a surface that is flush and continuous.
+  Further from the join the same dipping ray stays inside the fragment's own box and
+  identity excuses it. Hence a **wedge**, widest at the join and tapering away, on
+  three flights of stairs that are geometrically one landing. Same shape for two
+  wall panels, two floor planks, any two abutting statics.
+
+  The cure is the physical form, and it is exact rather than a mitigation: a sample
+  point's contribution is `V(p) · max(N·L_p, 0)`, so a point below the fragment's
+  horizon contributes **zero whatever stands in its way**. The set of rays that a
+  join blocks and the set of rays that are below the horizon are *the same set* —
+  which is why moving the cosine inside the loop removes the wedge entirely instead
+  of dimming it.
+
+  **Prototyped and rendered.** Per-sample cosine, outer multiply removed:
+  the wedges vanish, and so does the eight-ray speckle on grazing surfaces — a
+  below-horizon sample becomes a deterministic zero instead of a coin flip between
+  blocked and open. 21,177 pixels move on the stair fixture, 20,308 of them darker,
+  which is the overestimate the centre cosine was paying out.
+
+  Two things it should also settle, and both want measuring rather than assuming:
+  `docs/occluders.md`'s `same_run` is broad precisely because it was papering over
+  these below-horizon rays for panels, so this may retire its real reason; and the
+  seam that plan hands to its merge (S3b) may be the same defect seen from the
+  geometry side. **The reporter's own hypothesis, kept as one:** the artefact first
+  reported with a *side* light may go the same way once this lands.
+
+  It is a shading question, not an occluder one, which is why it lives here. The
+  gate is the reference path tracer: it samples an area light with 64 paths and a
+  real Lambert term, so per-sample cosine should move the frame *towards* it.
+
 - ~~🚩 **A shadowed floor leaks a one-pixel line of full light along every tile
   boundary.**~~ **Fixed, and the fix is `light::starting_cell`.** The cause is
   the last measurement below: the carried tile was allowed to *contradict* the

@@ -568,10 +568,26 @@ restated.
      --test traced -- the_frame_and_the_path_tracer_agree_about_a_run_of_flights --nocapture
    ./tools/mask_probe.py seams crates/client/render/target/traced/s3/run_of_flights_pathtrace.png
    ```
-   **Before 123 pixels** (26 + 12 + 6 + 44 + 30 + 5 by body pair), **after 87**
-   (12 + 14 + 6 + 24 + 25 + 6) — and one pair went *up*, which is the first clue
-   that the number is not a defect count: removing an occlusion on one side of a
-   join creates a flip where both sides used to be shadowed.
+   🔴 **And the before/after this first read is not one — the correction is the
+   point.** The census reports **87** (12 + 14 + 6 + 24 + 25 + 6) against a figure
+   of 123 recorded in a previous session, and that difference was written up here
+   as S3's own doing. It is not: with the exemption **neutralised in the shader**
+   the census is **87 as well**, and the dumped mask is identical to the last
+   pixel — 0 of 2568 × 512. The 123 came from a dump made in some other state, and
+   attributing a difference to a change without injecting that change is exactly
+   the trap this track has already paid for once (§ *Backlog*, "a dumped picture
+   carries no mark of the code that made it"). One number, two sessions, no
+   provenance.
+
+   **What S3 moves on screen, measured: nothing.** Run of flights, 0 pixels; wall
+   run elevation, 0 of 29,696; the stair fixture under a low front light, 0 of
+   262,144. Its exemption is reachable only when a ray runs *in* the surface's own
+   plane, which needs a point flame — the gate below uses one, and the shipped
+   renderer never does, because a sphere of `FLAME_RADIUS` centred in the plane
+   puts half its rays below it. So S3 is a rule made right and a picture unchanged,
+   and the seam a person sees belongs to `docs/lighting_rebuild.md`'s backlog
+   entry on the flame's own extent — the cosine is taken from the flame's centre
+   while visibility is sampled over its whole sphere.
 
    The census pairs pixels by **which body drew them**, because that is all a dumped
    mask carries; it does not know which *face*. Probed, the first survivor is
@@ -755,9 +771,18 @@ standing level with a wall — or in a landing's own plane — puts half of its 
 rays on the far side of that plane, and those rays genuinely cross the neighbouring
 primitive of the same surface. The reference tracer, handed the same primitives,
 agrees that they do. `same_run` papers over exactly this for a panel run by exempting
-the neighbour whatever the ray's direction, and there is no equivalent for a body —
-which is why the run of flights still reports **87** census pixels after S3 where it
-reported 123, most of them this.
+the neighbour whatever the ray's direction, and there is no equivalent for a body.
+
+⚠ **And the merge may not be what answers it.** Those below-plane rays are only
+traced at all because the shading takes its cosine from the flame's *centre* while
+visibility is sampled over the flame's whole sphere: a sample point below the
+fragment's horizon should contribute zero by `N·L` and never be asked about
+occlusion. Fix that, and the set of rays a join can block is empty — no merge
+required, and `same_run` loses its reason too. Prototyped and rendered on
+2026-08-09; it lives in `docs/lighting_rebuild.md`'s backlog, since it is a shading
+question rather than a geometry one. **Measure that before spending S3b on this**,
+because the merge's own argument then falls back to what it always was — one
+primitive per surface is cheaper and simpler, not a cure.
 
 Only the merge answers it, and it answers it completely: one primitive per surface
 means the ray that dips behind the plane starts *inside its own solid*, which
