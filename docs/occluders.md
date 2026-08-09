@@ -11,6 +11,13 @@ This continues `docs/lighting_geometry.md`'s question — box occluders becoming
 real geometry — with the part that document never had: a reason, a measurement
 and an order.
 
+✅ **All six steps are green as of 2026-08-09, and this document is a record from
+here on.** A session looking for work does not start here: what is still live out
+of this track is the § *Backlog* below, and the three items that outlive it — the
+aperture still measured in a tile, `PANEL_THICKNESS`'s inward fattening, and the
+instruments that cannot see a merge — are carried in
+[`lighting_rebuild.md`](lighting_rebuild.md)'s own backlog, which is the one list.
+
 ## What we are fixing
 
 **The ragged boundary between solids on neighbouring tiles.** Holes, fringe, and
@@ -28,10 +35,9 @@ S3b are deletions and optimisations that must move nothing. **S3 has since lande
 and moved nothing either** — its exemption needs a ray in the surface's own plane
 and the renderer has none, which is measured at S3's own acceptance. The seam a
 person reports is a *shading* defect and it belongs to
-[`lighting_rebuild.md`](lighting_rebuild.md)'s **phase 5b**, which is where this
-track's next session starts; nothing here is blocked on it, and everything here is
-easier to judge after it, because the below-horizon rays it removes are the ones
-that make a wall's own run look like an occluder question. So acceptance for the
+[`lighting_rebuild.md`](lighting_rebuild.md)'s **phase 5b**, which has since
+landed — and it is what licensed S4's deletion of `same_run`, since the rays that
+rule existed for are the below-horizon ones 5b stopped tracing. So acceptance for the
 sentence above is § *Acceptance for S3* — six things to run, each with a figure
 to read, none of them resting on anybody's description of a picture.
 

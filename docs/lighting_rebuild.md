@@ -318,9 +318,23 @@ table being stale.
 | 5 | area lights | ✅ landed | — |
 | 5b | a flame has no centre | ✅ landed | — |
 | 6 | the impostor | 🚧 6a and 6c landed | **6d** (the mesh pass off real statics, and its colour target); a corner's two panels still told apart by the **screen half**; `own_solid` still scanning a cell; and the phase's own second number — how far a real static's art overhangs its prism — still untaken |
-| 6e | the grid stops being a rule | ✅ landed [`occluders.md`](occluders.md) | **All six steps are green.** The grid is out of the walk on both backends, and S3b's merge folds a run of wall into one primitive — 73 pieces to 9 on the crate's own two-storey house, with no pixel moved. What that document keeps is a backlog: an aperture is still measured in a tile, no traced fixture merges anything, and `PANEL_THICKNESS`'s inward fattening turned out **not** to be answered by the merge |
+| 6e | the grid stops being a rule | ✅ landed [`occluders.md`](occluders.md) | **All six steps are green.** The grid is out of the walk on both backends, and S3b's merge folds a run of wall into one primitive — 73 pieces to 9 on the crate's own two-storey house, with no pixel moved. That document is a **record** now, and the four findings that outlive it — the aperture still measured in a tile, the instruments that cannot see a merge, `PANEL_THICKNESS`'s fattening the merge turned out **not** to answer, and `footprint`'s `i32` ranges — are in this document's backlog |
 | 7 | billboards | 🚧 the position half landed | the **normal**, and its *done when* is a person looking at a lit frame |
 | 8 | the sun | ⬜ not started | all of it |
+
+**Where a session starts, as of the reconsolidation on 2026-08-09:** phase 6e is
+closed and there is no live sub-plan under this document any more — `occluders.md`
+is a record like the seven above it. Three things are open and they are in order
+of what a frame is waiting on: **6d**, the mesh pass coming off real statics and
+gaining a colour target (which is phase 2's albedo, and what a body's albedo being
+invented is blocked on); **phase 7's normal**, which needs a person looking at a
+figure beside a torch rather than a number; and **phase 8**, untouched. Beside
+them, three defects a person has seen and nobody has fixed — a flame's own sprite
+reads black, a sprite's top edge is serrated where a missed ray takes a nearest
+face, and a whole-tile body writing a camera-facing normal is what darkened
+statics at 6c. All three are one question about what a *body* should write for a
+normal, they are in the backlog with their measurements, and they are the ones
+that decide whether a lit frame reads right.
 
 **Phase 0 — the reference, and it must judge the same model.**
 `crates/client/pathtrace` (in flight in a parallel session) becomes the oracle,
@@ -2122,6 +2136,17 @@ Things noticed while writing this, not blocking any phase:
   draws. `PANEL_THICKNESS`'s own doc argues the inward choice from the doubling
   it was avoiding, which the straddling form avoids better. Worth measuring
   before it is changed: it moves every panel in the grid.
+
+  **And the merge does not answer it, which `occluders.md` first said it would.**
+  A tile's north panel and its northern neighbour's south panel do share a whole
+  face, but they are an `EDGE_NORTH` and an `EDGE_SOUTH`, and `Solid::edges` is
+  documented as never naming two sides — the walk's panel arm reads it. So S3b
+  refuses the pair, exactly, and the fattening stays where it was. What would
+  answer it is a decision about what a two-sided panel means to `pierced` and to
+  `on_the_lit_surface`: a change to what one primitive *is*, which is the same
+  ground as the lateral fit (`facing::Prism` has no cross-axis term at all). The
+  constant is still both *how thick a wall is* and *which side of its tile it
+  sits on*.
 - **Three scans a drawn static now, where there was one.** `statics::collect`
   asks `Occlusion::owner_at` for the quad, `Occlusion::id_of` per mesh face and —
   since phase 6c — `id_of` again per *box*, all linear scans of the cell; see
@@ -2151,11 +2176,46 @@ Things noticed while writing this, not blocking any phase:
   row) and a `SolidId` will not fit beside them. It is also the *exact* answer
   where `own_solid` is a guess — a fitted climbable's treads are one owner and
   one shape, which that function's own doc calls the case it cannot answer.
-- **A run of wall wants to be one solid, and until it is, `same_run` stands in.**
-  Phase 4 measured that identity cannot retire it — the panel next along a run is
-  a different static — which makes "merge coplanar panels of a run into one solid"
-  the thing that *would*, and moves it from a tidiness idea to a named
-  prerequisite. `lighting_geometry.md`'s question, with a reason attached now.
+- ~~**A run of wall wants to be one solid, and until it is, `same_run` stands
+  in.**~~ **Done, phase 6e** — `occluders.md`'s S3b merges a run of coplanar
+  panels into one primitive (73 pieces to 9 on the crate's own two-storey house,
+  and not one pixel moved) and S4 deleted `same_run`. What is worth keeping out
+  of it is that the merge is *not* what retired the rule, which is what this
+  entry predicted: `same_run` excused a neighbouring panel for rays dipping
+  **behind** the surface's plane too, and those stopped being traced at phase 5b.
+  The merge landed anyway, and the run being one primitive is what makes S3's
+  half-space exemption enough on its own.
+
+**Inherited from `occluders.md`, which is a record now.** Three of its findings
+outlive the track and belong in this list, since this is the live one:
+
+- 🚩 **An aperture is the last rule in the pass still stated in a tile, and it
+  now costs a merge.** `light::run_v` is `along - along.floor()`, so a hole's
+  `near`/`far` are fractions of *one tile* of the panel's run — a merged windowed
+  run would draw the window in every tile of it. S3b's merge therefore refuses to
+  fold anything carrying an aperture, which is exact and safe and costs a wall
+  with one window in it three primitives instead of one. What closes it is the
+  aperture stated in the primitive's own coordinates, the way D1 did for the box.
+  The same change answers the other half: the holes are still an `Rgba8Uint`
+  plane indexed by `SolidId` (`Occlusion::list_rows` exists for that plane
+  alone), the last texture the primitives left behind when they became a storage
+  buffer. One record, one change. A hole's own `z` stays quantised to whole units
+  and that is no defect — it is measured off the art in whole units.
+- 🔴 **Two instruments still cannot see a merge.** The tracer's half is closed
+  (`BoxSpec` states a box's graphic, so a run of one graphic is a scene the merge
+  folds), but `frame.rs`'s shader sweep compares the shader against
+  `light::sample` and both read the same primitives — it gates the *port* and
+  cannot gate the *geometry* — and `pictures.rs` still draws nothing that merges.
+  Whether the sweep should carry a merged scene is a question about coverage of
+  the port, and the honest answer may be that it should not.
+- **`Solid::footprint`'s `i32` ranges are the one newtype the occluder sweep set
+  aside on purpose.** Closing it means a real tile-coordinate type, whose call
+  sites reach into `bake.rs`'s whole coordinate system (`origin`, `tile_of`,
+  `spill_of`, block and cell indices) — D7's ground, and its own pass.
+- **The hierarchy's cost is unmeasured on a real frame.** S5 left `tests/cost.rs`
+  reporting the tree, and the run itself is the user's — a heavy live run, not a
+  suite gate. Until it is taken, "a BVH is cheaper than the grid" is an argument
+  rather than a number.
 - **A sconce's own art says how far it stands out from its wall, and nothing reads
   it.** `MOUNTED_CLEARANCE` is `0.7` of a tile because half a tile reaches the
   plane and a fifth clears it; the sprite shows the real overhang and
