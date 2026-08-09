@@ -244,6 +244,19 @@ is still the art's; only the volume behind it becomes continuous. **This is the
 reason the acceptance criterion is reachable at all**: position and normal stop
 being able to jump at a tile edge, because there is no edge in the volume.
 
+> **Not done when S3b landed, and it cost a visible defect.** `statics::
+> push_volumes` went on handing the impostor `boxes_of`'s per-*tile* shapes while
+> the grid had folded the run into one primitive, so two abutting statics stood
+> as two boxes with a face buried between them — a face the merged solid does not
+> have. A fragment met against it looked east where its neighbours looked south,
+> and was excused from shadow by the very solid it was buried in (one merged
+> primitive, one id), so it came out fully lit: **a bright one-pixel vertical
+> stroke at every seam, once a tile**, reported from the client as garbage on the
+> vertical joins. Closed 2026-08-10 — `push_volumes` takes the grid's own box
+> wherever `id_of` names one and keeps `boxes_of`'s where it does not, which is
+> what preserves 6c's answer for the half of a street the grid refuses. See
+> `lighting_rebuild.md`'s phase 6h.
+
 **D7 — the map's tile keeps its own job, which is placement.** A static arrives
 at `(x, y, z)` on a tile; that is the wire and this plan does not touch it. The
 tile-to-world mapping — the arithmetic that decides which world coordinates a

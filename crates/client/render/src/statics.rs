@@ -318,11 +318,29 @@ pub fn collect(
 /// have undone `docs/lighting.md`'s decision 27 for every wall cap in the world.
 /// A pane of glass has a shape whether or not it casts a shadow.
 ///
-/// The join is by [`crate::occlusion::Part`], the same one [`push_mesh`] uses and
-/// for the same reason: both walk the shapes in the order the grid pushed them,
-/// so the `n`th here is the `n`th there. A `NOBODY` name is the honest answer for
-/// a shape the grid refused — the fragment is *somewhere*, and it is a point of
-/// nothing the shadow walk can be asked to exempt.
+/// **But the grid's own box wherever the grid has one** — `docs/occluders.md`'s
+/// D6, which that plan wrote down and did not do. Since S3b a run of coplanar
+/// pieces with one [`crate::occlusion::Owner`] is folded into **one** primitive,
+/// and the shapes [`crate::occlusion::boxes_of`] answers with are still one per
+/// *tile*. Two adjacent statics of one staircase therefore stood as two boxes
+/// with a face buried between them — a face the merged solid does not have — and
+/// a fragment met against it read as a surface looking east where its neighbours
+/// looked south. It was excused from shadow by the very solid it was buried in
+/// (one merged primitive is one id), so it came out **fully lit**: a bright,
+/// one-pixel vertical stroke at every seam between two abutting statics, once a
+/// tile, which is what a person looking at a lit staircase called garbage on the
+/// vertical joins. Position and normal stop being able to jump at a tile edge
+/// when there is no edge in the volume, which is the sentence D6 is.
+///
+/// The fallback is what keeps 6c's own fix: a picture the grid refused has no
+/// merged box to take, so it keeps its own — that is the `None` arm, and the
+/// paragraph above is why it cannot become "read everything through the grid".
+///
+/// The join is by [`crate::occlusion::Part`], and it is what makes the lookup
+/// possible at all: both sides walk the shapes in the order the grid pushed
+/// them, so the `n`th here is the `n`th there. A `NOBODY` name is the honest
+/// answer for a shape the grid refused — the fragment is *somewhere*, and it is
+/// a point of nothing the shadow walk can be asked to exempt.
 ///
 /// An empty range is left only for a picture with no shape at all, which
 /// `boxes_of` never produces today; the shader's own no-volume case is what
@@ -339,9 +357,16 @@ pub(crate) fn push_volumes(
     let offset = out.len() as u32;
     let (x, y) = (i32::from(at.x), i32::from(at.y));
     crate::occlusion::boxes_of(x, y, at.z, tile, shape, |part, _, space| {
+        let named = occlusion.id_of(x, y, owner, part);
+        // The grid's own primitive where there is one — merged, and therefore
+        // continuous across every tile this piece runs over. See the doc above.
+        let space = match named {
+            Some(id) => occlusion.solid(id).space,
+            None => space,
+        };
         out.push(crate::impostor::Volume::of(
             &space,
-            crate::occlusion::SolidId::word(occlusion.id_of(x, y, owner, part)),
+            crate::occlusion::SolidId::word(named),
         ));
     });
     crate::impostor::Range {

@@ -317,7 +317,7 @@ table being stale.
 | 4 | shadows by identity | ✅ landed | — |
 | 5 | area lights | ✅ landed | — |
 | 5b | a flame has no centre | ✅ landed | — |
-| 6 | the impostor | 🚧 6a, 6c, 6d and 6f landed | a corner's two panels still told apart by the **screen half**; the **stance** a sprite fragment carries is still the art's reading and not the box's, which is the hairline 6f left at every tread/riser join; and the phase's own second number — how far a real static's art overhangs its prism — still untaken |
+| 6 | the impostor | 🚧 6a, 6c, 6d, 6f and 6g landed | a corner's two panels' **ids** still told apart by the screen half — the *stance* is the met box's since 6g, and only the row number is left; and the phase's own second number — how far a real static's art overhangs its prism, which is the **fringe** along a sprite's silhouette — still untaken |
 | 6e | the grid stops being a rule | ✅ landed [`occluders.md`](occluders.md) | **All six steps are green.** The grid is out of the walk on both backends, and S3b's merge folds a run of wall into one primitive — 73 pieces to 9 on the crate's own two-storey house, with no pixel moved. That document is a **record** now, and the four findings that outlive it — the aperture still measured in a tile, the instruments that could not see a merge (closed since — one of them was drawing it), `PANEL_THICKNESS`'s fattening the merge turned out **not** to answer, and `footprint`'s `i32` ranges — are in this document's backlog |
 | 7 | billboards | 🚧 position and the camera-facing normal landed | a mobile pass in a picture harness, the inflated-silhouette candidate, and the choice between them — its *done when* is a person looking at a lit frame |
 | 8 | the sun | ⬜ not started | all of it |
@@ -1447,6 +1447,61 @@ day this crate wants one: ambient-free, one box, `body_albedo` on both sides,
 the same shape `the_frame_and_the_path_tracer_agree_about_brightness_on_open_
 ground` already is for the ground plane.
 
+**Phase 6h — the impostor meets the *merged* primitive.** *(Landed 2026-08-10.
+`docs/occluders.md`'s D6, which that plan decided and did not do.)* With 6f and
+6g in, the person who reported the wedges reported what was left: **bright,
+one-pixel vertical strokes at every seam between two abutting statics**, once a
+tile, on an otherwise shadowed staircase — garbage on the vertical joins.
+
+Measured rather than guessed at, and the G-buffer said it in one row: at the
+stroke's column the normal plane reads `(+1, 0, 0)` where every neighbouring
+pixel reads `(0, +1, 0)`. An **east** face, one pixel wide, at the tile boundary.
+`statics::push_volumes` was still handing the impostor `boxes_of`'s per-*tile*
+shapes, and S3b had folded the run into one primitive: so two adjacent statics of
+one staircase stood as two boxes with a face **buried between them**, a face the
+merged solid does not have. And because a merged primitive is one id, the buried
+fragment was excused from shadow by the solid it was buried in — fully lit, at
+full flame colour, against a dark tread.
+
+`push_volumes` now takes the grid's own box wherever `Occlusion::id_of` names one
+and keeps `boxes_of`'s where it does not. That fallback is not a hedge: it is 6c's
+own finding, that `Builder::add` refuses about half the drawn pictures of a
+Britain street outright, so reading *everything* through the grid would turn every
+one of them back into a billboard. Measured on the same frame: 42 stray bright
+pixels before, **0** after, with the normal at the seam column now south like its
+neighbours. Whole crate green.
+
+**Phase 6g — and the stance the box's face is, not the one the art was read
+as.** *(Landed 2026-08-10, straight after 6f and for the same report.)* 6f gave
+a sprite fragment the *identity* of the box its view ray met and left the
+*stance* alone. The stance is the second thing the mesh pass had been carrying
+for a climbable, and `blit.wesl` reads it for `lit_plane` — the plane D2's graze
+exemption is stated against. A plane the fragment is not in is the wrong one to
+excuse a candidate against, and for a flight of steps the plane it named was not
+even close: `facing_of` reads a staircase's silhouette as a **corner of a
+house** (`occlusion::boxes_of` says why, at length), so every pixel of a tread
+was carrying the face of a corner panel, picked by *which half of the sprite it
+was drawn on* — `across > 0.0`. That draws a wedge whose straight edge is the
+sprite's own middle column, which on screen is a **vertical** line, which is what
+a person looking at a lit staircase reported.
+
+`statics.wesl`'s `stance_of` takes it off the met face instead: `+z` is
+`STANCE_FLAT`, `+x` is `STANCE_FACE_EAST`, `+y` is `STANCE_FACE_SOUTH`, and
+there is no fourth case because `meets` only ever names a camera-facing face.
+`FACE_NORTH` and `FACE_WEST` become unreachable for a static that met a box, and
+that is not a gap: a panel standing on its tile's north edge is *drawn* on the
+box's `hi.y`, which is what `FACE_SOUTH` names, and `lit_plane` agrees with the
+impostor by construction now rather than by a table. The corner branch stays for
+the two things the box cannot answer — the `id` (a corner's halves address two
+instance rows and a box carries no row number, which is this phase's own last
+join) and the stance of a fragment with no box at all.
+
+Every gate green, including `tests/traced.rs`'s wall scenes, which is what says
+the wall case — whose plane moved by `PANEL_THICKNESS`, from the panel's far
+side to the side the camera sees — moved the right way. On the crate's own
+Britain staircase the dashed hairline 6f left along the tread/riser joins is
+continuous now instead of alternating: the alternation *was* the screen half.
+
 **Phase 6f — a fragment carries the name of the box it met.** *(Landed
 2026-08-10, and it is 6d's own bill.)* A person playing the shard reported that
 staircases had started "artefacting with polygons" — and they had, from the hour
@@ -2372,20 +2427,14 @@ Things noticed while writing this, not blocking any phase:
   where the two slabs overlap. What would close it is the volume carrying which
   *instance row* it belongs to, which is one word in a struct that has a spare
   one.
-- **A sprite fragment's `stance` is still the art's reading, and `lit_plane`
-  believes it.** 6f gave a fragment the *identity* of the box it met and left the
-  *stance* alone, so a pixel on a stair tread still calls itself the face of a
-  corner. `blit.wesl` reads the stance twice — `own_side`, the same-run mask, and
-  `lit_plane`, the plane D2's graze exemption is stated against — and the second
-  is what draws the one dashed hairline pixel along every tread/riser join in
-  `View::Shadow` today, measured on a real Britain staircase after 6f. The honest
-  plane is the measured normal's, which is already in the G-buffer and is always
-  a `hi` face because the impostor only ever names a camera-facing one. What
-  stops the swap is that for a **wall** the two disagree on purpose:
-  `lit_plane(FaceNorth)` is the panel box's `lo.y` and the normal names its
-  `hi.y`, `PANEL_THICKNESS` apart. So this is a change to every wall in the
-  world, not to stairs, and it wants a measurement of its own —
-  `tests/traced.rs`'s wall scenes are where it would be taken.
+- ~~**A sprite fragment's `stance` is still the art's reading, and `lit_plane`
+  believes it.**~~ **Done, 6g** — see that phase's account. The objection this
+  entry raised against the swap (for a wall, `lit_plane(FaceNorth)` is the panel
+  box's `lo.y` and the normal names its `hi.y`) turned out to be the argument
+  *for* it: the fragment is drawn on the box's camera-facing side, so `hi.y` is
+  the plane it is actually in and `lo.y` was the far one. Every gate stayed
+  green, which is what says the wall case moved by `PANEL_THICKNESS` and moved
+  the right way.
 - ~~**`own_solid` scans a cell to name a solid the fragment already met.**~~
   **Done, 6f** — see that phase's account. The missing piece this entry named
   ("a way to get it from the pass that knows it to the pass that asks") was the

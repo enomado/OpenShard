@@ -28,7 +28,8 @@
 // the formula is a second chance to disagree with it — see `crate::depth`.
 
 import package::place_format::{
-    KIND_MASK, KIND_MOBILE, STANCE_FACE_NORTH, STANCE_FACE_SOUTH, STANCE_CORNER, pack_ids,
+    KIND_MASK, KIND_MOBILE, STANCE_FLAT, STANCE_FACE_NORTH, STANCE_FACE_EAST,
+    STANCE_FACE_SOUTH, STANCE_CORNER, pack_ids,
 };
 import package::normal_format::pack_normal;
 import package::solid_format::{SOLID_NOBODY, pack_solid};
@@ -137,6 +138,33 @@ const Z_STEP: f32 = 4.0;
 // thing this pass still spells about the projection — `impostor::ray_from` is
 // the rest of it.
 const HALF_TILE_HEIGHT: f32 = 22.0;
+
+// **Which stance a met box's face is**, and the whole of it: `meets` only ever
+// names a *camera-facing* face, so the answer is one of three and never
+// `FACE_NORTH` or `FACE_WEST`. That is not a gap — a fragment is drawn on the
+// side of a box the camera can see, and for a panel standing on its tile's north
+// edge that side is the box's `hi.y`, which is what `FACE_SOUTH` names. The
+// stance a picture's *art* was read as says which edge of the tile the thing
+// stands on; this says which surface the fragment is actually a point of, and
+// `blit.wesl` wants the second — `lit_plane` is a plane, and a plane the
+// fragment is not in is the wrong one to excuse a candidate against.
+//
+// `docs/lighting_rebuild.md` phase 6g. What made this visible is 6d taking the
+// mesh pass — whose rows carried an honest per-face stance — off real statics:
+// a flight of steps is read as a **corner** by the silhouette detector (see
+// `occlusion::boxes_of`, which says why), so every pixel of a stair tread was
+// carrying the face of a corner panel it is nowhere near, resolved by which half
+// of the sprite it was drawn on. The wedge that put on the screen has a vertical
+// edge down the sprite's own middle column, which is what `across > 0.0` is.
+fn stance_of(normal: vec3<f32>) -> u32 {
+    if normal.z == 1.0 {
+        return STANCE_FLAT;
+    }
+    if normal.x == 1.0 {
+        return STANCE_FACE_EAST;
+    }
+    return STANCE_FACE_SOUTH;
+}
 
 // `crate::place::Stance`, in the four bits `Place::packed` writes it to — the
 // *instance* word's own bits, a different word from the G-buffer's own
@@ -421,6 +449,14 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         at = best.at;
         normal = best.normal;
         mine = volumes[best_at].solid;
+        // **And the stance the met face is**, which overrides the art's reading
+        // above for every static the grid holds a shape for. See `stance_of`:
+        // the corner branch is a statement about the *picture*, and a fragment
+        // that has met a box has a better one about itself. What is left of the
+        // branch is the `id` — a corner's two halves address two instance rows,
+        // and a box carries no row number to choose between them, which is this
+        // phase's own remaining join.
+        stance = stance_of(normal);
     }
 
     // The stance rides into the id word above the kind, and **it is not a
