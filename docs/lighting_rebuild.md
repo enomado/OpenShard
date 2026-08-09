@@ -1600,6 +1600,23 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
+- 🚩 **Nothing gates that an instrument writes what a world pass writes, and the
+  field it got wrong is the one no picture shows.** `plan::elevation` stamped
+  `OwnerId::NONE` into every row it built for three phases, and the two wall tests
+  drawn through it went on passing the whole time — because `same_run` covered for
+  the exemption the missing owner made unreachable. What would have caught it is
+  a claim nobody states: *a fragment of a static this frame's grid holds names the
+  solid the grid holds it as.* The tree has the shape for it — `traced.rs`'s
+  `a_face_fragments_own_plane_is_the_primitives_own_number` is that assertion about
+  a fragment's **plane** — and `plan.rs` is not the only writer of a place
+  attachment outside the world pass: `text.rs`, `gump.rs` and `mobiles.rs` write
+  `OwnerId::NONE` too, honestly (a glyph and a mobile are points of no occluder),
+  which is exactly why a reader cannot tell an honest `NONE` from a forgotten one
+  by looking. Worth one test that renders a known static through each instrument
+  and asserts the row's owner against `Occlusion::owner_at`. Two questions to
+  answer while writing it: whether `Kind` is enough to say which writers *must*
+  name one, and whether the ground's `GroundQuad` — which carries no owner field
+  at all — is the honest exception or the third missing measurement.
 - 🚩 **The impostor's *normal* is the whole of what 6c did to a sprite's
   shading, and it was measured by injection rather than argued.** A person
   reported a static reading darker and striped where it used to be even, and
@@ -1709,16 +1726,18 @@ Things noticed while writing this, not blocking any phase:
   before the cut, suite green after it, and the identity injection turning
   **exactly the same six tests** red before and after, so the self-shadow rule is
   demonstrably untouched.
-- 🚩 **S3's surface exemption is now unreachable, and its gate is vacuous rather
-  than green.** Phase 5b's own account has the numbers: `0` of 720 blamed with the
-  rule neutralised, against 480 with the pre-5b cosine restored, and the whole of
-  `tests/lighting.rs` passing without it. The plan deferred "delete it or keep it
-  as a proven no-op" to *after* that measurement, and the measurement is in — but
-  the thing to settle first is whether a fixture can reach it at all. It fires
-  only for a ray lying in a surface's own plane, and such a ray now has a cosine
-  of exactly zero and is never traced; if that is a theorem rather than a
-  coincidence of the fixtures, the rule is dead code with a proof and should be
-  deleted with the proof written at its grave.
+- ~~🚩 **S3's surface exemption is now unreachable, and its gate is vacuous rather
+  than green.**~~ **Refuted, and the entry above is why.** Phase 5b's numbers — `0`
+  of 720 blamed with the rule neutralised, the whole of `tests/lighting.rs` passing
+  without it — were taken while `same_run` was standing beside it answering the
+  same cases, and while three fixtures named no solid so that the rule could not
+  fire at all. With `same_run` deleted and every fixture naming its own solid, the
+  same injection is anything but vacuous: `on_the_lit_surface` forced to `false` on
+  both sides turns `a_room_lights_its_own_wall_and_not_the_storey_over_it` and
+  `a_wall_lit_from_one_end_has_no_dark_stroke_at_its_seam` red. It is the rule the
+  crate now stands on, and the general lesson is worth more than the entry: **a
+  no-op measured beside a second rule that covers the same ground is a statement
+  about the pair, not about the rule.** Neutralise one at a time *and* both.
 - **A flame of radius zero costs eight identical rays.** `flame_radius` is a knob
   now — `Lighting`'s field, and `examples/boxes.rs`'s `OPENSHARD_FLAME_RADIUS`
   since a person wanted to see how hard a shadow can be — and at zero every one of
