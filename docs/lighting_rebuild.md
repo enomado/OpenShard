@@ -1581,6 +1581,39 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
+- 🚩 **The impostor's *normal* is the whole of what 6c did to a sprite's
+  shading, and it was measured by injection rather than argued.** A person
+  reported a static reading darker and striped where it used to be even, and
+  three frames of one place (Britain `(1497, 1627)`, `View::Light`, a lamp post
+  added by hand) say which half of 6c it is: the commit before 6c draws the post
+  fully lit and the flight beside it in broad even bands; HEAD draws the post
+  black and the flight cut into dark stripes; and HEAD **with `best.normal`
+  forced to the zero vector and the position left alone** is the pre-6c picture
+  again. So the position half is innocent and the cosine against a box's
+  camera-facing face is the whole difference. What that face *is* is worth
+  stating plainly: `Meeting::normal` is always one of `+x`, `+y`, `+z`, so every
+  sprite fragment claims to look towards the camera, and a flame standing behind
+  that plane — including a lamp's own, inside its own box — reads `N · L ≤ 0`.
+  `View::Normal` over the same place shows it directly: a lamp post's pole comes
+  out split down the middle into a green half and a red one, which is a whole
+  tile's box answering for a picture of a thin pole. **The black emitter entry
+  above and this are one finding**, and the candidate this suggests and nobody
+  has measured is that a *body* — `edges == EDGE_MASK`, the box for a graphic
+  whose art would not name a side — should write **no facing** rather than a
+  face, keeping the measured normal for the panels and lids where the art really
+  does say which way a surface looks. It is a different answer from the three at
+  the black-emitter entry and should be judged beside them, not instead.
+- **"Vertical steps along the tiles" is reported and not reproduced.** Named by a
+  person at Britain `(1459, 1693)` beside the ragged silhouette above, in the
+  live client. `examples/isolated_scene` at that place, with a lamp post added by
+  hand and every knob at its default, does not draw them: the wall's lit face is
+  smooth across its tile boundaries and the ground has no tile-shaped step in it
+  at all. What differs between the two pictures is what the tool cannot yet
+  build: the client's carried lantern is a **beam**, its ambient may have the
+  **sky field** on — which is per tile and interpolated nowhere, the first
+  candidate for anything tile-shaped — and the knobs may be off their defaults.
+  Pinning it wants the client's own `View::Normal` of the same frame, which
+  separates a geometry answer from a walk answer, plus the tab's numbers.
 - 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
   showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the
