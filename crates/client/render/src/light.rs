@@ -2791,17 +2791,26 @@ fn candidates<'a>(
     }
 }
 
-/// Which tile a blamed primitive stands on, for the report alone.
+/// Which tile a ray was stopped on, for the report alone.
 ///
 /// **A report's coordinate and not a rule's**, and the distinction is the whole
 /// of `docs/occluders.md`'s S4: [`Stopper::cell`] is read by a person and by the
 /// handful of tests that name a wall by where it stands, and nothing about the
-/// light depends on it. Derived from the primitive's own low corner rather than
-/// carried from a walk, because there is no walk left to carry it — every shape
-/// the grid builds today has its low corner inside its own tile, panels
-/// included, since a panel is fattened *inward* from the edge it stands on.
-fn tile_of(space: &crate::solid::Solid) -> (i32, i32) {
-    (space.min.x.floor() as i32, space.min.y.floor() as i32)
+/// light depends on it. So a `floor` here is allowed where one in a walk is not.
+///
+/// **The middle of the crossing, and no longer the primitive's own low corner**
+/// — S3b is what moved it. A merged run of wall is one primitive over four
+/// tiles, so its low corner names the end of the run rather than the place the
+/// ray met it, and "which wall stopped me" is a question about the meeting. The
+/// two answers were the same number for every shape the grid built before the
+/// merge, which is why the corner was enough until now.
+///
+/// The middle rather than where the segment came in: an entry point lies exactly
+/// on the box's own face, and a face at a whole coordinate floors into the tile
+/// next door. That is § *The oracle*'s own defect, measured there and worth a
+/// line here because it was walked into again on the way to this fix.
+fn tile_of(at: [f32; 3]) -> (i32, i32) {
+    (at[0].floor() as i32, at[1].floor() as i32)
 }
 
 /// The shadow rules over one segment and the primitives a tree hands it — what
@@ -2904,6 +2913,17 @@ fn walk_primitives(
             return;
         }
         let middle = (entered + leaves) * 0.5;
+        // Where the ray is *inside* this primitive, which is what both the run
+        // fraction below and the report at the end of this closure mean by "where
+        // it crossed". The midpoint and not the entry point: an entry lies on the
+        // box's own face, and a face at a whole coordinate floors into the tile
+        // next door — § *The oracle*'s own defect, and it is no more welcome in a
+        // report than in a rule.
+        let cross = [
+            from[0] + delta[0] * middle,
+            from[1] + delta[1] * middle,
+            from[2] + delta[2] * middle,
+        ];
         let opacity = f32::from(stands.opacity) / 255.0;
         let by_surface = match stands.edges {
             0 => {
@@ -2953,14 +2973,7 @@ fn walk_primitives(
             // is [`on_the_lit_surface`]'s, stated about the fragment's own plane
             // instead of about a row of cells, and it is applied above with the
             // rest of them.
-            _ => {
-                let cross = [
-                    from[0] + delta[0] * middle,
-                    from[1] + delta[1] * middle,
-                    from[2] + delta[2] * middle,
-                ];
-                opacity * pierced(stands, cross)
-            }
+            _ => opacity * pierced(stands, cross),
         };
         if by_surface <= 0.0 {
             return;
@@ -2973,7 +2986,7 @@ fn walk_primitives(
             worst = Some((
                 entered,
                 Stopper {
-                    cell: tile_of(&space),
+                    cell: tile_of(cross),
                     solid: id,
                     edges: stands.edges,
                     span: (low, high),

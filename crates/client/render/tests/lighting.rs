@@ -1459,10 +1459,19 @@ fn every_scene_prints_a_diagram_that_is_not_blank() {
 /// - *Across* it — a spot south of the row, so the ray goes through a face.
 ///   Most of it does not arrive; not all, because it clips the tile obliquely
 ///   and decision 14's penumbra is doing its job.
-/// - *The same scene with no art at all*, where nothing names an edge and every
-///   occluder is the whole tile it was before. The along-ray is stopped. That is
-///   the old behaviour, and it is what says this test would fail on the code it
-///   was written against rather than passing for some other reason.
+/// - *The same point carrying no solid at all* — a fragment of the street rather
+///   than of the run, at the same place and along the same ray. It is stopped,
+///   and that is what says the along-ray above arrives because a surface may not
+///   shadow itself and not because there is nothing in its way.
+///
+///   **The third ray was the same scene with no art** until `docs/occluders.md`'s
+///   S3b, where every occluder was the whole tile it had been before decision 3
+///   and the along-ray died. That control is gone because its subject is: the
+///   merge folds a run of same-graphic whole-tile bodies into **one** primitive,
+///   so a fragment of the run is a point of all of it and the along-ray survives
+///   whatever the art said. A face sample can no longer reproduce the old
+///   behaviour in this scene at all — what still can is a fragment the run is not
+///   part of, which is the ray above.
 #[test]
 fn light_runs_along_a_wall_and_stops_across_it() {
     let scene = scene::wall_with_a_torch_beside_it();
@@ -1532,20 +1541,201 @@ fn light_runs_along_a_wall_and_stops_across_it() {
         scene.name,
     );
 
-    // And the same scene with the art taken away. Nothing then says which edge
-    // the wall is on, every occluder is the whole tile, and the along-ray dies —
-    // which is the defect this whole change is about, reproduced on demand.
-    let blind = Scene {
-        art: None,
-        ..scene::wall_with_a_torch_beside_it()
-    };
-    let blind_lighting = blind.lighting(STILL);
-    let along_blind = through(&blind_lighting, face(&blind_lighting, cx));
-    assert!(
-        along_blind < 0.01,
-        "with no art an occluder is the whole tile and the along-ray must die — {along_blind:.3} \
-         of it arrived, so this test is not measuring the edge at all",
+    // And the same point again, this time a point of **nothing** — the street's
+    // own fragment standing where the wall's face fragment stood. Nothing excuses
+    // it from the run, so the run stops it, and the along-ray above is measuring a
+    // rule rather than an empty frame. See this test's own doc for what stood here
+    // before S3b and why it could not stay.
+    let stranger = through(
+        &lighting,
+        Spot::face(
+            Vec2::new(f32::from(cx) + 0.5, f32::from(cy) + inside),
+            f32::from(scene::WALL_HEIGHT) / 2.0,
+            (i32::from(cx), i32::from(cy)),
+            openshard_client_render::facing::Face::South,
+        ),
     );
+    assert!(
+        stranger < 0.01,
+        "a fragment that is no part of the run must be stopped by it — {stranger:.3} of the \
+         flame arrived, so this test is not measuring the exemption at all",
+    );
+}
+
+/// **What the merge actually folds, on every scene the crate draws** — the
+/// census S3b is read against, and the anti-vacuity of every "nothing moved"
+/// number beside it.
+///
+/// A suite that stays green through a change nothing reached says nothing at all,
+/// and this track has paid for that reading twice (`docs/occluders.md`'s per-cell
+/// `max`, and its own vacuous tie-break gate). So the count is a number a run
+/// prints and a gate fails on: a cell's references are one per primitive the
+/// builder kept, so `references() - solids().len()` is exactly how many
+/// primitives the merge took out of the frame.
+///
+/// Printed per scene and asserted in the total, because which scene folds most is
+/// a fact about the fixtures rather than about the merge.
+#[test]
+fn the_merge_folds_the_scenes_this_crate_draws() {
+    let mut folded = 0;
+    let mut before = 0;
+    for scene in scene::all() {
+        let occlusion = scene.lighting(STILL).occlusion;
+        let (references, primitives) = (occlusion.reference_count(), occlusion.solid_count());
+        println!("{}: {references} pieces -> {primitives} primitives", scene.name);
+        assert!(
+            primitives <= references,
+            "{}: the merge invented a primitive",
+            scene.name,
+        );
+        folded += references - primitives;
+        before += references;
+    }
+    assert!(
+        folded * 2 > before,
+        "the merge folded {folded} of {before} pieces across the scenes, which is too few for \
+         a green suite to mean anything about it",
+    );
+}
+
+/// **S3b's own gate: a merged run answers every ray the way its pieces did.**
+///
+/// One geometry, stated twice. A run of seven whole-tile bodies of *one* graphic
+/// is one primitive once `occlusion::merge` has had it; the same seven with a
+/// graphic a tile cannot merge at all, because a merged primitive carries one
+/// `Owner` and that is the join a drawn instance finds its own box through. So
+/// the two grids hold the same volume as one box and as seven, and D2b's whole
+/// claim — a **pure optimisation**, not one pixel moved — is that no ray can tell
+/// them apart.
+///
+/// **Not circular**: the two sides share every line of the walk and differ only
+/// in what the broad phase is handed, which is exactly the property under test.
+/// The oracle for the *geometry* is that the twin is built from the same
+/// `Builder::add` calls with nothing changed but a graphic number.
+///
+/// The spots are points of **nothing**, and that is deliberate rather than
+/// convenient. A fragment that is a point of the run is exempt from the primitive
+/// it belongs to, and after the merge that is the whole run instead of one tile
+/// of it — D6 arriving, a change of answer this step means to make, and the
+/// subject of `light_runs_along_a_wall_and_stops_across_it` rather than of this.
+/// What this gate is about is every *other* ray in the frame, which is where
+/// nothing may move at all.
+///
+/// The census is asserted and not printed: a sweep that found every spot lit, or
+/// every spot dark, would agree about nothing and pass.
+#[test]
+fn a_merged_run_answers_every_ray_the_way_its_own_pieces_did() {
+    use openshard_client_render::camera::TileBounds;
+    use openshard_client_render::light::{Ambient, Light};
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    /// The row the wall stands on, and the tiles of it.
+    const ROW: u16 = 105;
+    const RUN: std::ops::Range<u16> = 102..109;
+
+    let bounds = TileBounds {
+        min_x: 100,
+        max_x: 112,
+        min_y: 100,
+        max_y: 112,
+    };
+    let wall = StaticTile {
+        flags: TileFlags::new(TileFlags::NO_SHOOT),
+        height: 10,
+        ..StaticTile::default()
+    };
+    // No art, so every occluder is the whole tile it stands on — a body, which is
+    // the shape a merge can grow along a row without any question about which side
+    // of a tile it sits on.
+    let run = |graphic: &dyn Fn(u16) -> u16| {
+        let mut grid = occlusion::Builder::new(bounds);
+        for x in RUN {
+            grid.add(
+                x,
+                ROW,
+                0,
+                openshard_protocol::wire::Graphic(graphic(x)),
+                &wall,
+                occlusion::Shape::UNREAD,
+            );
+        }
+        grid.finish(&Cutaway::OPEN)
+    };
+    let merged = run(&|_| 7);
+    let pieces = run(&|x| x);
+    assert_eq!(merged.solids().len(), 1, "the run of one graphic did not merge");
+    assert_eq!(
+        pieces.solids().len(),
+        RUN.len(),
+        "the run of seven graphics merged, so this twin is not a twin",
+    );
+
+    let lighting = |occlusion: occlusion::Occlusion, at: Vec2, z: f32| Lighting {
+        ambient: Ambient {
+            sky: [0.0, 0.0, 0.0],
+            ground: [0.0, 0.0, 0.0],
+        },
+        lights: vec![Light {
+            at,
+            z,
+            radius: 24.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        }],
+        occlusion,
+        sun: None,
+        view: openshard_client_render::debug::View::Lit,
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+    };
+
+    // Three flames: one squarely north of the run, one south of it, and one
+    // standing *in* the run's own line past its east end — the last is what puts
+    // rays down the length of the merged box, which is the arrangement a wrong
+    // union would answer differently from seven boxes.
+    let flames = [
+        (Vec2::new(105.5, 102.5), 5.0),
+        (Vec2::new(105.5, 108.5), 3.0),
+        (Vec2::new(111.5, 105.5), 5.0),
+    ];
+    let (mut blocked, mut clear) = (0_u32, 0_u32);
+    for (at, z) in flames {
+        let one = lighting(merged.clone(), at, z);
+        let seven = lighting(pieces.clone(), at, z);
+        // A quarter of a tile, over the whole rectangle and at three heights: the
+        // ground, halfway up the wall, and just over its top.
+        for step_y in 0..44 {
+            for step_x in 0..44 {
+                let (x, y) = (100.5 + step_x as f32 * 0.25, 100.5 + step_y as f32 * 0.25);
+                for z in [0.0, 5.0, 11.0] {
+                    let spot = Spot::at(Vec2::new(x, y), z, (x.floor() as i32, y.floor() as i32));
+                    let (a, b) = (
+                        light::sample(spot, &one).reaches[0],
+                        light::sample(spot, &seven).reaches[0],
+                    );
+                    assert_eq!(
+                        (a.within, a.through),
+                        (b.within, b.through),
+                        "the merge moved a ray at ({x}, {y}, z {z}) from the flame at {at:?}: \
+                         {:.3} against {:.3}",
+                        a.through,
+                        b.through,
+                    );
+                    match a.within && a.through < 1.0 {
+                        true => blocked += 1,
+                        false => clear += 1,
+                    }
+                }
+            }
+        }
+    }
+    // The sweep has to have seen the wall from both sides of it.
+    assert!(
+        blocked > 1_000,
+        "only {blocked} of the swept rays met the run at all"
+    );
+    assert!(clear > 1_000, "only {clear} of the swept rays got past it");
 }
 
 /// A ray through the gap between two walls on one tile goes through it.

@@ -541,11 +541,12 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     // geometry it meets, and how much geometry that is belongs beside the time.
     let tree = night.occlusion.bvh();
     eprintln!(
-        "occlusion: {cells} standing cells over {}x{} tiles, {} primitives, {} tree nodes, \
-         {} bytes of tree a frame",
+        "occlusion: {cells} standing cells over {}x{} tiles, {} primitives merged out of {} \
+         pieces, {} tree nodes, {} bytes of tree a frame",
         grid.width(),
         grid.height(),
         night.occlusion.solid_count(),
+        night.occlusion.reference_count(),
         tree.nodes().len(),
         night.occlusion.node_bytes().len() + night.occlusion.order_bytes().len(),
     );

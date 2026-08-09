@@ -472,7 +472,7 @@ one whose gate is not green.
 | S3 | the surface exemption | ✅ landed 2026-08-09 |
 | S4 | delete the cell rules | ✅ **all four gone.** `same_run`, the vertical shortcut, `starting_cell` — and the per-cell `max`, which S5 deleted with the cell it was a statement about; `first` went with the grid at the same time |
 | S5 | the hierarchy | ✅ **landed 2026-08-09** — both backends walk the tree, the grid is out of the walk everywhere, and the two walks are named for the boxes they read. The one number left is the cost harness's, and it is the user's to run. See § *The hierarchy* |
-| S3b | the merge | ⬜ last, after S5 — and a **pure optimisation** since phase 5b took its cure away |
+| S3b | the merge | ✅ **landed 2026-08-09** — a run of wall is one primitive, a floor is one slab, and the crate's own scenes fold 73 pieces to 9. Not one pixel moved. See § *The merge* |
 
 And S5 is the same shape a fourth time: the plan asked for a node budget and
 there is nothing to size, because the traversal's own monotonicity is the bound.
@@ -722,19 +722,36 @@ restated.
    plane comparison, a sign comparison and a table of five stances. The plane did not
    have to come from the instance row, so nothing was added there either.
 
-**S3b — the merge, and it is last.** D2b. Contiguous neighbours that are the same
-surface become one primitive at build time, after `occlusion::boxes_of` and inside
-`Builder::finish`. Two primitives merge exactly when they share a whole face, have
-equal opacity, equal `edges` classification and equal span — all exact
-comparisons, since the coordinates come from integers and authored fractions, and
-**no tolerance is introduced anywhere**. `occlusion::Part` keeps pointing every
-instance at the solid it is now a part of (D6).
+**S3b — the merge, and it is last. ✅ Landed 2026-08-09.** D2b. Contiguous
+neighbours that are the same surface become one primitive at build time, after
+`occlusion::boxes_of` and inside `Builder::finish`. Two primitives merge exactly
+when they share a whole face, have equal opacity, equal `edges` classification and
+equal span — all exact comparisons, since the coordinates come from integers and
+authored fractions, and **no tolerance is introduced anywhere**. `occlusion::Part`
+keeps pointing every instance at the solid it is now a part of (D6).
 
-**`PANEL_THICKNESS`'s inward fattening is answered here** and not separately: two
-walls on a shared tile edge are one surface, so they merge into one slab lying on
-the plane the art draws, which is what the `docs/lighting_rebuild.md` backlog
-entry asks for. The constant survives as *how thick a wall is* and stops being
-*which side of its tile a wall sits on*.
+🔴 **That list was three fields short, and the missing three are what keep the
+join and the arithmetic**: the `Owner` and the `Part` themselves (D6's join is a
+scan for the pair, so a merged primitive may not disagree about either), an
+aperture (a hole is a fraction of *one tile* of its run), and opacity being
+`OPAQUE` rather than merely equal (two panes dim twice, one merged pane dims
+once). See § *The merge* for what each would have broken.
+
+~~**`PANEL_THICKNESS`'s inward fattening is answered here** and not separately:
+two walls on a shared tile edge are one surface, so they merge into one slab lying
+on the plane the art draws, which is what the `docs/lighting_rebuild.md` backlog
+entry asks for.~~ 🔴 **It is not answered here, and the reason is `edges`.** A
+tile's north panel and its northern neighbour's south panel do share a whole face
+— both are fattened inward from the plane between them — but they are a
+`EDGE_NORTH` and a `EDGE_SOUTH`, and a merged primitive would have to carry both.
+`Solid::edges` is documented as never two named sides ("a corner is two panels,
+which is what the list is for"), and the walk's panel arm reads it. So the merge
+as built refuses them, which is exact and leaves the fattening exactly where it
+was. What would answer it is a decision about what a two-sided panel means to
+`pierced` and to `on_the_lit_surface` — a change to what one primitive *is*, which
+is what § *Not in scope*'s "lateral fit" entry is also about. It stays
+`docs/lighting_rebuild.md`'s backlog item. The constant is still both *how thick a
+wall is* and *which side of its tile it sits on*.
 
 *Gate:* **not one pixel moves.** That is the whole of what a pure optimisation
 means, and it is checkable: the shadow masks before and after are identical, and
@@ -1227,6 +1244,114 @@ OPENSHARD_CLIENT=… cargo test --release -p openshard-client-render \
     --test cost -- --ignored --nocapture
 ```
 
+### ✅ The merge: **a run of wall is one primitive, and the plan's rule was three fields short**
+
+Landed 2026-08-09. `occlusion::merge` is the whole of it: a pass in
+`Builder::finish` between the cells' own references and the primitives they name,
+and the first thing in this crate to point **two cells at one primitive** — which
+is what the reference level built at step 23.1 was for, and it cost exactly the
+one function that step said it would.
+
+**What it folds, measured on every scene the crate draws** —
+`lighting.rs`'s `the_merge_folds_the_scenes_this_crate_draws`, which prints a line
+a scene and fails if the total does not halve:
+
+| scene | pieces | primitives |
+|---|---|---|
+| a torch on the ground floor of a two-storey house | 73 | 9 |
+| a roofed, sunlit room with a window | 49 | 7 |
+| a shut, roofed house at noon | 49 | 5 |
+| a lit room with a second storey over it | 35 | 3 |
+| a shut room with a torch in it | 24 | 4 |
+| a sconce on a straight wall | 7 | 1 |
+
+The census exists because **a green suite through a change nothing reached says
+nothing**, and this track has read one that way twice. It is asserted rather than
+printed, for the same reason.
+
+**The condition is "share a whole face and be identical in every other field",
+and three of those fields are not in this plan's own sentence.** Each is a thing
+the merge would otherwise break, and each is written up in `merge.rs`'s header:
+
+- **The `Owner` and the `Part`.** They are `Occlusion::id_of`'s join — a drawn
+  instance finding the primitive its own pixels are met against, which is D6.
+  A merged primitive carries one of each, so folding two pieces that disagree
+  leaves the other instance naming nothing. With them equal the join is preserved
+  *by construction*, since both cells scan for the same pair. It is a narrower
+  rule than the plan wrote, and the honest cost is that **a run assembled out of
+  two graphics does not merge**; an `Owner` carries no tile, so a run of one
+  graphic at one height is one owner however long it is.
+- **An aperture stops a merge outright**, and that is a real finding rather than a
+  caution: `light::run_v` is `along - along.floor()`, so a hole is a fraction of
+  **one tile** of its panel's run. It is the last rule in the pass still stated in
+  a tile — D1 removed every other one — and a merged windowed run would put the
+  window in every tile of it. In the backlog.
+- **Opacity equal is not enough; it must be `OPAQUE`.** Two panes crossed by one
+  ray are dimmed twice and one merged pane dims once. That is a moved pixel, so a
+  translucent primitive is left alone. S5's own fixture,
+  `a_segment_through_two_panes_on_one_tile_is_dimmed_by_both_of_them`, is the
+  thing that would have gone red.
+
+**Only the horizontal axes**, and the reason is that the vertical cannot fire: an
+equal `Owner` includes the `z` the static stands at, so two primitives stacked in
+`z` are two owners by construction. A rule that cannot fire is a rule not worth
+writing — the fourth time on this track that a step's *decision* held while its
+*reason* did not.
+
+*Gates, all run:*
+
+- **The whole crate green**, both backends, with the census above saying the merge
+  is amply reached. `traced.rs`'s two path-tracer gates are the non-circular half:
+  the tracer is handed the scene's authored `BoxSpec`s and has never seen an
+  `Occlusion`, so a merge that moved geometry would show up as a moved pixel
+  against it.
+- **The twin oracle**, `lighting.rs`'s
+  `a_merged_run_answers_every_ray_the_way_its_own_pieces_did`: one geometry stated
+  twice — seven whole-tile bodies of *one* graphic, which merge into one
+  primitive, and the same seven with a graphic a tile, which cannot merge at all
+  because of the owner condition above. Three flames and 17,424 spots swept at a
+  quarter tile over three heights, and every ray must come back with the same
+  number from both. The spots are points of **nothing** on purpose: a fragment of
+  the run is exempt from all of it after the merge, and that is D6 arriving rather
+  than a defect to gate at zero.
+- *Fault injection, three, each red for its own reason*: a union that does not
+  grow (the merged box stays the first piece's) turns **10 of `tests/lighting.rs`**
+  red, the twin oracle among them; the owner dropped from the key turns the twin
+  oracle and `the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at` red;
+  a contiguity test loosened from `==` to `<=` — a gap folded into a run — turns
+  10 of `tests/lighting.rs` and two of the merge's own unit gates red.
+- *Identity*: the self-shadow injection turns exactly the **same four CPU tests**
+  red as S5 records.
+
+🔴 **And the injections found a blind spot worth more than the green.** Under the
+"union does not grow" injection — geometry genuinely wrong, ten CPU gates red —
+`tests/frame.rs`, `tests/pictures.rs` and `tests/traced.rs` all stayed **fully
+green**. For `traced.rs` the reason is that its scenes are built by
+`oracle::boxes::box_owner`, which gives every box its own graphic, so **nothing in
+them ever merges**; for `frame.rs` it is that the shader sweep compares the shader
+against `light::sample` and both walk the same broken geometry. So the two
+instruments this track leans on hardest cannot see this step at all, and what
+gates it is the CPU suite and the twin oracle. In the backlog.
+
+**Two fixtures lost their subject, and both were repaired rather than deleted.**
+
+- `light_runs_along_a_wall_and_stops_across_it`'s third ray was the same scene
+  with no art, where every occluder is a whole tile and the along-ray died — the
+  pre-decision-3 behaviour reproduced on demand. The merge folds a run of
+  same-graphic whole-tile bodies into **one** primitive, so a fragment of the run
+  is a point of all of it and the along-ray now survives whatever the art said. A
+  face sample cannot reproduce the old behaviour in that scene at all any more.
+  What replaces it is a fragment the run is **not** part of, standing at the same
+  point: it is stopped, which is what says the along-ray above measures the
+  exemption rather than an empty frame.
+- `Stopper::cell` was the blamed primitive's own low corner, and a merged run's
+  low corner names the end of the run rather than the place the ray met it. It is
+  the **middle of the crossing** now — and the middle rather than the entry point,
+  because an entry lies exactly on the box's own face and a face at a whole
+  coordinate floors into the tile next door. That is § *The oracle*'s own defect,
+  walked into again on the way to this fix and caught by two tests that name a
+  wall by where it stands.
+
 ### ✅ The rename: neither walk has a cell in it
 
 `walk_cells_exact` → **`walk_the_record`**, `walk_cells_streaming` →
@@ -1306,6 +1431,37 @@ Named so that a later session does not adopt them by accident:
 
 Findings from this track that do not block a step. Kept here so the plan can be
 read as work.
+
+🔴 **The two instruments this track leans on hardest cannot see the merge, and
+that is measured rather than suspected.** With a deliberately wrong union in
+`occlusion::merge` — the merged box left at its first piece's, ten of
+`tests/lighting.rs` red — `tests/frame.rs`, `tests/pictures.rs` and
+`tests/traced.rs` stayed **fully green**. Two different reasons, and neither is
+comfortable:
+
+- `traced.rs` and `examples/boxes.rs` build their scenes through
+  `oracle::boxes::box_owner`, which gives **every box its own graphic**, so
+  nothing in any of them merges. The path tracer is this plan's one non-circular
+  arbiter and it has never been shown a merged frame.
+- `frame.rs`'s shader sweep compares the shader against `light::sample`, and both
+  read the same primitives — so it gates the *port* and cannot gate the
+  *geometry*, exactly as S5 recorded when it built the sweep.
+
+What would close it is a traced fixture whose boxes share an owner: the same run
+of wall the twin oracle uses, drawn and compared against the tracer. It is one
+scene, and it would put the merge under the instrument that has no `Occlusion` in
+it at all.
+
+🔧 **The merge's own indices are bare `u32`s and its axis is a bare `usize`.**
+`occlusion::merge` carries three different index spaces in one integer type — a
+place in the frame's primitive list, a union-find group's name, and a place in the
+*output* list — beside a `0`/`1` axis selector that is a number where it is a
+choice of two. `docs/style.md`'s newtype rule is written for exactly this: a
+domain that is only in the reader's head is one a compiler cannot keep apart. It
+is a contained module and nothing outside it sees the raw types, which is why this
+is a backlog item and not a defect — but the same sweep is worth taking wider,
+since `bvh.rs` states its split axis the same way and `Solid::footprint`'s ranges
+are bare `i32`s.
 
 🔴 **Nothing in the crate gates a corner-grazing candidate, and that is measured
 rather than suspected.** `blit.wesl`'s `walk` carried an *unconditional* diagonal
@@ -1472,10 +1628,11 @@ Opaque either way, wrong for anything translucent (a pane, a `PANE` opacity of
 51). Whichever way the item above is answered, this is the second half of it, and
 D5's deletion of the per-cell `max` is where it lands.
 
-⇒ ✅ **Both halves are closed on the CPU by S5 and neither by a rule**: a
+⇒ ✅ **Both halves are closed on both sides, by S5 and neither by a rule**: a
 primitive is under exactly one leaf whatever its size, so it is offered once and
-its own tile has nothing to do with it. 🔴 **The shader still walks the grid**,
-so both are live on that side and S3b's precondition is not met until it moves.
+its own tile has nothing to do with it. The shader's port closed the same two on
+its side, which is what met S3b's precondition — and S3b has since built the first
+primitive wider than its own tile without either half being reachable.
 
 **The apertures are the last texture indexed by a `SolidId`.** The primitives are
 a storage buffer now and the holes beside them are still `Rgba8Uint` folded into
@@ -1532,6 +1689,20 @@ is ties *inside* a list the sort genuinely partitions.
 Worth stating as a habit beside the flame-position one above: **an injection that
 fails is not yet a gate that fires — read *why* it failed.** Three of these four
 readings were red, and only the last one was red about the rule.
+
+🔴 **An aperture is the last rule in the pass still stated in a tile**, and S3b is
+what made that cost something. `light::run_v` is `along - along.floor()`: a hole's
+`near`/`far` are fractions of **one tile** of the panel's run, so a merged windowed
+run would draw the window in every tile of it. The merge therefore refuses to fold
+anything carrying an aperture — exact, and it costs a wall with one window in it
+three primitives instead of one.
+
+What would close it is the aperture stated in the primitive's own coordinates,
+the way D1 did for the box: a `near`/`far` measured along the primitive rather
+than along whichever tile a crossing lands in. That is also what the *other*
+aperture item below wants — the holes are still an `Rgba8Uint` plane indexed by
+`SolidId`, and both are one change to the same record. Until then, a run of
+windows is a run of primitives, which is the safe direction and not a defect.
 
 **A hole's own `z` is still quantised**, to whole units offset by 128
 (`occlusion::z_byte`), and it is now the only quantised number left in the pass.

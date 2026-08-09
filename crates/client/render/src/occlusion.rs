@@ -101,6 +101,7 @@
 
 pub mod bake;
 pub mod bvh;
+pub mod merge;
 
 use openshard_protocol::wire::Graphic;
 
@@ -1697,10 +1698,13 @@ impl Occlusion {
     /// [`Occlusion::id_bytes`] uploads, and the number decision 30.6 has a
     /// distribution of.
     ///
-    /// Equal to [`Occlusion::solid_count`] until something spans a cell, and the
-    /// pair is worth printing side by side from that day on: the two being equal
-    /// is what says *nothing is shared yet*, which is a fact about the map's
-    /// geometry rather than about this format.
+    /// **The day something spanned a cell has arrived and it is the merge**, so
+    /// this is no longer [`Occlusion::solid_count`] under another name: a run of
+    /// wall on four tiles is four references to one primitive. The difference
+    /// between the two is exactly how many pieces `docs/occluders.md`'s S3b took
+    /// out of the frame, which is what `lighting.rs`'s
+    /// `the_merge_folds_the_scenes_this_crate_draws` counts and what
+    /// `tests/cost.rs` prints.
     pub fn reference_count(&self) -> usize {
         self.ids.len()
     }
@@ -2286,16 +2290,19 @@ impl Builder {
     /// what lets a test name a slice and a frame dump be compared with the one
     /// before it.
     ///
-    /// # One reference per solid, and it is not a placeholder
+    /// # The reference level stopped being the identity here
     ///
-    /// The ids this writes run `0, 1, 2, …` and the solid list is in the cells'
-    /// own order, because nothing the builder holds is referenced twice: a solid
-    /// is still one tile's. So the plane a cell points through is, today, the
-    /// identity — and building it anyway is the same argument step 23.2 makes for
-    /// the spill, which is that a missing reference is a hole in a shadow that
-    /// looks exactly like a detector failing. The level exists, both walks read
-    /// it, and the first thing to share a solid changes one function rather than
-    /// a format, a shader, two walks and three views.
+    /// The ids this writes ran `0, 1, 2, …` until `docs/occluders.md`'s S3b,
+    /// because nothing the builder held was referenced twice: a solid was one
+    /// tile's. The **merge** is the first thing to share one — a run of wall on
+    /// four tiles is four references to one primitive — and it cost exactly the
+    /// one function step 23.2 said it would, because the level was built before
+    /// anything depended on it being wrong. See [`merge::merged`].
+    ///
+    /// What did *not* change is a cell's own run: the references are the same
+    /// number and in the same order, so [`Span`] and the [`OwnerId`]s beside it
+    /// are untouched by the merge and every reader below still counts through a
+    /// cell the way it did.
     ///
     /// # This is where the [`Cutaway`] is applied, and that is decision 33
     ///
@@ -2355,7 +2362,13 @@ impl Builder {
                 count: (solids.len() as u32 - offset) as u8,
             });
         }
-        let ids = (0..solids.len() as u32).map(SolidId::new).collect();
+        // **The merge, `docs/occluders.md`'s S3b**, and the only thing between a
+        // cell's references and the primitives they name. Every reference keeps
+        // its place — a cell's run is the same length and in the same order — and
+        // what changes is that two cells of one run of wall now point at one
+        // primitive. See [`merge::merged`] for what may be folded and why the
+        // answer cannot change.
+        let (solids, ids) = merge::merged(solids);
         // **Built here and never after**, for the same reason the tile index is:
         // what comes out of a builder is a list nothing appends to, and a
         // hierarchy over a list that could still grow would be a tree that is
