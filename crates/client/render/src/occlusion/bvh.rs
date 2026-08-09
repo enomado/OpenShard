@@ -40,6 +40,16 @@
 
 use crate::occlusion::{Solid, SolidId};
 
+/// Which axis a node's box is measured or split on. A number here is a choice
+/// of three where the reader has to remember which — see the split's own
+/// tie-break, which used to be spelled `0`/`1`/`2` and is now a match arm.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Axis {
+    X,
+    Y,
+    Z,
+}
+
 /// How many primitives one leaf holds at most.
 ///
 /// A cost knob under D4 and therefore a number here rather than a question:
@@ -257,12 +267,12 @@ fn bounds(run: &[SolidId], solids: &[Solid]) -> crate::solid::Solid {
 /// The middle rather than either corner, so that a flat primitive — a lid, whose
 /// box has no `z` extent at all — sorts by where it actually is instead of by
 /// which end of it the split happens to read.
-fn centre(id: SolidId, axis: usize, solids: &[Solid]) -> f64 {
+fn centre(id: SolidId, axis: Axis, solids: &[Solid]) -> f64 {
     let wire = solids[id.raw() as usize].wire_box();
     let (lo, hi) = match axis {
-        0 => (wire.min.x, wire.max.x),
-        1 => (wire.min.y, wire.max.y),
-        _ => (wire.min.z, wire.max.z),
+        Axis::X => (wire.min.x, wire.max.x),
+        Axis::Y => (wire.min.y, wire.max.y),
+        Axis::Z => (wire.min.z, wire.max.z),
     };
     (lo + hi) * 0.5
 }
@@ -305,9 +315,9 @@ fn split(nodes: &mut Vec<Node>, order: &mut [SolidId], range: std::ops::Range<us
                 extent[0] >= extent[1] && extent[0] >= extent[2],
                 extent[1] >= extent[2],
             ) {
-                (true, _) => 0,
-                (false, true) => 1,
-                (false, false) => 2,
+                (true, _) => Axis::X,
+                (false, true) => Axis::Y,
+                (false, false) => Axis::Z,
             };
             // **The tie-break is the primitive's own name, and it is what makes
             // this sort unstable-safe.** Two primitives with the same centre on

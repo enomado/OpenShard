@@ -1452,16 +1452,24 @@ of wall the twin oracle uses, drawn and compared against the tracer. It is one
 scene, and it would put the merge under the instrument that has no `Occlusion` in
 it at all.
 
-🔧 **The merge's own indices are bare `u32`s and its axis is a bare `usize`.**
-`occlusion::merge` carries three different index spaces in one integer type — a
-place in the frame's primitive list, a union-find group's name, and a place in the
-*output* list — beside a `0`/`1` axis selector that is a number where it is a
-choice of two. `docs/style.md`'s newtype rule is written for exactly this: a
-domain that is only in the reader's head is one a compiler cannot keep apart. It
-is a contained module and nothing outside it sees the raw types, which is why this
-is a backlog item and not a defect — but the same sweep is worth taking wider,
-since `bvh.rs` states its split axis the same way and `Solid::footprint`'s ranges
-are bare `i32`s.
+~~🔧 **The merge's own indices are bare `u32`s and its axis is a bare
+`usize`.**~~ Fixed in `occlusion::merge`: a private `Prim` newtype now carries
+the frame's-primitive-list index and the union-find group name (one type on
+purpose — every group name *is* a `Prim`, the one `root` resolves a lookup
+to), and the third space — the merged *output* list — was already
+`SolidId`; only `named: Vec<Option<u32>>` had been storing it unwrapped, and
+now holds `Option<SolidId>` directly. The `0`/`1` axis selector is a
+two-variant `Axis` enum, with no third variant to handle — see the module's
+own "Why only the horizontal axes". Both types are private; nothing outside
+the module sees them, so the fix stayed contained.
+
+The same sweep taken wider, one item at a time: `bvh.rs`'s split axis (`0`/
+`1`/`2`) is now a private three-variant `Axis` too, same reasoning, same
+containment. `Solid::footprint`'s `i32` ranges are **not** done here — closing
+that one properly means a real tile-coordinate type, and that type's call
+sites reach into `bake.rs`'s whole coordinate system (`origin`, `tile_of`,
+`spill_of`, block/cell indices), which is D7's ground, named "not in scope,
+deliberately" above. Left as the one open item of this backlog entry.
 
 🔴 **Nothing in the crate gates a corner-grazing candidate, and that is measured
 rather than suspected.** `blit.wesl`'s `walk` carried an *unconditional* diagonal

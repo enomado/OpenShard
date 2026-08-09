@@ -86,6 +86,36 @@
 
 use crate::occlusion::{Solid, SolidId};
 
+/// A primitive's place in the frame's own list — what `parent` and `space`
+/// are keyed by below, and equally what a union-find group's name is: a
+/// group's name is always some member's own `Prim`, the one [`root`] resolves
+/// to. The two roles share one type on purpose, since every group name *is* a
+/// place in this same list — what [`SolidId`] and this may never share is the
+/// third space, the merged *output* list, which is why `named` below holds
+/// [`SolidId`] rather than this.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct Prim(u32);
+
+impl Prim {
+    fn new(at: u32) -> Self {
+        Self(at)
+    }
+
+    fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Which of the two horizontal axes a merge pass runs along — see the module
+/// header's "Why only the horizontal axes" for why there is no third variant:
+/// a merge along `z` is forbidden by the plan and cannot fire regardless, so
+/// nothing here has to handle it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Axis {
+    X,
+    Y,
+}
+
 /// The frame's primitives with every contiguous piece of one surface folded into
 /// one, and — for each primitive that went in, in order — the name of the
 /// primitive it is now part of.
@@ -102,7 +132,7 @@ use crate::occlusion::{Solid, SolidId};
 pub fn merged(solids: Vec<Solid>) -> (Vec<Solid>, Vec<SolidId>) {
     // Union-find over the primitives: `parent[i] == i` is a group's own name,
     // and a group's name is always the lowest index in it.
-    let mut parent: Vec<u32> = (0..solids.len() as u32).collect();
+    let mut parent: Vec<Prim> = (0..solids.len() as u32).map(Prim::new).collect();
     // The box each group covers, valid at the group's name and stale elsewhere.
     let mut space: Vec<crate::solid::Solid> = solids.iter().map(|solid| solid.space).collect();
 
@@ -110,30 +140,31 @@ pub fn merged(solids: Vec<Solid>) -> (Vec<Solid>, Vec<SolidId>) {
     // axis and those rows into a slab along the other, and a row that has just
     // grown is a fresh candidate for the axis that ran before it. Each pass
     // strictly reduces the number of groups, so the loop ends.
-    while join(0, &solids, &mut parent, &mut space) || join(1, &solids, &mut parent, &mut space) {}
+    while join(Axis::X, &solids, &mut parent, &mut space) || join(Axis::Y, &solids, &mut parent, &mut space) {
+    }
 
     let mut out: Vec<Solid> = Vec::with_capacity(solids.len());
-    let mut named: Vec<Option<u32>> = vec![None; solids.len()];
+    let mut named: Vec<Option<SolidId>> = vec![None; solids.len()];
     let mut ids: Vec<SolidId> = Vec::with_capacity(solids.len());
     for (at, solid) in solids.iter().enumerate() {
-        let name = root(&mut parent, at as u32) as usize;
-        let id = match named[name] {
+        let name = root(&mut parent, Prim::new(at as u32));
+        let id = match named[name.raw() as usize] {
             Some(id) => id,
             None => {
-                let id = out.len() as u32;
+                let id = SolidId::new(out.len() as u32);
                 // The group's own representative, and every field but the box is
                 // equal across the group by the merge's own conditions — so this
                 // is the whole primitive rather than a choice between pieces.
                 // The one field that differs is the box, which is the union.
                 out.push(Solid {
-                    space: space[name],
+                    space: space[name.raw() as usize],
                     ..*solid
                 });
-                named[name] = Some(id);
+                named[name.raw() as usize] = Some(id);
                 id
             }
         };
-        ids.push(SolidId::new(id));
+        ids.push(id);
     }
     (out, ids)
 }
@@ -171,12 +202,11 @@ struct Surface {
     across: [u64; 4],
 }
 
-/// What one primitive's key is for a merge along `axis` — `0` for `x`, `1` for
-/// `y`, and there is no third (see the header).
-fn surface(axis: usize, solid: &Solid, space: &crate::solid::Solid) -> Surface {
+/// What one primitive's key is for a merge along `axis` (see the header).
+fn surface(axis: Axis, solid: &Solid, space: &crate::solid::Solid) -> Surface {
     let across = match axis {
-        0 => [space.min.y, space.max.y, space.min.z, space.max.z],
-        _ => [space.min.x, space.max.x, space.min.z, space.max.z],
+        Axis::X => [space.min.y, space.max.y, space.min.z, space.max.z],
+        Axis::Y => [space.min.x, space.max.x, space.min.z, space.max.z],
     };
     Surface {
         edges: solid.edges,
@@ -189,27 +219,28 @@ fn surface(axis: usize, solid: &Solid, space: &crate::solid::Solid) -> Surface {
 }
 
 /// Where a box begins and ends along the axis being merged along.
-fn span(axis: usize, space: &crate::solid::Solid) -> (f64, f64) {
+fn span(axis: Axis, space: &crate::solid::Solid) -> (f64, f64) {
     match axis {
-        0 => (space.min.x, space.max.x),
-        _ => (space.min.y, space.max.y),
+        Axis::X => (space.min.x, space.max.x),
+        Axis::Y => (space.min.y, space.max.y),
     }
 }
 
 /// One pass along one axis: every group that can grow along it does, and the
 /// answer is whether anything did.
-fn join(axis: usize, solids: &[Solid], parent: &mut [u32], space: &mut [crate::solid::Solid]) -> bool {
+fn join(axis: Axis, solids: &[Solid], parent: &mut [Prim], space: &mut [crate::solid::Solid]) -> bool {
     // A windowed primitive is not offered at all — see the header — so it is
     // never anybody's neighbour either, and a run of wall with one window in it
     // comes out as three primitives rather than as a hole in the wrong tile.
     // Nor is a translucent one: two panes dim a ray twice and one merged pane
     // dims it once, which is a moved pixel whatever the geometry says.
-    let mut runs: Vec<(Surface, f64, u32)> = (0..solids.len() as u32)
-        .filter(|at| parent[*at as usize] == *at && mergeable(&solids[*at as usize]))
+    let mut runs: Vec<(Surface, f64, Prim)> = (0..solids.len() as u32)
+        .map(Prim::new)
+        .filter(|at| parent[at.raw() as usize] == *at && mergeable(&solids[at.raw() as usize]))
         .map(|at| {
-            let space = space[at as usize];
+            let space = space[at.raw() as usize];
             (
-                surface(axis, &solids[at as usize], &space),
+                surface(axis, &solids[at.raw() as usize], &space),
                 span(axis, &space).0,
                 at,
             )
@@ -225,10 +256,10 @@ fn join(axis: usize, solids: &[Solid], parent: &mut [u32], space: &mut [crate::s
         let mut into = runs[at].2;
         let mut next = at + 1;
         while next < runs.len() && runs[next].0 == runs[at].0 {
-            let (begins, _) = span(axis, &space[runs[next].2 as usize]);
+            let (begins, _) = span(axis, &space[runs[next].2.raw() as usize]);
             // Exact, and the whole of what "contiguous" means: a gap leaves two
             // primitives and an overlap is not a shared face at all.
-            if span(axis, &space[into as usize]).1 != begins {
+            if span(axis, &space[into.raw() as usize]).1 != begins {
                 break;
             }
             into = unite(parent, space, into, runs[next].2);
@@ -245,17 +276,17 @@ fn join(axis: usize, solids: &[Solid], parent: &mut [u32], space: &mut [crate::s
 /// The **lower** index survives, which is what makes a group's name its lowest
 /// member and [`merged`]'s output order a fact about the input rather than about
 /// the passes.
-fn unite(parent: &mut [u32], space: &mut [crate::solid::Solid], a: u32, b: u32) -> u32 {
+fn unite(parent: &mut [Prim], space: &mut [crate::solid::Solid], a: Prim, b: Prim) -> Prim {
     let (keep, gone) = match a < b {
         true => (a, b),
         false => (b, a),
     };
-    let (one, other) = (space[keep as usize], space[gone as usize]);
+    let (one, other) = (space[keep.raw() as usize], space[gone.raw() as usize]);
     // The componentwise union, which is the *exact* union of the two point sets
     // because they share a whole face: they are equal on two axes and touch on
     // the third, so nothing between them is empty and nothing outside them is
     // covered.
-    space[keep as usize] = crate::solid::Solid {
+    space[keep.raw() as usize] = crate::solid::Solid {
         min: crate::camera::WorldSpot {
             x: one.min.x.min(other.min.x),
             y: one.min.y.min(other.min.y),
@@ -267,18 +298,18 @@ fn unite(parent: &mut [u32], space: &mut [crate::solid::Solid], a: u32, b: u32) 
             z: one.max.z.max(other.max.z),
         },
     };
-    parent[gone as usize] = keep;
+    parent[gone.raw() as usize] = keep;
     keep
 }
 
 /// Which group a primitive is in, by its name.
-fn root(parent: &mut [u32], of: u32) -> u32 {
+fn root(parent: &mut [Prim], of: Prim) -> Prim {
     let mut at = of;
-    while parent[at as usize] != at {
+    while parent[at.raw() as usize] != at {
         // Path halving: a group is a handful of pieces, and this keeps the walk
         // short without a second pass over the list.
-        parent[at as usize] = parent[parent[at as usize] as usize];
-        at = parent[at as usize];
+        parent[at.raw() as usize] = parent[parent[at.raw() as usize].raw() as usize];
+        at = parent[at.raw() as usize];
     }
     at
 }
