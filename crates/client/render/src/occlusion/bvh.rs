@@ -188,6 +188,17 @@ impl Bvh {
         &self.nodes[at.raw() as usize]
     }
 
+    /// The permutation itself: every primitive of the frame exactly once, in the
+    /// order the build put them in.
+    ///
+    /// What [`crate::occlusion::Occlusion::order_bytes`] uploads. A leaf is a run
+    /// of this, so a backend that walks the tree needs the whole of it and not
+    /// one leaf at a time — which is exactly the difference between this and
+    /// [`Bvh::primitives`].
+    pub fn order(&self) -> &[SolidId] {
+        &self.order
+    }
+
     /// The primitives a leaf names, in the build's own permuted order.
     pub fn primitives(&self, leaf: Leaf) -> &[SolidId] {
         let from = leaf.first as usize;
@@ -411,11 +422,18 @@ mod tests {
     /// subtree is the contiguous run between it and its own escape, an inner
     /// node's first child is the very next node, and the second child's escape
     /// is its parent's.
+    ///
+    /// The root's own escape is the whole tree, and that is asserted here rather
+    /// than left to follow from the rest: `blit.wesl` reads it as the number of
+    /// nodes this frame has — its buffer is grown and never shrunk, so what ends
+    /// its traversal is the root's escape and not the buffer's length. A root
+    /// escaping short of the end would leave the shader walking a subtree.
     #[test]
     fn a_nodes_escape_is_the_end_of_its_own_subtree() {
         let solids = row(29);
         let bvh = Bvh::of(&solids);
         let end = bvh.past_the_end().raw();
+        assert_eq!(bvh.node(NodeIdx::ROOT).escape, bvh.past_the_end());
         for (at, node) in bvh.nodes().iter().enumerate() {
             let at = at as u32;
             assert!(

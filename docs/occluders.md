@@ -471,7 +471,7 @@ one whose gate is not green.
 | S2 | the detector, before the fix | ✅ built and read |
 | S3 | the surface exemption | ✅ landed 2026-08-09 |
 | S4 | delete the cell rules | ✅ **all four gone.** `same_run`, the vertical shortcut, `starting_cell` — and the per-cell `max`, which S5 deleted with the cell it was a statement about; `first` went with the grid at the same time |
-| S5 | the hierarchy | 🚧 **the tree is built and both CPU walks read it**; `blit.wesl` still walks the grid, and the cost harness is untouched. See § *The hierarchy* |
+| S5 | the hierarchy | 🚧 **both backends walk the tree** — the grid is out of the walk everywhere. Left: the cost harness, which prices `Occlusion::EMPTY`, and the two walks' names. See § *The hierarchy* |
 | S3b | the merge | ⬜ last, after S5 — and a **pure optimisation** since phase 5b took its cure away |
 
 And S5 is the same shape a fourth time: the plan asked for a node budget and
@@ -1048,8 +1048,9 @@ they are the reason D3 says the hierarchy is not about speed:
   was multiplied cell after cell. A primitive is under exactly one leaf;
 - a `floor()` decided which cell a boundary point was in.
 
-They close on the CPU only — `blit.wesl` still walks the grid, so S3b's own
-precondition is not met until the shader moves too.
+✅ **And they close on the shader too since the port below**, so S3b's own
+precondition — one broad phase, on both sides, that a merged primitive cannot
+outgrow — is met.
 
 **No node budget, and that departs from this plan's letter** (below), which asks
 for one "in the same role" as `MAX_WALK_STEPS`. There is nothing to size: a
@@ -1145,14 +1146,64 @@ cannot see a broad phase that misses a corner-grazing candidate either. The port
 deletes the probe with the grid (a tree has no ties to break), and this says the
 deletion is unmeasurable rather than measured — see § *Backlog*.
 
+### ✅ The shader on the tree: **the grid is out of the walk on both sides**
+
+Landed 2026-08-09, with the sweep above as its gate.
+
+**Two storage buffers at the free bindings**, 15 and 16: the nodes
+(`Occlusion::node_bytes`) and the permutation their leaves index into
+(`order_bytes`). A node is `Primitive`'s own shape — two `vec3<f32>` corners with
+a `u32` in the padding each leaves behind — carrying the escape index in one of
+those words and the leaf in the other, packed `first << 3 | count`. Three bits is
+the whole count, a leaf holding at most four; a second `u32` would have cost
+sixteen bytes a node, since a struct whose widest member is a `vec3<f32>` rounds
+up to a multiple of sixteen either way.
+
+🔑 **A traversal ends at the root's own escape, and that is what makes the buffer
+safe to grow and never shrink.** `arrayLength` would have been the obvious thing
+and would have been wrong: these buffers keep the capacity of the largest frame,
+so their length is last frame's tree, not this one's. The root's escape *is* this
+frame's node count. It also removes the empty-world case — a frame with no
+occluder uploads one node of zeros, whose escape is zero, so the loop runs no
+iterations. `bvh`'s `a_nodes_escape_is_the_end_of_its_own_subtree` gained the
+assertion that says the root escapes past the last node, since the shader now
+rests on it.
+
+**And the tree is uploaded before `upload_grid`'s own early return**, not after:
+a frame with no grid at all still binds these, and a tree left from the last
+frame would be a traversal of geometry the camera has walked away from.
+
+**`cell_stopped` became `primitive_stopped`**, and the per-cell `max` went with
+the cell it was a statement about — the product is the walk's now, one factor a
+primitive, which is what `light::walk_primitives` has done since the CPU moved.
+The DDA, its `first = floor(start.xy)`, its boundary arithmetic, its
+unconditional diagonal probe and `MAX_WALK_STEPS` are all deleted.
+
+*Gates, all run:*
+
+- The whole crate green with both backends on the tree, the new sweep included.
+- *Fault injection, into the new traversal*: a leaf skipping its first primitive
+  turns **five of the six** sweeps red (377–519 pixels); a hit that does not
+  descend — `next = node.escape` in place of `at + 1` — turns **all six** red,
+  1,355–2,400 pixels. The one scene the first injection leaves green is
+  `wall_with_a_torch_beside_it`, whose leaves' first primitives happen to stop no
+  ray it draws.
+- *The wire itself*: `the_wire_carries_the_tree_the_walk_reads` reads the bytes
+  back from the offsets rather than through the writer — the root's escape is the
+  node count, a leaf's `first` and `count` survive the packing, and the
+  permutation names every primitive exactly once. Both halves fault-injected
+  (`<< 4` for the pack, `escape + 1` for the escape) and both go red.
+
+*Found on the way, and fixed:* `PRIMITIVE_BYTES`' own doc named a gate,
+`the_wire_carries_a_primitives_own_six_numbers`, that **has never existed**. That
+is this file's own decay pattern — a comment describing a rule nothing compiles
+against — one level up: a comment describing a *test* nothing runs.
+
 **What is left of S5**, in order:
 
-1. **`blit.wesl`**: the tree as two storage buffers (the nodes and the
-   permutation), `candidates` as the same stackless traversal, and `cell_stopped`
-   becoming a per-*primitive* rule. Bindings 15 and 16 are the free ones.
-2. **`tests/cost.rs`**, which builds against `Occlusion::EMPTY` and therefore
+1. **`tests/cost.rs`**, which builds against `Occlusion::EMPTY` and therefore
    cannot price this at all.
-3. The rename: `walk_cells_exact`/`walk_cells_streaming` are the **record's** walk
+2. The rename: `walk_cells_exact`/`walk_cells_streaming` are the **record's** walk
    and the **wire's**, and neither has a cell in it.
 
 **S5 — the hierarchy.** D3. A CPU build over the primitives and a

@@ -1310,9 +1310,21 @@ pub const LIST_ROW: u32 = 1024;
 /// gives it twelve, so each `u32` occupies padding that would otherwise be dead
 /// and the struct is exactly this with nothing wasted. A number here and a
 /// layout there is a contract nothing but a person compares — see
-/// `the_wire_carries_a_primitives_own_six_numbers`, which is that person written
-/// down.
+/// [`the_wire_carries_the_whole_span`](Occlusion::primitive_bytes), which reads
+/// these bytes back from the offsets rather than through the writer, and is that
+/// person written down. (It named a test called
+/// `the_wire_carries_a_primitives_own_six_numbers` until 2026-08-09; no such
+/// test has ever existed, which is this file's own decay pattern one more time.)
 pub const PRIMITIVE_BYTES: usize = 32;
+
+/// How many bytes one node of the tree is on the wire —
+/// [`Occlusion::node_bytes`]'s own stride, and `blit.wesl`'s `Node` struct size.
+///
+/// The same shape as [`PRIMITIVE_BYTES`] and for the same reason: two
+/// `vec3<f32>` corners with a `u32` in the padding each of them leaves. One of
+/// those words is the escape index and the other is the leaf, packed — see
+/// [`Occlusion::node_bytes`].
+pub const NODE_BYTES: usize = 32;
 
 /// The occluders of one frame: the solids, the references to them, and the tile
 /// grid as the index of those.
@@ -1882,6 +1894,82 @@ impl Occlusion {
             }
         }
         bytes.resize(rows * row * 4, 0);
+        bytes
+    }
+
+    /// The **tree** as the storage buffer the shader traverses: one
+    /// [`NODE_BYTES`]-byte struct a node, depth first, the root first.
+    ///
+    /// `(lo.x, lo.y, lo.z, escape, hi.x, hi.y, hi.z, leaf)` — three `f32`, a
+    /// `u32`, three `f32`, a `u32`, little-endian, which is `blit.wesl`'s `Node`
+    /// and its WGSL layout exactly, laid out like [`Occlusion::primitive_bytes`]
+    /// and for the same reason.
+    ///
+    /// **The leaf is one word and it is packed**: `first << 3 | count`, with a
+    /// count of zero meaning an inner node, which holds no primitives at all. A
+    /// leaf holds at most [`bvh::LEAF_PRIMITIVES`] so three bits is the whole of
+    /// it, and what is left names any run of a list this renderer could hold —
+    /// the assertion below is what says so rather than a comment. A second `u32`
+    /// would have cost sixteen bytes a node, since a struct whose widest member
+    /// is a `vec3<f32>` rounds up to a multiple of sixteen either way.
+    ///
+    /// **A frame with no occluder writes one node of zeros**, and that is not a
+    /// sentinel anybody has to recognise: a traversal runs while its node index
+    /// is below the root's own escape, and a zeroed root escapes to zero. So the
+    /// empty tree ends the loop by arithmetic rather than by a case. The same
+    /// rule is what makes the buffer safe to grow and never shrink — the walk
+    /// stops at the root's escape, so whatever capacity is left holding from a
+    /// larger frame is never read.
+    pub fn node_bytes(&self) -> Vec<u8> {
+        let nodes = self.bvh.nodes();
+        let mut bytes = Vec::with_capacity(nodes.len().max(1) * NODE_BYTES);
+        for node in nodes {
+            for value in [node.space.min.x, node.space.min.y, node.space.min.z] {
+                bytes.extend_from_slice(&(value as f32).to_le_bytes());
+            }
+            bytes.extend_from_slice(&node.escape.raw().to_le_bytes());
+            for value in [node.space.max.x, node.space.max.y, node.space.max.z] {
+                bytes.extend_from_slice(&(value as f32).to_le_bytes());
+            }
+            let leaf = match node.leaf {
+                None => 0,
+                Some(leaf) => {
+                    // The one thing the packing can be wrong about, and it is a
+                    // fail-fast rather than a truncation: a run this far into the
+                    // permutation would silently be read as a different run.
+                    assert!(
+                        leaf.first < 1 << 29,
+                        "a leaf starting at {} does not fit beside its own count",
+                        leaf.first,
+                    );
+                    leaf.first << 3 | u32::from(leaf.count)
+                }
+            };
+            bytes.extend_from_slice(&leaf.to_le_bytes());
+        }
+        // The empty tree: one node of zeros, whose escape is zero.
+        bytes.resize(bytes.len().max(NODE_BYTES), 0);
+        bytes
+    }
+
+    /// And the **permutation** the leaves index into: every [`SolidId`] of the
+    /// frame exactly once, in the order the build put them in, as one `u32`
+    /// each.
+    ///
+    /// A list beside the tree rather than the solids themselves reordered, for
+    /// [`bvh::Bvh::order`]'s own reason: a [`SolidId`] is what an instance row
+    /// carries, what the aperture plane is indexed by and what the self-shadow
+    /// rule compares, so the list those name may not be shuffled under them.
+    ///
+    /// One entry for a frame with nothing in it, since a buffer of no size is not
+    /// a thing wgpu will bind — and nothing points at it, the tree above being a
+    /// single node that names no primitives.
+    pub fn order_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.solids.len().max(1) * 4);
+        for id in self.bvh.order() {
+            bytes.extend_from_slice(&id.raw().to_le_bytes());
+        }
+        bytes.resize(bytes.len().max(4), 0);
         bytes
     }
 
@@ -3903,6 +3991,95 @@ mod tests {
             "and one far past a map's own range arrives as itself: the wire has no \
              ends of its own to pin it to"
         );
+    }
+
+    /// **The tree arrives on the wire as the tree the CPU walked**, node for
+    /// node — `docs/occluders.md`'s S5, and the one statement `blit.wesl`'s
+    /// traversal rests on that no compiler checks.
+    ///
+    /// Read back from the layout rather than through anything the writer calls,
+    /// exactly as [`wire`] is and for the same reason. Three claims, and each is
+    /// one the shader would be silently wrong about:
+    ///
+    /// - the **root's escape is the node count**, which is where a traversal
+    ///   ends — the shader reads it instead of the buffer's length, because that
+    ///   buffer is grown and never shrunk;
+    /// - a leaf's `first` and `count` survive the packing into one word;
+    /// - the permutation names every primitive of the frame exactly once, which
+    ///   is the property that makes the tree a superset at all.
+    #[test]
+    fn the_wire_carries_the_tree_the_walk_reads() {
+        let bounds = TileBounds {
+            min_x: 0,
+            max_x: 15,
+            min_y: 0,
+            max_y: 15,
+        };
+        let mut builder = Builder::new(bounds);
+        // Enough bodies to make a tree with real depth rather than a single leaf:
+        // sixteen is four leaves at `LEAF_PRIMITIVES`, so there are inner nodes
+        // whose escape is not simply `at + 1`.
+        for x in 0..4_u16 {
+            for y in 0..4_u16 {
+                builder.add_raw(
+                    x,
+                    y,
+                    Solid::box_of(i32::from(x), i32::from(y), 0, 20, EDGE_ANY),
+                    Owner::new(0, Graphic(1)),
+                );
+            }
+        }
+        let occlusion = builder.finish(&Cutaway::OPEN);
+        let tree = occlusion.bvh();
+        let bytes = occlusion.node_bytes();
+        assert_eq!(
+            bytes.len(),
+            tree.nodes().len() * NODE_BYTES,
+            "one struct a node, and the buffer is as long as the tree"
+        );
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"));
+        assert_eq!(
+            word(12),
+            tree.nodes().len() as u32,
+            "the root escapes past the last node, which is what ends a traversal"
+        );
+        for (at, node) in tree.nodes().iter().enumerate() {
+            let base = at * NODE_BYTES;
+            assert_eq!(word(base + 12), node.escape.raw(), "node {at}'s escape");
+            let leaf = word(base + 28);
+            match node.leaf {
+                None => assert_eq!(leaf & 7, 0, "node {at} is inner and names no primitives"),
+                Some(run) => assert_eq!(
+                    (leaf >> 3, leaf & 7),
+                    (run.first, u32::from(run.count)),
+                    "node {at}'s own run"
+                ),
+            }
+        }
+
+        let order = occlusion.order_bytes();
+        let mut named: Vec<u32> = order
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes(word.try_into().expect("four bytes")))
+            .collect();
+        named.sort_unstable();
+        assert_eq!(
+            named,
+            (0..occlusion.solid_count() as u32).collect::<Vec<u32>>(),
+            "the permutation names every primitive of the frame exactly once"
+        );
+    }
+
+    /// And a frame with nothing standing in it is a tree a traversal ends on
+    /// before its first node: one node of zeros, whose escape is zero.
+    ///
+    /// Stated as a gate because it is what the shader relies on instead of a
+    /// case for an empty world — see [`Occlusion::node_bytes`].
+    #[test]
+    fn an_empty_frame_uploads_a_tree_that_ends_at_once() {
+        let bytes = Occlusion::EMPTY.node_bytes();
+        assert_eq!(bytes, vec![0; NODE_BYTES]);
+        assert_eq!(Occlusion::EMPTY.order_bytes(), vec![0; 4]);
     }
 
     /// The boxes are the cells, at the tiles they stand on — the claim the

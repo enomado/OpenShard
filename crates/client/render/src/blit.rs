@@ -158,6 +158,23 @@ pub struct Blit {
     /// with no window in it neither lays these bytes out nor sends them, which
     /// is every frame of a real map until step 16 lands.
     apertures: wgpu::Texture,
+    /// The broad phase, as the shader traverses it: the tree's nodes, depth
+    /// first, the root first. See
+    /// [`Occlusion::node_bytes`](crate::occlusion::Occlusion::node_bytes) and
+    /// `docs/occluders.md`'s S5.
+    ///
+    /// Grown and never shrunk, like [`Blit::primitives`] and for a stronger
+    /// reason than that one has: a traversal ends at the **root's own escape**,
+    /// which is this frame's node count, so capacity left over from a larger
+    /// frame is not merely unreferenced but unreachable.
+    nodes: wgpu::Buffer,
+    /// And the permutation its leaves index into — one `SolidId` a word. See
+    /// [`Occlusion::order_bytes`](crate::occlusion::Occlusion::order_bytes).
+    ///
+    /// A second buffer and not a field of the node: a leaf is a *run* of this,
+    /// which is two numbers in the node and however many primitives here, and
+    /// folding them together would be the same list held twice.
+    order: wgpu::Buffer,
 }
 
 impl Blit {
@@ -369,6 +386,30 @@ impl Blit {
                     },
                     count: None,
                 },
+                // And the broad phase: the tree's nodes and the permutation its
+                // leaves index into, `docs/occluders.md`'s S5. Read-only storage,
+                // the same as every list above — a traversal indexes them and
+                // writes nothing.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 16,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -450,6 +491,11 @@ impl Blit {
             // And room for one primitive nothing points at, for the same
             // reason: a buffer of no size is not a thing wgpu will bind.
             primitives: primitive_buffer(device, 1),
+            // One node and one word of permutation: the empty tree, whose root
+            // escapes to zero, so a traversal over it ends before its first
+            // node. See `Occlusion::node_bytes`.
+            nodes: tree_buffer(device, "bvh nodes", crate::occlusion::NODE_BYTES),
+            order: tree_buffer(device, "bvh order", 4),
         }
     }
 
@@ -484,6 +530,7 @@ impl Blit {
         } = frame;
         queue.write_buffer(&self.lighting, 0, &lighting_bytes(lighting));
         self.upload_grid(device, queue, lighting);
+        self.upload_tree(device, queue, lighting);
         // A bind group per call rather than per `Blit`: the world texture is
         // recreated on every resize and every zoom step, and a cached group
         // would be a handle to a texture that is no longer being drawn into.
@@ -567,6 +614,14 @@ impl Blit {
                 wgpu::BindGroupEntry {
                     binding: 14,
                     resource: wgpu::BindingResource::TextureView(&gbuffer.normal),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: self.nodes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 16,
+                    resource: self.order.as_entire_binding(),
                 },
             ],
         });
@@ -767,6 +822,21 @@ fn primitive_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
     })
 }
 
+/// Room for `bytes` of the broad phase — [`Blit::nodes`] and [`Blit::order`].
+///
+/// One function for both because they are grown by one rule: whatever the frame
+/// laid out, never smaller than the buffer already is, and never zero — a buffer
+/// of no size is not a thing wgpu will bind, and the empty tree is one node of
+/// zeros rather than no node at all.
+fn tree_buffer(device: &wgpu::Device, label: &str, bytes: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: bytes.max(4) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 /// One zeroed row, standing in for [`Frame::face_instances`] or
 /// [`Frame::mobile_instances`] when a caller has no real one to bind —
 /// ground-only fixtures, and [`crate::plan`]'s synthetic picture, which by its
@@ -924,6 +994,28 @@ impl Blit {
         if lighting.occlusion.any_aperture() {
             list(&self.apertures, &lighting.occlusion.aperture_bytes());
         }
+    }
+
+    /// The broad phase on the GPU: the tree's nodes and the permutation its
+    /// leaves index into, `docs/occluders.md`'s S5.
+    ///
+    /// Every frame, and **before** [`Blit::upload_grid`]'s own early return
+    /// rather than after it: a frame with no grid at all still binds this, and a
+    /// tree left over from the last frame would be a traversal of geometry the
+    /// camera has walked away from. The empty frame's own tree is one node whose
+    /// escape is zero, which is a traversal that ends before its first node —
+    /// see `Occlusion::node_bytes`.
+    fn upload_tree(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, lighting: &Lighting) {
+        let nodes = lighting.occlusion.node_bytes();
+        if (self.nodes.size() as usize) < nodes.len() {
+            self.nodes = tree_buffer(device, "bvh nodes", nodes.len());
+        }
+        queue.write_buffer(&self.nodes, 0, &nodes);
+        let order = lighting.occlusion.order_bytes();
+        if (self.order.size() as usize) < order.len() {
+            self.order = tree_buffer(device, "bvh order", order.len());
+        }
+        queue.write_buffer(&self.order, 0, &order);
     }
 }
 
