@@ -4622,8 +4622,11 @@ struct Fixture {
     /// boundary its own instance's tile ends at. That is what the impostor writes
     /// for every south and east face, and a share of them land a hair over.
     ///
-    /// Zero for every fixture that is not about it. `light::starting_cell` is the
-    /// rule this exists to point the frame at.
+    /// Zero for every fixture that is not about it. It exists to make a
+    /// fragment's position and its carried tile disagree, which
+    /// `docs/occluders.md`'s S4 turned from a rule's own subject into a fact
+    /// nothing downstream may read: the walk seeds itself from the position and
+    /// the tile is not passed to it at all.
     drift: (f32, f32),
 }
 
@@ -5359,11 +5362,13 @@ fn the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside() {
 /// **A fragment a hair past its own tile's edge is shadowed by the wall it has
 /// drifted into.**
 ///
-/// `blit.wesl`'s `starting_cell` and `light::starting_cell` are one rule written
-/// twice with no compiler between them, and this is the only thing comparing
-/// them — the shader's copy, on the shader. `light.rs`'s own
-/// `a_ray_starting_just_past_its_own_tile_is_stopped_by_the_cell_it_is_in` is
-/// the same claim about the two CPU walks.
+/// **What it is a claim about has changed, and `docs/occluders.md`'s S4 is
+/// why.** It used to compare `blit.wesl`'s `starting_cell` against
+/// `light::starting_cell` — one rule written twice with no compiler between the
+/// two — and both are deleted. What it states now is one step further back:
+/// **the shader answers from where a fragment stands, not from the tile its id
+/// plane names.** Those two are the same number for almost every pixel, and this
+/// fixture is the only place in the crate where they are made to differ.
 ///
 /// The scene is one body on the centre tile and a flame four tiles west of it,
 /// with the fixture's whole frame drifted a fifth of a tile east. That puts the
@@ -5373,11 +5378,16 @@ fn the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside() {
 /// and stands in the open, which is what makes the pair a claim rather than a
 /// number: the one inside the wall must be dark and the one beside it must not.
 ///
-/// Neutralise `starting_cell` in the shader and the inside pixel comes out as
-/// bright as the open one — the walk is handed a whole tile of slack to a
-/// boundary it has already crossed, so it never looks at the cell it is standing
-/// in. That is the light leak `docs/lighting_rebuild.md` phase 6c's backlog
-/// measured as a line along every tile boundary of a building's floors.
+/// ⚠ **It is a fixture rather than a gate, and that is measured.** Seed the
+/// shader's walk with a cell the fragment is *not* in and this stays green,
+/// because the ray runs west and reaches the wall's own cell within a hair
+/// either way — the injection reddens `the_shader_stops_a_vertical_ray_with_the_
+/// panel_it_stands_inside`, both path-tracer gates and `pictures.rs`'s
+/// `a_wall_in_front_of_a_torch_darkens_the_ground_behind_it_and_not_beside_it`
+/// instead. Its CPU twin was deleted for exactly this and its grave note in
+/// `light.rs` says so; this one is kept because nothing else in the crate builds
+/// a fragment whose position and carried tile disagree, and the day something
+/// starts reading that tile again this is the scene that shows it.
 ///
 /// `Surface::Upright` on purpose: the ray here is horizontal, so a `Flat`
 /// fragment would answer with a cosine of zero and both pixels would be dark for

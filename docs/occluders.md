@@ -57,9 +57,10 @@ the storage. Three consequences, each already seen in a frame:
    a run is N solids. `starting_cell` exists because a fragment's position and
    its instance's tile can disagree. The vertical shortcut reads one cell. The
    per-cell `max` exists because two panels of one corner are two boxes of one
-   wall. Four rules, all standing in for a shape that is not stated. **Two are
-   gone at S4** — `same_run` and the vertical shortcut — and neither went by the
-   merge or the hierarchy this plan expected to retire it.
+   wall. Four rules, all standing in for a shape that is not stated. **Three are
+   gone at S4** — `same_run`, the vertical shortcut and `starting_cell` — and not
+   one of them went by the merge or the hierarchy this plan expected to retire
+   it.
 
    **And for a *body* not even that** — a correction to this list, measured after
    it was written. `same_run` is a run of **panels** along a row or column; the
@@ -76,8 +77,10 @@ strictly outside their own carried tile and **324 of them leaked a fully lit
 pixel into a shadow**; the narrow leaks over one building's floors numbered 303.
 `starting_cell` took that to zero, and `docs/lighting_rebuild.md`'s backlog
 records that it is a repair rather than a construction — it arbitrates between
-two spellings of one fact instead of removing the second spelling. This plan
-removes it.
+two spellings of one fact instead of removing the second spelling. ✅ **Removed
+at S4, and the second spelling went with it**: the walk seeds itself from the
+position, the carried tile is not passed to a walk on either backend, and what
+the arbitration was worth is measured under § *The starting cell*.
 
 ## The decisions
 
@@ -193,6 +196,14 @@ vertical shortcut and the per-cell `max` are deleted. The first two because D2
 removes what they stand in for; the last two because they are statements about a
 cell in a pass that no longer has one. Each goes only after its own measurement
 says nothing depends on it — see § *Steps*, S4.
+
+⚠ **The reason given for `starting_cell` was wrong, and it went anyway.** D2
+removes nothing it stood in for: it is not an exemption at all but an arbiter
+between a fragment's position and the tile it carries, and D2 has no opinion
+about either. What licensed the deletion is a census — the case it was written
+for is unreachable in every scene the crate draws, and the case it *does* decide
+has one answer. A rule can be right to delete for a reason its plan never
+guessed, which is now three for three at S4.
 
 **And `same_run` is licensed by D2a rather than by the merge**, which is what the
 reversal above buys: the identity replaces it outright, so S4 no longer waits on
@@ -459,15 +470,19 @@ one whose gate is not green.
 | S1 | absolute coordinates on the wire | ✅ landed |
 | S2 | the detector, before the fix | ✅ built and read |
 | S3 | the surface exemption | ✅ landed 2026-08-09 |
-| S4 | delete the cell rules | 🚧 `same_run` ✅ and the vertical shortcut ✅ are gone; the per-cell `max` is 🔴 **blocked** — the suite is blind to it and the licence arrives with S5; `starting_cell` with `first` is what a session picks up next |
+| S4 | delete the cell rules | 🚧 `same_run` ✅, the vertical shortcut ✅ and `starting_cell` ✅ are gone; the per-cell `max` is 🔴 **blocked** — the suite is blind to it and the licence arrives with S5, and `first` goes with the grid itself, also at S5. **Nothing here is left to pick up** |
 | S5 | the hierarchy | ⬜ not started — and it carries the cost harness, which cannot price a frame with real occluders today |
 | S3b | the merge | ⬜ last, after S5 — and a **pure optimisation** since phase 5b took its cure away |
 
-Neither of S4's two deletions went the way this plan expected: `same_run` was
-retired by three fixtures learning to name their own solid, and the vertical
-shortcut by a census finding it is entered zero times. Each is written up under
-its own heading below, because *how* a rule turned out to be unnecessary is the
-part a later step inherits.
+None of S4's three deletions went the way this plan expected: `same_run` was
+retired by three fixtures learning to name their own solid, the vertical
+shortcut by a census finding it is entered zero times, and `starting_cell` by a
+census finding that the case it was written for is unreachable while the case it
+still decides has one answer. Each is written up under its own heading below,
+because *how* a rule turned out to be unnecessary is the part a later step
+inherits — and after three of them, **a census taken at the call site is the
+instrument this step is actually made of.** The pattern in all three: the plan's
+own reason for a deletion was not the reason it landed.
 
 **S1 — absolute coordinates on the wire.** D1. ✅ **Landed.** The reconstruction
 and the quantisation are gone; a primitive carries its own six numbers.
@@ -773,13 +788,105 @@ per-cell `max` (🔴 **measured 2026-08-09, and it does not land on this
 measurement** — see below), ~~the vertical
 shortcut~~ ✅ **deleted 2026-08-09, and it was a live defect and not only a
 branch** — see below, and the licence was a census rather than a green suite —
-and `starting_cell` with `first` (nothing left reads a cell).
+and ~~`starting_cell` with `first`~~ ✅ **`starting_cell` deleted 2026-08-09;
+`first` stays until S5**, which is the honest split of what "nothing left reads a
+cell" was asking for. The arbiter between a fragment's position and its carried
+tile is gone, and so is the carried tile itself — off `LitEnd`, off `dda_walk`
+and `candidate_tiles`, and off `walk`, `arrival` and `sunlight` in `blit.wesl`,
+which threaded it down three functions for one reader. What remains is one line
+of `from.floor()` at each of the three walks: a cell used as an **index**, which
+is what S5 deletes when it deletes the grid. See below.
 
 *Gate:* each deletion is preceded by neutralising the rule and finding the suite
 green, and followed by the brute-force oracle staying equal. The three tests that
 phase 4 found go red when identity is neutralised must stay red under that
 injection — the self-shadow rule is **not** part of this and must not be
 weakened by the merge.
+
+### ✅ The starting cell: **the case it was written for is unreachable, and the case it decides has one answer**
+
+Deleted from `light.rs`'s two walks and from `blit.wesl`, with everything that
+existed to feed it: `LitEnd`'s `tile` field, the `tile` parameter of `dda_walk`
+and `candidate_tiles`, and the `tile` parameter of `walk`, `arrival` and
+`sunlight` — three functions carrying the place attachment's own tile down to a
+single reader. Also gone, found while removing it: **`cell_stopped`'s `first`
+parameter, which nothing in its body read** — the same shape as the `ground`
+parameter the vertical shortcut left behind, and worth a line for the same
+reason, that a dead parameter reads as a rule.
+
+**The rule was an arbiter, not an exemption.** It read *"the carried tile, unless
+the start point is strictly outside it"* — the carried tile to break the tie a
+point on its own far edge is, `floor` to stop that tile contradicting the
+position outright. Only the second half was ever load-bearing, and it is what
+took the 324 leaked pixels above to zero.
+
+**The census, taken at the two walks themselves** — inside the rule it would have
+been drowned by its own proptest, which calls it four thousand times with
+nothing else in the frame:
+
+| | walks | `floor` ≠ carried tile | of those, the exact-edge tie |
+|---|---|---|---|
+| `lib.rs` | ≥65,536 | 34 | 16 ⇒ **18 strictly outside** |
+| `tests/frame.rs` | ≥262,144 | 0 | 0 |
+| `tests/lighting.rs` | ≥32,768 | 11,528 | 11,528 ⇒ **0 strictly outside** |
+
+So the case the rule was written for happens **18 times, all of them in the two
+fixtures written for it**, and there the rule *is* `floor`. Zero times in any
+generated or rendered scene. What it still decided, 11,544 times, is the
+exact-edge tie — the normal state of every south and east face since
+`docs/lighting_rebuild.md` phase 6c.
+
+**And that tie has one answer.** Both cells contain a point on the boundary
+between them, and a walk seeds its distance to the next boundary from the cell it
+starts in — so from either seed the other cell is reached at `t = 0` if the ray
+heads that way, and touched at a single point if it does not. A primitive is a
+tile's, so a solid listed on the merely-touched cell lies inside it and
+`ray_vs_solid`'s zero-length touch rule already refuses to block on it.
+⚠ **That last clause is the precondition, and S3b is what breaks it**: the first
+box wider than its own tile makes "touched at a point" and "meets the segment"
+two different things again. By then S5 has taken the cell away entirely, which is
+the order this plan already fixes — but it is a second reason the merge may not
+be brought forward, beside the superset hole in the backlog.
+
+**A latent CPU/GPU divergence came out with it.** `blit.wesl` stepped its walk
+from `first` while seeding `boundary` from the carried `tile`; `light.rs` has
+always used its own `first`. The two are the same number for every ray the suite
+draws and differ in exactly the strictly-outside case — the one no fixture
+reaches. One cell on both sides now, and it cost nothing to fix because the
+parameter it disagreed with was being deleted anyway.
+
+*Gates, both directions, both run:*
+
+- *Neutralised* — `floor` in both CPU walks and in `blit.wesl`: the crate is
+  green **but the rule's own unit test**, `same_run`'s shape exactly.
+- *Positive control* — seeded with a cell the point is **not** in (`floor + 1`),
+  on both backends: 5 unit tests, 14 of `tests/lighting.rs`, `frame.rs`'s
+  `the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside`,
+  `pictures.rs`'s `a_wall_in_front_of_a_torch_darkens_the_ground_behind_it_and_
+  not_beside_it` and all three `traced.rs` gates go red. The suite is amply
+  sensitive to **which** cell a walk starts in; what it is indifferent to is
+  which of two cells a point on their boundary is called, and that is the
+  distinction the whole deletion turns on.
+- *Identity* — the self-shadow injection turns exactly the same six tests red as
+  before the cut.
+
+**Two fixtures lost their own case, and one of them was kept.** The CPU twin,
+`a_ray_starting_just_past_its_own_tile_is_stopped_by_the_cell_it_is_in`, was
+built entirely out of a disagreement between a carried tile and a position;
+with no carried tile it asserted that a ray inside a wall is stopped by it, and
+it stayed **green under the positive control**. Deleted, with a grave note. What
+replaces it is `a_walk_starts_in_a_cell_its_own_start_point_is_in`, repointed
+from the deleted helper to `dda_walk`'s own first cell — the half of its claim
+that outlives the rule, and it does go red under the injection. `frame.rs`'s GPU
+twin is **kept and re-labelled**: it is the only place in the crate where a
+fragment's position and its carried tile are made to differ, so it is worth
+having as the scene that would show the tile being read again — and its doc now
+says outright that it is a fixture rather than a gate, because it too stays green
+under the injection.
+
+This is the third fixture on this track whose subject was taken away by a later
+phase and which went on passing. The other two are in the vertical shortcut
+below. The sweep the backlog asks for is still not done.
 
 ### ✅ The vertical shortcut: **entered zero times, and wrong when entered**
 

@@ -619,17 +619,12 @@ fn lit_plane(stance: u32) -> vec2<f32> {
 // `on_the_lit_surface` is the other half of this and lives below `solid_at`,
 // which it reads.
 
-// The cell a walk actually starts in: the tile its caller carries, unless the
-// start point is **strictly outside** that tile. `light::starting_cell`, and the
-// two are one rule — see it for what the carried tile is for, why a point past
-// the edge is not the tie it settles, and the 324 leaked pixels that named this.
-// No tolerance: the comparison is against the tile's own two planes and a point
-// exactly on one is inside.
-fn starting_cell(at: vec2<f32>, tile: vec2<f32>) -> vec2<i32> {
-    let x = select(tile.x, floor(at.x), at.x < tile.x || at.x > tile.x + 1.0);
-    let y = select(tile.y, floor(at.y), at.y < tile.y || at.y > tile.y + 1.0);
-    return vec2<i32>(i32(x), i32(y));
-}
+// **`starting_cell` stood here, and `docs/occluders.md`'s S4 deleted it** — with
+// the `tile` parameter of `walk`, `arrival` and `sunlight`, which carried the
+// place attachment's own tile down three functions for this one reader. A walk
+// seeds itself from `floor(start.xy)` now, in the one line that needs it.
+// `light.rs`'s grave note above `light::dda_walk` has the census that licensed
+// the cut and the argument for why the tie it used to break has one answer.
 
 // **`same_run` stood here, and `docs/occluders.md`'s S4 deleted it**, together
 // with the `on_surface` height gate that was inside it and had no other reader.
@@ -997,9 +992,14 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
 // `examples/boxes.rs`'s oracles read the same with it shared as with the probe
 // exact — so the parameter is gone and both calls are the one function.
 // `light::walk_cells_streaming`'s own probe has always been exact both places.
+//
+// **A `first` parameter stood second here and nothing in the body read it** —
+// deleted with `starting_cell` by `docs/occluders.md`'s S4, the same shape as
+// the `ground` parameter S4's vertical shortcut left behind. A dead parameter on
+// a walk's inner function is worth a line because it reads as a rule: the walk
+// looks like it treats its own starting cell specially, and it does not.
 fn cell_stopped(
     cell: vec2<i32>,
-    first: vec2<i32>,
     // Which solid of the grid the lit end is a point of, or `SOLID_NOBODY` for a
     // point of none. `light::LitEnd`'s `solid`, and the whole of the self-shadow
     // rule.
@@ -1147,7 +1147,6 @@ fn cell_stopped(
 fn walk(
     start: vec3<f32>,
     finish: vec3<f32>,
-    tile: vec2<f32>,
     stance: u32,
     // Which solid of the grid the lit end is a point of — `own_solid` for a
     // sprite fragment, `mesh_instances[id].solid` for a mesh face, `SOLID_NOBODY`
@@ -1160,19 +1159,11 @@ fn walk(
     // being stopped by the surface it left, and it does not need the ray moved.
     let delta = finish - start;
     let lit = start;
-    // The caller's own tile, not `floor(start.x/y)`: `start` can legitimately sit
-    // exactly on this tile's own far edge — a mesh face's own outer corner does,
-    // and nothing nudges it off — and flooring it back would pick whichever side
-    // happens to round down rather than the side the geometry actually stands on.
-    // `light::walk_cells`'s `first`, the same fix, and
-    // `docs/lighting_raymarch.md` step 5: this is where it names the same class of
-    // bug the CPU walk had, on the GPU walk decision 9 requires to match it.
-    //
-    // **And the carried tile breaks a tie rather than overruling the position** —
-    // `light::starting_cell`, and the two are one rule. A point strictly outside
-    // the tile it was handed is not on a boundary at all, and seeding this walk
-    // from that tile hands it a negative distance to a boundary already crossed.
-    let first = starting_cell(lit.xy, tile);
+    // The cell the start point stands in, and nothing else —
+    // `docs/occluders.md`'s S4 deleted `starting_cell` and the carried tile it
+    // arbitrated against, here and in `light.rs`, whose grave note above
+    // `light::dda_walk` has the census and the argument.
+    let first = vec2<i32>(i32(floor(lit.x)), i32(floor(lit.y)));
     // **A ray straight up or down takes the same walk as every other ray** —
     // `docs/occluders.md`'s S4. A branch of its own stood here and returned the
     // one starting cell by hand, which is exactly what the loop below does for a
@@ -1187,19 +1178,22 @@ fn walk(
     let toward = vec2<i32>(select(-1, 1, delta.x >= 0.0), select(-1, 1, delta.y >= 0.0));
     var per_tile = vec2<f32>(1.0e30, 1.0e30);
     var boundary = vec2<f32>(1.0e30, 1.0e30);
-    // The known tile's own edge, not `floor(lit.x/y)` — the same reason `first`
-    // above reads `tile`. A `lit` sitting exactly on this axis' boundary must
-    // seed `boundary[axis]` near zero (the ray is already leaving `first`), and
-    // `floor(lit.x/y)` there can just as well pick the far side and seed a whole
-    // tile of slack that was never there. `light::walk_cells_streaming`'s `boundary[axis]`.
+    // **`first`'s own edge, and this used to read the carried `tile` instead** —
+    // a latent divergence found while S4 was deleting that tile: the loop below
+    // steps from `first`, so a `boundary` measured off any other cell is a
+    // distance to a boundary this walk is not approaching. The two were the same
+    // number for every ray the suite draws and different in exactly the case
+    // `starting_cell` existed for, which is the case no fixture reached. It is
+    // one cell now, on both sides. `light::walk_cells_streaming`'s
+    // `boundary[axis]`, which has always read its own `first`.
     if abs(delta.x) > 1.0e-6 {
         per_tile.x = 1.0 / abs(delta.x);
-        let ahead = select(lit.x - tile.x, tile.x + 1.0 - lit.x, delta.x >= 0.0);
+        let ahead = select(lit.x - f32(first.x), f32(first.x) + 1.0 - lit.x, delta.x >= 0.0);
         boundary.x = ahead * per_tile.x;
     }
     if abs(delta.y) > 1.0e-6 {
         per_tile.y = 1.0 / abs(delta.y);
-        let ahead = select(lit.y - tile.y, tile.y + 1.0 - lit.y, delta.y >= 0.0);
+        let ahead = select(lit.y - f32(first.y), f32(first.y) + 1.0 - lit.y, delta.y >= 0.0);
         boundary.y = ahead * per_tile.y;
     }
 
@@ -1216,7 +1210,7 @@ fn walk(
     var cell = first;
     for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let stopped = cell_stopped(
-            cell, first, mine, stance, start, finish, delta,
+            cell, mine, stance, start, finish, delta,
         );
         through = through * (1.0 - stopped);
         if through <= 0.004 {
@@ -1255,7 +1249,7 @@ fn walk(
             out_by_x,
         );
         let probe_stopped = cell_stopped(
-            probe, first, mine, stance, start, finish, delta,
+            probe, mine, stance, start, finish, delta,
         );
         through = through * (1.0 - probe_stopped);
         if through <= 0.004 {
@@ -1387,7 +1381,6 @@ struct Arrival {
 fn arrival(
     at: vec3<f32>,
     to: vec3<f32>,
-    tile: vec2<f32>,
     stance: u32,
     mine: u32,
     normal: vec3<f32>,
@@ -1436,7 +1429,7 @@ fn arrival(
         if cosine <= 0.0 && !every_sample {
             continue;
         }
-        let through = walk(at, point, tile, stance, mine);
+        let through = walk(at, point, stance, mine);
         result.visible = result.visible + through;
         if cosine <= 0.0 {
             continue;
@@ -1483,7 +1476,7 @@ const MAX_SUN_TILES: f32 = 32.0;
 // `walk` draws. The fragment's own tile is skipped there as it is for a flame,
 // which is what lights a wall on the side the sun is on instead of shadowing it
 // with itself.
-fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32, mine: u32) -> f32 {
+fn sunlight(at: vec3<f32>, stance: u32, mine: u32) -> f32 {
     let horizontal = length(lighting.sun.xy);
     if horizontal < 1.0e-6 {
         // Straight overhead: nothing but the fragment's own tile is in the way,
@@ -1505,7 +1498,7 @@ fn sunlight(at: vec3<f32>, tile: vec2<f32>, stance: u32, mine: u32) -> f32 {
         // which arrives here as a ceiling below every fragment there is.
         return 1.0;
     }
-    return walk(at, at + step * tiles, tile, stance, mine);
+    return walk(at, at + step * tiles, stance, mine);
 }
 
 // Where the light view stops being the multiplier and starts being a curve.
@@ -1860,7 +1853,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // and a ray the lit path has no use for is one that view still has to
         // report. `Arrival::delivered` is the same number either way.
         let sent = arrival(
-            at, vec3<f32>(to.x, to.y, to.z), tile, stance, mine,
+            at, vec3<f32>(to.x, to.y, to.z), stance, mine,
             normal, light.beam, reach, view != VIEW_LIT,
         );
         // Recorded before the delivery is tested, so that a fragment inside a pool
@@ -1886,7 +1879,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // falloff, only whether anything stands between this pixel and the sky.
     var sun_through = 0.0;
     if lighting.sun_color.w > 0.0 {
-        sun_through = sunlight(at, tile, stance, mine);
+        sun_through = sunlight(at, stance, mine);
         lit = lit + lighting.sun_color.rgb * (lighting.sun_color.w * sun_through);
     }
 
