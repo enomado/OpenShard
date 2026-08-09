@@ -303,6 +303,25 @@ as a tinted cloak in daylight, only dimmer.
 
 Each is landable alone and leaves the tree working.
 
+*Where the rebuild stands, as of 2026-08-09.* The table is a **pointer, not the
+record** — each phase's own paragraphs below carry what it did, what it measured
+and what it got wrong, and a claim here that disagrees with one of them is this
+table being stale.
+
+| | Phase | State | What is left in it |
+|---|---|---|---|
+| 0 | the reference | ✅ done | — the tracer over a **real map**, which is a carried item rather than this phase |
+| 1 | linear and HDR | ✅ landed | — |
+| 2 | the G-buffer | ✅ position, normal, ids | **albedo**, which moved to 6d: a mesh face has none |
+| 3 | the BRDF | ✅ landed | — |
+| 4 | shadows by identity | ✅ landed | — |
+| 5 | area lights | ✅ landed | — |
+| 5b | a flame has no centre | ✅ landed | — |
+| 6 | the impostor | 🚧 6a and 6c landed | **6d** (the mesh pass off real statics, and its colour target); a corner's two panels still told apart by the **screen half**; `own_solid` still scanning a cell; and the phase's own second number — how far a real static's art overhangs its prism — still untaken |
+| 6e | the grid stops being a rule | 🚧 [`occluders.md`](occluders.md) | S1–S3 landed, S4 half done, S5 and S3b to come — that document's own table is the record |
+| 7 | billboards | 🚧 the position half landed | the **normal**, and its *done when* is a person looking at a lit frame |
+| 8 | the sun | ⬜ not started | all of it |
+
 **Phase 0 — the reference, and it must judge the same model.**
 `crates/client/pathtrace` (in flight in a parallel session) becomes the oracle,
 with a **BRDF switch**: it has to be able to compute what the engine computes, or

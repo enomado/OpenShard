@@ -454,6 +454,21 @@ in one run. Reach for it first the next time this shape appears.
 Each is landable alone and leaves the tree working. A session starts at the first
 one whose gate is not green.
 
+| | Step | State |
+|---|---|---|
+| S1 | absolute coordinates on the wire | ✅ landed |
+| S2 | the detector, before the fix | ✅ built and read |
+| S3 | the surface exemption | ✅ landed 2026-08-09 |
+| S4 | delete the cell rules | 🚧 `same_run` ✅ and the vertical shortcut ✅ are gone; the per-cell `max` is 🔴 **blocked** — the suite is blind to it and the licence arrives with S5; `starting_cell` with `first` is what a session picks up next |
+| S5 | the hierarchy | ⬜ not started — and it carries the cost harness, which cannot price a frame with real occluders today |
+| S3b | the merge | ⬜ last, after S5 — and a **pure optimisation** since phase 5b took its cure away |
+
+Neither of S4's two deletions went the way this plan expected: `same_run` was
+retired by three fixtures learning to name their own solid, and the vertical
+shortcut by a census finding it is entered zero times. Each is written up under
+its own heading below, because *how* a rule turned out to be unnecessary is the
+part a later step inherits.
+
 **S1 — absolute coordinates on the wire.** D1. ✅ **Landed.** The reconstruction
 and the quantisation are gone; a primitive carries its own six numbers.
 `walk_cells_streaming` no longer previews a quantisation that does not exist,
