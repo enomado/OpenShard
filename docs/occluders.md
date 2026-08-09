@@ -752,9 +752,8 @@ after: `a_fragment_is_shadowed_by_every_solid_of_its_own_static_but_the_one_it_i
 a_point_of`, `a_vertical_ray_is_not_stopped_by_lids_it_is_not_over`,
 `a_carried_light_lights_the_way_it_is_pointed`,
 `the_face_of_a_wall_is_lit_from_inside_the_room` and both path-tracer gates), the
-per-cell `max` (there is no cell to group
-by; the corner double-count it existed for outlives the merge's departure to S3b,
-so this one carries its own measurement rather than inheriting one), the vertical
+per-cell `max` (🔴 **measured 2026-08-09, and it does not land on this
+measurement** — see below), the vertical
 shortcut (a hierarchy has no reason for a special case, and
 this removes a branch that has twice had to grow a footprint gate to stop being a
 different answer), and `starting_cell` with `first` (nothing left reads a cell).
@@ -764,6 +763,45 @@ green, and followed by the brute-force oracle staying equal. The three tests tha
 phase 4 found go red when identity is neutralised must stay red under that
 injection — the self-shadow rule is **not** part of this and must not be
 weakened by the merge.
+
+### 🔴 The per-cell `max`: the suite is **blind** to it, not indifferent
+
+Neutralised the way `same_run` was — the `max` within a cell replaced by a
+product, `1 - (1-stopped)(1-by_surface)`, in both CPU walks *and* in `blit.wesl`
+— the whole crate stays green: 513 tests, the brute-force oracles, the GPU
+parity sweep and both path-tracer gates among them.
+
+**That green means nothing, and the number beside it is why.** Instrumented, a
+second solid of one cell stops the ray **1,359 times** across the suite — so the
+rule is amply *reached* — and every one of those is
+`already 1.000, now 1.000, opacity 255`. Both stoppers are opaque and the first
+has already saturated, where `max(1, 1)` and `1 - 0·0` are the same number by
+arithmetic. The suite cannot tell the two rules apart because nothing in it puts
+**two partial stoppers on one cell**, which is the only arrangement where they
+differ: a pane (`opacity 51`) beside another partial occluder.
+
+**And they are not interchangeable, so the missing fixture is not a formality.**
+A product is right for two *independent* surfaces — a ray through two panes is
+dimmed twice — and the `max` is right for two panels of **one** surface, which
+is a corner: one wall, counted once. D5's licence for this deletion is "there is
+no cell to group by", and that arrives with **S5**; what has to arrive with it is
+the grouping becoming *by surface* rather than disappearing. S3b does not supply
+it either — a corner's two panels are perpendicular, so no merge joins them, as
+§ *Not in scope* already says.
+
+⇒ **This deletion waits**, and what it waits on is a fixture with two partial
+stoppers on one cell and a decision about what the right answer there is. Written
+here rather than in the backlog because it is a precondition of a step.
+
+**Two false readings on the way, both worth the line they cost.** The first
+census read **0** — `eprintln!` inside a test is swallowed by libtest without
+`--nocapture`, so the detector was printing into a closed pipe and reporting
+"never happens". The second read **387 divergences**, every one of them
+`already 0.000, now 0.200`: that is `1 - (1-0)(1-0.2)` failing to be exactly
+`0.2` in `f32`, so the detector was measuring its own rounding. A detector that
+prints where nobody reads and one that counts its own arithmetic are the same
+defect as a vacuous gate — **it must count what it checked, and be shown a case
+it is known to fire on.**
 
 **S5 — the hierarchy.** D3. A CPU build over the primitives and a
 stackless traversal on both sides.
