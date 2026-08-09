@@ -1376,6 +1376,14 @@ Things noticed while writing this, not blocking any phase:
   blocked and open. 21,177 pixels move on the stair fixture, 20,308 of them darker,
   which is the overestimate the centre cosine was paying out.
 
+  **The side-lit case is real and is not to be discarded for want of a picture.**
+  It was reported from the client and reproduced in an earlier session; this
+  session failed to render it, which is a fact about the fixtures reached for, not
+  evidence against it. Treat it as present. It is also the case where a cosine
+  cannot hide anything — a lamp beside a wall lights the face it grazes — so it is
+  the configuration to check *after* the per-sample cosine lands, and the reporter
+  expects it to go the same way.
+
   Two things it should also settle, and both want measuring rather than assuming:
   `docs/occluders.md`'s `same_run` is broad precisely because it was papering over
   these below-horizon rays for panels, so this may retire its real reason; and the
