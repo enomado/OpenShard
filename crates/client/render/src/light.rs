@@ -923,17 +923,30 @@ fn place(at: Point, flame: Flame, time: f32) -> Light {
     }
 }
 
-/// How many cells of the grid one ray may look at.
-///
-/// `blit.wgsl`'s `MAX_WALK_STEPS`, and the two are one number: [`sample`] is the
-/// shader's own arithmetic in Rust and a bound that differed would make the two
-/// disagree exactly where a ray is longest. One number for both rays, because
-/// [`walk_cells`] is one walk: a pool reaches nine tiles at the widest, a
-/// sunbeam's segment runs [`MAX_SUN_TILES`], and a walk visits every cell the
-/// segment crosses, which on a diagonal is both axes' worth. It is never actually
-/// reached; it exists so that a loop over data cannot be made unbounded by a
-/// radius somebody widens later.
-pub const MAX_WALK_STEPS: i32 = 72;
+// **`MAX_WALK_STEPS` stood here, and `docs/occluders.md`'s S5 deleted it**
+// without putting a number in its place — which is a departure from that plan's
+// own letter, and the reason is worth the paragraph.
+//
+// It bounded the **cells** a ray stepped through, at 72, "so that a loop over
+// data cannot be made unbounded by a radius somebody widens later". The bound
+// was needed because the loop's length was the *ray's*: a longer reach is more
+// cells, and nothing about the grid said when to stop.
+//
+// S5 asks for a node budget in the same role. There is nothing to size. A
+// traversal moves to `at + 1` on a hit and to that node's own escape on a miss,
+// and **both are strictly greater than `at`** — the tree is laid out depth
+// first, so an escape is the end of a subtree that starts at `at`. So the loop
+// visits each node at most once and is bounded by the number of nodes the frame
+// *has*, which no radius can widen: a reach twice as long walks the same tree.
+// The one thing that could break it is a malformed tree — an escape pointing
+// backwards, out of a buffer nothing on this side wrote — and [`candidates`]
+// stops on exactly that rather than looping, which is a constant-free guard
+// where a budget would have been a number to defend.
+//
+// Measured, so the shape of the loop is not just argued: over the whole suite
+// the deepest traversal visits **33 nodes of a 49-node tree**. A budget sized
+// off that would have been a number about the fixtures rather than about the
+// data.
 
 // **`FLAME_SPREAD`, `SOFT_CROSSING_MIN`, `SOFT_CROSSING_MAX` and `FLAME_DEPTH`
 // lived here**, and `docs/lighting_rebuild.md` phase 5 is what deleted all four.
@@ -2668,820 +2681,361 @@ fn arrival(
     }
 }
 
-/// One segment of the world, cell by cell: how much of a ray survives it, and
-/// what stopped it.
-///
-/// `blit.wgsl`'s `walk`, including what it leaves out, and **one walk for both
-/// the flame and the sun** — see the shader for the argument, and for the
-/// measurement that produced it. What is left of "the ends are the parameters" is
-/// `spread`, how big the source is in tiles; a sunbeam passes `0.0` and gets the
-/// hard edge a point casts. **The `skip_last` beside it went at phase 4** — it
-/// was the flame's own end being excused from the panels of the cell it burns in,
-/// and `mounted_at` moving a sconce clear of its wall is what made that
-/// unnecessary. See the note where `exemption` stood.
-///
-/// Every cell the segment crosses, in order, with the length of each crossing:
-/// not a fixed number of samples, which at two tiles apart was one interior
-/// point and put every shadow's edge on a tile boundary. What a cell stops is
-/// its opacity scaled by how far the ray ran inside it — [`FLAME_SPREAD`] and its
-/// two bounds — and by how much of that run was inside the span the tile
-/// occupies, so a ray grazing the top of a wall or clipping its corner is dimmed
-/// rather than cut.
-///
-/// The starting cell is always skipped: the tile being lit must not shadow
-/// itself, which is what keeps a wall's own face the brightest thing beside a
-/// torch.
-/// One cell [`dda_walk`]'s DDA visits along the ray, and how the ray leaves
-/// it — no [`Occlusion`], no opacity, nothing about what is *in* the cell.
-///
-/// Split out so the stepping itself — which cell follows which — can be
-/// checked against plain numbers instead of a lit scene. This is the exact
-/// machinery `docs/lighting_raymarch.md`'s bugs lived in: a tile re-derived
-/// from a float that could legitimately sit on its own boundary, and (until
-/// [`walk_cells_streaming`]'s cutover removed the need for a corner jump at
-/// all) a corner tie that fired on a ray it was never about. See
-/// [`dda_walk`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct DdaCell {
-    /// The cell this step covers.
-    cell: (i32, i32),
-    /// Which side the ray leaves this cell by, matching `continues`. `0`
-    /// when the ray ends inside this cell instead of crossing on.
-    exit: u8,
-    /// How far along the whole segment (`0.0..=1.0`) the ray enters and
-    /// leaves this cell.
-    entered: f32,
-    leaves: f32,
-    /// Whether the walk continues past this cell — `false` exactly when
-    /// `exit == 0`, the ray ending here.
-    continues: bool,
-}
+// **`walk_cells`'s own doc comment stood here, orphaned**, and it is deleted
+// with the last of the cells it described. The function went at
+// `docs/lighting_raymarch.md`'s point 4 cutover and the doc outlived it,
+// attached to nothing and still promising things no walk has done since: a
+// crossing length a cell's opacity is scaled by (phase 5 made every crossing
+// hard), `FLAME_SPREAD` and its two bounds (deleted with the pancake flame),
+// and a starting cell that is always skipped (phase 4 replaced it with the
+// fragment's own solid).
+//
+// Worth a line rather than a silent removal, because it is the fourth thing on
+// this track to be found still describing a rule that had been gone for
+// phases — see the fixtures in `docs/occluders.md`'s S4. A doc comment nothing
+// compiles against decays exactly like a test whose subject was taken away.
+// **The DDA over the tile grid stood here, and `docs/occluders.md`'s S5 deleted
+// it**: `dda_walk`, `candidate_tiles`, `DdaCell`, the `first` cell both walks
+// seeded themselves with by `from.floor()`, and `MAX_WALK_STEPS`, which counted
+// its steps. What answers "what might this segment meet" now is
+// [`crate::occlusion::bvh::Bvh`] and [`candidates`] below.
+//
+// What the grid was, in one paragraph, because the shape of it is what the
+// replacement has to keep: a ray stepped from cell to cell along the nearer of
+// its two axis boundaries, never skipping one, and every solid registered on a
+// cell it stepped through was a candidate. `candidate_tiles` added both
+// single-axis neighbours at every transition — unconditionally, because CPU and
+// GPU do not compute a close-enough `boundary[0] - boundary[1]` to agree on
+// which rays are near a tie, so a *gated* probe made the two backends probe
+// different rays. A tree has no ties to break: a node is hit or it is not, by
+// the same slab test a primitive is, and both backends read one uploaded box.
+//
+// **Three things the grid got wrong that this is not free of by accident but by
+// construction**, and they are `docs/occluders.md`'s own backlog:
+//
+//   - **A cell listed a primitive once**, in the cell it was added on, so the
+//     first box wider than its own tile would have been invisible to a ray that
+//     crossed only the overhang. A leaf holds a primitive whatever its size.
+//   - **And listing one from two cells would have double-counted it**, because
+//     `through` was multiplied cell after cell. A primitive is under exactly one
+//     leaf, so it is applied exactly once — `bvh`'s own
+//     `every_primitive_is_named_by_exactly_one_leaf`.
+//   - **A `floor()` decided which cell a point on a boundary was in.** That is
+//     what took `starting_cell` a session to remove and what made both
+//     brute-force oracles wrong for a day (§ *The oracle*). There is no `floor`
+//     left in either walk.
 
-// **`starting_cell` stood here, and `docs/occluders.md`'s S4 deleted it** —
-// with [`LitEnd`]'s carried tile, which it was the last reader of, and with the
-// `tile` parameter of [`dda_walk`] and [`candidate_tiles`]. A walk seeds itself
-// from `from.floor()` now, in one line, at the two places that need one.
-//
-// The rule was an arbiter between two spellings of one fact: a fragment's
-// position, interpolated in `f32`, and the tile it carries out of the place
-// attachment. It read "the carried tile, unless the point is **strictly
-// outside** it" — the carried tile to break the tie a point on its own far edge
-// is, `floor` to stop that tile contradicting the position outright. The second
-// half is what earned it: measured on one real place at 4:1 before it,
-// **474 fragments stood strictly outside their own carried tile and 324 leaked a
-// fully lit pixel into a shadow**, a line of light along every tile boundary of
-// a building's floors.
-//
-// **What the census found is that only the first half was ever running.** With
-// the count taken at the two walks themselves rather than inside the rule — its
-// own proptest calls it directly and would have drowned the number —
-// the whole suite reaches:
-//
-// - **strictly outside its carried tile: 18 times**, all of them the two
-//   hand-built fixtures written for exactly that, and there the rule *is*
-//   `floor`. Zero times in any generated or rendered scene, `frame.rs`'s
-//   262,144 walks among them.
-// - **the exact-edge tie: 11,544 times** — `lighting.rs` alone is 11,528 of
-//   them. This is the normal state of every south and east face since
-//   `docs/lighting_rebuild.md` phase 6c, and it is the whole of what the rule
-//   still decided.
-//
-// **And the tie has one answer, which is why the arbiter goes.** Both cells
-// contain a point on the boundary between them, and a walk seeds its distance
-// to the next boundary from the cell it starts in — so from either seed the
-// other cell is reached at `t = 0` if the ray heads that way, and touched at a
-// single point if it does not. A primitive is a tile's, so a solid listed on the
-// cell that is only touched lies inside it, and [`ray_vs_solid`]'s zero-length
-// touch rule already refuses to block on it. ⚠ **That last sentence is the
-// precondition, and `docs/occluders.md`'s S3b is what breaks it**: the first box
-// wider than its own tile makes "touched at a point" and "meets the segment"
-// two different things again. By then S5 has taken the cell away entirely,
-// which is the order that plan already fixes.
-//
-// *Gate, taken in both directions before the cut:* neutralised to `floor` in
-// both walks **and** in `blit.wesl`, the crate is green but this rule's own unit
-// test. Seeded instead with a cell the point is **not** in (`floor + 1`), 3 unit
-// tests and 14 of `lighting.rs` go red on the CPU, and on the GPU both
-// path-tracer gates, `a_flame_just_over_a_landing_does_not_wedge_it_with_its_own_
-// below_horizon_rays`, `the_shader_stops_a_vertical_ray_with_the_panel_it_stands_
-// inside` and `a_wall_in_front_of_a_torch_darkens_the_ground_behind_it_and_not_
-// beside_it`. The suite is sensitive to which cell a walk starts in; what it is
-// indifferent to is which of two cells a point on their boundary is called.
-
-/// Which cells a straight ray from `from` to `to` visits, in order — plain
-/// single-axis DDA, one cell per step, no diagonal jump.
+/// Every primitive the segment `from`..`to` might meet — a **superset**, which
+/// is the whole of what `docs/occluders.md`'s D4 allows a broad phase to decide.
 ///
-/// The walk starts in `from`'s own cell — `from.floor()`, and no carried tile
-/// anywhere: `docs/occluders.md`'s S4 deleted `starting_cell`, whose grave note
-/// above has the census and the argument. Bounded by [`MAX_WALK_STEPS`] cells;
-/// a ray that has not reached `to` by then just stops.
+/// What comes back is not "the primitives the ray hits": it is the primitives
+/// whose *node* boxes the ray hits, which is more of them, and the answer is the
+/// per-primitive rules over that set and nothing else. So every knob in the
+/// tree — the leaf size, the split rule, this budget — cannot move a pixel, and
+/// the brute-force oracle is what says so rather than this comment.
 ///
-/// **A walk that never skips a cell is complete by construction** — the
-/// textbook reason grid-line rasterisation steps one axis at a time —
-/// which is why there is no corner-tie heuristic here at all;
-/// [`walk_cells_streaming`]'s own doc comment has the fault-injection
-/// discipline that checked this rather than assumed it, for the same shape
-/// of stepping restated here as [`DdaCell`]s instead of folded into that
-/// function's own loop.
+/// **Stackless, and that is the shape rather than an optimisation.** WGSL has no
+/// dynamic stack, and a fixed-size array of one would be a cap that silently
+/// truncates — the shape `MAX_WALK_STEPS` had. A node the segment misses is one
+/// assignment to that node's own escape index, which is where its whole subtree
+/// ends; a node it hits steps to `at + 1`, which is that node's first child. A
+/// leaf's escape *is* `at + 1`, so the two agree there and the loop needs no
+/// case for it.
 ///
-/// **A ray with no horizontal run needs no precondition and gets no branch.**
-/// Neither axis ever reaches its boundary, so both `boundary`s stay at the
-/// enormous `t` below, the first step already has `next >= 1.0`, and the walk is
-/// the one cell `from` stands in — which is exactly what the vertical shortcut
-/// `docs/occluders.md`'s S4 deleted used to return by hand. This function said
-/// "callers already guard `ground < 1e-6`" while answering that case correctly
-/// all along.
-fn dda_walk(from: Vec2, to: Vec2) -> Vec<DdaCell> {
-    let tile = (from.x.floor() as i32, from.y.floor() as i32);
-    let delta = [to.x - from.x, to.y - from.y];
-    // Which way each axis steps, how much of the whole segment one tile of it
-    // is worth, and how far along the segment the first boundary is. An axis
-    // the ray does not move along never reaches its boundary, which is what
-    // the enormous `t` says.
-    let toward = (
-        match delta[0] >= 0.0 {
-            true => 1,
-            false => -1,
-        },
-        match delta[1] >= 0.0 {
-            true => 1,
-            false => -1,
-        },
-    );
-    let mut per_tile = [1e30_f32; 2];
-    let mut boundary = [1e30_f32; 2];
-    for axis in 0..2 {
-        if delta[axis].abs() <= 1e-6 {
-            continue;
-        }
-        per_tile[axis] = 1.0 / delta[axis].abs();
-        let from = [from.x, from.y][axis];
-        // The known tile's own edge, not `from.floor()`: a `from` sitting
-        // exactly on this axis' boundary must seed `boundary[axis]` near
-        // zero (the ray is already leaving `tile`), and `from.floor()`
-        // there can just as well pick the far side and seed a whole tile of
-        // slack that was never there.
-        let edge = [tile.0, tile.1][axis] as f32;
-        let ahead = match delta[axis] >= 0.0 {
-            true => edge + 1.0 - from,
-            false => from - edge,
+/// Both of those are strictly forward, which is the whole of why there is no
+/// budget: see the loop's own comment, and the note where `MAX_WALK_STEPS`
+/// stood.
+///
+/// Mirrored in `blit.wesl`'s `candidates`, and the two are one traversal.
+fn candidates<'a>(
+    occlusion: &'a Occlusion,
+    from: [f32; 3],
+    to: [f32; 3],
+    mut each: impl FnMut(crate::occlusion::SolidId, &'a crate::occlusion::Solid),
+) {
+    let bvh = occlusion.bvh();
+    let end = bvh.past_the_end();
+    let mut at = crate::occlusion::bvh::NodeIdx::ROOT;
+    while at < end {
+        let node = bvh.node(at);
+        // The same slab test a primitive gets, against a box built out of the
+        // same `f32` corners — see `bvh::Node::space` for why a node whose
+        // corners were the record's `f64` could round inward of a primitive's
+        // and lose it.
+        let next = match ray_vs_solid(from, to, &node.space) {
+            None => node.escape,
+            Some(_) => {
+                if let Some(leaf) = node.leaf {
+                    for id in bvh.primitives(leaf) {
+                        each(*id, occlusion.solid(*id));
+                    }
+                }
+                crate::occlusion::bvh::NodeIdx::new(at.raw() + 1)
+            }
         };
-        boundary[axis] = ahead * per_tile[axis];
-    }
-
-    let mut cells = Vec::new();
-    let mut cell = tile;
-    let mut entered = 0.0_f32;
-    for _ in 0..MAX_WALK_STEPS {
-        let next = boundary[0].min(boundary[1]);
-        let leaves = next.min(1.0);
-        let out_by_x = boundary[0] < boundary[1];
-        let exit = match next < 1.0 {
-            false => 0,
-            true => match (out_by_x, out_by_x && toward.0 > 0 || !out_by_x && toward.1 > 0) {
-                (true, true) => crate::occlusion::EDGE_EAST,
-                (true, false) => crate::occlusion::EDGE_WEST,
-                (false, true) => crate::occlusion::EDGE_SOUTH,
-                (false, false) => crate::occlusion::EDGE_NORTH,
-            },
-        };
-        if next >= 1.0 {
-            cells.push(DdaCell {
-                cell,
-                exit: 0,
-                entered,
-                leaves,
-                continues: false,
-            });
+        // **The loop's own bound, and there is no constant in it**: a
+        // well-formed tree always moves forward, so this visits each node at
+        // most once and cannot run longer than the frame's own node count. A
+        // tree that does not move forward is malformed — an escape pointing at
+        // or behind its own node, which nothing on this side writes and
+        // `bvh`'s `a_nodes_escape_is_the_end_of_its_own_subtree` gates — and
+        // stopping is the one thing to do with it that is neither a hang nor a
+        // number somebody has to size. See the note where `MAX_WALK_STEPS`
+        // stood.
+        if next <= at {
             break;
         }
-        cells.push(DdaCell {
-            cell,
-            exit,
-            entered,
-            leaves,
-            continues: true,
-        });
-        // Into the neighbour across whichever boundary is nearer — the
-        // nearer boundary only, no diagonal probe.
-        match out_by_x {
-            true => {
-                cell.0 += toward.0;
-                boundary[0] += per_tile[0];
-            }
-            false => {
-                cell.1 += toward.1;
-                boundary[1] += per_tile[1];
-            }
-        }
-        entered = next;
+        at = next;
     }
-    cells
 }
 
-/// Every tile [`walk_cells_exact`] tests solids from: [`dda_walk`]'s own
-/// straight-line cells, plus — unconditionally — the diagonal neighbour
-/// crossed at every step.
+/// Which tile a blamed primitive stands on, for the report alone.
 ///
-/// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 1's answer,
-/// session 8: [`ray_vs_solid`] answers "is a candidate real" exactly, so
-/// nothing here needs to guess which corner is worth asking about before
-/// asking it — probe both neighbours every time and let the primitive say
-/// no. Roughly twice the cells [`dda_walk`] itself visits, not a bounding
-/// box: still `O(walk length)`, the order the doc's own cost estimate
-/// argued for.
-///
-/// Deduplicated, in the order the straight walk meets them — a diagonal
-/// candidate named at one step can be the very next cell the straight walk
-/// reaches on its own, and [`walk_cells_exact`] would double-count a
-/// solid on it otherwise.
-fn candidate_tiles(from: Vec2, to: Vec2) -> Vec<(i32, i32)> {
-    let delta = [to.x - from.x, to.y - from.y];
-    let toward = (
-        if delta[0] >= 0.0 { 1 } else { -1 },
-        if delta[1] >= 0.0 { 1 } else { -1 },
-    );
-    fn push(tiles: &mut Vec<(i32, i32)>, t: (i32, i32)) {
-        if !tiles.contains(&t) {
-            tiles.push(t);
-        }
-    }
-    let mut tiles = Vec::new();
-    for step in dda_walk(from, to) {
-        push(&mut tiles, step.cell);
-        if step.continues {
-            // Both single-axis neighbours of this cell, named at every
-            // transition regardless of which one `dda_walk` itself steps
-            // into next: an ordinary step already visits one of the two as
-            // its very next cell; the other is the diagonal neighbour this
-            // walk's own single-axis stepping never reaches on its own.
-            // Neither is the cell reached by stepping *both* axes — that
-            // one is already `dda_walk`'s own next-or-next-next cell, not a
-            // corner candidate at all.
-            push(&mut tiles, (step.cell.0 + toward.0, step.cell.1));
-            push(&mut tiles, (step.cell.0, step.cell.1 + toward.1));
-        }
-    }
-    tiles
+/// **A report's coordinate and not a rule's**, and the distinction is the whole
+/// of `docs/occluders.md`'s S4: [`Stopper::cell`] is read by a person and by the
+/// handful of tests that name a wall by where it stands, and nothing about the
+/// light depends on it. Derived from the primitive's own low corner rather than
+/// carried from a walk, because there is no walk left to carry it — every shape
+/// the grid builds today has its low corner inside its own tile, panels
+/// included, since a panel is fattened *inward* from the edge it stands on.
+fn tile_of(space: &crate::solid::Solid) -> (i32, i32) {
+    (space.min.x.floor() as i32, space.min.y.floor() as i32)
 }
 
-/// [`walk_cells`], built on [`ray_vs_solid`] instead of [`dda_walk`]'s own
-/// per-cell bookkeeping — `docs/lighting_raymarch.md`'s ray-vs-Solid
-/// scoping, point 2. Same signature, same exemption/run/aperture/softness
-/// rules, copied rather than re-derived: what changes is where a solid's
-/// own crossing interval comes from — an exact box intersection instead
-/// of a tile-boundary crossing fraction shared by everything on the cell.
-/// Not wired into [`walk`]/[`walk_sun`] yet — see the doc for why the
-/// cutover is its own, later step, gated on point 3's agreement pass.
+/// The shadow rules over one segment and the primitives a tree hands it — what
+/// both CPU walks are, with the one thing that differs between them as a
+/// parameter.
 ///
-/// **`corner_tie`, [`DdaTransition::Corner`] and [`panel_stop`] have no
-/// counterpart here, on purpose.** [`candidate_tiles`] probes the diagonal
-/// neighbour at every step unconditionally, and [`ray_vs_solid`] answers
-/// "does the ray actually touch this solid's box" exactly — nothing here
-/// needs the heuristic that used to stand in for that answer, and a
-/// solid's own box is tested directly rather than by asking which side of
-/// the *tile* a DDA step happened to cross.
+/// **That one thing is which box a primitive is**: the record's exact
+/// [`crate::occlusion::Solid::space`] for [`walk_cells_exact`], and the wire's
+/// `f32` [`crate::occlusion::Solid::wire_box`] for [`walk_cells_streaming`],
+/// which exists to be a faithful preview of what `blit.wesl` reads rather than a
+/// better version of it. Before `docs/occluders.md`'s S1 the gap between the two
+/// was a quantisation — a box rebuilt from a cell and four bytes — and the two
+/// walks were two functions because they genuinely computed different geometry.
+/// S1 collapsed the gap to an `f32` rounding, and S5 leaves them differing by
+/// exactly this one call, so a second copy would now be two chances for one rule
+/// to drift.
 ///
-/// **What is still grouped by tile, not by solid**: `through` is updated
-/// once per candidate tile, by the *largest* of what its solids stop — the
-/// same `stopped.max(by_surface)` discipline [`walk_cells`] uses, and for
-/// the same reason (two panels of one corner are two faces of one wall,
-/// crossed once). Each solid still gets its own exact `entered`/`leaves`
-/// from [`ray_vs_solid`]; only the accumulation into `through` stays
-/// per-tile.
+/// **The accumulation is a product over primitives, and the per-cell `max` is
+/// gone with the cell it was about.** `docs/occluders.md`'s S4 left that
+/// deletion blocked on this step, and what arrives with the tree is not the
+/// grouping moving to something else but the grouping *disappearing*: what
+/// crosses a segment is a volume, and a segment that crosses two volumes is
+/// stopped by both. The `max` said "two panels of one corner are one wall,
+/// counted once", which is a statement about a **cell** — the only thing that
+/// ever grouped them — and a corner's two panels overlap in the square where
+/// they meet, so it was also the one arrangement where the two rules differ on
+/// real geometry.
 ///
-/// **One thing tried and reverted, kept here rather than silently
-/// dropped**: dropping [`walk_cells`]'s "does either tile-boundary side
-/// pierce this body" safety net on an [`EDGE_ANY`] solid, on the theory
-/// that an exact box crossing no longer needs a safety net a DDA
-/// approximation did. Wrong — [`box_side`]'s scratch fuzz (see the doc's
-/// point 3) found `walk_cells_exact` reading a body's corner as almost
-/// fully open where `walk_cells` read it as blocked, in the exact shape
-/// `walk_cells`'s own comment names: "the pierce is what closes the sliver
-/// a ray clipping a corner used to walk through." The safety net was never
-/// about DDA imprecision — it is a deliberate choice that a corner reads
-/// as opaque, not as proportionally see-through for having been grazed at
-/// a narrow angle — so it stays, with [`box_side`] reading which side of
-/// the tile a crossing point sits on geometrically instead of carrying it
-/// from a DDA step that, for a diagonal-only candidate, never happened.
+/// Measured before it went: across the whole suite a second solid of one cell
+/// stops a ray 1,359 times and **every one of them is two opaque stoppers**,
+/// where `max(1, 1)` and `1 - 0·0` are the same number by arithmetic. So this
+/// moves no pixel of anything the crate draws, which is what D4 requires, and
+/// the arrangement where it would — two *partial* occluders crossed by one
+/// segment — is pinned by
+/// `a_segment_through_two_panes_is_dimmed_by_both_of_them` rather than left to
+/// whichever rule a later reader assumes.
+fn walk_primitives(
+    from: [f32; 3],
+    to: [f32; 3],
+    lit: LitEnd,
+    occlusion: &Occlusion,
+    box_of: impl Fn(&crate::occlusion::Solid) -> crate::solid::Solid,
+) -> (f32, Option<Stopper>) {
+    // The box the lit end is a point of, which is where its own plane comes
+    // from — through the same `box_of` as every candidate, which is what puts
+    // both sides of [`on_the_lit_surface`]'s comparison in one precision. `None`
+    // for a fragment of no occluder: the ground and a mobile are points of
+    // nothing and are exempt from nothing.
+    let own_box = lit.solid.map(|id| box_of(occlusion.solid(id)));
+    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let mut through = 1.0_f32;
+    // The primitive to blame, and **the earliest crossing rather than the
+    // largest**, which is the one rule that survives the tree having no ray
+    // order in it. `walk_cells_exact` used to sort its candidate cells by
+    // nearest crossing and blame the cell that tripped the cutoff, which was the
+    // first blocking cell in ray order; a tree hands its leaves back in its own
+    // order, so "first in ray order" has to be computed rather than arrived at.
+    // Kept as the `entered` beside the stopper, so the comparison is a number
+    // and not a re-derivation.
+    let mut worst: Option<(f32, Stopper)> = None;
+    candidates(occlusion, from, to, |id, stands| {
+        // The box this walk is entitled to read — see this function's own doc.
+        let space = box_of(stands);
+        let (low, high) = (space.min.z as f32, space.max.z as f32);
+        let Some((entered, leaves)) = ray_vs_solid(from, to, &space) else {
+            return;
+        };
+        // **A surface does not shadow itself, and that is the whole rule** —
+        // `docs/lighting_rebuild.md` phase 4. `Some(id) == Some(id)` and never
+        // `None == None`: a fragment that is a point of no occluder is exempt
+        // from nothing.
+        if lit.solid == Some(id) {
+            return;
+        }
+        // **And a surface does not shadow itself when it is cut into more than
+        // one primitive**, which is the whole of D2 — `docs/occluders.md`'s S3.
+        // A neighbouring box whose extent along this fragment's own normal ends
+        // exactly on this fragment's plane lies wholly behind that plane, so
+        // there is nothing there for the ray to cross.
+        if own_box
+            .as_ref()
+            .is_some_and(|own| on_the_lit_surface(lit.surface, own, &space, delta))
+        {
+            return;
+        }
+        // **A ray that only touches a solid at the point it starts from has not
+        // gone through it**, and that is exactly `crosses`'s own strictness said
+        // about a box instead of a plane. No epsilon: the interval is `0.0..0.0`,
+        // both ends exact numbers off the slab test.
+        //
+        // The case it is about is a tread's outer corner. A riser is a plane on
+        // the climb axis and a tread's lid stops exactly at it, so a fragment on
+        // that lip stands *in* the riser's own plane at exactly the riser's top —
+        // and every ray it sends anywhere touches the riser's box at `t = 0` and
+        // nowhere else. Identity cannot excuse it, because the riser is genuinely
+        // a different primitive from the lid. Measured before the rule: 88 pixels
+        // of a three-tread flight drawn shadowed where every independent oracle in
+        // the tree says lit.
+        if entered == 0.0 && leaves == 0.0 {
+            return;
+        }
+        let middle = (entered + leaves) * 0.5;
+        let opacity = f32::from(stands.opacity) / 255.0;
+        let by_surface = match stands.edges {
+            0 => {
+                // **Not the lid's own `entered`/`leaves`.** A lid is flat in `z`
+                // (`Solid::box_of`'s `min.z == max.z` for an ordinary floor), so
+                // the `z` slab narrows both ends to the exact same instant the
+                // ray crosses that one height — correct as a crossing *point*,
+                // but [`crosses`] needs the ray's `z` on each side of that point
+                // to tell "crossed through" from "never came close," and a
+                // from/to that are already equal answers every comparison in
+                // [`crosses`] as "never." What it needs is the ray's `z` where it
+                // enters and leaves the lid's own real horizontal footprint, over
+                // an unconstrained `z` — the lid's own box and not its tile's: a
+                // tread's top is a lid narrower than its tile, and asking a wider
+                // box than the lid actually is would let a ray graze the tile's
+                // corner past the tread's real edge read as "crossed through" the
+                // tread.
+                let footprint = crate::solid::Solid {
+                    min: crate::camera::WorldSpot {
+                        x: space.min.x,
+                        y: space.min.y,
+                        z: -1e6,
+                    },
+                    max: crate::camera::WorldSpot {
+                        x: space.max.x,
+                        y: space.max.y,
+                        z: 1e6,
+                    },
+                };
+                let (tile_entered, tile_leaves) =
+                    ray_vs_solid(from, to, &footprint).unwrap_or((entered, leaves));
+                let from_z = from[2] + delta[2] * tile_entered;
+                let to_z = from[2] + delta[2] * tile_leaves;
+                opacity * crosses(from_z, to_z, low, high)
+            }
+            // A body is a real 3D box and [`ray_vs_solid`] is an exact slab test
+            // — a `Some` here already means the segment genuinely passed through
+            // it over `entered..leaves`, so occlusion is the body's own opacity
+            // outright. No length-based fade, no per-side floor, no widened-corner
+            // graze: those existed only to fake a penumbra a point flame does not
+            // cast. See `docs/lighting_raymarch.md`'s "hard shadows" decision.
+            EDGE_ANY => opacity,
+            // A panel: a named side, and what stops the ray is whether it crossed
+            // the plane *inside* the panel's own drawn extent — [`pierced`], and
+            // its hole. There was a gate before it, `edges & !same_run == 0`, and
+            // `docs/occluders.md`'s S4 is where it went: the exemption it spelled
+            // is [`on_the_lit_surface`]'s, stated about the fragment's own plane
+            // instead of about a row of cells, and it is applied above with the
+            // rest of them.
+            _ => {
+                let cross = [
+                    from[0] + delta[0] * middle,
+                    from[1] + delta[1] * middle,
+                    from[2] + delta[2] * middle,
+                ];
+                opacity * pierced(stands, cross)
+            }
+        };
+        if by_surface <= 0.0 {
+            return;
+        }
+        through *= 1.0 - by_surface;
+        // `<` and not `<=`, so a tie names the primitive met first in the tree's
+        // own order rather than the last one to equal it — the same `>`-not-`>=`
+        // discipline the per-cell version kept, said about the ray's `t`.
+        if worst.as_ref().is_none_or(|(seen, _)| entered < *seen) {
+            worst = Some((
+                entered,
+                Stopper {
+                    cell: tile_of(&space),
+                    solid: id,
+                    edges: stands.edges,
+                    span: (low, high),
+                },
+            ));
+        }
+    });
+    // **The cutoff is applied at the end and no longer exits the loop early**,
+    // and that is what makes the blamed primitive independent of the order a
+    // tree hands its leaves back in. It cost nothing to give up: the early exit
+    // saved cells of a walk whose length was the ray's, where a traversal's cost
+    // is the geometry it actually meets. The value is unchanged either way — a
+    // product that has already fallen under the cutoff cannot climb back out of
+    // it.
+    match through <= RAY_CUTOFF {
+        true => (
+            0.0,
+            Some(
+                worst
+                    .expect("a ray that trips the cutoff has a primitive that did it")
+                    .1,
+            ),
+        ),
+        false => (through, None),
+    }
+}
+
+/// [`walk_cells`] against the **record's** own boxes — `docs/lighting_raymarch.md`'s
+/// ray-vs-Solid scoping, point 2, and since `docs/occluders.md`'s S5 one call to
+/// [`walk_primitives`] rather than a walk of its own.
 ///
-/// **The panel branch does still simplify one thing**: it samples
-/// [`pierced`] once, at the crossing's own midpoint, rather than at the
-/// two tile-boundary points `walk_cells` used. Those two points could be a
-/// whole cell apart; [`ray_vs_solid`]'s own `entered`/`leaves` already
-/// bound the ray to the panel's real
-/// [`crate::occlusion::PANEL_THICKNESS`]-deep box, so the two ends are
-/// close together by construction and one interior sample is enough — the
-/// same fuzz that caught the body regression above stayed clean on panels
-/// alone.
+/// The exact one: [`crate::occlusion::Solid::space`] is what the world built and
+/// what a hand-written fixture states, so this is the walk an oracle is compared
+/// against and the one a test asserting about geometry means.
 fn walk_cells_exact(
     from: [f32; 3],
     to: [f32; 3],
     lit: LitEnd,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
-    // The box the lit end is a point of, which is where its own plane comes from —
-    // `space` and not `wire_box`, this walk's own discipline, and see
-    // [`on_the_lit_surface`] for why both sides of that comparison have to come out
-    // of one source. `None` for a fragment of no occluder: the ground and a mobile
-    // are points of nothing and are exempt from nothing.
-    let own_box = lit.solid.map(|id| occlusion.solid(id).space);
-    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-
-    struct Hit<'a> {
-        stands: &'a crate::occlusion::Solid,
-        /// Which solid of the frame this is — off the reference the walk
-        /// followed to it, which is where a name lives. See
-        /// [`crate::occlusion::SolidId`].
-        id: crate::occlusion::SolidId,
-        entered: f32,
-        leaves: f32,
-    }
-    let mut by_tile: Vec<((i32, i32), Vec<Hit<'_>>)> = Vec::new();
-    let from2 = Vec2::new(from[0], from[1]);
-    let to2 = Vec2::new(to[0], to[1]);
-    for cell in candidate_tiles(from2, to2) {
-        let mut here = Vec::new();
-        for (id, stands) in occlusion.cell(cell.0, cell.1) {
-            if let Some((entered, leaves)) = ray_vs_solid(from, to, &stands.space) {
-                here.push(Hit {
-                    stands,
-                    id,
-                    entered,
-                    leaves,
-                });
-            }
-        }
-        if !here.is_empty() {
-            by_tile.push((cell, here));
-        }
-    }
-    // The order the ray actually meets them, the same discipline
-    // `walk_cells` keeps by walking cell after cell along the DDA — needed
-    // for the early cutoff below, and for a blamed tile to mean what
-    // `walk_cells`'s does.
-    by_tile.sort_by(|(_, a), (_, b)| {
-        let ea = a.iter().map(|hit| hit.entered).fold(f32::MAX, f32::min);
-        let eb = b.iter().map(|hit| hit.entered).fold(f32::MAX, f32::min);
-        ea.total_cmp(&eb)
-    });
-
-    let mut through = 1.0;
-    for (cell, hits) in by_tile {
-        let mut stopped: f32 = 0.0;
-        // The solid of this cell that took the most of the ray, kept beside the
-        // number it produced. `>` and not `>=`, so a tie names the one the walk
-        // met first rather than the last one to equal it.
-        let mut worst: Option<Stopper> = None;
-        for Hit {
-            stands,
-            id,
-            entered,
-            leaves,
-        } in hits
-        {
-            // The record's own span, exactly — this walk reads `space` for the
-            // box it tests, and reading a *rounded* height for the same solid's
-            // exemptions and its `crosses` would be two different solids in one
-            // iteration. `walk_cells_streaming`'s own copy is the quantised one
-            // on purpose; see its doc comment.
-            let (low, high) = (stands.low(), stands.high());
-            // **A surface does not shadow itself, and that is the whole rule** —
-            // `docs/lighting_rebuild.md` phase 4. `Some(id) == Some(id)` and never
-            // `None == None`: a fragment that is a point of no occluder is exempt
-            // from nothing.
-            if lit.solid == Some(id) {
-                continue;
-            }
-            // **And a surface does not shadow itself when it is cut into more than
-            // one primitive**, which is the whole of D2 — `docs/occluders.md`'s S3.
-            // A neighbouring box whose extent along this fragment's own normal ends
-            // exactly on this fragment's plane lies wholly behind that plane, so
-            // there is nothing there for the ray to cross. This is what `same_run`
-            // stood in for below and could only state for a *panel* on the same row
-            // or column: a body got no exemption at all, which is the seam this step
-            // cures.
-            if own_box
-                .as_ref()
-                .is_some_and(|own| on_the_lit_surface(lit.surface, own, &stands.space, delta))
-            {
-                continue;
-            }
-            // **A ray that only touches a solid at the point it starts from has
-            // not gone through it**, and that is exactly `crosses`'s own
-            // strictness said about a box instead of a plane. No epsilon: the
-            // interval is `0.0..0.0`, both ends exact numbers off the slab test.
-            //
-            // The case it is about is a tread's outer corner. A riser is a plane
-            // on the climb axis and a tread's lid stops exactly at it, so a
-            // fragment on that lip stands *in* the riser's own plane at exactly
-            // the riser's top — and every ray it sends anywhere touches the
-            // riser's box at `t = 0` and nowhere else. Identity cannot excuse it,
-            // because the riser is genuinely a different primitive from the lid.
-            // Measured before the rule: 88 pixels of a three-tread flight drawn
-            // shadowed where every independent oracle in the tree says lit.
-            //
-            // Only at the origin, and only for a zero-length interval: a ray that
-            // starts *inside* a box leaves it at some `t > 0`, and a lid the ray
-            // genuinely crosses is found at the `t` of its own plane. Neither is
-            // touched.
-            if entered == 0.0 && leaves == 0.0 {
-                continue;
-            }
-            let middle = (entered + leaves) * 0.5;
-            let opacity = f32::from(stands.opacity) / 255.0;
-            let by_surface = match stands.edges {
-                0 => {
-                    // **Not the lid's own `entered`/`leaves`.** A lid is
-                    // flat in `z` (`Solid::box_of`'s `min.z == max.z` for
-                    // an ordinary floor), so `ray_vs_solid`'s `z`-slab
-                    // narrows both ends to the exact same instant the ray
-                    // crosses that one height — correct as a crossing
-                    // *point*, but [`crosses`] needs the ray's `z` on each
-                    // side of that point to tell "crossed through" from
-                    // "never came close," and a from/to that are already
-                    // equal answers every comparison in [`crosses`] as
-                    // "never." What it needs is the ray's `z` where it
-                    // enters and leaves the lid's own real horizontal
-                    // footprint, over an unconstrained `z` — `stands.space`
-                    // itself, not the whole tile: a tread's own top is a lid
-                    // narrower than its tile, and asking a wider box than
-                    // the lid actually is would let a ray graze the tile's
-                    // corner past the tread's real edge read as "crossed
-                    // through" the tread. Was the whole tile until
-                    // `docs/lighting_raymarch.md`'s "second bigger idea"
-                    // landed — nothing before that could tell a sub-tile
-                    // lid's own bounds from its tile's.
-                    let footprint = crate::solid::Solid {
-                        min: crate::camera::WorldSpot {
-                            x: stands.space.min.x,
-                            y: stands.space.min.y,
-                            z: -1e6,
-                        },
-                        max: crate::camera::WorldSpot {
-                            x: stands.space.max.x,
-                            y: stands.space.max.y,
-                            z: 1e6,
-                        },
-                    };
-                    let (tile_entered, tile_leaves) =
-                        ray_vs_solid(from, to, &footprint).unwrap_or((entered, leaves));
-                    let from_z = from[2] + delta[2] * tile_entered;
-                    let to_z = from[2] + delta[2] * tile_leaves;
-                    opacity * crosses(from_z, to_z, low, high)
-                }
-                // A body is a real 3D box and `ray_vs_solid` is an exact
-                // slab test — a `Some` here already means the segment
-                // genuinely passed through it over `entered..leaves`, so
-                // occlusion is the body's own opacity outright. No
-                // length-based fade, no per-side `pierces` floor, no
-                // widened-corner graze: those existed only to fake a
-                // penumbra a point flame does not cast. See `docs/
-                // lighting_raymarch.md`'s "hard shadows" decision.
-                EDGE_ANY => opacity,
-                // A panel: a named side, and what stops the ray is whether it
-                // crossed the plane *inside* the panel's own drawn extent —
-                // `pierced`, and its hole. There was a gate before it,
-                // `edges & !same_run == 0`, and `docs/occluders.md`'s S4 is where
-                // it went: the exemption it spelled is `on_the_lit_surface`'s,
-                // stated about the fragment's own plane instead of about a row of
-                // cells, and it is applied above with the rest of them.
-                _ => {
-                    let cross = [
-                        from[0] + delta[0] * middle,
-                        from[1] + delta[1] * middle,
-                        from[2] + delta[2] * middle,
-                    ];
-                    opacity * pierced(stands, cross)
-                }
-            };
-            if by_surface > stopped {
-                stopped = by_surface;
-                worst = Some(Stopper {
-                    cell,
-                    solid: id,
-                    edges: stands.edges,
-                    span: (low, high),
-                });
-            }
-        }
-        through *= 1.0 - stopped;
-        if through <= RAY_CUTOFF {
-            // `through` was over the cutoff before this cell and is under it
-            // after, so `stopped` is above zero and some solid produced it.
-            return (
-                0.0,
-                Some(worst.expect("a cell that trips the cutoff has a solid that did it")),
-            );
-        }
-    }
-    (through, None)
+    walk_primitives(from, to, lit, occlusion, |stands| stands.space)
 }
 
-/// A GPU-shaped reformulation of [`walk_cells_exact`], proven equivalent to
-/// it (on ordinary, non-[`crate::occlusion::Builder::add_raw`] geometry) —
-/// `docs/lighting_raymarch.md`'s point 4, and [`walk`]/[`walk_sun`]'s own
-/// walk since the cutover, mirrored in `blit.wgsl`'s `walk`.
+/// And against the **wire's** — the `f32` a shader will read, which is what
+/// makes this a faithful preview of `blit.wesl` rather than a better version of
+/// it. [`walk`] and [`walk_sun`]'s own walk.
 ///
-/// Returns the blamed tile the same shape [`walk_cells`] used to: the cell
-/// being applied at the moment `through` first drops to or under
-/// [`RAY_CUTOFF`], `None` when nothing ever did. Free to add — the
-/// enumeration below already visits cells strictly in ray order, so the cell
-/// that trips the cutoff *is* the first one in ray order that fully blocked
-/// it, the same fact [`walk_cells`]'s own `Some(cell)` returns named. Kept
-/// rather than dropped because [`Reach::stopped_by`] has real readers
-/// (`tests/lighting.rs`'s assertions, `Debug` for [`Sample`],
-/// `examples/isolated_scene.rs`) that the cutover must not silently break.
-///
-/// **Why a second exact walk, rather than porting [`walk_cells_exact`]
-/// itself**: `blit.wgsl`'s `walk` returns one `f32`, `through` — nothing
-/// downstream reads which tile stopped it, unlike [`Reach::stopped_by`].
-/// [`candidate_tiles`]'s `Vec` (dynamic allocation, `O(n²)` dedup via
-/// `Vec::contains`) and [`walk_cells_exact`]'s subsequent sort by nearest
-/// crossing both exist only to name the *first* blocking tile in ray order —
-/// a question nothing downstream of `blit.wgsl`'s `walk` asks. `through` is
-/// a product of independent `(1 - stopped)` factors, one per candidate tile,
-/// and a product is order-independent (up to float noise, comfortably
-/// inside decision 9's ±1/255 tolerance) — so a bounded, bare per-fragment
-/// loop can multiply every candidate's contribution in as it is found,
-/// without ever collecting or sorting them, provided the enumeration itself
-/// never revisits a cell (which would double-count it) or misses one (which
-/// would under-occlude).
-///
-/// **The enumeration is plain single-axis DDA, one cell per step, and
-/// nothing else — no diagonal probe, and that was checked rather than
-/// assumed.** The backlog's own point 1/2 scoping (session 8) reads as
-/// asking for an *unconditional off-axis probe* alongside `dda_walk`'s own
-/// corner-jumping — because `dda_walk` still skips straight from one cell to
-/// a diagonal neighbour whenever [`corner_tie`] fires, and that skip is
-/// exactly what the probe exists to cover for. This function does not keep
-/// that skip at all: every transition steps exactly one axis, the nearer
-/// boundary, full stop — no [`corner_tie`], no [`panel_stop`], no
-/// [`DdaTransition::Corner`]. **A DDA walk that never skips a cell is
-/// complete by construction** — the textbook reason grid-line rasterisation
-/// steps one axis at a time is that doing so visits every cell a continuous
-/// line's interior passes through, with nothing left over for a diagonal
-/// probe to add. Checked, not trusted from the argument alone: an earlier
-/// draft of this function *did* carry an unconditional off-axis probe
-/// (mirroring the backlog's own framing literally), and deliberately
-/// disabling it — across the six-point counter-example, an unrestricted
-/// single-body fuzz, an unrestricted single-panel fuzz, a fuzz aimed
-/// exactly at a two-panel building corner, one fixed ray running the exact
-/// diagonal through a shared corner point, and 30,000 cases over a
-/// seven-solid room — never once produced a disagreement with
-/// [`walk_cells_exact`]. The probe was dead code for this architecture, not
-/// a simplification worth keeping "just in case"; see the doc's Session 15
-/// entry for the full account of ruling it out rather than assuming it in.
-///
-/// **The probe came back at the WGSL cutover, for a reason session 15's own
-/// fuzzing could never have reached: a second backend to disagree with.**
-/// Every fuzz above ran one CPU implementation against itself, so a tie in
-/// `boundary[0]`/`boundary[1]` always resolved the same way twice — nothing
-/// there could ever expose that a GPU's own division is not guaranteed to
-/// resolve the identical tie identically. `docs/lighting_raymarch.md`'s
-/// point 4 cutover found exactly that at `a_single_flat_face_beside_an_
-/// occluder_agrees_with_light_sample`, and the fix that survived is this
-/// function probing the untaken side of every transition — not the walk's
-/// own trajectory, which still steps one axis at a time, the nearer
-/// boundary only, same as always. A *gated* probe (only near a computed
-/// tie) was tried first and made things worse, not better: CPU and GPU do
-/// not compute a close-enough `boundary[0] - boundary[1]` to agree on which
-/// rays even count as near a tie, so widening the gate only widened the set
-/// of rays where one backend probed and the other did not. Unconditional
-/// removes the asymmetry instead of sizing it: `candidate_tiles` already
-/// names both single-axis neighbours at every transition regardless of any
-/// tie, so nothing here costs `walk_cells_exact` agreement that wasn't
-/// already priced in.
-///
-/// **What "exactly" is limited to, and why that limit is deliberate and not
-/// a shortcut.** Every solid tested here is read off
-/// [`crate::occlusion::Solid::wire_box`] rather than off
-/// [`crate::occlusion::Solid::space`] the way [`walk_cells_exact`] does,
-/// because `blit.wgsl` reads exactly those numbers and this function exists to
-/// be a faithful preview of what the shader does, not a better version of it.
-///
-/// **What that costs is now an `f32` rounding and nothing else** —
+/// **What that costs is an `f32` rounding and nothing else** —
 /// `docs/occluders.md`'s S1. It used to be a quantisation: a solid was
 /// reconstructed from `(tile, bottom, top, fraction)`, four bytes of
 /// two-hundred-and-fifty-fifths of a tile across and sixteen bits an end up,
 /// because the upload folded every primitive back onto a cell. This walk
 /// mirrored that fold on purpose, which is why the two CPU walks read different
-/// heights for one solid *by design*; with the fold gone the difference
-/// collapses to the last bits of a float, which decision 9's own parity
-/// tolerance absorbs and which is what D10 says the gap between record and wire
-/// is for — measuring, not hiding.
-///
-/// The `z` span [`walk_cells_streaming`] is entitled to read is that same box's,
-/// and **not** [`crate::occlusion::Solid::low`]/`high`'s own corners: the
-/// vertical half of one discipline, said in one place.
-fn wire_span(stands: &crate::occlusion::Solid) -> (f32, f32) {
-    let wire = stands.wire_box();
-    (wire.min.z as f32, wire.max.z as f32)
-}
-
+/// heights for one solid *by design*; with the fold gone the difference collapses
+/// to the last bits of a float, which decision 9's own parity tolerance absorbs
+/// and which is what D10 says the gap between record and wire is for — measuring,
+/// not hiding.
 fn walk_cells_streaming(
     from: [f32; 3],
     to: [f32; 3],
     lit: LitEnd,
     occlusion: &Occlusion,
 ) -> (f32, Option<Stopper>) {
-    // The cell the walk starts in, which is the cell the start point stands in
-    // and nothing else — `docs/occluders.md`'s S4 deleted the carried tile that
-    // used to arbitrate here, and the grave note above [`dda_walk`] has the
-    // census that licensed it.
-    let first = (from[0].floor() as i32, from[1].floor() as i32);
-    // The box the lit end is a point of — **the wire's**, like every other box this
-    // walk reads, so that the plane comparison D2 makes is the one the shader makes.
-    // See [`on_the_lit_surface`].
-    let own_box = lit.solid.map(|id| occlusion.solid(id).wire_box());
-    let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-
-    let toward = (
-        if delta[0] >= 0.0 { 1 } else { -1 },
-        if delta[1] >= 0.0 { 1 } else { -1 },
-    );
-    let mut per_tile = [1e30_f32; 2];
-    let mut boundary = [1e30_f32; 2];
-    for axis in 0..2 {
-        if delta[axis].abs() <= 1e-6 {
-            continue;
-        }
-        per_tile[axis] = 1.0 / delta[axis].abs();
-        let coord = [from[0], from[1]][axis];
-        let edge = [first.0, first.1][axis] as f32;
-        let ahead = match delta[axis] >= 0.0 {
-            true => edge + 1.0 - coord,
-            false => coord - edge,
-        };
-        boundary[axis] = ahead * per_tile[axis];
-    }
-
-    // One candidate tile's exact occlusion, folded into `through` — every
-    // solid on it tested with its own exact `ray_vs_solid` interval rather
-    // than a cell-shared one, [`walk_cells_exact`]'s own per-tile block
-    // restated over a single cell at a time. Nothing here reads which tile
-    // blamed the ray, so this can run in any order and as many times as the
-    // caller likes — the enumeration below is what has to visit each
-    // relevant cell exactly once, not this.
-    // Returns the solid that took the most of the ray on this cell, so the
-    // caller can name it where the cutoff trips — the same `>`-not-`>=` tie rule
-    // [`walk_cells_exact`] keeps. `None` where nothing on the cell touched it.
-    let apply = |cell: (i32, i32), through: &mut f32| -> Option<Stopper> {
-        let mut stopped: f32 = 0.0;
-        let mut worst: Option<Stopper> = None;
-        for (id, stands) in occlusion.cell(cell.0, cell.1) {
-            // The wire's own box, rounded exactly as the upload rounds it —
-            // all six coordinates, absolute, with no cell in them. See
-            // [`wire_span`], which is this box's `z` and the same function.
-            let (low, high) = wire_span(stands);
-            let space = stands.wire_box();
-            let Some((entered, leaves)) = ray_vs_solid(from, to, &space) else {
-                continue;
-            };
-            // The same one comparison [`walk_cells_exact`] makes — see it.
-            if lit.solid == Some(id) {
-                continue;
-            }
-            // And the same surface exemption, D2 — [`on_the_lit_surface`], and
-            // `walk_cells_exact`'s copy of this call says what it replaces. Both
-            // boxes are the wire's here, which is what makes this walk and the
-            // shader ask one question rather than two that agree.
-            if own_box
-                .as_ref()
-                .is_some_and(|own| on_the_lit_surface(lit.surface, own, &space, delta))
-            {
-                continue;
-            }
-            // And the same one touch rule; `walk_cells_exact`'s copy states it at
-            // length. A ray that only meets a solid at the point it starts from
-            // has not gone through it.
-            if entered == 0.0 && leaves == 0.0 {
-                continue;
-            }
-            let middle = (entered + leaves) * 0.5;
-            let opacity = f32::from(stands.opacity) / 255.0;
-            let by_surface = match stands.edges {
-                0 => {
-                    // Same tile-footprint lookup [`walk_cells_exact`] needs
-                    // for the same reason: a lid's own box is flat in `z`,
-                    // so its own `entered`/`leaves` collapse to one instant
-                    // rather than the before/after pair [`crosses`] needs.
-                    // `space` here, not the whole tile — see
-                    // `walk_cells_exact`'s own copy of this comment.
-                    let footprint = crate::solid::Solid {
-                        min: crate::camera::WorldSpot {
-                            x: space.min.x,
-                            y: space.min.y,
-                            z: -1e6,
-                        },
-                        max: crate::camera::WorldSpot {
-                            x: space.max.x,
-                            y: space.max.y,
-                            z: 1e6,
-                        },
-                    };
-                    let (tile_entered, tile_leaves) =
-                        ray_vs_solid(from, to, &footprint).unwrap_or((entered, leaves));
-                    let from_z = from[2] + delta[2] * tile_entered;
-                    let to_z = from[2] + delta[2] * tile_leaves;
-                    opacity * crosses(from_z, to_z, low, high)
-                }
-                // Same as `walk_cells_exact`'s own copy: a `Some` from the
-                // exact `ray_vs_solid` slab test already means a genuine
-                // crossing, so occlusion is the body's own opacity. See
-                // `docs/lighting_raymarch.md`'s "hard shadows" decision.
-                EDGE_ANY => opacity,
-                // A panel: a named side, and what stops the ray is whether it
-                // crossed the plane *inside* the panel's own drawn extent —
-                // `pierced`, and its hole. There was a gate before it,
-                // `edges & !same_run == 0`, and `docs/occluders.md`'s S4 is where
-                // it went: the exemption it spelled is `on_the_lit_surface`'s,
-                // stated about the fragment's own plane instead of about a row of
-                // cells, and it is applied above with the rest of them.
-                _ => {
-                    let cross = [
-                        from[0] + delta[0] * middle,
-                        from[1] + delta[1] * middle,
-                        from[2] + delta[2] * middle,
-                    ];
-                    opacity * pierced(stands, cross)
-                }
-            };
-            if by_surface > stopped {
-                stopped = by_surface;
-                worst = Some(Stopper {
-                    cell,
-                    solid: id,
-                    edges: stands.edges,
-                    span: (low, high),
-                });
-            }
-        }
-        *through *= 1.0 - stopped;
-        worst
-    };
-
-    let mut through = 1.0_f32;
-    let mut cell = first;
-    for _ in 0..MAX_WALK_STEPS {
-        let worst = apply(cell, &mut through);
-        if through <= RAY_CUTOFF {
-            return (
-                0.0,
-                Some(worst.expect("a cell that trips the cutoff has a solid that did it")),
-            );
-        }
-        let next = boundary[0].min(boundary[1]);
-        if next >= 1.0 {
-            break;
-        }
-        // Plain single-axis DDA drives the walk's own trajectory — the
-        // nearer boundary only, never skipping a cell or taking both. See
-        // this function's own doc comment for why an unconditional probe of
-        // the *trajectory itself* was tried and ruled out: a walk that never
-        // skips a cell is complete by construction, for one CPU
-        // implementation checked against itself.
-        //
-        // **The probe below is unconditional for a different reason, and
-        // does not change the trajectory.** A first attempt gated it behind
-        // `(boundary[0] - boundary[1]).abs() <= TIE_EPSILON` — cheaper, and
-        // wrong: CPU and GPU do not compute a close-enough `boundary[0] -
-        // boundary[1]` to agree on *which rays count as near a tie*, so one
-        // backend would probe a ray the other did not, and the extra
-        // occlusion only one side found showed up as a real parity failure
-        // (`the_shader_and_light_sample_agree_about_a_wall_that_faces_away`
-        // and others, found widening the gate rather than narrowing it —
-        // more rays fell on the wrong side of the asymmetry, not fewer).
-        // Probing every transition removes the asymmetry instead of trying
-        // to size it away: `candidate_tiles` already names both single-axis
-        // neighbours at every transition regardless of any tie, so
-        // `walk_cells_exact` already tests whatever this probes, and testing
-        // the same cell twice on this side changes nothing it could
-        // disagree with.
-        let out_by_x = boundary[0] < boundary[1];
-        let probe = match out_by_x {
-            true => (cell.0, cell.1 + toward.1),
-            false => (cell.0 + toward.0, cell.1),
-        };
-        let worst = apply(probe, &mut through);
-        if through <= RAY_CUTOFF {
-            return (
-                0.0,
-                Some(worst.expect("a probe that trips the cutoff has a solid that did it")),
-            );
-        }
-        match out_by_x {
-            true => {
-                cell.0 += toward.0;
-                boundary[0] += per_tile[0];
-            }
-            false => {
-                cell.1 += toward.1;
-                boundary[1] += per_tile[1];
-            }
-        }
-    }
-    (through, None)
+    walk_primitives(from, to, lit, occlusion, |stands| stands.wire_box())
 }
 
 /// [`walk`], through [`walk_cells_exact`] instead of [`walk_cells`] — for
@@ -3974,7 +3528,12 @@ mod tests {
         // And the same span off the wire, which is what the GPU reads. A half
         // is a whole number of `Solid::Z_STEPS`, so this is exact rather than
         // near — the step being a power of two is what buys that.
-        assert_eq!(wire_span(&box_at_half), (3.5, 6.5));
+        // `wire_span` was this said as its own function, and it went with
+        // `walk_cells_streaming`'s own body at `docs/occluders.md`'s S5: the
+        // walk reads the wire's whole box now and takes its `z` off that,
+        // which is the same two numbers with nothing between them.
+        let wire = box_at_half.wire_box();
+        assert_eq!((wire.min.z as f32, wire.max.z as f32), (3.5, 6.5));
     }
 
     // **`a_fragment_is_exempt_from_its_own_solid_and_from_a_twin_of_it_beside_it`
@@ -4950,40 +4509,22 @@ mod tests {
         }
     }
 
-    /// The pure-geometry echo of
-    /// [`a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray`]: the
-    /// same six spots and the same wall row, but asking [`dda_walk`] alone
-    /// whether the cell sequence ever visits `(100, 100)` — no [`Occlusion`],
-    /// no [`Lighting`], no `sample`. This is
-    /// `docs/lighting_raymarch.md`'s "A new `walk_cells` miss" — a ray
-    /// hugging a row's own grid line skipping the row entirely — at the
-    /// layer where it actually lives, checked against cell numbers instead
-    /// of a lit scene.
-    ///
-    /// `y 99.9`'s `false` is not a typo: the straight segment from `(102.5,
-    /// 99.9)` to `(98.0, 100.0)` never reaches `y >= 100` before its own
-    /// endpoint, so the geometrically correct walk never sets foot in the
-    /// wall's row at all — see the backlog entry's own correction of the
-    /// original six-point table.
-    #[test]
-    fn the_dda_walk_does_not_skip_the_wall_row_on_a_shallow_ray() {
-        for (y, visits_the_wall_row) in [
-            (99.9_f32, false),
-            (100.1, true),
-            (100.2, true),
-            (100.3, true),
-            (101.0, true),
-        ] {
-            let steps = dda_walk(Vec2::new(102.5, y), Vec2::new(98.0, 100.0));
-            let visited = steps.iter().any(|step| step.cell == (100, 100));
-            assert_eq!(
-                visited,
-                visits_the_wall_row,
-                "y {y}: cells were {:?}",
-                steps.iter().map(|step| step.cell).collect::<Vec<_>>(),
-            );
-        }
-    }
+    // **`the_dda_walk_does_not_skip_the_wall_row_on_a_shallow_ray` stood here**,
+    // and `docs/occluders.md`'s S5 took its subject away with the DDA.
+    //
+    // It was the pure-geometry echo of
+    // [`a_wall_level_with_the_flame_is_not_skipped_by_a_shallow_ray`] above,
+    // which is still drawn and still the gate: the same six spots and the same
+    // wall row, asking `dda_walk` alone whether its cell sequence ever visited
+    // `(100, 100)`. That question was worth a test because a *row* was how the
+    // grid found a wall, and `docs/lighting_raymarch.md`'s "A new `walk_cells`
+    // miss" is a ray hugging a row's own grid line and skipping the row.
+    //
+    // **A tree has no rows to skip.** A primitive is under exactly one leaf
+    // whatever line the ray hugs, and what decides whether it is asked about is
+    // the slab test against its own node's box — the same test that then decides
+    // the primitive itself. There is no second, coarser question left to get
+    // wrong, which is the whole of why the grid's own gap cannot recur here.
 
     /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over the
     /// three-tread climbable stair
@@ -5191,66 +4732,22 @@ mod tests {
         });
     }
 
-    /// A walk starts in a cell the ray is actually in — and it asks
-    /// [`dda_walk`], which is where the seed now lives.
-    ///
-    /// **It used to ask `starting_cell`, and `docs/occluders.md`'s S4 deleted
-    /// that.** The half of its claim that went with the rule was "the carried
-    /// tile wins the tie"; the half that outlives it is the one a DDA actually
-    /// needs — **the cell it seeds itself from contains its own start point** —
-    /// because a walk seeded from a cell the point is *not* in computes a
-    /// negative distance to a boundary it has already crossed, which is the
-    /// 324-pixel leak in the grave note above. Asking the walk rather than a
-    /// helper is also what keeps the claim gateable at all: the helper is gone
-    /// and the walk cannot be.
-    ///
-    /// The domain is the interesting one and not a plausible one: a fraction of
-    /// exactly `0.0` or `1.0` is a point on a tile's own edge, which
-    /// `docs/lighting_rebuild.md` phase 6c's impostor puts every south and east
-    /// face at, and the census in the grave note counts 11,544 of across the
-    /// suite; a fraction past either is the `f32` drift on top of it.
-    ///
-    /// *Injection:* seed [`dda_walk`] with `floor + 1` — a cell the point is not
-    /// in — and this goes red, along with 2 more unit tests and 14 of
-    /// `tests/lighting.rs`.
-    #[test]
-    fn a_walk_starts_in_a_cell_its_own_start_point_is_in() {
-        use proptest::prelude::*;
-
-        proptest!(ProptestConfig::with_cases(4_096), |(
-            tile_x in -20_i32..20,
-            tile_y in -20_i32..20,
-            // A tile's width either side of its own two edges, so the sample
-            // lands inside, exactly on, and past each of them.
-            off_x in -0.25_f32..1.25,
-            off_y in -0.25_f32..1.25,
-            // Somewhere else entirely, so the walk has a direction and the first
-            // step is a real one rather than a ray that ends where it starts.
-            to_x in -25.0_f32..25.0,
-            to_y in -25.0_f32..25.0,
-        )| {
-            let from = Vec2::new(tile_x as f32 + off_x, tile_y as f32 + off_y);
-            let to = Vec2::new(to_x, to_y);
-            prop_assume!((from.x - to.x).abs() > 1e-3 || (from.y - to.y).abs() > 1e-3);
-
-            let steps = dda_walk(from, to);
-            // A positive control on the fixture itself: a walk that stepped
-            // nowhere would satisfy anything asserted about its first cell.
-            prop_assert!(!steps.is_empty(), "from {from:?} to {to:?} walked no cell at all");
-            let cell = steps[0].cell;
-
-            // The point is in the cell's own closure — the invariant a DDA
-            // seeded from `cell` needs and the one the leak broke.
-            prop_assert!(
-                from.x >= cell.0 as f32 && from.x <= (cell.0 + 1) as f32,
-                "x {} is not in cell {}", from.x, cell.0,
-            );
-            prop_assert!(
-                from.y >= cell.1 as f32 && from.y <= (cell.1 + 1) as f32,
-                "y {} is not in cell {}", from.y, cell.1,
-            );
-        });
-    }
+    // **`a_walk_starts_in_a_cell_its_own_start_point_is_in` stood here**, and
+    // `docs/occluders.md`'s S5 took the cell it was about.
+    //
+    // It had already outlived one deletion: its subject was `starting_cell`, the
+    // arbiter S4 removed, and what was repointed at `dda_walk` afterwards was the
+    // half of the claim a DDA still needed — **the cell a walk seeds itself from
+    // contains its own start point** — because a walk seeded from a cell the
+    // point is not in computes a negative distance to a boundary it has already
+    // crossed. That is the 324-pixel leak in the grave note above.
+    //
+    // **A traversal has no seed at all.** It starts at the root of a tree whose
+    // nodes are boxes in world coordinates, so there is no cell to be wrong
+    // about, no `floor()` to put a boundary point on the wrong side of one, and
+    // nothing left for this to assert. The 11,544 exact-edge ties its domain was
+    // built around are not a case any more: a point on two cells' shared boundary
+    // was only ever a question because a cell was the unit of lookup.
 
     /// **The brute-force oracle: [`ray_vs_solid`] against every primitive in
     /// the grid, with no cell in it anywhere.** `docs/occluders.md`'s
@@ -5783,111 +5280,30 @@ mod tests {
         });
     }
 
-    /// A `from` on a boundary starts in the cell it is *heading into*, and
-    /// never in the one behind it.
-    ///
-    /// **The same fixture as before `docs/occluders.md`'s S4, with the opposite
-    /// expectation, and that is the whole of what the deletion moved.** A point
-    /// on the join between tiles 5 and 6 is a point of both, and the walk used
-    /// to be told which one by the carried tile — here `(5, 5)`, so it started
-    /// behind the ray and had to leave at `t` near zero. There is no carried
-    /// tile now: the point is `6.0`, so the walk starts at `6` and spends a real
-    /// third of the segment there. Both readings visit `(6, 5)` and then
-    /// `(7, 5)`, which is why the census in the grave note above could count
-    /// 11,544 of this case without a single answer moving — and asserting the
-    /// *sequence* is what makes that a claim rather than a coincidence.
-    #[test]
-    fn a_from_on_a_boundary_starts_in_the_cell_it_is_heading_into() {
-        // `x == 6.0` is the join between tiles 5 and 6, and the ray keeps
-        // moving in `+x`, away from tile 5 and never back into it.
-        let steps = dda_walk(Vec2::new(6.0, 5.5), Vec2::new(9.0, 5.5));
-        assert_eq!(steps[0].cell, (6, 5));
-        assert_eq!(steps[1].cell, (7, 5));
-        assert!(
-            (steps[0].leaves - 1.0 / 3.0).abs() < 1e-3,
-            "the first cell is a whole tile of a three-tile ray: leaves = {}",
-            steps[0].leaves,
-        );
-    }
-
-    /// Everything [`dda_walk`] promises about its own output, checked as
-    /// plain numbers over arbitrary rays — no scene, no `Occlusion`, no GPU.
-    /// This is the fast net the testability audit in
-    /// `docs/lighting_raymarch.md` argues for: the DDA is the piece every
-    /// bug in that doc actually lived in, and it is the one piece that was,
-    /// until now, only reachable through a rendered or CPU-sampled scene.
-    #[test]
-    fn dda_walk_visits_a_connected_path_of_cells_starting_where_the_ray_does() {
-        use proptest::prelude::*;
-
-        proptest!(ProptestConfig::with_cases(1024), |(
-            tile_x in -20_i32..20,
-            tile_y in -20_i32..20,
-            frac_x in 0.0_f32..1.0,
-            frac_y in 0.0_f32..1.0,
-            delta_x in -8.0_f32..8.0,
-            delta_y in -8.0_f32..8.0,
-        )| {
-            // The same `ground < 1e-6` floor callers guard the DDA with —
-            // `dda_walk` has no direction to step in below it.
-            prop_assume!(delta_x.abs() > 1e-3 || delta_y.abs() > 1e-3);
-
-            let from = Vec2::new(tile_x as f32 + frac_x, tile_y as f32 + frac_y);
-            let to = Vec2::new(from.x + delta_x, from.y + delta_y);
-            let steps = dda_walk(from, to);
-
-            prop_assert!(!steps.is_empty());
-            // The fraction is strictly inside its tile, so the cell the point
-            // stands in is the tile the generator built it on — the one place
-            // this proptest can name the seed without restating `floor`.
-            prop_assert_eq!(steps[0].cell, (tile_x, tile_y));
-            prop_assert!(steps.len() <= MAX_WALK_STEPS as usize);
-
-            // Every cell but a genuinely final one has somewhere it goes
-            // next, and a final one is exactly the one with no exit side —
-            // the two facts a caller leans on to know when to stop reading.
-            for step in &steps {
-                prop_assert_eq!(step.exit == 0, !step.continues);
-            }
-            for step in &steps[..steps.len() - 1] {
-                prop_assert!(step.continues);
-            }
-
-            // Consecutive cells are von-Neumann neighbours: single-axis
-            // stepping, one tile at a time, one axis a step — no diagonal
-            // jump and nothing this walk does ever skips a cell or stands
-            // still.
-            for pair in steps.windows(2) {
-                let (a, b) = (pair[0].cell, pair[1].cell);
-                let (dx, dy) = ((b.0 - a.0).abs(), (b.1 - a.1).abs());
-                prop_assert_eq!(dx + dy, 1, "non-adjacent or diagonal step {:?} -> {:?}", a, b);
-            }
-
-            // `entered`/`leaves` walk forward along the segment, never
-            // backward and never outside `0.0..=1.0`.
-            let mut floor = 0.0_f32;
-            for step in &steps {
-                prop_assert!((0.0..=1.0).contains(&step.entered));
-                prop_assert!((0.0..=1.0).contains(&step.leaves));
-                prop_assert!(step.leaves + 1e-6 >= step.entered);
-                prop_assert!(step.entered + 1e-6 >= floor);
-                floor = step.leaves;
-            }
-
-            // An axis the ray does not move along is never crossed — the
-            // walk stays in the start point's own row or column the whole way.
-            if delta_y.abs() < 1e-6 {
-                for step in &steps {
-                    prop_assert_eq!(step.cell.1, tile_y);
-                }
-            }
-            if delta_x.abs() < 1e-6 {
-                for step in &steps {
-                    prop_assert_eq!(step.cell.0, tile_x);
-                }
-            }
-        });
-    }
+    // **Two more of the DDA's own tests stood here**, and `docs/occluders.md`'s
+    // S5 took the walk they were about:
+    //
+    // - `a_from_on_a_boundary_starts_in_the_cell_it_is_heading_into`, which was
+    //   the last fixture on this track built entirely out of which of two cells
+    //   a point on their shared boundary belongs to. S4's census counted 11,544
+    //   of that case without a single answer moving; a tree does not ask the
+    //   question at all.
+    // - `dda_walk_visits_a_connected_path_of_cells_starting_where_the_ray_does`,
+    //   the fast net the testability audit in `docs/lighting_raymarch.md` argued
+    //   for — every promise the DDA made about its own output, over arbitrary
+    //   rays and with no scene: a connected path of von-Neumann neighbours, one
+    //   axis a step, `entered`/`leaves` walking forward inside `0.0..=1.0`, and
+    //   no more than `MAX_WALK_STEPS` of them.
+    //
+    // **What inherits that net is `occlusion::bvh`'s own tests**, and it is the
+    // same discipline one layer down: the structural claims a traversal leans on
+    // — every primitive under exactly one leaf, a node's box holding its whole
+    // subtree, an escape index that is the end of that subtree — checked as
+    // plain numbers with no scene, no `Occlusion` and no GPU. What is *not*
+    // inherited is a claim about the order a ray meets things in, because a
+    // traversal has none; what replaces it is that the order cannot matter, and
+    // `walk_primitives` states that outright by taking the earliest crossing
+    // rather than the first one found.
 
     /// A unit box built at `(0, 0)`, spanning `0..1` on every axis — the
     /// smallest real box [`ray_vs_solid`]'s hand-computed tests below share,

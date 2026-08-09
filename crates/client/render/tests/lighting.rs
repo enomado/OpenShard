@@ -1666,6 +1666,109 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
     );
 }
 
+/// **Two panes on one tile dim a ray twice, and the fixture exists because for
+/// three phases nothing in this crate could tell that from dimming it once.**
+///
+/// `docs/occluders.md`'s S4 left the per-cell `max` blocked on exactly this. The
+/// walk used to take the *largest* of what one cell's solids stopped and
+/// multiply that in once — "two panels of one corner are one wall, counted once"
+/// — and S5 deleted it with the cell it was a statement about. What is left is a
+/// product over primitives: a segment that crosses two volumes is stopped by
+/// both.
+///
+/// Neutralising the `max` had left the whole crate green, which is why it could
+/// not land on that measurement: instrumented, a second solid of one cell stops
+/// a ray **1,359 times** across the suite and every one of those is two *opaque*
+/// stoppers, where `max(1, 1)` and `1 − 0·0` are the same number by arithmetic.
+/// The suite was blind to the rule rather than indifferent to it.
+///
+/// So this is the arrangement it was blind to, and the only one where the two
+/// rules differ: two `WINDOW` statics on one tile, both [`occlusion::PANE`], one
+/// ray through both. The product says `0.8 · 0.8`; the `max` says `0.8`, and
+/// putting it back turns this red.
+///
+/// **Two statics and not a corner's two panels**, deliberately. Two independent
+/// panes are the case where the product is unambiguously right — two sheets of
+/// glass, two dimmings. A corner's panels overlap in the square where they meet,
+/// so there the `max` had a real argument (one wall's material, counted twice),
+/// and that case is left open in the plan's backlog rather than answered by a
+/// fixture built to whichever rule shipped.
+#[test]
+fn a_segment_through_two_panes_on_one_tile_is_dimmed_by_both_of_them() {
+    use openshard_client_render::camera::TileBounds;
+    use openshard_client_render::light::{Ambient, Light};
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    const GLAZING: (u16, u16) = (105, 105);
+    const HEIGHT: f32 = 5.0;
+
+    let pane = StaticTile {
+        flags: TileFlags::new(TileFlags::WINDOW),
+        height: 10,
+        ..StaticTile::default()
+    };
+    let mut grid = occlusion::Builder::new(TileBounds {
+        min_x: 100,
+        max_x: 110,
+        min_y: 100,
+        max_y: 110,
+    });
+    // Two of them, on one tile, at one height: no facing, so each is the whole
+    // tile — the body rule — and one ray crossing the tile crosses both boxes
+    // over the same interval. Different graphics, so they are two `Owner`s and
+    // two solids rather than one static counted twice.
+    for graphic in [0_u16, 1] {
+        grid.add(
+            GLAZING.0,
+            GLAZING.1,
+            0,
+            openshard_protocol::wire::Graphic(graphic),
+            &pane,
+            occlusion::Shape::UNREAD,
+        );
+    }
+    let occlusion = grid.finish(&Cutaway::OPEN);
+    assert_eq!(
+        occlusion
+            .solids_at(i32::from(GLAZING.0), i32::from(GLAZING.1))
+            .count(),
+        2,
+        "the tile does not hold two panes, so this fixture asks nothing",
+    );
+
+    let lighting = Lighting {
+        ambient: Ambient {
+            sky: [0.0, 0.0, 0.0],
+            ground: [0.0, 0.0, 0.0],
+        },
+        lights: vec![Light {
+            // Due west, level with the fragment, so the ray crosses the tile
+            // squarely and every one of the flame's own points crosses both.
+            at: Vec2::new(f32::from(GLAZING.0) - 1.5, f32::from(GLAZING.1) + 0.5),
+            z: HEIGHT,
+            radius: 8.0,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            beam: None,
+        }],
+        occlusion,
+        sun: None,
+        view: openshard_client_render::debug::View::Lit,
+        flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+    };
+
+    let east = (GLAZING.0 + 2, GLAZING.1);
+    let through = light::sample(spot(east, HEIGHT), &lighting).reaches[0].through;
+    let one_pane = 1.0 - f32::from(occlusion::PANE) / 255.0;
+    assert!(
+        (through - one_pane * one_pane).abs() < 1e-3,
+        "two panes passed {through:.4}, where one alone passes {one_pane:.4} and \
+         two of them should pass {:.4} — a per-cell `max` is back",
+        one_pane * one_pane,
+    );
+}
+
 /// One grid, one panel, one hole: the fixture the two tests below aim rays at.
 ///
 /// Built by hand rather than out of a scene, for the reason the gap test above
