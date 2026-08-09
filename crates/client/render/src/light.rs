@@ -1445,7 +1445,7 @@ fn pierced(stands: &crate::occlusion::Solid, cross: [f32; 3]) -> f32 {
 /// whether a corner is worth asking about before asking it — this asks
 /// directly and answers exactly, for a box as thin as a panel's own
 /// [`crate::occlusion::PANEL_THICKNESS`] slab or as flat as a lid's bare
-/// plane. [`walk_cells_streaming`] is what calls it now, mirrored in
+/// plane. [`walk_the_wire`] is what calls it now, mirrored in
 /// `blit.wgsl`'s `walk`.
 ///
 /// `None` when the segment misses the box on at least one axis outright —
@@ -1464,18 +1464,20 @@ fn pierced(stands: &crate::occlusion::Solid, cross: [f32; 3]) -> f32 {
 /// it is left for the caller to make rather than made silently in here.
 ///
 /// **Stays exact on purpose — widening this, even scoped to
-/// [`walk_cells_streaming`]'s own caller, was tried and reverted.**
+/// [`walk_the_wire`]'s own caller, was tried and reverted.**
 /// `docs/lighting_raymarch.md`'s point 4 cutover found a real GPU/CPU
 /// disagreement traced to here (see `blit.wgsl`'s own comment for the case),
 /// but rescuing the same near-miss on the CPU side clamped `leaves` up to
 /// `entered`, collapsing a genuine, if small, interior crossing to a
 /// zero-length touch and changing what the surrounding `by_surface` branches
-/// computed for it. Because [`walk_cells_exact`]'s `candidate_tiles` probes a
-/// wider set of candidate cells than [`walk_cells_streaming`]'s own plain
-/// single-axis stepping ever visits — deliberately, session 8's own scoping
-/// — a rescued near-miss on a cell only one of the two walks reaches turned
+/// computed for it. Because [`walk_the_record`]'s `candidate_tiles` probed a
+/// wider set of candidate cells than [`walk_the_wire`]'s own plain
+/// single-axis stepping ever visited — deliberately, session 8's own scoping;
+/// `docs/occluders.md`'s S5 has since given the two **one** broad phase, so
+/// the asymmetry this paragraph turns on no longer exists — a rescued
+/// near-miss on a cell only one of the two walks reached turned
 /// a shared, unconditional widening into a *new* disagreement between them,
-/// not a fix to one; `walk_cells_streaming_agrees_with_walk_cells_exact_on_
+/// not a fix to one; `walk_the_wire_agrees_with_walk_the_record_on_
 /// a_single_body`/`_on_a_single_panel`/`_in_a_small_room` all found real
 /// counterexamples within a few hundred proptest cases. The GPU/CPU gap
 /// this doc's own point 4 cutover found did not need this function widened
@@ -1654,8 +1656,8 @@ fn lit_plane(surface: Surface) -> Option<(usize, bool)> {
 /// for [`Surface::Upright`], which has no plane at all: a tree's sprite is excused
 /// from its own box by name and by nothing else.
 ///
-/// Both boxes must be read from **one** source — `space` in [`walk_cells_exact`],
-/// [`crate::occlusion::Solid::wire_box`] in [`walk_cells_streaming`] and the shader
+/// Both boxes must be read from **one** source — `space` in [`walk_the_record`],
+/// [`crate::occlusion::Solid::wire_box`] in [`walk_the_wire`] and the shader
 /// — for the same reason those walks each read one box for their geometry: two
 /// precisions in one comparison is two surfaces.
 fn on_the_lit_surface(
@@ -1773,7 +1775,7 @@ pub struct Spot {
     /// outer corner, `at.x` exactly whole) and `floor()` there picks whichever
     /// side happens to round down, not the side the geometry actually stands
     /// on. Every caller already knows which tile it means; carrying it here
-    /// instead of re-deriving it in [`walk_cells`] is the CPU twin of
+    /// instead of re-deriving it in the walk is the CPU twin of
     /// `MeshFaceVertex::tile`'s fix to the same class of bug on the GPU side.
     /// `docs/lighting_raymarch.md` step 2.
     pub tile: (i32, i32),
@@ -2007,8 +2009,8 @@ pub struct Stopper {
     /// different pictures, and an id number is not one a reader can see.
     pub edges: u8,
     /// The `z` span **the walk that blamed it actually read**: the record's
-    /// exact corners from [`walk_cells_exact`], the wire's quantised one from
-    /// [`walk_cells_streaming`].
+    /// exact corners from [`walk_the_record`], the wire's quantised one from
+    /// [`walk_the_wire`].
     ///
     /// Deliberately not normalised to one of the two. Which span a walk is
     /// entitled to is the discipline `docs/lighting_height.md` phase 2 states,
@@ -2216,13 +2218,13 @@ pub fn sample(spot: Spot, lighting: &Lighting) -> Sample {
     sample_with(spot, lighting, walk, walk_sun)
 }
 
-/// [`sample`], through [`walk_cells_exact`] instead of [`walk_cells`].
+/// [`sample`], through [`walk_the_record`] instead of [`walk_the_wire`].
 ///
 /// A temporary public seam for `docs/lighting_raymarch.md`'s point 3, not a
 /// second code path anything real should call: the doc's own oracles
 /// (`tests/lighting.rs`'s grid-sweep and fuzz, `tests/frame.rs`'s
-/// real-geometry fixtures) run through `sample`, not `walk_cells` directly,
-/// so exercising `walk_cells_exact` against them needs its own entry point
+/// real-geometry fixtures) run through `sample`, not the walk directly,
+/// so exercising `walk_the_record` against them needs its own entry point
 /// into the same machinery. It goes away at point 4's cutover, when `sample`
 /// itself walks this path and there is only one `sample` to have a seam to.
 #[doc(hidden)]
@@ -2340,7 +2342,7 @@ fn sample_with(
 /// *direction*, so the only thing this does that [`walk`] does not is work out
 /// where the segment ends: the point at which the ray leaves the grid's ceiling,
 /// because from there on it is looking at sky. Everything after that is
-/// [`walk_cells`], the same walk a flame's ray takes.
+/// [`walk_the_wire`], the same walk a flame's ray takes.
 ///
 /// The spot's own tile is skipped, as it is for a flame, and for the same reason
 /// in reverse: a wall's own pixels are on a tile that stops light, and a wall
@@ -2377,10 +2379,10 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper
     ];
     // No tile to exempt at the far end, and no source size: the sun subtends half
     // a degree, which is a point at this scale.
-    walk_cells_streaming(from, to, LitEnd::of(spot), occlusion)
+    walk_the_wire(from, to, LitEnd::of(spot), occlusion)
 }
 
-/// The ray from a spot to a point of a flame: [`walk_cells_streaming`] with the
+/// The ray from a spot to a point of a flame: [`walk_the_wire`] with the
 /// two ends of it.
 ///
 /// **`at` and not `light.at`**, because phase 5 asks this [`SHADOW_RAYS`] times
@@ -2391,7 +2393,7 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper
 /// `spread` this used to carry was a flame's size standing in for its own
 /// penumbra, and the size is in the ray's far end now.
 fn walk(spot: Spot, at: [f32; 3], occlusion: &Occlusion) -> (f32, Option<Stopper>) {
-    walk_cells_streaming([spot.at.x, spot.at.y, spot.z], at, LitEnd::of(spot), occlusion)
+    walk_the_wire([spot.at.x, spot.at.y, spot.z], at, LitEnd::of(spot), occlusion)
 }
 
 /// A number in `0.0..1.0` that belongs to a point of the world and to no other:
@@ -2807,8 +2809,8 @@ fn tile_of(space: &crate::solid::Solid) -> (i32, i32) {
 /// parameter.
 ///
 /// **That one thing is which box a primitive is**: the record's exact
-/// [`crate::occlusion::Solid::space`] for [`walk_cells_exact`], and the wire's
-/// `f32` [`crate::occlusion::Solid::wire_box`] for [`walk_cells_streaming`],
+/// [`crate::occlusion::Solid::space`] for [`walk_the_record`], and the wire's
+/// `f32` [`crate::occlusion::Solid::wire_box`] for [`walk_the_wire`],
 /// which exists to be a faithful preview of what `blit.wesl` reads rather than a
 /// better version of it. Before `docs/occluders.md`'s S1 the gap between the two
 /// was a quantisation — a box rebuilt from a cell and four bytes — and the two
@@ -2853,7 +2855,7 @@ fn walk_primitives(
     let mut through = 1.0_f32;
     // The primitive to blame, and **the earliest crossing rather than the
     // largest**, which is the one rule that survives the tree having no ray
-    // order in it. `walk_cells_exact` used to sort its candidate cells by
+    // order in it. `walk_the_record` used to sort its candidate cells by
     // nearest crossing and blame the cell that tripped the cutoff, which was the
     // first blocking cell in ray order; a tree hands its leaves back in its own
     // order, so "first in ray order" has to be computed rather than arrived at.
@@ -2999,14 +3001,20 @@ fn walk_primitives(
     }
 }
 
-/// [`walk_cells`] against the **record's** own boxes — `docs/lighting_raymarch.md`'s
+/// The walk against the **record's** own boxes — `docs/lighting_raymarch.md`'s
 /// ray-vs-Solid scoping, point 2, and since `docs/occluders.md`'s S5 one call to
 /// [`walk_primitives`] rather than a walk of its own.
 ///
 /// The exact one: [`crate::occlusion::Solid::space`] is what the world built and
 /// what a hand-written fixture states, so this is the walk an oracle is compared
 /// against and the one a test asserting about geometry means.
-fn walk_cells_exact(
+///
+/// **It was `walk_cells_exact` until S5 finished**, and the rename is the last of
+/// that step: there is no cell in either walk any more — a hierarchy over
+/// primitives is what answers "what might this segment meet", and what the two
+/// still differ by is which *boxes* they read. So the pair is named for that and
+/// for nothing else: the record's and [`walk_the_wire`]'s.
+fn walk_the_record(
     from: [f32; 3],
     to: [f32; 3],
     lit: LitEnd,
@@ -3029,23 +3037,18 @@ fn walk_cells_exact(
 /// to the last bits of a float, which decision 9's own parity tolerance absorbs
 /// and which is what D10 says the gap between record and wire is for — measuring,
 /// not hiding.
-fn walk_cells_streaming(
-    from: [f32; 3],
-    to: [f32; 3],
-    lit: LitEnd,
-    occlusion: &Occlusion,
-) -> (f32, Option<Stopper>) {
+fn walk_the_wire(from: [f32; 3], to: [f32; 3], lit: LitEnd, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
     walk_primitives(from, to, lit, occlusion, |stands| stands.wire_box())
 }
 
-/// [`walk`], through [`walk_cells_exact`] instead of [`walk_cells`] — for
+/// [`walk`], through [`walk_the_record`] instead of [`walk_the_wire`] — for
 /// `docs/lighting_raymarch.md`'s point 3 agreement pass, not for anywhere
 /// real.
 fn walk_exact(spot: Spot, at: [f32; 3], occlusion: &Occlusion) -> (f32, Option<Stopper>) {
-    walk_cells_exact([spot.at.x, spot.at.y, spot.z], at, LitEnd::of(spot), occlusion)
+    walk_the_record([spot.at.x, spot.at.y, spot.z], at, LitEnd::of(spot), occlusion)
 }
 
-/// [`walk_sun`], through [`walk_cells_exact`] instead of [`walk_cells`] —
+/// [`walk_sun`], through [`walk_the_record`] instead of [`walk_the_wire`] —
 /// see [`walk_exact`].
 fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
     let horizontal = (sun.toward[0] * sun.toward[0] + sun.toward[1] * sun.toward[1]).sqrt();
@@ -3070,7 +3073,7 @@ fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<S
         from[1] + step[1] * tiles,
         from[2] + step[2] * tiles,
     ];
-    walk_cells_exact(from, to, LitEnd::of(spot), occlusion)
+    walk_the_record(from, to, LitEnd::of(spot), occlusion)
 }
 
 /// How wide the flame in a hand throws its light: the full angle, in degrees.
@@ -3529,7 +3532,7 @@ mod tests {
         // is a whole number of `Solid::Z_STEPS`, so this is exact rather than
         // near — the step being a power of two is what buys that.
         // `wire_span` was this said as its own function, and it went with
-        // `walk_cells_streaming`'s own body at `docs/occluders.md`'s S5: the
+        // `walk_the_wire`'s own body at `docs/occluders.md`'s S5: the
         // walk reads the wire's whole box now and takes its `z` off that,
         // which is the same two numbers with nothing between them.
         let wire = box_at_half.wire_box();
@@ -4529,7 +4532,7 @@ mod tests {
     /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over the
     /// three-tread climbable stair
     /// [`a_treads_top_is_not_shadowed_by_the_tread_it_is_the_top_of`] uses.
-    /// This is the scene that found a real bug in [`walk_cells_exact`], not
+    /// This is the scene that found a real bug in [`walk_the_record`], not
     /// just another `walk_cells` gap: a lid is flat in `z`
     /// (`Solid::box_of`'s `min.z == max.z`), and a flight's treads were two
     /// such degenerate boxes each until they became bodies — [`ray_vs_solid`]'s
@@ -4541,7 +4544,7 @@ mod tests {
     /// *either side* of a crossing to tell "went through" from "never
     /// close," and a from/to that already collapsed to the same value
     /// answers every comparison in it as "never" — regardless of the real
-    /// geometry. `walk_cells_exact` read every lid as fully transparent
+    /// geometry. `walk_the_record` read every lid as fully transparent
     /// before this was caught, `1.0` unconditionally.
     ///
     /// **Fixed by asking a different question for the lid branch**: not
@@ -4551,16 +4554,16 @@ mod tests {
     /// tile's `x`/`y` bounds with `z` left unconstrained, giving
     /// `crosses` the before/after pair it actually needs. The same
     /// question `walk_cells`'s own DDA cell entry/exit answered for free;
-    /// `walk_cells_exact` has to ask it explicitly since it no longer
+    /// `walk_the_record` has to ask it explicitly since it no longer
     /// walks cells at all.
     ///
     /// This test pins the regression at the exact input the stair scene's
     /// own fuzz found it at, rather than trusting the fix by reasoning
     /// alone: reverting the tile-footprint lookup back to the lid's own
-    /// `entered`/`leaves` reproduces `walk_cells_exact` reading fully open
+    /// `entered`/`leaves` reproduces `walk_the_record` reading fully open
     /// (`1.0`) here, confirmed by hand before this test was written.
     #[test]
-    fn walk_cells_exact_does_not_read_every_lid_as_transparent() {
+    fn walk_the_record_does_not_read_every_lid_as_transparent() {
         use crate::facing::Prism;
         use crate::occlusion::{Builder, Shape};
 
@@ -4581,7 +4584,7 @@ mod tests {
 
         let from = [101.26917_f32, 99.877884, 4.255842];
         let to = [100.57816_f32, 100.689926, 0.0];
-        let new = walk_cells_exact(from, to, LitEnd::nowhere(), &occlusion);
+        let new = walk_the_record(from, to, LitEnd::nowhere(), &occlusion);
         assert!(
             new.0 < 0.5,
             "a ray crossing the first tread's own lid should not read as more than half open: \
@@ -4593,7 +4596,7 @@ mod tests {
 
     /// `docs/lighting_raymarch.md`'s ray-vs-Solid scoping, point 3, over the
     /// same stair scene as
-    /// [`walk_cells_exact_does_not_read_every_lid_as_transparent`] — a
+    /// [`walk_the_record_does_not_read_every_lid_as_transparent`] — a
     /// smoke test, not a parity oracle.
     ///
     /// **Full numeric agreement with `walk_cells`, or even the weaker
@@ -4606,16 +4609,16 @@ mod tests {
     /// tested against every solid on the tile, `pierced`'s z-band test
     /// never checking a riser's own `x`/`y` extent at all) can find or
     /// miss occlusion a per-*solid* exact test would not, in either
-    /// direction, and telling that apart from a `walk_cells_exact` bug
+    /// direction, and telling that apart from a `walk_the_record` bug
     /// needs the same exemption predicates (`on_surface`, `own_run`,
     /// `flame_end`) evaluated the same way a disagreement-characterising
     /// test would have to duplicate — a real next step, not attempted
-    /// here. What this checks instead: `walk_cells_exact` never panics and
+    /// here. What this checks instead: `walk_the_record` never panics and
     /// never returns a `through` outside `0.0..=1.0` over a broad fuzz of
     /// this richer scene — the lid bug above would have shown up here too,
     /// as values pinned at `1.0` far more often than the geometry allows.
     #[test]
-    fn walk_cells_exact_stays_in_range_on_the_stair() {
+    fn walk_the_record_stays_in_range_on_the_stair() {
         use crate::facing::Prism;
         use crate::occlusion::{Builder, Shape};
         use proptest::prelude::*;
@@ -4646,20 +4649,20 @@ mod tests {
             prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let new = walk_cells_exact(from, to, LitEnd::nowhere(), &occlusion);
+            let new = walk_the_record(from, to, LitEnd::nowhere(), &occlusion);
             prop_assert!((0.0..=1.0).contains(&new.0), "from {from:?} to {to:?}: through {}", new.0);
         });
     }
 
     /// `docs/lighting_raymarch.md`'s point 4, the same six-point counter-
     /// example this whole track started from — full numeric agreement with
-    /// [`walk_cells_exact`]. This is a single whole-tile body
+    /// [`walk_the_record`]. This is a single whole-tile body
     /// (`Shape::UNREAD`), so [`crate::occlusion::Solid::box_of`]'s
     /// reconstruction is bit-for-bit the solid's own real `space`, and this
-    /// is the case [`walk_cells_streaming`]'s own doc comment claims exact
+    /// is the case [`walk_the_wire`]'s own doc comment claims exact
     /// agreement for.
     #[test]
-    fn walk_cells_streaming_agrees_with_walk_cells_exact_on_the_six_point_counter_example() {
+    fn walk_the_wire_agrees_with_walk_the_record_on_the_six_point_counter_example() {
         use crate::occlusion::{Builder, Shape};
 
         let wall = StaticTile {
@@ -4679,22 +4682,22 @@ mod tests {
         let flame = [98.0_f32, 100.0, 10.0];
         for y in [99.9_f32, 100.1, 100.2, 100.3, 101.0] {
             let from = [102.5_f32, y, 10.0];
-            let exact = walk_cells_exact(from, flame, LitEnd::nowhere(), &occlusion).0;
-            let streaming = walk_cells_streaming(from, flame, LitEnd::nowhere(), &occlusion).0;
+            let exact = walk_the_record(from, flame, LitEnd::nowhere(), &occlusion).0;
+            let streaming = walk_the_wire(from, flame, LitEnd::nowhere(), &occlusion).0;
             assert!(
                 (exact - streaming).abs() < 1e-4,
-                "y {y}: walk_cells_exact through {exact} disagrees with walk_cells_streaming through {streaming}",
+                "y {y}: walk_the_record through {exact} disagrees with walk_the_wire through {streaming}",
             );
         }
     }
 
     /// `docs/lighting_raymarch.md`'s point 4, over the same single-body wall
     /// scene the six-point counter-example's own occlusion is built from —
-    /// **with no corner restriction**, because [`walk_cells_streaming`] has
+    /// **with no corner restriction**, because [`walk_the_wire`] has
     /// no corner-jump branch to be restricted away from. Full numeric
-    /// agreement with [`walk_cells_exact`] everywhere in the domain.
+    /// agreement with [`walk_the_record`] everywhere in the domain.
     #[test]
-    fn walk_cells_streaming_agrees_with_walk_cells_exact_on_a_single_body() {
+    fn walk_the_wire_agrees_with_walk_the_record_on_a_single_body() {
         use crate::occlusion::{Builder, Shape};
         use proptest::prelude::*;
 
@@ -4723,11 +4726,11 @@ mod tests {
             prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, LitEnd::nowhere(), &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(), &occlusion).0;
+            let exact = walk_the_record(from, to, LitEnd::nowhere(), &occlusion).0;
+            let streaming = walk_the_wire(from, to, LitEnd::nowhere(), &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
-                "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
+                "from {from:?} to {to:?}: walk_the_record {exact} vs walk_the_wire {streaming}",
             );
         });
     }
@@ -4766,7 +4769,7 @@ mod tests {
     /// from has not gone through it.
     ///
     /// Reads [`crate::occlusion::Solid::wire_box`], which is what the streaming
-    /// walk and the shader are entitled to; [`walk_cells_exact`] reads the
+    /// walk and the shader are entitled to; [`walk_the_record`] reads the
     /// record, and the fixture below is where those two are asked to be the
     /// same box.
     fn met_by_brute_force(from: [f32; 3], to: [f32; 3], occlusion: &Occlusion) -> bool {
@@ -4881,14 +4884,8 @@ mod tests {
             // takes none. So the two walks' own `through` is the same binary the
             // oracle answers in, and no tolerance is needed to compare them.
             for (walk, through) in [
-                (
-                    "walk_cells_streaming",
-                    walk_cells_streaming(*from, *to, lit, &occlusion).0,
-                ),
-                (
-                    "walk_cells_exact",
-                    walk_cells_exact(*from, *to, lit, &occlusion).0,
-                ),
+                ("walk_the_wire", walk_the_wire(*from, *to, lit, &occlusion).0),
+                ("walk_the_record", walk_the_record(*from, *to, lit, &occlusion).0),
             ] {
                 assert_eq!(
                     through == 0.0,
@@ -4935,8 +4932,8 @@ mod tests {
     ///
     /// Every fixture they build goes through `Builder::add` off a `StaticTile`,
     /// so every span in them is a whole `z` and a half — and the two walks read
-    /// *different* boxes for one solid on purpose ([`walk_cells_exact`] the
-    /// record's own `f64` corners, [`walk_cells_streaming`] the wire's, see
+    /// *different* boxes for one solid on purpose ([`walk_the_record`] the
+    /// record's own `f64` corners, [`walk_the_wire`] the wire's, see
     /// [`wire_span`]). On a whole `z` those two are equal by construction, so
     /// their agreement there says nothing about the discipline that keeps them
     /// close anywhere else: the assertion passes on a scene where the thing it
@@ -4951,7 +4948,7 @@ mod tests {
     /// [`a_primitive_at_no_fraction_a_byte_could_name_reads_the_same_three_ways`]
     /// for the fixture that names it.
     #[test]
-    fn walk_cells_streaming_agrees_with_walk_cells_exact_on_a_body_at_a_fractional_z() {
+    fn walk_the_wire_agrees_with_walk_the_record_on_a_body_at_a_fractional_z() {
         use crate::occlusion::Builder;
         use proptest::prelude::*;
 
@@ -5043,17 +5040,17 @@ mod tests {
             };
             prop_assume!(hits_with(-slack) == hits_with(slack));
 
-            let exact = walk_cells_exact(from, to, LitEnd::nowhere(), &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(), &occlusion).0;
+            let exact = walk_the_record(from, to, LitEnd::nowhere(), &occlusion).0;
+            let streaming = walk_the_wire(from, to, LitEnd::nowhere(), &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
-                "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
+                "from {from:?} to {to:?}: walk_the_record {exact} vs walk_the_wire {streaming}",
             );
         });
     }
 
     /// `docs/lighting_raymarch.md`'s point 4, over a single **panel**
-    /// (`Shape::faced`) — the branch [`walk_cells_exact_disagreements_are_
+    /// (`Shape::faced`) — the branch [`walk_the_record_disagreements_are_
     /// backed_by_ray_vs_solid`]'s own doc comment flags as the one
     /// deliberate simplification (one [`pierced`] sample at the crossing's
     /// own midpoint). A panel's box is `PANEL_THICKNESS`-inset from the
@@ -5062,7 +5059,7 @@ mod tests {
     /// not the weaker "stronger answer is backed" claim the `walk_cells`
     /// comparison needed.
     #[test]
-    fn walk_cells_streaming_agrees_with_walk_cells_exact_on_a_single_panel() {
+    fn walk_the_wire_agrees_with_walk_the_record_on_a_single_panel() {
         use crate::facing::Facing;
         use crate::occlusion::{Builder, Shape};
         use proptest::prelude::*;
@@ -5099,11 +5096,11 @@ mod tests {
             prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, LitEnd::nowhere(), &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(), &occlusion).0;
+            let exact = walk_the_record(from, to, LitEnd::nowhere(), &occlusion).0;
+            let streaming = walk_the_wire(from, to, LitEnd::nowhere(), &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
-                "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
+                "from {from:?} to {to:?}: walk_the_record {exact} vs walk_the_wire {streaming}",
             );
         });
     }
@@ -5111,13 +5108,13 @@ mod tests {
     /// `docs/lighting_raymarch.md`'s point 4, over a small room rather than
     /// one isolated wall — three walled sides, a doorway gap, and a
     /// free-standing body in the open area, seven solids on six different
-    /// tiles at once. [`walk_cells_streaming`]'s own doc comment names this
+    /// tiles at once. [`walk_the_wire`]'s own doc comment names this
     /// as the densest of the constructions that went looking for a case
     /// where plain single-axis DDA (no diagonal probe) misses a cell a real
     /// ray passes through, and did not find one — this is that construction,
     /// kept as a permanent regression rather than only run once by hand.
     #[test]
-    fn walk_cells_streaming_agrees_with_walk_cells_exact_in_a_small_room() {
+    fn walk_the_wire_agrees_with_walk_the_record_in_a_small_room() {
         use crate::facing::Facing;
         use crate::occlusion::{Builder, Shape};
         use proptest::prelude::*;
@@ -5195,11 +5192,11 @@ mod tests {
             prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let exact = walk_cells_exact(from, to, LitEnd::nowhere(), &occlusion).0;
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(), &occlusion).0;
+            let exact = walk_the_record(from, to, LitEnd::nowhere(), &occlusion).0;
+            let streaming = walk_the_wire(from, to, LitEnd::nowhere(), &occlusion).0;
             prop_assert!(
                 (exact - streaming).abs() < 1e-3,
-                "from {from:?} to {to:?}: walk_cells_exact {exact} vs walk_cells_streaming {streaming}",
+                "from {from:?} to {to:?}: walk_the_record {exact} vs walk_the_wire {streaming}",
             );
         });
     }
@@ -5208,14 +5205,14 @@ mod tests {
     /// stair — and a **real, new-found boundary of the reconstruction**, not
     /// a smoke test alone.
     ///
-    /// **Full agreement with [`walk_cells_exact`] does not hold here, and it
+    /// **Full agreement with [`walk_the_record`] does not hold here, and it
     /// should not — this is a second, independent source of the same gap
     /// session 14 already named, not a new one to chase.** A tread's top
     /// and riser are built by [`crate::occlusion::Solid::tread_top_box_of`]/
     /// [`crate::occlusion::Solid::tread_riser_box_of`] (`Prism::footprint`),
     /// not by [`crate::occlusion::Solid::box_of`] — they are sub-tile strips
     /// along the climb axis. A tread's `edges` is `0`, the same as an
-    /// ordinary floor's, so [`walk_cells_streaming`]'s `box_of(tile, 0,
+    /// ordinary floor's, so [`walk_the_wire`]'s `box_of(tile, 0,
     /// ...)` reconstruction necessarily comes back the *whole* tile —
     /// correct for a real floor, wrong for a tread that covers a third of
     /// one. **Worth recording explicitly, not left implicit**: the "second
@@ -5227,24 +5224,24 @@ mod tests {
     /// **An honest attempt at a disagreement-backing oracle here (checking
     /// whether the tile either walk blames has a lossy `box_of`
     /// reconstruction) failed on its very first fuzz run, and the failure is
-    /// itself informative, not a bug to chase.** `walk_cells_exact`'s own
+    /// itself informative, not a bug to chase.** `walk_the_record`'s own
     /// `stopped_by` names the *first* tile in ray order that fully blocked
     /// it; when it found nothing blocking at all (`through == 1.0`,
     /// `stopped_by == None`) there is no blamed tile to fall back to, and
     /// the tile a disagreement actually traces to can be anywhere a tread or
     /// riser's real, precise footprint the ray legitimately misses gets
-    /// read by `walk_cells_streaming` as the *whole* tile instead. Building
+    /// read by `walk_the_wire` as the *whole* tile instead. Building
     /// a sound oracle for that needs the same care session 11's own
     /// multi-solid disagreement oracle took for `exemption` — a real next
     /// step, not attempted here. So this checks what
-    /// `walk_cells_exact_stays_in_range_on_the_stair` already checks for the
+    /// `walk_the_record_stays_in_range_on_the_stair` already checks for the
     /// exact walk itself: never panics, never returns a `through` outside
     /// `0.0..=1.0`, over the same broad fuzz — the lid-transparency and
     /// off-axis-probe-omission bugs either could have had would show up here
     /// as an out-of-range value or a panic, even without a numeric oracle to
     /// compare against.
     #[test]
-    fn walk_cells_streaming_stays_in_range_on_the_stair() {
+    fn walk_the_wire_stays_in_range_on_the_stair() {
         use crate::facing::Prism;
         use crate::occlusion::{Builder, Shape};
         use proptest::prelude::*;
@@ -5275,7 +5272,7 @@ mod tests {
             prop_assume!((fx - tx).abs() > 1e-3 || (fy - ty).abs() > 1e-3);
             let from = [fx, fy, fz];
             let to = [tx, ty, tz];
-            let streaming = walk_cells_streaming(from, to, LitEnd::nowhere(), &occlusion).0;
+            let streaming = walk_the_wire(from, to, LitEnd::nowhere(), &occlusion).0;
             prop_assert!((0.0..=1.0).contains(&streaming), "from {from:?} to {to:?}: through {streaming}");
         });
     }

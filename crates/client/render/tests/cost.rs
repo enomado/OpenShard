@@ -508,7 +508,14 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
             built.occlusion.bytes().len()
                 + grid.field_bytes().len()
                 + grid.id_bytes().len()
-                + grid.primitive_bytes().len(),
+                + grid.primitive_bytes().len()
+                // And the broad phase, which is uploaded every frame with the
+                // primitives it is over — `docs/occluders.md`'s S5. Counted here
+                // rather than left out because this reading is what the *upload*
+                // costs, and a plane nobody added to it is a plane nobody sees
+                // grow.
+                + grid.node_bytes().len()
+                + grid.order_bytes().len(),
         );
         cpu_bytes = cpu_bytes.min(start.elapsed());
     }
@@ -523,6 +530,29 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         "no light source in a whole widest-zoom frame of Britain: the cases below would all be `dark`"
     );
     assert!(cells > 0, "nothing stands in the grid, so no ray can be stopped");
+
+    // And the same companion for the **broad phase**, since `docs/occluders.md`'s
+    // S5 made it the thing a ray actually walks: a frame whose tree is one leaf
+    // prices four primitives tested outright and no traversal at all, which would
+    // be a reading of the narrow phase wearing the name of the wide one.
+    //
+    // The numbers are printed as well as asserted, because they are what the
+    // per-pixel figures below have to be read against — a walk's cost is the
+    // geometry it meets, and how much geometry that is belongs beside the time.
+    let tree = night.occlusion.bvh();
+    eprintln!(
+        "occlusion: {cells} standing cells over {}x{} tiles, {} primitives, {} tree nodes, \
+         {} bytes of tree a frame",
+        grid.width(),
+        grid.height(),
+        night.occlusion.solid_count(),
+        tree.nodes().len(),
+        night.occlusion.node_bytes().len() + night.occlusion.order_bytes().len(),
+    );
+    assert!(
+        tree.nodes().len() > 1,
+        "the frame's tree is a single node: the readings below price no traversal"
+    );
 
     let mut dark = night.clone();
     dark.lights.clear();

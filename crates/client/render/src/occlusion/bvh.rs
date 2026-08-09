@@ -98,7 +98,7 @@ pub struct Node {
     /// skips and the walk never sees.
     ///
     /// Conservative for **both** CPU walks by construction and not by luck:
-    /// `walk_cells_exact` tests `space` and `walk_cells_streaming` tests
+    /// `walk_the_record` tests `space` and `walk_the_wire` tests
     /// `wire_box`, and the slab test converts either to `f32` before it does
     /// anything — `wire_box` is `space` through that same conversion, so the two
     /// walks test bit-identical boxes and this contains both.

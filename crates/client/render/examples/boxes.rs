@@ -99,7 +99,7 @@
 //! same points, written as one side-by-side comparison picture per box
 //! (`<path>_oracle_box<N>.png`: oracle | engine | signed diff) plus a
 //! disagreement count on stderr. `OPENSHARD_BOXES_ORACLE_EXACT=1` swaps the
-//! engine side to `light::sample_exact` (`walk_cells_exact`, the ray-vs-Solid
+//! engine side to `light::sample_exact` (`walk_the_record`, the ray-vs-Solid
 //! primitive session 8-11 built) instead of `light::sample`'s own
 //! `walk_cells` — this is how session 14 found that `walk_cells`'s `EDGE_ANY`
 //! body arm (`light.rs:2269`) tests a candidate tile's `z`-span alone and
@@ -107,9 +107,9 @@
 //! box `occlusion::Builder::add_raw` can build, none `Builder::add` ever
 //! could) shadows as if it filled the whole tile: `tree`'s default scene
 //! disagreed with the oracle on 3027 of 9216 sampled points of the lower
-//! box's own top through `walk_cells`, 480 through `walk_cells_exact` (the
+//! box's own top through `walk_cells`, 480 through `walk_the_record` (the
 //! remainder is the soft edge of a real penumbra against the oracle's own
-//! hard step, not a further bug). **`walk_cells_exact` is not wired into
+//! hard step, not a further bug). **`walk_the_record` is not wired into
 //! `blit.wgsl`, and wiring it would not be enough on its own even if it
 //! were**: `Occlusion::solid_bytes` (`occlusion.rs:1259`), what the GPU
 //! actually reads a solid's shape from, uploads four bytes a solid —

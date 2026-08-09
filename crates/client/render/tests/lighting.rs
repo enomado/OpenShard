@@ -2130,12 +2130,12 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
 /// **Not `occlusion::PANEL_THICKNESS`'s own depth, on purpose — tighter than
 /// that by twenty.** The step used to be `0.02`, sized to the thinnest a
 /// solid's box gets, and it was too coarse: `docs/lighting_raymarch.md`
-/// session 10 found this fuzz test (and its `walk_cells_exact` counterpart,
+/// session 10 found this fuzz test (and its `walk_the_record` counterpart,
 /// added the same session) fail on a random seed whose spot and light sat
 /// exactly far enough apart that the ray only clipped the wall tile's own
 /// far corner for about three thousandths of a tile of real depth —
 /// `ray_vs_solid`-confirmed a genuine hit, `walk_cells` and
-/// `walk_cells_exact` both correctly called it blocked, and this oracle's
+/// `walk_the_record` both correctly called it blocked, and this oracle's
 /// `0.02`-tile step stepped clean over the sliver and called it open. A
 /// thin *panel* and a thin *corner graze* are different questions —
 /// `PANEL_THICKNESS` bounds the first, nothing before session 10 measured
@@ -2756,7 +2756,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
 /// the ray-vs-`Solid` walk against an oracle that shares no arithmetic with
 /// either DDA.
 ///
-/// `light.rs`'s own `mod tests` already checked `walk_cells_exact` against
+/// `light.rs`'s own `mod tests` already checked `walk_the_record` against
 /// `walk_cells` directly on this exact scene (a single wall, off
 /// `corner_tie`'s path); what that could not exercise is the public seam
 /// itself — `sample_exact` threading a spot and a light through `Sample`,
@@ -2856,7 +2856,7 @@ fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
             if walked_blocked != brute_blocked {
                 disagreed.push(format!(
                     "spot ({:.2}, {:.2}, {z:.1}), light ({:.2}, {:.2}, {light_z:.1}): \
-                     walk_cells_exact says {}, the brute-force oracle says {}",
+                     walk_the_record says {}, the brute-force oracle says {}",
                     at.x,
                     at.y,
                     light_at.x,
@@ -2987,7 +2987,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
             walked_blocked,
             brute_blocked,
             "spot ({:.4}, {:.4}, {:.2}) tile {:?}, light ({:.4}, {:.4}, {:.2}) \
-             tile {:?}: walk_cells_exact says {}, the brute-force oracle says {}",
+             tile {:?}: walk_the_record says {}, the brute-force oracle says {}",
             spot_at.x, spot_at.y, spot_z, spot_tile,
             light_at.x, light_at.y, flame_z, target_tile,
             if walked_blocked { "blocked" } else { "open" },
@@ -3136,7 +3136,7 @@ fn a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces() {
             };
             for (name, sample) in [
                 ("walk_cells", light::sample(spot, &lighting)),
-                ("walk_cells_exact", light::sample_exact(spot, &lighting)),
+                ("walk_the_record", light::sample_exact(spot, &lighting)),
             ] {
                 let Some(reach) = sample.reaches.iter().find(|reach| reach.within) else {
                     continue;
@@ -3284,7 +3284,7 @@ fn the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so() {
     // 2. Both walks. They were the accused and they were right.
     for (name, sample) in [
         ("walk_cells", light::sample(spot, &lighting)),
-        ("walk_cells_exact", light::sample_exact(spot, &lighting)),
+        ("walk_the_record", light::sample_exact(spot, &lighting)),
     ] {
         let reach = sample
             .reaches

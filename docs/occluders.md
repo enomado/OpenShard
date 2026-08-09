@@ -471,7 +471,7 @@ one whose gate is not green.
 | S2 | the detector, before the fix | ✅ built and read |
 | S3 | the surface exemption | ✅ landed 2026-08-09 |
 | S4 | delete the cell rules | ✅ **all four gone.** `same_run`, the vertical shortcut, `starting_cell` — and the per-cell `max`, which S5 deleted with the cell it was a statement about; `first` went with the grid at the same time |
-| S5 | the hierarchy | 🚧 **both backends walk the tree** — the grid is out of the walk everywhere. Left: the cost harness, which prices `Occlusion::EMPTY`, and the two walks' names. See § *The hierarchy* |
+| S5 | the hierarchy | ✅ **landed 2026-08-09** — both backends walk the tree, the grid is out of the walk everywhere, and the two walks are named for the boxes they read. The one number left is the cost harness's, and it is the user's to run. See § *The hierarchy* |
 | S3b | the merge | ⬜ last, after S5 — and a **pure optimisation** since phase 5b took its cure away |
 
 And S5 is the same shape a fourth time: the plan asked for a node budget and
@@ -1018,9 +1018,10 @@ prints where nobody reads and one that counts its own arithmetic are the same
 defect as a vacuous gate — **it must count what it checked, and be shown a case
 it is known to fire on.**
 
-### 🚧 The hierarchy: **the tree is built and the CPU walks read it**
+### ✅ The hierarchy: **both backends walk the tree**
 
-Landed 2026-08-09, in two commits, with the shader still on the grid.
+Landed 2026-08-09, over two sessions: the build and the CPU walks first, then
+the gate the shader port needed and the port itself.
 
 **What is in the tree.** `occlusion::bvh` — median split on the longest axis,
 leaves of up to four, depth-first layout with an escape index a node. Built in
@@ -1199,12 +1200,46 @@ unconditional diagonal probe and `MAX_WALK_STEPS` are all deleted.
 is this file's own decay pattern — a comment describing a rule nothing compiles
 against — one level up: a comment describing a *test* nothing runs.
 
-**What is left of S5**, in order:
+### ✅ The cost harness, and what this plan was wrong about
 
-1. **`tests/cost.rs`**, which builds against `Occlusion::EMPTY` and therefore
-   cannot price this at all.
-2. The rename: `walk_cells_exact`/`walk_cells_streaming` are the **record's** walk
-   and the **wire's**, and neither has a cell in it.
+**`tests/cost.rs` prices the walk over real occluders and always has.** This
+plan's own remainder said it "builds against `Occlusion::EMPTY` and therefore
+cannot price this at all", and that is a misreading of the one `Occlusion::EMPTY`
+in the file: it is handed to the **statics** pass, so a fragment there takes the
+billboard fallback and the *impostor* is what goes unpriced. The blit's five
+cases are lit with `light::collect`'s own grid off the middle of Britain —
+`night` walks real rays through real primitives, and since the port, through the
+tree.
+
+What it genuinely lacked was any *report* of the thing being walked, so a reading
+could not be read against the geometry that produced it. Added: the tree's node
+count and its bytes a frame beside the standing-cell count, the tree's two
+buffers in the upload accounting, and a companion assertion in the same spirit as
+the two beside it — a frame whose tree is a single node prices four primitives
+tested outright and no traversal, which would be a reading of the narrow phase
+wearing the wide one's name.
+
+🚩 **It is `#[ignore]`d and wants a client and an adapter, so the number is the
+user's to take**, not this session's:
+
+```sh
+OPENSHARD_CLIENT=… cargo test --release -p openshard-client-render \
+    --test cost -- --ignored --nocapture
+```
+
+### ✅ The rename: neither walk has a cell in it
+
+`walk_cells_exact` → **`walk_the_record`**, `walk_cells_streaming` →
+**`walk_the_wire`**. What the two differ by is which *boxes* they read —
+`Solid::space` against `Solid::wire_box` — and that is now the whole of the
+difference, so it is the whole of the name. Test names went with them
+(`walk_the_wire_agrees_with_walk_the_record_on_…`).
+
+Three doc comments were left describing a world that had gone: five rustdoc links
+to `walk_cells`, retired at point 4's cutover, and `ray_vs_solid`'s own paragraph
+arguing from `candidate_tiles` probing a wider set of cells than the streaming
+walk visits — an asymmetry S5 removed by giving the two one broad phase. Fixed
+where they were wrong and marked where they are history.
 
 **S5 — the hierarchy.** D3. A CPU build over the primitives and a
 stackless traversal on both sides.

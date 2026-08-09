@@ -5578,12 +5578,12 @@ fn ground_truth_blocked(
 /// ever touches a solid's corner — never a length of its inside — is that
 /// this is not a bug in either walk to resolve, it is the accepted overlap
 /// two panels physically share at a shared corner
-/// (`crate::occlusion::PANEL_THICKNESS`). [`walk_cells_exact`]'s
+/// (`crate::occlusion::PANEL_THICKNESS`). [`walk_the_record`]'s
 /// `candidate_tiles` unconditionally probes both diagonal neighbours at
 /// every step — a deliberate feature, so a genuine corner-cutting occluder
 /// is never missed — and at an *exact* corner tie a ray can graze a
 /// diagonal neighbour's own corner point without its straight line ever
-/// entering that tile's interior at all. [`walk_cells_streaming`] has no
+/// entering that tile's interior at all. [`walk_the_wire`] has no
 /// such probe and simply never visits that tile, which is why the two can
 /// disagree exactly here without either being wrong: [`exact_walk_
 /// disagreements`] arbitrates by [`ground_truth_blocked`], which is blind to
@@ -5638,17 +5638,17 @@ fn blamed_tile_has_a_real_crossing(
 /// over one of decision 9's own real-geometry scenes.
 struct ExactWalkReport {
     /// A classification flip [`ground_truth_blocked`] backs `walk_cells`
-    /// for — a genuine, new defect in `walk_cells_exact` this doc has not
+    /// for — a genuine, new defect in `walk_the_record` this doc has not
     /// already catalogued, and the only thing these tests fail on.
     bugs: Vec<String>,
     /// A classification flip [`ground_truth_blocked`] backs
-    /// `walk_cells_exact` for: an already-real `walk_cells` gap, the same
+    /// `walk_the_record` for: an already-real `walk_cells` gap, the same
     /// family `docs/lighting_raymarch.md`'s session 9 found four of.
     explained: usize,
     /// A classification flip this oracle cannot rule on — the marched path
     /// crossed a solid with an aperture, which it does not model.
     unexplained: usize,
-    /// A classification flip backed by a tile `walk_cells_exact` blamed that
+    /// A classification flip backed by a tile `walk_the_record` blamed that
     /// the straight segment only ever grazes the corner of — the accepted
     /// corner-grazing ambiguity, not a defect. See `blamed_tile_has_a_real_
     /// crossing`'s own doc comment.
@@ -5676,7 +5676,7 @@ struct ExactWalkReport {
 ///
 /// So a flip is not itself a failure: [`ground_truth_blocked`] — independent
 /// of both walks, sharing no arithmetic with either — is asked to arbitrate.
-/// Backing `walk_cells_exact` explains the flip as one of `walk_cells`'s own
+/// Backing `walk_the_record` explains the flip as one of `walk_cells`'s own
 /// gaps; backing `walk_cells` instead is a real bug in the exact walk, which
 /// is what fails these tests.
 fn exact_walk_disagreements(lighting: &Lighting, surface: Surface, z: i8) -> ExactWalkReport {
@@ -5716,7 +5716,7 @@ fn exact_walk_disagreements(lighting: &Lighting, surface: Surface, z: i8) -> Exa
                 match ground_truth_blocked(from, to, own_tile, target_tile, true, &lighting.occlusion) {
                     None => report.unexplained += 1,
                     Some(truth) if truth == b_blocked => report.explained += 1,
-                    // `walk_cells_exact` blamed a tile the straight segment
+                    // `walk_the_record` blamed a tile the straight segment
                     // never actually enters — only its own corner, which
                     // `candidate_tiles`' unconditional diagonal probe reaches
                     // and a bare point-in-box march (blind to which tile it
@@ -5725,7 +5725,7 @@ fn exact_walk_disagreements(lighting: &Lighting, surface: Surface, z: i8) -> Exa
                     // this is `docs/lighting_raymarch.md`'s own accepted
                     // corner-grazing ambiguity, the same shape `walk_cells`'
                     // `corner_tie` used to be generous about on purpose, not
-                    // a defect in `walk_cells_exact` to chase.
+                    // a defect in `walk_the_record` to chase.
                     Some(_)
                         if b_blocked
                             && !blamed_tile_has_a_real_crossing(
@@ -5738,7 +5738,7 @@ fn exact_walk_disagreements(lighting: &Lighting, surface: Surface, z: i8) -> Exa
                         report.grazed += 1;
                     }
                     Some(_) => report.bugs.push(format!(
-                        "({px}, {py}) light {index}: walk_cells {} ({:.4}), walk_cells_exact {} \
+                        "({px}, {py}) light {index}: walk_cells {} ({:.4}), walk_the_record {} \
                          ({:.4}), ground truth says {}",
                         if a_blocked { "blocked" } else { "open" },
                         a.through,
@@ -5757,7 +5757,7 @@ fn exact_walk_disagreements(lighting: &Lighting, surface: Surface, z: i8) -> Exa
                 let b_blocked = b.through <= EXACT_WALK_BLOCKED;
                 if a_blocked != b_blocked {
                     report.bugs.push(format!(
-                        "({px}, {py}) sun: walk_cells {} ({:.4}), walk_cells_exact {} ({:.4}), \
+                        "({px}, {py}) sun: walk_cells {} ({:.4}), walk_the_record {} ({:.4}), \
                          not yet arbitrated by ground truth",
                         if a_blocked { "blocked" } else { "open" },
                         a.through,
@@ -5784,7 +5784,7 @@ fn assert_no_exact_walk_bugs(report: &ExactWalkReport) {
     );
     assert!(
         report.bugs.is_empty(),
-        "{} of 4096 pixels found a real walk_cells_exact bug:\n{}",
+        "{} of 4096 pixels found a real walk_the_record bug:\n{}",
         report.bugs.len(),
         report.bugs.join("\n"),
     );

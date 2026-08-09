@@ -862,7 +862,7 @@ impl Solid {
     /// number rather than staying flat, the way a lid still does.
     ///
     /// `pub(crate)` since `docs/lighting_raymarch.md`'s point 4:
-    /// `light::walk_cells_streaming` reconstructs a solid's box from exactly
+    /// `light::walk_the_wire` reconstructs a solid's box from exactly
     /// `(tile, edges, bottom, top)` rather than reading `Solid::space`
     /// directly, because that is all `blit.wgsl`'s upload format will ever
     /// carry for an ordinary static (no `x`/`y` channel — session 14's
@@ -939,7 +939,7 @@ impl Solid {
     /// was geometry, all of it was the storage.
     ///
     /// [`Occlusion::primitive_bytes`] writes exactly these numbers, and
-    /// `light::walk_cells_streaming` reads them rather than [`Solid::space`]
+    /// `light::walk_the_wire` reads them rather than [`Solid::space`]
     /// for the reason it always has — it exists to preview what the shader
     /// does, so the two must round identically, and one function is what makes
     /// that so rather than two that agree.
@@ -1476,7 +1476,7 @@ impl Occlusion {
     ///
     /// A tile carries one lid, or one body, or a panel per side its art named; a
     /// caller combines them itself, and the combination is a rule rather than a
-    /// fold — see `light::walk_cells_exact`, which takes the largest and not the
+    /// fold — see `light::walk_the_record`, which takes the largest and not the
     /// product, because two panels of one wall are one wall.
     ///
     /// The pair and not the solid alone, because a walk's whole self-shadow rule
@@ -3161,8 +3161,8 @@ mod tests {
     /// the record and not against a cell.
     ///
     /// A round trip and not a spot check, because the class this closes is one
-    /// nothing else looks at. `light::walk_cells_exact` reads `space` directly
-    /// and is right whatever the bytes say; `light::walk_cells_streaming` and
+    /// nothing else looks at. `light::walk_the_record` reads `space` directly
+    /// and is right whatever the bytes say; `light::walk_the_wire` and
     /// the shader read only these bytes, and the two walks' agreement proptests
     /// build their panels with [`Solid::box_of`], whose slab is
     /// [`PANEL_THICKNESS`] deep — never a plane, so never able to pose the
