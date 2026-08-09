@@ -142,6 +142,7 @@ use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::paperdoll;
 use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, SpriteRenderer, Target};
 use openshard_client_render::select::{self, Select, Selection};
+use openshard_client_render::skills;
 use openshard_client_render::solids::{self, SolidsRenderer};
 use openshard_client_render::sprite::{SpriteQuad, split_corners};
 use openshard_client_render::statics::PickedStatic;
@@ -164,6 +165,8 @@ use openshard_uofiles::font::AsciiFonts;
 use openshard_uofiles::gumpart::Gumps;
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
+use openshard_uofiles::skillgrp::SkillGroups;
+use openshard_uofiles::skills::Skills as SkillNames;
 use openshard_uofiles::texmaps::TexMaps;
 use openshard_uofiles::tiledata::TileData;
 use openshard_uofiles::ttf_font::TtfFont;
@@ -552,6 +555,25 @@ pub fn run<D: Dial + Send + 'static>(
         }
     };
 
+    // What the skills are called, and which heading each is filed under: the
+    // skill window's two tables. Fatal like every other client file — a window
+    // that drew rows with no names would be a list of numbers — and read once,
+    // since together they are under a kilobyte.
+    let skill_names = match SkillNames::open(dir) {
+        Ok(names) => names,
+        Err(error) => {
+            eprintln!("opening Skills.idx and skills.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let skill_groups = match SkillGroups::open(dir) {
+        Ok(groups) => groups,
+        Err(error) => {
+            eprintln!("opening skillgrp.mul: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     // Where the character stands at boot: the camera's tile, at the height the
     // ground there actually is.
     //
@@ -612,6 +634,8 @@ pub fn run<D: Dial + Send + 'static>(
         ttf_font,
         anim,
         equip_conv,
+        skill_names,
+        skill_groups,
         // The device's own limit replaces WebGL2's floor once there is a device
         // to ask; the floor is the smallest thing this has to run on.
         control: Control::new(Camera::new(start, 1024, 768), 2048, STARTUP_RIG),
@@ -716,6 +740,11 @@ pub fn run<D: Dial + Send + 'static>(
         drawn_windows: Vec::new(),
         dragging: None,
         held_doll: None,
+        // Shut until the player presses Skills on their own paperdoll: the
+        // shard sends the whole list at world entry, and a window that opened
+        // on the packet would open itself at every login.
+        skills: None,
+        held_skill: None,
         last_scroll: None,
         chat: Chat::default(),
         dialogs: gump::Dialogs::default(),
@@ -1079,6 +1108,16 @@ enum WindowSubject {
     Paperdoll(Serial),
     /// A `0xB0` dialog, by the id the shard filed it under.
     Dialog(GumpId),
+    /// This character's skills. No key at all: a `0x3A` carries no serial, so
+    /// there is one skill window and it is always about the body at this end of
+    /// the connection — see `view::Player::skills`.
+    ///
+    /// The one window kind whose *existence* is not in the view. A container
+    /// window is open because the shard opened it and a dialog because the
+    /// shard drew it, so `sync_own_windows` can read both off the view; this one
+    /// is open because the player pressed Skills, and `App::skills` is where
+    /// that fact lives.
+    Skills,
 }
 
 /// What the last frame drew for one window, and what it answers to.
@@ -1095,6 +1134,8 @@ enum Drawn {
     Container(Vec<gump_art::Picture>),
     /// A paperdoll: the frame, its furniture and the doll.
     Paperdoll(paperdoll::Doll),
+    /// The skill window: the scroll, the rows inside its viewport, and the bar.
+    Skills(skills::Sheet),
 }
 
 impl Drawn {
@@ -1105,6 +1146,7 @@ impl Drawn {
             Self::Dialog(window) => &window.pictures,
             Self::Container(pictures) => pictures,
             Self::Paperdoll(doll) => &doll.pictures,
+            Self::Skills(sheet) => &sheet.pictures,
         }
     }
 }
@@ -1250,6 +1292,16 @@ struct App {
     /// [`EquipConv`]. Read once at startup like [`App::hues`]: unlike `anim`,
     /// the whole table is small enough to hold rather than seek into.
     equip_conv: EquipConv,
+    /// What the client's own files call each skill, and which heading each one
+    /// is filed under: the two tables the skill window's rows are built from.
+    ///
+    /// Read at startup and held, like [`App::equip_conv`] and unlike
+    /// [`App::anim`]: fifty-eight names and fifty-eight group numbers are under
+    /// a kilobyte between them, and the window asks for all of both every frame
+    /// it is open.
+    skill_names: SkillNames,
+    /// Which heading each skill is under — see [`App::skill_names`].
+    skill_groups: SkillGroups,
     /// The statics that move on their own — fires, torches, water wheels — and
     /// how far into their cycles they are.
     ///
@@ -1583,6 +1635,24 @@ struct App {
     /// clicks on the same picture of the same window rather than two clicks
     /// anywhere.
     last_scroll: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
+    /// The skill window, when it is open: which headings are shut and how far
+    /// down it is scrolled.
+    ///
+    /// `Some` *is* the window being open. Two facts in one field on purpose:
+    /// every other window kind is open because the view holds its subject, and
+    /// this one has no subject in the view to be open because of — so a
+    /// separate `skills_open: bool` beside a `Tree` would be a second answer to
+    /// the same question, able to say the window is shut while its scroll
+    /// position stands.
+    skills: Option<skills::Tree>,
+    /// What the mouse went down on in the skill window, if anything.
+    ///
+    /// [`held_doll`](App::held_doll)'s twin, and keyed the same way — by what
+    /// was pressed rather than by which picture, because the window is laid out
+    /// afresh every frame and an index would name a different row by the time
+    /// the button came up. A held [`skills::Hit::Thumb`] is also what makes the
+    /// bar follow the pointer: see [`App::drag_thumb`].
+    held_skill: Option<skills::Hit>,
     /// The speech line — see [`Chat`].
     chat: Chat,
     /// What every open `0xB0` dialog is holding that no packet carries: the
@@ -2125,6 +2195,7 @@ impl ApplicationHandler<link::Update> for App {
                 );
                 let mut changed = self.control.cursor_moved(x, y);
                 changed |= self.drag_own_window();
+                changed |= self.drag_thumb();
                 // Held, the button steers: a heading toward wherever the cursor
                 // is, by default, or a Ctrl-held move order — see
                 // `walk_toward_cursor` and `steer.rs`'s module docs for why
@@ -2253,7 +2324,10 @@ impl ApplicationHandler<link::Update> for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(position) => position.y as f32,
                 };
-                if notches != 0.0 && self.zoom(notches > 0.0) {
+                // A list under the pointer takes the notch before the camera
+                // does: rolling a wheel over a window is scrolling that window,
+                // in this client as in every other.
+                if notches != 0.0 && (self.scroll_skills(notches) || self.zoom(notches > 0.0)) {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
                     }
@@ -2677,12 +2751,21 @@ impl App {
             // No world, no windows: a map viewer has no shard to have opened
             // one, and anything left over is from a session that has ended.
             self.own_windows.clear();
+            // Including the skill window, whose existence is this field: a tree
+            // left standing here would reopen the window at the next login with
+            // the last session's headings shut.
+            self.skills = None;
+            self.held_skill = None;
             return;
         };
         self.own_windows.retain(|window| match window.subject {
             WindowSubject::Container(serial) => view.containers.contains_key(&serial),
             WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
             WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
+            // The one kind the view cannot answer for — see the variant's docs.
+            // Closing it is what empties `skills`, so this is that fact read
+            // back rather than a second copy of it.
+            WindowSubject::Skills => self.skills.is_some(),
         });
         // The state a dialog holds that no packet does, kept in step with the
         // same list: a window the shard has taken away forgets its page, its
@@ -2709,6 +2792,25 @@ impl App {
             let step = self.own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
             self.own_windows.push(OwnWindow {
                 subject,
+                at: GumpPixel::new(
+                    CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
+                    CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
+                ),
+            });
+        }
+        // The skill window, which nothing in the view asked for: the player did,
+        // by pressing Skills. Cascaded like a bag, for want of anywhere better
+        // — the reference remembers where this one was left, which is the
+        // backlog entry every window kind here shares.
+        if self.skills.is_some()
+            && !self
+                .own_windows
+                .iter()
+                .any(|window| window.subject == WindowSubject::Skills)
+        {
+            let step = self.own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
+            self.own_windows.push(OwnWindow {
+                subject: WindowSubject::Skills,
                 at: GumpPixel::new(
                     CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
                     CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
@@ -2864,6 +2966,18 @@ impl App {
                 return true;
             }
         }
+        // The skill window's own furniture: a heading's arrow, the two ends of
+        // the bar, the track and the thumb. The same gesture again, and the same
+        // reason for taking the press away from the drag — the bar runs down the
+        // inside of the scroll, and a thumb that also picked the window up would
+        // move both at once.
+        if subject == WindowSubject::Skills {
+            if let Some(hit) = self.skill_hit_under_pointer() {
+                self.held_skill = Some(hit);
+                self.dragging = None;
+                return true;
+            }
+        }
         let grab = self
             .own_windows
             .last()
@@ -2894,6 +3008,117 @@ impl App {
         doll.hits.get(&index).copied()
     }
 
+    /// Which of the skill window's pictures the cursor is over means something,
+    /// if any of them does.
+    ///
+    /// [`App::doll_button_under_pointer`]'s twin, and the same rule: the list is
+    /// the one the last frame drew, so a row cut away by the viewport is not
+    /// pickable where it is not drawn — that box is on the pictures themselves,
+    /// which is why nothing here has to know about it.
+    fn skill_hit_under_pointer(&self) -> Option<skills::Hit> {
+        let Some(Drawn::Skills(sheet)) = self.drawn(WindowSubject::Skills) else {
+            return None;
+        };
+        sheet.hit(self.pointer_gump, &self.gump_atlas)
+    }
+
+    /// How tall the list is right now — what every scroll is clamped against.
+    ///
+    /// Asked afresh rather than remembered: shutting a heading changes it, and a
+    /// clamp against a stale height either refuses a scroll that is now legal or
+    /// allows one that is not.
+    fn skill_content(&self) -> i32 {
+        match self.skills.as_ref() {
+            Some(tree) => skills::content_height(&self.skill_names, &self.skill_groups, tree),
+            None => 0,
+        }
+    }
+
+    /// What a click on the skill window does.
+    ///
+    /// Four of the five hits; the thumb is the fifth and does its work on the
+    /// move rather than the release — see [`App::drag_thumb`].
+    fn skill_clicked(&mut self, hit: skills::Hit) {
+        let content = self.skill_content();
+        // The point the *track* was clicked, taken before the tree is borrowed
+        // mutably: it is read off the window the last frame drew, and that
+        // borrow and this one cannot both stand.
+        let jumped = match hit {
+            skills::Hit::Track => match self.drawn(WindowSubject::Skills) {
+                Some(Drawn::Skills(sheet)) => Some(sheet.offset_at(self.pointer_gump, content)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some(tree) = self.skills.as_mut() else {
+            return;
+        };
+        match hit {
+            // Opening or shutting a heading leaves the scroll where it is,
+            // which can be past the end of a list that has just got shorter —
+            // so it is clamped against what the list is *now*.
+            skills::Hit::Heading(group) => {
+                tree.toggle(group);
+                let content = skills::content_height(&self.skill_names, &self.skill_groups, tree);
+                tree.scroll_to(tree.offset(), content);
+            }
+            skills::Hit::Up => tree.scroll_by(-skills::STEP, content),
+            skills::Hit::Down => tree.scroll_by(skills::STEP, content),
+            skills::Hit::Track => {
+                if let Some(offset) = jumped {
+                    tree.scroll_to(offset, content);
+                }
+            }
+            skills::Hit::Thumb => {}
+        }
+    }
+
+    /// Follow the pointer with a thumb that is being dragged. Answers whether
+    /// the list moved.
+    ///
+    /// Driven from the mouse's own movement, like [`App::drag_own_window`] and
+    /// for the same reason: a drag is a gesture that is under way between a
+    /// press and a release, and the release only ends it.
+    fn drag_thumb(&mut self) -> bool {
+        if self.held_skill != Some(skills::Hit::Thumb) {
+            return false;
+        }
+        let content = self.skill_content();
+        let Some(Drawn::Skills(sheet)) = self.drawn(WindowSubject::Skills) else {
+            return false;
+        };
+        let offset = sheet.offset_at(self.pointer_gump, content);
+        let Some(tree) = self.skills.as_mut() else {
+            return false;
+        };
+        let before = tree.offset();
+        tree.scroll_to(offset, content);
+        tree.offset() != before
+    }
+
+    /// A wheel notch over the skill window scrolls it instead of zooming the
+    /// world. Answers whether the window took the notch.
+    ///
+    /// Taken whenever the pointer is over the window, even when the list is
+    /// already at its end: a wheel that fell through to the camera because the
+    /// list could not move would zoom the world from inside a window, which is
+    /// the one thing a player rolling a wheel over a list does not mean.
+    fn scroll_skills(&mut self, notches: f32) -> bool {
+        if self.window_under_pointer() != Some(WindowSubject::Skills) {
+            return false;
+        }
+        let content = self.skill_content();
+        if let Some(tree) = self.skills.as_mut() {
+            // A notch is a row, and up the wheel is up the list.
+            let step = match notches > 0.0 {
+                true => -skills::STEP,
+                false => skills::STEP,
+            };
+            tree.scroll_by(step, content);
+        }
+        true
+    }
+
     /// The release that finishes a press on a dialog's button or a paperdoll's,
     /// and whatever it sent.
     ///
@@ -2901,6 +3126,15 @@ impl App {
     /// the button comes back up on the way out either way, and a page button
     /// changes what the window is showing without a packet leaving.
     fn release_on_own_window(&mut self) -> bool {
+        if let Some(hit) = self.held_skill.take() {
+            // The same "still on the same picture" rule the doll's buttons
+            // follow. The thumb is the exception that needs no arm: it has
+            // already done its work, on every mouse move since the press.
+            if self.skill_hit_under_pointer() == Some(hit) {
+                self.skill_clicked(hit);
+            }
+            return true;
+        }
         if let Some((subject, button)) = self.held_doll.take() {
             // Only if the pointer is still on the same button. A press that
             // slid off one is not a click on it — the reference's own rule for
@@ -2988,6 +3222,9 @@ impl App {
         let Some(link) = self.link.as_ref() else {
             return;
         };
+        // Set inside the match and acted on after it: the link is borrowed out
+        // of `self` for the length of it, and opening the window is a write.
+        let mut opened_skills = false;
         match button {
             // The one picture whose *state* is on the frame: what is asked for
             // is the opposite of what the last packet about the stance said.
@@ -3007,7 +3244,19 @@ impl App {
             // about them. A health bar over somebody else is a window of its
             // own — backlog, `docs/client.md`.
             paperdoll::DollButton::Status if own => link.status(mobile),
-            paperdoll::DollButton::Skills if own => link.skills(mobile),
+            // The window opens *here*, on the press, and the packet only fills
+            // it: the shard sends the whole list at world entry as well, so a
+            // window that opened when a `0x3A` arrived would open itself at
+            // every login. Opened before the answer comes back, which is why a
+            // skill with no line yet is a row with an empty column rather than
+            // an empty window.
+            //
+            // Only for our own doll, `Status`'s reason: a `0x3A` has no serial
+            // in it and is always about the body at this end.
+            paperdoll::DollButton::Skills if own => {
+                link.skills(mobile);
+                opened_skills = true;
+            }
             // The scrolls, which are a *double* click. `Virtue` is the only one
             // of the three with a packet — the reference's `0xB1` under a gump
             // id nobody opened, see `openshard_client_net::doll::virtue`.
@@ -3015,6 +3264,13 @@ impl App {
             // Everything else: a stranger's Status, the first click of a pair,
             // and the four buttons with nothing to send.
             _ => {}
+        }
+        if opened_skills {
+            // Pressing it again with the window already open leaves the tree
+            // alone — the headings the player shut stay shut — and asks the
+            // shard for the list once more, which is what the reference's own
+            // button does.
+            self.skills.get_or_insert_with(skills::Tree::default);
         }
     }
 
@@ -3100,6 +3356,16 @@ impl App {
             }
             WindowSubject::Paperdoll(serial) => {
                 view.paperdoll_closed(serial);
+            }
+            // Nothing in the view to tell: the skills stay where they are, the
+            // way a paperdoll's equipment does. What closing takes away is the
+            // tree — which headings were shut and where the list was scrolled to
+            // — and that is deliberate: the reference's window does not remember
+            // either, and a window with no memory is the backlog entry both
+            // kinds already share.
+            WindowSubject::Skills => {
+                self.skills = None;
+                self.held_skill = None;
             }
             WindowSubject::Dialog(_) => unreachable!("answered above"),
         }
@@ -5523,6 +5789,42 @@ impl App {
                                 Drawn::Dialog(self.dialogs.layout(gump, open.at, &self.gump_atlas)),
                             ));
                         }
+                        WindowSubject::Skills => {
+                            let Some(tree) = self.skills.as_ref() else {
+                                continue;
+                            };
+                            // The three sources meet here and nowhere else: the
+                            // names and the tree out of the client's files, the
+                            // numbers out of the view, and how wide a string
+                            // came out of the font atlas — which is what puts a
+                            // value's right edge where it belongs and starts a
+                            // heading's rule at the end of its name.
+                            //
+                            // The wire's `u8` becomes a `SkillId` here, at the
+                            // one seam that holds both: `view::Player::skills`
+                            // is keyed by what the shard said, and the files'
+                            // numbering is the type the window is written
+                            // against. A skill the files do not name has no row
+                            // to put a number on, and is dropped by `names.get`
+                            // inside the layout rather than here.
+                            windows.push((
+                                open.subject,
+                                Drawn::Skills(skills::window(
+                                    &self.skill_names,
+                                    &self.skill_groups,
+                                    tree,
+                                    |id| {
+                                        view.player.skills.get(&id.0).map(|line| skills::Standing {
+                                            value: line.value,
+                                            cap: line.cap,
+                                            lock: line.lock,
+                                        })
+                                    },
+                                    |text, font| text::gump_width(text, font, &self.font_atlas),
+                                    open.at,
+                                )),
+                            ));
+                        }
                         WindowSubject::Container(serial) => {
                             let Some(gump) = view.containers.get(&serial).copied() else {
                                 continue;
@@ -5667,6 +5969,12 @@ impl App {
         // up on a window laid out differently from the pictures under it.
         {
             let mut labels: Vec<openshard_client_render::text::GumpLabel<'_>> = Vec::new();
+            // The lines that are cut to a box before they are drawn, already
+            // quads: they cannot travel with the labels above, because what
+            // cuts them is the window they belong to and a label does not carry
+            // one. Extended onto the same draw call, which is the point — one
+            // texture, one pass, whatever produced the quads.
+            let mut cut: Vec<SpriteQuad> = Vec::new();
             for (subject, drawn) in &self.drawn_windows {
                 match (subject, drawn) {
                     (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
@@ -5696,11 +6004,25 @@ impl App {
                             labels.push(paperdoll::name(&doll.name, at));
                         }
                     }
+                    // The skill window writes its own lines — a heading, a
+                    // name, a value, the total — and they are the one text in
+                    // this client that is *cut*: a row half out of the viewport
+                    // is drawn half, which is what a bar the player drags means.
+                    // Collected and cut here rather than added to `labels`,
+                    // because a glyph is a quad in the font atlas and has no
+                    // picture to carry a box on — see `Scissor::cut`.
+                    (WindowSubject::Skills, Drawn::Skills(sheet)) => {
+                        let lines: Vec<GumpLabel<'_>> = sheet.lines.iter().map(skills::Line::label).collect();
+                        let mut own = openshard_client_render::text::collect_gump(&lines, &self.font_atlas);
+                        sheet.viewport.cut(&mut own);
+                        cut.extend(own);
+                    }
                     _ => {}
                 }
             }
-            if !labels.is_empty() {
-                let quads = openshard_client_render::text::collect_gump(&labels, &self.font_atlas);
+            if !labels.is_empty() || !cut.is_empty() {
+                let mut quads = openshard_client_render::text::collect_gump(&labels, &self.font_atlas);
+                quads.extend(cut);
                 window.gump_text_pass.render(
                     &window.device,
                     &window.queue,
