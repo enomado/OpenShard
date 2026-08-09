@@ -188,14 +188,11 @@ conversion — none of which we have, and all of which are pre-UOP-only.
 
 ## What targeting an old client would cost us
 
-Three gaps, in order of how much work they are:
+Two gaps left, in order of how much work they are — a third, the map width, is
+closed; see `docs/roadmap.md`'s own record:
 
 - **`verdata.mul` support.** Mandatory below 5.0.0a and entirely absent here:
   `grep -rn verdata --include='*.rs' crates` finds nothing.
-- **A version-driven map width.** We derive the width from the file, which is
-  right about the file and wrong about the client: a modern `map0.mul` served to
-  a client below 4.0.11d gives a world 1024 tiles wider than the one being
-  drawn. This wants a `Feature`-shaped rule and a test.
 - **The lower half of two protocol boundaries.** `Feature::NewContextMenu`
   (6.0.0.0) gates the *new* `0xBF.0x14.0x02` form, so nothing stops us sending
   the old form to a client with no popup menus at all. Same shape of gap for
