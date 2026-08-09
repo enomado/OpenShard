@@ -126,6 +126,152 @@ impl EncodePacket for SkillsFull {
     }
 }
 
+/// Which of the two `0x3A` packets a body is, and whether its rows carry a cap.
+///
+/// The one place in this protocol where the id is not the whole answer: both
+/// packets are `0x3A`, and the byte after the length field says which — so a
+/// client dispatching on the id alone can route the packet but not decode it.
+/// That byte also says whether the rows carry the cap field, and **it is the
+/// byte that is believed, not the version**: the version says what a shard
+/// *should* send, and this says what it did. A decoder that asked
+/// [`Feature::SkillCaps`] instead would read every field of every row two bytes
+/// out of place the first time the two disagreed.
+///
+/// The reference's own reading — `PacketHandlers.UpdateSkills`, whose two lines
+/// `haveCap = type != 0 && type <= 0x03 || type == 0xDF` and `isSingleUpdate =
+/// type == 0xFF || type == 0xDF` are this whole table.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SkillsForm {
+    /// Every skill, ids one-based and the list zero-terminated — [`SkillsFull`].
+    WholeList {
+        /// Whether each row ends with the skill's cap.
+        caps: bool,
+    },
+    /// One skill, id zero-based, no terminator — [`SkillUpdate`].
+    OneLine {
+        /// Whether the row ends with the skill's cap.
+        caps: bool,
+    },
+    /// `0xFE` — the *names* of the skills, which a shard may send to replace the
+    /// client's own `skills.mul` table. Recognised so that it can be refused by
+    /// name rather than read as a list of values; this engine never sends one.
+    NameTable,
+}
+
+impl SkillsForm {
+    /// What a type byte means, or `None` for one that means nothing.
+    #[must_use]
+    pub const fn of(type_byte: u8) -> Option<Self> {
+        match type_byte {
+            0x00 => Some(Self::WholeList { caps: false }),
+            // 0x01 and 0x03 are the capped whole list *and* an instruction to
+            // open the window, which this client does not take: its window opens
+            // when the player asks for it. See `docs/client.md`'s backlog.
+            0x01..=0x03 => Some(Self::WholeList { caps: true }),
+            0xDF => Some(Self::OneLine { caps: true }),
+            0xFE => Some(Self::NameTable),
+            0xFF => Some(Self::OneLine { caps: false }),
+            _ => None,
+        }
+    }
+}
+
+/// A `0x3A` off the wire, whichever of the two it turned out to be.
+///
+/// A decoder and not a packet: nothing encodes this. It exists because
+/// [`DecodePacket`] routes on the id and the id is shared, so the split happens
+/// one byte later — and it happens *once*, here, rather than in each of the two
+/// decoders plus the dispatcher that picks between them.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SkillsPacket {
+    /// The list that fills a window.
+    WholeList(SkillsFull),
+    /// The line that follows a gain.
+    OneLine(SkillUpdate),
+}
+
+/// Read one row: id, value, base, lock, and the cap if this form carries one.
+///
+/// `one_based` is the whole-list form's quirk — see [`SkillsFull`] — and is why
+/// a zero id can terminate the list without colliding with Alchemy.
+fn decode_entry(
+    reader: &mut PacketReader<'_>,
+    caps: bool,
+    one_based: bool,
+) -> Result<SkillEntry, DecodeError> {
+    let raw = reader.u16()?;
+    let id = match one_based {
+        true => raw - 1, // the caller has already refused a zero
+        false => raw,
+    };
+    let id = u8::try_from(id).map_err(|_| DecodeError::UnknownValue {
+        field: "skill id",
+        value: u32::from(id),
+    })?;
+    let value = reader.u16()?;
+    let base = reader.u16()?;
+    let lock = SkillLock::from_bits(reader.u8()?);
+    // A capless row is refused rather than given a cap: 1000 is the reference's
+    // own stand-in, and a window drawing an invented ceiling as if the shard had
+    // sent one is worse than a client that says it cannot read this form. The
+    // form only reaches a client that declared itself older than 4.0.0a, and the
+    // day one does, this is where `cap` becomes an `Option`.
+    if !caps {
+        return Err(DecodeError::Unsupported {
+            packet: <SkillsFull as EncodePacket>::ID,
+            form: "a capless skill row, from before 4.0.0a",
+        });
+    }
+    let cap = reader.u16()?;
+    Ok(SkillEntry {
+        id,
+        value,
+        base,
+        lock,
+        cap,
+    })
+}
+
+impl DecodePacket for SkillsPacket {
+    const ID: u8 = 0x3A;
+
+    /// Decode whichever `0x3A` this is.
+    ///
+    /// The whole list ends at its zero id — the terminator the one-based
+    /// numbering exists to make unambiguous — or at the end of the body, because
+    /// a shard that sent the count in the length field and no terminator is
+    /// still saying the same thing.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let byte = reader.u8()?;
+        let form = SkillsForm::of(byte).ok_or(DecodeError::UnknownValue {
+            field: "skill packet type",
+            value: u32::from(byte),
+        })?;
+        match form {
+            SkillsForm::WholeList { caps } => {
+                let mut entries = Vec::new();
+                while !reader.is_empty() {
+                    // Peek at the id: a zero ends the list, and a list that ends
+                    // exactly at the terminator has nothing after it to read.
+                    let mut ahead = reader.clone();
+                    if ahead.u16()? == 0 {
+                        break;
+                    }
+                    entries.push(decode_entry(reader, caps, true)?);
+                }
+                Ok(Self::WholeList(SkillsFull { entries }))
+            }
+            SkillsForm::OneLine { caps } => Ok(Self::OneLine(SkillUpdate {
+                entry: decode_entry(reader, caps, false)?,
+            })),
+            SkillsForm::NameTable => Err(DecodeError::Unsupported {
+                packet: Self::ID,
+                form: "the shard's own skill-name table (0xFE)",
+            }),
+        }
+    }
+}
+
 /// A single skill's update (`0x3A`), sent when one changes so an open window
 /// follows a gain. The id rides zero-based here, and there is no terminator.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -230,6 +376,29 @@ mod tests {
         ClientVersion::new(3, 0, 0, 0)
     }
 
+    /// Decode a `0x3A` the way a client does — through the dispatcher, and not
+    /// through `SkillsPacket::decode_body` directly.
+    ///
+    /// The routing is half of what is under test: a `ServerPacket` the client
+    /// has no arm for answers `Ok(None)`, is stepped over, and is never heard
+    /// of again, which is how the `0x72` answering the war toggle stayed
+    /// invisible for as long as the toggle existed. A test that called the
+    /// decoder itself would pass with the arm missing.
+    fn decode_server_packet(bytes: &[u8]) -> crate::server_packet::ServerPacket {
+        match crate::server_packet::ServerPacket::decode(bytes, aos()) {
+            Ok(Some(packet)) => packet,
+            other => panic!("0x3A did not decode as a skill packet: {other:?}"),
+        }
+    }
+
+    /// The same, for the packets that must be refused.
+    fn decode_server_error(bytes: &[u8]) -> DecodeError {
+        match crate::server_packet::ServerPacket::decode(bytes, aos()) {
+            Err(crate::server_packet::ServerDecodeError::Skills(error)) => error,
+            other => panic!("0x3A decoded, and should not have: {other:?}"),
+        }
+    }
+
     #[test]
     fn skill_locks_round_trip_through_the_wire_byte() {
         for lock in [SkillLock::Up, SkillLock::Down, SkillLock::Locked] {
@@ -327,6 +496,114 @@ mod tests {
         assert_eq!(packet[3], 0xDF, "the capped delta type");
         assert_eq!(u16::from_be_bytes([packet[4], packet[5]]), 25, "zero-based here");
         assert_eq!(packet.len(), 13);
+    }
+
+    /// The full list, back off the wire the way a client reads it: the ids come
+    /// back zero-based, every field lands where it was put, and the terminator
+    /// is not a row.
+    #[test]
+    fn the_whole_list_comes_back_off_the_wire_as_it_was_sent() {
+        let entries = vec![
+            SkillEntry {
+                id: 0, // Alchemy, the id the one-based numbering exists for
+                value: 755,
+                base: 700,
+                lock: SkillLock::Locked,
+                cap: 1000,
+            },
+            SkillEntry {
+                id: 45,
+                value: 500,
+                base: 480,
+                lock: SkillLock::Down,
+                cap: 1200,
+            },
+            SkillEntry {
+                id: 57, // the last skill a 7.0 client knows
+                value: 0,
+                base: 0,
+                lock: SkillLock::Up,
+                cap: 1000,
+            },
+        ];
+        let packet = encode_packet(
+            &SkillsFull {
+                entries: entries.clone(),
+            },
+            aos(),
+        );
+        let decoded = decode_server_packet(&packet);
+        assert_eq!(
+            decoded,
+            crate::server_packet::ServerPacket::SkillsFull(SkillsFull { entries })
+        );
+    }
+
+    /// The delta, whose id is *not* one-based — read as if it were, every single
+    /// update would train the skill above the one that moved.
+    #[test]
+    fn a_single_line_comes_back_on_the_skill_it_was_sent_for() {
+        let entry = SkillEntry {
+            id: 25, // Magery
+            value: 501,
+            base: 501,
+            lock: SkillLock::Up,
+            cap: 1000,
+        };
+        let packet = encode_packet(&SkillUpdate { entry }, aos());
+        let decoded = decode_server_packet(&packet);
+        assert_eq!(
+            decoded,
+            crate::server_packet::ServerPacket::SkillUpdate(SkillUpdate { entry })
+        );
+    }
+
+    /// The type byte is the whole of the difference between the two, and it is
+    /// what is believed about the cap field as well.
+    #[test]
+    fn the_type_byte_says_which_packet_and_whether_the_rows_carry_a_cap() {
+        assert_eq!(SkillsForm::of(0x00), Some(SkillsForm::WholeList { caps: false }));
+        assert_eq!(SkillsForm::of(0x02), Some(SkillsForm::WholeList { caps: true }));
+        assert_eq!(SkillsForm::of(0x03), Some(SkillsForm::WholeList { caps: true }));
+        assert_eq!(SkillsForm::of(0xDF), Some(SkillsForm::OneLine { caps: true }));
+        assert_eq!(SkillsForm::of(0xFF), Some(SkillsForm::OneLine { caps: false }));
+        assert_eq!(SkillsForm::of(0xFE), Some(SkillsForm::NameTable));
+        assert_eq!(SkillsForm::of(0x7A), None, "nothing names this");
+    }
+
+    /// A form this crate knows of and does not read says so, rather than reading
+    /// its bytes as the form it does know — which would decode, and would be
+    /// wrong from the first row.
+    #[test]
+    fn a_shard_sent_name_table_is_refused_by_name() {
+        // 0x3A, length, type 0xFE, a count and nothing else.
+        let packet = [0x3A, 0x00, 0x06, 0xFE, 0x00, 0x01];
+        let error = decode_server_error(&packet);
+        assert!(
+            matches!(error, DecodeError::Unsupported { packet: 0x3A, .. }),
+            "{error:?}"
+        );
+    }
+
+    /// The capless rows of a pre-AoS client are refused for the same reason, and
+    /// not given the reference's stand-in cap of 1000: a window drawing a ceiling
+    /// nobody sent cannot be told from one drawing a ceiling somebody did.
+    #[test]
+    fn a_capless_row_is_refused_rather_than_given_an_invented_cap() {
+        let packet = encode_packet(
+            &SkillsFull {
+                entries: vec![SkillEntry {
+                    id: 0,
+                    value: 100,
+                    base: 100,
+                    lock: SkillLock::Up,
+                    cap: 1000,
+                }],
+            },
+            pre_aos(),
+        );
+        let error = decode_server_error(&packet);
+        assert!(matches!(error, DecodeError::Unsupported { .. }), "{error:?}");
     }
 
     #[test]

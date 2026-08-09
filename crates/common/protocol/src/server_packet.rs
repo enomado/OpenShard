@@ -39,7 +39,7 @@ use crate::login::{
 use crate::mobile::{MobileIncoming, MobileMove, MobileStatus, OpenPaperdoll, Remove, StatLocks};
 use crate::packet::{DecodePacket, EncodePacket, Frame, FrameError, PacketLength, frame_body, frame_packet};
 use crate::properties::TooltipRevision;
-use crate::skill::{SkillUpdate, SkillsFull};
+use crate::skill::{SkillUpdate, SkillsFull, SkillsPacket};
 use crate::speech::{LocalizedMessage, SpokenMessage, UnicodeMessage};
 use crate::spellbook::SpellbookContent;
 use crate::target::TargetCursor;
@@ -463,6 +463,15 @@ impl ServerPacket {
             <WarMode as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::WarMode)
                 .map_err(ServerDecodeError::WarMode)?,
+            // Both `0x3A`s. The id routes them together and the type byte tells
+            // them apart, which is why this is the one arm that decodes into a
+            // decision rather than into a variant — see `SkillsPacket`.
+            <SkillsPacket as DecodePacket>::ID => {
+                match decode_server(packet, version).map_err(ServerDecodeError::Skills)? {
+                    SkillsPacket::WholeList(list) => Self::SkillsFull(list),
+                    SkillsPacket::OneLine(line) => Self::SkillUpdate(line),
+                }
+            }
             // "You may go." A client that could not read this would sit on the
             // paperdoll's Log Out button with nothing happening, which is
             // exactly what the packet exists to prevent.
@@ -529,6 +538,9 @@ pub enum ServerDecodeError {
     WarMode(DecodeError),
     /// `0xD1` did not decode.
     LogoutAck(DecodeError),
+    /// `0x3A` did not decode — either of the two, since the id is shared and
+    /// which one it was is a fact from inside the body that failed to be read.
+    Skills(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -557,6 +569,7 @@ impl fmt::Display for ServerDecodeError {
             Self::OpenPaperdoll(error) => ("0x88 paperdoll", error),
             Self::WarMode(error) => ("0x72 war mode", error),
             Self::LogoutAck(error) => ("0xD1 logout ack", error),
+            Self::Skills(error) => ("0x3A skills", error),
         };
         write!(f, "{name}: {error}")
     }
