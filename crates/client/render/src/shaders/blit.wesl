@@ -502,20 +502,6 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
 // removed the second thing they bought. `light.rs`'s own note where the pair
 // stood has the whole argument.
 
-// Whether a lit point lies **on** a surface: its `z` is inside the span that
-// surface occupies, its two edges included, and **exactly** — the `ON_TOP`
-// tolerance was the nudge `walk` gave the point, handed back here, and both went
-// at phase 4. What the exemptions are asked, one surface at a time — see `walk`,
-// and `light::on_surface`.
-//
-// `low`/`high` are the primitive's own `lo.z`/`hi.z`: this is a question about
-// whether a fragment is a point *of* the solid, and half a unit of rounding is
-// the difference between a face's bottom row belonging to the box it is drawn on
-// and standing under it.
-fn on_surface(z: f32, low: f32, high: f32) -> bool {
-    return z >= low && z <= high;
-}
-
 // **`drawn_on` lived here**, and `docs/lighting_rebuild.md` phase 4 retired it
 // along with its twin — see `light.rs`'s own note where the Rust one stood. It
 // asked whether a lid was a plane the fragment was drawn at the height of, which
@@ -645,23 +631,12 @@ fn starting_cell(at: vec2<f32>, tile: vec2<f32>) -> vec2<i32> {
     return vec2<i32>(i32(x), i32(y));
 }
 
-// `light::same_run`, and see it for why `docs/lighting_rebuild.md` phase 4 does
-// *not* delete this: a run of wall is N different statics cut on tile boundaries,
-// so the panel next along the run is a different solid however exactly a fragment
-// names its own. The height gate rides inside it now, where the Rust twin has it.
-fn same_run(own: u32, cell: vec2<i32>, first: vec2<i32>, spot_z: f32, low: f32, high: f32) -> u32 {
-    if !on_surface(spot_z, low, high) {
-        return 0u;
-    }
-    var line = 0u;
-    if cell.y == first.y {
-        line = line | EDGE_NORTH | EDGE_SOUTH;
-    }
-    if cell.x == first.x {
-        line = line | EDGE_EAST | EDGE_WEST;
-    }
-    return own & line;
-}
+// **`same_run` stood here, and `docs/occluders.md`'s S4 deleted it**, together
+// with the `on_surface` height gate that was inside it and had no other reader.
+// `light::same_run`'s own grave note has the argument in full: it was
+// `on_the_lit_surface` said as arithmetic over cells, and what kept it alive was
+// three fixtures asking the walk about a fragment that named no solid, so the
+// rule that reads the fragment's own box could never fire.
 
 // How wide the lists are as textures, in texels. `occlusion::LIST_ROW`, and the
 // two are one number — a list is one dimensional and a texture is not.
@@ -1033,7 +1008,6 @@ fn ray_vs_solid(ray_from: vec3<f32>, ray_to: vec3<f32>, lo: vec3<f32>, hi: vec3<
 fn cell_stopped(
     cell: vec2<i32>,
     first: vec2<i32>,
-    own: u32,
     // Which solid of the grid the lit end is a point of, or `SOLID_NOBODY` for a
     // point of none. `light::LitEnd`'s `solid`, and the whole of the self-shadow
     // rule.
@@ -1092,9 +1066,10 @@ fn cell_stopped(
         // primitive** — `docs/occluders.md`'s D2, this step's whole subject. The
         // rule above answers for the fragment's own box and could never answer for
         // the box abutting it, which is a different primitive of the same wall,
-        // floor or landing. `same_run` below stood in for it and only for a *panel*
-        // on the same row or column; a **body** got no exemption at all, which is
-        // the seam this cures.
+        // floor or landing. `same_run` stood in for it and only for a *panel* on
+        // the same row or column; a **body** got no exemption at all, which is the
+        // seam this cures — and this rule having cured it is why S4 could delete
+        // that one outright.
         if on_the_lit_surface(stance, mine, stands.lo, stands.hi, delta) {
             continue;
         }
@@ -1111,7 +1086,6 @@ fn cell_stopped(
         if hit.entered == 0.0 && hit.leaves == 0.0 {
             continue;
         }
-        let same_run = same_run(own, cell, first, lit.z, low, high);
         // Where along the ray this crossing happens, and therefore where in the
         // world — the exact crossing's own midpoint rather than the cell-shared
         // one the old walk used. It was also what the penumbra's own width was
@@ -1164,12 +1138,11 @@ fn cell_stopped(
             // A **panel** — a wall standing on one side of its tile. A
             // *surface*, and what a surface does to a ray is decided where
             // the ray pierces it: one sample, at the exact crossing's own
-            // midpoint, less whatever of this cell is the same run of wall
-            // the lit end stands in.
-            let stops = edges & ~same_run;
-            if stops != 0u {
-                by_surface = opacity * pierced(stands, id, start + delta * middle);
-            }
+            // midpoint. There was an `edges & ~same_run` gate here, and
+            // `docs/occluders.md`'s S4 is where it went — the run it excused is
+            // `on_the_lit_surface`'s plane, tested above with the other
+            // exemptions.
+            by_surface = opacity * pierced(stands, id, start + delta * middle);
         }
         stopped = max(stopped, by_surface);
     }
@@ -1223,10 +1196,11 @@ fn walk(
         // this says why: a vertical ray is stopped by anything it is inside the
         // footprint of and whose span it crosses, and both of those shapes are
         // one. A panel is a plane, and a vertical ray lying in a wall's own plane
-        // is the graze `same_run` exists for on the main path and has no answer
-        // here. Lids alone until a fitted climbable's treads became bodies, which
-        // is what exposed a gap that was already there for every body in the
-        // world: a ray straight up out of a tree's box left it unstopped.
+        // is the graze the main path answers with `on_the_lit_surface` — where
+        // `same_run` answered it before S4 — and that has no answer here. Lids
+        // alone until a fitted climbable's treads became bodies, which is what
+        // exposed a gap that was already there for every body in the world: a ray
+        // straight up out of a tree's box left it unstopped.
         let straight = solids_at(first.x, first.y);
         var stopped = 0.0;
         for (var i = 0u; i < straight.y; i = i + 1u) {
@@ -1267,13 +1241,6 @@ fn walk(
         }
         return max(0.0, 1.0 - stopped);
     }
-    // Which side of its own tile the lit end **is the face of**. What it is for
-    // is `same_run` below: a run of wall is one surface and no part of a surface
-    // shadows another part of it. The pixel's own side and not its tile's whole
-    // mask, which is what decision 23 says in words — a corner's *perpendicular*
-    // panel is a different surface and stops the ray as it always did. A pixel
-    // that is not a face is part of no run and gets nothing. `light::walk_cells_streaming`.
-    let own = own_side(stance);
     // Which way each axis steps and how much of the whole segment one tile of
     // it is worth. An axis the ray does not move along never reaches its
     // boundary, which is what the enormous `t` says.
@@ -1309,7 +1276,7 @@ fn walk(
     var cell = first;
     for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let stopped = cell_stopped(
-            cell, first, own, mine, stance, start, finish, delta, ground,
+            cell, first, mine, stance, start, finish, delta, ground,
         );
         through = through * (1.0 - stopped);
         if through <= 0.004 {
@@ -1348,7 +1315,7 @@ fn walk(
             out_by_x,
         );
         let probe_stopped = cell_stopped(
-            probe, first, own, mine, stance, start, finish, delta, ground,
+            probe, first, mine, stance, start, finish, delta, ground,
         );
         through = through * (1.0 - probe_stopped);
         if through <= 0.004 {

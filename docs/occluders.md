@@ -708,7 +708,7 @@ moment one exists — see the backlog's first entry, which is this step's own
 precondition and not a nuisance.
 
 **S4 — delete the cell rules.** D5, in this order and each behind its own
-measurement: `same_run` (🔴 **not licensed by S3, and licensed by phase 5b rather than by the
+measurement: ~~`same_run`~~ ✅ **deleted** (🔴 **not licensed by S3, and licensed by phase 5b rather than by the
 merge** — S3 landed and measured that the exemption is *narrower* than this
 function, which excuses a neighbouring panel of the run for rays that dip behind the
 surface's plane as well as for rays leaving it. The theorem cannot license those and
@@ -737,7 +737,21 @@ neutralised turns two red, so the pair is load-bearing and the two are mutually
 redundant on every fixture. The tie is broken by the argument rather than by the
 suite — D2 is a theorem, `same_run` excuses more than the theorem allows, a
 tile's north panel on the same row among it. `lighting_rebuild.md`'s backlog has
-the numbers), the
+the numbers.
+✅ **Deleted**, from `light.rs`'s two walks and from `blit.wesl`, with
+`on_surface` — the height half of the mask, and a function `same_run` was the
+only reader of — and the two unit tests whose whole subject was either. The panel
+arm of all three walks is now `pierced` and nothing else. Its grave note lives
+above `light::lit_plane`, and it states the narrowing as well as the deletion: the
+mask excused a tile's **north** panel for a south-facing fragment on the same row,
+a different plane and a real occlusion the theorem correctly keeps. The gate below
+was taken in full — suite green with the rule neutralised on both sides before the
+cut, suite green after it, brute-force oracles and the GPU parity sweep among
+them, and the identity injection turns exactly the same six tests red before and
+after: `a_fragment_is_shadowed_by_every_solid_of_its_own_static_but_the_one_it_is_
+a_point_of`, `a_vertical_ray_is_not_stopped_by_lids_it_is_not_over`,
+`a_carried_light_lights_the_way_it_is_pointed`,
+`the_face_of_a_wall_is_lit_from_inside_the_room` and both path-tracer gates), the
 per-cell `max` (there is no cell to group
 by; the corner double-count it existed for outlives the merge's departure to S3b,
 so this one carries its own measurement rather than inheriting one), the vertical

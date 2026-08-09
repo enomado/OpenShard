@@ -90,7 +90,7 @@ Named, so the plan can be checked against the tree:
 |---|---|
 | ~~`light::faces`, `FACE_EDGE`~~ **gone, phase 3** | `light::lit_from`, `max(N · L, 0)` off the G-buffer normal |
 | ~~`STAND_OFF`, `ON_TOP`~~ **gone, phase 4** | exact position + self-hit by primitive id, bias `0` |
-| ~~`exemption`~~ **gone, phase 4**; `on_surface` and `own_run` **stay, measured** | the same id test, once — inline, in both walks. The other two are `same_run`, which is a *different* claim: see phase 4 |
+| ~~`exemption`~~ **gone, phase 4**; ~~`on_surface`, `own_run`~~ **gone, `occluders.md`'s S4** | the same id test, once — inline, in both walks. The other two were `same_run`, a *different* claim (see phase 4) that S4 deleted once every fixture named its own solid |
 | ~~`mounted_at`'s height test~~ **gone, phase 4**; `mounted_at` and `MOUNTED_CLEARANCE` **stay, measured** | a sconce burns where it hangs, which the map does not say and the art does — see phase 4 |
 | ~~`WIDTH_OVERLAP`~~ **gone, phase 6**; `Prism::mesh`'s `widen_footprint` went with it | one silhouette: a static is drawn once and its geometry met by the view ray — see phase 6 |
 | ~~`FLAME_DEPTH`, `pierces`, `crosses`'s softening, `SOFT_CROSSING_*`~~ **gone, phase 5**; `inside` and the `spread` parameter went with them | an area light and eight shadow rays at `FLAME_RADIUS` |
@@ -708,8 +708,13 @@ corner, which is where every stair defect is found.
 *Three of the plan's deletions did not happen, and each was settled by injecting
 the fault rather than by reading the code.*
 
-- **`own_run` stays**, as `same_run` with its height gate folded in. Identity
-  cannot answer it: a run of wall is *N different statics* cut on tile
+- **`own_run` stays**, as `same_run` with its height gate folded in. ⚠ **This
+  reading did not survive**: `docs/occluders.md`'s S4 deleted `same_run` outright,
+  and what was wrong with the measurement below is that three fixtures asked the
+  walk about a fragment that named no solid, so `on_the_lit_surface` — which reads
+  the fragment's own box — could never fire and the cell arithmetic was the only
+  thing left standing. What follows is what was measured then, kept whole.
+  Identity cannot answer it: a run of wall is *N different statics* cut on tile
   boundaries, so the panel next along the run is a different solid however
   exactly a fragment names its own. Neutralised, `light_runs_along_a_wall_and_
   stops_across_it` and `the_two_faces_of_a_corner_are_lit_from_the_side_each_
@@ -744,8 +749,9 @@ flight fixture, `the_face_of_a_wall_is_lit_from_inside_the_room` and
 `a_carried_light_lights_the_way_it_is_pointed`. The last two are also the only
 place the `None` half of it is measured — a flat fragment's own solid is a lid,
 and `crosses`'s strictness already answers a ray leaving a plane exactly; a face
-fragment's own solid is a panel, and `same_run` masks its own cell's side
-whatever the fragment carries.
+fragment's own solid is a panel, and `same_run` masked its own cell's side
+whatever the fragment carried — that rule is gone with S4, and `on_the_lit_surface`
+in its place answers nothing for a fragment with no box either.
 
 *Three world claims were re-taken, and the rule from *How this is judged* held —
 each was a judgement about the scene.* Two were the same graze: **a flame exactly
@@ -1030,7 +1036,11 @@ way.*
   rule**: both build their spots with `Spot::face` and no `part_of`, so
   `spot.solid` is `None`, `own_box` is `None`, and D2 — the thing that would
   answer for a coplanar neighbour — cannot be asked at all. The question is open
-  and its next step is in the backlog.
+  and its next step is in the backlog. ✅ **Settled since, and it was the fixture:
+  `same_run` is deleted.** Three places named no solid — those two spots and
+  `plan::elevation`'s own rows — and with all three naming one the rule has no
+  case left anywhere in the crate. The backlog entry below has the numbers and
+  `docs/occluders.md`'s S4 has the deletion.
 
 *The side-lit case was checked and the fixture does not show it.* On
 `a-wall-run-with-a-lamp-along-it`'s elevation — the one fixture in the tree built
@@ -1342,7 +1352,11 @@ each is nameable:
 - **`starting_cell`** — bookkeeping about which cell a ray begins in, and this
   document's own backlog already says it is a repair rather than a
   construction. With no cell in the answer there is nothing for it to arbitrate.
-- **`same_run`** — a rule stated in cells outright (`cell.x == first.x`).
+- ~~**`same_run`**~~ — a rule stated in cells outright (`cell.x == first.x`).
+  **Gone already, and not by the merge**: S4 deleted it once every fixture named
+  the solid its fragment is a point of, which left `on_the_lit_surface` — a
+  theorem about a box and a plane, needing no cell — answering every case the
+  cell arithmetic had. This step inherits one rule fewer.
 - **The vertical shortcut** — `solids_at(first)` and nothing else, an
   optimisation that has twice had to grow a footprint gate to stop being a
   *different* answer.
@@ -1353,17 +1367,22 @@ each is nameable:
 
 *The order matters, and the first step is not in this list.* Merging coplanar
 neighbours into one primitive is the **prerequisite**, not a tidy-up: it is what
-makes `same_run` and the per-cell `max` unnecessary rather than deleted and
-hoped for — a run of wall that is one solid has no second face to double-count
-and no sibling to be excused from. Phase 4 measured that identity alone cannot
-retire `same_run` for exactly this reason. So: widen a primitive's coordinates
-off the tile, merge, then delete the four rules, in that order.
+makes the per-cell `max` unnecessary rather than deleted and hoped for — a run of
+wall that is one solid has no second face to double-count and no sibling to be
+excused from. So: widen a primitive's coordinates off the tile, merge, then delete
+the rules that are left, in that order.
+
+*And `same_run` did not wait for it.* Phase 4 measured that identity alone could
+not retire it, and that measurement was of a **fixture**, not of the rule: three
+places asked the walk about a fragment that named no solid, so the rule that reads
+a fragment's own box could not fire and the cell arithmetic was all that was left.
+With all three naming one, S4 deleted `same_run` outright — no merge involved.
 
 *Done when:* a walk's answer is a function of the primitives and the segment
 alone — gated by equality against brute force over **every** primitive in the
 scene, which is the one non-circular oracle shape this tree already has — and
-`first`, `starting_cell`, `same_run`, the vertical shortcut and the per-cell
-`max` are gone from both walks and from `blit.wesl`.
+`first`, `starting_cell`, the vertical shortcut and the per-cell `max` are gone
+from both walks and from `blit.wesl` — `same_run` already is.
 
 *What this is not.* It is not about seams between sprites: the grid never had
 anything to do with the picture, and phase 6c already made a fragment's shape a
@@ -1681,6 +1700,15 @@ Things noticed while writing this, not blocking any phase:
   already written: D2 is a theorem about a box and a plane, `same_run` is cell
   arithmetic that excuses more than the theorem allows — a tile's *north* panel on
   the same row is excused by `same_run` and correctly is not by D2.
+
+  **And it is deleted**, `docs/occluders.md`'s S4, first of that step's four: out
+  of both walks in `light.rs`, out of `blit.wesl`, taking `on_surface` — the
+  height half of the mask, whose only reader it was — and the two unit tests whose
+  whole subject was either. The panel arm of all three walks is `pierced` and
+  nothing else now. S4's gate in full: suite green with the rule neutralised
+  before the cut, suite green after it, and the identity injection turning
+  **exactly the same six tests** red before and after, so the self-shadow rule is
+  demonstrably untouched.
 - 🚩 **S3's surface exemption is now unreachable, and its gate is vacuous rather
   than green.** Phase 5b's own account has the numbers: `0` of 720 blamed with the
   rule neutralised, against 480 with the pre-5b cosine restored, and the whole of

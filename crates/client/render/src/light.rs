@@ -1321,37 +1321,14 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
 // half. That strictness is the same sentence [`ON_TOP`] was, spelled in the place
 // the geometry is decided instead of in the ray's start.
 
-/// Whether a lit point lies **on** a surface: its `z` is inside the span that
-/// surface occupies, its two edges included.
-///
-/// What the exemptions are asked, one surface at a time. "A surface does not
-/// shadow itself" needs to know which surface a pixel *is* a point of, and a
-/// tile of a two-storey house holds a wall for each storey: `0..20` and
-/// `20..40`, two surfaces, and a pixel at `z 25` is on the second. The first is
-/// under its feet and occludes it exactly as anybody else's wall would.
-///
-/// Inclusive at both ends on purpose: a wall's base is the ground it stands on
-/// and its top is the cap somebody's floor pixel is lying on, and a pixel is a
-/// point of the surface it is drawn from at both.
-///
-/// **And exact.** It was inclusive by [`ON_TOP`] — the tolerance was the nudge
-/// `stand_clear` gave the point, handed back here so that a pixel of a wall's top
-/// cap, drawn at exactly the wall's own `top` and then lifted a hair above it,
-/// still read as a point of its own wall. Phase 4 deleted the nudge, so there is
-/// nothing left to give back and no tolerance left to argue about: both sides are
-/// exact numbers on the wire.
-///
-/// `low`/`high` are the solid's `z` span and **not** its
-/// [`bottom`](crate::occlusion::Solid::bottom)/`top`, which is
-/// `docs/lighting_height.md` phase 2: each walk hands the span it is entitled to
-/// read — [`walk_cells_exact`] the record's own exact one, [`walk_cells_streaming`]
-/// the one the GPU can reconstruct off the wire — instead of this deciding for
-/// both by rounding.
-///
-/// `blit.wgsl`'s `on_surface`.
-fn on_surface(z: f32, low: f32, high: f32) -> bool {
-    z >= low && z <= high
-}
+// **`on_surface` lived here** and went with its only reader, `same_run` —
+// `docs/occluders.md`'s S4. It asked whether a fragment's `z` lay inside a
+// primitive's own span, inclusively and exactly, and what that answered was
+// "is the lit end at a height this panel occupies at all", the height half of
+// the run mask. Nothing else ever called it: the question a walk asks now is
+// whether a candidate's extent *ends on the fragment's own plane*, which is
+// [`on_the_lit_surface`], and a span read off the wire rather than rounded is
+// held by [`wire_span`] and its own test. `blit.wesl`'s copy went with it.
 
 // **`drawn_on` lived here**, and `docs/lighting_rebuild.md` phase 4 is what
 // retired it. It asked whether a lid was a plane the fragment was *drawn at* the
@@ -1551,45 +1528,29 @@ fn over_footprint(at: [f32; 3], solid: &crate::solid::Solid) -> bool {
         && at[1] <= solid.max.y as f32
 }
 
-/// Which of a cell's sides are **the same wall the lit end is part of**, and
-/// therefore must not shadow it.
-///
-/// `blit.wgsl`'s `own_run` argues it: a wall's face lies *on* the panel it is the
-/// face of, so a ray leaving a wall pixel along the wall grazes the panels of the
-/// tiles either side of it, and whether that counts as a crossing is decided by
-/// the last bits of a float. It drew a thin dark stroke down every tile seam of
-/// any wall lit by a lamp standing near it. A run of wall is one surface and no
-/// part of a surface shadows another part of it.
-///
-/// Only the panels on the *same line*: the same row for a north or south face,
-/// the same column for an east or west one. A wall tile that also carries the
-/// perpendicular face of a corner stops the ray on that face as it always did.
-/// And only where the lit end is at a height the panel occupies at all, which is
-/// what `spot_z` and the span are for.
-///
-/// **`docs/lighting_rebuild.md` phase 4 was to have deleted this, and it does
-/// not.** The plan's reasoning was that identity answers it, and identity cannot:
-/// a run of wall is *N different statics* cut on tile boundaries, so the panel
-/// next along the run is a different solid however exactly a fragment names its
-/// own. Neutralising this function while the bias was zero turned
-/// `light_runs_along_a_wall_and_stops_across_it` and
-/// `the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at` red — measured,
-/// not argued. What would retire it is the *grid* merging a run of coplanar panels
-/// into one solid, which is `docs/lighting_geometry.md`'s question and not this
-/// phase's.
-fn same_run(own: u8, cell: (i32, i32), first: (i32, i32), spot_z: f32, low: f32, high: f32) -> u8 {
-    if !on_surface(spot_z, low, high) {
-        return 0;
-    }
-    let mut line = 0;
-    if cell.1 == first.1 {
-        line |= crate::occlusion::EDGE_NORTH | crate::occlusion::EDGE_SOUTH;
-    }
-    if cell.0 == first.0 {
-        line |= crate::occlusion::EDGE_EAST | crate::occlusion::EDGE_WEST;
-    }
-    own & line
-}
+// **`same_run` stood here, and `docs/occluders.md`'s S4 deleted it.**
+//
+// What it said was that a run of wall is one surface and no part of a surface
+// shadows another part of it — true, and spelled as arithmetic over *cells*: the
+// panels of the same row for a north or south face, of the same column for an
+// east or west one, at a height the panel occupies. It drew that mask out of
+// `own`, the lit face's own edge bit, and the panel arm of both walks skipped a
+// candidate whose sides were all inside it.
+//
+// It is [`on_the_lit_surface`] said less exactly. That rule is a theorem about a
+// box and a plane — a candidate whose extent along the fragment's own normal axis
+// ends on the fragment's own plane lies wholly behind it, so there is nothing
+// there to cross — and it needs no row, no column and no height gate. What kept
+// `same_run` alive for three phases was not a case it covered and the theorem did
+// not: it was that **three fixtures asked the walk about a fragment that was a
+// point of no solid**, so the theorem, which reads the fragment's own box, could
+// never fire and the cell arithmetic was the only thing left. The two spots in
+// `tests/lighting.rs` and `plan::elevation`'s own rows now name their solid, and
+// with them naming it the whole crate is green without this function.
+//
+// Its going is a *narrowing* and not only a tidy-up: the mask excused a tile's
+// **north** panel for a south-facing fragment on the same row, which is a
+// different plane and a real occlusion the theorem correctly keeps.
 
 /// Which axis the plane a lit surface lies in runs across, and which end of a box
 /// that plane is: `true` for a box's `max` corner, `false` for its `min`.
@@ -1654,9 +1615,12 @@ fn lit_plane(surface: Surface) -> Option<(usize, bool)> {
 ///
 /// What it replaces, and each of these is a rule that stood in for it: the walk's
 /// own `lit.solid == Some(id)` wherever the surface names a side (a solid's own
-/// extreme trivially equals itself), and [`same_run`] entirely — a run of wall is
+/// extreme trivially equals itself), and `same_run` entirely — a run of wall is
 /// N statics whose panels share one plane, which is what that function's cell
-/// arithmetic and height gate were approximating. It does **not** replace identity
+/// arithmetic and height gate were approximating. **`same_run` is gone**, and its
+/// grave note above [`lit_plane`] is where its argument is kept:
+/// `docs/occluders.md`'s S4 deleted it once every fixture in the tree could name
+/// the solid a fragment is a point of. It does **not** replace identity
 /// for [`Surface::Upright`], which has no plane at all: a tree's sprite is excused
 /// from its own box by name and by nothing else.
 ///
@@ -1735,7 +1699,7 @@ impl LitEnd {
 // **`ExemptionContext`, `Exemption` and `exemption` lived here**, and
 // `docs/lighting_rebuild.md` phase 4 dissolved all three. What the function did,
 // in the end, was two unrelated things at once — decide whether one solid was
-// exempt from shadowing the ray, and hand back [`same_run`]'s mask beside it —
+// exempt from shadowing the ray, and hand back `same_run`'s mask beside it —
 // and the first of those is now one comparison a walk makes inline:
 //
 //     if lit.solid == Some(id) { continue; }
@@ -3000,8 +2964,8 @@ fn walk_cells_exact(
             // **A lid or a body, not a panel.** A vertical ray is stopped by
             // anything it is inside the footprint of and whose span it crosses,
             // and both of those shapes are one; a *panel* is a plane, and a
-            // vertical ray lying in a wall's own plane is the graze `same_run`
-            // exists for on the main path and has no answer here.
+            // vertical ray lying in a wall's own plane is the graze
+            // `on_the_lit_surface` exists for on the main path and has no answer here.
             //
             // This read `edges != 0` — lids alone — until a fitted climbable's
             // treads became bodies (`occlusion::Builder::add`'s climbable
@@ -3056,10 +3020,6 @@ fn walk_cells_exact(
             false => (1.0 - stopped, None),
         };
     }
-    let own = match lit.surface.face() {
-        Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
-        None => 0,
-    };
 
     struct Hit<'a> {
         stands: &'a crate::occlusion::Solid,
@@ -3161,7 +3121,6 @@ fn walk_cells_exact(
             if entered == 0.0 && leaves == 0.0 {
                 continue;
             }
-            let same_run = same_run(own, cell, first, from[2], low, high);
             let middle = (entered + leaves) * 0.5;
             let opacity = f32::from(stands.opacity) / 255.0;
             let by_surface = match stands.edges {
@@ -3213,17 +3172,20 @@ fn walk_cells_exact(
                 // penumbra a point flame does not cast. See `docs/
                 // lighting_raymarch.md`'s "hard shadows" decision.
                 EDGE_ANY => opacity,
-                edges => {
-                    if edges & !same_run == 0 {
-                        0.0
-                    } else {
-                        let cross = [
-                            from[0] + delta[0] * middle,
-                            from[1] + delta[1] * middle,
-                            from[2] + delta[2] * middle,
-                        ];
-                        opacity * pierced(stands, cross)
-                    }
+                // A panel: a named side, and what stops the ray is whether it
+                // crossed the plane *inside* the panel's own drawn extent —
+                // `pierced`, and its hole. There was a gate before it,
+                // `edges & !same_run == 0`, and `docs/occluders.md`'s S4 is where
+                // it went: the exemption it spelled is `on_the_lit_surface`'s,
+                // stated about the fragment's own plane instead of about a row of
+                // cells, and it is applied above with the rest of them.
+                _ => {
+                    let cross = [
+                        from[0] + delta[0] * middle,
+                        from[1] + delta[1] * middle,
+                        from[2] + delta[2] * middle,
+                    ];
+                    opacity * pierced(stands, cross)
                 }
             };
             if by_surface > stopped {
@@ -3385,8 +3347,8 @@ fn walk_cells_streaming(
             // **A lid or a body, not a panel.** A vertical ray is stopped by
             // anything it is inside the footprint of and whose span it crosses,
             // and both of those shapes are one; a *panel* is a plane, and a
-            // vertical ray lying in a wall's own plane is the graze `same_run`
-            // exists for on the main path and has no answer here.
+            // vertical ray lying in a wall's own plane is the graze
+            // `on_the_lit_surface` exists for on the main path and has no answer here.
             //
             // This read `edges != 0` — lids alone — until a fitted climbable's
             // treads became bodies (`occlusion::Builder::add`'s climbable
@@ -3430,10 +3392,6 @@ fn walk_cells_streaming(
             false => (1.0 - stopped, None),
         };
     }
-    let own = match lit.surface.face() {
-        Some(face) => crate::occlusion::edges_of(Some(crate::facing::Facing::One(face))),
-        None => 0,
-    };
 
     let toward = (
         if delta[0] >= 0.0 { 1 } else { -1 },
@@ -3497,7 +3455,6 @@ fn walk_cells_streaming(
             if entered == 0.0 && leaves == 0.0 {
                 continue;
             }
-            let same_run = same_run(own, cell, first, from[2], low, high);
             let middle = (entered + leaves) * 0.5;
             let opacity = f32::from(stands.opacity) / 255.0;
             let by_surface = match stands.edges {
@@ -3531,17 +3488,20 @@ fn walk_cells_streaming(
                 // crossing, so occlusion is the body's own opacity. See
                 // `docs/lighting_raymarch.md`'s "hard shadows" decision.
                 EDGE_ANY => opacity,
-                edges => {
-                    if edges & !same_run == 0 {
-                        0.0
-                    } else {
-                        let cross = [
-                            from[0] + delta[0] * middle,
-                            from[1] + delta[1] * middle,
-                            from[2] + delta[2] * middle,
-                        ];
-                        opacity * pierced(stands, cross)
-                    }
+                // A panel: a named side, and what stops the ray is whether it
+                // crossed the plane *inside* the panel's own drawn extent —
+                // `pierced`, and its hole. There was a gate before it,
+                // `edges & !same_run == 0`, and `docs/occluders.md`'s S4 is where
+                // it went: the exemption it spelled is `on_the_lit_surface`'s,
+                // stated about the fragment's own plane instead of about a row of
+                // cells, and it is applied above with the rest of them.
+                _ => {
+                    let cross = [
+                        from[0] + delta[0] * middle,
+                        from[1] + delta[1] * middle,
+                        from[2] + delta[2] * middle,
+                    ];
+                    opacity * pierced(stands, cross)
                 }
             };
             if by_surface > stopped {
@@ -4049,61 +4009,38 @@ mod tests {
         assert_eq!(pierced(&windowed, [0.9, 0.0, 10.0]), 1.0);
     }
 
-    /// [`same_run`]'s bitmask logic, exhaustively over its four shapes: same
-    /// row, same column, neither, and `first` itself (both at once) — the
-    /// whole of its finite domain in the two facts that matter (row and
-    /// column), so this is exhaustive rather than a sample.
-    ///
-    /// The span is the lit end's own and the height is inside it, so that what is
-    /// under test is the *line*: the height gate is the assertion below this one.
-    #[test]
-    fn same_run_keeps_only_the_sides_on_the_same_row_or_column_as_the_start() {
-        let own = crate::occlusion::EDGE_NORTH | crate::occlusion::EDGE_EAST;
-        let first = (5, 5);
-        let run = |cell| same_run(own, cell, first, 10.0, 0.0, 20.0);
-        assert_eq!(run((8, 5)), crate::occlusion::EDGE_NORTH);
-        assert_eq!(run((5, 9)), crate::occlusion::EDGE_EAST);
-        assert_eq!(run((8, 9)), 0);
-        assert_eq!(run(first), own);
-
-        // And the height gate the mask is behind: a lit end nowhere near the
-        // panel's own span is in no run of it, whatever line it stands on.
-        assert_eq!(same_run(own, first, first, 30.0, 0.0, 20.0), 0);
-    }
+    // **`same_run_keeps_only_the_sides_on_the_same_row_or_column_as_the_start`
+    // lived here** and went with the function it was exhaustive over —
+    // `docs/occluders.md`'s S4. It was the only thing in the crate that went red
+    // when `same_run` was neutralised, which is what said the rule had no case of
+    // its own left; see the note at its grave above `lit_plane`.
 
     // **`stand_clear_nudges_only_along_a_faces_own_outward_normal` lived here**
     // and went with the nudge it was about: `docs/lighting_rebuild.md` phase 4
     // took the bias to zero, and a test whose whole subject is which axis a
     // constant moves a ray along does not survive the constant.
 
-    /// [`on_surface`]'s own inclusiveness, at both ends and **exactly** — a
-    /// fragment at a wall's own `top` is a point of that wall, and one a
-    /// hairsbreadth above it is not.
-    ///
-    /// It was inclusive by `ON_TOP` until phase 4, which is the tolerance
-    /// `stand_clear` gave the point and had to be given back here; with the nudge
-    /// gone there is nothing to give back, and the third and fourth assertions
-    /// below are the pair that says so.
-    #[test]
-    fn on_surface_is_inclusive_of_both_ends_and_exact() {
-        let wall = test_solid(0, 20, crate::occlusion::EDGE_NORTH);
-        let (low, high) = (wall.low(), wall.high());
-        assert!(on_surface(0.0, low, high));
-        assert!(on_surface(20.0, low, high));
-        assert!(!on_surface(20.0 + 1.0 / 128.0, low, high));
-        assert!(!on_surface(-1.0 / 128.0, low, high));
-    }
+    // **`on_surface_is_inclusive_of_both_ends_and_exact` lived here** and went
+    // with `on_surface`, `docs/occluders.md`'s S4. Its whole subject was that
+    // predicate's two ends, and there is no predicate left to be inclusive: what
+    // asks whether a fragment belongs to a primitive is now the primitive's own
+    // name (`Spot::part_of`) and the plane test beside it.
 
-    /// And that the span it is inclusive of is the caller's own, fraction
-    /// included — `docs/lighting_height.md` phase 2's whole point on this side.
+    /// A primitive's `z` span is the caller's own, fraction included —
+    /// `docs/lighting_height.md` phase 2's whole point on this side.
     ///
     /// A box based half a unit up is the case the plan's control scene
     /// (`OPENSHARD_TREE_H1=3.5`) is made of: rounded to `4`, the bottom half
     /// unit of the box's own faces reads as *below* the box, and every rule that
     /// asks whether a fragment belongs to the thing it was drawn from answers
     /// no for it.
+    ///
+    /// It read the span through `on_surface` until S4 deleted that predicate.
+    /// The claim never was the predicate's: it is that `Solid::low`/`high` and
+    /// [`wire_span`] both answer `3.5` where `bottom()`'s rounding answers `4`,
+    /// and both halves are asserted below, exactly.
     #[test]
-    fn on_surface_reads_a_fractional_span_and_not_a_rounded_one() {
+    fn a_primitives_span_is_its_own_fraction_and_not_a_rounded_one() {
         let box_at_half = crate::occlusion::Solid {
             space: crate::solid::Solid {
                 min: crate::camera::WorldSpot {
@@ -4124,15 +4061,12 @@ mod tests {
             owner: crate::occlusion::Owner::new(3, openshard_protocol::wire::Graphic(0)),
             part: crate::occlusion::Part::ONLY,
         };
-        let (low, high) = (box_at_half.low(), box_at_half.high());
-        assert_eq!((low, high), (3.5, 6.5));
-        assert!(
-            on_surface(3.6, low, high),
-            "a fragment of the box's own face, a tenth of a unit up it"
-        );
-        assert!(
-            !on_surface(3.4, low, high),
-            "and one below the box entirely, which `bottom()`'s own rounding to 4 could not tell apart"
+        assert_eq!(
+            (box_at_half.low(), box_at_half.high()),
+            (3.5, 6.5),
+            "the span is rounded, so a fragment a tenth of a unit up the box's own \
+             face reads as below it — which is what `bottom()`'s own `4` cannot tell \
+             apart from a fragment that really is",
         );
         // And the same span off the wire, which is what the GPU reads. A half
         // is a whole number of `Solid::Z_STEPS`, so this is exact rather than
@@ -4786,8 +4720,11 @@ mod tests {
     /// fragment that is a point of nothing must be exempt from nothing, and this
     /// fixture cannot show it: a flat fragment's own solid is a *lid*, and
     /// `crosses`'s strictness already answers a ray leaving a plane exactly as no
-    /// crossing at all; a face fragment's own solid is a *panel*, and [`same_run`]
-    /// masks its own cell's side whatever the fragment carries. What does show it
+    /// crossing at all; a face fragment's own solid is a *panel*, and `same_run`
+    /// masked its own cell's side whatever the fragment carried — that rule is gone
+    /// with S4, and what stands in its place ([`on_the_lit_surface`]) reads the
+    /// fragment's own box, so it too answers nothing for a fragment that has none.
+    /// What does show it
     /// is `tests/lighting.rs`'s `the_face_of_a_wall_is_lit_from_inside_the_room`
     /// and `a_carried_light_lights_the_way_it_is_pointed`, both of which go red
     /// with the comparison forced to `false` — checked by injecting exactly that.
