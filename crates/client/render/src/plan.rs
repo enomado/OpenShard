@@ -36,6 +36,34 @@ use crate::facing::Face;
 use crate::light::Lighting;
 use crate::occlusion::{self, Cell};
 
+/// One instance row an instrument built, and what it claimed about the world.
+///
+/// **A picture cannot be asked what attachment it was drawn from**, and that is
+/// not a theoretical gap: [`elevation`] stamped
+/// [`occlusion::OwnerId::NONE`] into every row it built for three phases, with
+/// two green tests drawn through it the whole time, because the one field that
+/// was wrong is the one no pixel shows. `docs/lighting_rebuild.md`'s backlog
+/// asks for a gate on it, and a gate needs the claim in a form it can read.
+///
+/// One of these per row [`drawn`] builds — that is, one per distinct tile of
+/// each kind, keyed by first sight, which is exactly what a world pass would
+/// have uploaded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Named {
+    /// The tile the row is for.
+    pub tile: (u16, u16),
+    /// Which pass's row it is: [`crate::place::Kind::Static`] for a face row,
+    /// [`crate::place::Kind::Land`] for a ground one. Nothing else has a row
+    /// here — see [`drawn`], where a kind with no instance buffer takes row
+    /// zero and is never named.
+    pub kind: crate::place::Kind,
+    /// **Which occluder of that tile the row named**, straight out of the grid
+    /// — or [`occlusion::OwnerId::NONE`] for a surface that is a point of no
+    /// occluder, which is the ground's honest answer and was the elevation's
+    /// wrong one.
+    pub owner: occlusion::OwnerId,
+}
+
 /// One drawn plan, and what it was drawn of.
 ///
 /// RGBA rows, top-left first, `width * 4` bytes each — the layout the readback
@@ -52,6 +80,12 @@ pub struct Picture {
     pub height: u32,
     /// The pixels, RGBA8.
     pub pixels: Vec<u8>,
+    /// The instance rows the pixels were drawn from — see [`Named`].
+    ///
+    /// Carried rather than discarded because it is the only place an
+    /// instrument's claim about the world is stated, and a picture is not one:
+    /// `tests/attachment.rs` compares these against the grid.
+    pub named: Vec<Named>,
 }
 
 impl Picture {
@@ -282,12 +316,20 @@ pub fn draw(
     // through `Place` because there is no quad and no instance — this is the
     // attachment a world pass *would* have written for a floor covering
     // everything.
-    // A plan view is all ground, and the ground is a point of no occluder — the
-    // same answer `ground.rs` gives a real frame's `GroundQuad`, not an absence
-    // this instrument is skipping over. `drawn` never asks it here: no fragment
-    // below is a `Kind::Static`.
-    let owner_of = |_| crate::occlusion::OwnerId::NONE;
-    let pixels = drawn(
+    // A plan view is all ground, and `drawn` asks this only where it builds a
+    // *face* row — so on this instrument it is never asked at all, and the
+    // closure says so by refusing rather than by answering
+    // [`crate::occlusion::OwnerId::NONE`].
+    //
+    // It answered `NONE` until this line, and that is the shape of the defect
+    // `elevation` shipped for three phases: a constant that is right only
+    // because nothing reads it, and that goes on being returned the day
+    // something does. A plan view that grew a static would then be drawing a
+    // fragment that is a point of nothing — silently, since no pixel shows the
+    // field. This way it stops, and whoever added the static says what it is a
+    // point of.
+    let owner_of = |tile| unreachable!("a plan view drew a static on {tile:?} and named no owner");
+    let (pixels, named) = drawn(
         device,
         queue,
         lighting,
@@ -323,6 +365,7 @@ pub fn draw(
         width,
         height,
         pixels,
+        named,
     }
 }
 
@@ -371,7 +414,7 @@ pub fn elevation(
             .occlusion
             .owner_at(i32::from(tile.0), i32::from(tile.1), wall.of.z, wall.of.graphic)
     };
-    let pixels = drawn(
+    let (pixels, named) = drawn(
         device,
         queue,
         lighting,
@@ -445,6 +488,7 @@ pub fn elevation(
         width,
         height,
         pixels,
+        named,
     }
 }
 
@@ -484,6 +528,10 @@ pub struct Wall {
 ///
 /// `size` is the picture's, as one pair: the two are never chosen apart, and
 /// splitting them was what put this over clippy's argument count.
+///
+/// Back come the pixels **and the rows they were drawn from** — [`Named`], one
+/// per row this builds, which is the only statement of what the instrument
+/// claimed about the world and the thing `tests/attachment.rs` gates.
 fn drawn(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -492,7 +540,7 @@ fn drawn(
     size: (u32, u32),
     owner_of: impl Fn((u16, u16)) -> crate::occlusion::OwnerId,
     place_of: impl Fn(u32, u32) -> crate::gbuffer::Fragment,
-) -> Vec<u8> {
+) -> (Vec<u8>, Vec<Named>) {
     let (width, height) = size;
     let world = crate::blit::world_texture(device, width, height);
     let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
@@ -524,6 +572,9 @@ fn drawn(
     let mut ground_ids: std::collections::HashMap<(u16, u16), u32> = std::collections::HashMap::new();
     let mut ground_rows: Vec<u8> = Vec::new();
     let mut ids: Vec<u32> = Vec::with_capacity(fragments.len());
+    // What each of those rows said about the world, in the order they were
+    // built. The picture carries it out — see [`Named`].
+    let mut named: Vec<Named> = Vec::new();
     for fragment in &fragments {
         let tile = fragment.tile;
         // A kind with no instance buffer of its own here takes row zero and
@@ -533,6 +584,12 @@ fn drawn(
             // `Kind::Static` — [`elevation`]'s pixels, never [`draw`]'s.
             crate::place::Kind::Static => *face_ids.entry(tile).or_insert_with(|| {
                 let id = (face_rows.len() as u64 / crate::sprite::SpriteQuad::STRIDE) as u32;
+                let owner = owner_of(tile);
+                named.push(Named {
+                    tile,
+                    kind: crate::place::Kind::Static,
+                    owner,
+                });
                 crate::sprite::SpriteQuad {
                     rect: crate::geometry::Rect {
                         x: 0.0,
@@ -557,7 +614,7 @@ fn drawn(
                     // **Which occluder of this tile the picture is of**, from the
                     // caller — see [`elevation`]'s `owner_of`, and the comment
                     // there for what this said before and what it cost.
-                    owner: u32::from(owner_of(tile).raw()),
+                    owner: u32::from(owner.raw()),
                     volumes: crate::impostor::Range::default(),
                 }
                 .write(&mut face_rows);
@@ -566,6 +623,17 @@ fn drawn(
             // `Kind::Land` — [`draw`]'s pixels, never [`elevation`]'s.
             crate::place::Kind::Land => *ground_ids.entry(tile).or_insert_with(|| {
                 let id = (ground_rows.len() as u64 / crate::ground::GroundQuad::STRIDE) as u32;
+                // A [`crate::ground::GroundQuad`] has no owner field at all, and
+                // that is the honest exception rather than a fourth place a
+                // number could be forgotten: `occlusion::Builder` is only ever
+                // handed statics and ground items — see `occlusion::place` — so
+                // no land tile is ever a solid, and a field that could only hold
+                // `NONE` is a field a later writer could get wrong.
+                named.push(Named {
+                    tile,
+                    kind: crate::place::Kind::Land,
+                    owner: crate::occlusion::OwnerId::NONE,
+                });
                 crate::ground::GroundQuad {
                     x: 0.0,
                     y: 0.0,
@@ -713,7 +781,7 @@ fn drawn(
         &lighting,
     );
     queue.submit([encoder.finish()]);
-    read_back(device, queue, &surface, width, height)
+    (read_back(device, queue, &surface, width, height), named)
 }
 
 /// An RGBA8 texture, as rows with the copy's padding taken off.

@@ -448,7 +448,13 @@ pub fn wall_run_lit_from_along_it() -> Scene {
 /// and a hand-drawn parallelogram is the projection and nothing else — so what a
 /// scene using it demonstrates is the grid's edge mask, with the art table's own
 /// coverage taken out of the question. See [`crate::facing`].
-fn south_faced_wall() -> StaticAtlas {
+/// `pub` for `tests/attachment.rs`, which needs pictures for a scene that
+/// carries none: a scene's `art` decides what its occluders *are* — a faced
+/// panel or the whole tile — so a test that wants both a faced wall and some
+/// other scene's arrangement has to bring the atlas rather than change the
+/// scene's own, and bringing a second copy of this would be a second
+/// arrangement to keep in step.
+pub fn south_faced_wall() -> StaticAtlas {
     StaticAtlas::pack([(
         WALL,
         crate::facing::silhouette(crate::facing::Face::South, WALL_HEIGHT.into()),

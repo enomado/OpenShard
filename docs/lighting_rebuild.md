@@ -1600,23 +1600,53 @@ still wanted.
 
 Things noticed while writing this, not blocking any phase:
 
-- 🚩 **Nothing gates that an instrument writes what a world pass writes, and the
-  field it got wrong is the one no picture shows.** `plan::elevation` stamped
-  `OwnerId::NONE` into every row it built for three phases, and the two wall tests
-  drawn through it went on passing the whole time — because `same_run` covered for
-  the exemption the missing owner made unreachable. What would have caught it is
-  a claim nobody states: *a fragment of a static this frame's grid holds names the
-  solid the grid holds it as.* The tree has the shape for it — `traced.rs`'s
-  `a_face_fragments_own_plane_is_the_primitives_own_number` is that assertion about
-  a fragment's **plane** — and `plan.rs` is not the only writer of a place
-  attachment outside the world pass: `text.rs`, `gump.rs` and `mobiles.rs` write
-  `OwnerId::NONE` too, honestly (a glyph and a mobile are points of no occluder),
-  which is exactly why a reader cannot tell an honest `NONE` from a forgotten one
-  by looking. Worth one test that renders a known static through each instrument
-  and asserts the row's owner against `Occlusion::owner_at`. Two questions to
-  answer while writing it: whether `Kind` is enough to say which writers *must*
-  name one, and whether the ground's `GroundQuad` — which carries no owner field
-  at all — is the honest exception or the third missing measurement.
+- ~~🚩 **Nothing gates that an instrument writes what a world pass writes, and the
+  field it got wrong is the one no picture shows.**~~ **Built: `tests/attachment.rs`,
+  three tests, each fault-injected to red.** The claim it states is the one nobody
+  did — *a row that draws a static this frame's grid holds names the occluder the
+  grid holds it as* — and what made it statable is that a `plan::Picture` now
+  carries the rows it was drawn from (`plan::Named`). A picture could not be asked
+  what attachment it came from, which is exactly how `plan::elevation` stamped
+  `OwnerId::NONE` into every row for three phases with two green tests over it.
+
+  **The world-pass half is a round trip and not an equality.** `items::collect`
+  calls `owner_at` itself, so comparing its row against `owner_at` would be the
+  code agreeing with itself; the gate goes the other way instead — take the number
+  the row carries, look it up in the grid's own list for that tile, and require the
+  solid it lands on to be the very static that was drawn. That is only *reachable*
+  on a tile holding two occluders, since on a one-solid tile every number in range
+  resolves to the same static. So the fixture is two scenes: the wall run, and
+  `storey_over_a_torch`, whose ring tiles carry a wall at `z 0` and another at
+  `z WALL_HEIGHT`. The test counts both — rows examined, and rows on an ambiguous
+  tile — because a census that examined nothing passes.
+
+  **The two questions, answered.** *`Kind` is enough* to say which writers must
+  ask, among the passes that write a G-buffer: `Kind::Static` is exactly that set.
+  The two passes that write `Kind::Static` beside a bare `NONE` — `statics::selected`
+  and `items::outlined` — are out of the claim rather than exceptions to it, because
+  the silhouette pipeline's vertex layout declares no `place` attribute at all
+  (`renderer.rs`: *"a silhouette has no hue and no place"*), and a row that reaches
+  no attachment cannot be wrong about one. And the ground's `GroundQuad` is the
+  **honest exception**: `occlusion::place` is only ever handed statics and ground
+  items, so no land tile is ever a solid, and an owner field there could only ever
+  hold `NONE` — which is a field a later writer gets wrong for free.
+
+  🔴 **And a third instrument was carrying the defect's shape, unread.**
+  `plan::draw`'s `owner_of` was a constant `OwnerId::NONE`, correct only because
+  `drawn` asks for an owner where it builds a *face* row and a plan view builds
+  none. That is the same sentence as the bug that shipped: a constant that is right
+  until something reads it, in a field no pixel shows. It is `unreachable!` now, so
+  a plan view that grows a static stops instead of quietly drawing a fragment that
+  is a point of nothing. Found by the injection that failed to go red — the first
+  version of the plan-view test asserted `owner == NONE` and was a tautology
+  against a hardcoded constant.
+
+  **Still not gated, and named so it is not assumed:** `MeshFaceRow::solid`, the
+  mesh half of the same join. No built scene has a climbable — `scene.rs` mentions
+  neither prism nor climbable — so there is no synthetic route through
+  `items::collect` that produces a mesh row at all. It wants a scene before it can
+  want a test. `mobiles.rs`, `text.rs` and `gump.rs` are unasserted on purpose:
+  their `NONE` is honest by kind, and the claim above does not reach them.
 - 🚩 **The impostor's *normal* is the whole of what 6c did to a sprite's
   shading, and it was measured by injection rather than argued.** A person
   reported a static reading darker and striped where it used to be even, and
