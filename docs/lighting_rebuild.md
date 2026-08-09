@@ -318,7 +318,7 @@ table being stale.
 | 5 | area lights | ✅ landed | — |
 | 5b | a flame has no centre | ✅ landed | — |
 | 6 | the impostor | 🚧 6a and 6c landed | **6d** (the mesh pass off real statics, and its colour target); a corner's two panels still told apart by the **screen half**; `own_solid` still scanning a cell; and the phase's own second number — how far a real static's art overhangs its prism — still untaken |
-| 6e | the grid stops being a rule | 🚧 [`occluders.md`](occluders.md) | S1–S3 landed, S4 half done, S5 and S3b to come — that document's own table is the record |
+| 6e | the grid stops being a rule | 🚧 [`occluders.md`](occluders.md) | S1–S5 landed — the grid is out of the walk on **both** backends, which is the rule this phase is named for. **S3b**, the merge, is what is left, and it is a pure optimisation since 5b took its cure away. That document's own table is the record |
 | 7 | billboards | 🚧 the position half landed | the **normal**, and its *done when* is a person looking at a lit frame |
 | 8 | the sun | ⬜ not started | all of it |
 
