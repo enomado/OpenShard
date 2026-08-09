@@ -100,6 +100,7 @@
 //! than how big it is.
 
 pub mod bake;
+pub mod bvh;
 
 use openshard_protocol::wire::Graphic;
 
@@ -1357,6 +1358,15 @@ pub struct Occlusion {
     /// Every solid in the frame, in the order [`Occlusion::primitive_bytes`]
     /// uploads and [`SolidId`] names.
     solids: Vec<Solid>,
+    /// The broad phase over those solids — `docs/occluders.md`'s D3, and what
+    /// replaces the grid above as the thing a ray asks "what might I meet".
+    ///
+    /// Beside the index rather than instead of it, and that is not a transition
+    /// state: the grid keeps the job it is good at, which is answering about a
+    /// *tile* — [`Occlusion::at`]'s merged view, [`Occlusion::owner_at`]'s join,
+    /// the wireframe, the plan view. What moves to the tree is the **walk**,
+    /// whose question was never about tiles at all.
+    bvh: bvh::Bvh,
     /// How much of the sky each tile can see, in the same order as the index —
     /// see this module's header and [`Occlusion::sky_at`].
     ///
@@ -1384,6 +1394,7 @@ impl Occlusion {
         ids: Vec::new(),
         owners: Vec::new(),
         solids: Vec::new(),
+        bvh: bvh::Bvh::EMPTY,
         sky: Vec::new(),
         dropped: 0,
     };
@@ -1491,6 +1502,17 @@ impl Occlusion {
     /// a cost to apologise for.
     pub fn solids(&self) -> &[Solid] {
         &self.solids
+    }
+
+    /// The broad phase over those solids — see [`Occlusion::bvh`] and
+    /// `docs/occluders.md`'s D3.
+    ///
+    /// The **structure** and not an answer: what a ray meets is the walk's
+    /// business, and the walk is what traverses this. D4 is that a traversal
+    /// hands back a superset and the answer is the per-primitive rules over it,
+    /// so nothing here may decide anything about light.
+    pub fn bvh(&self) -> &bvh::Bvh {
+        &self.bvh
     }
 
     /// Which occluder of `(x, y)` the static standing at `z` with graphic
@@ -2246,12 +2268,18 @@ impl Builder {
             });
         }
         let ids = (0..solids.len() as u32).map(SolidId::new).collect();
+        // **Built here and never after**, for the same reason the tile index is:
+        // what comes out of a builder is a list nothing appends to, and a
+        // hierarchy over a list that could still grow would be a tree that is
+        // right about a prefix of the frame.
+        let bvh = bvh::Bvh::of(&solids);
         Occlusion {
             bounds: self.bounds,
             index,
             ids,
             owners,
             solids,
+            bvh,
             sky: self.sky,
             dropped: self.dropped,
         }
