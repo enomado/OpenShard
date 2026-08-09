@@ -57,7 +57,9 @@ the storage. Three consequences, each already seen in a frame:
    a run is N solids. `starting_cell` exists because a fragment's position and
    its instance's tile can disagree. The vertical shortcut reads one cell. The
    per-cell `max` exists because two panels of one corner are two boxes of one
-   wall. Four rules, all standing in for a shape that is not stated.
+   wall. Four rules, all standing in for a shape that is not stated. **Two are
+   gone at S4** — `same_run` and the vertical shortcut — and neither went by the
+   merge or the hierarchy this plan expected to retire it.
 
    **And for a *body* not even that** — a correction to this list, measured after
    it was written. `same_run` is a run of **panels** along a row or column; the
@@ -753,16 +755,84 @@ a_point_of`, `a_vertical_ray_is_not_stopped_by_lids_it_is_not_over`,
 `a_carried_light_lights_the_way_it_is_pointed`,
 `the_face_of_a_wall_is_lit_from_inside_the_room` and both path-tracer gates), the
 per-cell `max` (🔴 **measured 2026-08-09, and it does not land on this
-measurement** — see below), the vertical
-shortcut (a hierarchy has no reason for a special case, and
-this removes a branch that has twice had to grow a footprint gate to stop being a
-different answer), and `starting_cell` with `first` (nothing left reads a cell).
+measurement** — see below), ~~the vertical
+shortcut~~ ✅ **deleted 2026-08-09, and it was a live defect and not only a
+branch** — see below, and the licence was a census rather than a green suite —
+and `starting_cell` with `first` (nothing left reads a cell).
 
 *Gate:* each deletion is preceded by neutralising the rule and finding the suite
 green, and followed by the brute-force oracle staying equal. The three tests that
 phase 4 found go red when identity is neutralised must stay red under that
 injection — the self-shadow rule is **not** part of this and must not be
 weakened by the merge.
+
+### ✅ The vertical shortcut: **entered zero times, and wrong when entered**
+
+Deleted from `light.rs`'s two walks and from `blit.wesl`, with `over_footprint`
+— [`ray_vs_solid`]'s two horizontal axes spelled again, and a function the
+shortcut was the only reader of — and the `ground` parameter `cell_stopped`
+had stopped using. `dda_walk` answers a ray with no horizontal run with exactly
+the one starting cell the branch returned by hand, so **which** cells are looked
+at did not change.
+
+**What did change is which shapes count, and there the branch was a defect.** It
+skipped every **panel** outright, on the argument that a panel is a plane and a
+vertical ray lying in a wall's own plane is a graze it had no rule for. Two
+things were wrong with that. It has had a rule since S3 — `on_the_lit_surface`
+is called inside the branch too — and a panel is not a plane in the grid: it is
+a `PANEL_THICKNESS`-deep slab a fragment can stand inside and a ray can run the
+whole height of. Measured: a fragment inside a wall's own thickness, lit from
+twenty `z` straight overhead, was handed **the full flame** by both walks and by
+the shader.
+
+**The licence is a census, and the census is what makes this step honest.**
+Instrumented — both answers computed for every straight-up ray, printed — the
+whole crate enters the branch **zero times**. Not "agrees everywhere": never
+runs. The reason is `docs/lighting_rebuild.md`'s phase 5: a flame is a sphere and
+`light::flame_points` lays its samples at `sqrt((i + 0.5) / n)` of the radius, so
+**no sample is the centre** and a flame directly overhead is eight rays each
+leaning a `FLAME_RADIUS` out of the vertical. `walk_sun` answers an overhead sun
+before any walk starts. So the branch has been unreachable in the shipped
+renderer since phase 5, and the only configuration that still reaches it is
+`flame_radius = 0` — the `OPENSHARD_FLAME_RADIUS` knob.
+
+**Both tests named for the vertical case had stopped sending a vertical ray, and
+went on passing.** `light::a_vertical_ray_is_not_stopped_by_lids_it_is_not_over`
+and `frame.rs`'s `the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_
+under` were written before phase 5 and were measuring the ordinary walk
+afterwards. Both set `flame_radius` to `0.0` now and both carry a **positive
+control** — every point `flame_points` returns must have the fragment's own `x`
+and `y` — so a fixture that stops reaching its own subject fails instead of
+passing for the wrong reason. This is the per-cell `max`'s lesson one step on: a
+detector must count what it checked, and a *gate* must show that it reached what
+it is about.
+
+*Gates, both fault-injected to red in the session that trusts them:*
+
+- `tests/lighting.rs`'s `a_vertical_ray_meets_what_stands_over_it_whatever_shape_
+  it_is` — a lid, a body and a panel over one fragment, the two CPU walks against
+  `segment_inside_box` over every primitive in the frame. With the shortcut
+  restored as the answer it reports the panel at `1.000` where the geometry says
+  `0`.
+- `frame.rs`'s `the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside`
+  — the shader's own third, which nothing else reaches: the last pixel down a
+  tile sits at `112/127` of it, inside a south panel's slab, and the control is
+  the same pixel with the wall taken out of the grid. With the branch pasted back
+  into `blit.wesl` it reads **230 against 230** — the wall makes no difference at
+  all.
+- The identity injection turns **exactly the same six tests** red as S4's own
+  record lists for before the cut, so the self-shadow rule is demonstrably
+  untouched.
+
+⚠ **And the oracle lied first, which is the finding worth keeping.** The exact
+oracle was first written as "some primitive takes a *positive length* of the
+ray", and a **lid is a box flat in `z`** — no segment ever spends a positive
+length inside one. It answered "open" for a fragment squarely under a plank and
+would have convicted both walks of a defect they do not have. Crossing a surface
+is a plane crossing and not an interval; `enter < 1 && leave > 0` — the primitive
+meets the *open* segment — is the one statement that covers a slab and a plane
+alike. Same shape as the corner graze in § *The oracle*: an oracle arbitrates, so
+a wrong one convicts the walk that was right.
 
 ### 🔴 The per-cell `max`: the suite is **blind** to it, not indifferent
 

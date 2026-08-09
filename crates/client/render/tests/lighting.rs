@@ -2100,6 +2100,168 @@ fn segment_inside_box(from: [f64; 3], to: [f64; 3], min: [f64; 3], max: [f64; 3]
     Some((enter, leave))
 }
 
+/// **A ray straight up is answered by what stands over it, whatever shape that
+/// is** — `docs/occluders.md`'s S4, the vertical shortcut.
+///
+/// Both walks took a branch of their own for a ray with no horizontal run, on the
+/// argument that there is no direction to step in so only the one cell can hold
+/// anything. That much is true. What the branch also did was **decide which
+/// shapes count**: it skipped every panel outright, because a panel is a plane
+/// and a vertical ray lying in a wall's own plane was a graze the branch had no
+/// rule for. It has had one since S3 — `on_the_lit_surface` is called there too —
+/// and a panel is not a plane in the grid, it is a
+/// [`occlusion::PANEL_THICKNESS`]-deep slab a ray can stand inside and run the
+/// whole height of.
+///
+/// So this is the case the two answers differ on, and it is the reason the
+/// deletion is a fix rather than a tidy-up: a fragment inside a wall's own
+/// thickness, lit from straight overhead, is behind twenty `z` of wall and the
+/// shortcut hands it the full flame.
+///
+/// **The oracle is [`segment_inside_box`] over every primitive in the frame** —
+/// exact, in `f64`, sharing nothing with either walk — and the claim is
+/// geometric rather than a restatement of the walk's rules: a ray is blocked when
+/// some primitive it is not a point of meets the **open** segment, both ends
+/// excluded. The fragment is a point of nothing here, so identity and D2 have
+/// nothing to say and the comparison is about the shapes alone.
+///
+/// ⚠ **The first spelling of that criterion was "takes a positive length of the
+/// ray", and it was blind to every floor in the world.** A lid is a box flat in
+/// `z` — `min.z == max.z` — so no segment ever spends a positive length inside
+/// one, and the oracle answered "open" for a fragment squarely under a plank
+/// while both walks correctly said otherwise. Crossing a *surface* is a plane
+/// crossing and not an interval, and `enter < 1 && leave > 0` is the one
+/// statement that covers a slab and a plane alike. Kept written down because an
+/// oracle arbitrates: this one would have convicted both walks of a defect they
+/// do not have, which is the same shape as the corner graze `docs/occluders.md`
+/// § *The oracle* was written from.
+///
+/// **`flame_radius` is `0.0` and the control says why.** A flame is a sphere
+/// since phase 5 and `light::flame_points` puts no sample at its centre, so a
+/// flame directly overhead sends eight rays that lean out of the vertical and
+/// nothing reaches this branch at all. Measured 2026-08-09: the whole crate
+/// enters it zero times.
+#[test]
+fn a_vertical_ray_meets_what_stands_over_it_whatever_shape_it_is() {
+    use openshard_client_render::camera::TileBounds;
+    use openshard_client_render::facing::{Blocks, Facing};
+    use openshard_client_render::light::{Ambient, Light, ShadowRays};
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    // One tile, and one point of it every ray starts from: inside a south
+    // panel's own slab, which is the `y` a wall on that edge occupies, so that
+    // the same fragment stands under all three shapes in turn.
+    const TILE: (i32, i32) = (100, 100);
+    const AT: (f32, f32) = (100.5, 100.9);
+
+    let scene = |flags: u64, facing: Option<Facing>, base: i8, height: u8| {
+        let mut grid = occlusion::Builder::new(TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        grid.add(
+            TILE.0 as u16,
+            TILE.1 as u16,
+            base,
+            openshard_protocol::wire::Graphic(0),
+            &StaticTile {
+                flags: TileFlags::new(TileFlags::NO_SHOOT | flags),
+                height,
+                ..StaticTile::default()
+            },
+            occlusion::Shape {
+                facing,
+                hole: None,
+                prism: None,
+                blocks: Blocks::EMPTY,
+            },
+        );
+        grid.finish(&Cutaway::OPEN)
+    };
+
+    // A lid ten `z` up, a body spanning five to fifteen, and a panel standing the
+    // whole way — the walk's three arms, one scene each.
+    let shapes = [
+        ("a lid", scene(TileFlags::FLOOR, None, 10, 0)),
+        ("a body", scene(0, None, 5, 10)),
+        ("a panel", scene(0, Some(Facing::One(Face::South)), 0, 20)),
+    ];
+
+    let mut crossed = 0;
+    for (what, grid) in shapes {
+        let flame = (AT.0, AT.1, 20.0);
+        let spot = Spot::at(Vec2::new(AT.0, AT.1), 0.0, TILE);
+        let lighting = Lighting {
+            ambient: Ambient {
+                sky: [0.0, 0.0, 0.0],
+                ground: [0.0, 0.0, 0.0],
+            },
+            lights: vec![Light {
+                at: Vec2::new(flame.0, flame.1),
+                z: flame.2,
+                radius: 40.0,
+                color: [1.0, 1.0, 1.0],
+                intensity: 1.0,
+                beam: None,
+            }],
+            occlusion: grid.clone(),
+            sun: None,
+            view: debug::View::Lit,
+            flame_radius: 0.0,
+            shadow_rays: ShadowRays::DEFAULT,
+        };
+
+        // The positive control: every ray actually walked has no horizontal run.
+        let straight = light::flame_points(spot, [flame.0, flame.1, flame.2], 0.0, ShadowRays::DEFAULT)
+            .iter()
+            .all(|point| point[0] == spot.at.x && point[1] == spot.at.y);
+        assert!(straight, "{what}: the fixture is not sending a vertical ray");
+
+        // What the geometry says, exactly, over every primitive of the frame.
+        let from = [f64::from(AT.0), f64::from(AT.1), 0.0];
+        let to = [f64::from(flame.0), f64::from(flame.1), f64::from(flame.2)];
+        let blocked = grid.solids().iter().any(|solid| {
+            // The oracle's own premises, asserted rather than assumed — the shape
+            // `brute_force_blocked` states about apertures, and for the same
+            // reason: it answers a *binary* question, so a partial occluder or a
+            // hole would make it confidently wrong rather than silently narrow.
+            assert!(
+                solid.aperture.is_none() && solid.opacity == 255,
+                "{what}: this oracle is binary and the fixture is not — opacity \
+                 {}, aperture {:?}",
+                solid.opacity,
+                solid.aperture,
+            );
+            let (min, max) = (solid.space.min, solid.space.max);
+            segment_inside_box(from, to, [min.x, min.y, min.z], [max.x, max.y, max.z])
+                // Strictly between the two ends: a plane crossed at `t` has
+                // `enter == leave` and is a passage, a box touched at the ray's
+                // own start or finish is not. See the doc comment.
+                .is_some_and(|(enter, leave)| enter < 1.0 && leave > 0.0)
+        });
+        crossed += usize::from(blocked);
+
+        let streaming = light::sample(spot, &lighting).reaches[0].through;
+        let exact = light::sample_exact(spot, &lighting).reaches[0].through;
+        let (want, floor, ceiling) = match blocked {
+            true => ("stopped", 0.0, 0.05),
+            false => ("open", 0.95, 1.0),
+        };
+        assert!(
+            (floor..=ceiling).contains(&streaming) && (floor..=ceiling).contains(&exact),
+            "{what} standing over the fragment: the geometry says the ray is {want}, \
+             and the walks answered streaming {streaming:.3}, exact {exact:.3}",
+        );
+    }
+    assert_eq!(
+        crossed, 3,
+        "every one of the three shapes has to actually stand in the ray's way, or \
+         this test agrees with the geometry about nothing",
+    );
+}
+
 /// Whether the straight segment from `from` to `to` passes through any solid
 /// standing between the two tiles the walk itself exempts.
 ///

@@ -1506,27 +1506,44 @@ fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Op
     Some((entered, leaves))
 }
 
-/// Whether a point stands over a solid's own horizontal footprint.
-///
-/// [`ray_vs_solid`]'s parallel-axis branch, on the two horizontal axes alone,
-/// and deliberately the same rule rather than a second one: a segment that does
-/// not move along an axis either sits inside the box's span on that axis for its
-/// whole length or misses the box entirely, and both ends count as inside there
-/// exactly as they do here.
-///
-/// **Why the halves are split** instead of the vertical-ray shortcuts simply
-/// calling [`ray_vs_solid`]: a vertical ray's *height* answer is [`crosses`]'s,
-/// and that one is soft. A flame is a body `spread` deep rather than a point, so
-/// a lid a little past the end of the ray still takes part of it, and a lid the
-/// ray ends exactly on takes half. `ray_vs_solid` answers the same question
-/// hard, and using it whole would erase the penumbra the shortcut's own
-/// [`crosses`] call exists to compute — trading one defect for a visible one.
-fn over_footprint(at: [f32; 3], solid: &crate::solid::Solid) -> bool {
-    at[0] >= solid.min.x as f32
-        && at[0] <= solid.max.x as f32
-        && at[1] >= solid.min.y as f32
-        && at[1] <= solid.max.y as f32
-}
+// **The vertical shortcut stood here, with `over_footprint` its own half, and
+// `docs/occluders.md`'s S4 deleted both.**
+//
+// A ray with no horizontal run got a branch of its own in both walks and in
+// `blit.wesl`: there is no direction to step in, so only the starting cell can
+// hold anything. That much was true and is still true — [`dda_walk`] answers a
+// ray with no run with exactly that one cell, which is why deleting the branch
+// changes nothing about *which* cells are looked at.
+//
+// What the branch also did was decide **which shapes count**, and there it was a
+// second, poorer answer to a question the main path already answers:
+//
+//   - it skipped every **panel** outright, on the argument that a panel is a
+//     plane and a vertical ray lying in a wall's own plane is a graze the branch
+//     had no rule for. It has had one since S3 — [`on_the_lit_surface`] is
+//     called there too — and a panel is not a plane in the grid but a
+//     [`crate::occlusion::PANEL_THICKNESS`]-deep slab a ray can stand inside and
+//     run the whole height of. That was a live defect:
+//     `a_vertical_ray_meets_what_stands_over_it_whatever_shape_it_is` measures a
+//     fragment inside a wall's own thickness, lit from straight overhead through
+//     twenty `z` of wall, and the branch handed it the full flame;
+//   - it needed [`crosses`] and `over_footprint` — [`ray_vs_solid`]'s two halves
+//     spelled again — because a vertical ray's height answer was once *soft*.
+//     Phase 5 made [`crosses`] a hard crossing test, so the two halves are the
+//     whole of `ray_vs_solid` and the split had nothing left to buy;
+//   - and it had twice had to grow a gate to stop being a different answer from
+//     the main path: once for sub-tile lids, once when a fitted climbable's
+//     treads became bodies.
+//
+// **What licensed the deletion is a census rather than a green suite.** Measured
+// 2026-08-09: the whole crate entered this branch **zero times**. A flame is a
+// sphere since phase 5 and [`flame_points`] puts no sample at its centre, so a
+// flame directly overhead is eight rays each leaning [`FLAME_RADIUS`] out of the
+// vertical — and [`walk_sun`] answers an overhead sun before any walk starts. The
+// two tests named for the vertical case had stopped sending a vertical ray and
+// went on passing. Both set `flame_radius` to zero now, with the control that
+// says the rays really are straight, and zero is the one configuration a person
+// can still reach it from (`OPENSHARD_FLAME_RADIUS`).
 
 // **`same_run` stood here, and `docs/occluders.md`'s S4 deleted it.**
 //
@@ -2748,9 +2765,13 @@ fn starting_cell(from: [f32; 3], tile: (i32, i32)) -> (i32, i32) {
 /// of stepping restated here as [`DdaCell`]s instead of folded into that
 /// function's own loop.
 ///
-/// **Precondition**: `from` and `to` are not the same point in the plane —
-/// callers already guard `ground < 1e-6` before this is ever called, and
-/// there is no direction to step in for a ray with no length in it.
+/// **A ray with no horizontal run needs no precondition and gets no branch.**
+/// Neither axis ever reaches its boundary, so both `boundary`s stay at the
+/// enormous `t` below, the first step already has `next >= 1.0`, and the walk is
+/// the one cell `tile` names — which is exactly what the vertical shortcut
+/// `docs/occluders.md`'s S4 deleted used to return by hand. This function said
+/// "callers already guard `ground < 1e-6`" while answering that case correctly
+/// all along.
 fn dda_walk(from: Vec2, to: Vec2, tile: (i32, i32)) -> Vec<DdaCell> {
     let delta = [to.x - from.x, to.y - from.y];
     // Which way each axis steps, how much of the whole segment one tile of it
@@ -2951,75 +2972,6 @@ fn walk_cells_exact(
     // are points of nothing and are exempt from nothing.
     let own_box = lit.solid.map(|id| occlusion.solid(id).space);
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-    let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
-    if ground < 1e-6 {
-        // Same shortcut `walk_cells` takes, unchanged: no direction to walk
-        // in, so only a lid on the one cell can stand between the ends.
-        // `cell` rather than `solids_at` for the id beside each lid — the two
-        // follow the same references in the same order, so this enumerates
-        // exactly what it always did.
-        let mut stopped: f32 = 0.0;
-        let mut worst: Option<Stopper> = None;
-        for (id, stands) in occlusion.cell(first.0, first.1) {
-            // **A lid or a body, not a panel.** A vertical ray is stopped by
-            // anything it is inside the footprint of and whose span it crosses,
-            // and both of those shapes are one; a *panel* is a plane, and a
-            // vertical ray lying in a wall's own plane is the graze
-            // `on_the_lit_surface` exists for on the main path and has no answer here.
-            //
-            // This read `edges != 0` — lids alone — until a fitted climbable's
-            // treads became bodies (`occlusion::Builder::add`'s climbable
-            // branch), which is what exposed it: the gap was already there for
-            // every body in the world, so a ray straight up out of a tree's box
-            // left it unstopped.
-            if stands.edges != 0 && stands.edges != crate::occlusion::EDGE_ANY {
-                continue;
-            }
-            // And only the lids this ray is actually **under**. A tread's top is
-            // a lid narrower than its tile, and the main path has asked this
-            // since sub-tile footprints landed — this shortcut did not follow,
-            // which made a flight's three treads shadow one another from
-            // straight above and below. `docs/lighting_height.md`'s backlog, and
-            // `a_vertical_ray_is_not_stopped_by_lids_it_is_not_over`.
-            if !over_footprint(from, &stands.space) {
-                continue;
-            }
-            let (low, high) = (stands.low(), stands.high());
-            // Phase 4's rule, here too, and here it is the whole rule: a ray
-            // going straight up or down off a tread is exactly the ray whose only
-            // contact with that tread's own top is the point it started at.
-            if lit.solid == Some(id) {
-                continue;
-            }
-            // And D2's, which subsumes the line above wherever the surface names a
-            // side: a lid abutting this one at exactly this one's own height is the
-            // same floor, and a straight-up ray off a tread is the case where that
-            // matters most — every neighbouring tread of one landing tops out on
-            // the plane the fragment stands on.
-            if own_box
-                .as_ref()
-                .is_some_and(|own| on_the_lit_surface(lit.surface, own, &stands.space, delta))
-            {
-                continue;
-            }
-            let by_surface = f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high);
-            if by_surface > stopped {
-                stopped = by_surface;
-                worst = Some(Stopper {
-                    cell: first,
-                    solid: id,
-                    edges: stands.edges,
-                    span: (low, high),
-                });
-            }
-        }
-        return match stopped >= 1.0 - RAY_CUTOFF {
-            // A `stopped` that reaches the cutoff came from some lid, so there is
-            // one to name — the invariant this `expect` states rather than hides.
-            true => (0.0, Some(worst.expect("a lid took the ray to nothing"))),
-            false => (1.0 - stopped, None),
-        };
-    }
 
     struct Hit<'a> {
         stands: &'a crate::occlusion::Solid,
@@ -3328,70 +3280,6 @@ fn walk_cells_streaming(
     // See [`on_the_lit_surface`].
     let own_box = lit.solid.map(|id| occlusion.solid(id).wire_box());
     let delta = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-    let ground = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
-    if ground < 1e-6 {
-        // Same shortcut [`walk_cells_exact`] takes: no direction to walk in, so
-        // only a lid on the one cell can stand between the ends — and only one
-        // this ray is under, which is the footprint gate below.
-        //
-        // The box is the **wire's**, not `space`'s, because this walk is the
-        // preview of what the GPU reads —
-        // [`crate::occlusion::Solid::wire_box`], all six coordinates through
-        // one function. The main path below reads exactly the same box for
-        // exactly this reason; a shortcut that read `space` directly would be a
-        // second, finer answer to a question the shader cannot ask that
-        // precisely.
-        let mut stopped: f32 = 0.0;
-        let mut worst: Option<Stopper> = None;
-        for (id, stands) in occlusion.cell(first.0, first.1) {
-            // **A lid or a body, not a panel.** A vertical ray is stopped by
-            // anything it is inside the footprint of and whose span it crosses,
-            // and both of those shapes are one; a *panel* is a plane, and a
-            // vertical ray lying in a wall's own plane is the graze
-            // `on_the_lit_surface` exists for on the main path and has no answer here.
-            //
-            // This read `edges != 0` — lids alone — until a fitted climbable's
-            // treads became bodies (`occlusion::Builder::add`'s climbable
-            // branch), which is what exposed it: the gap was already there for
-            // every body in the world, so a ray straight up out of a tree's box
-            // left it unstopped.
-            if stands.edges != 0 && stands.edges != crate::occlusion::EDGE_ANY {
-                continue;
-            }
-            let (low, high) = wire_span(stands);
-            let space = stands.wire_box();
-            if !over_footprint(from, &space) {
-                continue;
-            }
-            // Phase 4's rule — [`walk_cells_exact`]'s own copy of this says why.
-            if lit.solid == Some(id) {
-                continue;
-            }
-            // And D2's, for the reason [`walk_cells_exact`]'s copy of this in its
-            // own vertical shortcut gives: a landing's neighbouring treads top out
-            // on the plane a fragment of one of them stands on.
-            if own_box
-                .as_ref()
-                .is_some_and(|own| on_the_lit_surface(lit.surface, own, &space, delta))
-            {
-                continue;
-            }
-            let by_surface = f32::from(stands.opacity) / 255.0 * crosses(from[2], to[2], low, high);
-            if by_surface > stopped {
-                stopped = by_surface;
-                worst = Some(Stopper {
-                    cell: first,
-                    solid: id,
-                    edges: stands.edges,
-                    span: (low, high),
-                });
-            }
-        }
-        return match stopped >= 1.0 - RAY_CUTOFF {
-            true => (0.0, Some(worst.expect("a lid took the ray to nothing"))),
-            false => (1.0 - stopped, None),
-        };
-    }
 
     let toward = (
         if delta[0] >= 0.0 { 1 } else { -1 },
@@ -4858,6 +4746,17 @@ mod tests {
     /// footprint gate, and it carries more weight than it used to: the shortcut
     /// looks at bodies now as well as lids (see its own comment), so a tread it
     /// is not over is a solid it would otherwise stop on outright.
+    ///
+    /// ⚠ **And this test stopped sending a vertical ray at phase 5, silently.**
+    /// A flame became a sphere and [`flame_points`] lays its samples on the disc
+    /// the sphere presents — `sqrt((i + 0.5) / n)` of the radius, so **no sample
+    /// is the centre**. A flame directly overhead is therefore eight rays each
+    /// leaning [`FLAME_RADIUS`] out of the vertical, and the branch this test is
+    /// named for was never entered again. Measured on 2026-08-09: the whole crate
+    /// runs the shortcut *zero* times. `flame_radius` is `0.0` here for that
+    /// reason and the assertion below is the positive control — a fixture that
+    /// cannot reach the rule it is about passes for the wrong reason, which is the
+    /// same defect as a gate that is green under injection.
     #[test]
     fn a_vertical_ray_is_not_stopped_by_lids_it_is_not_over() {
         use crate::facing::Prism;
@@ -4907,9 +4806,21 @@ mod tests {
                 occlusion: occlusion.clone(),
                 sun: None,
                 view: crate::debug::View::default(),
-                flame_radius: FLAME_RADIUS,
+                // A point flame, which is the only thing that sends a ray
+                // straight up — see this test's own doc comment.
+                flame_radius: 0.0,
                 shadow_rays: ShadowRays::DEFAULT,
             };
+            // The positive control, and it is the whole reason this test is worth
+            // anything: every one of the rays actually walked has to have no
+            // horizontal run at all. At `FLAME_RADIUS` none of them does.
+            let straight = flame_points(spot, [at.x, at.y, z], lighting.flame_radius, lighting.shadow_rays)
+                .iter()
+                .all(|point| point[0] == spot.at.x && point[1] == spot.at.y);
+            assert!(
+                straight,
+                "the fixture is not sending a vertical ray, so it cannot be about one",
+            );
             (
                 sample(spot, &lighting).reaches[0].through,
                 sample_exact(spot, &lighting).reaches[0].through,

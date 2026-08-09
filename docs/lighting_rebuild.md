@@ -1357,9 +1357,13 @@ each is nameable:
   the solid its fragment is a point of, which left `on_the_lit_surface` — a
   theorem about a box and a plane, needing no cell — answering every case the
   cell arithmetic had. This step inherits one rule fewer.
-- **The vertical shortcut** — `solids_at(first)` and nothing else, an
+- ~~**The vertical shortcut**~~ — `solids_at(first)` and nothing else, an
   optimisation that has twice had to grow a footprint gate to stop being a
-  *different* answer.
+  *different* answer. **Gone already, and not by the hierarchy**: S4 deleted it
+  once a census showed the whole crate enters it **zero times** — a flame is a
+  sphere and none of its samples is its centre, so no ray is vertical — and that
+  the one thing it did differently was skip every panel, which is a wall a
+  fragment inside it was lit straight through. This step inherits one rule fewer.
 - **The per-cell `max`** — `stopped = max(stopped, by_surface)` once per cell,
   so that "two panels of one corner are two faces of one wall, crossed once".
   That is a statement about *overlapping boxes for one physical surface*, and it
@@ -1381,8 +1385,9 @@ With all three naming one, S4 deleted `same_run` outright — no merge involved.
 *Done when:* a walk's answer is a function of the primitives and the segment
 alone — gated by equality against brute force over **every** primitive in the
 scene, which is the one non-circular oracle shape this tree already has — and
-`first`, `starting_cell`, the vertical shortcut and the per-cell `max` are gone
-from both walks and from `blit.wesl` — `same_run` already is.
+`first`, `starting_cell` and the per-cell `max` are gone
+from both walks and from `blit.wesl` — `same_run` and the vertical shortcut
+already are.
 
 *What this is not.* It is not about seams between sprites: the grid never had
 anything to do with the picture, and phase 6c already made a fragment's shape a
@@ -1768,6 +1773,41 @@ Things noticed while writing this, not blocking any phase:
   crate now stands on, and the general lesson is worth more than the entry: **a
   no-op measured beside a second rule that covers the same ground is a statement
   about the pair, not about the rule.** Neutralise one at a time *and* both.
+- 🚩 **A test whose subject moved out from under it goes on passing, and this
+  track has now found two of them in one place.** Both vertical-ray tests were
+  written when a flame was a point; phase 5 made it a sphere whose samples are
+  never its centre, and from that day neither test sent a vertical ray — the
+  branch each is named for was entered zero times by the whole crate. Nothing
+  said so, because a test that stops reaching its own case *passes*. The repair
+  is a **positive control** in each (`flame_points` must return the fragment's own
+  `x` and `y`), and the question it raises is general: **which other fixtures name
+  a case a later phase took away?** The candidates are every test written against
+  a point flame — anything whose scene puts the flame exactly on a plane, exactly
+  on an axis or exactly at a corner, since an eighth of a tile of sphere is enough
+  to move all three. Worth one sweep of `tests/` with that question rather than a
+  guess.
+- **`brute_force_blocked`'s step count comes from the *horizontal* run alone, so a
+  steep ray gets almost no samples.** `steps = ceil(ground / BRUTE_STEP)`, and
+  `ground` is `sqrt(dx² + dy²)` — a ray climbing twenty `z` over a hundredth of a
+  tile is sampled once, and a vertical one not at all (`1..1` is an empty range,
+  so it returns "open" without looking). Its own-column exemption covers the whole
+  segment of a vertical ray besides, so it has *no opinion* about the case rather
+  than a wrong one. Nothing has been convicted by it yet — the fuzzers aim
+  horizontally — but this is the one non-circular oracle in the tree and its
+  resolution should come from the segment it is measuring: `sqrt(dx² + dy² +
+  (dz / Z_PER_TILE)²)`, the same isotropic metric everything else uses. Cheap, and
+  it wants its own run before it is trusted, because a finer march can only turn
+  "open" into "blocked" — which is a finding either way.
+- **`walk_sun` answers an overhead sun by hand, and its reason is the one the
+  vertical shortcut just lost.** `horizontal < 1e-6` returns `(1.0, None)` under
+  the comment *"the only thing that could shadow the spot is on its own tile —
+  which is exempt"*. Since phase 4 a fragment is exempt from **its own primitive**
+  and not from its tile, so a floor under a roof, both on one tile, is a sun ray
+  through a roof. Measure zero in practice — a sun exactly overhead is one instant
+  of one day curve — which is why it is a backlog line and not a defect report;
+  what it is *not* is a rule that still has an argument behind it. Deleting it is
+  the same one-line change the vertical shortcut was, and the same census applies:
+  find out whether any fixture reaches it first.
 - **A flame of radius zero costs eight identical rays.** `flame_radius` is a knob
   now — `Lighting`'s field, and `examples/boxes.rs`'s `OPENSHARD_FLAME_RADIUS`
   since a person wanted to see how hard a shadow can be — and at zero every one of

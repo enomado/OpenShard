@@ -893,22 +893,14 @@ fn sky_at(x: i32, y: i32) -> f32 {
 // quantisation: `solid_at(id).lo`/`.hi` are the primitive's own corners in
 // absolute world coordinates, so what used to be a function is now two fields.
 //
-// Whether a point stands over a solid's own horizontal footprint —
-// `light::over_footprint`, and `ray_vs_solid`'s parallel-axis branch on the two
-// horizontal axes alone, both ends inclusive as they are there.
+// **`over_footprint` stood here and went with the no-horizontal-run shortcut in
+// `walk`** — `docs/occluders.md`'s S4, and `light.rs`'s own grave note where the
+// Rust twin was states the measurement. It was `ray_vs_solid`'s parallel-axis
+// branch on the two horizontal axes alone, spelled again because that shortcut
+// could not call `ray_vs_solid` outright while a vertical ray's height answer
+// was `crosses`'s *soft* one. Phase 5 made `crosses` a hard crossing test, so
+// the two halves became the whole function and the split bought nothing.
 //
-// Used by the no-horizontal-run shortcut in `walk`, which cannot call
-// `ray_vs_solid` outright: the two answer the *height* half differently, and a
-// vertical ray's height answer is `crosses`'s. `ray_vs_solid`'s slab is
-// inclusive at both ends, so a ray that starts exactly on a lid's own plane has
-// hit it; `crosses` is strict, and a candle standing on the floor it lights has
-// gone through nothing. That was a softness until phase 5 and is a strictness
-// now, and the split it forces is the same one. The Rust twin's doc comment
-// states it too.
-fn over_footprint(at: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> bool {
-    return at.x >= lo.x && at.x <= hi.x && at.y >= lo.y && at.y <= hi.y;
-}
-
 // Where a straight segment enters and leaves an axis-aligned box, as a
 // fraction of the whole segment (`0.0` is `from`, `1.0` is `to`) — the slab
 // method, continuous throughout, no notion of "which tile" anywhere in it.
@@ -1016,7 +1008,6 @@ fn cell_stopped(
     start: vec3<f32>,
     finish: vec3<f32>,
     delta: vec3<f32>,
-    ground: f32,
 ) -> f32 {
     let span = solids_at(cell.x, cell.y);
     let lit = start;
@@ -1168,7 +1159,6 @@ fn walk(
     // attachment's byte layout stood here; identity is what keeps a ray from
     // being stopped by the surface it left, and it does not need the ray moved.
     let delta = finish - start;
-    let ground = length(delta.xy);
     let lit = start;
     // The caller's own tile, not `floor(start.x/y)`: `start` can legitimately sit
     // exactly on this tile's own far edge — a mesh face's own outer corner does,
@@ -1183,64 +1173,14 @@ fn walk(
     // the tile it was handed is not on a boundary at all, and seeding this walk
     // from that tile hands it a negative distance to a boundary already crossed.
     let first = starting_cell(lit.xy, tile);
-    if ground < 1.0e-6 {
-        // Straight up or down. There is no direction to walk in and there never
-        // was — but "the only cells on the line are the exempt ones", which is
-        // what this used to say, stopped being true at decision 32: a **lid** on
-        // that one cell is between the two ends of the ray, and a vertical ray is
-        // the case a floor is most obviously in the way of. A torch on the ground
-        // floor and the plank directly over it were the shortcut's own
-        // counterexample.
-        //
-        // **A lid or a body, not a panel**, and `light::walk_cells`'s own copy of
-        // this says why: a vertical ray is stopped by anything it is inside the
-        // footprint of and whose span it crosses, and both of those shapes are
-        // one. A panel is a plane, and a vertical ray lying in a wall's own plane
-        // is the graze the main path answers with `on_the_lit_surface` — where
-        // `same_run` answered it before S4 — and that has no answer here. Lids
-        // alone until a fitted climbable's treads became bodies, which is what
-        // exposed a gap that was already there for every body in the world: a ray
-        // straight up out of a tree's box left it unstopped.
-        let straight = solids_at(first.x, first.y);
-        var stopped = 0.0;
-        for (var i = 0u; i < straight.y; i = i + 1u) {
-            let reference = id_at(straight.x + i);
-            let id = reference.x;
-            let stands = solid_at(id);
-            let sides = stands.flags & EDGE_MASK;
-            if sides != 0u && sides != EDGE_MASK {
-                continue;
-            }
-            // And only the lids this ray is actually **under**. A tread's top is
-            // a lid narrower than its tile; the walk below this shortcut has
-            // asked it since sub-tile footprints landed and this shortcut did
-            // not follow, so a flight's three treads shadowed one another from
-            // straight above and below. `docs/lighting_height.md`'s backlog, and
-            // `light::walk_cells_streaming`'s own copy of the same gate — the
-            // primitive's own box on both axes, the same one the walk below
-            // reads.
-            if !over_footprint(start, stands.lo, stands.hi) {
-                continue;
-            }
-            // Phase 4's rule, here too — `light::walk_cells_streaming`'s own copy
-            // of it in this same shortcut, and here it is the whole rule: a ray
-            // going straight up or down off a tread is exactly the ray whose only
-            // contact with that tread's own top is the point it started at.
-            if mine == id {
-                continue;
-            }
-            // And D2's, for the same reason `light::walk_cells_streaming`'s copy of
-            // this in its own shortcut gives: the neighbouring treads of one landing
-            // top out on the very plane a fragment of one of them stands on, and a
-            // ray going straight up crosses none of them.
-            if on_the_lit_surface(stance, mine, stands.lo, stands.hi, delta) {
-                continue;
-            }
-            let stops = f32(stands.opacity) / 255.0 * crosses(start.z, finish.z, stands.lo.z, stands.hi.z);
-            stopped = max(stopped, stops);
-        }
-        return max(0.0, 1.0 - stopped);
-    }
+    // **A ray straight up or down takes the same walk as every other ray** —
+    // `docs/occluders.md`'s S4. A branch of its own stood here and returned the
+    // one starting cell by hand, which is exactly what the loop below does for a
+    // ray with no horizontal run: neither axis ever reaches its boundary, so both
+    // `boundary`s stay at the enormous `t`, `next >= 1.0` on the first step and
+    // the walk is over. What the branch also did was skip every **panel**, and
+    // that was a defect rather than a saving — see `light.rs`'s grave note where
+    // the Rust twin stood.
     // Which way each axis steps and how much of the whole segment one tile of
     // it is worth. An axis the ray does not move along never reaches its
     // boundary, which is what the enormous `t` says.
@@ -1276,7 +1216,7 @@ fn walk(
     var cell = first;
     for (var i = 0; i < MAX_WALK_STEPS; i = i + 1) {
         let stopped = cell_stopped(
-            cell, first, mine, stance, start, finish, delta, ground,
+            cell, first, mine, stance, start, finish, delta,
         );
         through = through * (1.0 - stopped);
         if through <= 0.004 {
@@ -1315,7 +1255,7 @@ fn walk(
             out_by_x,
         );
         let probe_stopped = cell_stopped(
-            probe, first, mine, stance, start, finish, delta, ground,
+            probe, first, mine, stance, start, finish, delta,
         );
         through = through * (1.0 - probe_stopped);
         if through <= 0.004 {

@@ -5203,9 +5203,29 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
         occlusion,
         sun: None,
         view: View::default(),
-        flame_radius: openshard_client_render::light::FLAME_RADIUS,
+        // **A point flame, because a sphere does not send a vertical ray.**
+        // `light::flame_points` lays its samples on the disc the sphere presents,
+        // at `sqrt((i + 0.5) / n)` of the radius, so none of them is the centre —
+        // a flame directly overhead is eight rays each leaning a
+        // `FLAME_RADIUS` out of the vertical. This test was written before phase 5
+        // gave the flame a body and went on passing afterwards without ever
+        // entering the branch it is named for. The control below is what says it
+        // does now.
+        flame_radius: 0.0,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
     };
+    let straight = openshard_client_render::light::flame_points(
+        openshard_client_render::light::Spot::flat(over, 1.0, (i32::from(cx), i32::from(cy))),
+        [over.x, over.y, 15.0],
+        lighting.flame_radius,
+        lighting.shadow_rays,
+    )
+    .iter()
+    .all(|point| point[0] == over.x && point[1] == over.y);
+    assert!(
+        straight,
+        "the fixture is not sending a vertical ray, so it cannot be about one",
+    );
     let fixture = Fixture {
         surface: Surface::Flat,
         drift: (0.0, 0.0),
@@ -5224,6 +5244,115 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
         "the flame is directly over {LIT:?} and the lids between them are strips \
          of the tile it is not under: {lit:?} there against {blocked:?} over the \
          middle tread, which its own lid does stop",
+    );
+}
+
+/// **A vertical ray on the GPU is stopped by the wall it stands inside** —
+/// `docs/occluders.md`'s S4, the shader's third of the vertical shortcut.
+///
+/// That branch skipped every panel outright, on the argument that a panel is a
+/// plane and a vertical ray lying in a wall's own plane is a graze it had no rule
+/// for. A panel is not a plane in the grid: it is a `PANEL_THICKNESS`-deep slab,
+/// and a fragment standing inside one is behind the whole height of a wall.
+/// `light.rs`'s grave note has the argument and
+/// `lighting.rs`'s `a_vertical_ray_meets_what_stands_over_it_whatever_shape_it_is`
+/// is the same claim about the two CPU walks; this is the shader's own copy,
+/// which nothing else here reaches.
+///
+/// The pixel is chosen for its **fraction**: `parity_place` steps a tile in
+/// sixteen hundred-and-twenty-sevenths, so the last pixel of a tile sits at
+/// `112/127` of it — inside a south panel's own `0.8..1.0` slab, where the pixel
+/// before it at `96/127` is not. The control is the same pixel with the wall
+/// taken out of the grid and nothing else changed, so what is being read is the
+/// wall and not the geometry of the fixture.
+///
+/// `flame_radius` is `0.0` for the reason the test above states: a sphere sends
+/// no vertical ray, and at `FLAME_RADIUS` this fixture would measure the ordinary
+/// walk.
+#[test]
+fn the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+
+    let (cx, cy) = openshard_client_render::scene::CENTRE;
+    let bounds = TileBounds {
+        min_x: i32::from(cx) - 10,
+        max_x: i32::from(cx) + 10,
+        min_y: i32::from(cy) - 10,
+        max_y: i32::from(cy) + 10,
+    };
+    // The last pixel down the centre tile: `112/127` of the way into it, which is
+    // inside a south panel and is the only fraction this frame draws that is.
+    const INSIDE: (u32, u32) = (35, 39);
+    let (x, y, sub_x, sub_y) = parity_place(INSIDE.0, INSIDE.1);
+    assert_eq!((x, y), (cx, cy), "the pixel has to be on the wall's own tile");
+    assert!(
+        f64::from(sub_y) >= 1.0 - openshard_client_render::occlusion::PANEL_THICKNESS,
+        "the pixel is not inside the panel's own slab, so this test is about nothing",
+    );
+    let over = Vec2::new(f32::from(x) + sub_x, f32::from(y) + sub_y);
+
+    let frame = |grid: openshard_client_render::occlusion::Occlusion| {
+        let lighting = Lighting {
+            ambient: openshard_client_render::light::NIGHT,
+            lights: vec![Light {
+                at: over,
+                z: 20.0,
+                radius: 40.0,
+                color: [1.0, 1.0, 1.0],
+                intensity: 1.0,
+                beam: None,
+            }],
+            occlusion: grid,
+            sun: None,
+            view: View::default(),
+            flame_radius: 0.0,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        };
+        let fixture = Fixture {
+            // A point of nothing, looking nowhere: the wall is a different
+            // static, so identity and D2 have nothing to say and what is left is
+            // the shape alone.
+            surface: Surface::Upright,
+            z: 0,
+            owner: OwnerId::NONE,
+            drift: (0.0, 0.0),
+        };
+        let frame = parity_frame(&device, &queue, &lighting, 64, 64, fixture);
+        i32::from(frame.pixel(INSIDE.0, INSIDE.1)[0])
+    };
+
+    let mut wall = Builder::new(bounds);
+    wall.add(
+        cx,
+        cy,
+        0,
+        Graphic(0),
+        &openshard_uofiles::tiledata::StaticTile {
+            flags: openshard_uofiles::tiledata::TileFlags::new(
+                openshard_uofiles::tiledata::TileFlags::NO_SHOOT,
+            ),
+            height: 20,
+            ..openshard_uofiles::tiledata::StaticTile::default()
+        },
+        Shape {
+            facing: Some(openshard_client_render::facing::Facing::One(
+                openshard_client_render::facing::Face::South,
+            )),
+            hole: None,
+            prism: None,
+            blocks: openshard_client_render::facing::Blocks::EMPTY,
+        },
+    );
+
+    let behind = frame(wall.finish(&Cutaway::OPEN));
+    let open = frame(Builder::new(bounds).finish(&Cutaway::OPEN));
+    assert!(
+        open > behind + 40,
+        "a fragment inside the wall's own slab, lit from twenty `z` straight \
+         overhead, reads {behind} against {open} with the wall taken away: the \
+         shader is letting a vertical ray through a panel",
     );
 }
 
