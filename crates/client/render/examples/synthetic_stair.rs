@@ -24,12 +24,27 @@
 //!   the climb rather than along it. Default `1`. A run is the only way to ask
 //!   about a seam between two *different* statics: abutting treads of two
 //!   neighbouring flights sit at the same `z` on either side of a tile
-//!   boundary, so identity cannot say they are one surface (they are not one
-//!   static) and `own_run`'s same-row/same-column mask is what stands in for
-//!   it. One flight cannot pose that question at all.
+//!   boundary.
+//!
+//!   What answers that question changed underneath this knob and the sentence
+//!   here changed with it. It used to be `own_run`'s same-row/same-column mask,
+//!   standing in for an identity that could not fire because two flights are two
+//!   statics; `occlusion::merge` retired the mask (`docs/occluders.md`'s S3b and
+//!   S4) by making identity fire after all — the flights of a run are one
+//!   `Owner`, so a tread of the run is **one primitive** and both halves of the
+//!   seam name it. That is what this knob poses now, and phase 6h is what it
+//!   turned out to be about.
 //! - `OPENSHARD_LIGHT_AT=dx,dy` — the flame's position, offset from the run's
-//!   first tile. Default `2.5,1.0`, below the top tread and in front of the
+//!   **last** tile. Default `2.5,1.0`, below the top tread and in front of the
 //!   flight.
+//!
+//!   Off the last tile rather than the first so that the default stands beside
+//!   the staircase for any `run` — measured off the first, `+2.5` is *inside*
+//!   the third flight of a run of three, and a point source embedded in a solid
+//!   is a scene where the light reference and the frame differ everywhere for a
+//!   reason that is neither's defect (7,210 judged pixels of one, against 59
+//!   with the flame outside). For a single flight the two anchors are the same
+//!   tile and nothing moves.
 //!
 //!   This line used to say that the default "leaves the far tread in its own
 //!   riser's shadow", citing `Surface::shadowed_by_own_tile` and decision 32 —
@@ -87,6 +102,11 @@
 //! named the same way: the `place` attachment says which mesh row drew the
 //! pixel, the row says which grid solid it draws, and that solid is what goes.
 //! Every other body counts, its own flight's included.
+//!
+//! For a run of flights a primitive is **wider than a flight**: the same tread of
+//! every flight is one owner and one part, so `occlusion::merge` folds the run
+//! into one box a tread and a fragment of any flight is a point of all of it.
+//! See [`Body::primitive`].
 //!
 //! That is one body a tread since `docs/lighting_rebuild.md` phase 6; it was a
 //! lid and a riser plane before, and for a *plane* dropping the primitive and
@@ -444,8 +464,108 @@ struct Body {
     flight: usize,
     /// Which tread of that flight, in climb order.
     tread: usize,
+    /// Which **primitive of the grid** this tread is a piece of.
+    ///
+    /// A tread of one flight stopped being a primitive when `occlusion::merge`
+    /// landed (`docs/occluders.md`'s D2b): the same tread of two flights standing
+    /// side by side shares a whole face with its neighbour and agrees in every
+    /// other field the merge asks about — one [`Owner`], because an owner is a
+    /// `(z, graphic)` and carries no tile, and one [`Part`](grid::Part), because
+    /// both are the same tread of the same profile — so the grid folds the run
+    /// into **one box a tread**. Two treads of one flight are not folded: they
+    /// differ in `Part` and in span.
+    ///
+    /// So a piece's own primitive is its tread number, and that is a derivation
+    /// like every other one in this file rather than a reading: [`gate_against_
+    /// grid`] holds the fold against the solids the grid really pushed, corners
+    /// and identity both.
+    primitive: usize,
     min: (f64, f64, f64),
     max: (f64, f64, f64),
+}
+
+/// One **primitive of the grid**: a tread of the run, whole — every flight's
+/// piece of that tread folded together. See [`Body::primitive`].
+struct Primitive {
+    /// Which tread of the profile, which is also this primitive's index in the
+    /// list [`merged`] hands back.
+    tread: usize,
+    min: (f64, f64, f64),
+    max: (f64, f64, f64),
+}
+
+/// A corner as an array, so an axis can be an index: the tuples above read
+/// better where a corner is written out and worse in a loop over axes.
+fn axes(corner: (f64, f64, f64)) -> [f64; 3] {
+    [corner.0, corner.1, corner.2]
+}
+
+/// Which horizontal axis the flights of a run stand along — **across** the
+/// climb, since that is the only arrangement `main` builds and the only one two
+/// abutting treads at one height can have.
+fn across_axis(up: Face) -> usize {
+    match up {
+        Face::North | Face::South => 0,
+        Face::East | Face::West => 1,
+    }
+}
+
+/// The pieces folded into the primitives the grid holds — and the fold checked
+/// while it happens.
+///
+/// The union taken here is a union of **point sets**, not a bounding box, and
+/// that is the merge's own condition rather than a nicety: `occlusion::merge`
+/// joins two boxes only where they share a whole face, so the pieces of one
+/// primitive have to agree exactly on the two axes that are not the run's, and
+/// tile the run's axis with no gap and no overlap. A fixture that failed either
+/// would be folding something the grid did not, and the corner comparison in
+/// [`gate_against_grid`] would then be reporting the fixture's own arithmetic.
+fn merged(bodies: &[Body], up: Face) -> Vec<Primitive> {
+    let across = across_axis(up);
+    let count = bodies.iter().map(|body| body.primitive + 1).max().unwrap_or(0);
+    (0..count)
+        .map(|tread| {
+            let pieces: Vec<&Body> = bodies.iter().filter(|body| body.primitive == tread).collect();
+            let first = pieces.first().expect("a primitive nothing is a piece of");
+            let (mut lo, mut hi) = (axes(first.min), axes(first.max));
+            let mut spans = 0.0;
+            for piece in &pieces {
+                let (min, max) = (axes(piece.min), axes(piece.max));
+                for axis in 0..3 {
+                    if axis == across {
+                        continue;
+                    }
+                    assert!(
+                        (min[axis] - lo[axis]).abs() < 1e-12 && (max[axis] - hi[axis]).abs() < 1e-12,
+                        "tread {tread}: flight {}'s piece spans {}..{} on axis {axis} and flight {}'s \
+                         spans {}..{}, so the two do not share a whole face and the grid would not \
+                         have merged them",
+                        piece.flight,
+                        min[axis],
+                        max[axis],
+                        first.flight,
+                        lo[axis],
+                        hi[axis],
+                    );
+                }
+                lo[across] = lo[across].min(min[across]);
+                hi[across] = hi[across].max(max[across]);
+                spans += max[across] - min[across];
+            }
+            assert!(
+                (spans - (hi[across] - lo[across])).abs() < 1e-12,
+                "tread {tread}: its {} pieces are {spans} wide together and their union is {} wide, \
+                 so they leave a gap or overlap and their union is not their union",
+                pieces.len(),
+                hi[across] - lo[across],
+            );
+            Primitive {
+                tread,
+                min: (lo[0], lo[1], lo[2]),
+                max: (hi[0], hi[1], hi[2]),
+            }
+        })
+        .collect()
 }
 
 /// The tile-relative footprint of one climb-axis span, `lo..=hi` of the run
@@ -524,6 +644,9 @@ fn flight_bodies(flight: usize, stands: Point, up: Face, treads: &[u8]) -> Vec<B
             Body {
                 flight,
                 tread,
+                // The same tread of every flight is one primitive — see
+                // [`Body::primitive`], which is where that is argued.
+                primitive: tread,
                 min: (min_x, min_y, base),
                 max: (max_x, max_y, base + f64::from(height)),
             }
@@ -545,37 +668,49 @@ fn flight_bodies(flight: usize, stands: Point, up: Face, treads: &[u8]) -> Vec<B
 /// what this assertion is for — it is the first thing that failed after it, in
 /// the count, which is exactly the shape of failure a gate on a scene's own
 /// geometry is built to have.
-fn gate_against_grid(bodies: &[Body], flights: &[Point], occlusion: &Occlusion) {
+///
+/// **And it compared one flight's own boxes until `occlusion::merge` landed**,
+/// which is the second time this gate was the first thing to fail: a run's
+/// flights are one owner and one part a tread, so the grid folds the run into a
+/// box a tread and a per-flight derivation is a box a third the width
+/// (`docs/lighting_rebuild.md` phase 6i's fourth item — `this oracle says 101,
+/// the grid's own solid says 103`, and `OPENSHARD_STAIR_RUN>1` has been unusable
+/// since). What it compares now is the fold, [`merged`], and what makes that a
+/// statement about the grid rather than about this file is the second half
+/// below: every flight of the run has to name the **same** `SolidId` for a
+/// tread. A merge that stopped firing would leave the corners agreeing with
+/// nothing and that identity red.
+fn gate_against_grid(bodies: &[Body], flights: &[Point], up: Face, occlusion: &Occlusion) {
+    let primitives = merged(bodies, up);
     let mut at = 0usize;
     for (flight, stands) in flights.iter().enumerate() {
         let solids: Vec<_> = occlusion
             .solids_at(i32::from(stands.x), i32::from(stands.y))
             .collect();
-        let mine: Vec<&Body> = bodies.iter().filter(|body| body.flight == flight).collect();
         assert_eq!(
             solids.len(),
-            mine.len(),
+            primitives.len(),
             "flight {flight} at ({}, {}): the grid holds {} solids and this oracle derived {} treads",
             stands.x,
             stands.y,
             solids.len(),
-            mine.len(),
+            primitives.len(),
         );
-        for (body, solid) in mine.iter().zip(&solids) {
+        for (primitive, solid) in primitives.iter().zip(&solids) {
             let corners = [
-                (body.min.0, solid.space.min.x),
-                (body.max.0, solid.space.max.x),
-                (body.min.1, solid.space.min.y),
-                (body.max.1, solid.space.max.y),
-                (body.min.2, solid.space.min.z),
-                (body.max.2, solid.space.max.z),
+                (primitive.min.0, solid.space.min.x),
+                (primitive.max.0, solid.space.max.x),
+                (primitive.min.1, solid.space.min.y),
+                (primitive.max.1, solid.space.max.y),
+                (primitive.min.2, solid.space.min.z),
+                (primitive.max.2, solid.space.max.z),
             ];
             for (mine, theirs) in corners {
                 assert!(
                     (mine - theirs).abs() < 1e-12,
-                    "flight {} tread {}: this oracle says {mine}, the grid's own solid says {theirs}",
-                    body.flight,
-                    body.tread,
+                    "tread {}, seen from flight {flight}: this oracle says {mine}, the grid's own \
+                     solid says {theirs}",
+                    primitive.tread,
                 );
             }
             // A tread is a **body**, and a body names every edge: `Edges::ANY` is
@@ -586,15 +721,50 @@ fn gate_against_grid(bodies: &[Body], flights: &[Point], occlusion: &Occlusion) 
             assert_eq!(
                 solid.edges,
                 grid::Edges::ANY,
-                "flight {} tread {}: the grid's own solid has edges {:#06b}, so it is not a body",
-                body.flight,
-                body.tread,
+                "tread {}, seen from flight {flight}: the grid's own solid has edges {:#06b}, so it \
+                 is not a body",
+                primitive.tread,
                 solid.edges.raw(),
             );
         }
-        at += mine.len();
+        at += primitives.len();
     }
-    assert_eq!(at, bodies.len(), "a flight's treads went uncompared");
+    // Every piece this file derived went into a primitive that was compared: the
+    // loop above walks the primitives once per flight, so what it cannot notice
+    // on its own is a flight whose treads folded into nothing.
+    assert_eq!(
+        at,
+        bodies.len(),
+        "{} pieces were derived and {at} went into a compared primitive",
+        bodies.len(),
+    );
+
+    // **The fold is the grid's and not this file's**, stated as identity: every
+    // flight of the run names one `SolidId` for a tread. That is the same
+    // question `id_of` answers for the mesh rows below — one owner, since an
+    // owner is a `(z, graphic)` and the flights of a run stand at one height
+    // under one graphic — and it is what makes a fragment of any flight exempt
+    // from the whole run's tread, which is what [`oracle_visible`] drops.
+    for primitive in &primitives {
+        let part = grid::Part::nth(primitive.tread);
+        let named: Vec<Option<SolidId>> = flights
+            .iter()
+            .map(|stands| {
+                occlusion.id_of(
+                    i32::from(stands.x),
+                    i32::from(stands.y),
+                    Owner::new(stands.z, STAIR),
+                    part,
+                )
+            })
+            .collect();
+        assert!(
+            named.iter().all(|id| *id == named[0]) && named[0].is_some(),
+            "tread {}: the flights of this run name {named:?}, so the grid did not fold them into \
+             one primitive and every count below would be about a staircase nobody built",
+            primitive.tread,
+        );
+    }
 }
 
 /// Which body a plane is a face of: **two drawn faces a tread, one body a
@@ -608,6 +778,16 @@ fn gate_against_grid(bodies: &[Body], flights: &[Point], occlusion: &Occlusion) 
 /// flight.
 fn body_of(plane: usize) -> usize {
     plane / 2
+}
+
+/// Which **primitive of the grid** a plane's fragments are points of — what the
+/// walk excuses them from, and therefore what [`oracle_visible`] is told to drop.
+///
+/// Read off the piece rather than computed from `plane` a second time: the piece
+/// knows which primitive it was folded into ([`Body::primitive`]), and a formula
+/// here would be a third statement of the merge for the other two to drift from.
+fn primitive_of(bodies: &[Body], plane: usize) -> usize {
+    bodies[body_of(plane)].primitive
 }
 
 /// That the plane this file derived for a mesh face really is a **face of** the
@@ -774,6 +954,18 @@ fn gate_against_mesh(slab: &Slab, face: &openshard_client_render::mesh::Face, up
 /// shadowed by its own static" would light it. A flight is three bodies and this
 /// drops one of them, which is exactly the granularity phase 4 found the owner
 /// too coarse for.
+///
+/// `own` names a **primitive** and not a piece since `occlusion::merge`: a
+/// fragment of one flight's third tread is a point of the box the whole run's
+/// third tread was folded into, so every flight's piece of that tread goes with
+/// it. Dropping only the fragment's own flight's piece would be this file
+/// stating a rule the walk does not have, and the pixels it disagreed about
+/// would be the neighbour's half of one box shadowing the other half.
+///
+/// The pieces are what is tested rather than the folded box, and the two are the
+/// same test: pieces of one primitive tile it with no gap ([`merged`] asserts
+/// exactly that), and a segment meets a union of contiguous boxes exactly when
+/// it meets one of them — `occlusion::merge`'s own header, from the other side.
 fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), bodies: &[Body], own: usize) -> f64 {
     let spot = light::Spot::at(
         Vec2::new(point.0 as f32, point.1 as f32),
@@ -792,9 +984,8 @@ fn oracle_visible(point: (f64, f64, f64), light: (f64, f64, f64), bodies: &[Body
             let to = (f64::from(at[0]), f64::from(at[1]), f64::from(at[2]));
             bodies
                 .iter()
-                .enumerate()
-                .filter(|(index, _)| *index != own)
-                .all(|(_, body)| segment_clear_of_box(point, to, body.min, body.max))
+                .filter(|body| body.primitive != own)
+                .all(|body| segment_clear_of_box(point, to, body.min, body.max))
         })
         .count();
     clear as f64 / points.count() as f64
@@ -980,7 +1171,7 @@ fn write_reference(
                 match (
                     distance >= radius,
                     slab.faces(*point, flame, up),
-                    oracle_visible(*point, flame, bodies, body_of(*plane)) > 0.5,
+                    oracle_visible(*point, flame, bodies, primitive_of(bodies, *plane)) > 0.5,
                 ) {
                     // The three answers `Shade` decodes, in the colours
                     // `blit.wesl` writes them, so the two pictures can be read
@@ -1111,7 +1302,7 @@ fn write_light_reference(
                 // against, and the engine multiplies by how much of the flame it
                 // can see; a reference that switched at a half would call every
                 // penumbra pixel a disagreement of up to half a flame.
-                let seen = oracle_visible(point, flame, bodies, body_of(plane)) as f32;
+                let seen = oracle_visible(point, flame, bodies, primitive_of(bodies, plane)) as f32;
                 if seen <= 0.0 {
                     continue;
                 }
@@ -1512,7 +1703,7 @@ fn main() {
         .enumerate()
         .flat_map(|(flight, stands)| flight_bodies(flight, *stands, up, &treads))
         .collect();
-    gate_against_grid(&bodies, &flights, &occlusion);
+    gate_against_grid(&bodies, &flights, up, &occlusion);
 
     // And as **surfaces**, which is what the mesh draws and what the `place`
     // attachment names a pixel by — each one held against the body it is a face
@@ -1531,9 +1722,18 @@ fn main() {
     // every face of it carries this one number. What it is *not* is one
     // occluder: `docs/lighting_rebuild.md` phase 4 made the exemption a
     // `SolidId`, owner **and** part, precisely because a tread does shadow the
-    // treads below it and an owner alone could not say so. Each flight of a run
-    // gets its own owner, which is the whole point of building the run:
-    // neighbours are not each other's.
+    // treads below it and an owner alone could not say so.
+    //
+    // **The flights of a run share that owner**, and this used to say the
+    // opposite — "each flight gets its own, which is the whole point of building
+    // the run: neighbours are not each other's". An `Owner` is a `(z, graphic)`
+    // and carries no tile, so a run standing at one height under one graphic is
+    // one owner however wide it is; that is not a detail of this fixture but the
+    // condition `occlusion::merge` folds on, and the sentence was wrong from the
+    // day the merge landed. What the run still poses, and a single flight cannot,
+    // is the two-abutting-statics question — it is now posed as *one* primitive
+    // where there were two, which is what `docs/occluders.md`'s D6 is about and
+    // what phase 6h turned out to be.
     let owners: Vec<Owner> = flights
         .iter()
         .map(|stands| {
@@ -1691,14 +1891,22 @@ fn main() {
     let (ldx, ldy) = parse_pair(&env_or("OPENSHARD_LIGHT_AT", "2.5,1.0"));
     let light_z: f32 = env_or("OPENSHARD_LIGHT_Z", "2").parse().expect("a number");
     let light_radius: f32 = env_or("OPENSHARD_LIGHT_RADIUS", "6").parse().expect("a number");
-    eprintln!("light: at ({ldx:+}, {ldy:+}) of the tile, z {light_z}, radius {light_radius}");
+    // Off the **last** flight of the run, so the default stands beside the
+    // staircase however wide it is rather than inside it — see the header's own
+    // entry for this knob. One flight is one tile and the anchor is that tile.
+    let lit_from = *flights.last().expect("a run of at least one flight");
+    let flame_at = Vec2::new(f32::from(lit_from.x) + ldx, f32::from(lit_from.y) + ldy);
+    eprintln!(
+        "light: at ({ldx:+}, {ldy:+}) of tile ({}, {}) — ({}, {}), z {light_z}, radius {light_radius}",
+        lit_from.x, lit_from.y, flame_at.x, flame_at.y,
+    );
     let selected = View::ALL[env_or("OPENSHARD_FRAME_VIEW", "0")
         .parse::<usize>()
         .expect("an index")];
     let mut lighting = Lighting {
         ambient: openshard_client_render::light::NIGHT,
         lights: vec![Light {
-            at: Vec2::new(f32::from(at.x) + ldx, f32::from(at.y) + ldy),
+            at: flame_at,
             z: light_z,
             radius: light_radius,
             color: [1.0, 1.0, 1.0],
@@ -1783,8 +1991,8 @@ fn main() {
     // the stair or in front of it" nearly as fast as a mark on the frame does.
     let projection = camera.projection();
     let light_screen = camera.to_view_exact(project_exact(WorldSpot {
-        x: f64::from(at.x) + f64::from(ldx),
-        y: f64::from(at.y) + f64::from(ldy),
+        x: f64::from(flame_at.x),
+        y: f64::from(flame_at.y),
         z: f64::from(light_z),
     }));
     let light_pixel = (
@@ -1876,11 +2084,14 @@ fn main() {
         return;
     }
 
-    let flame = (
-        f64::from(at.x) + f64::from(ldx),
-        f64::from(at.y) + f64::from(ldy),
-        f64::from(light_z),
-    );
+    // **Off the light the renderer was handed and not off the offset again.**
+    // This was `at + (ldx, ldy)` — a third spelling of the flame's position
+    // beside the `Light` above and the crosshair below — and the three agreed
+    // only for as long as they were the same expression. Moving the anchor to
+    // the run's last tile moved one of them, and the face oracle immediately
+    // reported 1,375 pixels of a three-flight run as the renderer's fault: an
+    // oracle lighting a scene from somewhere the renderer did not.
+    let flame = (f64::from(flame_at.x), f64::from(flame_at.y), f64::from(light_z));
     // The scene drawn again from the geometry, and where the two pictures differ
     // — see `write_reference`, and the module header's own note about why a count
     // cannot describe a shape.
@@ -2009,7 +2220,7 @@ fn main() {
                 beyond += 1;
             }
             let rendered_lit = shade.lit();
-            let independent = oracle_visible(point, flame, &bodies, body_of(id)) > 0.5;
+            let independent = oracle_visible(point, flame, &bodies, primitive_of(&bodies, id)) > 0.5;
             if independent == rendered_lit {
                 continue;
             }
