@@ -3516,3 +3516,296 @@ fn the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so() {
          the cell lookup is back",
     );
 }
+
+/// **A segment through the corner two occupied tiles share meets what stands
+/// there** — `docs/occluders.md`'s backlog entry on the corner-grazing
+/// candidate, which is the one geometry a broad phase can plausibly mishandle
+/// and the one nothing in the crate gated.
+///
+/// The grid had an *unconditional diagonal probe* for exactly this: a second
+/// `cell_stopped` on the neighbour the step does not take, so a ray that grazes
+/// a corner without entering either cell's interior still met what stood on it.
+/// Measured before S5's port: replacing that probe's result with `0.0` left the
+/// **whole crate green**, so nothing here had ever put a ray through a corner in
+/// a way a broad phase could get wrong. The port then deleted the probe with the
+/// grid — a tree is hit or missed by one slab test and has no tie to break — and
+/// that made the deletion *unmeasurable* rather than measured. This is the
+/// fixture that measures it.
+///
+/// **The scene is built so that the corner is a corner of the tree as well.**
+/// Eight whole-tile bodies down the diagonal, and the median split on their
+/// longest axis cuts the run in half: tiles `100..=103` under one leaf,
+/// `104..=107` under the other, and the two leaf boxes meet at exactly one
+/// point, `(104, 104)`. That point is also the shared corner of the two
+/// *primitives* on either side of it. So a segment through it grazes two node
+/// boxes and two primitives at a single instant each, which is the arrangement
+/// a strict node test — or any tolerance that folds a zero-length crossing into
+/// a miss — answers wrongly. The structural assertions below are what say the
+/// fixture still has that shape; the run is short enough to hold in the head and
+/// long enough that the split is real.
+///
+/// **The arbiter is [`segment_inside_box`] and not [`brute_force_blocked`]**,
+/// for § *The oracle*'s own reason: a fixed-step sampler can be defeated by a
+/// sliver thinner than its step, and the thin end of the ladder here is four
+/// hundred times thinner than [`BRUTE_STEP`]. The sampler is asked anyway
+/// wherever the clip is deep enough for it to resolve, as a third voice that
+/// shares no arithmetic with either walk.
+///
+/// **The ladder is powers of two, and that is not decoration.** Every endpoint
+/// is `106 - 2^-k` and every box corner a whole number, so the slab test's
+/// divisions are exact in `f32` and what the ladder measures is the geometry
+/// rather than the rounding of its own coordinates. It bottoms out at `2^-17`,
+/// which is one ulp at `106` — the thinnest a corner clip can be *stated* at
+/// this scale — and the assertion that the shift survived is what stops a
+/// tighter rung from silently becoming a repeat of the rung above it.
+///
+/// The same ladder is run twice, at a height inside the run and at one over it,
+/// so the walks have to say "open" as well as "stopped" and the oracle is what
+/// decides which. A gate that only ever demands a shadow passes on a walk that
+/// blocks everything.
+#[test]
+fn a_segment_through_the_corner_two_leaves_meet_at_finds_what_stands_there() {
+    use openshard_client_render::camera::TileBounds;
+    use openshard_client_render::light::{Ambient, Light, ShadowRays};
+    use openshard_client_render::occlusion::{Builder, Shape, SolidId};
+    use openshard_protocol::wire::Graphic;
+    use openshard_uofiles::tiledata::{StaticTile, TileFlags};
+
+    // Eight bodies down the diagonal from (100, 100). Eight because the split is
+    // by the median of the centres, so an even run splits in the middle and the
+    // seam between the two halves is a whole coordinate.
+    const RUN: i32 = 8;
+    // Five `z`, which is **under** the run's own eight tiles of extent: the split
+    // takes the node's longest axis, and a taller run would split in `z`, where
+    // every one of these boxes sits at the same height and the two halves would
+    // share a whole face instead of a corner.
+    const HEIGHT: u8 = 5;
+    // Where the two halves meet, in both `x` and `y` — the shared corner of the
+    // bodies on tiles (103, 103) and (104, 104).
+    const CORNER: f64 = 104.0;
+
+    let mut grid = Builder::new(TileBounds {
+        min_x: 95,
+        max_x: 115,
+        min_y: 95,
+        max_y: 115,
+    });
+    for step in 0..RUN {
+        grid.add(
+            (100 + step) as u16,
+            (100 + step) as u16,
+            0,
+            Graphic(0x0100),
+            &StaticTile {
+                flags: TileFlags::new(TileFlags::NO_SHOOT),
+                height: HEIGHT,
+                ..StaticTile::default()
+            },
+            Shape::UNREAD,
+        );
+    }
+    let occlusion = grid.finish(&Cutaway::OPEN);
+    // Diagonal neighbours share an edge and never a whole face, so S3b's merge
+    // cannot fold this run — asserted rather than argued, because a merge would
+    // put both sides of the corner in one primitive and the exemption, not the
+    // broad phase, would be what answered every ray below.
+    assert_eq!(
+        occlusion.solids().len(),
+        RUN as usize,
+        "the run has to stay {RUN} primitives, or the corner this test is about is inside one of them",
+    );
+
+    let named = |at: f64| {
+        let found = occlusion
+            .solids()
+            .iter()
+            .position(|solid| solid.space.min.x == at && solid.space.min.y == at);
+        SolidId::new(found.unwrap_or_else(|| panic!("no body stands at ({at}, {at})")) as u32)
+    };
+    let (west, east) = (named(CORNER - 1.0), named(CORNER));
+
+    // **The fixture's own subject, asserted.** Two primitives meeting at a corner
+    // is a question for the narrow phase; two *leaves* meeting there is what
+    // makes it a question for the broad one.
+    let bvh = occlusion.bvh();
+    let leaf_of = |id: SolidId| {
+        bvh.nodes()
+            .iter()
+            .position(|node| node.leaf.is_some_and(|leaf| bvh.primitives(leaf).contains(&id)))
+            .expect("every primitive of a frame is named by exactly one leaf")
+    };
+    let (west_leaf, east_leaf) = (leaf_of(west), leaf_of(east));
+    assert_ne!(
+        west_leaf, east_leaf,
+        "both sides of the corner are under one leaf, so no node box is grazed and this \
+         fixture is about the narrow phase only — lengthen the run until the split falls \
+         between them",
+    );
+    let (west_box, east_box) = (bvh.nodes()[west_leaf].space, bvh.nodes()[east_leaf].space);
+    assert!(
+        west_box.max.x == CORNER
+            && west_box.max.y == CORNER
+            && east_box.min.x == CORNER
+            && east_box.min.y == CORNER,
+        "the two leaf boxes do not meet at ({CORNER}, {CORNER}) — west ends at \
+         ({}, {}), east starts at ({}, {}), and a segment through that point would be \
+         crossing one of them rather than grazing both",
+        west_box.max.x,
+        west_box.max.y,
+        east_box.min.x,
+        east_box.min.y,
+    );
+
+    // The ladder, in powers of two so every endpoint below is exact — see the
+    // doc. `2^-17` is one ulp at `106`; there is no rung under it to take.
+    let mut offsets = vec![0.0_f32];
+    for exponent in [1, 4, 8, 12, 16, 17] {
+        let step = (2.0_f32).powi(-exponent);
+        offsets.push(step);
+        offsets.push(-step);
+    }
+
+    let mut stopped = 0_usize;
+    let mut open = 0_usize;
+    let mut sampled = 0_usize;
+    let mut wrong: Vec<String> = Vec::new();
+    for &offset in &offsets {
+        // The anti-diagonal through the corner, slid `offset` along itself in
+        // both coordinates: `x + y = 208 - 2·offset`. Positive slides the line
+        // into the west body's own far corner and clean past the east one;
+        // negative does the reverse; zero touches both at exactly one point. Both
+        // ends stand on empty tiles, so nothing here is a fragment of the run and
+        // neither identity nor D2 has anything to say.
+        for (what, height) in [("through the run", 2.0_f32), ("over the run", 7.0_f32)] {
+            let from = [106.0 - offset, 102.0 - offset, height];
+            let to = [102.0 - offset, 106.0 - offset, height];
+            // The rung is real. An offset under an ulp would round away and this
+            // ladder would quietly measure the same ray twice.
+            assert_eq!(
+                106.0_f32 - from[0],
+                offset,
+                "an offset of {offset:e} does not survive `f32` at this scale, so this rung \
+                 is the one above it wearing a smaller number",
+            );
+
+            let (from64, to64) = (from.map(f64::from), to.map(f64::from));
+            let ground = ((to64[0] - from64[0]).powi(2) + (to64[1] - from64[1]).powi(2)).sqrt();
+            // The exact answer, in `f64`, over every primitive of the frame: a
+            // primitive meets the **open** segment. The deepest such crossing is
+            // kept beside it, because it is what says whether the fixed-step
+            // sampler can be asked at all.
+            let deepest = occlusion
+                .solids()
+                .iter()
+                .filter_map(|solid| {
+                    let (min, max) = (solid.space.min, solid.space.max);
+                    segment_inside_box(from64, to64, [min.x, min.y, min.z], [max.x, max.y, max.z])
+                        .filter(|(enter, leave)| *enter < 1.0 && *leave > 0.0)
+                        .map(|(enter, leave)| (leave - enter) * ground)
+                })
+                .fold(f64::NEG_INFINITY, f64::max);
+            let blocked = deepest > f64::NEG_INFINITY;
+            match blocked {
+                true => stopped += 1,
+                false => open += 1,
+            }
+
+            let spot = Spot::flat(
+                Vec2::new(from[0], from[1]),
+                from[2],
+                (from[0].floor() as i32, from[1].floor() as i32),
+            );
+            let lighting = Lighting {
+                ambient: Ambient {
+                    sky: [0.0, 0.0, 0.0],
+                    ground: [0.0, 0.0, 0.0],
+                },
+                lights: vec![Light {
+                    at: Vec2::new(to[0], to[1]),
+                    z: to[2],
+                    radius: 30.0,
+                    color: [1.0, 1.0, 1.0],
+                    intensity: 1.0,
+                    beam: None,
+                }],
+                occlusion: occlusion.clone(),
+                sun: None,
+                view: debug::View::Lit,
+                // One ray and not eight: a sphere of `FLAME_RADIUS` would put
+                // every sample off the line this whole fixture is about.
+                flame_radius: 0.0,
+                shadow_rays: ShadowRays::DEFAULT,
+            };
+            // Collected rather than asserted on the spot, so an injection says
+            // **which** rungs of the ladder are load-bearing instead of stopping
+            // at the first one. The exact-corner rung and a rung a tolerance
+            // would swallow are different claims and this is what tells them
+            // apart.
+            for (name, sample) in [
+                ("walk_the_wire", light::sample(spot, &lighting)),
+                ("walk_the_record", light::sample_exact(spot, &lighting)),
+            ] {
+                let through = sample.reaches[0].through;
+                let (want, floor, ceiling) = match blocked {
+                    true => ("stopped", 0.0, 0.01),
+                    false => ("open", 0.99, 1.0),
+                };
+                if !(floor..=ceiling).contains(&through) {
+                    wrong.push(format!(
+                        "a segment {what} at {offset:e} from the corner: the geometry says the \
+                         ray is {want} (deepest crossing {deepest:.3e} tiles), and {name} \
+                         answered {through:.4}",
+                    ));
+                }
+            }
+
+            // The third voice, wherever it can resolve the clip at all: a point
+            // sampler that shares no arithmetic with either walk. Four steps of
+            // margin, since a march lands *in* a window of depth `d` only when
+            // `d` is comfortably over its own stride.
+            if blocked && deepest > f64::from(BRUTE_STEP) * 4.0 {
+                sampled += 1;
+                assert!(
+                    brute_force_blocked(
+                        from,
+                        to,
+                        (from[0].floor() as i32, from[1].floor() as i32),
+                        (to[0].floor() as i32, to[1].floor() as i32),
+                        false,
+                        &occlusion,
+                    ),
+                    "a segment {what} at {offset:e} from the corner clips {deepest:.3e} tiles of \
+                     the run, and the point sampler walked straight through it",
+                );
+            }
+        }
+    }
+
+    // What was examined, and it is asserted rather than printed: a ladder that
+    // slid off the run would report every ray open and every assertion above
+    // would hold vacuously.
+    assert_eq!(
+        stopped,
+        offsets.len(),
+        "every ray at the run's own height has to meet it — {stopped} of {} did",
+        offsets.len(),
+    );
+    assert_eq!(
+        open,
+        offsets.len(),
+        "every ray over the run has to miss it — {open} of {} did",
+        offsets.len(),
+    );
+    assert!(
+        sampled >= 4,
+        "the point sampler was asked {sampled} times: the fat end of the ladder is what it is \
+         for, and a fixture it can never resolve has lost its third voice",
+    );
+    assert!(
+        wrong.is_empty(),
+        "{} of {} walked rays disagree with the geometry:\n{}",
+        wrong.len(),
+        (stopped + open) * 2,
+        wrong.join("\n"),
+    );
+}

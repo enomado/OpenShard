@@ -6182,6 +6182,173 @@ fn the_shader_and_light_sample_agree_about_a_surface_that_looks_up() {
     }
 }
 
+/// **The shader meets what stands at the corner two leaves meet at** —
+/// `docs/occluders.md`'s backlog entry on the corner-grazing candidate, on the
+/// side the grid's own probe was deleted from.
+///
+/// The grid carried an *unconditional diagonal probe* in `blit.wesl`'s `walk`, so
+/// a ray grazing a corner without entering either cell's interior still met what
+/// stood on it. S5 measured what that probe was worth — replacing its result with
+/// `0.0` left the **whole crate green** — and then deleted it with the grid, which
+/// made the deletion unmeasurable rather than measured. `lighting.rs`'s
+/// `a_segment_through_the_corner_two_leaves_meet_at_finds_what_stands_there` is
+/// the same claim about the two CPU walks; this is the shader's own third of it,
+/// and nothing else here reaches it.
+///
+/// **One pixel, and everything about it is exact.** Eight whole-tile bodies down
+/// the diagonal; the median split cuts the run in half and the two leaf boxes
+/// meet at exactly one point, the shared corner of the two bodies either side of
+/// the split. The fragment is a tile's own top-left corner and the flame stands
+/// on the anti-diagonal through that point, so the whole segment lies in the
+/// plane `x + y = cx + cy` — the one plane that touches those two boxes along a
+/// single vertical edge and misses the other six outright. So the *only* thing
+/// between this fragment and its flame is a graze of exactly zero length at the
+/// corner, and the control is the same frame with those two bodies taken out.
+///
+/// `flame_radius` is `0.0` for the reason the vertical-ray fixtures give: a
+/// sphere of samples puts every ray off the plane this fixture is built on, and
+/// what it would then measure is the ordinary walk.
+#[test]
+fn the_shader_meets_what_stands_at_the_corner_two_leaves_meet_at() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+
+    let (cx, cy) = openshard_client_render::scene::CENTRE;
+    let bounds = TileBounds {
+        min_x: i32::from(cx) - 10,
+        max_x: i32::from(cx) + 10,
+        min_y: i32::from(cy) - 10,
+        max_y: i32::from(cy) + 10,
+    };
+    // Which of the run's eight bodies sit either side of the split, and therefore
+    // which two share the corner at `(cx, cy)`.
+    const WEST: u16 = 3;
+    const EAST: u16 = 4;
+
+    let run = |without: &[u16]| {
+        let mut grid = Builder::new(bounds);
+        for step in 0..8_u16 {
+            let tile = (cx - 4 + step, cy - 4 + step);
+            if without.contains(&step) {
+                continue;
+            }
+            grid.add(
+                tile.0,
+                tile.1,
+                0,
+                Graphic(0x0100),
+                &openshard_uofiles::tiledata::StaticTile {
+                    flags: openshard_uofiles::tiledata::TileFlags::new(
+                        openshard_uofiles::tiledata::TileFlags::NO_SHOOT,
+                    ),
+                    // Under the run's own eight tiles of extent, so the tree
+                    // splits the diagonal in `x` rather than in `z`, where every
+                    // one of these boxes sits at the same height.
+                    height: 5,
+                    ..openshard_uofiles::tiledata::StaticTile::default()
+                },
+                Shape::UNREAD,
+            );
+        }
+        grid.finish(&Cutaway::OPEN)
+    };
+
+    // **The fixture's own subject, asserted.** Two primitives meeting at a corner
+    // is a question for the narrow phase; two leaf *boxes* meeting there is what
+    // makes it a question for the broad one, and it is the split that puts them
+    // there rather than anything this test writes down.
+    let whole = run(&[]);
+    let (corner_x, corner_y) = (f64::from(cx), f64::from(cy));
+    let bvh = whole.bvh();
+    let ends = bvh
+        .nodes()
+        .iter()
+        .any(|node| node.leaf.is_some() && node.space.max.x == corner_x && node.space.max.y == corner_y);
+    let starts = bvh
+        .nodes()
+        .iter()
+        .any(|node| node.leaf.is_some() && node.space.min.x == corner_x && node.space.min.y == corner_y);
+    assert!(
+        ends && starts,
+        "no two leaf boxes meet at ({corner_x}, {corner_y}): one ending there {ends}, one \
+         starting there {starts} — the run is under a single leaf and this fixture is about \
+         the narrow phase only",
+    );
+
+    // The tile's own top-left corner, which is the only fraction `parity_place`
+    // draws that lands exactly on the plane — see the doc.
+    const ON_THE_PLANE: (u32, u32) = (40, 24);
+    let (x, y, sub_x, sub_y) = parity_place(ON_THE_PLANE.0, ON_THE_PLANE.1);
+    assert_eq!(
+        (x, y, sub_x, sub_y),
+        (cx + 1, cy - 1, 0.0, 0.0),
+        "the pixel has to be the corner of the tile one step off the anti-diagonal, or its \
+         ray does not run through the corner at all",
+    );
+
+    let frame = |grid: Occlusion| {
+        let lighting = Lighting {
+            ambient: openshard_client_render::light::NIGHT,
+            lights: vec![Light {
+                // On the anti-diagonal through the corner, and low enough that the
+                // segment crosses the corner column three quarters of a `z` up —
+                // inside the run's own height, where a flame overhead would clear
+                // it.
+                at: Vec2::new(f32::from(cx) - 3.0, f32::from(cy) + 3.0),
+                z: 3.0,
+                radius: 20.0,
+                color: [1.0, 1.0, 1.0],
+                intensity: 1.0,
+                beam: None,
+            }],
+            occlusion: grid,
+            sun: None,
+            view: View::Shadow,
+            flame_radius: 0.0,
+            shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        };
+        let frame = parity_frame(&device, &queue, &lighting, 64, 64, Fixture::ground());
+        shadow_drawn(frame.pixel(ON_THE_PLANE.0, ON_THE_PLANE.1))
+    };
+
+    let grazed = frame(whole);
+    assert_eq!(
+        grazed,
+        Shadow::Blocked,
+        "the shader lets a ray through the corner where two bodies meet: it drew {grazed:?} \
+         where the segment touches both of them at exactly one point",
+    );
+
+    // **The control, and it has to take both bodies away**: the segment touches
+    // each of them at the same instant, so either one alone still stops it. That
+    // is worth having as its own reading rather than as an argument — it is what
+    // says the two grazes are one point and not two chances at a thicker
+    // crossing.
+    for gone in [&[WEST][..], &[EAST][..]] {
+        let still = frame(run(gone));
+        assert_eq!(
+            still,
+            Shadow::Blocked,
+            "with body {gone:?} of the run taken out the other still meets the ray at the \
+             corner, and the shader drew {still:?}",
+        );
+    }
+    let open = frame(run(&[WEST, EAST]));
+    let Shadow::Through(visible) = open else {
+        panic!(
+            "with both bodies at the corner taken away nothing is left between this fragment \
+             and its flame, and the shader drew {open:?} — so what the reading above measures \
+             is not the corner",
+        );
+    };
+    assert!(
+        visible >= 0.99,
+        "the control fragment sees only {visible:.3} of its flame with the corner cleared, so \
+         something else in the run is on the segment and the graze is not what was measured",
+    );
+}
+
 /// The light view has no plateau in the middle of a pool.
 ///
 /// The failure this protects against is the one it was written for: the view

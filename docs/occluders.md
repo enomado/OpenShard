@@ -1568,23 +1568,66 @@ of one crate could not. `cargo check/clippy/fmt --workspace` and
 `cargo test -p openshard-client-render` (all 417 lib tests plus every
 integration suite) are green.
 
-🔴 **Nothing in the crate gates a corner-grazing candidate, and that is measured
-rather than suspected.** `blit.wesl`'s `walk` carried an *unconditional* diagonal
-probe — a second `cell_stopped` on the neighbour the step does not take — put
-there so a ray that grazes a corner without entering the cell's interior still
-meets what stands on it. Replace its result with `0.0` and **the entire crate
-stays green**: 526 tests, both path-tracer gates, the new shader sweep, all of
-it. The grid's own trajectory never needed it on any scene the suite draws.
+~~🔴 **Nothing in the crate gates a corner-grazing candidate, and that is
+measured rather than suspected.**~~ ✅ **Closed 2026-08-09, on both sides.**
+`blit.wesl`'s `walk` carried an *unconditional* diagonal probe — a second
+`cell_stopped` on the neighbour the step does not take — put there so a ray that
+grazes a corner without entering the cell's interior still meets what stands on
+it. Replacing its result with `0.0` left **the entire crate green**: 526 tests,
+both path-tracer gates, the shader sweep, all of it. The grid's own trajectory
+never needed it on any scene the suite drew, so the port deleted the probe with
+the grid — a tree is hit or missed by one slab test and has no tie to break —
+and that made the deletion *unmeasurable* rather than measured. The one geometry
+a hierarchy could plausibly mishandle was the one nothing would catch.
 
-Two things follow, and only the first is comfortable. The port deletes the probe
-along with the grid — a tree is hit or missed by one slab test and has no tie to
-break — so nothing is *lost*. But the suite's silence also means no fixture here
-puts a ray through a corner in a way that a broad phase can get wrong, so the
-one geometry a hierarchy could plausibly mishandle is the one nothing would
-catch. What would close it is a fixture built for it: a segment whose straight
-line passes exactly through the shared corner of two occupied tiles, with the
-brute-force oracle — which is `no cells` and therefore blind to tiles — as the
-arbiter.
+**What closes it is the fixture this entry asked for, built so that the corner is
+a corner of the *tree* as well.** Eight whole-tile bodies down the diagonal: the
+median split on the longest axis cuts the run in half, and the two leaf boxes
+meet at exactly one point — which is also the shared corner of the two
+primitives either side of it. Both facts are asserted rather than assumed, since
+a run short enough to sit under one leaf would leave the fixture asking about
+the narrow phase alone.
+
+- **The two CPU walks**: `lighting.rs`'s `a_segment_through_the_corner_two_
+  leaves_meet_at_finds_what_stands_there`. A ladder of offsets slides the
+  anti-diagonal across that corner, in **powers of two** so every endpoint is
+  exact in `f32` and the rungs measure the geometry rather than the rounding of
+  their own coordinates; it bottoms out at `2^-17`, one ulp at `106`, with the
+  shift asserted so a tighter rung cannot quietly become the one above it. The
+  arbiter is `segment_inside_box` and **not** `brute_force_blocked` — § *The
+  oracle*'s own rule, and the thin end here is four hundred times thinner than
+  `BRUTE_STEP` — with the sampler asked anyway as a third voice wherever it can
+  resolve the clip. The same ladder runs at a height inside the run and over it,
+  so the walks have to say *open* as well as *stopped*: 52 walked rays, half of
+  each.
+- **The shader**: `frame.rs`'s `the_shader_meets_what_stands_at_the_corner_two_
+  leaves_meet_at`, which is the side the probe was deleted from. One pixel, and
+  everything about it exact: the fragment is a tile's own top-left corner and the
+  flame stands on the anti-diagonal through the split, so the whole segment lies
+  in the plane `x + y = cx + cy` — the one plane that touches those two boxes
+  along a single vertical edge and misses the other six outright. So the only
+  thing between that fragment and its flame is a graze of exactly zero length,
+  and the control takes both bodies away. Either one alone still stops the ray,
+  which is its own reading: the two grazes are one point rather than two chances
+  at a thicker crossing.
+
+*Fault injection, three, and the third is the number this entry was waiting
+for:*
+
+- *The node test made strict* (a zero-length node graze dropped) on the CPU: **2
+  of 52** rays red, both of them the exact-corner rung. Across the whole crate
+  the only other test that notices is `a_vertical_ray_meets_what_stands_over_it_
+  whatever_shape_it_is`, and it notices because a **lid** is a box flat in `z` —
+  a degenerate box, not a corner. So the corner case really was ungated.
+- *A tolerance in the node test* (`1e-4` of the segment): **10 of 52**, the exact
+  rung and the two thinnest either side of it. The `2^-12` rung survives, its
+  crossing being `1.2e-4` of the segment — which is the ladder reporting where a
+  tolerance stops mattering rather than a pass. The two fuzzers and the pinned
+  corner graze go red at this width as well.
+- *The same injection in `blit.wesl`'s own traversal*: the new GPU fixture is
+  **the only thing in the crate that goes red** — the other 51 tests of
+  `frame.rs`, all 6 of `pictures.rs` and all 8 of `traced.rs` stay green, the
+  shader sweep and both path-tracer gates among them.
 
 🚩 **The merge inherits the seam, and what it inherits is a sphere's own half.**
 S3 cures a surface shadowing itself for every ray *leaving* that surface, which is
