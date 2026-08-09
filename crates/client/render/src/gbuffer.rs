@@ -217,7 +217,8 @@ pub fn ids_id(word: u32) -> u32 {
     word >> IDS_ID_SHIFT
 }
 
-/// Where each pixel's fragment is in the world: `(x, y, z, 1)`.
+/// Where each pixel's fragment is in the world, and **which solid of the grid it
+/// is a point of**: `(x, y, z, solid)`.
 ///
 /// `Rgba32Float`, and the four channels are not a packing — they are the number
 /// itself. What this replaces is a `tile` fetched from an instance row, a
@@ -240,21 +241,60 @@ pub fn ids_id(word: u32) -> u32 {
 /// next step and not this one: the occlusion grid, every solid's span and the
 /// whole shadow walk are stated in `z` units, and a G-buffer that alone counted
 /// differently would be a second metric rather than one.
+///
+/// **The fourth channel is not a homogeneous `1`.** It is the
+/// [`crate::occlusion::SolidId`] the fragment is a point of, or [`SOLID_NONE`]
+/// for a point of none — see `solid_format.wesl`, which carries the argument,
+/// and [`pack_solid`]/[`unpack_solid`], which are its Rust twins. It is the one
+/// number the shadow walk compares, and it rides here because the pass that
+/// knows it is the pass that met the box: an id fits a `f32` exactly and this
+/// channel was a constant.
 pub const POSITION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 /// What an untouched pixel of [`POSITION_FORMAT`] is left as.
 ///
 /// Never read: a pixel nothing drew is [`crate::place::Kind::Nothing`], which
 /// the blit passes through before it looks at any of this. The fourth channel
-/// is `1` where a fragment wrote one and `0` here, so a plane read on its own —
-/// by a diagnostic, or by a test — can still tell the two apart without a
-/// second fetch.
+/// is negative where a fragment wrote no solid and `0` here, so a plane read on
+/// its own — by a diagnostic, or by a test — can still tell "nothing drew this"
+/// from "a point of nothing" without a second fetch.
 pub const POSITION_CLEAR: wgpu::Color = wgpu::Color {
     r: 0.0,
     g: 0.0,
     b: 0.0,
     a: 0.0,
 };
+
+/// A point of no solid at all, as [`POSITION_FORMAT`]'s fourth channel holds it
+/// — `solid_format.wesl`'s `SOLID_NONE`.
+///
+/// Negative because [`crate::occlusion::SolidId::NOBODY`] is `u32::MAX` and that
+/// is the one id an `f32` cannot carry exactly. Everything a real id can be —
+/// three bytes, see [`crate::occlusion::SolidId`] — is under `2^24` and
+/// therefore exact.
+pub const SOLID_NONE: f32 = -1.0;
+
+/// One [`crate::occlusion::SolidId`] word as the channel it rides in:
+/// `solid_format.wesl`'s `pack_solid`.
+pub fn pack_solid(solid: u32) -> f32 {
+    match solid == crate::occlusion::SolidId::NOBODY {
+        true => SOLID_NONE,
+        false => solid as f32,
+    }
+}
+
+/// And back — `solid_format.wesl`'s `unpack_solid`.
+///
+/// The pair is here for the same reason [`pack_normal`] and [`unpack_normal`]
+/// are: a test that reads a plane back off the GPU asserts the *word* the shader
+/// wrote against the word this side computes, so the two spellings of one format
+/// are compared rather than each trusted.
+pub fn unpack_solid(channel: f32) -> u32 {
+    match channel < 0.0 {
+        true => crate::occlusion::SolidId::NOBODY,
+        false => channel as u32,
+    }
+}
 
 /// Which way each pixel's surface looks: one octahedral word, and the layout is
 /// [`pack_normal`].
@@ -525,6 +565,17 @@ pub struct Fragment {
     pub kind: crate::place::Kind,
     /// Which way its surface looks.
     pub stance: crate::place::Stance,
+    /// **Which solid of the grid it is a point of**, or [`None`] for a point of
+    /// none — the ground, a mobile, a surface a fixture has no grid behind.
+    ///
+    /// A field and not a derivation, unlike [`Fragment::normal`]'s stance table:
+    /// the real pass reads it off the box its view ray met and there is nothing
+    /// about *where* a fragment is that says which primitive it belongs to. It
+    /// is the same fact [`crate::light::Spot::solid`] carries on the CPU side,
+    /// and a fixture that means to compare the two walks has to state it once
+    /// for both — which is exactly what it could not do while this rode in a
+    /// cell scan keyed on an owner.
+    pub solid: Option<crate::occlusion::SolidId>,
 }
 
 impl Fragment {
@@ -538,13 +589,14 @@ impl Fragment {
     ///
     /// The *unquantised* pair, which is the whole point of the plane: what the
     /// place attachment rounded to a hundred-and-twenty-seventh of a tile and a
-    /// sixteenth of a `z` unit, this states outright.
+    /// sixteenth of a `z` unit, this states outright — and the solid in the
+    /// fourth channel, [`pack_solid`].
     pub fn position(self) -> [f32; 4] {
         [
             f32::from(self.tile.0) + self.sub.0,
             f32::from(self.tile.1) + self.sub.1,
             self.z,
-            1.0,
+            pack_solid(crate::occlusion::SolidId::word(self.solid)),
         ]
     }
 
@@ -691,6 +743,9 @@ mod tests {
                 z: 3.5,
                 kind,
                 stance,
+                // A point of no solid: this is about the normal plane, and
+                // nothing here has a grid behind it to name one from.
+                solid: None,
             }
             .normal()
         };

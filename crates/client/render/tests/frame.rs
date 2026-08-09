@@ -36,7 +36,7 @@ const TORCH_TILES: f32 = 3.0;
 use openshard_client_render::camera::TileBounds;
 use openshard_client_render::gbuffer;
 use openshard_client_render::mobiles::{self, Mobile};
-use openshard_client_render::occlusion::{self, Builder, Occlusion, OwnerId, Shape};
+use openshard_client_render::occlusion::{self, Builder, Occlusion, OwnerId, Shape, SolidId};
 use openshard_client_render::outline::{self, Outline, Ring};
 use openshard_client_render::place::{Kind, Place};
 use openshard_client_render::renderer::{self, GroundRenderer, SpriteRenderer, Target};
@@ -2432,6 +2432,104 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
     assert_eq!(id(middle - 4, row), 1, "the left half is not its shadow row");
 }
 
+/// `docs/lighting_rebuild.md` phase 7: a mobile has no volume, so before this
+/// its normal was the zero vector — "lit from every side", the flatness a
+/// person reported beside a torch. The plane it is drawn on has exactly one
+/// normal, and this is the gate that the shader writes *that* one rather than
+/// the zero vector or some other guess: the word the GPU wrote, checked
+/// against `impostor::billboard_normal` packed on this side, exactly, the
+/// same shape `two_mesh_faces_carry_their_own_two_normals` and
+/// `a_sprite_pixel_meets_the_same_box_on_both_sides` already hold their own
+/// producers to.
+#[test]
+fn a_billboards_normal_is_the_plane_it_is_drawn_on() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+
+    const GRAPHIC: Graphic = Graphic(1);
+    const SIZE: u16 = 20;
+    const ORIGIN: f32 = 20.0;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([(
+        GRAPHIC,
+        Image::new(
+            SIZE,
+            SIZE,
+            vec![Color16(0b0_00000_11111_00000); usize::from(SIZE) * usize::from(SIZE)],
+        ),
+    )])
+    .expect("fits");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+
+    let at = Point::new(300, 400, 0);
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        &[SpriteQuad {
+            rect: Rect {
+                x: ORIGIN,
+                y: ORIGIN,
+                width: f32::from(sprite.width),
+                height: f32::from(sprite.height),
+            },
+            region: sprite.region,
+            depth: 0.4,
+            hue: 0,
+            place: Place::of_mobile(at),
+            twin: 0,
+            owner: 0,
+            volumes: Range::default(),
+        }],
+        &[],
+        &[],
+        &[],
+        256,
+    );
+
+    let x = ORIGIN as u32 + u32::from(SIZE) / 2;
+    let y = ORIGIN as u32 + u32::from(SIZE) / 2;
+    assert_eq!(
+        gbuffer::ids_kind(places.at(x, y)),
+        Some(Kind::Mobile),
+        "nothing was drawn at ({x}, {y})",
+    );
+    // Not the exact word, unlike the corner and mesh-face gates beside this
+    // one: those compare *cardinal* faces, and `NORMAL_AXIS_SPAN`'s evenness
+    // is what buys a cardinal a bit-for-bit round trip. `(1, 1, 0)` is a
+    // diagonal on the octahedral map's own equator — the fold this crate's
+    // own sweep already measured — so `normalize`'s GPU and CPU paths land a
+    // quantisation step apart on `z` alone (`8.6e-5` here, both sides reading
+    // `0.0` in every digit a person would type). The bound is
+    // `a_direction_survives_the_normal_packing`'s own: `0.01°` is what a
+    // channel can show.
+    let angle = |a: [f32; 3], b: [f32; 3]| {
+        let chord: f64 = (0..3)
+            .map(|i| {
+                let d = f64::from(a[i]) - f64::from(b[i]);
+                d * d
+            })
+            .sum::<f64>()
+            .sqrt();
+        2.0 * (chord / 2.0).clamp(-1.0, 1.0).asin().to_degrees()
+    };
+    let gpu = gbuffer::unpack_normal(places.normal_at(x, y));
+    let cpu = gbuffer::unpack_normal(gbuffer::pack_normal(
+        openshard_client_render::impostor::billboard_normal(),
+    ));
+    let off = angle(gpu, cpu);
+    assert!(
+        off < 0.01,
+        "a billboard's normal is {off}° off the plane it is drawn on: {gpu:?} vs {cpu:?}",
+    );
+}
+
 /// The impostor is written twice — `impostor.wesl` and [`impostor`] — and this
 /// is the only thing that compares them.
 ///
@@ -2490,16 +2588,24 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
     // load-bearing rather than decorative. Written out rather than taken from
     // `Solid::box_of` because what is under test here is the arithmetic and not
     // the grid's own shapes — the two tests above are where those are stated.
+    //
+    // **Three distinct names**, which is the other half of what the sweep
+    // compares since `solid_format.wesl`: a fragment carries the name of the box
+    // it was met against, so ids that were all `NOBODY` (or all equal) would let
+    // a pass that always answered with the *first* box pass this test — which is
+    // exactly the defect that shipped when phase 6d took the mesh pass off real
+    // statics and left `blit.wesl` narrowing an owner by a stance. Arbitrary and
+    // non-consecutive on purpose: nothing here may pass by counting.
     let boxes = [
         Volume {
             lo: [300.0, 400.5, 0.0],
             hi: [301.0, 401.0, 3.0],
-            solid: occlusion::SolidId::word(None),
+            solid: 7,
         },
         Volume {
             lo: [300.0, 400.0, 0.0],
             hi: [301.0, 400.5, 6.0],
-            solid: occlusion::SolidId::word(None),
+            solid: 11,
         },
         // And a lid, flat: `lo.z == hi.z`, which is what the grid stands for a
         // floor and the one shape whose `z` slab is a point — so the sweep runs
@@ -2511,7 +2617,7 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
         Volume {
             lo: [300.0, 400.0, 9.0],
             hi: [301.0, 401.0, 9.0],
-            solid: occlusion::SolidId::word(None),
+            solid: 13,
         },
     ];
     let quads = [SpriteQuad {
@@ -2601,6 +2707,17 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
                     met.at,
                 );
             }
+            // **And it carries that box's own name**, which is what the shadow
+            // walk compares and the whole of `solid_format.wesl`. A `SolidId` is
+            // three bytes and an `f32` holds every integer to twenty-four, so
+            // this is an equality and not a tolerance — the same standard the
+            // normal above is held to.
+            assert_eq!(
+                point[3],
+                gbuffer::pack_solid(volume.solid),
+                "({x}, {y}) is a point of box {which} and says it is a point of {}",
+                gbuffer::unpack_solid(point[3]),
+            );
             compared += 1;
             faces[met.normal.iter().position(|n| *n == 1.0).expect("one axis")] += 1;
             if !met.hit() {
@@ -2673,6 +2790,8 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
         id: 0,
         tile,
         normal: Stance::FaceEast.normal(),
+        // Not this test's subject — see `a_mesh_face_pixel_carries_its_exact_world_position`.
+        colour: [1.0, 1.0, 1.0],
     };
     let vertices = [
         corner(54.0, 54.0),
@@ -2759,6 +2878,8 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
         id: 0,
         tile,
         normal: Stance::Flat.normal(),
+        // Not this test's subject — see `a_mesh_face_pixel_carries_the_mesh_face_sentinel`.
+        colour: [1.0, 1.0, 1.0],
     };
     let vertices = [
         corner(54.0, 54.0),
@@ -2794,7 +2915,12 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
     );
     assert_eq!(
         places.position_at(64, 64),
-        [world[0], world[1], world[2], 1.0],
+        // The fourth channel is `SOLID_NONE` and that is this pass's own answer
+        // rather than an absence: a mesh face names its solid in its *row*, so
+        // `blit.wesl`'s `STANCE_MESH_FACE` branch reads it there and the channel
+        // every other producer states it in says "ask the row". See
+        // `mesh_face.wesl` and `solid_format.wesl`.
+        [world[0], world[1], world[2], gbuffer::SOLID_NONE],
         "a mesh face's fragment does not carry the position the pass computed",
     );
 }
@@ -2851,6 +2977,8 @@ fn two_mesh_faces_carry_their_own_two_normals() {
             id,
             tile,
             normal,
+            // Not this test's subject — see `two_mesh_faces_carry_their_own_two_normals`.
+            colour: [1.0, 1.0, 1.0],
         };
         let to = from + 20.0;
         [
@@ -4589,29 +4717,33 @@ fn parity_place(px: u32, py: u32) -> (u16, u16, f32, f32) {
 struct Fixture {
     surface: Surface,
     z: i8,
-    /// Which occluder of its own cell every pixel is a point of.
+    /// Which **solid** of the grid every pixel is a point of.
     ///
-    /// [`OwnerId::NONE`] for every fixture that predates sub-tile lids, and that
-    /// is the honest default: those scenes are flat ground and walls, where a
-    /// pixel is a point of nothing and identity decides nothing. A fixture whose
-    /// scene has a *flight* in it must say otherwise — a tread's top is excused
-    /// from its own lid by identity alone, and without an owner the fragment is
-    /// shadowed by the very step it stands on and every other question about it
-    /// is unreachable.
+    /// [`None`] for every fixture that predates sub-tile lids, and that is the
+    /// honest default: those scenes are flat ground and walls, where a pixel is
+    /// a point of nothing and identity decides nothing. A fixture whose scene
+    /// has a *flight* in it must say otherwise — a tread's top is excused from
+    /// its own lid by identity alone, and without one the fragment is shadowed
+    /// by the very step it stands on and every other question about it is
+    /// unreachable.
     ///
-    /// **An owner and not a `SolidId`, which is one level coarser than what the
-    /// shader compares** — `docs/lighting_rebuild.md` phase 4. Every pixel this
-    /// fixture writes is a `Kind::Static` *sprite*, so `blit.wesl`'s `own_solid`
-    /// narrows this owner by the pixel's own stance, exactly as it does for a real
-    /// wall. For a flight that narrowing is ambiguous by construction — three
-    /// lids, one owner, one flat stance — so which tread a flat pixel comes out a
-    /// point of is the grid's own reference order. The one test in that shape
-    /// (`the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under`)
-    /// passes because that order puts the bottom tread first, and it is written
-    /// down here because nothing else says so: the real pipeline draws a flight
-    /// through the mesh pass, whose row names its solid outright. See this file's
-    /// own entry in `docs/lighting_rebuild.md`'s backlog.
-    owner: OwnerId,
+    /// **A `SolidId` and not an `OwnerId`, which is what the shader compares** —
+    /// `docs/lighting_rebuild.md` phase 4. It was the coarser one until the
+    /// solid came to ride in the position plane (`solid_format.wesl`): the
+    /// shader took an owner off the instance row and narrowed it per fragment by
+    /// the stance, which is exact for a wall and ambiguous by construction for a
+    /// flight — three lids, one owner, one flat stance — so which tread a flat
+    /// pixel came out a point of was the grid's own reference order. This states
+    /// it instead.
+    ///
+    /// **One solid for the whole frame**, which is the fixture's own limit and
+    /// not the format's: every pixel here is written from one `Fixture`, so a
+    /// scene whose pixels stand on *different* solids says so by choosing which
+    /// one it is asking about. `the_shader_does_not_stop_a_vertical_ray_with_a_
+    /// lid_it_is_not_under` is the one test in that shape, and its two pixels
+    /// are picked around exactly this: the lit one really is on the tread named
+    /// here, and the control one is not and is blocked by its own.
+    solid: Option<SolidId>,
     /// How far past the sub-tile fraction every fragment's *position* is written,
     /// while its **tile stays what [`parity_place`] says**.
     ///
@@ -4637,7 +4769,7 @@ impl Fixture {
         Self {
             surface: Surface::Upright,
             z: 0,
-            owner: OwnerId::NONE,
+            solid: None,
             drift: (0.0, 0.0),
         }
     }
@@ -4660,7 +4792,7 @@ fn parity_frame(
     let Fixture {
         surface,
         z,
-        owner,
+        solid,
         drift,
     } = fixture;
     let world = openshard_client_render::blit::world_texture(device, width, height);
@@ -4701,8 +4833,13 @@ fn parity_frame(
                 // never a second half to point at — see
                 // `crate::sprite::split_corners` for the real pass's row.
                 twin: 0,
-                // The fixture's own, so the shader is told what `Spot` is told.
-                owner: u32::from(owner.raw()),
+                // **Never read by the shader any more**, and the row carries it
+                // only because `SpriteQuad` has the field: what a fragment is a
+                // point of rides in the position plane now, per fragment, and
+                // `blit.wesl`'s owner-and-stance narrowing went with the scan
+                // that used it. `OwnerId::NONE`'s own word, which is what a row
+                // that means nothing by it should say.
+                owner: u32::from(OwnerId::NONE.raw()),
                 volumes: openshard_client_render::impostor::Range::default(),
             }
             .write(&mut face_rows);
@@ -4783,6 +4920,10 @@ fn parity_frame(
                 z: f32::from(z),
                 kind,
                 stance,
+                // The fixture's own, so the shader is told what `Spot` is told —
+                // one statement about the fragment, written into the plane the
+                // real passes write it into.
+                solid,
             };
             // A static's or a mobile's *tile* comes from the row — that is what
             // the id plane names, and the position plane keeps saying where the
@@ -5025,7 +5166,7 @@ fn the_shader_reads_a_primitive_at_no_fraction_a_byte_could_name() {
             // Inside the box's own span, which runs from just over 1 to just
             // under 9: a ray level with the fragment crosses it in `z`.
             z: 4,
-            owner: OwnerId::NONE,
+            solid: None,
             drift: (0.5, (min_y - f64::from(cy) + offset) as f32),
         };
         let frame = parity_frame(&device, &queue, &lighting, 64, 64, fixture);
@@ -5165,10 +5306,22 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
     let graphic = Graphic(0x0736);
     builder.add(cx, cy, 0, graphic, &stair, Shape::solid(prism));
     let occlusion = builder.finish(&Cutaway::OPEN);
-    let owner = occlusion.owner_at(i32::from(cx), i32::from(cy), 0, graphic);
+    // **The bottom tread's own solid**, named rather than arrived at: `LIT` sits
+    // in that tread's strip, so this is what a fragment there really is a point
+    // of. It used to be `owner_at` and the shader's own narrowing, which for a
+    // flight comes down to the grid's reference order — three lids, one owner —
+    // and the test passed because that order happens to put tread 0 first. The
+    // solid rides in the position plane now (`solid_format.wesl`), so the
+    // fixture says which one and the reference order decides nothing.
+    let solid = occlusion.id_of(
+        i32::from(cx),
+        i32::from(cy),
+        occlusion::Owner::new(0, graphic),
+        occlusion::Part::nth(0),
+    );
     assert!(
-        !owner.same(OwnerId::NONE),
-        "the flight has to have an owner or the fragment is shadowed by its own tread",
+        solid.is_some(),
+        "the flight has to have a bottom tread or the fragment is shadowed by the step it stands on",
     );
 
     // The pixel the ray is vertical at, and its control. Both are on the centre
@@ -5235,7 +5388,7 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
         // The bottom tread's own height: what makes `LIT` a point *of* that
         // tread rather than of the air over it.
         z: 1,
-        owner,
+        solid,
     };
 
     let (width, height) = (64, 64);
@@ -5319,7 +5472,7 @@ fn the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside() {
             // the shape alone.
             surface: Surface::Upright,
             z: 0,
-            owner: OwnerId::NONE,
+            solid: None,
             drift: (0.0, 0.0),
         };
         let frame = parity_frame(&device, &queue, &lighting, 64, 64, fixture);
@@ -5458,7 +5611,7 @@ fn a_fragment_a_hair_inside_a_wall_is_shadowed_by_the_cell_it_drifted_into() {
         surface: Surface::Upright,
         // Inside the body's own `0..20`, and level with the flame.
         z: 10,
-        owner: OwnerId::NONE,
+        solid: None,
         drift: (DRIFT, 0.0),
     };
 

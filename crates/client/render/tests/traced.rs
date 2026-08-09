@@ -507,6 +507,11 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
                     id,
                     tile: [f32::from(b.tile.0), f32::from(b.tile.1)],
                     normal: face.normal,
+                    // The same authored value `oracle::pathtrace::Albedos::
+                    // INVENTED.body` is, so a brightness gate that reads this
+                    // back with `oracle::body_albedo` is measuring a number
+                    // both sides were actually given, not a coincidence.
+                    colour: oracle::pathtrace::Albedos::INVENTED.body.map(|c| c as f32),
                 });
             }
         }
@@ -1347,9 +1352,12 @@ const WEDGE_BIAS: f64 = 0.002;
 /// The albedos are **one** on the reference's side and the ambient is nothing on
 /// the engine's, which makes both pictures the same quantity: the sum over the
 /// flame's body of `visibility × cosine × falloff²`, times colour and intensity.
-/// That is what lets a scene of *boxes* be judged for brightness at all —
-/// `mesh_face.wesl` writes no colour, so a shaded comparison here would be
-/// judging [`oracle::pathtrace::Albedos::body`], which is invented.
+/// **Pinned deliberately, not for want of a real number any more** — since
+/// `docs/lighting_rebuild.md` phase 6d a box has a measurable
+/// [`oracle::pathtrace::Albedos::body`] — but this gate's subject is the
+/// below-horizon wedge alone, and folding a second measured quantity in would
+/// be a second thing that could move the picture on a run where only one is
+/// meant to.
 #[test]
 fn a_flame_just_over_a_landing_does_not_wedge_it_with_its_own_below_horizon_rays() {
     let Some((device, queue)) = gpu() else {

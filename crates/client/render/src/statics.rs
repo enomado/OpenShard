@@ -224,8 +224,14 @@ pub fn collect(
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
-    let mut mesh_vertices = Vec::new();
-    let mut mesh_rows = Vec::new();
+    // Always empty since `docs/lighting_rebuild.md` phase 6d: a real static's
+    // position and normal come from the impostor meeting `boxes` below, and
+    // nothing here pushes a mesh face for it any more. `StaticGeometry` still
+    // carries the two fields — [`crate::renderer::MeshFaceRenderer`]'s own
+    // pass still runs, into whatever these are, and the four hand-built
+    // diagnostic scenes are what fill the same fields with real faces.
+    let mesh_vertices = Vec::new();
+    let mesh_rows = Vec::new();
     let mut boxes = Vec::new();
 
     for_each_static_in(map, camera.visible_tiles(), |item| {
@@ -264,20 +270,6 @@ pub fn collect(
             occlusion,
         );
         let quad = quad_of(at, &placed, base, u32::from(item.hue), owner, volumes);
-        if let Some(prism) = &placed.prism {
-            push_mesh(
-                MeshSink {
-                    vertices: &mut mesh_vertices,
-                    rows: &mut mesh_rows,
-                },
-                camera,
-                at,
-                prism,
-                quad.depth,
-                key,
-                occlusion,
-            );
-        }
         quads.push((placed.order, quad));
     });
 
@@ -358,97 +350,16 @@ pub(crate) fn push_volumes(
     }
 }
 
-/// The mesh pass's two lists, which only ever grow together: one
-/// [`MeshFaceRow`] and the six [`MeshFaceVertex`]es of the face it describes.
-///
-/// A pair rather than two arguments because they are one output — a row without
-/// its vertices draws nothing and vertices without their row address a buffer
-/// past its end — and because [`push_mesh`] is the one producer of both.
-pub(crate) struct MeshSink<'a> {
-    pub vertices: &'a mut Vec<MeshFaceVertex>,
-    pub rows: &'a mut Vec<MeshFaceRow>,
-}
-
-/// Push one climbable static's honest faces — a top and a riser per tread,
-/// [`crate::facing::Prism::mesh`] — as raw, fan-triangulated vertices.
-///
-/// `depth` is the enclosing [`SpriteQuad`]'s own, reused rather than
-/// recomputed: a second depth formula here is a second chance to disagree
-/// with the one that already decided this static's pixels
-/// (`docs/gbuffer.md` decision 4).
-///
-/// `pub(crate)` and not private because [`crate::items`] wants the same
-/// correction for a placement that came from the server's own list rather
-/// than the map's — [`Placed::prism`] is set by [`place`] either way, and a
-/// second copy of this loop would be a second place the two could disagree.
-///
-/// **Every face carries the name of the solid the grid stood up for it**, and
-/// that is `docs/lighting_rebuild.md` phase 4 seen from the drawing side. The
-/// join is by [`crate::occlusion::Part`] — the `n`th face of a prism's mesh is
-/// the `n`th solid its `Builder::add` pushed, because both walk the same treads
-/// from the same two facts — and `occlusion::tests::
-/// a_flight_draws_its_own_solids_in_the_grid_s_own_order` is what holds that
-/// against the geometry rather than leaving it as two loops that agree.
-///
-/// `owner` is the enclosing static's own, and it is a *key* here rather than a
-/// number to be carried: one `Builder::add` is one owner however many solids it
-/// pushed, so the owner alone is what the phase found insufficient — the walk
-/// could not tell one tread of a flight from another with it.
-///
-/// A face the grid has no solid for gets [`crate::occlusion::SolidId::NOBODY`].
-/// That is not a defect to assert away: the grid drops a static the cutaway hides
-/// or the draw ceiling cuts, and this pass legitimately draws one whose solid is
-/// not in this frame's list. It reads as "a point of no occluder", which is the
-/// honest answer — exempt from nothing, shadowed by everything.
-pub(crate) fn push_mesh(
-    into: MeshSink<'_>,
-    camera: &Camera,
-    at: Point,
-    prism: &crate::facing::Prism,
-    depth: f32,
-    owner: crate::occlusion::Owner,
-    occlusion: &crate::occlusion::Occlusion,
-) {
-    let MeshSink { vertices, rows } = into;
-    let mesh = prism.mesh(i32::from(at.x), i32::from(at.y), i32::from(at.z));
-    for (part, face) in mesh.faces().iter().enumerate() {
-        let id = rows.len() as u32;
-        // **Two drawn faces a tread, one solid a tread** — `Prism::mesh` emits a
-        // top and then the rise below it for each, and the grid now stands up
-        // one body for the whole tread, so the join divides. It was `part`
-        // itself while the grid held the same lid-and-riser pair this draws;
-        // see `Builder::add`'s climbable branch for why that split went, and
-        // `occlusion::tests::a_flight_draws_its_own_solids_in_the_grid_s_own_
-        // order` for the containment that holds the two together now.
-        let solid = occlusion.id_of(
-            i32::from(at.x),
-            i32::from(at.y),
-            owner,
-            crate::occlusion::Part::nth(part / 2),
-        );
-        rows.push(MeshFaceRow {
-            tile: (at.x, at.y),
-            stance: crate::place::Stance::of_normal(face.normal)
-                .expect("Prism::mesh only ever produces normals Stance::of_normal recognizes"),
-            solid: crate::occlusion::SolidId::word(solid),
-        });
-        for corner in face.fan() {
-            let screen = camera.to_view_exact(crate::camera::project_exact(corner));
-            vertices.push(MeshFaceVertex {
-                screen,
-                world: [corner.x as f32, corner.y as f32, corner.z as f32],
-                depth,
-                id,
-                tile: [at.x as f32, at.y as f32],
-                // The face's own, straight through — the same vector the row's
-                // stance above is `Stance::of_normal` of, carried rather than
-                // named so that the G-buffer's normal plane holds geometry and
-                // not a rounding of it.
-                normal: face.normal,
-            });
-        }
-    }
-}
+// **`MeshSink` and `push_mesh` lived here** and went with the last thing that
+// called either: `docs/lighting_rebuild.md` phase 6d took the mesh pass off
+// real statics, and `push_mesh` was `pub(crate)` for exactly two callers, both
+// inside this crate — `statics::collect` and `items::collect` — because a
+// third, external one (`examples/*.rs`, `tests/*.rs`) cannot see a `pub(crate)`
+// item at all. Once both went, its only caller left was its own unit test,
+// which went with it — see the note at its grave in `mod tests`. What replaced
+// it, for a real static, is the impostor meeting `push_volumes`'s own boxes;
+// what still builds a `MeshFaceRow`/`MeshFaceVertex` pair by hand is the four
+// hand-built diagnostic scenes, each its own copy for the reason above.
 
 /// One placed picture: where it lands, which frame it is showing, and where it
 /// sorts.
@@ -475,12 +386,6 @@ pub(crate) struct Placed {
     /// Which way its picture faces — a rug on the ground is as flat as a floor
     /// built into the map. See [`crate::place::Stance`].
     pub(crate) stance: crate::place::Stance,
-    /// The solid this static's art is a picture of, if the client's own
-    /// `CLIMBABLE` bit and the atlas's own measurement agree it has one —
-    /// see [`crate::atlas::StaticAtlas::prism`]'s own doc for why the bit
-    /// comes first. `docs/gbuffer.md` step 4c reads this to build the
-    /// static's honest [`crate::mesh::Mesh`]; nothing else uses it yet.
-    pub(crate) prism: Option<crate::facing::Prism>,
 }
 
 /// Place one static, or `None` when there is nothing on screen for it: hidden by
@@ -521,12 +426,6 @@ pub(crate) fn place(
         // when the atlas packed this sprite. See `crate::place::Stance` and
         // `crate::facing`.
         stance: crate::place::Stance::of(tile, sprite.facing),
-        // The bit first, the atlas's own measurement second — the same
-        // order `occlusion::Builder::add`'s climbable branch already checks
-        // in, and the same reason `StaticAtlas::prism`'s own doc gives: a
-        // wall can score well against some prism by accident, and only the
-        // client's own flag says a static is one at all.
-        prism: tile.flags.is_climbable().then(|| atlas.prism(showing)).flatten(),
     })
 }
 
@@ -1330,62 +1229,18 @@ mod tests {
         );
     }
 
-    /// [`push_mesh`]'s vertices carry the enclosing static's own tile, and a
-    /// stair's footprint reaches at least as far as that tile's own far edge
-    /// — [`crate::facing::widen_footprint`] pushes the tile-crossing side
-    /// past it by a hair more. `mesh_face.wgsl`'s fragment stage leans on
-    /// both: it now subtracts this `tile` from a fragment's exact world
-    /// position instead of taking `fract()` of the position alone, because
-    /// `fract` of anything at or past a whole tile past `tile` wraps back
-    /// toward `0` — reading a corner on this stair's own far edge as sitting
-    /// on the *next* tile's near one instead. That was the shadow-raymarch
-    /// anomaly `docs/lighting.md` tracks: one fully-lit pixel on an otherwise
-    /// evenly-shadowed flat tread, where every neighbouring sample read
-    /// partly blocked.
-    #[test]
-    fn a_stair_s_mesh_vertices_carry_their_tile_and_reach_its_far_edge() {
-        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
-        let prism = crate::facing::Prism::new(crate::facing::Face::North, &[5, 5, 5])
-            .expect("three treads is a legal profile");
-        let at = Point::new(100, 100, 0);
-        let mut vertices = Vec::new();
-        let mut rows = Vec::new();
-        // An empty grid, deliberately: this test is about where a vertex is, and
-        // an empty grid holds no solid for any face — so every row comes out
-        // `SolidId::NOBODY`, which is the honest answer and not a thing under
-        // test here. `light.rs`'s own flight tests are where the join is asserted.
-        let occlusion = crate::occlusion::Occlusion::EMPTY;
-        push_mesh(
-            MeshSink {
-                vertices: &mut vertices,
-                rows: &mut rows,
-            },
-            &camera,
-            at,
-            &prism,
-            0.0,
-            crate::occlusion::Owner::new(0, Graphic(0x0736)),
-            &occlusion,
-        );
-
-        assert!(!vertices.is_empty(), "a three-tread stair has faces to draw");
-        for vertex in &vertices {
-            assert_eq!(
-                vertex.tile,
-                [100.0, 100.0],
-                "every corner of a static's mesh should carry the static's own tile"
-            );
-        }
-
-        let max_offset = vertices
-            .iter()
-            .flat_map(|v| [v.world[0] - v.tile[0], v.world[1] - v.tile[1]])
-            .fold(f32::MIN, f32::max);
-        assert!(
-            max_offset >= 1.0 - 1e-6,
-            "expected some corner at or past the tile's far edge (offset >= 1.0), got {max_offset}",
-        );
-    }
+    // **`a_stair_s_mesh_vertices_carry_their_tile_and_reach_its_far_edge` lived
+    // here** and went with `push_mesh`, `docs/lighting_rebuild.md` phase 6d:
+    // `push_mesh` was `pub(crate)` for exactly two callers, both inside this
+    // crate — `statics::collect` and `items::collect` — and the phase removed
+    // both, since a real static's position and normal come from the impostor
+    // meeting its boxes now, not from a second draw over its own sprite. What
+    // this test asserted (a corner carries its static's own tile, and a
+    // stair's footprint reaches at least as far as that tile's far edge) is
+    // the same claim the four hand-built diagnostic scenes make about their
+    // own, separately-built `MeshFaceVertex` lists — `examples/boxes.rs`'s and
+    // `examples/synthetic_stair.rs`'s own tests among them — and those did not
+    // move.
 
     /// A tiledata entry with the flags and height a test wants —
     /// `occlusion::tests::tile`'s own shape, which cannot be shared across two

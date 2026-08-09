@@ -531,6 +531,10 @@ fn main() {
                     id,
                     tile: [f32::from(tile.x), f32::from(tile.y)],
                     normal: face.normal,
+                    // This tool is about the crack between two silhouettes, not
+                    // about colour — a flat mid-grey the same as `two_cubes`'
+                    // own two cubes' picture is not asking anything of.
+                    colour: [0.5, 0.5, 0.5],
                 });
             }
         }

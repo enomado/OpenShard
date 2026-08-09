@@ -20,6 +20,11 @@ import package::place_format::{
 
 import package::normal_format::unpack_normal;
 
+// Which solid a fragment is a point of, and how it rides in the position
+// plane's fourth channel — written by `statics.wgsl`, read here, and the whole
+// of what `own_solid`'s cell scan used to guess at. See that file's own header.
+import package::solid_format::{SOLID_NOBODY, unpack_solid};
+
 // The world's one metric, declared where the view ray needs it and imported
 // here rather than restated — `docs/lighting_rebuild.md`'s *One metric*.
 import package::impostor::Z_PER_TILE;
@@ -328,25 +333,14 @@ struct GroundInstance {
 
 @group(0) @binding(12) var<storage, read> ground_instances: array<GroundInstance>;
 
-// No occluder at all — `occlusion::OwnerId::NONE`, and what the ground, a mobile
-// and anything the grid refused stamp. Zero and matching nothing, which is why
-// the numbering `Builder::finish` hands out starts at one: two fragments that are
-// each a point of nothing are not a point of the same thing.
-//
-// Still read, by `own_solid` alone: a sprite instance covers a corner's two
-// panels, so what a *fragment* of one is a point of is its static's owner
-// narrowed by its own stance. Nothing else compares an owner any more.
-const OWNER_NONE: u32 = 0u;
-
-// And no *solid* at all: what a fragment carries when it is a point of none —
-// the ground, a mobile, a gump, a face whose static this frame's grid refused.
-// `occlusion::SolidId::NOBODY`, and the two are one number.
-//
-// **It cannot collide with a real id.** A reference carries its id in three
-// bytes (`id_at`), so every id this pass can read back is at most `0xFF_FFFF`
-// and this is strictly greater than all of them. `docs/lighting_rebuild.md`
-// phase 4.
-const SOLID_NOBODY: u32 = 0xFFFFFFFFu;
+// **`OWNER_NONE` stood here**, and it went with `own_solid` — the last thing in
+// this pass that compared an *owner* at all. What a fragment is a point of is a
+// `SolidId` (`docs/lighting_rebuild.md` phase 4) and it arrives now in the
+// position plane's fourth channel, written by the pass that met the box:
+// `solid_format.wesl` carries the whole argument, and `SOLID_NOBODY` is
+// imported from it rather than spelled a second time here.
+// `FaceInstance::owner` and `mobile_instances`' own copy of it stay in their
+// structs for the stride's sake, unread — the same reason `twin` is there.
 
 // The stance rides in the id word above the kind — `ids_stance`, and
 // `statics.wgsl` writes it. **It is no longer read here for a normal**:
@@ -736,62 +730,27 @@ fn solid_at(id: u32) -> Primitive {
 // same `SolidId` as the primitives, so `apertures[id]` is the whole of it — the
 // same thing D8 did for the box at S1, arriving at the last plane a solid had.
 
-// **Which solid of the grid a *sprite* fragment is a point of**, or
-// `SOLID_NOBODY` where the grid holds none.
+// **`own_solid` stood here**, and what replaced it is a channel rather than a
+// function: `statics.wgsl` writes the name of the box its view ray met into the
+// position plane's fourth word, and this pass reads it. `solid_format.wesl`
+// carries the argument in full; the short of it is that the scan was exact for
+// every static that stands **one** shape per owner — a wall's panel, a floor's
+// lid, a body's tile, `Builder::add` pushes never two of a kind — and ambiguous
+// for the one that does not. A fitted climbable stands one box per *tread*, all
+// of them `Edges::ANY` under one `Owner`, so `(owner, shape)` named a set and
+// the loop returned whichever member the cell's list held first: every pixel of
+// a flight claimed to be a point of its bottom step.
 //
-// `docs/lighting_rebuild.md` phase 4, and the half of it a mesh face does not
-// need: `mesh_instances[id].solid` names one primitive outright, because the pass
-// that draws a tread draws exactly one. A sprite instance is not one primitive —
-// a corner static is two panels and one picture, and which of the two a fragment
-// belongs to is decided *per fragment*, by the stance `statics.wgsl` resolved the
-// corner into. So the id has to be found here rather than carried.
+// That cost nothing while `docs/gbuffer.md` step 4c's mesh pass drew over every
+// climbable static, because its row named one primitive outright and this
+// function was never asked. `docs/lighting_rebuild.md` phase 6d took the pass
+// off real statics and the ambiguity came out from under it as triangular
+// wedges of self-shadow down every staircase in the world.
 //
-// It is exact rather than a guess, and the reason is a property of
-// `Builder::add`: a static that is not a fitted climbable pushes **either** one
-// lid, **or** one body, **or** one panel per named side — never two of a kind.
-// So `(owner, shape)` names exactly one solid of the cell, and the fragment's own
-// stance is what says which shape:
-//
-//   - a fragment with a **side** is a point of the panel standing on that side;
-//   - a fragment with none is a point of the lid (`edges == 0`) or of the body
-//     (`edges == EDGE_MASK`), and a static has only one of those two.
-//
-// Once a fragment, not once a candidate solid, which is the other half of why it
-// is a function: the walk's own rule is now a single comparison of two ids, and
-// everything that used to be asked per solid per light — a height inside a span,
-// which plane the fragment was drawn at, `edges & own` — is asked here once.
-//
-// **A fitted climbable is the one case this cannot answer**, and it is the case
-// that does not ask: its six solids are lids and panels of one owner, so `own`
-// alone is ambiguous — and every pixel of it is drawn by the mesh pass over the
-// sprite, which carries its id. Where the mesh does not quite cover the sprite
-// (`WIDTH_OVERLAP`'s border, phase 6's), this answers with some tread of the
-// right shape rather than the right one. That is a hairline on a static whose own
-// art overhangs its volume, and phase 6 removes the border rather than this the
-// ambiguity.
-fn own_solid(tile: vec2<i32>, owner: u32, own: u32) -> u32 {
-    if owner == OWNER_NONE {
-        return SOLID_NOBODY;
-    }
-    let span = solids_at(tile.x, tile.y);
-    for (var k = 0u; k < span.y; k = k + 1u) {
-        let reference = id_at(span.x + k);
-        if reference.y != owner {
-            continue;
-        }
-        let edges = solid_at(reference.x).flags & EDGE_MASK;
-        if own != 0u {
-            if (edges & own) != 0u {
-                return reference.x;
-            }
-            continue;
-        }
-        if edges == 0u || edges == EDGE_MASK {
-            return reference.x;
-        }
-    }
-    return SOLID_NOBODY;
-}
+// Two things the channel is better at besides. A **corner** static's two panels
+// were told apart here by the resolved stance and are told apart now by the box
+// the ray actually met. And the scan was a loop over a cell's whole reference
+// list, once a fragment, which is gone from the pass entirely.
 
 // **`docs/occluders.md`'s D2**: whether a candidate box is part of the very
 // surface the lit fragment is a point of, and so must not shadow it.
@@ -1696,14 +1655,24 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     var stance = ids_stance(ids);
     let id = ids_id(ids);
     var tile = vec2<f32>(0.0);
-    // **And which solid of the grid this fragment is a point of** — the one
-    // number the shadow walk compares, `docs/lighting_rebuild.md` phase 4.
-    // Resolved here, once a fragment, rather than asked per candidate solid per
-    // light the way the owner-and-shape pair it replaced was.
-    //
-    // Land keeps `SOLID_NOBODY`: the ground is no occluder, so it is exempt from
-    // nothing, which is what it always was in effect.
-    var mine = SOLID_NOBODY;
+    // Where the fragment itself is, and **which solid of the grid it is a point
+    // of** — one read, because the second rides in the first's fourth channel
+    // (`solid_format.wesl`). The position used to be `tile + fraction` with the
+    // fraction taken out of the place attachment's fourth channel in
+    // hundred-and-twenty-sevenths, and a height taken out of its third as eight
+    // whole units plus four bits of sixteenths. Every one of the three was exact
+    // in the pass that computed it; `docs/lighting_rebuild.md` phase 2 is the
+    // decision to carry the number instead of the fields, and its second root —
+    // "a fragment's own position is not exactly known, so a shadow ray must
+    // start away from where it really is" — is the bill that packing ran up.
+    let place = textureLoad(position_of, texel, 0);
+    let at = place.xyz;
+    // The solid is the one number the shadow walk compares
+    // (`docs/lighting_rebuild.md` phase 4), and every producer states it: the
+    // impostor's own box for a static, `SOLID_NOBODY` for the ground, for a
+    // mobile and for a static this frame's grid holds nothing for. Only a mesh
+    // face overrides it below, out of its own row.
+    var mine = unpack_solid(place.w);
     if kind == KIND_LAND {
         tile = vec2<f32>(
             f32(ground_instances[id].place0 & 0xFFFFu),
@@ -1716,42 +1685,22 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // attachment's sentinel stood in for.
         //
         // And its solid outright: a mesh face is one primitive by construction,
-        // so the pass that drew it already knew which. See `MeshFaceInstance`.
+        // so the pass that drew it already knew which — as a *row*, which is why
+        // that pass writes `SOLID_NONE` in the channel every other one states
+        // its answer in. See `MeshFaceInstance` and `mesh_face.wesl`.
         let row = mesh_instances[id];
         tile = vec2<f32>(f32(row.tile & 0xFFFFu), f32(row.tile >> 16u));
         stance = row.stance;
         mine = row.solid;
     } else {
         var row_place: vec2<u32>;
-        var owner = OWNER_NONE;
         if kind == KIND_STATIC {
             row_place = face_instances[id].place;
-            owner = face_instances[id].owner;
         } else {
             row_place = mobile_instances[id].place;
-            // A mobile's row stamps `OwnerId::NONE` on the CPU side
-            // (`mobiles::collect`), so this reads it rather than assuming it —
-            // one place decides what a billboard is a point of, and it is the
-            // one that builds the row. `own_solid` turns that into
-            // `SOLID_NOBODY` by the same rule it uses for everything else,
-            // which is why a mobile needs no branch of its own here.
-            owner = mobile_instances[id].owner;
         }
         tile = vec2<f32>(f32(row_place.x & 0xFFFFu), f32(row_place.x >> 16u));
-        // A sprite instance is not one primitive: a corner static is two panels
-        // and one picture, and the stance `statics.wgsl` resolved says which.
-        mine = own_solid(vec2<i32>(i32(tile.x), i32(tile.y)), owner, own_side(stance));
     }
-    // And where the fragment itself is — read, not rebuilt. This used to be
-    // `tile + fraction` with the fraction taken out of the place attachment's
-    // fourth channel in hundred-and-twenty-sevenths, and a height taken out of
-    // its third as eight whole units plus four bits of sixteenths. Every one of
-    // the three was exact in the pass that computed it; `docs/lighting_rebuild.md`
-    // phase 2 is the decision to carry the number instead of the fields, and its
-    // second root — "a fragment's own position is not exactly known, so a shadow
-    // ray must start away from where it really is" — is the bill that packing ran
-    // up.
-    let at = textureLoad(position_of, texel, 0).xyz;
     // Where in its tile that leaves it. Nothing computes the fraction any more;
     // this is the difference between two things already known, and only the
     // diagnostics below read it.

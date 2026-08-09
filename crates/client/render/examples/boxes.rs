@@ -773,6 +773,13 @@ fn main() {
                     id,
                     tile: [f32::from(b.tile.0), f32::from(b.tile.1)],
                     normal: face.normal,
+                    // What the reference tracer is told every box is worth —
+                    // `oracle::pathtrace::Albedos::INVENTED.body` — so the two
+                    // pictures start from one authored number rather than two.
+                    // `oracle::body_albedo` reads this back off the frame below,
+                    // which is what makes "the same albedo on both sides" a
+                    // measurement and not a second author agreeing with the first.
+                    colour: oracle::pathtrace::Albedos::INVENTED.body.map(|c| c as f32),
                 });
             }
         }
@@ -1487,9 +1494,14 @@ fn main() {
             flame: &lighting.lights[0],
             albedos: oracle::pathtrace::Albedos {
                 ground: oracle::ground_albedo(&drawn, &world_pixels),
-                // Invented, and it stays invented until phase 6: there is no
-                // colour on the engine's side of a box's face to take one from.
-                ..oracle::pathtrace::Albedos::INVENTED
+                // Measured since `docs/lighting_rebuild.md` phase 6d gave the
+                // mesh pass a colour target — except on `scene_flat`, whose
+                // whole point is that it has no boxes, so there is nothing on
+                // the engine's side to read one off.
+                body: match boxes.is_empty() {
+                    true => oracle::pathtrace::Albedos::INVENTED.body,
+                    false => oracle::body_albedo(&drawn, &world_pixels),
+                },
             },
             lit_pixels: &lit_pixels,
         });

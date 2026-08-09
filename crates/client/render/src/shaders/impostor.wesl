@@ -94,6 +94,13 @@ fn billboard_at(tile: vec2<f32>, base: f32, across: f32, down: f32) -> vec3<f32>
     );
 }
 
+// The billboard plane's own normal — `(1, 1, 0)` normalised, `VIEW`'s
+// horizontal part. `docs/lighting_rebuild.md` phase 7's "facing the camera"
+// candidate; `impostor::billboard_normal`, and the two are one formula.
+fn billboard_normal() -> vec3<f32> {
+    return normalize(vec3<f32>(1.0, 1.0, 0.0));
+}
+
 // Where the view ray meets one box, and which of its faces that is.
 struct Meeting {
     // The point, in world units, clamped into the box.

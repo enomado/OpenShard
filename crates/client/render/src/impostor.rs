@@ -127,6 +127,20 @@ pub fn billboard_at(tile: (i32, i32), base: f32, across: f32, down: f32) -> [f32
     ]
 }
 
+/// The billboard plane's own normal: `(1, 1, 0)` normalised, [`VIEW`]'s
+/// horizontal part. `docs/lighting_rebuild.md` phase 7's "facing the camera"
+/// candidate — never wrong, never interesting, and the one this phase picked:
+/// the plane a mobile is drawn on has exactly one normal, so giving a fragment
+/// of it *that* normal is not a choice among several so much as the plane's own
+/// fact, stated rather than left as the zero vector.
+///
+/// `statics.wesl`'s equivalent, and the two are one formula — see
+/// [`billboard_at`].
+pub fn billboard_normal() -> [f32; 3] {
+    let n = std::f32::consts::FRAC_1_SQRT_2;
+    [n, n, 0.0]
+}
+
 /// Which run of a frame's [`Volume`] list belongs to one drawn static.
 ///
 /// The association `docs/lighting_rebuild.md` phase 6 rests on: a fragment is

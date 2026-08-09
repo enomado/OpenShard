@@ -35,6 +35,7 @@
 
 import package::place_format::{KIND_LAND, STANCE_FLAT, pack_ids};
 import package::normal_format::pack_normal;
+import package::solid_format::SOLID_NONE;
 
 struct Viewport {
     // The target's size in *real* pixels — the display's, which at a
@@ -262,7 +263,11 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // diamond, and a fragment there — one the alpha cut below has not reached
     // yet — would otherwise name a neighbour nothing was drawn on.
     let local = clamp(in.local, vec2<f32>(0.0), vec2<f32>(1.0));
-    out.position = vec4<f32>(in.tile + local, in.world_z, 1.0);
+    // The fourth channel names the solid this fragment is a point of, and the
+    // ground is a point of none: land is no occluder, so it is exempt from
+    // nothing — which is what it has always been in effect.
+    // `solid_format.wesl`.
+    out.position = vec4<f32>(in.tile + local, in.world_z, SOLID_NONE);
     // And the normal, which land now has and which it did not before.
     //
     // **This was a deliberate zero and phase 3 is what changed it.** The old

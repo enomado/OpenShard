@@ -55,22 +55,25 @@ pub struct Albedos {
     /// decodes it, so "the same albedo on both sides" is a measurement rather
     /// than a claim.
     pub ground: [f64; 3],
-    /// Every box's, linear. **Still a stand-in**, and the reason phase 0's
-    /// scene has no boxes in it: `mesh_face.wesl` writes no colour into the
-    /// world texture at all, so a box's face has nothing on the engine's side
-    /// for this to be compared against. Phase 6 is where a mesh face gets an
-    /// albedo; until then this number is what the *reference* thinks a box
-    /// looks like and nothing checks it.
+    /// Every box's, linear. **Measured off the frame since `docs/lighting_
+    /// rebuild.md` phase 6d**, the same way [`ground`](Self::ground) is —
+    /// `oracle::body_albedo` reads it back from the mesh pass's own colour
+    /// target, which did not exist before that phase. Still [`INVENTED`](
+    /// Self::INVENTED) on a scene with no boxes in it — `scene_flat`'s whole
+    /// point — where there is nothing on the engine's side to read.
     pub body: [f64; 3],
 }
 
 impl Albedos {
-    /// What the tracer assumed before anybody asked it to agree about
-    /// brightness: a pale body on a duller ground, both invented.
+    /// What a box is worth when there is nothing to measure it against, and
+    /// what a scene *with* boxes writes into every one of their faces so that
+    /// `oracle::body_albedo` has an authored number to read back rather than
+    /// an arbitrary one — `examples/boxes.rs`'s own `MeshFaceVertex::colour`
+    /// and this constant are the same value on purpose.
     ///
     /// Kept as a named constant rather than spread back through the callers
-    /// that do not care, so that "this scene never checked its own colours" is
-    /// a thing a call site *says*.
+    /// that do not care, so that "this scene never measured its own colours"
+    /// is a thing a call site *says*.
     pub const INVENTED: Self = Self {
         ground: [0.42, 0.44, 0.40],
         body: [0.72, 0.70, 0.66],

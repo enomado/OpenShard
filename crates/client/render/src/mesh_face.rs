@@ -125,15 +125,27 @@ pub struct MeshFaceVertex {
     /// Flat across the face, the same as `id` and `tile` — a [`crate::mesh::Face`]
     /// is planar, so there is nothing for the rasteriser to interpolate.
     pub normal: [f32; 3],
+    /// This face's own albedo, **linear** — the same convention every other
+    /// surface's is stated in (`oracle::pathtrace::Albedos`'s own doc), and
+    /// encoded to sRGB once, in `mesh_face.wgsl`'s fragment stage, the way
+    /// every other producer of [`crate::blit::WORLD_FORMAT`] does.
+    ///
+    /// `docs/lighting_rebuild.md` phase 6d: this pass wrote no colour at all
+    /// until then, because the enclosing static's own billboard sprite always
+    /// drew one and this pass ran only to correct a normal. Off real statics
+    /// now, the four hand-built diagnostic scenes that still use it have no
+    /// sprite underneath to fall back on, so a face needs to say what it is
+    /// worth. Flat across the face like `id`, `tile` and `normal`.
+    pub colour: [f32; 3],
 }
 
 impl MeshFaceVertex {
     /// Bytes one vertex occupies: `Float32x2` (screen), `Float32x3` (world),
-    /// `Float32` (depth), `Uint32` (id), `Float32x2` (tile) and `Float32x3`
-    /// (normal), with no padding to match — unlike `SpriteQuad`, nothing reads
-    /// this buffer a second time as storage, so there is no `blit.wgsl`-side
-    /// mirror whose alignment to round up to.
-    pub const STRIDE: u64 = 48;
+    /// `Float32` (depth), `Uint32` (id), `Float32x2` (tile), `Float32x3`
+    /// (normal) and `Float32x3` (colour), with no padding to match — unlike
+    /// `SpriteQuad`, nothing reads this buffer a second time as storage, so
+    /// there is no `blit.wgsl`-side mirror whose alignment to round up to.
+    pub const STRIDE: u64 = 60;
 
     /// Append this vertex to a vertex buffer's upload bytes.
     pub fn write(&self, out: &mut Vec<u8>) {
@@ -148,7 +160,12 @@ impl MeshFaceVertex {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out.extend_from_slice(&self.id.to_le_bytes());
-        for value in self.tile.iter().chain(self.normal.iter()) {
+        for value in self
+            .tile
+            .iter()
+            .chain(self.normal.iter())
+            .chain(self.colour.iter())
+        {
             out.extend_from_slice(&value.to_le_bytes());
         }
     }
@@ -189,6 +206,7 @@ mod tests {
             id: 0xABCD,
             tile: [100.0, 100.0],
             normal: [0.0, 0.0, 1.0],
+            colour: [0.72, 0.70, 0.66],
         };
         let mut out = Vec::new();
         vertex.write(&mut out);
@@ -205,5 +223,8 @@ mod tests {
         assert_eq!(&out[36..40], &0.0f32.to_le_bytes(), "normal.x");
         assert_eq!(&out[40..44], &0.0f32.to_le_bytes(), "normal.y");
         assert_eq!(&out[44..48], &1.0f32.to_le_bytes(), "normal.z");
+        assert_eq!(&out[48..52], &0.72f32.to_le_bytes(), "colour.r");
+        assert_eq!(&out[52..56], &0.70f32.to_le_bytes(), "colour.g");
+        assert_eq!(&out[56..60], &0.66f32.to_le_bytes(), "colour.b");
     }
 }

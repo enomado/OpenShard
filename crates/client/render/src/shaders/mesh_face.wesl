@@ -1,19 +1,28 @@
 // `docs/gbuffer.md` step 4c's render pass: one raw, non-instanced vertex per
 // corner of a `crate::mesh::Face`, fan-triangulated on the CPU
-// (`Face::fan`). No colour target — the enclosing static's own billboard
-// sprite already drew the picture (`statics.wgsl`), and this pass exists
-// only to give that same static's pixels a more honest per-face normal and
-// position than one blended stance (a former `facing::Prism::tread_normal`,
-// retired by step 5 once this pass made it unnecessary) could.
+// (`Face::fan`).
 //
 // Depth is not derived here either, for the same reason `statics.wgsl` says
 // so of its own: it is the enclosing static's own `SpriteQuad::depth`,
 // carried through unchanged, so this pass's depth test can only tie or
 // improve on what the billboard sprite already wrote — never disagree with
 // it (`docs/gbuffer.md` decision 4).
+//
+// **A colour target since `docs/lighting_rebuild.md` phase 6d.** Until then
+// this pass ran over every real climbable static too, always into a static's
+// own billboard sprite — which had already drawn the picture — so writing one
+// here would only have overwritten it with nothing better. Phase 6d took the
+// pass off every real static: a real one's position and normal come from the
+// impostor meeting its boxes now (`statics.wgsl`), and this pass survives only
+// for the four hand-built diagnostic scenes that draw geometry with no sprite
+// under it at all — `examples/boxes.rs`, `examples/two_cubes.rs`,
+// `tests/traced.rs`, `examples/synthetic_stair.rs`. Those have nothing to fall
+// back on, so a face now says what it is worth.
 
 import package::place_format::{KIND_STATIC, STANCE_MESH_FACE, pack_ids};
 import package::normal_format::pack_normal;
+import package::solid_format::SOLID_NONE;
+import package::tonemap::linear_to_srgb;
 
 struct Viewport {
     // Real pixels per virtual pixel — see `ground.wgsl`, which documents the
@@ -55,6 +64,10 @@ struct VertexOut {
     // `Stance::of_normal`, on the CPU — and it is still what the shadow walk's
     // own-run test reads until phase 4 replaces that with an id.
     @location(3) @interpolate(flat) normal: vec3<f32>,
+    // This face's own albedo, linear — flat like `normal`, and the reason is
+    // the same: a `Face` is planar and carries one colour, not six corners of
+    // one. `crate::mesh_face::MeshFaceVertex::colour`.
+    @location(4) @interpolate(flat) colour: vec3<f32>,
 };
 
 @vertex
@@ -68,6 +81,7 @@ fn vs_main(
     @location(3) id: u32,
     @location(4) tile: vec2<f32>,
     @location(5) normal: vec3<f32>,
+    @location(6) colour: vec3<f32>,
 ) -> VertexOut {
     // Virtual pixels to real ones, the same single line `statics.wgsl`'s own
     // vertex stage ends on.
@@ -83,6 +97,7 @@ fn vs_main(
     out.id = id;
     out.tile = tile;
     out.normal = normal;
+    out.colour = colour;
     return out;
 }
 
@@ -98,22 +113,27 @@ fn vs_main(
 // between a fragment and where it really is.
 
 struct FragmentOut {
+    // This face's own albedo, sRGB-encoded the way every other producer of
+    // `crate::blit::WORLD_FORMAT` writes it — `docs/lighting_rebuild.md` phase
+    // 6d, and see the header comment for why this pass has one at all now.
+    @location(0) color: vec4<f32>,
     // What drew this fragment and which row it came from —
     // `crate::gbuffer::IDS_FORMAT`.
-    @location(0) ids: u32,
+    @location(1) ids: u32,
     // And where that fragment is, unpacked and unquantised — `crate::gbuffer`.
     // This pass is the one producer that had it exactly all along: `in.world`
     // is the rasteriser's own interpolation of three real corners, which is
     // why the phase's test picks a mesh face to compare against.
-    @location(1) position: vec4<f32>,
+    @location(2) position: vec4<f32>,
     // And which way it looks, carried whole from the vertex rather than named
     // by a stance and read back out of one — packed by `normal_format.wesl`.
-    @location(2) normal: u32,
+    @location(3) normal: u32,
 };
 
 @fragment
 fn fs_main(in: VertexOut) -> FragmentOut {
     var out: FragmentOut;
+    out.color = vec4<f32>(linear_to_srgb(in.colour), 1.0);
     out.ids = pack_ids(in.id, STANCE_MESH_FACE, KIND_STATIC);
     // **`in.world`, exactly**, which this pass has had all along: the
     // rasteriser's own interpolation of three real corners, affine across a
@@ -129,7 +149,15 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // side the geometry stands on. `docs/lighting.md`'s shadow-raymarch anomaly is
     // that bug: one fragment on an otherwise evenly-shadowed tread reading fully
     // lit, because the walk it fed started from the wrong tile's occluders.
-    out.position = vec4<f32>(in.world, 1.0);
+    // **`SOLID_NONE` in the fourth channel, and this is the one pass for which
+    // that is not the answer.** The channel names the solid a fragment is a
+    // point of (`solid_format.wesl`), and a mesh face knows its own outright —
+    // but it knows it as a *row*, `MeshFaceRow::solid`, which this pass has no
+    // binding for and `blit.wgsl` reads directly out of `mesh_instances[id]`.
+    // A face is one primitive by construction, so the row can name it and there
+    // is no per-fragment question to answer; the sentinel here says "ask the
+    // row", which is what the `STANCE_MESH_FACE` branch there does.
+    out.position = vec4<f32>(in.world, SOLID_NONE);
     out.normal = pack_normal(in.normal);
     return out;
 }

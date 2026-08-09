@@ -1583,8 +1583,8 @@ fn main() {
             // **Two drawn faces a tread, one solid a tread**: `Prism::mesh`
             // emits a top and then the rise below it for each, and phase 6 put
             // the grid's tread back to one body, so the join divides.
-            // `statics::push_mesh` makes exactly this join in the real pipeline
-            // and `occlusion`'s own tests gate it.
+            // `occlusion::tests::a_flight_draws_its_own_solids_in_the_grid_s_own_order`
+            // gates the same join on the grid's own side.
             let solid = occlusion
                 .id_of(
                     i32::from(stands.x),
@@ -1607,6 +1607,10 @@ fn main() {
                     id,
                     tile: [f32::from(stands.x), f32::from(stands.y)],
                     normal: face.normal,
+                    // This tool's own oracle reads visibility off `View::Shadow`,
+                    // never brightness — a flat mid-grey is not a claim about
+                    // anything it measures.
+                    colour: [0.5, 0.5, 0.5],
                 });
             }
         }

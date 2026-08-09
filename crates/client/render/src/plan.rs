@@ -356,6 +356,10 @@ pub fn draw(
                 // that does not write what the world pass writes answers about
                 // itself. Decisions 27 and 28.
                 stance: crate::place::Stance::Flat,
+                // And a point of no solid: this view's every pixel is the
+                // ground, which is no occluder and exempt from nothing — the
+                // same answer `ground.wesl` writes in a real frame.
+                solid: None,
             }
         },
     );
@@ -406,9 +410,11 @@ pub fn elevation(
     // `docs/lighting_rebuild.md`'s backlog, the same finding as the two fixtures in
     // `tests/lighting.rs` that never called `Spot::part_of`.
     //
-    // The stance the closure below writes is what narrows this owner to one panel
-    // per fragment — `blit.wesl`'s `own_solid` — so a run drawn face-on names the
-    // panel it is the face of and nothing else.
+    // **The owner is the row's now and no more than that**: the shader stopped
+    // narrowing it to a panel per fragment when the solid came to ride in the
+    // position plane (`solid_format.wesl`), so what this picture is a face of is
+    // stated outright below, by `Occlusion::id_facing`, and this is what
+    // `tests/attachment.rs` reads back off the row.
     let owner_of = |tile: (u16, u16)| {
         lighting
             .occlusion
@@ -463,6 +469,23 @@ pub fn elevation(
                 z,
                 kind: crate::place::Kind::Static,
                 stance,
+                // **And which solid that face is**, which the shader used to
+                // find for itself out of the owner above and this stance —
+                // `blit.wesl`'s late `own_solid`. It reads the name off the
+                // position plane now, so the instrument states it, which is
+                // the same asymmetry `owner_of` already carries: a picture of
+                // one face of a run knows exactly which panel it drew.
+                solid: lighting.occlusion.id_facing(
+                    i32::from(tile_x),
+                    i32::from(tile_y),
+                    wall.of,
+                    match wall.face {
+                        Face::North => crate::occlusion::Edges::NORTH,
+                        Face::East => crate::occlusion::Edges::EAST,
+                        Face::South => crate::occlusion::Edges::SOUTH,
+                        Face::West => crate::occlusion::Edges::WEST,
+                    },
+                ),
             }
         },
     );

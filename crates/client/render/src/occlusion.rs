@@ -1640,6 +1640,33 @@ impl Occlusion {
         })
     }
 
+    /// The same question asked by a **side** rather than by a [`Part`]: which
+    /// solid of `owner` on this tile is the panel standing on `side`.
+    ///
+    /// [`Part`] is a push-order number, and a caller that knows a wall by the
+    /// face it is looking at does not know it: [`edges_of`] pushes one panel per
+    /// named side in a fixed order, so a corner's south face is `Part::nth(2)`
+    /// where a plain south wall's is `Part::ONLY`. Answering by the side itself
+    /// is what a *drawing* of one face of a wall has to hand
+    /// ([`crate::plan::elevation`]).
+    ///
+    /// This is the rule `blit.wesl`'s `own_solid` used to run per fragment, and
+    /// the reason it is only here now: on the GPU a static's fragment reads the
+    /// name off the box its view ray met (`solid_format.wesl`), and the scan is
+    /// exact by side only for a shape that stands **one** panel per side —
+    /// which every static does except a fitted climbable, whose treads name no
+    /// side at all ([`Edges::ANY`]) and therefore cannot be asked for this way.
+    ///
+    /// `None` where the grid holds no such panel, exactly as [`id_of`] means it.
+    ///
+    /// [`id_of`]: Occlusion::id_of
+    pub fn id_facing(&self, x: i32, y: i32, owner: Owner, side: Edges) -> Option<SolidId> {
+        self.ids_at(x, y).iter().copied().find(|id| {
+            let solid = self.solid(*id);
+            solid.owner == owner && solid.edges.contains(side)
+        })
+    }
+
     /// Every solid of one static on one tile, with the frame's own name for
     /// each — [`Occlusion::id_of`]'s scan asked once for the whole static
     /// instead of once per piece.

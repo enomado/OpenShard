@@ -312,29 +312,44 @@ table being stale.
 |---|---|---|---|
 | 0 | the reference | ✅ done | — the tracer over a **real map**, which is a carried item rather than this phase |
 | 1 | linear and HDR | ✅ landed | — |
-| 2 | the G-buffer | ✅ position, normal, ids | **albedo**, which moved to 6d: a mesh face has none |
+| 2 | the G-buffer | ✅ position, normal, ids, albedo | — |
 | 3 | the BRDF | ✅ landed | — |
 | 4 | shadows by identity | ✅ landed | — |
 | 5 | area lights | ✅ landed | — |
 | 5b | a flame has no centre | ✅ landed | — |
-| 6 | the impostor | 🚧 6a and 6c landed | **6d** (the mesh pass off real statics, and its colour target); a corner's two panels still told apart by the **screen half**; `own_solid` still scanning a cell; and the phase's own second number — how far a real static's art overhangs its prism — still untaken |
+| 6 | the impostor | 🚧 6a, 6c, 6d and 6f landed | a corner's two panels still told apart by the **screen half**; the **stance** a sprite fragment carries is still the art's reading and not the box's, which is the hairline 6f left at every tread/riser join; and the phase's own second number — how far a real static's art overhangs its prism — still untaken |
 | 6e | the grid stops being a rule | ✅ landed [`occluders.md`](occluders.md) | **All six steps are green.** The grid is out of the walk on both backends, and S3b's merge folds a run of wall into one primitive — 73 pieces to 9 on the crate's own two-storey house, with no pixel moved. That document is a **record** now, and the four findings that outlive it — the aperture still measured in a tile, the instruments that could not see a merge (closed since — one of them was drawing it), `PANEL_THICKNESS`'s fattening the merge turned out **not** to answer, and `footprint`'s `i32` ranges — are in this document's backlog |
-| 7 | billboards | 🚧 the position half landed | the **normal**, and its *done when* is a person looking at a lit frame |
+| 7 | billboards | 🚧 position and the camera-facing normal landed | a mobile pass in a picture harness, the inflated-silhouette candidate, and the choice between them — its *done when* is a person looking at a lit frame |
 | 8 | the sun | ⬜ not started | all of it |
 
-**Where a session starts, as of the reconsolidation on 2026-08-09:** phase 6e is
-closed and there is no live sub-plan under this document any more — `occluders.md`
-is a record like the seven above it. Three things are open and they are in order
-of what a frame is waiting on: **6d**, the mesh pass coming off real statics and
-gaining a colour target (which is phase 2's albedo, and what a body's albedo being
-invented is blocked on); **phase 7's normal**, which needs a person looking at a
-figure beside a torch rather than a number; and **phase 8**, untouched. Beside
-them, three defects a person has seen and nobody has fixed — a flame's own sprite
-reads black, a sprite's top edge is serrated where a missed ray takes a nearest
-face, and a whole-tile body writing a camera-facing normal is what darkened
-statics at 6c. All three are one question about what a *body* should write for a
-normal, they are in the backlog with their measurements, and they are the ones
-that decide whether a lit frame reads right.
+**Where a session starts, as of 6f landing on 2026-08-10:** phase 6e is closed
+and there is no live sub-plan under this document any more — `occluders.md` is a
+record like the seven above it. **6d is closed, and so is 6f, which is the bill
+6d ran up**: a person playing the shard saw staircases artefacting with polygons,
+and it was the sprite path naming the wrong tread of a flight the moment the mesh
+pass stopped covering for it. Read 6f's account before touching anything a
+fragment *carries* — it is a worked example of removing a pass by what it
+computed rather than by what it delivered. What 6f leaves behind is one dashed
+hairline at every tread/riser join, and its cause is named: the **stance**.
+**Phase 7 is half-open,
+its own account is above, and what it is waiting on is now named rather than
+generic**: `examples/isolated_scene.rs` needs a mobile pass before there is a
+picture of a figure beside a torch to look at, the inflated-silhouette
+candidate has not been started, and the choice between the two is what the
+phase's own *done when* is. Beside it, **phase 8** is untouched, and three
+defects a person has seen and nobody has fixed — a flame's own sprite reads
+black, a sprite's top edge is serrated where a missed ray takes a nearest face,
+and a whole-tile body writing a camera-facing normal is what darkened statics at
+6c. All three are one question about what a *body* should write for a normal,
+they are in the backlog with their measurements, and they are the ones that
+decide whether a lit frame reads right. ⚠ **Unrelated to any of this:** the
+working tree also carries a large, uncommitted, in-flight change to the gump,
+paperdoll and text-shaping code (`crates/client/app/src/{gump,lib,shell}.rs`,
+`crates/client/render/src/{gump,paperdoll,text}.rs` and their tests) from a
+parallel session — it currently leaves `openshard-client-app` (and therefore
+`openshard-playground`) failing to build. It is not this document's concern and
+this session did not touch it, but it is why a real client could not be used to
+look at phase 7's picture and had to be named as a blocker instead.
 
 **Phase 0 — the reference, and it must judge the same model.**
 `crates/client/pathtrace` (in flight in a parallel session) becomes the oracle,
@@ -726,6 +741,8 @@ agree. A **sprite** instance is not one primitive — a corner is two panels and
 picture, and only a fragment's own stance says which — so `blit.wesl`'s
 `own_solid` narrows the instance's owner by that stance, once per fragment. It is
 exact for everything but a fitted climbable, whose pixels the mesh pass draws.
+(**That last clause is what 6d falsified and 6f repaired** — a sprite fragment
+carries its solid outright now, off the box the impostor met. See 6f.)
 
 *The bias is zero, and the two constants had already lost both of their reasons.*
 `STAND_OFF` was `2/127` of a tile and `ON_TOP` `1/128` of a `z` — numbers off the
@@ -1321,13 +1338,14 @@ tile the instance carries, and what a fragment is exempt from has been primitive
 identity since phase 4. So the number is the plane the geometry states, asserted
 to the float.
 
-*What is left of phase 6, and it is not small.* The mesh pass still runs over
-every fitted climbable (6d is where it comes off real statics and gains a colour
-target, which is phase 2's albedo). The corner's two panels are still told apart
+*What is left of phase 6, and it is not small.* ~~The mesh pass still runs over
+every fitted climbable~~ **done, 6d** — see that phase's own account below. The
+corner's two panels are still told apart
 by the **screen half** rather than by the box the ray met — the impostor picks
 between them for the normal, but the id has to follow `split_corners`' twin row
-and a box carries no row number. `own_solid` still scans a cell to name a
-sprite's solid, where the box the fragment met already carries one. And the
+and a box carries no row number. ~~`own_solid` still scans a cell to name a
+sprite's solid, where the box the fragment met already carries one.~~ **Done,
+6f**, and it was not a cost item after all — it was the defect 6d uncovered. And the
 phase's own second number — how far a *real* static's art overhangs its own
 fitted prism — is still unmeasured: the gate's fixture is a plain rectangle
 nobody fitted to anything, so its overhang is a property of the fixture.
@@ -1347,6 +1365,155 @@ found **two** defects, each its own backlog entry below: a flame's own sprite is
 black, and a shadowed floor leaked a line of light along every tile boundary —
 that second one is **fixed**, and it was 6c's own arrival, since the position
 that contradicts its instance's tile is what the impostor started writing.
+
+**Phase 6d — the mesh pass off real statics, and its colour target.** *(Landed
+2026-08-09.)* Two changes, named together because the second only matters once
+the first is true.
+
+*Off real statics.* `statics::collect` and `items::collect` each had one call
+to `push_mesh`, gated on `Placed::prism` — the second draw over a climbable
+static's own billboard sprite that 6c's impostor made redundant for position and
+normal but nobody had yet removed. Both went, along with `Placed::prism` itself
+and `push_mesh`/`MeshSink`, which had no caller left once they did: `push_mesh`
+was `pub(crate)` for exactly those two call sites, because a third, external one
+(`examples/*.rs`, `tests/*.rs`) cannot see a `pub(crate)` item at all, so the
+four hand-built diagnostic scenes that still draw mesh geometry were never
+routed through it and did not need to change. What is left calling
+`MeshFaceRenderer::render` is exactly those four —
+`examples/boxes.rs`, `examples/two_cubes.rs`, `tests/traced.rs`,
+`examples/synthetic_stair.rs` — plus the crate's own direct tests of the pass
+(`tests/frame.rs`'s `render_places` helper), which draw geometry with no sprite
+under it and have no impostor of their own to fall back on.
+
+*And a colour target.* `mesh_face.wesl`'s `FragmentOut` gained a `color`
+attachment at location 0 — `crate::blit::WORLD_FORMAT`, sRGB-encoded from a new
+`MeshFaceVertex::colour` (linear, flat across a face, `tonemap::linear_to_srgb`
+in the fragment stage the same way every other producer of that plane writes
+it) — and `MeshFaceRenderer`'s pipeline and render pass grew a fourth target and
+a fourth colour attachment (`target.view`, loaded rather than cleared, ahead of
+the three G-buffer planes, matching `GroundRenderer`'s own target order). This
+is what phase 2's own table meant by "a mesh face has none": the G-buffer's
+albedo plane *is* the world/picture texture (`gbuffer.rs`'s own doc says so
+directly), and until this phase the one producer that drew into it without a
+sprite underneath wrote nothing there at all.
+
+*The oracle side follows it.* `oracle::body_albedo` reads the colour back off
+the frame the same way `oracle::ground_albedo` already does for land — a box's
+own faces, filtered by `Stance::MeshFace`'s routing sentinel rather than by
+`Kind::Land`, asserted flat, decoded `srgb_to_linear`. `examples/boxes.rs` and
+the shared fixture in `tests/traced.rs` now write every box's face in
+`oracle::pathtrace::Albedos::INVENTED.body` — the same authored linear value on
+both sides of the vertex/oracle call, so "the same albedo on both sides" is a
+measurement of the frame again rather than two authors typing the same three
+floats. `Albedos::INVENTED.body` stays the fallback for `scene_flat`, which has
+no boxes and therefore nothing to read.
+
+*Done when:* a box's own colour is on the engine's side of a shaded comparison
+at all. **Done, and measured rather than assumed clean.** `OPENSHARD_BOXES_SCENE=pair`:
+the visibility and face oracles — unaffected by any of this, and run first as
+the sanity check that nothing about *where* a fragment is moved — read
+`0` disagreement everywhere, on both boxes' east and south faces and on the
+ground behind them, exactly as before. `oracle::body_albedo` reads a single flat
+colour off the two boxes' six drawn faces with no panic, which is the measured
+half of "the same albedo on both sides": the bytes the mesh pass wrote are the
+bytes the oracle got back.
+
+**What it does not close, named so nothing claims it.** The full shaded
+comparison (`View::Lit` against the tracer's own `Brdf::Lambert` render) on a
+scene *with* boxes is not tight, and was never expected to be: `boxes.rs`'s own
+code lights every scene but `scene_flat` with `NIGHT` ambient on the engine's
+side and gives the reference none at all, deliberately, because "giving the
+tracer an ambient instead would be this renderer's own ambient model, restated
+inside the thing that checks this" — the same reasoning phase 0 gave for why
+only a boxless, ambient-free scene is the calibration gate. On `pair`, mean
+channel difference `42.58` of `255`, worst `71` — a number this phase makes
+*measurable for the first time*, not one it introduces; before it, the same
+comparison had nothing on the engine's side to disagree about, because there
+was no colour to compare. Closing it wants either an ambient-free box scene
+(`scene_flat`'s own trick, extended) or a reference that models sky/ground
+ambient honestly, and it is not this phase's own "done when".
+
+**And there is no automated gate on any of this yet.** `oracle::body_albedo` is
+exercised by `examples/boxes.rs`, a tool a person runs, and by nothing under
+`cargo test`: no scene in `tests/traced.rs` currently asks for a shaded
+comparison on a box, because every one that has boxes reads `View::Shadow`
+(visibility, which never cared about albedo — the comment at each of those call
+sites already says so) or pins both sides' albedo to `1.0`
+(`a_flame_just_over_a_landing_does_not_wedge_it_with_its_own_below_horizon_
+rays`, deliberately, to isolate the below-horizon wedge from a second measured
+quantity). A regression that made a mesh face's own colour wrong would be caught
+by nothing but a person looking at `boxes_lit_vs_traced.png`. Worth a scene, the
+day this crate wants one: ambient-free, one box, `body_albedo` on both sides,
+the same shape `the_frame_and_the_path_tracer_agree_about_brightness_on_open_
+ground` already is for the ground plane.
+
+**Phase 6f — a fragment carries the name of the box it met.** *(Landed
+2026-08-10, and it is 6d's own bill.)* A person playing the shard reported that
+staircases had started "artefacting with polygons" — and they had, from the hour
+6d landed. `View::Shadow` on a real flight in Britain draws it outright: a
+checkerboard of triangular wedges down every staircase, dark red against white,
+where every other surface in the frame is clean.
+
+*What it was.* `blit.wesl` asked `own_solid` which solid of the grid a **sprite**
+fragment is a point of, by scanning the fragment's own cell for a solid with the
+drawn static's owner and a shape its stance agreed with. That is exact for
+everything `Builder::add` stands **one** shape per owner for — a wall's panel, a
+floor's lid, a body's tile, never two of a kind — and ambiguous for the one thing
+that is not: a fitted climbable stands one box per *tread*, every one of them
+`Edges::ANY` under one `Owner`, so the scan named a set and the loop returned
+whichever tread the cell's reference list held first. Every pixel of a flight
+claimed to be a point of its bottom step, and the steps above it self-shadowed.
+
+**And this was written down.** `own_solid`'s own doc named the fitted climbable
+as "the one case this cannot answer", and excused it in the next clause: *"and it
+is the case that does not ask: every pixel of it is drawn by the mesh pass over
+the sprite, which carries its id."* 6d deleted that pass. The backlog entry for
+the same function is filed under **cost** — thirteen scans of one cell for a
+four-tread flight — and says the exactness point in its last sentence, where
+nothing reads it as a hazard. A premise stated as an aside in the code that
+depends on it, and a defect filed as a performance item, are the two halves of
+why 6d shipped this: the phase checked what it *removed* (position, normal) and
+not what the thing it removed had also been **carrying**.
+
+*The fix.* `impostor::Volume` has carried its box's `SolidId` since 6b, in a word
+the vector's own alignment paid for. `statics.wesl` now keeps which box its ray
+landed on and writes that name into the **position plane's fourth channel** —
+which every producer had been filling with a constant `1.0`. An id is three bytes
+and an `f32` holds every integer to `2^24` exactly, so the round trip is lossless
+by construction; `SolidId::NOBODY` does not fit and does not need to, since a
+negative channel is the whole of "a point of no solid". `solid_format.wesl` is
+the format, `gbuffer::pack_solid`/`unpack_solid` its Rust twins,
+`gbuffer::Fragment::solid` the field a fixture states it in, and `own_solid` and
+`OWNER_NONE` are gone from the pass along with the last thing that compared an
+*owner* at all.
+
+Two things it is better at besides. A **corner**'s two panels were told apart
+here by the resolved stance and are told apart now by the box the ray met. And a
+cell scan per fragment left the pass entirely.
+
+*Gates.* `a_sprite_pixel_meets_the_same_box_on_both_sides` — the sweep that
+already compares the GPU's meeting against `impostor::nearest` over the same
+boxes — now gives its three boxes three **distinct** names and asserts the
+channel equals the met box's own, as an equality and not a tolerance.
+Fault-injected in the same session: writing `volumes[in.volumes.x].solid` (always
+the first box, which is precisely the shape of the shipped defect) turns it red
+at the first fragment. `the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_
+not_under` states the bottom tread's `SolidId` outright, where it used to lean on
+the grid's reference order; `plan::elevation` states the panel it drew, through a
+new `Occlusion::id_facing` — the CPU home of the by-side rule that used to live
+in the shader. Whole crate green: 430 lib tests and every integration suite,
+`tests/traced.rs` and `tests/lighting.rs` among them.
+
+*What it does not close, measured rather than assumed.* The wedges are gone; a
+**hairline** remains, one dashed pixel along every tread/riser join. That is the
+other half of what the mesh pass had been carrying — the **stance**. `blit.wesl`
+reads it for `lit_plane`, the graze exemption's plane, and for a stair fragment
+the stance is still the sprite's corner-derived face rather than the surface the
+fragment is actually on. The measured normal is the honest answer and it is
+already in the G-buffer; what stops a one-line swap is that for a *wall* the two
+disagree by design — `lit_plane(FaceNorth)` names the panel box's `lo.y` and the
+impostor's normal names its `hi.y`, `PANEL_THICKNESS` apart — so moving it is a
+change to every wall in the world and wants its own measurement. In the backlog.
 
 **Phase 6e — the grid stops being a rule.** 🚩 **[`docs/occluders.md`](occluders.md)
 is the plan and the live document; this paragraph is its summary and does not
@@ -1477,6 +1644,46 @@ What is left of the phase is the normal, unchanged: the camera-facing plane
 against the silhouette's own inflated field, chosen by looking. The bands are
 gone either way; what the normal buys is the torch-side reading the *done when*
 asks for.
+
+*The camera-facing half is landed, 2026-08-09, and the inflated-silhouette half
+is not started.* Before this a mobile fell into the same branch as a static
+missing a measurement and read as the zero vector — `blit.wesl`'s own comment
+for that value is "lit from every side", and `cosine = 1.0` unconditionally is
+what a person's "lit flat across" report was. `impostor::billboard_normal` is
+`(1, 1, 0)` normalised, `VIEW`'s horizontal part and the plane's own normal
+stated rather than guessed — the same fact `billboard_at`'s own doc comment
+already named and nothing had wired into shading. `statics.wesl` now tells a
+mobile apart from a static-with-no-box for the *normal* the same way it already
+does for the *position*: the first gets the plane's normal, the second keeps the
+zero vector, because the second is a genuinely missing measurement and the first
+is not. `a_billboards_normal_is_the_plane_it_is_drawn_on` is the packing gate,
+the same shape `two_mesh_faces_carry_their_own_two_normals` and
+`a_sprite_pixel_meets_the_same_box_on_both_sides` already hold their own
+producers to — fault-injected back to the zero vector, red at `60°` off; with
+the fix, `0.01°`, `a_direction_survives_the_normal_packing`'s own bound and not
+a margin sized to fit. The two sides do not agree bit-for-bit, unlike a cardinal
+face: `(1, 1, 0)` sits on the octahedral map's own fold line, where the GPU's and
+the CPU's `normalize` land a quantisation step apart on `z` alone (`8.6e-5`,
+both reading `0.0` to every digit a person would type) — the angle bound is the
+honest comparison for a direction this format does not promise a bit-exact round
+trip for, and the cardinal promise is untouched.
+
+**And this is not the phase's own "done when".** The plane's normal is one
+vector, the same at every pixel of a mobile's sprite, so a torch to a figure's
+left does not read any brighter on the figure's left than a torch to its right
+would — only the ordinary falloff-by-distance every fragment already gets
+varies at all. That is real progress over "lit from every side" and it is
+"never wrong, never interesting" exactly as this document named it above: the
+flat, one-cosine-for-the-whole-figure reading is gone, and the *directional*
+reading a person beside a torch would actually notice is not bought by this half
+alone. Weighing it against the inflated-silhouette candidate — the thing the
+*done when* asks for — wants a picture of a real figure beside a real light, and
+two things stand between here and one: `examples/isolated_scene.rs`, built for
+exactly this kind of check at phase 6, has no mobile pass yet ("a dummy stands
+in for it"), and no fixture in the tree runs the full ground-plus-statics-
+plus-mobiles-plus-lighting pipeline in one frame the way the real client does.
+Both are this phase's own next step, ahead of building the second candidate —
+there is no picture to choose between two candidates with yet.
 
 **Phase 8 — the sun.** A direction, the same BRDF, the same rays, sky visibility
 as ambient occlusion.
@@ -2107,16 +2314,14 @@ Things noticed while writing this, not blocking any phase:
   is covered only through its CPU twin, which the phase's own commits also
   rewrote. What the one frame test in that shape reaches instead is `crosses`'s
   strictness: its fragment is flat and its own solid is a lid.
-- **`parity_frame`'s `Fixture` names an owner, and the shader compares a solid.**
-  Every pixel it writes is a sprite, so `own_solid` narrows that owner by the
-  pixel's stance — and for a *flight* that narrowing is ambiguous by construction,
-  three lids and one flat stance. `the_shader_does_not_stop_a_vertical_ray_with_a_
-  lid_it_is_not_under` passes because the grid's reference order happens to put
-  the bottom tread first, which is written down at the field and nowhere else. The
-  honest fix is for the fixture to write a **mesh** row, which is what the real
-  pipeline draws a flight through and what can carry a `SolidId` outright; it is
-  a third row table in a function that already has two, which is why it was not
-  done in the phase that found it.
+- ~~**`parity_frame`'s `Fixture` names an owner, and the shader compares a
+  solid.**~~ **Done, 6f**, and not by the fix this entry proposed: the fixture
+  names a `SolidId` now, because `gbuffer::Fragment` has a field for one and the
+  plane it writes carries it. Writing a **mesh** row instead — this entry's own
+  suggestion — would have been a third row table in that function *and* would
+  have moved the fixture off the sprite path the shipped defect lived on.
+  `the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under` states
+  the bottom tread outright now, so the grid's reference order decides nothing.
 - ~~**`statics.wesl` still clamps a face fragment to `INSIDE`.**~~ **Done, phase
   6c** — there is no clamp and no inverse projection to clamp: a face fragment is
   the point where its own view ray leaves its own panel's box, which is that
@@ -2167,15 +2372,28 @@ Things noticed while writing this, not blocking any phase:
   where the two slabs overlap. What would close it is the volume carrying which
   *instance row* it belongs to, which is one word in a struct that has a spare
   one.
-- **`own_solid` scans a cell to name a solid the fragment already met.**
-  `blit.wesl` narrows a sprite instance's owner by the fragment's stance, once
-  per fragment, walking the cell's list — and `impostor::Volume::solid` is the
-  answer outright, carried by the very box the ray met and written on the wire
-  since phase 6b. What is missing is a way to get it from the pass that knows it
-  to the pass that asks: the id word is full (kind, stance, twenty-six bits of
-  row) and a `SolidId` will not fit beside them. It is also the *exact* answer
-  where `own_solid` is a guess — a fitted climbable's treads are one owner and
-  one shape, which that function's own doc calls the case it cannot answer.
+- **A sprite fragment's `stance` is still the art's reading, and `lit_plane`
+  believes it.** 6f gave a fragment the *identity* of the box it met and left the
+  *stance* alone, so a pixel on a stair tread still calls itself the face of a
+  corner. `blit.wesl` reads the stance twice — `own_side`, the same-run mask, and
+  `lit_plane`, the plane D2's graze exemption is stated against — and the second
+  is what draws the one dashed hairline pixel along every tread/riser join in
+  `View::Shadow` today, measured on a real Britain staircase after 6f. The honest
+  plane is the measured normal's, which is already in the G-buffer and is always
+  a `hi` face because the impostor only ever names a camera-facing one. What
+  stops the swap is that for a **wall** the two disagree on purpose:
+  `lit_plane(FaceNorth)` is the panel box's `lo.y` and the normal names its
+  `hi.y`, `PANEL_THICKNESS` apart. So this is a change to every wall in the
+  world, not to stairs, and it wants a measurement of its own —
+  `tests/traced.rs`'s wall scenes are where it would be taken.
+- ~~**`own_solid` scans a cell to name a solid the fragment already met.**~~
+  **Done, 6f** — see that phase's account. The missing piece this entry named
+  ("a way to get it from the pass that knows it to the pass that asks") was the
+  position plane's **fourth channel**, which every producer had been writing a
+  constant `1.0` into: an id is three bytes and an `f32` carries every integer
+  to twenty-four exactly. What this entry got wrong is the priority — it is
+  filed here as a cost, and it was a live, visible defect from the hour 6d
+  landed.
 - ~~**A run of wall wants to be one solid, and until it is, `same_run` stands
   in.**~~ **Done, phase 6e** — `occluders.md`'s S3b merges a run of coplanar
   panels into one primitive (73 pieces to 9 on the crate's own two-storey house,

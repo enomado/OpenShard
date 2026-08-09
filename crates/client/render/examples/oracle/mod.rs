@@ -150,6 +150,46 @@ pub fn ground_albedo(drawn: &[Drawn], world: &[u8]) -> [f64; 3] {
     })
 }
 
+/// What a box's faces reflect, in linear units, **read off the frame the mesh
+/// pass drew** — [`ground_albedo`]'s own argument, for the other surface a
+/// shaded comparison needs.
+///
+/// `docs/lighting_rebuild.md` phase 6d gave the mesh pass a colour target;
+/// before it, `oracle::pathtrace::Albedos::body` was a stand-in because there
+/// was nothing on the engine's side to measure. A mesh face's own routing
+/// sentinel (`Stance::MeshFace`) is what separates it from a ground pixel here,
+/// the same way [`Drawn::stance`]'s own doc says a reader has to.
+///
+/// # Panics
+///
+/// If the frame drew no box face at all, or if the faces it drew are not one
+/// flat colour — a scene with boxes must give every one of them the same
+/// albedo, or a comparison against one reference number is comparing an
+/// average of several to a number that was never any of them.
+pub fn body_albedo(drawn: &[Drawn], world: &[u8]) -> [f64; 3] {
+    let static_kind = openshard_client_render::place::Kind::Static as u32;
+    let mesh_face = openshard_client_render::place::Stance::MeshFace as u32;
+    let mut found: Option<[u8; 3]> = None;
+    for (pixel, texel) in drawn.iter().enumerate() {
+        if texel.kind != static_kind || texel.stance != mesh_face {
+            continue;
+        }
+        let art = [world[pixel * 4], world[pixel * 4 + 1], world[pixel * 4 + 2]];
+        assert_eq!(
+            *found.get_or_insert(art),
+            art,
+            "a box's faces are not one flat colour — pixel {pixel} is {art:?}, and a reference with a \
+             single body albedo cannot be laid beside a scene that gives its boxes more than one"
+        );
+    }
+    let stored = found.expect("the frame drew no box face at all, so there is nothing to compare");
+    stored.map(|channel| {
+        f64::from(openshard_client_render::tonemap::srgb_to_linear(
+            f32::from(channel) / 255.0,
+        ))
+    })
+}
+
 /// One plane copied back to the CPU, whole, at `stride` bytes a texel.
 ///
 /// The row pitch is rounded up to `COPY_BYTES_PER_ROW_ALIGNMENT` and the

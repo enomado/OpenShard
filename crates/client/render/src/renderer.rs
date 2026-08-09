@@ -1442,11 +1442,21 @@ impl SpriteRenderer {
     }
 }
 
-/// Draws `docs/gbuffer.md` step 4c's mesh-geometry pass: depth and place
-/// only, for a [`crate::mesh::Mesh`]'s faces — never colour, because the
-/// enclosing static's own billboard sprite already drew the picture, and
-/// this pass exists only to give that same static's pixels a more honest
-/// per-face normal than one blended stance could.
+/// Draws `docs/gbuffer.md` step 4c's mesh-geometry pass, for a
+/// [`crate::mesh::Mesh`]'s faces.
+///
+/// **No longer a real static's pass — `docs/lighting_rebuild.md` phase 6d.**
+/// It used to run over every climbable static too, always into that static's
+/// own billboard sprite, which had already drawn the picture; this pass
+/// existed only to give those pixels a more honest per-face normal than one
+/// blended stance could, and wrote no colour at all. A real static's position
+/// and normal now come from the impostor meeting its boxes
+/// (`statics.wgsl`), so nothing in a real frame calls this any more — what is
+/// left is the four hand-built diagnostic scenes that draw geometry with no
+/// sprite under it, and for them it writes a colour too
+/// ([`crate::blit::WORLD_FORMAT`]) beside the G-buffer's own planes —
+/// [`IDS_TARGET`], [`POSITION_TARGET`], [`NORMAL_TARGET`] — and the shared
+/// depth buffer.
 ///
 /// No atlas, no sampler, no texture at all — unlike [`SpriteRenderer`], it
 /// has nothing to upload at construction and nothing an atlas repack would
@@ -1463,9 +1473,7 @@ pub struct MeshFaceRenderer {
 }
 
 impl MeshFaceRenderer {
-    /// Build the pipeline. Takes no atlas and no colour format: this pass
-    /// writes only the G-buffer's own planes — [`IDS_TARGET`],
-    /// [`POSITION_TARGET`], [`NORMAL_TARGET`] — and the shared depth buffer.
+    /// Build the pipeline.
     pub fn new(device: &wgpu::Device) -> Self {
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh face viewport"),
@@ -1559,6 +1567,13 @@ impl MeshFaceRenderer {
                             offset: 36,
                             shader_location: 5,
                         },
+                        // And this face's own albedo — `docs/lighting_rebuild.md`
+                        // phase 6d. See [`MeshFaceVertex::colour`].
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 48,
+                            shader_location: 6,
+                        },
                     ],
                 })],
             },
@@ -1566,7 +1581,16 @@ impl MeshFaceRenderer {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(IDS_TARGET), Some(POSITION_TARGET), Some(NORMAL_TARGET)],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: crate::blit::WORLD_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(IDS_TARGET),
+                    Some(POSITION_TARGET),
+                    Some(NORMAL_TARGET),
+                ],
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1603,11 +1627,12 @@ impl MeshFaceRenderer {
     }
 
     /// Draw `vertices` (`crate::mesh::Face::fan`'s output, six per face) into
-    /// `target`'s place and depth, keeping its colour untouched.
+    /// `target`'s place, depth and colour.
     ///
-    /// Loads rather than clears: this runs after the statics pass, into the
-    /// same static's own pixels, so its depth test can only tie or improve on
-    /// what the billboard sprite already wrote there.
+    /// Loads rather than clears every plane, colour included: a real static's
+    /// own billboard sprite (or, for the four diagnostic scenes, the ground
+    /// beneath) may already have drawn something here, and this pass's depth
+    /// test can only tie or improve on what is already there.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -1663,10 +1688,22 @@ impl MeshFaceRenderer {
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("mesh face"),
-            // No picture at all: `target.view` already carries the billboard
-            // sprite's own, and this pass has nothing to add to it — only the
-            // G-buffer's own planes and the shared depth buffer.
+            // `target.view` first, matching every other world pass's own
+            // order — `docs/lighting_rebuild.md` phase 6d. Loaded and not
+            // cleared: for a real static this ran into a billboard sprite's
+            // own pixels (before phase 6d took it off real statics
+            // entirely), and for the four diagnostic scenes that still call
+            // it, whatever the ground pass already drew stays underneath.
             color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
                 Some(wgpu::RenderPassColorAttachment {
                     view: &target.gbuffer.ids,
                     depth_slice: None,

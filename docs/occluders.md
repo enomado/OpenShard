@@ -227,6 +227,14 @@ of one cell for a four-tread flight**. Under D6 the answer is carried: the
 primitive a fragment met is the primitive it is a point of. They are in scope
 here and land in S4 with the rest.
 
+> **`own_solid` went, 2026-08-10, and not for the cost.** The prediction above
+> was right about the answer — the primitive a fragment met is the primitive it
+> is a point of, and it now rides in the position plane's fourth channel
+> (`solid_format.wesl`) — but what forced it was correctness rather than a scan
+> count. The scan was *ambiguous* for a fitted climbable, whose treads are one
+> owner and name no side, and phase 6d took away the mesh pass that had been
+> covering that everywhere it mattered. See `lighting_rebuild.md`'s own account.
+
 **D6 — the impostor meets the merged primitive its instance is part of.** Phase
 6c made a fragment's shape a property of its own instance, and `occlusion::Part`
 is the join from an instance to the solids it pushed. After merging that join

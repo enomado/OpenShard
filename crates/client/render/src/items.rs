@@ -101,15 +101,6 @@ pub fn needed_graphics(items: &[GroundItem], animations: &StaticAnimations) -> B
 /// server said, and writing a highlight into it would put the cursor's position
 /// inside the record of the world.
 ///
-/// Also the honest mesh for any item that is a climbable, prism-fit static —
-/// [`crate::statics::StaticGeometry`], the same shape [`crate::statics::collect`]
-/// returns and for the same reason. A stair the server placed rather than the
-/// map is exactly as stepped as one built into it, and `Placed::prism` does not
-/// know which list its own placement came from — only [`place`] does, and both
-/// callers read the same field. Before this, a climbable *item* fell through to
-/// the flat corner-stance reading forever, with no honest mesh pass ever built
-/// for it: this function threw `placed.prism` away.
-///
 /// `occlusion` is this frame's own grid, already built — see
 /// [`crate::statics::collect`], which takes it for the same reason and states it.
 // Eight, and every one of them is a different source this frame reads: the list,
@@ -131,8 +122,10 @@ pub fn collect(
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
-    let mut mesh_vertices = Vec::new();
-    let mut mesh_rows = Vec::new();
+    // Always empty since `docs/lighting_rebuild.md` phase 6d — see
+    // `crate::statics::collect`'s own comment at the same two locals.
+    let mesh_vertices = Vec::new();
+    let mesh_rows = Vec::new();
     let mut boxes = Vec::new();
 
     for (index, item) in items.iter().enumerate() {
@@ -170,20 +163,6 @@ pub fn collect(
             occlusion,
         );
         let quad = quad_of(item.at, &placed, base, hue, owner, volumes);
-        if let Some(prism) = &placed.prism {
-            crate::statics::push_mesh(
-                crate::statics::MeshSink {
-                    vertices: &mut mesh_vertices,
-                    rows: &mut mesh_rows,
-                },
-                camera,
-                item.at,
-                prism,
-                quad.depth,
-                key,
-                occlusion,
-            );
-        }
         quads.push((order, quad));
     }
 

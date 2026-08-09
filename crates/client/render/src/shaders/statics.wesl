@@ -31,7 +31,8 @@ import package::place_format::{
     KIND_MASK, KIND_MOBILE, STANCE_FACE_NORTH, STANCE_FACE_SOUTH, STANCE_CORNER, pack_ids,
 };
 import package::normal_format::pack_normal;
-import package::impostor::{billboard_at, hit, meets, ray_from};
+import package::solid_format::{SOLID_NOBODY, pack_solid};
+import package::impostor::{billboard_at, billboard_normal, hit, meets, ray_from};
 
 struct Viewport {
     // The target's size in *real* pixels — see `ground.wgsl`, which documents
@@ -63,10 +64,14 @@ struct Viewport {
 // other, which is what makes the silhouettes agree by construction rather than
 // by a border.
 //
-// `pad` is the vector's own alignment rather than a spare field, and `solid` is
-// there because the row it fills is paid for either way — nothing in this pass
-// reads it yet. See `crate::impostor::Volume::write`, which is the one place
-// this layout is spelled on the other side.
+// `pad` is the vector's own alignment rather than a spare field. `solid` is the
+// frame's own name for this box, and this pass **writes it into the G-buffer**
+// — the fragment stage carries the name of whichever box its view ray landed
+// on, which is what `blit.wgsl` compares a shadow candidate against. It rode
+// here unread for a phase, in a word the vector's alignment paid for anyway; see
+// `solid_format.wesl` for what asking a cell scan instead cost. And see
+// `crate::impostor::Volume::write`, which is the one place this layout is
+// spelled on the other side.
 struct Volume {
     lo: vec3<f32>,
     pad: f32,
@@ -352,11 +357,33 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // `x - y`, the one direction no wall runs. Guessing a plane for a wall is
     // therefore wrong in a way that guessing one for a person is not.
     var at = vec3<f32>(tile + vec2<f32>(0.5), base - down / Z_STEP);
-    if ((in.place.y >> 8u) & KIND_MASK) == KIND_MOBILE {
+    let is_mobile = ((in.place.y >> 8u) & KIND_MASK) == KIND_MOBILE;
+    if is_mobile {
         at = billboard_at(tile, base, across, down);
     }
+    // **A billboard's normal is the plane's own, not the zero vector.**
+    // `docs/lighting_rebuild.md` phase 7: a mobile has no volume for `meets` to
+    // land on, so before this it fell into the same branch as a static missing
+    // a *measurement* (below) and read as lit from every side — flat across a
+    // figure, since nothing about the light could then vary along a row. A
+    // billboard is not a missing measurement, though; it is a plane, by
+    // construction, and the plane has exactly one normal. Stating it is the
+    // "facing the camera" candidate this phase picked: never wrong, and cheap
+    // enough to owe nothing to the inflated-silhouette alternative it was
+    // weighed against.
+    //
+    // **And which solid of the grid it is a point of**, which is the box's own
+    // name and not a second thing to look up. `solid_format.wesl` carries the
+    // argument: the scan `blit.wgsl` used to do instead is exact for everything
+    // that stands one shape per owner and ambiguous for a fitted climbable,
+    // which stands one box per tread under one owner. A mobile and a static the
+    // grid holds nothing for keep `SOLID_NOBODY`, which is the honest answer —
+    // a point of nothing, exempt from nothing.
     var normal = vec3<f32>(0.0);
-    if in.volumes.y != 0u {
+    var mine = SOLID_NOBODY;
+    if is_mobile {
+        normal = billboard_normal();
+    } else if in.volumes.y != 0u {
         let start = ray_from(tile, base, across, down);
         // `impostor::nearest`, spelled here because the boxes are a binding: the
         // box in *front* wins among those the ray genuinely goes through — the
@@ -364,6 +391,11 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         // them, the one it passes closest to. That last case is the sprite
         // overhanging its own volume, and `met.outside` is how far.
         var best = meets(start, volumes[in.volumes.x].lo, volumes[in.volumes.x].hi);
+        // Which box that was, carried beside the meeting rather than recovered
+        // afterwards: `meets` answers about a pair of corners and has no notion
+        // of whose they were, and re-finding the winner by comparing `t`s would
+        // be a second rule that could disagree with the one below.
+        var best_at = in.volumes.x;
         for (var k = 1u; k < in.volumes.y; k = k + 1u) {
             let volume = volumes[in.volumes.x + k];
             let met = meets(start, volume.lo, volume.hi);
@@ -383,10 +415,12 @@ fn fs_main(in: VertexOut) -> FragmentOut {
             }
             if better {
                 best = met;
+                best_at = in.volumes.x + k;
             }
         }
         at = best.at;
         normal = best.normal;
+        mine = volumes[best_at].solid;
     }
 
     // The stance rides into the id word above the kind, and **it is not a
@@ -405,7 +439,10 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // position plane at `docs/lighting_rebuild.md` phase 2, since both are this
     // fragment's own and both were being quantised on the way.
     out.ids = pack_ids(id, stance, (in.place.y >> 8u) & KIND_MASK);
-    out.position = vec4<f32>(at, 1.0);
+    // The fourth channel is the solid this fragment is a point of, not a
+    // homogeneous `1.0` — `solid_format.wesl`, and the only place in this pass
+    // that a *name* rides beside a position.
+    out.position = vec4<f32>(at, pack_solid(mine));
     // `pack_normal` carries the two bits that separate the three answers: a zero
     // vector is a real one here — a picture with no measured volume has no side
     // — so "nothing drew this pixel" needs a bit of its own to be
