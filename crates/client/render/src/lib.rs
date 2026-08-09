@@ -68,6 +68,7 @@ pub mod png;
 pub mod renderer;
 pub mod scene;
 pub mod select;
+pub mod skills;
 pub mod solid;
 pub mod solids;
 pub mod sprite;
