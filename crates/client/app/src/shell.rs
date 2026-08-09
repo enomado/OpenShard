@@ -2207,7 +2207,7 @@ fn draw_occluders(
     cut: Cut,
     viewport_origin: egui::Pos2,
 ) {
-    use openshard_client_render::occlusion::{EDGE_ANY, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH};
+    use openshard_client_render::occlusion::Edges;
     use openshard_client_render::solid::Side;
 
     let clip = painter.clip_rect();
@@ -2272,15 +2272,15 @@ fn draw_occluders(
             // it lies at: a ray is stopped by crossing it, not by travelling
             // through it, so a box would draw a solid where the model has a
             // plane. Brightest, because it is the face that looks at the light.
-            0 => face(high.clone(), 1.0),
+            Edges::NONE => face(high.clone(), 1.0),
             // A **body** — a tree, a post, a graphic whose art names no edge. A
             // solid the ray travels through, so it is a box; and only the three
             // faces a camera can see are drawn, which is what makes it read as a
             // box rather than as a tangle. `Face::outward` names the two: an
             // isometric camera sees `+x` and `+y`.
-            EDGE_ANY => {
-                face(wall_of(panel_edge(EDGE_SOUTH)), Side::SOUTH_SHADE);
-                face(wall_of(panel_edge(EDGE_EAST)), Side::EAST_SHADE);
+            Edges::ANY => {
+                face(wall_of(panel_edge(Edges::SOUTH)), Side::SOUTH_SHADE);
+                face(wall_of(panel_edge(Edges::EAST)), Side::EAST_SHADE);
                 face(high.clone(), 1.0);
             }
             // A **panel** — a wall standing on one named edge of its tile. One
@@ -2293,9 +2293,9 @@ fn draw_occluders(
             named => face(
                 wall_of(panel_edge(named)),
                 match named {
-                    EDGE_EAST => Side::EAST_SHADE,
-                    EDGE_SOUTH => Side::SOUTH_SHADE,
-                    EDGE_NORTH => 0.42,
+                    Edges::EAST => Side::EAST_SHADE,
+                    Edges::SOUTH => Side::SOUTH_SHADE,
+                    Edges::NORTH => 0.42,
                     _ => 0.58,
                 },
             ),
@@ -2313,13 +2313,13 @@ fn draw_occluders(
 /// it derives the same pairs from `Face::place_at`, which is what the *shader*
 /// places a face pixel with, so the wireframe and the pixels cannot disagree
 /// about which edge a wall is on.
-fn panel_edge(named: u8) -> [usize; 2] {
-    use openshard_client_render::occlusion::{EDGE_EAST, EDGE_NORTH, EDGE_SOUTH};
+fn panel_edge(named: openshard_client_render::occlusion::Edges) -> [usize; 2] {
+    use openshard_client_render::occlusion::Edges;
 
     match named {
-        EDGE_NORTH => [0, 1],
-        EDGE_EAST => [1, 2],
-        EDGE_SOUTH => [3, 2],
+        Edges::NORTH => [0, 1],
+        Edges::EAST => [1, 2],
+        Edges::SOUTH => [3, 2],
         _ => [0, 3],
     }
 }
@@ -2364,7 +2364,7 @@ mod tests {
     #[test]
     fn the_wireframe_puts_a_panel_on_the_edge_its_pixels_are_drawn_on() {
         use openshard_client_render::facing::Face;
-        use openshard_client_render::occlusion::{EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, EDGE_WEST};
+        use openshard_client_render::occlusion::Edges;
 
         // `Camera::tile_facet`'s own order, as the corner offsets it means.
         const DIAMOND: [(f32, f32); 4] = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
@@ -2376,10 +2376,10 @@ mod tests {
         };
 
         for (face, named) in [
-            (Face::North, EDGE_NORTH),
-            (Face::East, EDGE_EAST),
-            (Face::South, EDGE_SOUTH),
-            (Face::West, EDGE_WEST),
+            (Face::North, Edges::NORTH),
+            (Face::East, Edges::EAST),
+            (Face::South, Edges::SOUTH),
+            (Face::West, Edges::WEST),
         ] {
             let want = [corner(face.place_at(0.0)), corner(face.place_at(1.0))];
             let drawn = panel_edge(named);

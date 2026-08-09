@@ -84,7 +84,7 @@
 //! after phase 5b there is measurably no ray left that reaches it — which is what
 //! the gate reports rather than what this module claims.
 
-use crate::occlusion::{Solid, SolidId};
+use crate::occlusion::{Edges, Solid, SolidId};
 
 /// A primitive's place in the frame's own list — what `parent` and `space`
 /// are keyed by below, and equally what a union-find group's name is: a
@@ -193,7 +193,7 @@ fn mergeable(solid: &Solid) -> bool {
 /// constant.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct Surface {
-    edges: u8,
+    edges: Edges,
     roof: bool,
     /// The owner, spelled out: a `(z, graphic)` pair — see the header.
     z: i8,
@@ -319,7 +319,7 @@ mod tests {
     use openshard_protocol::wire::Graphic;
 
     use super::*;
-    use crate::occlusion::{Aperture, EDGE_ANY, EDGE_SOUTH, OPAQUE, Owner, PANE, Part};
+    use crate::occlusion::{Aperture, Edges, OPAQUE, Owner, PANE, Part};
 
     /// One primitive as a test here states one: where it stands, what shape it is,
     /// and **whose** it is.
@@ -329,7 +329,7 @@ mod tests {
     /// itself would be a second opinion about where a panel's plane is. The
     /// graphic *is* a parameter, which it is not there: telling two owners apart
     /// is half of what this module is about.
-    fn stands_at(x: i32, y: i32, top: i32, edges: u8, graphic: u16) -> Solid {
+    fn stands_at(x: i32, y: i32, top: i32, edges: Edges, graphic: u16) -> Solid {
         Solid {
             space: Solid::box_of(x, y, 0, top, edges),
             opacity: OPAQUE,
@@ -349,7 +349,9 @@ mod tests {
     /// where.
     #[test]
     fn a_run_of_one_wall_becomes_one_primitive() {
-        let run: Vec<Solid> = (100..104).map(|x| stands_at(x, 100, 20, EDGE_SOUTH, 7)).collect();
+        let run: Vec<Solid> = (100..104)
+            .map(|x| stands_at(x, 100, 20, Edges::SOUTH, 7))
+            .collect();
         let (solids, ids) = merged(run.clone());
         assert_eq!(solids.len(), 1, "four panels of one wall are one wall");
         // Every reference still names it — a cell's run is unchanged in length and
@@ -375,7 +377,7 @@ mod tests {
     #[test]
     fn a_floor_becomes_one_slab() {
         let floor: Vec<Solid> = (100..103)
-            .flat_map(|y| (100..103).map(move |x| stands_at(x, y, 0, 0, 9)))
+            .flat_map(|y| (100..103).map(move |x| stands_at(x, y, 0, Edges::NONE, 9)))
             .collect();
         let (solids, _) = merged(floor);
         assert_eq!(solids.len(), 1, "nine planks of one floor are one floor");
@@ -391,10 +393,10 @@ mod tests {
     #[test]
     fn a_gap_in_a_run_is_two_primitives() {
         let run = vec![
-            stands_at(100, 100, 20, EDGE_SOUTH, 7),
-            stands_at(101, 100, 20, EDGE_SOUTH, 7),
+            stands_at(100, 100, 20, Edges::SOUTH, 7),
+            stands_at(101, 100, 20, Edges::SOUTH, 7),
             // One tile of open ground, and then the wall goes on.
-            stands_at(103, 100, 20, EDGE_SOUTH, 7),
+            stands_at(103, 100, 20, Edges::SOUTH, 7),
         ];
         let (solids, ids) = merged(run);
         assert_eq!(solids.len(), 2);
@@ -412,8 +414,8 @@ mod tests {
     #[test]
     fn a_run_of_two_graphics_stays_two_primitives() {
         let run = vec![
-            stands_at(100, 100, 20, EDGE_SOUTH, 7),
-            stands_at(101, 100, 20, EDGE_SOUTH, 8),
+            stands_at(100, 100, 20, Edges::SOUTH, 7),
+            stands_at(101, 100, 20, Edges::SOUTH, 8),
         ];
         let (solids, _) = merged(run);
         assert_eq!(
@@ -428,8 +430,8 @@ mod tests {
     #[test]
     fn a_step_up_in_a_run_stays_two_primitives() {
         let run = vec![
-            stands_at(100, 100, 20, EDGE_ANY, 7),
-            stands_at(101, 100, 25, EDGE_ANY, 7),
+            stands_at(100, 100, 20, Edges::ANY, 7),
+            stands_at(101, 100, 25, Edges::ANY, 7),
         ];
         let (solids, _) = merged(run);
         assert_eq!(solids.len(), 2, "two spans do not share a whole face");
@@ -448,7 +450,7 @@ mod tests {
         let run: Vec<Solid> = (100..104)
             .map(|x| Solid {
                 opacity: PANE,
-                ..stands_at(x, 100, 20, EDGE_SOUTH, 7)
+                ..stands_at(x, 100, 20, Edges::SOUTH, 7)
             })
             .collect();
         let (solids, _) = merged(run);
@@ -467,7 +469,7 @@ mod tests {
         let run: Vec<Solid> = (100..104)
             .map(|x| Solid {
                 aperture: Some(Aperture::new(0.25, 0.75, 5, 15)),
-                ..stands_at(x, 100, 20, EDGE_SOUTH, 7)
+                ..stands_at(x, 100, 20, Edges::SOUTH, 7)
             })
             .collect();
         let (solids, _) = merged(run);
@@ -482,7 +484,7 @@ mod tests {
     #[test]
     fn a_list_with_nothing_to_merge_is_unchanged() {
         let apart: Vec<Solid> = (0..4)
-            .map(|n| stands_at(100 + n * 2, 100, 20, EDGE_ANY, 7))
+            .map(|n| stands_at(100 + n * 2, 100, 20, Edges::ANY, 7))
             .collect();
         let (solids, ids) = merged(apart.clone());
         assert_eq!(solids, apart);

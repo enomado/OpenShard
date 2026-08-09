@@ -4,7 +4,7 @@
 use openshard_client_render::atlas::StaticAtlas;
 use openshard_client_render::camera::Camera;
 use openshard_client_render::cutaway::Cutaway;
-use openshard_client_render::occlusion::{self, EDGE_ANY};
+use openshard_client_render::occlusion::{self, Edges};
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::art::Art;
@@ -42,8 +42,8 @@ fn main() {
         for ty in bounds.min_y..=bounds.max_y {
             for solid in grid.solids_at(tx, ty) {
                 match solid.edges {
-                    0 => lids += 1,
-                    EDGE_ANY => bodies += 1,
+                    Edges::NONE => lids += 1,
+                    Edges::ANY => bodies += 1,
                     _ => panels += 1,
                 }
                 *opacities.entry(solid.opacity).or_default() += 1;

@@ -723,7 +723,7 @@ mod tests {
                 },
             },
             opacity: super::super::OPAQUE,
-            edges: super::super::EDGE_ANY,
+            edges: super::super::Edges::ANY,
             aperture: None,
             roof: false,
             owner: super::super::Owner::new(0, openshard_protocol::wire::Graphic(0)),

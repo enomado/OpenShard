@@ -311,23 +311,23 @@ fn what_the_lighting_knows_about_a_place() {
 }
 
 /// An edge mask as the four letters, for a line a person reads.
-fn edges(mask: u8) -> String {
+fn edges(mask: occlusion::Edges) -> String {
     let named = [
-        (occlusion::EDGE_NORTH, 'N'),
-        (occlusion::EDGE_EAST, 'E'),
-        (occlusion::EDGE_SOUTH, 'S'),
-        (occlusion::EDGE_WEST, 'W'),
+        (occlusion::Edges::NORTH, 'N'),
+        (occlusion::Edges::EAST, 'E'),
+        (occlusion::Edges::SOUTH, 'S'),
+        (occlusion::Edges::WEST, 'W'),
     ];
     let text: String = named
         .iter()
-        .map(|(bit, letter)| match mask & bit != 0 {
+        .map(|(bit, letter)| match mask.contains(*bit) {
             true => *letter,
             false => '-',
         })
         .collect();
     match mask {
-        0 => format!("{text} (a lid)"),
-        occlusion::EDGE_ANY => format!("{text} (a whole tile)"),
+        occlusion::Edges::NONE => format!("{text} (a lid)"),
+        occlusion::Edges::ANY => format!("{text} (a whole tile)"),
         _ => text,
     }
 }

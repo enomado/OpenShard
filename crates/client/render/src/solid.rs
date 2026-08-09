@@ -216,7 +216,7 @@ pub const DRAWN_LID_THICKNESS: f64 = 2.0;
 pub fn drawn(solid: &crate::occlusion::Solid) -> Solid {
     let space = solid.space;
     let (mut min, max) = (space.min, space.max);
-    if solid.edges == 0 {
+    if solid.edges == crate::occlusion::Edges::NONE {
         // A lid — a floor, a roof, a plank. A slab hanging under the height it
         // lies at: the surface a ray is stopped by is the top one, so the
         // thickness goes downwards.
@@ -246,7 +246,7 @@ pub fn drawn(solid: &crate::occlusion::Solid) -> Solid {
 /// wireframe are looked at against each other — a red plane standing inside an
 /// amber box is a defect, and it is invisible if the two chose their own reds.
 pub fn kind_colour(solid: &crate::occlusion::Solid) -> [f32; 3] {
-    use crate::occlusion::{EDGE_ANY, OPAQUE};
+    use crate::occlusion::{Edges, OPAQUE};
 
     match (solid.opacity < OPAQUE, solid.edges) {
         // A pane, whatever shape it is: the one thing here that is about how
@@ -255,12 +255,12 @@ pub fn kind_colour(solid: &crate::occlusion::Solid) -> [f32; 3] {
         // A lid — a floor, a roof, a plank. Warm, because it is the face that
         // looks at the light, and because its *absence* over a tile is what a
         // person opening this view is usually hunting.
-        (false, 0) => [255.0, 190.0, 70.0],
+        (false, Edges::NONE) => [255.0, 190.0, 70.0],
         // A body: a graphic whose art named no edge, so the whole tile stops
         // light. Violet, and deliberately the odd colour out — it is a fallback
         // rather than a measurement, and a street with one of these standing
         // among panels is worth seeing from across the room.
-        (false, EDGE_ANY) => [190.0, 90.0, 255.0],
+        (false, Edges::ANY) => [190.0, 90.0, 255.0],
         // A panel: a wall on one named edge.
         (false, _) => [255.0, 70.0, 60.0],
     }

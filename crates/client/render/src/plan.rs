@@ -209,7 +209,7 @@ impl Picture {
             let (left, top) = ((x - self.bounds.min_x) * scale, (y - self.bounds.min_y) * scale);
             let (right, bottom) = (left + scale - 1, top + scale - 1);
             let color = panel_color(&cell);
-            if cell.edges == 0 {
+            if cell.edges == occlusion::Edges::NONE {
                 // A lid — a floor or a roof. It has no side to draw, so it is the
                 // whole square, dashed: the ray is stopped by its `z` span alone.
                 self.dashed((left, top), (right, top), color);
@@ -222,19 +222,19 @@ impl Picture {
             // ray has to cross. Two pixels thick, so a wall reads as a wall at a
             // glance rather than as a hairline.
             for (edge, from, to) in [
-                (occlusion::EDGE_NORTH, (left, top), (right, top)),
-                (occlusion::EDGE_SOUTH, (left, bottom), (right, bottom)),
-                (occlusion::EDGE_WEST, (left, top), (left, bottom)),
-                (occlusion::EDGE_EAST, (right, top), (right, bottom)),
+                (occlusion::Edges::NORTH, (left, top), (right, top)),
+                (occlusion::Edges::SOUTH, (left, bottom), (right, bottom)),
+                (occlusion::Edges::WEST, (left, top), (left, bottom)),
+                (occlusion::Edges::EAST, (right, top), (right, bottom)),
             ] {
-                if cell.edges & edge == 0 {
+                if !cell.edges.contains(edge) {
                     continue;
                 }
                 self.line(from, to, color);
                 let inward = match edge {
-                    occlusion::EDGE_NORTH => (0, 1),
-                    occlusion::EDGE_SOUTH => (0, -1),
-                    occlusion::EDGE_WEST => (1, 0),
+                    occlusion::Edges::NORTH => (0, 1),
+                    occlusion::Edges::SOUTH => (0, -1),
+                    occlusion::Edges::WEST => (1, 0),
                     _ => (-1, 0),
                 };
                 self.line(

@@ -346,15 +346,15 @@ fn split(nodes: &mut Vec<Node>, order: &mut [SolidId], range: std::ops::Range<us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::occlusion::{EDGE_ANY, Owner, Part};
+    use crate::occlusion::{Edges, Owner, Part};
 
     /// A body filling one tile, from `z` 0 to 10 — the shape a built scene's
     /// occluders mostly are, and enough to give a build something to sort.
     fn body(x: i32, y: i32, z: i32) -> Solid {
         Solid {
-            space: crate::occlusion::Solid::box_of(x, y, z, z + 10, EDGE_ANY),
+            space: crate::occlusion::Solid::box_of(x, y, z, z + 10, Edges::ANY),
             opacity: crate::occlusion::OPAQUE,
-            edges: EDGE_ANY,
+            edges: Edges::ANY,
             aperture: None,
             roof: false,
             owner: Owner::new(z as i8, openshard_protocol::wire::Graphic(1)),
@@ -528,8 +528,8 @@ mod tests {
         // failed for that reason, and would have been read as the tie-break
         // working.
         let lid = |x: i32| Solid {
-            space: crate::occlusion::Solid::box_of(x, 0, 0, 0, 0),
-            edges: 0,
+            space: crate::occlusion::Solid::box_of(x, 0, 0, 0, Edges::NONE),
+            edges: Edges::NONE,
             ..body(x, 0, 0)
         };
         let solids: Vec<Solid> = (0..40).map(|at| lid(at % 2)).collect();

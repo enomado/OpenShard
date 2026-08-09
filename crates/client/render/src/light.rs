@@ -57,7 +57,7 @@ use crate::cutaway::{self, Cutaway};
 use crate::facing::Face;
 use crate::geometry::Vec2;
 use crate::items::GroundItem;
-use crate::occlusion::{EDGE_ANY, Occlusion};
+use crate::occlusion::{Edges, Occlusion};
 
 /// One point light, where it stands in the world.
 ///
@@ -876,7 +876,7 @@ const MOUNTED_CLEARANCE: f32 = 0.7;
 ///
 /// A tile with no panel is not moved, and that covers the ordinary cases by
 /// construction: a torch on the ground, a lamp post in the street, a brazier in a
-/// room. So is a cell whose sides cancel — [`EDGE_ANY`](crate::occlusion::EDGE_ANY),
+/// room. So is a cell whose sides cancel — [`Edges::ANY`](crate::occlusion::Edges::ANY),
 /// the whole-tile answer for a graphic the art would not name, and a lid — because
 /// there is no direction in it to move along and a guess would be a wrong one.
 fn mounted_at(at: Vec2, occlusion: &crate::occlusion::Occlusion) -> Vec2 {
@@ -886,7 +886,10 @@ fn mounted_at(at: Vec2, occlusion: &crate::occlusion::Occlusion) -> Vec2 {
     // Componentwise and not along one normalised direction, so that a flame on a
     // **corner** — two panels, and every building has them — goes clear of both
     // planes rather than half clear of each.
-    let toward = |positive: u8, negative: u8| match (cell.edges & positive != 0, cell.edges & negative != 0) {
+    let toward = |positive: Edges, negative: Edges| match (
+        cell.edges.contains(positive),
+        cell.edges.contains(negative),
+    ) {
         (true, false) => MOUNTED_CLEARANCE,
         (false, true) => -MOUNTED_CLEARANCE,
         // Neither side, or both: a lid, a whole-tile occluder, or a tile holding
@@ -894,8 +897,8 @@ fn mounted_at(at: Vec2, occlusion: &crate::occlusion::Occlusion) -> Vec2 {
         _ => 0.0,
     };
     Vec2::new(
-        at.x + toward(crate::occlusion::EDGE_EAST, crate::occlusion::EDGE_WEST),
-        at.y + toward(crate::occlusion::EDGE_SOUTH, crate::occlusion::EDGE_NORTH),
+        at.x + toward(crate::occlusion::Edges::EAST, crate::occlusion::Edges::WEST),
+        at.y + toward(crate::occlusion::Edges::SOUTH, crate::occlusion::Edges::NORTH),
     )
 }
 
@@ -1376,8 +1379,8 @@ fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
 /// lid and a body have no run for this to be measured along.
 ///
 /// `blit.wgsl`'s `run_v`.
-fn run_v(edges: u8, px: f32, py: f32) -> f32 {
-    let along = match edges & (crate::occlusion::EDGE_NORTH | crate::occlusion::EDGE_SOUTH) != 0 {
+fn run_v(edges: Edges, px: f32, py: f32) -> f32 {
+    let along = match edges.contains(Edges::NORTH.union(Edges::SOUTH)) {
         true => px,
         false => py,
     };
@@ -2001,13 +2004,13 @@ pub struct Stopper {
     /// reach it — the very name [`exemption`] compares. See
     /// [`crate::occlusion::SolidId`].
     pub solid: crate::occlusion::SolidId,
-    /// Its sides: `0` for a lid, [`crate::occlusion::EDGE_ANY`] for a body,
-    /// anything else for a panel.
+    /// Its sides: [`crate::occlusion::Edges::NONE`] for a lid,
+    /// [`crate::occlusion::Edges::ANY`] for a body, anything else for a panel.
     ///
     /// The shape rather than the identity, and it is here because a report is
     /// read by a person: "a lid stopped me" and "a panel stopped me" are two
     /// different pictures, and an id number is not one a reader can see.
-    pub edges: u8,
+    pub edges: Edges,
     /// The `z` span **the walk that blamed it actually read**: the record's
     /// exact corners from [`walk_the_record`], the wire's quantised one from
     /// [`walk_the_wire`].
@@ -2026,8 +2029,8 @@ impl std::fmt::Display for Stopper {
     /// this and a second copy would drift.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let shape = match self.edges {
-            0 => "lid",
-            EDGE_ANY => "body",
+            Edges::NONE => "lid",
+            Edges::ANY => "body",
             _ => "panel",
         };
         write!(
@@ -2926,7 +2929,7 @@ fn walk_primitives(
         ];
         let opacity = f32::from(stands.opacity) / 255.0;
         let by_surface = match stands.edges {
-            0 => {
+            Edges::NONE => {
                 // **Not the lid's own `entered`/`leaves`.** A lid is flat in `z`
                 // (`Solid::box_of`'s `min.z == max.z` for an ordinary floor), so
                 // the `z` slab narrows both ends to the exact same instant the
@@ -2965,7 +2968,7 @@ fn walk_primitives(
             // outright. No length-based fade, no per-side floor, no widened-corner
             // graze: those existed only to fake a penumbra a point flame does not
             // cast. See `docs/lighting_raymarch.md`'s "hard shadows" decision.
-            EDGE_ANY => opacity,
+            Edges::ANY => opacity,
             // A panel: a named side, and what stops the ray is whether it crossed
             // the plane *inside* the panel's own drawn extent — [`pierced`], and
             // its hole. There was a gate before it, `edges & !same_run == 0`, and
@@ -3401,7 +3404,7 @@ mod tests {
     /// helpers below — the four numbers a scene is actually about, the same
     /// way `occlusion.rs`'s own `stands_at` is, but built directly since that
     /// one is private to `occlusion`'s own test module.
-    fn test_solid(bottom: i32, top: i32, edges: u8) -> crate::occlusion::Solid {
+    fn test_solid(bottom: i32, top: i32, edges: Edges) -> crate::occlusion::Solid {
         crate::occlusion::Solid {
             space: crate::solid::Solid {
                 min: crate::camera::WorldSpot {
@@ -3442,12 +3445,12 @@ mod tests {
     /// real scene, not a corner case invented for this test.
     #[test]
     fn run_v_reads_the_axis_the_edges_name_and_floors_rather_than_fracts() {
-        assert!((run_v(crate::occlusion::EDGE_NORTH, 3.75, 9.25) - 0.75).abs() < 1e-6);
-        assert!((run_v(crate::occlusion::EDGE_EAST, 3.75, 9.25) - 0.25).abs() < 1e-6);
+        assert!((run_v(crate::occlusion::Edges::NORTH, 3.75, 9.25) - 0.75).abs() < 1e-6);
+        assert!((run_v(crate::occlusion::Edges::EAST, 3.75, 9.25) - 0.25).abs() < 1e-6);
         // `(-3.25).fract()` is `-0.25` in Rust; the correct run fraction is
         // `0.75`, which is what a floor-based fraction gives and `fract`
         // does not.
-        assert!((run_v(crate::occlusion::EDGE_NORTH, -3.25, 0.0) - 0.75).abs() < 1e-6);
+        assert!((run_v(crate::occlusion::Edges::NORTH, -3.25, 0.0) - 0.75).abs() < 1e-6);
     }
 
     /// [`hole`]'s two claims: nothing without an aperture, and — with one — the
@@ -3473,7 +3476,7 @@ mod tests {
     /// stopped by the wall around it.
     #[test]
     fn pierced_is_the_whole_surface_with_no_hole_and_open_where_the_hole_is() {
-        let wall = test_solid(0, 20, crate::occlusion::EDGE_NORTH);
+        let wall = test_solid(0, 20, crate::occlusion::Edges::NORTH);
         assert_eq!(pierced(&wall, [0.5, 0.0, 10.0]), 1.0);
 
         let mut windowed = wall;
@@ -3528,7 +3531,7 @@ mod tests {
                 },
             },
             opacity: 255,
-            edges: crate::occlusion::EDGE_ANY,
+            edges: crate::occlusion::Edges::ANY,
             aperture: None,
             roof: false,
             owner: crate::occlusion::Owner::new(3, openshard_protocol::wire::Graphic(0)),

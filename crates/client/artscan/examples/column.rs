@@ -72,9 +72,10 @@ fn main() {
                 occlusion::opacity(Graphic(item.tile), tile),
                 facing,
                 match tile.flags.is_background() {
-                    true => 0,
+                    true => occlusion::Edges::NONE,
                     false => occlusion::edges_of(facing),
-                },
+                }
+                .raw(),
                 tile.flags,
             );
         }

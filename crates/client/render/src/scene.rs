@@ -55,7 +55,7 @@ pub const WALL_EAST: Graphic = Graphic(0x000B);
 ///
 /// **The whole point of it is that it is faceless.** [`house_corner`] leaves this
 /// graphic out of its own atlas, so the occlusion grid falls back to
-/// [`crate::occlusion::EDGE_ANY`], the whole-tile answer, and the sprite falls
+/// [`crate::occlusion::Edges::ANY`], the whole-tile answer, and the sprite falls
 /// back to [`crate::place::Stance::Upright`] — which is what a corner *was*
 /// before decision 25, when `facing::facing_of` refused one rather than reading
 /// it. The `None` arrives by the same expression a refused picture's would: see
@@ -552,7 +552,7 @@ pub fn house_corner() -> Scene {
 /// **The same corner, with a picture the detector reads.**
 ///
 /// [`house_corner`] is the corner as this pass had it: a graphic whose art names
-/// no edge, so the tile is `EDGE_ANY` in the grid and `Upright` in the
+/// no edge, so the tile is `Edges::ANY` in the grid and `Upright` in the
 /// attachment. This one gives that graphic the two faces a camera can see, which
 /// is what the client's own corner art is — so the tile carries two panels rather
 /// than four, and each of its halves is a surface with a direction it looks in.

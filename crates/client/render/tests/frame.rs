@@ -1895,7 +1895,7 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
             i32::from(at.y),
             i32::from(at.z),
             i32::from(at.z),
-            0,
+            occlusion::Edges::NONE,
         ),
         occlusion::SolidId::word(None),
     )];
@@ -2192,7 +2192,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
                 400,
                 0,
                 i32::from(HEIGHT) / openshard_client_render::camera::Z_STEP,
-                openshard_client_render::occlusion::EDGE_SOUTH,
+                openshard_client_render::occlusion::Edges::SOUTH,
             ),
             occlusion::SolidId::word(None),
         )

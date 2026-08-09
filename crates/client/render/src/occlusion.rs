@@ -142,17 +142,58 @@ pub fn stops_light(tile: &StaticTile) -> bool {
 ///
 /// A mask of zero is a **lid**: something horizontal, a floor or a roof, whose
 /// occlusion is entirely its `z` span and which no vertical edge describes.
-/// [`EDGE_ANY`] is "it stands up and nobody knows which way", which is exactly
-/// the old whole-tile answer and therefore the safe fallback.
-pub const EDGE_NORTH: u8 = 1;
-/// The `x1` side. See [`EDGE_NORTH`].
-pub const EDGE_EAST: u8 = 2;
-/// The `y1` side. See [`EDGE_NORTH`].
-pub const EDGE_SOUTH: u8 = 4;
-/// The `x0` side. See [`EDGE_NORTH`].
-pub const EDGE_WEST: u8 = 8;
-/// All four: a thing that stands up whose facing the art would not name.
-pub const EDGE_ANY: u8 = EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST;
+/// [`Edges::ANY`] is "it stands up and nobody knows which way", which is
+/// exactly the old whole-tile answer and therefore the safe fallback.
+///
+/// A choice from a small finite set, by `docs/style.md`'s narrow newtype
+/// rule — not an arbitrary `u8`, and not an enum either: a corner is two
+/// named sides at once ([`Edges::EAST`]`.union(`[`Edges::SOUTH`]`)`, say),
+/// which only a bitmask states without a fifth variant per pair. The field
+/// stays private the way [`bvh::NodeIdx`] does; [`Edges::raw`] is the one
+/// door out, to the wire byte `blit.wesl` mirrors these same four bits in.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
+pub struct Edges(u8);
+
+impl Edges {
+    /// No named side: a lid, whose occlusion is its `z` span alone.
+    pub const NONE: Edges = Edges(0);
+    /// The `y0` side.
+    pub const NORTH: Edges = Edges(1);
+    /// The `x1` side.
+    pub const EAST: Edges = Edges(2);
+    /// The `y1` side.
+    pub const SOUTH: Edges = Edges(4);
+    /// The `x0` side.
+    pub const WEST: Edges = Edges(8);
+    /// All four: a thing that stands up whose facing the art would not name.
+    pub const ANY: Edges = Edges(Self::NORTH.0 | Self::EAST.0 | Self::SOUTH.0 | Self::WEST.0);
+
+    /// Every side `self` and `other` name between them — a corner built from
+    /// its two panels, or the union `Cell` folds a tile's solids into.
+    pub const fn union(self, other: Edges) -> Edges {
+        Edges(self.0 | other.0)
+    }
+
+    /// Whether `self` names any side `other` does — a single bit against
+    /// [`Edges::ANY`], or two bits of a corner against one named side.
+    pub const fn contains(self, other: Edges) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// The raw mask: the one door out to the wire byte and to `blit.wesl`'s
+    /// mirror of these same four bits. See the type doc.
+    pub const fn raw(self) -> u8 {
+        self.0
+    }
+}
+
+impl std::ops::BitOr for Edges {
+    type Output = Edges;
+
+    fn bitor(self, rhs: Edges) -> Edges {
+        self.union(rhs)
+    }
+}
 /// How thick a panel is, in tiles: real geometry, inward from the plane its
 /// face pixels lie on — the depth [`light::walk_cells`](crate::light::walk_cells)
 /// is genuinely stopped by, not only a view's own fattening.
@@ -233,13 +274,13 @@ fn z_byte(z: i32) -> u8 {
 /// One line, and it is the whole of how a walk carries an edge across a
 /// boundary: the line a ray crosses is one cell's east and the next one's west.
 /// `blit.wgsl` has the same function and the parity test is what says so.
-pub fn opposite(side: u8) -> u8 {
+pub fn opposite(side: Edges) -> Edges {
     match side {
-        EDGE_NORTH => EDGE_SOUTH,
-        EDGE_SOUTH => EDGE_NORTH,
-        EDGE_EAST => EDGE_WEST,
-        EDGE_WEST => EDGE_EAST,
-        _ => 0,
+        Edges::NORTH => Edges::SOUTH,
+        Edges::SOUTH => Edges::NORTH,
+        Edges::EAST => Edges::WEST,
+        Edges::WEST => Edges::EAST,
+        _ => Edges::NONE,
     }
 }
 
@@ -250,18 +291,18 @@ pub fn opposite(side: u8) -> u8 {
 /// facing's does — `opposite` of the climb's `up` — and a second copy of this
 /// match would be exactly the kind of drift decision 9 warns about, one file
 /// over.
-fn edge_of(face: Face) -> u8 {
+fn edge_of(face: Face) -> Edges {
     match face {
-        Face::North => EDGE_NORTH,
-        Face::East => EDGE_EAST,
-        Face::South => EDGE_SOUTH,
-        Face::West => EDGE_WEST,
+        Face::North => Edges::NORTH,
+        Face::East => Edges::EAST,
+        Face::South => Edges::SOUTH,
+        Face::West => Edges::WEST,
     }
 }
 
 /// Which sides of its tile a static occupies, from what the art said about it.
 ///
-/// `None` — a post, a tree, a graphic no atlas was offered — is [`EDGE_ANY`]:
+/// `None` — a post, a tree, a graphic no atlas was offered — is [`Edges::ANY`]:
 /// the whole-tile answer, unchanged from before faces existed. A **corner** is
 /// two bits, which is the panel path with two panels on it and not a new case —
 /// see the `edges` arm of `light::walk_cells` and of `blit.wgsl`'s `walk`. A
@@ -272,11 +313,11 @@ fn edge_of(face: Face) -> u8 {
 /// running *alongside* a corner — down the street the corner stands on — crosses
 /// neither of its two panels and passes, exactly as it does beside the runs of
 /// wall either side of it, where before it was stopped by a whole-tile occluder.
-pub fn edges_of(facing: Option<crate::facing::Facing>) -> u8 {
+pub fn edges_of(facing: Option<crate::facing::Facing>) -> Edges {
     let Some(facing) = facing else {
-        return EDGE_ANY;
+        return Edges::ANY;
     };
-    facing.faces().map(edge_of).fold(0, |mask, side| mask | side)
+    facing.faces().map(edge_of).fold(Edges::NONE, Edges::union)
 }
 
 /// **What shape one static standing at one place is**: its boxes, each with the
@@ -305,7 +346,7 @@ pub fn boxes_of(
     z: i8,
     tile: &StaticTile,
     shape: &Shape,
-    mut each: impl FnMut(Part, u8, crate::solid::Solid),
+    mut each: impl FnMut(Part, Edges, crate::solid::Solid),
 ) {
     let bottom = i32::from(z);
     let top = bottom + calc_height(tile);
@@ -346,14 +387,14 @@ pub fn boxes_of(
         // nothing to land on.
         //
         // So a tread is its own strip of the tile, from the static's base to its
-        // own height. `EDGE_ANY` because a stair is solid: a body, whose
+        // own height. `Edges::ANY` because a stair is solid: a body, whose
         // occlusion is `ray_vs_solid`'s exact slab test rather than a lid's
         // crossing test and a panel's run masking.
         let treads = prism.treads();
         for (tread, &height) in treads.iter().enumerate() {
             each(
                 Part::nth(tread),
-                EDGE_ANY,
+                Edges::ANY,
                 Solid::tread_box_of(
                     x,
                     y,
@@ -373,10 +414,14 @@ pub fn boxes_of(
     // a house — and narrow it by `PANEL_THICKNESS` on two sides for nothing: the
     // flight is already half-height (`calc_height`), so what a panel reading
     // loses is not "this looks like solid stone", it is a seam short of the tile
-    // the neighbour occludes from. One whole-tile body, `EDGE_ANY`'s un-inset
+    // the neighbour occludes from. One whole-tile body, `Edges::ANY`'s un-inset
     // case of `box_of`, is the answer for the 37.7% the fit still misses.
     if tile.flags.is_climbable() {
-        each(Part::ONLY, EDGE_ANY, Solid::box_of(x, y, bottom, top, EDGE_ANY));
+        each(
+            Part::ONLY,
+            Edges::ANY,
+            Solid::box_of(x, y, bottom, top, Edges::ANY),
+        );
         return;
     }
     // A floor or a rug is a **lid**: what it is is the `z` it lies at, and no
@@ -389,19 +434,19 @@ pub fn boxes_of(
     // `None` is deliberate: a floor whose silhouette happened to read as a wall
     // would otherwise be given one edge out of four.
     let edges = match tile.flags.is_background() {
-        true => 0,
+        true => Edges::NONE,
         false => edges_of(shape.facing),
     };
     match edges {
         // A lid, or a body: one surface, and the mask is the whole of what says
         // which of the walk's two rules it takes.
-        0 | EDGE_ANY => each(Part::ONLY, edges, Solid::box_of(x, y, bottom, top, edges)),
+        Edges::NONE | Edges::ANY => each(Part::ONLY, edges, Solid::box_of(x, y, bottom, top, edges)),
         named => {
             // A corner's panels are numbered in the order they are pushed, which
             // is the order this array names the sides in — see [`Part`].
             let mut part = 0;
-            for side in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
-                if named & side != 0 {
+            for side in [Edges::NORTH, Edges::EAST, Edges::SOUTH, Edges::WEST] {
+                if named.contains(side) {
                     each(Part::nth(part), side, Solid::box_of(x, y, bottom, top, side));
                     part += 1;
                 }
@@ -724,11 +769,11 @@ pub struct Solid {
     pub space: crate::solid::Solid,
     /// How much of a ray crossing it is stopped.
     pub opacity: u8,
-    /// Which side of the tile it stands on: one of [`EDGE_NORTH`],
-    /// [`EDGE_EAST`], [`EDGE_SOUTH`], [`EDGE_WEST`] for a panel, `0` for a lid,
-    /// or [`EDGE_ANY`] for a body. Never two named sides — a corner is two
-    /// panels, which is what the list is for.
-    pub edges: u8,
+    /// Which side of the tile it stands on: one of [`Edges::NORTH`],
+    /// [`Edges::EAST`], [`Edges::SOUTH`], [`Edges::WEST`] for a panel,
+    /// [`Edges::NONE`] for a lid, or [`Edges::ANY`] for a body. Never two named
+    /// sides — a corner is two panels, which is what the list is for.
+    pub edges: Edges,
     /// The hole in it, where the art named one — see [`Aperture`], and step 21.3
     /// of `docs/lighting.md`. Indexed by the solid's own place in
     /// [`Occlusion::solid`], which is what the aperture plane is folded to.
@@ -878,7 +923,7 @@ impl Solid {
     /// invention — and the panel that is a fifth of a tile deep on the inside of
     /// the edge it stands on is exactly the sort of thing a second spelling gets
     /// wrong. See `crate::impostor::Volume::of`.
-    pub fn box_of(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> crate::solid::Solid {
+    pub fn box_of(x: i32, y: i32, bottom: i32, top: i32, edges: Edges) -> crate::solid::Solid {
         use crate::camera::WorldSpot;
 
         let (x, y) = (f64::from(x), f64::from(y));
@@ -900,17 +945,17 @@ impl Solid {
             // that is the whole of the box. `bottom` and `top` are both kept
             // because a static with a height is a lid whose span really is deep
             // — a plank is not, a sloped roof section is.
-            0 | EDGE_ANY => {}
+            Edges::NONE | Edges::ANY => {}
             // A panel: a slab standing on the named edge, `PANEL_THICKNESS` deep
             // into the tile it stands on and never past it — two walls on the
             // shared edge of neighbouring tiles must not draw one inside the
             // other, which is the same argument `solid::drawn` used to make
             // alone. The outer face stays exactly on the plane `Face::place_at`
             // draws a face pixel on; only the inner one moves.
-            EDGE_NORTH => max.y = y + PANEL_THICKNESS,
-            EDGE_SOUTH => min.y = y + 1.0 - PANEL_THICKNESS,
-            EDGE_WEST => max.x = x + PANEL_THICKNESS,
-            EDGE_EAST => min.x = x + 1.0 - PANEL_THICKNESS,
+            Edges::NORTH => max.y = y + PANEL_THICKNESS,
+            Edges::SOUTH => min.y = y + 1.0 - PANEL_THICKNESS,
+            Edges::WEST => max.x = x + PANEL_THICKNESS,
+            Edges::EAST => min.x = x + 1.0 - PANEL_THICKNESS,
             // A corner is two panels and [`Builder::add`] pushes them one at a
             // time, so more than one named side never reaches here. Whatever it
             // is, it stands up and it is not measured: the whole tile, which is
@@ -1014,8 +1059,8 @@ impl Solid {
     ///
     /// Off [`Solid::space`], not off a kind alone: a panel is flat on the axis
     /// it has no extent on, and flooring that axis recovers the one tile it
-    /// stands on — **except** [`Solid::box_of`]'s `EDGE_EAST` and `EDGE_SOUTH`
-    /// cases, whose plane sits at the *far* boundary of their own tile
+    /// stands on — **except** [`Solid::box_of`]'s [`Edges::EAST`] and
+    /// [`Edges::SOUTH`] cases, whose plane sits at the *far* boundary of their own tile
     /// (`x + 1`, `y + 1`, an integer) rather than the near one. Flooring that
     /// integer lands on the neighbour, not the tile the solid was pushed for —
     /// found on the real map (`tests/cost.rs`'s oracle), where a wall's own
@@ -1054,8 +1099,16 @@ impl Solid {
             lo..=hi
         }
         (
-            axis(self.space.min.x, self.space.max.x, self.edges & EDGE_EAST != 0),
-            axis(self.space.min.y, self.space.max.y, self.edges & EDGE_SOUTH != 0),
+            axis(
+                self.space.min.x,
+                self.space.max.x,
+                self.edges.contains(Edges::EAST),
+            ),
+            axis(
+                self.space.min.y,
+                self.space.max.y,
+                self.edges.contains(Edges::SOUTH),
+            ),
         )
     }
 }
@@ -1082,9 +1135,9 @@ pub struct Cell {
     /// all of them. A ray is stopped only where it crosses one of these.
     ///
     /// Zero is a **lid** and not "nothing": something horizontal, whose whole
-    /// occlusion is the `z` span above. [`EDGE_ANY`] is the old whole-tile
-    /// answer and what an unreadable static gets. See [`EDGE_NORTH`].
-    pub edges: u8,
+    /// occlusion is the `z` span above. [`Edges::ANY`] is the old whole-tile
+    /// answer and what an unreadable static gets. See [`Edges::NORTH`].
+    pub edges: Edges,
 }
 
 /// A tile with nothing at all over it: the whole of the sky.
@@ -1856,7 +1909,7 @@ impl Occlusion {
             for value in [wire.min.x, wire.min.y, wire.min.z] {
                 bytes.extend_from_slice(&(value as f32).to_le_bytes());
             }
-            bytes.extend_from_slice(&u32::from(PRESENT | holed | solid.edges).to_le_bytes());
+            bytes.extend_from_slice(&u32::from(PRESENT | holed | solid.edges.raw()).to_le_bytes());
             for value in [wire.max.x, wire.max.y, wire.max.z] {
                 bytes.extend_from_slice(&(value as f32).to_le_bytes());
             }
@@ -2154,7 +2207,7 @@ impl Builder {
                     // the art measured a rectangle above the picture's own base
                     // and this static is standing at one.
                     aperture: match edges {
-                        0 | EDGE_ANY => None,
+                        Edges::NONE | Edges::ANY => None,
                         _ => shape.hole.map(|hole| Aperture::above(bottom, hole)),
                     },
                     roof: tile.flags.is_roof(),
@@ -2215,7 +2268,7 @@ impl Builder {
             Solid {
                 space,
                 opacity: OPAQUE,
-                edges: EDGE_ANY,
+                edges: Edges::ANY,
                 aperture: None,
                 roof: false,
                 owner,
@@ -2585,7 +2638,7 @@ mod tests {
     /// out here, and that is the point: a test that spelled the corners itself
     /// would be a second opinion about where a panel's plane is, and the first
     /// one is the thing under test. What a scene is *about* is the four numbers.
-    fn stands_at(x: i32, y: i32, bottom: i32, top: i32, edges: u8) -> Solid {
+    fn stands_at(x: i32, y: i32, bottom: i32, top: i32, edges: Edges) -> Solid {
         Solid {
             space: Solid::box_of(x, y, bottom, top, edges),
             opacity: OPAQUE,
@@ -2870,7 +2923,7 @@ mod tests {
                 bottom: 5,
                 top: 25,
                 opacity: OPAQUE,
-                edges: EDGE_ANY,
+                edges: Edges::ANY,
             })
         );
         assert_eq!(occlusion.at(103, 103), None, "its neighbour is open ground");
@@ -2883,7 +2936,7 @@ mod tests {
     /// reads as a panel rather than as a body — see the `edges` arm of
     /// `light::walk_cells` — so a ray crossing the sides the corner does
     /// not stand on passes, exactly as it does beside the runs of wall either
-    /// side of it. Before this every corner in the world was `EDGE_ANY`.
+    /// side of it. Before this every corner in the world was `Edges::ANY`.
     #[test]
     fn a_corner_stands_on_the_two_sides_its_art_named() {
         use crate::facing::{Face, Facing};
@@ -2892,7 +2945,7 @@ mod tests {
             right: Face::East,
             left: Face::South,
         };
-        assert_eq!(edges_of(Some(corner)), EDGE_EAST | EDGE_SOUTH);
+        assert_eq!(edges_of(Some(corner)), Edges::EAST | Edges::SOUTH);
         // And each of the four pairings, so that a mask built from the right
         // half's answer twice would be caught.
         assert_eq!(
@@ -2900,12 +2953,12 @@ mod tests {
                 right: Face::North,
                 left: Face::West
             })),
-            EDGE_NORTH | EDGE_WEST,
+            Edges::NORTH | Edges::WEST,
         );
         // A plain wall is still one side, and a graphic nothing measured is still
         // the whole tile: neither of those moved.
-        assert_eq!(edges_of(Some(Facing::One(Face::South))), EDGE_SOUTH);
-        assert_eq!(edges_of(None), EDGE_ANY);
+        assert_eq!(edges_of(Some(Facing::One(Face::South))), Edges::SOUTH);
+        assert_eq!(edges_of(None), Edges::ANY);
 
         let mut occlusion = Builder::new(bounds());
         occlusion.add(
@@ -2919,7 +2972,7 @@ mod tests {
         let occlusion = occlusion.finish(&Cutaway::OPEN);
         assert_eq!(
             occlusion.at(102, 103).unwrap().edges,
-            EDGE_EAST | EDGE_SOUTH,
+            Edges::EAST | Edges::SOUTH,
             "the cell did not take the corner's two sides",
         );
         // And in the list it is **two solids**, which is the shape decision 30
@@ -2932,10 +2985,10 @@ mod tests {
         assert_eq!(
             occlusion.solids_at(102, 103).copied().collect::<Vec<_>>(),
             [
-                stands_at(102, 103, 0, 20, EDGE_EAST),
+                stands_at(102, 103, 0, 20, Edges::EAST),
                 Solid {
                     part: Part::nth(1),
-                    ..stands_at(102, 103, 0, 20, EDGE_SOUTH)
+                    ..stands_at(102, 103, 0, 20, Edges::SOUTH)
                 },
             ],
         );
@@ -2975,11 +3028,11 @@ mod tests {
 
         assert_eq!(
             occlusion.solids_at(100, 100).copied().collect::<Vec<_>>(),
-            [stands_at(100, 100, 10, 10, 0)],
+            [stands_at(100, 100, 10, 10, Edges::NONE)],
         );
         assert_eq!(
             occlusion.solids_at(101, 100).copied().collect::<Vec<_>>(),
-            [stands_at(101, 100, 0, 20, EDGE_ANY)],
+            [stands_at(101, 100, 0, 20, Edges::ANY)],
         );
         assert_eq!(occlusion.ids_at(102, 100), &[], "open ground stands nothing");
         assert_eq!(occlusion.ids_at(0, 0), &[], "and neither does off the grid");
@@ -3254,7 +3307,7 @@ mod tests {
                         (mine - theirs).abs() <= mine.abs() * f64::from(f32::EPSILON),
                         "{up:?}: a solid with edges {:#06b} at {:?}..{:?} came back with {axis} \
                          {theirs} instead of {mine}",
-                        solid.edges,
+                        solid.edges.raw(),
                         solid.space.min,
                         solid.space.max,
                     );
@@ -3294,7 +3347,7 @@ mod tests {
     ///
     /// **Step 23.5's second half is this test's history; gbuffer.md step 4b is
     /// what changed since.** A tread used to be one body a ray travels through,
-    /// asserted here as `edges == EDGE_ANY`; it is now two faces, a lid for its
+    /// asserted here as `edges == Edges::ANY`; it is now two faces, a lid for its
     /// top and a panel for the riser below it — decision 3's "seven honest
     /// normals" for this fixture's three-tread stair (six here; the seventh, a
     /// lid static's own top, is a different graphic this test does not build).
@@ -3307,7 +3360,7 @@ mod tests {
     /// each top is its own strip of the tile, climbing west, so the low tread is
     /// the strip nearest east and the high one nearest west — and each riser is
     /// degenerate on that same axis, a plane and not a strip. And the **facing**:
-    /// a riser's named edge is `up`'s opposite, `EDGE_EAST` for a climb west,
+    /// a riser's named edge is `up`'s opposite, `Edges::EAST` for a climb west,
     /// which is also `Solid::footprint`'s `far` case — exercised here rather
     /// than assumed, since a riser past the first tread sits at a fraction of
     /// the tile, not its true edge (see `footprint`'s own doc). See
@@ -3335,7 +3388,8 @@ mod tests {
         );
         for tread in &treads {
             assert_eq!(
-                tread.edges, EDGE_ANY,
+                tread.edges,
+                Edges::ANY,
                 "a tread is a body: a stair is solid, and its occlusion is an exact slab test"
             );
         }
@@ -3390,7 +3444,7 @@ mod tests {
             left: Face::South,
         }));
         assert_eq!(corner.len(), 1, "one whole-tile body, not two panels");
-        assert_eq!(corner[0].edges, EDGE_ANY, "a body, not a named-edge panel");
+        assert_eq!(corner[0].edges, Edges::ANY, "a body, not a named-edge panel");
         assert_eq!(corner[0].top(), 10, "still half of what tiledata states");
         assert_eq!(
             (corner[0].space.min.x, corner[0].space.max.x),
@@ -3544,8 +3598,8 @@ mod tests {
             occlusion.solids_at(105, 105).copied().collect::<Vec<_>>(),
             [
                 // Neither was given a face, so both are the whole tile.
-                stands_at(105, 105, 0, 20, EDGE_ANY),
-                stands_at(105, 105, 40, 60, EDGE_ANY),
+                stands_at(105, 105, 0, 20, Edges::ANY),
+                stands_at(105, 105, 40, 60, Edges::ANY),
             ],
             "the two walls merged into one, and the air between them with it",
         );
@@ -3555,7 +3609,7 @@ mod tests {
                 bottom: 0,
                 top: 60,
                 opacity: OPAQUE,
-                edges: EDGE_ANY,
+                edges: Edges::ANY,
             }),
             "the merged view is what it always was",
         );
@@ -3603,10 +3657,10 @@ mod tests {
         assert_eq!(
             occlusion.solids_at(104, 104).copied().collect::<Vec<_>>(),
             [
-                stands_at(104, 104, 0, 20, EDGE_SOUTH),
+                stands_at(104, 104, 0, 20, Edges::SOUTH),
                 Solid {
                     opacity: PANE,
-                    ..stands_at(104, 104, 20, 20, 0)
+                    ..stands_at(104, 104, 20, 20, Edges::NONE)
                 },
             ],
         );
@@ -3619,7 +3673,7 @@ mod tests {
                 bottom: 0,
                 top: 20,
                 opacity: OPAQUE,
-                edges: EDGE_SOUTH,
+                edges: Edges::SOUTH,
             }),
         );
     }
@@ -3738,7 +3792,7 @@ mod tests {
         let (x, y) = (1500, 1600);
         // A floor as the map has one: a lid whose span is the height it lies at,
         // which is what `calc_height` gives a `FLOOR` static of no height.
-        let flat = stands_at(x, y, 20, 20, 0);
+        let flat = stands_at(x, y, 20, 20, Edges::NONE);
         assert!(
             (flat.space.min.z - 20.0).abs() < 1e-9 && (flat.space.max.z - 20.0).abs() < 1e-9,
             "a lid the world owns is the plane it lies in, it is {:?}",
@@ -3749,7 +3803,7 @@ mod tests {
             (lid.max.z - 20.0).abs() < 1e-9 && (lid.min.z - (20.0 - DRAWN_LID_THICKNESS)).abs() < 1e-9,
             "a lid's top is its plane and it is drawn hanging under it, it is {lid:?}",
         );
-        let body = drawn(&stands_at(x, y, 0, 20, EDGE_ANY));
+        let body = drawn(&stands_at(x, y, 0, 20, Edges::ANY));
         assert!(
             (body.min.x - f64::from(x)).abs() < 1e-9
                 && (body.max.x - f64::from(x) - 1.0).abs() < 1e-9
@@ -3919,7 +3973,7 @@ mod tests {
         // neither of these was given a face, so both are the whole tile. One
         // struct a primitive, unpadded — nothing folds into rows here since
         // `docs/occluders.md`'s D8.
-        let whole = u32::from(PRESENT | EDGE_ANY);
+        let whole = u32::from(PRESENT | Edges::ANY.raw());
         let surfaces = occlusion.primitive_bytes();
         assert_eq!(
             surfaces.len(),
@@ -4058,7 +4112,7 @@ mod tests {
                 builder.add_raw(
                     x,
                     y,
-                    Solid::box_of(i32::from(x), i32::from(y), 0, 20, EDGE_ANY),
+                    Solid::box_of(i32::from(x), i32::from(y), 0, 20, Edges::ANY),
                     Owner::new(0, Graphic(1)),
                 );
             }
@@ -4156,7 +4210,7 @@ mod tests {
                         bottom: 0,
                         top: 20,
                         opacity: OPAQUE,
-                        edges: EDGE_ANY,
+                        edges: Edges::ANY,
                     }
                 ),
                 (
@@ -4166,7 +4220,7 @@ mod tests {
                         bottom: 5,
                         top: 15,
                         opacity: PANE,
-                        edges: EDGE_ANY,
+                        edges: Edges::ANY,
                     }
                 ),
             ],

@@ -235,7 +235,7 @@ fn main() {
     // NO_SHOOT so it occludes light at all (a crate's own flags do not:
     // `occlusion::opacity`'s own doc). Not climbable and not FLOOR, and
     // `Shape::UNREAD` says the art named no edge — together that is the
-    // `0 | EDGE_ANY` arm of `Builder::add`, one whole-tile body rather than a
+    // `0 | Edges::ANY` arm of `Builder::add`, one whole-tile body rather than a
     // wall's single named-edge panel.
     let cube_tile = StaticTile {
         flags: TileFlags::new(TileFlags::NO_SHOOT),

@@ -578,18 +578,18 @@ fn gate_against_grid(bodies: &[Body], flights: &[Point], occlusion: &Occlusion) 
                     body.tread,
                 );
             }
-            // A tread is a **body**, and a body names every edge: `EDGE_ANY` is
+            // A tread is a **body**, and a body names every edge: `Edges::ANY` is
             // "it stands up and nobody knows which way", which a walk reads as an
             // exact slab test rather than as a lid's crossing or a panel's run
             // mask. The half of the pairing corner equality cannot check — a lid
             // of no height occupies the same corners as a body of no height.
             assert_eq!(
                 solid.edges,
-                grid::EDGE_ANY,
+                grid::Edges::ANY,
                 "flight {} tread {}: the grid's own solid has edges {:#06b}, so it is not a body",
                 body.flight,
                 body.tread,
-                solid.edges,
+                solid.edges.raw(),
             );
         }
         at += mine.len();
@@ -1499,7 +1499,7 @@ fn main() {
                 solid.space.max.y,
                 solid.space.min.z,
                 solid.space.max.z,
-                solid.edges,
+                solid.edges.raw(),
             );
         }
     }

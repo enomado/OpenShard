@@ -780,7 +780,7 @@ fn main() {
             solid.space.max.y,
             solid.space.min.z,
             solid.space.max.z,
-            solid.edges,
+            solid.edges.raw(),
             solid.opacity,
         );
     }

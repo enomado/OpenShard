@@ -101,7 +101,7 @@
 //! disagreement count on stderr. `OPENSHARD_BOXES_ORACLE_EXACT=1` swaps the
 //! engine side to `light::sample_exact` (`walk_the_record`, the ray-vs-Solid
 //! primitive session 8-11 built) instead of `light::sample`'s own
-//! `walk_cells` — this is how session 14 found that `walk_cells`'s `EDGE_ANY`
+//! `walk_cells` — this is how session 14 found that `walk_cells`'s `Edges::ANY`
 //! body arm (`light.rs:2269`) tests a candidate tile's `z`-span alone and
 //! never its `x`/`y` footprint, so a body narrower than its own tile (every
 //! box `occlusion::Builder::add_raw` can build, none `Builder::add` ever

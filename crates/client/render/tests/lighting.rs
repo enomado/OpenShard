@@ -1081,7 +1081,7 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
     // consulted, which is `docs/lighting_rebuild.md`'s backlog item: the two
     // fixtures that measured `same_run` load-bearing were the two that could not
     // ask the other rule at all.
-    let panel = |edge: u8| {
+    let panel = |edge: occlusion::Edges| {
         lighting
             .occlusion
             .pieces_of(corner.0, corner.1, occlusion::Owner::new(0, scene::CORNER))
@@ -1089,7 +1089,7 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
             .map(|(id, _)| id)
             .expect("the corner stands as one panel per face its art names")
     };
-    let reach = |at: Vec2, face: Face, edge: u8| {
+    let reach = |at: Vec2, face: Face, edge: occlusion::Edges| {
         let spot = Spot::face(at, f32::from(scene::WALL_HEIGHT) / 2.0, corner, face).part_of(panel(edge));
         light::sample(spot, &lighting)
             .reaches
@@ -1105,9 +1105,13 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
     let towards = reach(
         Vec2::new(cx + 0.5, cy + inside),
         Face::South,
-        occlusion::EDGE_SOUTH,
+        occlusion::Edges::SOUTH,
     );
-    let away = reach(Vec2::new(cx + inside, cy + 0.5), Face::East, occlusion::EDGE_EAST);
+    let away = reach(
+        Vec2::new(cx + inside, cy + 0.5),
+        Face::East,
+        occlusion::Edges::EAST,
+    );
 
     assert!(
         towards > 0.5,

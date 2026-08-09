@@ -1474,17 +1474,30 @@ meant. A private `Link` newtype (mirroring `bvh::NodeIdx`) now covers it, and
 `bake.rs`'s own read of the same arena — the one place outside `occlusion.rs`
 that ever touched it — takes the type instead of the raw value.
 
-Two things stayed open on purpose, surveyed and set aside rather than missed:
+One thing stayed open on purpose, surveyed and set aside rather than missed:
 
 - `Solid::footprint`'s `i32` ranges. Closing that one properly means a real
   tile-coordinate type, and that type's call sites reach into `bake.rs`'s
   whole coordinate system (`origin`, `tile_of`, `spill_of`, block/cell
   indices), which is D7's ground, named "not in scope, deliberately" above.
-- The `edges: u8` bitmask (`EDGE_NORTH`/`EAST`/`SOUTH`/`WEST`/`EDGE_ANY`) on
-  `Solid`, `Cell` and `merge::Surface` — a genuine choice from a small finite
-  set by the same rule, but one shared across four files and mirrored in
-  `blit.wesl`'s own wire layout, unlike the private, single-module fixes
-  above. Worth a pass of its own rather than folding into this one.
+
+~~The `edges: u8` bitmask (`EDGE_NORTH`/`EAST`/`SOUTH`/`WEST`/`EDGE_ANY`) on
+`Solid`, `Cell` and `merge::Surface` — shared across four files and mirrored in
+`blit.wesl`'s own wire layout, unlike the private, single-module fixes above,
+so flagged for a pass of its own.~~ Fixed: a private `Edges` newtype (`Solid`,
+`Cell`, `light::Stopper::edges`, `merge::Surface::edges`), the same shape as
+`bvh::NodeIdx` — a private `u8` field, associated consts `NORTH`/`EAST`/
+`SOUTH`/`WEST`/`ANY`/`NONE`, `contains`/`union` methods, `BitOr`, and `raw()`
+as the one door out to the wire byte `primitive_bytes` packs and to
+`blit.wesl`'s own mirror of the same four bits — which stays untouched: WGSL
+has no type system for this side of the wire to carry. Landed across every
+file the survey named plus three more the survey's own grep missed
+(`crates/client/app/src/shell.rs`'s wireframe, and the two artscan examples,
+`grid.rs`/`column.rs`) — the full set only surfaced by compiling after each
+site, `cargo check --workspace --all-targets` catching what a text search
+of one crate could not. `cargo check/clippy/fmt --workspace` and
+`cargo test -p openshard-client-render` (all 417 lib tests plus every
+integration suite) are green.
 
 🔴 **Nothing in the crate gates a corner-grazing candidate, and that is measured
 rather than suspected.** `blit.wesl`'s `walk` carried an *unconditional* diagonal
