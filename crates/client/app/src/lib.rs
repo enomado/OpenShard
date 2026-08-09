@@ -151,7 +151,6 @@ use openshard_movement::{Heading, Lean, Leeway, Terrain};
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::gump::GumpId;
-use openshard_protocol::mobile::PaperdollFlags;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
@@ -223,6 +222,27 @@ const GLIDE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16)
 /// either, and a mouse that slips a pixel between two clicks has not stopped
 /// double-clicking.
 const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(350);
+
+/// Whether a click on `button` of `subject` at `now` is the second of a pair —
+/// [`App::scroll_paired`]'s rule, with the state passed in.
+///
+/// A free function because the rule is the part worth pinning and an [`App`] is
+/// a window, a GPU surface and a connection: `last` is everything it reads.
+///
+/// **Both halves of "the same picture" are compared.** A pair is two clicks on
+/// one scroll of one window; the profile scroll and the party manifest sit
+/// fourteen pixels apart on the same frame, and a rule that only looked at the
+/// time would open a profile because the hand slipped between two clicks.
+fn scroll_pairs(
+    last: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
+    now: Instant,
+    subject: WindowSubject,
+    button: paperdoll::DollButton,
+) -> bool {
+    last.is_some_and(|(at, window, picture)| {
+        window == subject && picture == button && now.duration_since(at) <= DOUBLE_CLICK
+    })
+}
 
 /// How near the body the cursor may sit while the steering button is held
 /// without asking for anything — in **world pixels**, measured from the body's
@@ -695,6 +715,8 @@ pub fn run<D: Dial + Send + 'static>(
         own_windows: Vec::new(),
         drawn_windows: Vec::new(),
         dragging: None,
+        held_doll: None,
+        last_scroll: None,
         chat: Chat::default(),
         dialogs: gump::Dialogs::default(),
         show_terrain: false,
@@ -1538,6 +1560,29 @@ struct App {
     /// reorders the list, so an index taken at the press names a different
     /// window by the time the mouse moves.
     dragging: Option<(WindowSubject, GumpPixel)>,
+    /// The paperdoll button the mouse went down on, and whose doll it is.
+    ///
+    /// [`gump::Dialogs::holding`]'s counterpart for the one window kind that is
+    /// not a layout, and the same three things it buys: the pressed picture is
+    /// drawn while the finger is down, the release acts only if the pointer is
+    /// still on the *same* button, and a press on a button does not also drag
+    /// the frame under it.
+    ///
+    /// Keyed by subject, not by picture index: the doll is laid out afresh every
+    /// frame — a hat coming off changes how many pictures are in front of the
+    /// buttons — so an index taken at the press names a different picture by the
+    /// time the button comes up. The button itself is stable.
+    held_doll: Option<(WindowSubject, paperdoll::DollButton)>,
+    /// The last completed click on one of a paperdoll's three scrolls, and when.
+    ///
+    /// The scrolls answer a *double* click where the seven buttons answer a
+    /// single one (`GumpPic.MouseDoubleClick` against `Button`'s
+    /// `OnButtonClick`), and this is that pair. Separate from
+    /// [`last_click`](App::last_click), which pairs clicks on the *world*: a
+    /// click on a window never reaches that one, and a pair has to be two
+    /// clicks on the same picture of the same window rather than two clicks
+    /// anywhere.
+    last_scroll: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
     /// The speech line — see [`Chat`].
     chat: Chat,
     /// What every open `0xB0` dialog is holding that no packet carries: the
@@ -2806,6 +2851,19 @@ impl App {
                 return true;
             }
         }
+        // A paperdoll's own furniture, which is the same gesture a dialog's
+        // buttons have and none of the machinery: there is no layout to consult,
+        // only the list this window drew and the `hits` beside it. Taking the
+        // press away from the drag is the point — the column of buttons runs
+        // down the middle of the frame, and pressing one used to pick the whole
+        // doll up.
+        if let WindowSubject::Paperdoll(_) = subject {
+            if let Some(button) = self.doll_button_under_pointer(subject) {
+                self.held_doll = Some((subject, button));
+                self.dragging = None;
+                return true;
+            }
+        }
         let grab = self
             .own_windows
             .last()
@@ -2820,13 +2878,41 @@ impl App {
         true
     }
 
-    /// The release that finishes a press on a dialog's button, and the answer it
-    /// sent if it was a reply button.
+    /// Which of a paperdoll's pictures the cursor is over is a button, if it is
+    /// over one at all.
+    ///
+    /// Against the list the last frame drew and the atlas it was drawn from —
+    /// [`App::drawn_windows`]' rule — so this and the picture on the screen
+    /// cannot answer differently. `hits` is what turns an index into a meaning;
+    /// a picture that is not in it is the frame, the body or a garment, and a
+    /// press there is a press on the window.
+    fn doll_button_under_pointer(&self, subject: WindowSubject) -> Option<paperdoll::DollButton> {
+        let Some(Drawn::Paperdoll(doll)) = self.drawn(subject) else {
+            return None;
+        };
+        let index = gump_art::pick(&doll.pictures, self.pointer_gump, &self.gump_atlas)?;
+        doll.hits.get(&index).copied()
+    }
+
+    /// The release that finishes a press on a dialog's button or a paperdoll's,
+    /// and whatever it sent.
     ///
     /// Answers whether anything happened, so the caller can ask for a redraw:
     /// the button comes back up on the way out either way, and a page button
     /// changes what the window is showing without a packet leaving.
     fn release_on_own_window(&mut self) -> bool {
+        if let Some((subject, button)) = self.held_doll.take() {
+            // Only if the pointer is still on the same button. A press that
+            // slid off one is not a click on it — the reference's own rule for
+            // every control it draws — and it is not a click on whatever the
+            // finger landed on either.
+            if self.doll_button_under_pointer(subject) == Some(button) {
+                self.doll_clicked(subject, button);
+            }
+            // True whatever it landed on: the button was drawn pressed and has
+            // to come back up.
+            return true;
+        }
         let Some(gump_id) = self.dialogs.holding() else {
             return false;
         };
@@ -2846,6 +2932,107 @@ impl App {
             self.own_windows.retain(|window| window.subject != subject);
         }
         true
+    }
+
+    /// One of a paperdoll's buttons was clicked: send what it means.
+    ///
+    /// **Every one of these is a request and nothing else.** Not a window this
+    /// client opens on its own, not a stance it flips locally: the shard answers
+    /// the toggle with a `0x72`, the Quest button with a dialog, the Skills
+    /// button with a `0x3A`, and what is drawn follows *those*. It is
+    /// [`App::use_under_cursor`]'s rule for the interface — a client that acted
+    /// on its own would show a state the server refused.
+    ///
+    /// # The three scrolls want a pair
+    ///
+    /// The seven buttons down the frame answer a single click (`Button` and
+    /// `OnButtonClick` in `PaperDollGump`); the profile scroll, the party
+    /// manifest and the virtue menu are `GumpPic`s with a
+    /// `MouseDoubleClick` handler, and a single click on one does nothing at
+    /// all. That difference is honoured here rather than in
+    /// [`paperdoll::DollButton`], which says which picture was hit and nothing
+    /// about what the mouse did to it.
+    ///
+    /// # What sends nothing, and why it is not a guess
+    ///
+    /// Help, Options and the party manifest have nowhere to go: `0x9B` and the
+    /// party's `0xBF 0x06` are not in `openshard_protocol` yet, and the options
+    /// window is a client's own and does not exist. Profile (`0xB8`) is the same
+    /// gap. They press, they come back up, and they are written down in
+    /// `docs/client.md` — a packet invented here so that a button "did
+    /// something" would be a shard logging an unknown id for a window that is
+    /// never going to open.
+    fn doll_clicked(&mut self, subject: WindowSubject, button: paperdoll::DollButton) {
+        let WindowSubject::Paperdoll(mobile) = subject else {
+            return;
+        };
+        // A doll is filed under the serial it is a picture of, so *whose* it is
+        // is this question and not a second field: only our own frame carries
+        // the six buttons and the toggle, but a stranger's carries Status and
+        // the profile scroll, and those name the body they were clicked on.
+        let Some(view) = self.view.as_ref() else {
+            return;
+        };
+        let own = view.player.serial == mobile;
+        let war = view.player.war;
+        // Before the link is borrowed, and for all three scrolls rather than
+        // only the one with a packet: the pair is a fact about the gesture, and
+        // a scroll that recorded no first click would let a *later* click on
+        // another scroll pair with something older than it.
+        let paired = match button {
+            paperdoll::DollButton::Profile | paperdoll::DollButton::Party | paperdoll::DollButton::Virtue => {
+                self.scroll_paired(subject, button)
+            }
+            _ => false,
+        };
+        let Some(link) = self.link.as_ref() else {
+            return;
+        };
+        match button {
+            // The one picture whose *state* is on the frame: what is asked for
+            // is the opposite of what the last packet about the stance said.
+            paperdoll::DollButton::WarMode => link.war_mode(!war),
+            paperdoll::DollButton::LogOut => link.log_out(),
+            paperdoll::DollButton::Quests => link.quest_log(),
+            paperdoll::DollButton::Guild => link.guild_menu(),
+            // The two windows this client cannot draw yet. The request still
+            // goes out: the shard answers a `0x34` with a `0x11` or a `0x3A`,
+            // and the day either window is built it will be built against a
+            // packet that is already arriving rather than against a guess.
+            //
+            // Only for our own doll, because that is all this shard answers:
+            // `RequestStatus` is keyed on the connection and ignores the serial
+            // in the packet (see `StatusQuery::serial`), so pressing Status on a
+            // stranger's frame would send our own status back and open nothing
+            // about them. A health bar over somebody else is a window of its
+            // own — backlog, `docs/client.md`.
+            paperdoll::DollButton::Status if own => link.status(mobile),
+            paperdoll::DollButton::Skills if own => link.skills(mobile),
+            // The scrolls, which are a *double* click. `Virtue` is the only one
+            // of the three with a packet — the reference's `0xB1` under a gump
+            // id nobody opened, see `openshard_client_net::doll::virtue`.
+            paperdoll::DollButton::Virtue if paired => link.virtue(mobile),
+            // Everything else: a stranger's Status, the first click of a pair,
+            // and the four buttons with nothing to send.
+            _ => {}
+        }
+    }
+
+    /// Whether this click on a scroll is the second of a pair, on the same
+    /// scroll of the same window.
+    ///
+    /// [`App::last_click`]'s rule, applied to a picture instead of the world:
+    /// cleared when a pair fires, so a third click starts a fresh one, and the
+    /// subject and the button are both compared — two clicks on two different
+    /// scrolls are two first clicks, not a double click on the second.
+    ///
+    /// Only ever asked about the three scrolls. The seven buttons act on the
+    /// first click and never reach here.
+    fn scroll_paired(&mut self, subject: WindowSubject, button: paperdoll::DollButton) -> bool {
+        let now = Instant::now();
+        let paired = scroll_pairs(self.last_scroll, now, subject, button);
+        self.last_scroll = (!paired).then_some((now, subject, button));
+        paired
     }
 
     /// Move the window being dragged so that the point the player grabbed stays
@@ -5381,31 +5568,30 @@ impl App {
                                 hue,
                                 equipment: &equipment,
                             });
-                            // War mode comes off the `0x88` itself — it is the
-                            // one thing `PaperdollFlags` carries that the frame
-                            // is drawn differently for, and the toggle only
-                            // exists on our own doll.
+                            // The stance, off the player and not off the `0x88`
+                            // the window opened on: a `0x72` moves it while
+                            // that packet stands still, and the toggle is the
+                            // one picture on the frame that has to follow. See
+                            // `WorldView::player`'s `war`, which is where both
+                            // packets are folded to.
                             let whose = match own {
-                                true => paperdoll::Whose::Own {
-                                    war: view
-                                        .paperdolls
-                                        .get(&serial)
-                                        .is_some_and(|doll| doll.flags.has(PaperdollFlags::WARMODE)),
-                                },
+                                true => paperdoll::Whose::Own { war: view.player.war },
                                 false => paperdoll::Whose::Another,
                             };
+                            // Which button the finger is on, if it is on one of
+                            // this window's. Held per window rather than per
+                            // client: two dolls can be open and only the pressed
+                            // one draws a pressed picture.
+                            let held = self
+                                .held_doll
+                                .filter(|(window, _)| *window == open.subject)
+                                .map(|(_, button)| button);
                             windows.push((
                                 open.subject,
                                 Drawn::Paperdoll(paperdoll::window(
                                     wearer.as_ref(),
                                     whose,
-                                    // Nothing is drawn held yet: what a
-                                    // paperdoll's buttons *do* is the next
-                                    // step — see `docs/client.md` — and a
-                                    // button that pressed and did nothing
-                                    // would be a worse answer than one that
-                                    // does not press.
-                                    None,
+                                    held,
                                     &self.equip_conv,
                                     files,
                                     open.at,
@@ -5776,6 +5962,54 @@ mod tests {
     /// and not about the ring it fell in.
     fn heading_to(body: camera::WorldPixel, cursor: camera::WorldPixel) -> Option<Heading> {
         ask_between(body, cursor).map(steer::Ask::heading)
+    }
+
+    /// A paperdoll window, for the pairing tests below.
+    fn doll(serial: u32) -> WindowSubject {
+        WindowSubject::Paperdoll(Serial::new(serial).expect("a serial"))
+    }
+
+    /// The three scrolls answer a double click, and this is what makes two
+    /// clicks one: the same picture, on the same window, inside the same 350ms
+    /// a door is opened in.
+    #[test]
+    fn two_clicks_on_one_scroll_are_a_pair_and_two_scrolls_are_not() {
+        let first = Instant::now();
+        let soon = first + DOUBLE_CLICK / 2;
+        let profile = paperdoll::DollButton::Profile;
+
+        assert!(
+            !scroll_pairs(None, first, doll(0x2A), profile),
+            "the first click of all has nothing to pair with"
+        );
+        assert!(scroll_pairs(
+            Some((first, doll(0x2A), profile)),
+            soon,
+            doll(0x2A),
+            profile
+        ));
+        assert!(
+            !scroll_pairs(
+                Some((first, doll(0x2A), profile)),
+                soon,
+                doll(0x2A),
+                paperdoll::DollButton::Party
+            ),
+            "the manifest sits fourteen pixels along, and is not the same scroll"
+        );
+        assert!(
+            !scroll_pairs(Some((first, doll(0x2A), profile)), soon, doll(0xFF), profile),
+            "nor is the same scroll on somebody else's doll"
+        );
+        assert!(
+            !scroll_pairs(
+                Some((first, doll(0x2A), profile)),
+                first + DOUBLE_CLICK + std::time::Duration::from_millis(1),
+                doll(0x2A),
+                profile
+            ),
+            "and a click a breath too late is a first click"
+        );
     }
 
     /// The screen bearings of the eight directions, as the isometric actually

@@ -1309,6 +1309,83 @@ does not carry yet.
    What is still egui's is the dev HUD and the panels around the world. Nothing
    the shard sends is drawn by it any more.
 
+8. **A paperdoll's buttons are requests, and the frame is drawn from the
+   answer.** The layout landed in decision 6 with nothing behind it. What is
+   behind it now is one rule stated three ways: *nothing is done locally on the
+   way out.* The toggle does not flip its own picture, the Log Out button does
+   not close the connection, and no window is opened by pressing anything — each
+   button sends a packet and what is drawn follows the shard's answer to it.
+   It is `App::use_under_cursor`'s rule for the interface, and it is why the
+   client's own war stance is not a field the button writes.
+
+   **The gesture is a dialog button's, with no dialog.** `App::held_doll` is
+   `Dialogs::holding`'s counterpart: the press takes hold of a button, the frame
+   draws its pressed face while the finger is down, and the release acts *only*
+   if the pointer is still on the same button. It is keyed by
+   `(WindowSubject, DollButton)` and not by picture index, because the doll is
+   laid out afresh every frame and a hat coming off renumbers the list. Taking
+   the press away from the drag is the other half: the column runs down the
+   middle of the frame, and without this, pressing a button picked the doll up.
+
+   **The three scrolls want a pair.** `scroll_pairs` is `App::last_click`'s rule
+   applied to a picture — ClassicUO's 350ms, no distance test — and it compares
+   the window *and* the picture, because the profile scroll and the party
+   manifest sit fourteen pixels apart and a rule that only looked at the clock
+   would open one because the hand slipped.
+
+   **War mode has one home, and it is the player.** It arrives two ways — the
+   `0x88`'s `PaperdollFlags::WARMODE` when a doll opens on us, and every `0x72`
+   after that — and both fold to `WorldView::player.war`. The flag byte is *not*
+   kept beside the window: `view::Paperdoll` carries `can_lift` and nothing
+   else, because a stance stored on the packet that opened the window is a
+   stance that goes stale the moment the next `0x72` lands, and the toggle would
+   draw the older of the two answers. That the `0x72` was not being read at all
+   is the defect this found: `ServerPacket::decode` had no arm for it, so the
+   shard's answer was framed, dropped, and the toggle could never move.
+
+   **What each button sends, and what four of them do not.** The wire half is
+   `openshard_client_net::doll`, one function per button, each tested against
+   this engine's own `ClientPacket::decode` — a button whose packet decoded as
+   `Unknown` would look, from the window, exactly like one that works:
+
+   | Button | Packet | What answers it |
+   |---|---|---|
+   | Peace/War | `0x72` | the shard's own `0x72`, which is what the toggle is drawn from |
+   | Log Out | `0xD1` | the shard's `0xD1`, and the client closes the socket on it |
+   | Quests | `0xD7` `0x32` | a `0xB0` — the quest log opens as a dialog, and that path was already built |
+   | Guild | `0xD7` `0x28` | nothing yet: `guilds` is a stub, and the dispatch says so where it names the subcommand |
+   | Status | `0x34` `0x04` | a `0x11` nothing draws yet |
+   | Skills | `0x34` `0x05` | a `0x3A` nothing draws yet |
+   | Profile scroll (double) | — | `0xB8` is not in `openshard_protocol` |
+   | Party manifest (double) | — | `0xBF 0x06` is not either |
+   | Virtue menu (double) | `0xB1` | a `GumpAnswered` the script pack can act on |
+   | Help | — | `0x9B` is not in `openshard_protocol` |
+   | Options | — | a window of the client's own that does not exist |
+
+   Two of those deserve their reasons written down. **Status and Skills send
+   only from our own doll**, because that is all this shard answers: the request
+   is keyed on the connection and the serial in the packet is ignored
+   (`StatusQuery::serial`), so pressing Status on a stranger's frame would fetch
+   *our* status and open nothing about them. A health bar over somebody else is
+   a window of its own. And the **virtue menu is a `0xB1` for a dialog nobody
+   opened** — `ReplyGump(player, 0x1CD, 1, [subject])` is the reference's own
+   convention, ServUO registers the same id — which reaches the script pack as
+   an ordinary `GumpAnswered`, so a Community Pack can draw a virtue menu
+   without an engine change.
+
+   The four that send nothing press and come back up, and they are in the
+   backlog rather than papered over: a packet invented here so that a button
+   "did something" would be a shard logging an unknown id for a window that is
+   never going to open.
+
+   **The gate is both ends on one wire**:
+   `crates/e2e/shard/tests/paperdoll_buttons.rs` logs a client into a real shard
+   and presses three of them — the toggle in *both* directions (a client that
+   folded "at war" from the mere arrival of a `0x72` passes half of that and
+   fails the other), the Quest button until a `0xB0` opens, and Log Out until
+   the grant comes back. Nothing else could have caught the missing decode arm:
+   every unit test on either side of it passed while the toggle was dead.
+
 Done: double-clicking a mobile — or ourselves — opens a framed window that draws
 its body and its equipment in the reference's order and hues, with the backpack
 last; the window drags, raises and closes like a container's; a unit test says a
@@ -1317,7 +1394,10 @@ and the client-file tests say a layer with `anim_id == 0` draws nothing, that
 every gump a dressed body asks for is one the client ships, and that the female
 fallback is exercised rather than merely available. The frame carries its own
 buttons and its name plate, and the client-file tests say every one of those
-pictures — up and pressed, on both frames — is one the client ships.
+pictures — up and pressed, on both frames — is one the client ships. Seven of
+those eleven pictures now send something: the toggle asks for a stance and is
+drawn from the answer, Log Out leaves the world, Quests opens the shard's own
+dialog, and the rest are in decision 8's table.
 
 Done for dialogs: a `0xB0` opens where the shard asked, drags by its own
 background, closes on the right button with an answer of button zero (unless
@@ -1340,7 +1420,11 @@ OPENSHARD_CLIENT=… cargo test -p openshard-client-render --test gumpshot \
 ## M5 — interaction
 
 Single and double click (`0x09`, `0x06`), drag and drop (`0x07`, `0x08`),
-targeting (`0x6C`, `0x6B`), war mode. Speech (`0xAD`) landed early — see M4.
+targeting (`0x6C`, `0x6B`), war mode. Speech (`0xAD`) landed early — see M4, and
+so did **war mode**: the paperdoll's toggle asks for a stance and the client
+folds the shard's answer (decision 8 in M4). What M5 still owes it is the
+*picture* — a body drawn in its war stance, and an attack that follows from
+standing in one.
 
 **Double-click landed early too, because a door needs it.** A door is an entity
 the shard placed, and the only thing that opens one is a `0x06` naming its
@@ -2925,12 +3009,18 @@ Each is a seam the work made visible. None blocks the next milestone.
   anything past Latin-1 gets those glyphs skipped rather than drawn. A
   `unifont.mul` reader is the fix, beside `font.rs`, and the same one the
   journal will want the day a shard says something in Cyrillic.
-- **A paperdoll's buttons press and do nothing.** The layout, the hit table and
-  the pressed art are all there (`paperdoll::DollButton`), and not one of the
-  eleven is wired to anything: there is no status bar, no skill list, no options
-  window and no log-out path to open. The three scrolls want a *double* click
-  rather than a single one, which is a distinction `App` does not draw for a
-  window's own pictures yet.
+- ~~**A paperdoll's buttons press and do nothing.**~~ Seven of the eleven send a
+  packet now, and the double click the three scrolls wanted is drawn — decision
+  8 in M4, and `scroll_pairs` is the pair. What is left is not a gesture but
+  four missing packets and two missing windows: **Help (`0x9B`), Profile
+  (`0xB8`) and the party manifest (`0xBF 0x06`) have no packet in
+  `openshard_protocol`**, and Options is a client window of our own that does
+  not exist. Beside them, **Status and Skills send a request nothing draws the
+  answer to** — the `0x11` and the `0x3A` arrive and are dropped by
+  `WorldView::apply`, which is where a status bar and a skill list would start.
+  Status on a *stranger's* doll sends nothing at all, deliberately: the shard
+  answers a `0x34` about the connection and not about the serial in it, so it is
+  a health-bar window that is missing rather than a packet.
 - **Nothing remembers where a window was.** The reference keeps a per-container
   and per-paperdoll position across sessions (`UIManager.SavePosition`); this
   cascades containers from a constant and puts a dialog where the shard asked,
@@ -3568,13 +3658,13 @@ that the ring reaches it. What was found on the way and left undone:
   that puts the cloak on top when a body faces away and behind when it faces the
   viewer. `mobiles::push_quads` pushes layers in wire order today. Cheap now
   that `paperdoll::order` exists and `EquipmentLayer` carries its layer.
-- **No buttons, no tooltips, no lifting.** The `0x88`'s `PaperdollFlags` says
-  whether this client may lift off this doll, and nothing reads it yet; the
-  reference's own paperdoll has Help, Options, Log Out, War Mode, Status and
-  Quest buttons over the picture. The hit test all of them wanted is written —
-  `gump::pick` over the window's whole picture list, decision 5 — so what is
-  left is the layout: which picture each button is, where it goes in the frame,
-  and a press and release over the same one being what a click means.
+- **No tooltips, no lifting.** The buttons are done — decision 8 in M4: they
+  press, they release over the same picture, and seven of them send a packet.
+  What the `0x88`'s flag byte still buys nothing is the *lifting*:
+  `view::Paperdoll::can_lift` is read off `PaperdollFlags::CAN_LIFT` and
+  nothing asks it, because dragging a worn item off the doll is a `0x07`/`0x13`
+  pair this client does not send from any window yet. That flag is the shard's
+  permission and the first thing that arm should consult.
 - **A window has no memory.** Both kinds cascade from a fixed corner and are
   forgotten when they close; the reference client remembers a per-container and
   per-paperdoll position across sessions. `desk.rs` already persists the
@@ -3590,9 +3680,43 @@ that the ring reaches it. What was found on the way and left undone:
   not revealed. The frame is drawn and the doll is not, so the window can be
   moved and closed while it waits; what is still not decided is whether it
   should *ask* for the body.
-- **The frame carries nothing a frame is for.** No name — the `0x88`'s 60-byte
-  name is in `WorldView::paperdolls` and nothing draws it, where the reference
-  puts a title label at `(39, 262)` — no buttons, no minimise (`0x07EE`, the
-  reference's collapsed frame), and no equipment slots down the side. The name
-  wants a font in the gump pass, which the journal will want too; the rest wants
-  the picture-list hit test above.
+- ~~**The frame carries nothing a frame is for.**~~ It carries the name — the
+  `0x88`'s 60-byte string on the plate at `(39, 262)`, decision 6 — and eleven
+  working pictures, decision 8. What is still missing is the **minimise**
+  (`0x07EE`, the reference's collapsed frame, and a second window state nothing
+  here models) and the **equipment slots down the side**, which are a modern
+  client's and want the same lifting the entry above is about.
+
+## Backlog, found while wiring the paperdoll's buttons
+
+- **A packet the shard sends and the client has no arm for is invisible.**
+  `ServerPacket::decode`'s list is shorter than the list of things
+  `ServerPacket` can *encode*, and the gap answers `Ok(None)` — framed, stepped
+  over, and silent. That is the right behaviour for a decoder that is still
+  growing, and it is also how the `0x72` answering the war toggle went missing
+  for as long as the toggle existed: every unit test on either side passed. The
+  two lists are in one file and nothing compares them. A test that walks the
+  server's send-side length table and names the ids with no decoder would not
+  fail — it would *report*, which is what makes a growing gap visible instead of
+  quiet.
+- **`StatusFlags`' bits are still unmodelled, and a body's stance now has a
+  reader.** `WorldView::player.war` is our own character's, off the `0x72`.
+  Everybody *else*'s war stance is in the flag byte of their `0x77`/`0x78`
+  (`Mobile::flags`) and nothing reads it — see the type's own docs, which say
+  outright that the bits are a guess nobody has made yet. It costs nothing
+  today, because no stranger's frame draws a toggle; it starts costing the day
+  M5 draws a body standing in a war stance, which is the same fact for our own
+  body and for theirs.
+- **Three gestures now say "press, hold, release over the same thing".**
+  `Dialogs::press`/`release` for a dialog's buttons and switches, the doll's
+  `held_doll`, and the world's own double-click pair. They are not the same code
+  and two of them are not the same *shape* — a dialog's hold is keyed by gump
+  id, a doll's by window and button — so this is an observation and not a
+  design: a fourth would make the pattern worth extracting, and until then a
+  shared "gesture" type would be an abstraction over two examples.
+- **The status bar and the skill list are the next two windows.** The requests
+  go out (decision 8's table); `WorldView::apply` has no arm for the `0x11` or
+  the `0x3A` that come back, so the answers are dropped at the same seam the
+  entry above describes. Both want a window of the client's own — neither is a
+  shard-sent layout — and the skill list is the one the reference draws with a
+  scrollbar, which nothing here has yet either.

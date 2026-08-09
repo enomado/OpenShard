@@ -23,12 +23,7 @@ use crate::target::TargetResponse;
 use crate::trade::SecureTradeAction;
 use crate::vendor::{BuyReply, SellReply};
 use crate::version::ClientVersion;
-use crate::world::{ResyncRequest, WalkRequest};
-
-/// `0xD1` from the client is a bare notification — "log me out" — with no
-/// body to decode. Kept private: nothing outside [`ClientPacket::decode`]
-/// needs the id on its own.
-const LOGOUT_REQUEST_ID: u8 = 0xD1;
+use crate::world::{LogoutRequest, ResyncRequest, WalkRequest};
 
 /// One packet the world dispatcher understood, already decoded.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -120,7 +115,9 @@ impl ClientPacket {
             WalkRequest::ID => decode_packet(packet, version)
                 .map(Self::Walk)
                 .map_err(ClientDecodeError::Walk),
-            LOGOUT_REQUEST_ID => Ok(Self::LogoutRequest),
+            // A bare notification: the id is the whole of it, and the byte
+            // behind it means nothing either way.
+            LogoutRequest::ID => Ok(Self::LogoutRequest),
             ResyncRequest::ID => Ok(Self::ResyncRequest),
             StatusQuery::ID => decode_packet(packet, version)
                 .map(Self::StatusQuery)

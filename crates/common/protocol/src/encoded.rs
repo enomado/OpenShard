@@ -9,7 +9,9 @@
 //! `PacketHandlers.EncodedCommand` and Sphere's `Event_ExtCmd` equivalent — the
 //! two agree.
 
+use crate::codec::PacketWriter;
 use crate::error::{DecodeError, expect_id};
+use crate::packet::{PacketLength, frame_body};
 
 /// `0xD7` — a client request named by its subcommand.
 ///
@@ -47,6 +49,45 @@ impl EncodedCommand {
         let subcommand = RawEncodedSubcommand(reader.u16()?);
         Ok(Self { serial, subcommand })
     }
+
+    /// The `0xD7` this client sends for one subcommand, with the trailing byte
+    /// the reference writes after the word.
+    ///
+    /// Private, and reached through the two named requests below, because that
+    /// trailing byte is *not* a constant: `Send_QuestMenuRequest` writes a zero
+    /// and `Send_GuildMenuRequest` a `0x0A`. It is the subcommand's own payload,
+    /// short enough to look like padding, and a single encoder taking whatever
+    /// the caller happened to pass would let one button send the other's.
+    fn encode(serial: RawEncodedSerial, subcommand: u16, payload: u8) -> Vec<u8> {
+        frame_body(Self::ID, PacketLength::Variable, |out: &mut PacketWriter| {
+            out.u32(serial.0);
+            out.u16(subcommand);
+            out.u8(payload);
+        })
+    }
+}
+
+/// The paperdoll's Quest button: open the quest log —
+/// `GameActions.RequestQuestMenu`, whose packet is `0xD7` subcommand `0x32`
+/// followed by a zero byte.
+///
+/// `serial` is the asking player's own, which is what the reference writes and
+/// what this engine ignores on the way in (see [`EncodedCommand::serial`]).
+#[must_use]
+pub fn quest_log_request(serial: RawEncodedSerial) -> Vec<u8> {
+    EncodedCommand::encode(serial, EncodedSubcommand::QUEST_GUMP_REQUEST, 0x00)
+}
+
+/// The paperdoll's Guild button — `0xD7` subcommand `0x28`, and the `0x0A`
+/// `Send_GuildMenuRequest` writes after it.
+///
+/// This shard does not act on it yet (`guilds` is a stub, and the dispatch says
+/// so where it names the subcommand), which is the server's half to fill in. The
+/// button sends the request a real client sends either way: a packet that never
+/// leaves is a defect the day the stub is filled, and one nobody would look for.
+#[must_use]
+pub fn guild_menu_request(serial: RawEncodedSerial) -> Vec<u8> {
+    EncodedCommand::encode(serial, EncodedSubcommand::GUILD_GUMP_REQUEST, 0x0A)
 }
 
 /// The entity a `0xD7` claims to be about, exactly as sent. No promotion: see
@@ -133,6 +174,34 @@ mod tests {
         let mut bytes = packet(1, EncodedSubcommand::SET_ABILITY);
         bytes[0] = 0xD6;
         assert!(EncodedCommand::decode(&bytes).is_err());
+    }
+
+    /// The two paperdoll buttons, written by this crate and read back by it:
+    /// the length field the framer patched, the subcommand each button means,
+    /// and the trailing byte that differs between them.
+    #[test]
+    fn the_two_paperdoll_requests_decode_as_themselves() {
+        let quest = quest_log_request(RawEncodedSerial(0x0000_002A));
+        assert_eq!(quest.len(), 10, "id, length, serial, subcommand, payload");
+        assert_eq!(
+            &quest[1..3],
+            &10u16.to_be_bytes(),
+            "the framer patched the length"
+        );
+        assert_eq!(quest[9], 0x00, "the quest request's own trailing byte");
+        let decoded = EncodedCommand::decode(&quest).unwrap();
+        assert_eq!(decoded.serial, RawEncodedSerial(0x0000_002A));
+        assert_eq!(
+            decoded.subcommand.interpret(),
+            EncodedSubcommand::QuestGumpRequest
+        );
+
+        let guild = guild_menu_request(RawEncodedSerial(0x0000_002A));
+        assert_eq!(guild[9], 0x0A, "and the guild request's is not the same byte");
+        assert_eq!(
+            EncodedCommand::decode(&guild).unwrap().subcommand.interpret(),
+            EncodedSubcommand::GuildGumpRequest
+        );
     }
 
     #[test]

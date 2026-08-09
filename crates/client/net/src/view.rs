@@ -64,6 +64,20 @@ pub struct Player {
     /// Poisoned, invisible, war mode. Same absence as `hue` until the first
     /// `0x20`.
     pub flags: StatusFlags,
+    /// Whether this character stands in war mode.
+    ///
+    /// **The one home for that fact.** It arrives two ways — a `0x72`, which is
+    /// how the server answers the paperdoll's toggle, and the `0x88`'s own
+    /// [`PaperdollFlags::WARMODE`] when a paperdoll is opened on us — and it is
+    /// folded to this one field rather than left in whichever packet said it
+    /// last. A second copy on [`Paperdoll`] is exactly the shape that draws a
+    /// stale toggle: the window would answer from the flag byte it opened with
+    /// while the stance had moved on.
+    ///
+    /// Not read off [`flags`](Self::flags): [`StatusFlags`]' bits are not
+    /// modelled — see its docs — and guessing one here would be a second
+    /// answer to the same question.
+    pub war: bool,
     /// Where it stands.
     pub position: Point,
     /// Which way it faces, and whether it is running.
@@ -287,10 +301,16 @@ pub struct Paperdoll {
     /// put in front of it. Not the mobile's name as anything else knows it — the
     /// wire's `0x88` is the only place this string exists.
     pub name: String,
-    /// War mode, and whether this client may lift what is worn. The second is
-    /// the shard's answer and not a guess: it is set for your own paperdoll and
-    /// for a pet's, and clear for a stranger's.
-    pub flags: PaperdollFlags,
+    /// Whether this client may lift what is worn on this doll. The shard's
+    /// answer and not a guess: it is set for your own paperdoll and for a pet's,
+    /// and clear for a stranger's.
+    ///
+    /// The flag byte's *other* bit is not kept beside it. War mode is a fact
+    /// about the body, not about the window over it, and a second `0x72` moves
+    /// it while this record stands still — so it is folded into
+    /// [`Player::war`], and this field is the whole of what the `0x88` says
+    /// about the window it opened.
+    pub can_lift: bool,
 }
 
 /// A dialog the server has opened on this client, layout already read.
@@ -337,6 +357,10 @@ impl WorldView {
                 body: start.body,
                 hue: Hue::NONE,
                 flags: StatusFlags::NONE,
+                // At peace until something says otherwise, which is what a
+                // `0x1B` means: a session starts out of war, and a shard that
+                // logs a character back in fighting says so with a `0x72`.
+                war: false,
                 position: start.position,
                 facing: start.facing,
                 equipment: Vec::new(),
@@ -508,6 +532,11 @@ impl WorldView {
                     body: update.body,
                     hue: update.hue,
                     flags: update.flags,
+                    // The stance is nobody's business but `0x72`'s: `0x20`
+                    // carries a flag byte whose war bit this engine does not
+                    // model, and reading one out of it would be a second answer
+                    // to `war`'s question — see `Player::war`.
+                    war: self.player.war,
                     position: update.position,
                     facing: update.facing,
                     // `0x20` is a position and an appearance, never a paperdoll:
@@ -557,6 +586,9 @@ impl WorldView {
                     body: incoming.body,
                     hue: incoming.hue,
                     flags: incoming.flags,
+                    // Kept, for `0x20`'s reason above: a `0x78` describes a body
+                    // and what hangs on it, and the stance is not one of those.
+                    war: self.player.war,
                     position: incoming.position,
                     facing: incoming.facing,
                     equipment: incoming.equipment.clone(),
@@ -649,10 +681,30 @@ impl WorldView {
             ServerPacket::OpenPaperdoll(paperdoll) => {
                 let fresh = Paperdoll {
                     name: paperdoll.text.clone(),
-                    flags: paperdoll.flags,
+                    can_lift: paperdoll.flags.has(PaperdollFlags::CAN_LIFT),
                 };
-                let changed = self.paperdolls.get(&paperdoll.serial) != Some(&fresh);
+                let mut changed = self.paperdolls.get(&paperdoll.serial) != Some(&fresh);
                 self.paperdolls.insert(paperdoll.serial, fresh);
+                // The flag byte's other bit, filed where the stance lives rather
+                // than beside the window — and only when the doll is our own:
+                // a `0x88` about somebody else states *their* stance, which
+                // nothing here draws, and folding it into the player would be
+                // this client learning it was at war from a stranger's frame.
+                if paperdoll.serial == self.player.serial {
+                    let war = paperdoll.flags.has(PaperdollFlags::WARMODE);
+                    changed |= self.player.war != war;
+                    self.player.war = war;
+                }
+                changed
+            }
+            // The stance settled. Sent unprompted as well as in answer to the
+            // client's own `0x72` — a shard puts a player into war mode when
+            // something attacks them — so this is folded rather than assumed
+            // from what was asked for. It is the toggle's picture on the
+            // paperdoll and, later, the stance a body is drawn standing in.
+            ServerPacket::WarMode(mode) => {
+                let changed = self.player.war != mode.war;
+                self.player.war = mode.war;
                 changed
             }
             // Mobiles walking out of range and items being picked up arrive the
@@ -691,6 +743,7 @@ impl WorldView {
 
 #[cfg(test)]
 mod tests {
+    use openshard_protocol::combat::WarMode;
     use openshard_protocol::containers::{AddToContainer, ContainerContents};
     use openshard_protocol::direction::Direction;
     use openshard_protocol::items::WorldItem;
@@ -1144,7 +1197,7 @@ mod tests {
         assert!(view.apply(&paperdoll_of(other())));
         let open = view.paperdolls.get(&other()).expect("the window was recorded");
         assert_eq!(open.name, "Lord British");
-        assert_eq!(open.flags, PaperdollFlags::CAN_LIFT);
+        assert!(open.can_lift);
         assert_eq!(
             view.mobiles.get(&other()).unwrap().equipment,
             vec![shirt()],
@@ -1154,6 +1207,49 @@ mod tests {
             !view.apply(&paperdoll_of(other())),
             "the same window twice settles"
         );
+    }
+
+    /// The one home for the stance, and the two doors into it: the `0x88` this
+    /// client's own paperdoll opens on, and every `0x72` after it. The second
+    /// must win — that is the whole reason the flag byte is not kept beside the
+    /// window it arrived with.
+    #[test]
+    fn war_mode_is_the_players_and_the_last_packet_about_it_wins() {
+        let mut view = WorldView::entered(start());
+        assert!(!view.player.war, "a session starts at peace");
+
+        assert!(view.apply(&ServerPacket::OpenPaperdoll(
+            openshard_protocol::mobile::OpenPaperdoll {
+                serial: view.player.serial,
+                text: "Lord British".to_owned(),
+                flags: PaperdollFlags::WARMODE.with(PaperdollFlags::CAN_LIFT),
+            }
+        )));
+        assert!(view.player.war, "our own `0x88` states the stance we are in");
+
+        assert!(view.apply(&ServerPacket::WarMode(WarMode { war: false })));
+        assert!(!view.player.war, "and a `0x72` moves it");
+        assert!(
+            !view.apply(&ServerPacket::WarMode(WarMode { war: false })),
+            "the same stance twice is not a change"
+        );
+    }
+
+    /// A stranger's `0x88` says whether *they* are at war, and this client is
+    /// not. The bit is dropped rather than folded: nothing draws a stranger's
+    /// stance — their frame has no toggle on it — and folding it would have our
+    /// own doll show war because somebody else drew a sword.
+    #[test]
+    fn a_strangers_paperdoll_does_not_put_this_client_into_war_mode() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::OpenPaperdoll(
+            openshard_protocol::mobile::OpenPaperdoll {
+                serial: other(),
+                text: "a guard".to_owned(),
+                flags: PaperdollFlags::WARMODE,
+            },
+        ));
+        assert!(!view.player.war);
     }
 
     /// Closing a window is a click and no packet carries it — the third place

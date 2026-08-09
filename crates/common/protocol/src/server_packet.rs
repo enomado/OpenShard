@@ -192,7 +192,7 @@ impl ServerPacket {
             Self::LightLevel(_) => LightLevel::ID,
             Self::PlayMusic(_) => PlayMusic::ID,
             Self::SeasonChange(_) => SeasonChange::ID,
-            Self::LogoutAck(_) => LogoutAck::ID,
+            Self::LogoutAck(_) => <LogoutAck as EncodePacket>::ID,
             Self::MapChange(_) => MapChange::ID,
             Self::Remove(_) => <Remove as EncodePacket>::ID,
             Self::OpenPaperdoll(_) => <OpenPaperdoll as EncodePacket>::ID,
@@ -456,6 +456,19 @@ impl ServerPacket {
             <OpenPaperdoll as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::OpenPaperdoll)
                 .map_err(ServerDecodeError::OpenPaperdoll)?,
+            // The stance that settled — the answer to the paperdoll's toggle,
+            // and the same five bytes the client asked with. Decoded through
+            // the same type both directions share; there is nothing in the
+            // packet to say which way it was travelling.
+            <WarMode as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::WarMode)
+                .map_err(ServerDecodeError::WarMode)?,
+            // "You may go." A client that could not read this would sit on the
+            // paperdoll's Log Out button with nothing happening, which is
+            // exactly what the packet exists to prevent.
+            <LogoutAck as DecodePacket>::ID => decode_server(packet, version)
+                .map(|LogoutAck| Self::LogoutAck(LogoutAck))
+                .map_err(ServerDecodeError::LogoutAck)?,
             _ => return Ok(None),
         };
         Ok(Some(decoded))
@@ -512,6 +525,10 @@ pub enum ServerDecodeError {
     ContainerContents(DecodeError),
     /// `0x88` did not decode.
     OpenPaperdoll(DecodeError),
+    /// `0x72` did not decode.
+    WarMode(DecodeError),
+    /// `0xD1` did not decode.
+    LogoutAck(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -538,6 +555,8 @@ impl fmt::Display for ServerDecodeError {
             Self::AddToContainer(error) => ("0x25 add to container", error),
             Self::ContainerContents(error) => ("0x3C container contents", error),
             Self::OpenPaperdoll(error) => ("0x88 paperdoll", error),
+            Self::WarMode(error) => ("0x72 war mode", error),
+            Self::LogoutAck(error) => ("0xD1 logout ack", error),
         };
         write!(f, "{name}: {error}")
     }
@@ -1482,6 +1501,26 @@ mod tests {
         })
         .encode(version());
         assert_eq!(ServerPacket::decode(&bytes, version()), Ok(None));
+    }
+
+    /// The two packets the paperdoll's buttons wait for, round-tripped through
+    /// the client's own reader. Both used to fall through to `Ok(None)`: the
+    /// shard answered the war toggle and the client threw the answer away, so
+    /// the toggle's picture could never move.
+    #[test]
+    fn the_answers_a_paperdoll_waits_for_are_decoded() {
+        for war in [true, false] {
+            let bytes = ServerPacket::WarMode(WarMode { war }).encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(ServerPacket::WarMode(WarMode { war })))
+            );
+        }
+        let bytes = ServerPacket::LogoutAck(crate::world::LogoutAck).encode(version());
+        assert_eq!(
+            ServerPacket::decode(&bytes, version()),
+            Ok(Some(ServerPacket::LogoutAck(crate::world::LogoutAck)))
+        );
     }
 
     #[test]

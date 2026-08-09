@@ -206,13 +206,17 @@ impl DecodePacket for LookRequest {
 /// ServUO's `MobileQuery`: a magic word, a type byte, then the queried serial.
 /// Type `0x05` is the skill window opening; anything else is the status bar.
 /// Answering every query with the status, as before, left the skill window
-/// empty. The queried serial is not modelled: every query this engine acts on
-/// is about the asking player's own mobile, which the connection already
-/// knows without reading it back off the wire.
+/// empty.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct StatusQuery {
     /// Which window is asking.
     pub kind: StatusQueryKind,
+    /// Whom it is asking about, exactly as sent. Class D on this end: nothing
+    /// here routes by it — every query this engine acts on is about the asking
+    /// player's own mobile, which the connection already knows — but the client
+    /// half has to *write* one, and a field only one direction reads is better
+    /// than two functions that could disagree about the byte layout.
+    pub serial: RawSerial,
 }
 
 /// What a [`StatusQuery`] is asking for.
@@ -224,17 +228,61 @@ pub enum StatusQueryKind {
     Skills,
 }
 
+impl StatusQueryKind {
+    /// The type byte on the wire.
+    #[must_use]
+    pub const fn to_bits(self) -> u8 {
+        match self {
+            Self::Status => 0x04,
+            Self::Skills => 0x05,
+        }
+    }
+
+    /// Which window a type byte means. Total, and everything that is not the
+    /// skill list is the status bar — the reference sends `0x04` for it, and a
+    /// shard that guessed at anything else would answer the wrong window.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        match bits {
+            0x05 => Self::Skills,
+            _ => Self::Status,
+        }
+    }
+}
+
+/// The magic word every `0x34` opens with, which nothing reads — ServUO writes
+/// and ignores the same four bytes, and so does the reference client.
+const STATUS_QUERY_MAGIC: u32 = 0xEDED_EDED;
+
+impl StatusQuery {
+    /// Encode a whole `0x34`. What `crates/client/net` sends when a paperdoll's
+    /// Status or Skills button is pressed; this *server* never sends one, only
+    /// ever decodes it — the same split as
+    /// [`DoubleClick::encode`](crate::containers::DoubleClick::encode).
+    #[must_use]
+    pub fn encode(self) -> Vec<u8> {
+        crate::packet::frame_body(
+            <Self as DecodePacket>::ID,
+            PacketLength::Fixed(10),
+            |out: &mut PacketWriter| {
+                out.u32(STATUS_QUERY_MAGIC);
+                out.u8(self.kind.to_bits());
+                out.u32(self.serial.0);
+            },
+        )
+    }
+}
+
 impl DecodePacket for StatusQuery {
     const ID: u8 = 0x34;
 
     fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
         let _magic = reader.u32()?;
-        let kind = if reader.u8()? == 0x05 {
-            StatusQueryKind::Skills
-        } else {
-            StatusQueryKind::Status
-        };
-        Ok(Self { kind })
+        let kind = StatusQueryKind::from_bits(reader.u8()?);
+        Ok(Self {
+            kind,
+            serial: RawSerial(reader.u32()?),
+        })
     }
 }
 
@@ -984,6 +1032,24 @@ mod tests {
         let status = [0x34, 0x00, 0x00, 0x12, 0x34, 0x04, 0x40, 0x00, 0x00, 0x2A];
         let query: StatusQuery = crate::packet::decode_packet(&status, version()).unwrap();
         assert_eq!(query.kind, StatusQueryKind::Status);
+        assert_eq!(query.serial, RawSerial(0x4000_002A), "and whom it asks about");
+    }
+
+    /// The client's half: what a paperdoll's Status and Skills buttons write is
+    /// what this crate's own decoder reads back, type byte and serial both. The
+    /// magic word is not asserted on — nothing reads it, at either end.
+    #[test]
+    fn a_status_query_this_client_writes_is_one_this_server_reads() {
+        for kind in [StatusQueryKind::Status, StatusQueryKind::Skills] {
+            let bytes = StatusQuery {
+                kind,
+                serial: RawSerial(0x4000_002A),
+            }
+            .encode();
+            let heard: StatusQuery = crate::packet::decode_packet(&bytes, version()).unwrap();
+            assert_eq!(heard.kind, kind);
+            assert_eq!(heard.serial, RawSerial(0x4000_002A));
+        }
     }
 
     #[test]

@@ -104,6 +104,28 @@ pub enum Command {
     /// eats the food. What using it *means* is the shard's answer — see
     /// [`openshard_client_net::interact`].
     Use(Serial),
+    /// Ask to enter or leave war mode — the paperdoll's peace/war toggle.
+    ///
+    /// The stance asked for, not the one to draw: the server answers with the
+    /// one that settled and the picture follows *that*. See
+    /// [`openshard_client_net::doll::war_mode`].
+    WarMode(bool),
+    /// "Log Out" was pressed. The connection stays up until the shard answers.
+    LogOut,
+    /// Ask for a mobile's status bar (`0x34`).
+    Status(Serial),
+    /// Ask for a mobile's skill list — the same packet, the other type byte.
+    Skills(Serial),
+    /// Ask for our own quest log (`0xD7`).
+    ///
+    /// No serial: the request names the asking player and the thread already
+    /// knows which one that is. Passing it from the window would be the same
+    /// number carried through two hands for a shard that ignores it anyway.
+    QuestLog,
+    /// Ask for our own guild menu — the `0xD7` beside the quest log's.
+    GuildMenu,
+    /// Double-clicking the virtue scroll on a doll: whose virtues.
+    Virtue(Serial),
 }
 
 /// A dialog answered: which window, which button, and what was set on it.
@@ -157,6 +179,41 @@ impl Link {
     /// Use an object — the double-click.
     pub fn use_object(&self, serial: Serial) {
         let _ = self.commands.send(Command::Use(serial));
+    }
+
+    /// Ask for a stance. See [`Command::WarMode`].
+    pub fn war_mode(&self, war: bool) {
+        let _ = self.commands.send(Command::WarMode(war));
+    }
+
+    /// Announce that the player is leaving.
+    pub fn log_out(&self) {
+        let _ = self.commands.send(Command::LogOut);
+    }
+
+    /// Ask for a mobile's status bar.
+    pub fn status(&self, mobile: Serial) {
+        let _ = self.commands.send(Command::Status(mobile));
+    }
+
+    /// Ask for a mobile's skill list.
+    pub fn skills(&self, mobile: Serial) {
+        let _ = self.commands.send(Command::Skills(mobile));
+    }
+
+    /// Ask for our own quest log.
+    pub fn quest_log(&self) {
+        let _ = self.commands.send(Command::QuestLog);
+    }
+
+    /// Ask for our own guild menu.
+    pub fn guild_menu(&self) {
+        let _ = self.commands.send(Command::GuildMenu);
+    }
+
+    /// Ask about a mobile's virtues.
+    pub fn virtue(&self, mobile: Serial) {
+        let _ = self.commands.send(Command::Virtue(mobile));
     }
 }
 
@@ -250,6 +307,14 @@ async fn play<D: Dial>(
                     Ok(None) => return "the shard closed the connection".to_owned(),
                     Err(error) => return error.to_string(),
                 };
+                // "You may go." The shard answers the paperdoll's Log Out button
+                // with this and then leaves the character standing until the
+                // socket closes — closing it is the client's half, and both
+                // references do it here. Nothing after this packet is worth
+                // reading, so the loop ends and the window is told why.
+                if matches!(packet, openshard_protocol::server_packet::ServerPacket::LogoutAck(_)) {
+                    return "logged out".to_owned();
+                }
                 // Before folding, because folding is what sets it: asking twice
                 // for the same disagreement is the burst ClassicUO's
                 // `ResendPacketResync` guards against.
@@ -344,6 +409,22 @@ async fn play<D: Dial>(
                     }
                     Command::Say(text) => openshard_client_net::talk::say(&text),
                     Command::Use(serial) => openshard_client_net::interact::use_object(serial),
+                    // The paperdoll's buttons. Nothing is done locally on the
+                    // way out for any of them — the toggle's picture, the quest
+                    // window and the logout all wait for the shard's answer,
+                    // for the reason the door does (`Command::Use`): a client
+                    // that acted on its own would show a state the server
+                    // refused.
+                    Command::WarMode(war) => openshard_client_net::doll::war_mode(war),
+                    Command::LogOut => openshard_client_net::doll::log_out(),
+                    Command::Status(mobile) => openshard_client_net::doll::status(mobile),
+                    Command::Skills(mobile) => openshard_client_net::doll::skills(mobile),
+                    // Ours by definition — see `Command::QuestLog`.
+                    Command::QuestLog => openshard_client_net::doll::quest_log(view.player.serial),
+                    Command::GuildMenu => openshard_client_net::doll::guild_menu(view.player.serial),
+                    Command::Virtue(mobile) => {
+                        openshard_client_net::doll::virtue(view.player.serial, mobile)
+                    }
                     Command::AnswerGump(reply) => openshard_client_net::talk::answer_gump(
                         reply.key,
                         reply.gump_id,

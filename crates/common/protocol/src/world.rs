@@ -1057,12 +1057,54 @@ impl EncodePacket for SeasonChange {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct LogoutAck;
 
+/// `0xD1` *from the client* — "Log Out" was pressed. 2 bytes, no body.
+///
+/// The other half of [`LogoutAck`], and the same shape as [`ResyncRequest`]
+/// beside [`WalkAck`]: one id, two packets, told apart only by which way they
+/// travel. Nothing in it means anything — the reference client writes the id and
+/// lets the length field zero-fill the rest — so this exists to give the client
+/// half a name and one place that knows the id, rather than a literal in the
+/// window's own code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct LogoutRequest;
+
+impl LogoutRequest {
+    /// The id, shared with [`LogoutAck`] in the other direction.
+    pub const ID: u8 = 0xD1;
+
+    /// Encode the whole packet. What `crates/client/net` sends when the
+    /// paperdoll's Log Out button is pressed; this server only ever decodes it,
+    /// and decodes it as nothing but its id.
+    #[must_use]
+    pub fn encode(self) -> Vec<u8> {
+        let mut writer = PacketWriter::with_capacity(2);
+        writer.u8(Self::ID);
+        // The one byte behind the id, which both references write and neither
+        // reads — the client's table says the packet is two bytes long.
+        writer.zeros(1);
+        writer.into_bytes()
+    }
+}
+
 impl EncodePacket for LogoutAck {
     const ID: u8 = 0xD1;
     const LENGTH: PacketLength = PacketLength::Fixed(2);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u8(0x01);
+    }
+}
+
+impl DecodePacket for LogoutAck {
+    const ID: u8 = 0xD1;
+
+    /// The accept byte is read past and not kept. Refusing is a rule neither
+    /// this shard nor either reference has — see the type's own docs — so a
+    /// field carrying "it was a `0x01`" would be one nothing could ever branch
+    /// on. What the packet means is that it arrived.
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        reader.u8()?;
+        Ok(Self)
     }
 }
 

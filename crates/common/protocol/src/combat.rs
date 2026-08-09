@@ -18,15 +18,40 @@ pub struct WarMode {
     pub war: bool,
 }
 
+impl WarMode {
+    /// The five bytes, whichever end is writing them. One body behind both
+    /// doors below, because the packet is the same shape in both directions and
+    /// two writers would be two chances to pad it differently.
+    fn write(self, out: &mut PacketWriter) {
+        out.bool(self.war);
+        out.u8(0x00);
+        out.u8(0x32);
+        out.u8(0x00);
+    }
+
+    /// Encode a whole `0x72`. What `crates/client/net` sends when the
+    /// paperdoll's peace/war toggle is pressed — the client's stance is a
+    /// *request*, and what it settles to is the server's answer on the same id.
+    ///
+    /// No [`ClientVersion`] where [`EncodePacket`] takes one: the layout has
+    /// never had a version in it, and the client half has no version to hand at
+    /// the point a button is pressed.
+    #[must_use]
+    pub fn encode(self) -> Vec<u8> {
+        crate::packet::frame_body(
+            <Self as EncodePacket>::ID,
+            <Self as EncodePacket>::LENGTH,
+            |out: &mut PacketWriter| self.write(out),
+        )
+    }
+}
+
 impl EncodePacket for WarMode {
     const ID: u8 = 0x72;
     const LENGTH: PacketLength = PacketLength::Fixed(5);
 
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
-        out.bool(self.war);
-        out.u8(0x00);
-        out.u8(0x32);
-        out.u8(0x00);
+        self.write(out);
     }
 }
 
@@ -198,6 +223,19 @@ mod tests {
             encode_packet(&WarMode { war: false }, version()),
             vec![0x72, 0x00, 0x00, 0x32, 0x00]
         );
+    }
+
+    /// The client's door and the server's write the same five bytes. Asserted
+    /// rather than assumed: they are two public functions over one body, and the
+    /// day one of them grows a version this is what says so.
+    #[test]
+    fn both_ends_write_the_same_war_mode_packet() {
+        for war in [true, false] {
+            assert_eq!(
+                WarMode { war }.encode(),
+                encode_packet(&WarMode { war }, version())
+            );
+        }
     }
 
     #[test]
