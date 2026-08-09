@@ -23,6 +23,8 @@ use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::font::{AsciiFonts, CHARS_PER_FONT, FONT_COUNT, GLYPH_BASE};
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::map::Map;
+use openshard_uofiles::skillgrp::SkillGroups;
+use openshard_uofiles::skills::{SkillId, Skills};
 use openshard_uofiles::texmaps::{TEXTURE_COUNT, TexMaps, TextureId};
 use openshard_uofiles::tiledata::{LAND_TILE_COUNT, TileData, TileDataFormat};
 
@@ -879,4 +881,128 @@ fn a_real_fonts_mul_parses_to_ten_plausible_faces() {
     assert_eq!((a.width(), a.height()), (12, 21), "font 3's 'A'");
     let space = fonts.glyph(Font(3), 0x20).unwrap();
     assert_eq!((space.width(), space.height()), (6, 20), "font 3's space");
+}
+
+/// The skill names, and the claim the whole window rests on: the id a name sits
+/// at here is the id the `0x3A` packets speak.
+///
+/// A fixture cannot settle it. The reference numbers the *non-empty* index
+/// entries in order and skips the rest — so whether Mining is 45 depends on
+/// there being no hole in the first 58 entries of a real `Skills.idx`, which is
+/// a fact about a shipped file and about nothing else. The four spot checks are
+/// ServUO's own `SkillName` values, arrived at from the other side of the wire.
+#[test]
+fn the_shipped_names_are_dense_and_are_the_wires_own_numbering() {
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let skills = Skills::open(&dir).expect("a client ships a readable Skills.idx/skills.mul pair");
+    assert!(
+        skills.len() >= 58,
+        "a 7.0 client names 58 skills, this one names {}",
+        skills.len()
+    );
+    for (id, name) in [(0u8, "Alchemy"), (25, "Magery"), (45, "Mining"), (57, "Throwing")] {
+        assert_eq!(
+            skills.get(SkillId(id)).map(|skill| skill.name.as_str()),
+            Some(name),
+            "skill {id}"
+        );
+    }
+}
+
+/// The record's first byte is a flag and not the first letter of the name.
+///
+/// Read one byte early, every name would come out with a stray control
+/// character in front of it and every `has_action` would be whatever the first
+/// letter happened to be — which is *true* for every skill whose name starts
+/// with a letter, so the flag would look like "every skill has a button". The
+/// shipped file settles it both ways: Alchemy has no button and Anatomy has one.
+#[test]
+fn the_leading_byte_is_the_button_flag_and_not_a_letter() {
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let skills = Skills::open(&dir).expect("a client ships a readable Skills.idx/skills.mul pair");
+    assert!(
+        !skills.get(SkillId(0)).expect("Alchemy").has_action,
+        "Alchemy is not used from the window"
+    );
+    assert!(skills.get(SkillId(1)).expect("Anatomy").has_action, "Anatomy is");
+    let with = skills.iter().filter(|(_, skill)| skill.has_action).count();
+    assert!(
+        (10..skills.len()).contains(&with),
+        "{with} of {} skills carry the flag, which is not a flag at all",
+        skills.len()
+    );
+    for (_, skill) in skills.iter() {
+        assert!(
+            skill
+                .name
+                .chars()
+                .all(|char| char.is_ascii_graphic() || char == ' '),
+            "{:?} has a byte in it that is not part of a name",
+            skill.name
+        );
+    }
+}
+
+/// The tree itself: seven headings, in the file's own order, and every skill
+/// filed under one that has a name.
+///
+/// The layout claim a fixture agrees with by construction is the one-based
+/// numbering — the file's per-skill table counts from 1 into the names, and 0 is
+/// the group the file never names. Read as zero-based, every skill would come out
+/// one heading early: Mining would be filed under "Magic" and nothing about the
+/// window would look broken.
+#[test]
+fn every_shipped_skill_is_filed_under_a_group_that_has_a_name() {
+    let Some(dir) = client_dir() else {
+        return;
+    };
+    let skills = Skills::open(&dir).expect("a client ships a readable Skills.idx/skills.mul pair");
+    let groups = SkillGroups::open(&dir).expect("a client ships a readable skillgrp.mul");
+    let headings: Vec<&str> = groups.groups().map(|(_, name)| name).collect();
+    assert_eq!(
+        headings,
+        [
+            "Misc",
+            "Combat",
+            "Trade Skills",
+            "Magic",
+            "Wilderness",
+            "Thieving",
+            "Bard"
+        ],
+        "the shipped headings, Misc first"
+    );
+    for (id, name, heading) in [
+        (0u8, "Alchemy", "Trade Skills"),
+        (25, "Magery", "Magic"),
+        (45, "Mining", "Trade Skills"),
+        (3, "Item Identification", "Misc"),
+        (9, "Peacemaking", "Bard"),
+    ] {
+        let group = groups.group_of(SkillId(id)).expect("a shipped skill is filed");
+        assert_eq!(groups.name(group), Some(heading), "{name} ({id})");
+    }
+    // The cross-file claim the window needs and neither file states: the two
+    // tables are the same length, so every row drawn has a heading to sit under.
+    assert_eq!(
+        groups.filed(),
+        skills.len(),
+        "skillgrp.mul files a different number of skills than skills.mul names"
+    );
+    for (id, skill) in skills.iter() {
+        let group = groups
+            .group_of(id)
+            .unwrap_or_else(|| panic!("{} ({}) is filed nowhere", skill.name, id.0));
+        assert!(
+            groups.name(group).is_some(),
+            "{} ({}) is filed under group {} which has no name",
+            skill.name,
+            id.0,
+            group.0
+        );
+    }
 }

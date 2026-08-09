@@ -32,6 +32,8 @@ pub mod gumpart;
 pub mod hues;
 pub mod image;
 pub mod map;
+pub mod skillgrp;
+pub mod skills;
 pub mod texmaps;
 pub mod tiledata;
 pub mod ttf_font;
