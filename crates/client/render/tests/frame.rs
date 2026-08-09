@@ -1986,6 +1986,64 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
         height(places.position_at(62, 62)) > height(places.position_at(62, 72)),
         "a wall is not taller further up its picture",
     );
+
+    // **A mobile, drawn with no volume exactly as the wall above, spreads.**
+    //
+    // `docs/lighting_rebuild.md` phase 7: a mobile has no volume by
+    // construction rather than for want of a measurement, so it is a billboard
+    // — a vertical plane through its tile's centre, turned towards the camera —
+    // and a fragment of it is where its own view ray meets that plane. The
+    // stanza above and this one are therefore *deliberately* different answers
+    // to the same missing box, and the pair is the only thing that says the
+    // pass tells the two apart. `impostor::billboard_at` carries the
+    // derivation.
+    //
+    // What this is a gate on is not the arithmetic — `impostor.rs` states that
+    // as its own two properties — but that a mobile's pixels stop sharing one
+    // point. Sharing one was visible: a figure lit flat across, with horizontal
+    // bands over it wherever `blit.wesl`'s `dither` gave one screen row one
+    // turn of the sample spiral and the next row another.
+    let places = render_places(
+        &device,
+        &queue,
+        &land,
+        &texmaps,
+        &[],
+        &statics,
+        // Through the statics pass, which is the pass a mobile is really drawn
+        // by: what makes it a mobile is the kind in its own `Place`, and that is
+        // the word the branch under test reads.
+        &[quad(Place::of_mobile(at), Range::default())],
+        &[],
+        &[],
+        &[],
+        128,
+    );
+    let (mid_x, mid_y) = sub(places.position_at(62, 62));
+    let (right_x, right_y) = sub(places.position_at(72, 62));
+    assert!(
+        right_x > mid_x && right_y < mid_y,
+        "a mobile's pixels do not move along the plane it is drawn on: \
+         ({mid_x}, {mid_y}) at the middle against ({right_x}, {right_y}) ten pixels right",
+    );
+    // On the plane and not merely apart: the two coordinates move by the same
+    // amount in opposite directions, which is what `x - y` means and is the one
+    // direction a billboard's own plane runs along.
+    assert!(
+        ((right_x - mid_x) + (right_y - mid_y)).abs() < 1e-4,
+        "({right_x}, {right_y}) is off the plane through ({mid_x}, {mid_y})",
+    );
+    // And straight down the picture is straight down the plane: the height moves
+    // and the ground position does not.
+    assert_eq!(
+        sub(places.position_at(62, 72)),
+        (mid_x, mid_y),
+        "a mobile's pixel moved across the world going down its own picture",
+    );
+    assert!(
+        height(places.position_at(62, 62)) > height(places.position_at(62, 72)),
+        "a mobile is not taller further up its picture",
+    );
 }
 
 /// A ground pixel decodes to `Stance::Flat`, read the same direct way the two

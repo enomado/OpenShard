@@ -66,6 +66,34 @@ fn ray_from(tile: vec2<f32>, base: f32, across: f32, down: f32) -> vec3<f32> {
     );
 }
 
+// Where a fragment of a **billboard** is: the point of its own view ray on the
+// vertical plane the sprite is drawn on.
+//
+// `docs/lighting_rebuild.md` phase 7, and the half of it that is not a choice.
+// A mobile has no volume, so `meets` has nothing to meet and the pass fell back
+// to a *point* — the middle of the tile, with the height running down the
+// picture — which is the same point for every pixel of a screen row. A figure
+// lit flat across, and `blit.wesl`'s `dither` turning the sample pattern by an
+// angle that belongs to the position, so an eight-ray estimate lands in
+// horizontal bands across it. Both are one cause.
+//
+// The plane stands through the tile's centre, contains the vertical, and runs
+// along the screen's own `x` axis — `(1, -1)` in tiles, which is what `ray_from`
+// moves along when only `across` changes. Its normal is therefore `(1, 1, 0)`,
+// `VIEW`'s horizontal part: turned towards the camera, which is what a billboard
+// is. The height falls out unchanged, `Z_PER_TILE / TILE_WIDTH` being `1 /
+// Z_STEP` exactly — what the old point had wrong was `x` and `y` and nothing
+// else.
+//
+// `impostor::billboard_at`, and the two are one formula.
+fn billboard_at(tile: vec2<f32>, base: f32, across: f32, down: f32) -> vec3<f32> {
+    return vec3<f32>(
+        tile.x + 0.5 + across / TILE_WIDTH,
+        tile.y + 0.5 - across / TILE_WIDTH,
+        base - down * Z_PER_TILE / TILE_WIDTH,
+    );
+}
+
 // Where the view ray meets one box, and which of its faces that is.
 struct Meeting {
     // The point, in world units, clamped into the box.

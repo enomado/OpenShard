@@ -28,10 +28,10 @@
 // the formula is a second chance to disagree with it — see `crate::depth`.
 
 import package::place_format::{
-    KIND_MASK, STANCE_FACE_NORTH, STANCE_FACE_SOUTH, STANCE_CORNER, pack_ids,
+    KIND_MASK, KIND_MOBILE, STANCE_FACE_NORTH, STANCE_FACE_SOUTH, STANCE_CORNER, pack_ids,
 };
 import package::normal_format::pack_normal;
-import package::impostor::{hit, meets, ray_from};
+import package::impostor::{billboard_at, hit, meets, ray_from};
 
 struct Viewport {
     // The target's size in *real* pixels — see `ground.wgsl`, which documents
@@ -322,14 +322,39 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // walk starts from the tile the instance carries, which is a whole number a
     // pass knew exactly.
     //
-    // The default is the **no volume** case, and it is the one reading that is
-    // not geometry: a picture the grid holds no shape for — a mobile, a text
-    // glyph, a static the grid refused — stands in the middle of its tile with
-    // its height running down the picture at four pixels a unit, and has no
-    // facing at all. That is what `Stance::Upright` has always meant, said once
-    // here instead of five times below, and phase 7 is what gives a billboard a
-    // normal.
+    // The default is the **no volume** case, and it is two different states
+    // wearing one branch — which is why the answer below is not one answer.
+    // Neither has a facing at all, which is what `Stance::Upright` has always
+    // meant and is what phase 7's own open question is about.
+    //
+    // A **mobile** has no volume *by construction*: `docs/lighting_rebuild.md`
+    // says so in as many words — "a billboard is no volume, so it casts nothing"
+    // — and nothing is ever going to measure one. So it is a billboard, and a
+    // billboard is a **plane**: the sprite is drawn on a vertical plane through
+    // its tile's centre turned towards the camera, and a fragment of it is where
+    // its own view ray meets that plane. `impostor::billboard_at` is the
+    // derivation and phase 7 is where it belongs; the height it answers with is
+    // the one this pass already drew, to the bit.
+    //
+    // **It stood at the tile's centre until then**, one point for every pixel of
+    // a screen row, and a person could see both halves of that: a figure lit
+    // flat across, since nothing about the light varied along a row, and
+    // horizontal bands over it, since `blit.wesl`'s `dither` turns each row's
+    // sample pattern by an angle that belongs to the position.
+    //
+    // A **static with no box** is the other state, and it is a measurement that
+    // is missing rather than one that cannot exist: a picture the grid refused, a
+    // text glyph. It keeps the tile's centre, and that is not conservatism —
+    // `a_floor_spreads_across_its_tile_and_a_wall_stands_up_it` states the reason
+    // and would go red for the other choice. What a wall's picture runs along is
+    // the world axis the wall is built on, a screen *diagonal*, and the tiledata
+    // does not say which of the two it is; the billboard's plane runs along
+    // `x - y`, the one direction no wall runs. Guessing a plane for a wall is
+    // therefore wrong in a way that guessing one for a person is not.
     var at = vec3<f32>(tile + vec2<f32>(0.5), base - down / Z_STEP);
+    if ((in.place.y >> 8u) & KIND_MASK) == KIND_MOBILE {
+        at = billboard_at(tile, base, across, down);
+    }
     var normal = vec3<f32>(0.0);
     if in.volumes.y != 0u {
         let start = ray_from(tile, base, across, down);

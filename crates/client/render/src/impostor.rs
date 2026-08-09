@@ -89,6 +89,44 @@ pub fn ray_from(tile: (i32, i32), base: f32, across: f32, down: f32) -> [f32; 3]
     ]
 }
 
+/// Where a fragment of a **billboard** is: the point of its own view ray on the
+/// vertical plane the sprite is drawn on.
+///
+/// `docs/lighting_rebuild.md` phase 7, and the half of it that is not a choice.
+/// A mobile has no volume, so [`meets`] has nothing to meet and the pass falls
+/// back to a *point* — the middle of the tile, with the height running down the
+/// picture. That point is the same for **every pixel of a screen row**: a
+/// billboard is forty pixels wide and all forty of them were told they are at
+/// the tile's centre. Two things a person can see follow from it. The sprite is
+/// lit flat across, because nothing about the light varies along a row. And
+/// `blit.wesl`'s `dither` — which turns the sample pattern by an angle that
+/// belongs to the *position* — hands one row one turn and the next row another,
+/// so an eight-ray estimate lands in **horizontal bands** across the figure.
+/// That is what a person standing next to a torch actually looks like today.
+///
+/// The plane is the one the picture is drawn on: it stands through the tile's
+/// centre, it contains the vertical, and its horizontal direction is the one the
+/// screen's own `x` axis runs along — `(1, -1)` in tiles, which is what
+/// [`ray_from`] moves along when only `across` changes. So its normal is
+/// `(1, 1, 0)`, the horizontal part of [`VIEW`]: the plane is turned towards the
+/// camera, which is what a billboard *is*.
+///
+/// The arithmetic is [`ray_from`]'s ray met with that plane, and it is worth
+/// stating that the height falls out unchanged: the meeting is at
+/// `t = -down / TILE_WIDTH` along [`VIEW`], which takes `z` to
+/// `base - down * Z_PER_TILE / TILE_WIDTH` — and `Z_PER_TILE / TILE_WIDTH` is
+/// `1 / Z_STEP` exactly. The pass's old point already had the right `z`; what it
+/// had wrong was `x` and `y`, and that is the whole of this function.
+///
+/// `statics.wesl`'s `billboard_at`, and the two are one formula.
+pub fn billboard_at(tile: (i32, i32), base: f32, across: f32, down: f32) -> [f32; 3] {
+    [
+        tile.0 as f32 + 0.5 + across / TILE_WIDTH,
+        tile.1 as f32 + 0.5 - across / TILE_WIDTH,
+        base - down * Z_PER_TILE / TILE_WIDTH,
+    ]
+}
+
 /// Which run of a frame's [`Volume`] list belongs to one drawn static.
 ///
 /// The association `docs/lighting_rebuild.md` phase 6 rests on: a fragment is
@@ -338,6 +376,56 @@ mod tests {
     /// The unit cube on tile `(100, 101)`, ten `z` tall.
     fn cube() -> ([f32; 3], [f32; 3]) {
         ([100.0, 101.0, 0.0], [101.0, 102.0, 10.0])
+    }
+
+    /// **A billboard's fragment is on the plane, and the plane is turned towards
+    /// the camera.**
+    ///
+    /// Stated as the two properties that make it one rather than as the numbers
+    /// it comes out with: every point is in the plane through the tile's centre
+    /// whose normal is `VIEW`'s horizontal part, and the point is on the
+    /// fragment's *own* view ray, so it draws where it was drawn. A formula that
+    /// satisfies both is the meeting, and nothing else is.
+    #[test]
+    fn a_billboards_fragment_is_its_view_ray_met_with_a_plane_facing_the_camera() {
+        let tile = (100, 101);
+        let base = 7.0;
+        let centre = [tile.0 as f32 + 0.5, tile.1 as f32 + 0.5];
+        for across in [-20.0, -3.0, 0.0, 11.5, 22.0] {
+            for down in [-8.0, 0.0, 4.0, 37.0] {
+                let at = billboard_at(tile, base, across, down);
+                // In the plane: the normal is `(1, 1, 0)` and the centre is on it.
+                let off_plane = (at[0] - centre[0]) + (at[1] - centre[1]);
+                assert!(off_plane.abs() < 1e-5, "{across}/{down}: {off_plane}");
+                // And on the fragment's own view ray, which is what says it draws
+                // on the pixel it was drawn on: the two differ by a multiple of
+                // `VIEW` and by nothing else.
+                let start = ray_from(tile, base, across, down);
+                let along = [at[0] - start[0], at[1] - start[1], at[2] - start[2]];
+                let t = along[0] / VIEW[0];
+                for axis in 0..3 {
+                    assert!(
+                        (along[axis] - t * VIEW[axis]).abs() < 1e-4,
+                        "{across}/{down}: axis {axis} of {along:?} is not {t} of {VIEW:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// And the height is the one the pass already drew with, to the bit.
+    ///
+    /// The point of the entry is what phase 7 does *not* change: `z` was right
+    /// before — `base - down / Z_STEP` — and a new derivation that moved it would
+    /// be lifting every mobile off the ground it stands on. `Z_PER_TILE /
+    /// TILE_WIDTH` is `1 / Z_STEP` exactly, which is why the two spellings agree
+    /// rather than nearly agree.
+    #[test]
+    fn a_billboards_height_is_what_the_pass_already_drew() {
+        for down in [-8.0, 0.0, 4.0, 37.0, 130.0] {
+            let at = billboard_at((100, 101), 7.0, 13.0, down);
+            assert_eq!(at[2], 7.0 - down / crate::camera::Z_STEP as f32, "at {down}");
+        }
     }
 
     #[test]

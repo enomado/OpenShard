@@ -1377,6 +1377,43 @@ since it builds its frame against `Occlusion::EMPTY`.
 *Done when:* a person standing beside a torch reads as lit from the torch's side,
 in a frame a human being has looked at.
 
+*The position half is landed, and it was not in this paragraph.* The phase was
+written as a question about the **normal**, and a person looking at a figure
+standing next to a lamp reported two things instead: it is lit flat across, and
+it carries **horizontal bands**. Both are one cause, and it is the other field —
+a mobile has no volume, so the impostor had nothing to meet and the pass fell
+back to a *point*, the middle of the tile with the height running down the
+picture. That point is the same for **every pixel of a screen row**: nothing
+about the light can vary along a row, which is the flatness; and `blit.wesl`'s
+`dither` turns the sample pattern by an angle belonging to the position, so one
+row gets one turn of the spiral and the next another — an eight-ray estimate,
+banded.
+
+So a billboard is a **plane** and no longer a point: vertical, through its tile's
+centre, turned towards the camera, and a fragment of it is where its own view ray
+meets that plane. `impostor::billboard_at` is the derivation and the shader's
+copy is one formula with it; the height it answers with is what the pass already
+drew, to the bit, since `Z_PER_TILE / TILE_WIDTH` *is* `1 / Z_STEP`. No choice
+was made here — the plane the sprite is drawn on is not a candidate among
+several, which is why this half could land without the looking the rest of the
+phase needs.
+
+**A static with no box keeps the tile's centre**, and the pass now tells the two
+apart by kind. They were one branch and they are not one state: a mobile has no
+volume by construction (*"a billboard is no volume, so it casts nothing"*, above)
+while a static without one is a **measurement that is missing** — the grid
+refused it, or it is a text glyph. `a_floor_spreads_across_its_tile_and_a_wall_
+stands_up_it` states why the second must not get a plane and would go red if it
+did: what a wall's picture runs along is the world axis the wall is built on, a
+screen *diagonal*, and the tiledata does not say which of the two; a billboard's
+plane runs along `x - y`, the one direction no wall runs. The same fixture is the
+gate for both halves now, and its mobile stanza fails with the branch neutralised.
+
+What is left of the phase is the normal, unchanged: the camera-facing plane
+against the silhouette's own inflated field, chosen by looking. The bands are
+gone either way; what the normal buys is the torch-side reading the *done when*
+asks for.
+
 **Phase 8 — the sun.** A direction, the same BRDF, the same rays, sky visibility
 as ambient occlusion.
 
@@ -1543,6 +1580,35 @@ still wanted.
 ## Backlog
 
 Things noticed while writing this, not blocking any phase:
+
+- 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
+  showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
+  in `View::Light` and again in `View::Normal`: along a wall's top boundary the
+  normal alternates pixel by pixel between the wall's own camera-facing face and
+  the neighbour above it, and the light alternates with it. The rule it comes
+  from is this document's own — *"a pixel of the sprite whose ray misses the
+  prism takes the nearest point on it — the art overhangs its own volume by a
+  pixel or two and that is what it means"* — and the accepted cost beside it
+  (*"statics without a good prism get a rougher volume"*). What nobody wrote down
+  is that the *nearest face* of a miss flips between two answers along a
+  silhouette, so a smooth overhang reads as a comb. Three candidates and none of
+  them measured: keep it (it is a fringe of one pixel, and phase 6d moves these
+  fragments anyway); give a **missed** ray no facing at all, which is what the
+  normal plane's third state means and is honest about a volume that does not
+  describe the pixel — but it puts a fringe lit from every side against
+  neighbours that are not, so it has to be looked at rather than argued; or take
+  the *instance's* own single facing for a miss, which is the pre-6c answer for
+  the whole sprite applied to its overhang alone. **Measure the flipping pixels
+  first** — how many, how far out (`Meeting::outside`), and whether they are the
+  same set as the ones a person can see.
+- **A billboard's brightness is a per-row estimate no longer, and what is left is
+  ordinary sampling noise.** Phase 7's position half took away the correlation
+  that turned eight rays into bands; it did not take away the eight rays. A
+  mobile standing next to a flame is now dithered per pixel like everything else,
+  which is the *same* grain the entry below names and is what the ray-count knob
+  exists to trade against. Worth a look on a real figure before deciding
+  anything: at `FLAME_RADIUS` the grain is small, and it was only ever a person's
+  complaint at a flame size eight times that.
 
 - 🚩 **Two world claims are asked about a fragment that is a point of no solid,
   and that is why `same_run` still reads as load-bearing.**
