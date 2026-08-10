@@ -3692,11 +3692,58 @@ outlive the track and belong in this list, since this is the live one:
   the body rule was about to make it: the zero-normal share on the flight is
   **0.0%**, where it had been **100%**. The thing a person is looking at is the
   entry below, and this one had to land first for it to be visible at all.
-- 🚩 **One flight of stairs, and its boxes disagree about which way it climbs.**
-  The reporter's own reading, and it is the right one: *there is garbage drawn
-  there.* Not shading — geometry. Britain's `(1454, 1728)`, ten tiles of one
-  staircase, 35,100 static fragments below `z 6.6`, classified by the face
-  `impostor::meets` handed each:
+- 🚩 **A silhouette score cannot see inside its own outline, and that is where
+  the surfaces are.** The finding, and it is a general one: `silhouettes_agree`
+  is the only measure any fitted shape in this renderer is scored by, and it
+  compares two **filled outlines**. Everything interior to the outline — where a
+  step's riser stands, how deep its tread is, a moulding, a recess — contributes
+  nothing to the score. Two prisms with the same silhouette and different insides
+  are the same number, so a fit can be *confident and still wrong about where the
+  surfaces are*, and the lighting is the pass that finds out: a facing is exactly
+  what a cosine is computed from.
+  <br>
+  **Measured, on the reported flight at Britain's `(1454, 1728)`.** The fit is not
+  ambiguous — `examples/prism_axis.rs` (new, `artscan`) ranks the whole 261-candidate
+  sweep per graphic, and `0x0751` takes `North [1,3,5]` at **0.9752** with its
+  entire top six climbing north and a margin of **+0.0775** over the best
+  candidate on any other axis. `0x0752` the same, `West`, +0.0775. `0x0754` and
+  `0x0758` `East`, +0.0945. `0x0750` is a plain `box [5]`, +0.0520. And `0x0756`,
+  which the table holds no prism for, is refused with a margin of **+0.0024** —
+  a coin flip between axes, which is the search saying so. Six pictures, six
+  confident answers.
+  <br>
+  **And the insides are wrong anyway.** Over 37 east-face bands sampled across
+  the flight, the model's riser and the artist's own step joint are parallel and
+  roughly equal in number — median **2** model bands per screen column against
+  **3** drawn joints — but the model's riser stands **10.5 view px** where the
+  art's joint is **2.5**: four times too tall. So each riser band covers the upper
+  half of what the picture draws as the step's *tread*. `blit.wesl` gives a
+  vertical face a full cosine where a lid takes a grazing one, measured on this
+  very flight at **165.4** against **11.6** of 765, so the model's misplaced
+  riser draws as a bright stripe up the middle of every stone slab — which is
+  what a person reported as *something extra being drawn there*.
+  <br>
+  **Where to take it.** The measure, not the fit. A score over filled outlines
+  cannot be repaired by more candidates or a higher `PRISM_FITS`; it wants a
+  second term that sees inside — the art's own interior edges against the model's,
+  which is the same alpha the silhouette detector already walks. `MAX_TREADS` is 4
+  and is a cap on the *measurement*, so it belongs in the same question rather
+  than beside it. And the reach is not staircases: **every** fitted prism is
+  scored this way, which is `geometry_census`'s 3.2% fitted-prism class — the
+  tables, counters and display cases `boxes_of`'s `PLATFORM` branch admits on
+  exactly the same terms.
+  <br>
+  **Two earlier framings died on the way here and are worth the lines.** *The
+  boxes disagree about the climb axis* — six graphics, four axes — is true and is
+  not a defect: `prism_axis` says every one of the six is confidently its own
+  direction, and the structure really is a stoop with steps down three sides.
+  *Interior faces at the joins between abutting tiles* — the "garbage on the
+  vertical joins" `statics::push_volumes`' own doc records — does not reproduce
+  either: `isolated_scene` prints `0x0751`'s treads at `x 99.000..102.000`, three
+  tiles folded into one primitive, so `occlusion::merge` is doing its job here.
+  <br>
+  The face census that was the first evidence, kept because the ratio is the
+  reason the error is visible at all:
   <br>
 
   | face met | fragments | share | flame term of 765 |
@@ -3706,42 +3753,24 @@ outlive the track and belong in this list, since this is the live one:
   | **south**, `+y` | 4,927 | 14.0% | 12.7 |
 
   <br>
-  **The two side families are the same size** — 4,957 against 4,927, which is
-  the symmetry the projection has — **and they point at right angles to each
-  other inside one staircase.** Drawn over the art (the `Normal` layer masked
-  onto a frame with the flames turned off, which is the albedo), the south faces
-  run *along* the steps the artist drew and the east faces run *across* them.
-  The lamp stands east, so the family that is at ninety degrees to the picture is
-  the only one lit — 165.4 against 12.7 — and it draws as a set of bright strips
-  cutting over the treads. That is the report, exactly.
-  <br>
-  **The cause is in the table, not in the renderer.** The six graphics of this
-  one flight are fitted with four different climb axes:
-  `0x0751` (three tiles) `prism N`, `0x0752` `prism W`, `0x0754` and `0x0758`
-  `prism E`, `0x0750` `prism E 5` (one tread, so a plain box), and `0x0756` no
-  prism at all. A staircase has one climb axis. `best_prism` scores each picture
-  alone, by silhouette IoU, with nothing that could notice that the piece next to
-  it disagrees.
+  **The two side families are the same size** — 4,957 against 4,927, which is the
+  symmetry the projection has. What separates them is 165.4 against 12.7: the
+  lamp stands east, so of the two only the east one is lit, and every placement
+  error in it is at full contrast against a lid beside it taking a fourteenth of
+  the same flame. A misplaced *lid* would be invisible in this frame. That ratio
+  is why an error inside the outline surfaces as "something extra drawn there"
+  rather than as slightly wrong shading.
   <br>
   **What it is not**, all measured on the same frame. Not the ground poking
   through: `View::Kind` says *static* on every one of the strips' pixels. Not the
-  art: the same jump is in a frame rendered with `OPENSHARD_LIGHT_BRIGHTNESS=0`,
-  and under flat light the flight is an ordinary grey staircase with no strips in
-  it at all. Not the height: `0x0750`, `0x0751`, `0x0752`, `0x0754`, `0x0756` and
-  `0x0758` are all 44×65 pictures and 43 + 4·5 is 63, so the fitted five `z` are
-  the art's own — this is not [`footprints.md`](footprints.md)'s missing height
-  reaching a climbable. Not the shadow walk: visibility averages 248.8 of 255.
-  Not the merge either: no solid under the strips runs wider than 0.8 of a tile,
-  so the long bands are per-tile pieces lining up rather than one merged run.
-  <br>
-  **Where to start.** Per graphic, not per frame: draw each of the six alone
-  against its own art and ask whether `best_prism`'s axis is the one the picture
-  climbs. `examples/synthetic_stair.rs` builds a `Prism` by hand through the real
-  pipeline and `artscan`'s `shape` example prints the silhouette the detector
-  read, so the pair is already in the tree. If the fits are individually right,
-  then the pieces genuinely differ and what is missing is a rule above one
-  picture — a flight is a *run*, and `occlusion::merge` is the one place that
-  already knows a run when it sees one.
+  art: the same albedo jump is in a frame rendered with
+  `OPENSHARD_LIGHT_BRIGHTNESS=0`, and under flat light the flight is an ordinary
+  grey staircase with no strips in it at all. Not the height: `0x0750`, `0x0751`,
+  `0x0752`, `0x0754`, `0x0756` and `0x0758` are all 44×65 pictures and 43 + 4·5
+  is 63, so the fitted five `z` are the art's own — this is not
+  [`footprints.md`](footprints.md)'s missing height reaching a climbable. Not the
+  shadow walk: visibility averages 248.8 of 255. Not the merge: `0x0751`'s treads
+  stand at `x 99.000..102.000`, three tiles folded into one primitive.
   <br>
   ⚠ **The first census of this was taken on the wrong set and is superseded by
   the table above.** It classified only the fragments that *changed* between two
