@@ -48,9 +48,25 @@
 //! linear sampler shrinks it. [`Camera::minifies`] is the branch, and it is the
 //! only one.
 //!
-//! The one place a *real* pixel enters is the cursor, and it leaves in the same
-//! call — [`Camera::pick`] takes one and hands back a [`WorldPixel`]. That is
-//! why the third space has no type: nothing carries it.
+//! The third space is the **real** pixel, and it has a type for the fraction of
+//! one: [`RealPoint`]. It was once true that nothing carried it — that the only
+//! place a real pixel entered was the cursor, and it left in the same call, with
+//! [`Camera::pick`] taking one and handing back a [`WorldPixel`]. It stopped
+//! being true and the paragraph that said so outlived the fact: this camera
+//! answers in real pixels from [`Camera::to_viewport`],
+//! [`Camera::to_viewport_exact`], [`Camera::tile_facet`] and
+//! [`Projection::centre`], and every one of them used to answer in the same bare
+//! [`Vec2`] that [`Camera::to_view_exact`] and [`Projection::origin`] answer in.
+//! Which meant [`Camera::to_viewport_exact`] — a function that *takes* a view
+//! pixel and *returns* a real one — compiled when fed its own output, silently
+//! applying the zoom twice.
+//!
+//! What is still bare is the *view* side of that pair. A fractional view pixel
+//! is a [`Vec2`], and it stays one for now because it does not stop where the
+//! camera does: it is what every quad, every [`Rect`](crate::geometry::Rect) and
+//! every atlas placement in this crate is measured in, so a type for it is a
+//! sweep through the sprite path rather than a change to this file.
+//! `docs/pixels.md` P3 carries that half.
 
 use openshard_protocol::world::Point;
 
@@ -140,6 +156,42 @@ pub struct ViewPixel {
     pub x: i32,
     /// Downwards.
     pub y: i32,
+}
+
+/// A place on the display's own grid, to a fraction of one of its pixels.
+///
+/// The **real** pixel of `docs/camera.md` D11 — what the compositor hands us and
+/// what a painter drawing over the world has to answer in. Every other pixel
+/// space in this crate is *virtual*, the art's own grid, and the two are the
+/// same number only at 1:1; a [`Zoom`] is exactly the ratio between them.
+///
+/// Measured from the corner of the rect the world is drawn into, which is the
+/// same corner [`ViewPixel`] measures from and is **not** the surface's corner
+/// when a docked panel has moved the viewport — a caller painting onto the whole
+/// surface adds the rect's own origin, once, itself.
+///
+/// Fractional because the things that reach this space are not on the display's
+/// lattice either: a highlight round a slab a fifth of a tile thick has corners
+/// between the virtual pixels before the zoom multiplies them, and rounding each
+/// one on its own bends a plane. `f32` and not [`WorldPoint`]'s `f64`: this is a
+/// position inside one viewport, a few thousand pixels wide at most, where `f32`
+/// resolves to a ten-thousandth of a pixel.
+///
+/// No `From` or `Into` from any virtual space, for [`ViewPixel`]'s reason: the
+/// only thing allowed to move a point between the two is a [`Camera`], because
+/// the zoom and the eye's own fraction are what the move consists of.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct RealPoint {
+    /// Rightwards.
+    pub x: f32,
+    /// Downwards.
+    pub y: f32,
+}
+
+impl RealPoint {
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
 }
 
 /// A place in the world's own coordinates, between the tiles as well as on them.
@@ -516,6 +568,21 @@ pub struct Projection {
     pub scale: f32,
 }
 
+/// Half an extent, floored, as a float — in whichever pixel space the extent
+/// was in.
+///
+/// The one copy of the halving [`Projection::centre`], [`Projection::one_to_one`]
+/// and [`Camera::projection`] all need, and the float image of the integer one
+/// [`Camera::to_view`] and [`Camera::pick`] do. Spaceless on purpose: it is the
+/// same rounding of the same number whether the extent is real pixels or virtual
+/// ones, and the callers above differ in exactly which — so the space belongs on
+/// what each of them hands back, not in here. `docs/parity.md`'s window-parity
+/// entry is what the floor is for, and [`Projection::centre`] carries the
+/// account.
+fn half_extent(width: u32, height: u32) -> (f32, f32) {
+    ((width / 2) as f32, (height / 2) as f32)
+}
+
 impl Projection {
     /// Where the middle of the target lands, in the target's own real pixels.
     ///
@@ -536,8 +603,9 @@ impl Projection {
     ///
     /// Gated by [`crate::camera::tests::no_primary_sample_lands_on_a_whole_virtual_pixel`]
     /// on this side and by `tests/parity.rs`'s odd-extent case on the shader's.
-    pub fn centre(width: u32, height: u32) -> Vec2 {
-        Vec2::new((width / 2) as f32, (height / 2) as f32)
+    pub fn centre(width: u32, height: u32) -> RealPoint {
+        let half = half_extent(width, height);
+        RealPoint::new(half.0, half.1)
     }
 
     /// The world drawn 1:1 into an image of this size, eye in the middle.
@@ -546,11 +614,19 @@ impl Projection {
     /// there is no magnification in either, and in the second one the scaling is
     /// the blit's.
     pub fn one_to_one(width: u32, height: u32) -> Self {
+        // Halved as an integer for the reason `Camera::projection` gives at
+        // length: `to_view` halves the extent the same way, and two roundings of
+        // one number have to be one rounding.
+        //
+        // [`half_extent`] and not [`Projection::centre`], though the two are the
+        // same arithmetic: `origin` is in *virtual* pixels and `centre` answers
+        // in real ones, and here — and only here — the extent handed in is both,
+        // because `scale` is 1. The shared rounding is what has to be one
+        // function; the space is the caller's, so the two entry points differ by
+        // which type they hand back and nothing else.
+        let half = half_extent(width, height);
         Self {
-            // Halved as an integer for the reason `Camera::projection` gives at
-            // length: `to_view` halves the extent the same way, and two
-            // roundings of one number have to be one rounding.
-            origin: Projection::centre(width, height),
+            origin: Vec2::new(half.0, half.1),
             scale: 1.0,
         }
     }
@@ -742,9 +818,12 @@ impl Camera {
         // the *rounded* eye, so what is left over is added once, to the point
         // the target is centred on, instead of to every quad.
         let rounded = self.eye();
+        // `half_extent` and not a second `/ 2` written here: the same halving
+        // `Projection::centre` does, so the two cannot drift apart.
+        let half = half_extent(self.render_width(), self.render_height());
         let origin = Vec2::new(
-            (self.render_width() as i32 / 2) as f32 + (self.eye.x - f64::from(rounded.x)) as f32,
-            (self.render_height() as i32 / 2) as f32 + (self.eye.y - f64::from(rounded.y)) as f32,
+            half.0 + (self.eye.x - f64::from(rounded.x)) as f32,
+            half.1 + (self.eye.y - f64::from(rounded.y)) as f32,
         );
         if self.minifies() {
             // 1:1 into an image of virtual resolution, which the blit then
@@ -810,7 +889,7 @@ impl Camera {
     /// what carries a render-space point the rest of the way to a pixel a
     /// painter can use. `f32` because a highlight is drawn at whatever
     /// magnification the blit lands on, not on a texel grid.
-    pub fn to_viewport(&self, at: ViewPixel) -> Vec2 {
+    pub fn to_viewport(&self, at: ViewPixel) -> RealPoint {
         self.to_viewport_exact(Vec2::new(at.x as f32, at.y as f32))
     }
 
@@ -822,7 +901,14 @@ impl Camera {
     /// viewport would put a face's two ends on different fractions of the same
     /// plane. The integer entry point is this one at whole coordinates, so there
     /// is no second projection to disagree with.
-    pub fn to_viewport_exact(&self, at: Vec2) -> Vec2 {
+    ///
+    /// `at` is a fractional *view* pixel and the answer is a [`RealPoint`], and
+    /// the two being different types is the point: this function **is** the
+    /// zoom, so feeding it its own output applies the zoom twice — which
+    /// compiled, for as long as both sides were a bare [`Vec2`], and would put a
+    /// highlight `zoom` times further from the middle of the viewport than the
+    /// world it is drawn over.
+    pub fn to_viewport_exact(&self, at: Vec2) -> RealPoint {
         // From `projection`'s origin and not from half the extent, so the eye's
         // sub-virtual-pixel offset is in here too. Without it this lands where
         // the world *would* be if the camera were on a whole virtual pixel,
@@ -843,7 +929,7 @@ impl Camera {
         // also what [`Camera::pick`] has always done, so the two directions are
         // now one rounding rather than two.
         let centre = Projection::centre(self.width, self.height);
-        Vec2::new(
+        RealPoint::new(
             (at.x - projection.origin.x) * scale + centre.x,
             (at.y - projection.origin.y) * scale + centre.y,
         )
@@ -856,7 +942,7 @@ impl Camera {
     /// 44 pixels on a side in render space regardless of zoom, and only the
     /// blit in [`Camera::to_viewport`] scales it, so the offsets below are
     /// taken before that conversion and not after.
-    pub fn tile_diamond(&self, point: Point) -> [Vec2; 4] {
+    pub fn tile_diamond(&self, point: Point) -> [RealPoint; 4] {
         self.tile_facet(point, [point.z; 4])
     }
 
@@ -877,7 +963,7 @@ impl Camera {
     ///
     /// The lift is a *difference* from `point.z` because [`Camera::to_screen`]
     /// has already applied that one to the centre.
-    pub fn tile_facet(&self, point: Point, corners: [i8; 4]) -> [Vec2; 4] {
+    pub fn tile_facet(&self, point: Point, corners: [i8; 4]) -> [RealPoint; 4] {
         let centre = self.to_screen(point);
         let half = TILE_WIDTH / 2;
         // Up the screen as the corner rises, by the same `Z_STEP` `project`
@@ -1169,6 +1255,45 @@ mod tests {
              AN_EYE_ON_A_HALF_PIXEL_REACHES_THE_CORNER now names a defect that is gone — take it \
              out, here and in docs/parity.md's backlog",
         );
+    }
+
+    /// The three halvings of one extent are one halving.
+    ///
+    /// [`Projection::centre`] answers in real pixels, [`Projection::one_to_one`]
+    /// and [`Camera::projection`] put the same number in `origin` in virtual
+    /// ones, and [`Camera::to_view`] does it a third time in integers. They now
+    /// share [`half_extent`], and this is what says so from outside: a floor
+    /// written twice is a floor that drifts at exactly the odd extents
+    /// `docs/parity.md`'s window-parity entry is about, and every extent below is
+    /// odd on at least one axis for that reason.
+    ///
+    /// The 1:1 row is the crossing the types otherwise refuse — the one camera at
+    /// which a real pixel and a virtual one are the same pixel, which is why
+    /// `one_to_one` may build a view-space `origin` out of the same arithmetic
+    /// `centre` reads as real.
+    #[test]
+    fn one_extent_is_halved_once() {
+        for (width, height) in [(900, 700), (901, 700), (900, 701), (901, 701), (1, 1)] {
+            let centre = Projection::centre(width, height);
+            let origin = Projection::one_to_one(width, height).origin;
+            assert_eq!(
+                (centre.x, centre.y),
+                (origin.x, origin.y),
+                "at {width}x{height}: the real centre and the 1:1 virtual origin are one number",
+            );
+
+            // And the camera's own two, at 1:1, where `to_view` puts the eye
+            // exactly on `projection().origin` — the property the comment in
+            // `Camera::projection` argues and nothing asserted.
+            let camera = Camera::new(Point::new(1501, 1659, 0), width, height);
+            let eye = camera.to_view(camera.eye());
+            let origin = camera.projection().origin;
+            assert_eq!(
+                (eye.x as f32, eye.y as f32),
+                (origin.x, origin.y),
+                "at {width}x{height}: `to_view`'s integer halving and `projection`'s float one",
+            );
+        }
     }
 
     /// [`project`] now goes through [`project_exact`], and this is the gate on

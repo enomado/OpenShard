@@ -164,8 +164,8 @@ here rather than as a sweep is that P2 will have just named which confusions are
 *Done when:* each grid P2 shows can collide has a type that stops the collision
 at compile time, or a written reason it does not.
 
-**In progress.** One of the three is done, and doing it corrected what this
-phase thought the third one was.
+**In progress.** Two of the three are done, and the first of them corrected what
+this phase thought the third one was.
 
 #### The correction: there is no "impostor tile space"
 
@@ -217,21 +217,48 @@ a lit pixel or a black one. `scaled` and `divided` are separate methods for the
 same reason. The newtype is unwrapped, via `axes()`, at exactly one place — the
 uniform `blit.rs` writes.
 
+#### Done — [`camera::RealPoint`](../crates/client/render/src/camera.rs#L177)
+
+The real pixel, on the side where two grids met in one expression:
+`to_viewport_exact` *takes* a fractional view pixel and *returns* a real one,
+both were `Vec2`, so feeding it its own output compiled and applied the zoom
+twice. It now returns a `RealPoint`, and so do `to_viewport`, `tile_facet`,
+`tile_diamond`, `Projection::centre`, `Solid::faces` and `Solid::outline` — the
+whole run from the camera to the painter, since every one of those answers on
+the display's grid. `solids.rs`'s vertex writer takes one too, which is where
+the value stops: a `RealPoint` is unwrapped at the buffer, and nowhere before
+it. No `From` in either direction; a `Camera` is the only thing that crosses.
+
+The module doc's claim that *"the one place a real pixel enters is the cursor…
+that is why the third space has no type: nothing carries it"* is rewritten
+rather than deleted — a paragraph that outlived its fact is worth saying so.
+
+**What typing it turned up:** `Projection::one_to_one` built its virtual
+`origin` out of `Projection::centre`, which answers in real pixels. The types
+refused it, and the refusal is correct *and* the code was right — 1:1 is exactly
+the camera where the two grids are the same grid. The halving is now
+[`half_extent`](../crates/client/render/src/camera.rs#L560), deliberately
+spaceless: one rounding, three callers (`centre` in real pixels,
+`one_to_one` and `Camera::projection` in virtual ones), each naming its own
+space in what it hands back. `Camera::projection` had a fourth copy of that
+`/ 2` written out; it reads the shared one now. Gated by
+[`one_extent_is_halved_once`](../crates/client/render/src/camera.rs#L1260),
+which also pins the property `Camera::projection`'s comment argues at length and
+nothing asserted: at 1:1 `to_view` puts the eye exactly on `projection().origin`,
+at odd extents included.
+
 #### Still open
 
-- **The real pixel.** [`camera.rs`'s own module doc](../crates/client/render/src/camera.rs#L51)
-  claims it needs no type: *"the one place a real pixel enters is the cursor, and
-  it leaves in the same call — `Camera::pick` takes one and hands back a
-  `WorldPixel`. That is why the third space has no type: nothing carries it."*
-  **P1 found that claim to be stale.** `ViewportRect`, `Projection::scale`,
-  `Projection::centre`, `Camera::width`/`height`, `image_size` and
-  `dump::read_rect` all carry one. The expressible collision is sharper than the
-  count: `Camera` returns a bare `Vec2` from four methods, two of them in view
-  (virtual) pixels — `to_view_exact`, `projection().origin` — and two in real
-  ones — `to_viewport`, `to_viewport_exact` — and `to_viewport_exact` *takes* a
-  view-space `Vec2` and *returns* a real-space one, so feeding it its own output
-  compiles. That is the next thing to type, and the module doc's paragraph is
-  what has to be rewritten with it.
+- **The view pixel — the other half of that pair.** A fractional view pixel is
+  still a bare `Vec2`, and it is now the *only* untyped side of a crossing this
+  camera performs. Left so on purpose: unlike the real pixel it does not stop at
+  the camera. `to_view_exact`'s answer is what `statics::stand_on`,
+  `Placed::at`, `geometry::Rect`, every sprite quad and every atlas placement in
+  the crate are measured in, so the type that space actually wants is a `Rect`
+  with a space rather than a `ViewPoint` at the camera's edge — a sweep through
+  the sprite path, not a change to `camera.rs`. The collision P3 set out to stop
+  is stopped by one side of the pair carrying a type; this is the coverage that
+  is missing, and it is worth its own session.
 - **The art texel.** Left untyped on purpose for now. It is real (`Region`'s UV
   arithmetic, `Projection::scale`, every atlas rectangle), and P2's row about it
   found a genuine hazard — the land and statics atlases divide exactly while
@@ -258,6 +285,20 @@ that a mutation turns red.
   `Z_PER_TILE` is *defined* as `TILE_WIDTH / Z_STEP`, so they cannot disagree —
   but a reader meeting `lo.z`/`hi.z` in the impostor has no way to know which of
   the two `z` units they are in without following the definition.
+- 🚩 **The *whole* real pixel is still untyped, and it is the one the cursor
+  arrives on.** `RealPoint` is the fraction; `Camera::pick(x: i32, y: i32)`,
+  `Camera::width`/`height`, `image_size` and `ViewportRect` are all whole real
+  pixels as bare integers. Nothing collides today — `pick` consumes its pair in
+  the same call, as the old module doc said — but the pair is two `i32`s that a
+  caller with a `ViewPixel` in hand can pass by mistake, which is exactly the
+  shape `WorldPixel`/`ViewPixel` exist to refuse. Small and mechanical; it wants
+  the app crate's event handling looked at in the same pass.
+- 🚩 **`geometry::Vec2` means a *tile-space* position in `light.rs`.** `Light.at`
+  and `Spot::at` are `x`, `y` in tiles — `Vec2::new(100.5, 100.5)` is the middle
+  of tile 100,100, not a pixel of anything. That is a seventh meaning for the
+  type, sitting one file away from `TileVec`, which was introduced in this same
+  phase for tile-space *offsets*. The two are the same space's point and vector;
+  only one of them has a name.
 - 🚩 **Nothing states what a `ViewportRect` is measured in when a docked panel
   has moved it.** `dump::read_rect` honours an origin, the blit sets a viewport
   rect, and `Camera` knows an image size — three numbers about the same

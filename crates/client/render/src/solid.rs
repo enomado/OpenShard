@@ -14,8 +14,7 @@
 //! overlapping. That is what makes this a handful of arithmetic rather than a
 //! mesh pipeline: no index buffer, no back-face culling, nothing to cull against.
 
-use crate::camera::{Camera, WorldSpot, project_exact};
-use crate::geometry::Vec2;
+use crate::camera::{Camera, RealPoint, WorldSpot, project_exact};
 
 /// A box standing in the world: two opposite corners in the world's own units.
 ///
@@ -99,7 +98,7 @@ impl Solid {
     /// The three polygons tile the solid's hexagonal outline and never overlap,
     /// so a caller painting them translucent gets one weight of colour per pixel
     /// and may draw them in any order.
-    pub fn faces(&self, camera: &Camera) -> [(Side, [Vec2; 4]); 3] {
+    pub fn faces(&self, camera: &Camera) -> [(Side, [RealPoint; 4]); 3] {
         let at = |x: f64, y: f64, z: f64| {
             camera.to_viewport_exact(camera.to_view_exact(project_exact(WorldSpot { x, y, z })))
         };
@@ -154,7 +153,7 @@ impl Solid {
     ///
     /// Derived from [`Solid::faces`] rather than projected again, so a change to
     /// the corner order moves the strokes with the fills.
-    pub fn outline(&self, camera: &Camera) -> [[Vec2; 2]; 9] {
+    pub fn outline(&self, camera: &Camera) -> [[RealPoint; 2]; 9] {
         let faces = self.faces(camera);
         let (top, east, south) = (faces[0].1, faces[1].1, faces[2].1);
         // The hexagon, walked round: over the top's north and east corners, down

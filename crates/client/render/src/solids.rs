@@ -33,8 +33,7 @@
 //! than a compromise.
 
 use crate::blit::ViewportRect;
-use crate::camera::Camera;
-use crate::geometry::Vec2;
+use crate::camera::{Camera, RealPoint};
 use crate::solid::Solid;
 
 /// How much of the picture a face keeps under a solid.
@@ -325,7 +324,7 @@ impl SolidsRenderer {
         // The corners are in *viewport* pixels — `Camera::to_viewport` measures
         // from the picture's own corner — and the target is the whole surface,
         // so the world's rectangle inside it is added once, here.
-        let place = |at: Vec2| Vec2::new(at.x + frame.rect.x as f32, at.y + frame.rect.y as f32);
+        let place = |at: RealPoint| RealPoint::new(at.x + frame.rect.x as f32, at.y + frame.rect.y as f32);
         let mut bytes = Vec::with_capacity(solids.len() * 36 * VERTEX_BYTES);
         // The fills first and the whole run of them, then every outline: two
         // draws over one buffer, so the strokes land over every face rather than
@@ -393,7 +392,7 @@ impl SolidsRenderer {
             .filter(|(solid, _)| on_screen(solid, camera, frame.rect))
             .collect();
         let solids = &showing[..];
-        let place = |at: Vec2| Vec2::new(at.x + frame.rect.x as f32, at.y + frame.rect.y as f32);
+        let place = |at: RealPoint| RealPoint::new(at.x + frame.rect.x as f32, at.y + frame.rect.y as f32);
         let mut bytes = Vec::with_capacity(solids.len() * 36 * VERTEX_BYTES);
         for (solid, colours) in solids {
             for (face, (_side, corners)) in solid.faces(camera).into_iter().enumerate() {
@@ -513,7 +512,7 @@ fn on_screen(solid: &Solid, camera: &Camera, rect: ViewportRect) -> bool {
 }
 
 /// One vertex: where it is on the target, and what colour.
-fn write_vertex(bytes: &mut Vec<u8>, at: Vec2, tint: [f32; 4]) {
+fn write_vertex(bytes: &mut Vec<u8>, at: RealPoint, tint: [f32; 4]) {
     for value in [at.x, at.y, tint[0], tint[1], tint[2], tint[3]] {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
