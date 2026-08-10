@@ -1698,10 +1698,17 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // The diagnostics leave it alone too, and deliberately: a view that painted
     // the background would make the world's own silhouette hard to find, and
     // every one of these is read by comparing a shape against the picture it
-    // came from. The one exception is the kind view, whose whole subject is
-    // which pixels are nothing.
+    // came from.
+    //
+    // **Three exceptions, and all three are views whose subject is which pixels
+    // are which.** The kind view's whole content is that question. And the two
+    // normal layers make a claim a passed-through pixel breaks: each says it
+    // holds *its own category and nothing else*, so a speaker's letters left
+    // standing over the geometry layer are not a landmark, they are the layer
+    // being wrong about itself. This was reported from a client dump — the text
+    // over a head, drawn in a picture that had promised to be measured surfaces.
     if ids_kind(ids) == KIND_NOTHING {
-        if view == VIEW_KIND {
+        if view == VIEW_KIND || view == VIEW_NORMAL_GEOMETRY || view == VIEW_NORMAL_SPRITES {
             return vec4<f32>(0.0, 0.0, 0.0, color.a);
         }
         return color;

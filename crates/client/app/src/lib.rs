@@ -623,6 +623,9 @@ pub fn run<D: Dial + Send + 'static>(
         // And a torch in hand for when it is not daylight: see `App::lantern`.
         lantern: true,
         light_view: View::Lit,
+        // The whole world. A client that started with anything ticked off would
+        // be a client showing a picture nobody asked for.
+        drawing: frame::Draw::EVERYTHING,
         frame_dump: None,
         frame_dumps: 0,
         flame_clock: std::time::Duration::ZERO,
@@ -1402,6 +1405,16 @@ struct App {
     /// and the field is written onto the frame's `Lighting` on its way to the
     /// blit. `docs/lighting.md`, decision 8.
     light_view: View,
+    /// Which of the world's producers this client is drawing — the World tab's
+    /// own boxes, and [`frame::Draw::EVERYTHING`] until somebody unticks one.
+    ///
+    /// Beside `light_view` for the same reason it is: a property of the person
+    /// looking rather than of the world. The G-buffer holds one answer per pixel,
+    /// so a person who wants to look at a wall a body is standing in front of
+    /// cannot get it out of the picture — the body's pixels *are* the body's.
+    /// This is how they ask for a frame the body is not in, with everything still
+    /// standing in the grid and still casting its own shadow.
+    drawing: frame::Draw,
     /// Where the next frame writes itself out, when somebody has pressed F12.
     ///
     /// **`docs/parity.md`'s first backlog item.** The tools could always dump a
@@ -4213,6 +4226,9 @@ impl App {
         if let Some(ease) = request.ease {
             self.crowd.set_ease(ease);
         }
+        if let Some(draw) = request.draw {
+            self.drawing = draw;
+        }
         if let Some(show) = request.show_terrain {
             self.show_terrain = show;
         }
@@ -4346,6 +4362,7 @@ impl App {
             offline: self.link.is_none(),
             mobiles,
             items,
+            draw: self.drawing,
             show_terrain: self.show_terrain,
             // The tile is lit when nothing else took the highlight. Under
             // `Items` nothing ever does, which is the mode's whole content; the
@@ -5249,7 +5266,21 @@ impl App {
                 Some((anchor, text.to_string(), font, hue))
             })
             .collect();
-        let drawn: Vec<Mobile> = drawn.into_iter().map(|(_, mobile)| mobile).collect();
+        // **The crowd, or none of it** — `frame::Draw::mobiles`, which this
+        // function honours because `frame::assemble` does not collect mobiles at
+        // all. Emptied here and not at each of the three uses below, so that the
+        // picture, the ring and the outline cannot disagree about who is in the
+        // frame: a body left out of the world image and still ringed would be a
+        // halo round nothing.
+        //
+        // The speech above is deliberately *not* filtered by it. A label is not a
+        // thing standing in the street — `Kind::Nothing`, see `crate::place::Kind`
+        // — and turning the crowd off to look at a wall is not a request to go
+        // deaf.
+        let drawn: Vec<Mobile> = match self.drawing.mobiles {
+            true => drawn.into_iter().map(|(_, mobile)| mobile).collect(),
+            false => Vec::new(),
+        };
 
         // The vsync wait, and the reason it is timed on its own: under
         // `PresentMode::Fifo` this call blocks until the display has taken the
@@ -5417,6 +5448,10 @@ impl App {
             // takes the *sky* away, and a frame with no sky has no grid for
             // anything to be met against.
             impostor: Impostor::Met,
+            // Which producers this frame draws — the World tab's own boxes. The
+            // whole world unless somebody has ticked one off, and the lighting is
+            // collected from all of it whatever they tick: see `frame::Draw`.
+            draw: self.drawing,
             // The view is the looker's, not the world's: a diagnostic draws from
             // the values this frame was lit with, and in daylight those are the
             // ambient and the place attachment — which is exactly what a person

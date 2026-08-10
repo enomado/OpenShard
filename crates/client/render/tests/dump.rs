@@ -87,6 +87,12 @@ struct Drawn {
     ground: GroundRenderer,
     statics: SpriteRenderer,
     mesh: MeshFaceRenderer,
+    /// How many static pictures the assembly collected — what `draw` above let
+    /// through, kept because a count is the only thing about the *drawing* that
+    /// the four fields above have already turned into GPU buffers.
+    statics_collected: usize,
+    /// And how many quads of land, on the same terms.
+    land_collected: usize,
 }
 
 /// Assemble the frame at [`AT`] the way `App::draw` assembles one, draw its
@@ -95,7 +101,15 @@ struct Drawn {
 /// The map's own statics and no server items, the player's own cutaway, night
 /// with a flame in hand: the client's values, because a fixture that quietly
 /// chose easier ones is the coincidence `docs/parity.md` is about.
-fn draw_britain(device: &wgpu::Device, queue: &wgpu::Queue, dir: &std::path::Path) -> Drawn {
+///
+/// `draw` is the one input a caller here varies: everything, or the subset a
+/// person has ticked in the World tab. See [`frame::Draw`].
+fn draw_britain(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    dir: &std::path::Path,
+    draw: frame::Draw,
+) -> Drawn {
     let map = Map::load_facet(dir, 0).expect("Felucca");
     let art = Art::open(dir).expect("artLegacyMUL.uop");
     let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
@@ -138,6 +152,7 @@ fn draw_britain(device: &wgpu::Device, queue: &wgpu::Queue, dir: &std::path::Pat
         bake: None,
         highlight: None,
         impostor: Impostor::Met,
+        draw,
         // Set per plane by `dump::planes`; what it is here is what a caller that
         // never dumped would draw.
         view: View::Lit,
@@ -203,6 +218,8 @@ fn draw_britain(device: &wgpu::Device, queue: &wgpu::Queue, dir: &std::path::Pat
         ground: ground_pass,
         statics: statics_pass,
         mesh: mesh_pass,
+        statics_collected: static_quads.len(),
+        land_collected: ground_quads.len(),
     }
 }
 
@@ -290,7 +307,7 @@ fn a_frame_dumps_one_picture_per_view_at_the_size_asked_for() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir);
+    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -339,7 +356,7 @@ fn a_frame_dumps_one_picture_per_view_at_the_size_asked_for() {
         );
     }
 
-    // **The positive control.** Thirteen pictures of the right size are what a
+    // **The positive control.** Fifteen pictures of the right size are what a
     // dump that ignored the view would also produce, and it would answer
     // nothing: these three planes are three different questions about one frame
     // — what it looks like, which place each pixel belongs to, and which way
@@ -372,7 +389,7 @@ fn a_readback_off_the_corner_is_the_same_pixels_shifted() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir);
+    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -434,4 +451,285 @@ fn a_readback_off_the_corner_is_the_same_pixels_shifted() {
             row + corner.y,
         );
     }
+}
+
+/// **Each normal layer holds its own category and nothing else.**
+///
+/// The two layers were added to answer whether a fringe along a silhouette
+/// belongs to a sprite drawn over geometry, and that question only has an answer
+/// if a picture of one layer really is only that layer. The first report against
+/// them was a person looking at a client dump and finding a speaker's letters
+/// standing in the *geometry* picture — `KIND_NOTHING` pixels, which every other
+/// diagnostic passes through on purpose so the world's silhouette stays findable.
+/// A layer that promises to be one category cannot afford that landmark.
+///
+/// So this reads the kind plane beside the two, and holds them to the partition
+/// they claim: nothing is in neither, land is measured, a mobile is a picture,
+/// and a static is in exactly one of the two — never both, never neither.
+/// Black is the mark of "not in this layer" and it is unambiguous: a normal
+/// reaches it only at `(-1, -1, -1)`, which is not a unit vector.
+#[test]
+fn each_normal_layer_holds_its_own_category_and_nothing_else() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING);
+    let format = blit::WORLD_FORMAT;
+    let into = dump_target(&device, format);
+    let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
+    let world_view = drawn.world.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer_views = drawn.gbuffer.views();
+    let mut blit = Blit::new(&device, format);
+    let dummy_mobiles = blit::dummy_instances(&device);
+    let rect = ViewportRect {
+        x: 0,
+        y: 0,
+        width: VIEWPORT.0,
+        height: VIEWPORT.1,
+    };
+
+    // One blit per view into the same texture, read back raw — the picture is
+    // not what is being asked about here, the bytes are. The world image is an
+    // argument because the control below draws over a copy of it.
+    let mut plane_of = |view: View, world: &wgpu::TextureView| {
+        let mut lighting = drawn.lighting.clone();
+        lighting.view = view;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("layer partition"),
+        });
+        blit.render(
+            &device,
+            &queue,
+            &mut encoder,
+            blit::Frame {
+                target: &into_view,
+                world,
+                gbuffer: &gbuffer_views,
+                face_instances: drawn.statics.instances_buffer(),
+                mobile_instances: &dummy_mobiles,
+                mesh_instances: drawn.mesh.rows_buffer(),
+                ground_instances: drawn.ground.instances_buffer(),
+                zoom: openshard_client_render::camera::Zoom::ONE,
+                rect,
+            },
+            &lighting,
+        );
+        queue.submit([encoder.finish()]);
+        dump::read_rect(&device, &queue, &into, rect)
+    };
+    let kinds = plane_of(View::Kind, &world_view);
+
+    // **The positive control, and the defect that was actually reported.** A
+    // pixel nothing drew keeps whatever the world image holds there, which is how
+    // a speaker's letters ended up standing in the geometry layer — the text pass
+    // writes the image and leaves the id plane at `Kind::Nothing`. This frame has
+    // no text in it, so without a control the whole `NOTHING` branch below is
+    // vacuous: the background is black either way and the assertion passes over a
+    // shader that has stopped painting it. Measured, not assumed — the rule was
+    // removed from `blit.wesl` and every assertion here stayed green.
+    //
+    // So one background pixel is painted white in a *copy* of the world image,
+    // which is the text pass's own shape with none of its machinery: same image,
+    // same G-buffer, one pixel that the world did not draw and cannot be black.
+    let background = (0..(rect.width * rect.height) as usize)
+        .find(|pixel| kinds[pixel * 4..pixel * 4 + 3] == [0, 0, 0])
+        .expect("a frame of a street has background around its edges");
+    let (width, height) = (drawn.world.width(), drawn.world.height());
+    let painted = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("the world image with a message written over it"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("copy the world image"),
+    });
+    encoder.copy_texture_to_texture(
+        drawn.world.as_image_copy(),
+        painted.as_image_copy(),
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &painted,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: background as u32 % rect.width,
+                y: background as u32 / rect.width,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[255, 255, 255, 255],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    let painted_view = painted.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let geometry = plane_of(View::NormalGeometry, &painted_view);
+    let sprites = plane_of(View::NormalSprites, &painted_view);
+
+    // `debug_color`'s own four colours for `VIEW_KIND`, written as the floats the
+    // shader states rather than as bytes: what an `Rgba8Unorm` attachment does to
+    // a value that lands exactly halfway is the driver's business — `0.30 * 255`
+    // is `76.5` and this one answers `76` — so the comparison allows the last bit
+    // and nothing more. A drifted colour is several bits away, not one.
+    const NOTHING: [f32; 3] = [0.0, 0.0, 0.0];
+    const LAND: [f32; 3] = [0.20, 0.65, 0.30];
+    const STATIC: [f32; 3] = [0.25, 0.45, 1.00];
+    const MOBILE: [f32; 3] = [1.00, 0.40, 0.15];
+    let is = |pixel: &[u8], want: [f32; 3]| {
+        (0..3).all(|channel| (f32::from(pixel[channel]) - want[channel] * 255.0).abs() <= 1.0)
+    };
+    // Which of the four a kind pixel is, as an index into `counted` below. An
+    // unknown colour is a failure and not a fifth bucket: it would mean the kind
+    // view draws something this test does not know the rule for, and every
+    // assertion below would then be silently skipping those pixels.
+    let named = |pixel: &[u8]| match pixel {
+        _ if is(pixel, NOTHING) => Some(0),
+        _ if is(pixel, LAND) => Some(1),
+        _ if is(pixel, STATIC) => Some(2),
+        _ if is(pixel, MOBILE) => Some(3),
+        _ => None,
+    };
+
+    let mut counted = [0u32; 4];
+    for pixel in 0..(rect.width * rect.height) as usize {
+        let at = pixel * 4;
+        let in_geometry = !is(&geometry[at..at + 3], NOTHING);
+        let in_sprites = !is(&sprites[at..at + 3], NOTHING);
+        let (x, y) = (pixel as u32 % rect.width, pixel as u32 / rect.width);
+        match named(&kinds[at..at + 3]) {
+            Some(0) => {
+                counted[0] += 1;
+                assert!(
+                    !in_geometry && !in_sprites,
+                    "({x}, {y}) is nothing drawn and stands in a layer: \
+                     geometry {in_geometry}, sprites {in_sprites}",
+                );
+            }
+            Some(1) => {
+                counted[1] += 1;
+                assert!(
+                    in_geometry && !in_sprites,
+                    "({x}, {y}) is land, whose normal is its own patch's, and it is not \
+                     in the geometry layer alone: geometry {in_geometry}, sprites {in_sprites}",
+                );
+            }
+            Some(2) => {
+                counted[2] += 1;
+                assert!(
+                    in_geometry != in_sprites,
+                    "({x}, {y}) is a static and stands in {} layers, not one",
+                    u32::from(in_geometry) + u32::from(in_sprites),
+                );
+            }
+            Some(3) => {
+                counted[3] += 1;
+                assert!(
+                    !in_geometry && in_sprites,
+                    "({x}, {y}) is a mobile, which is a billboard and never a measured \
+                     surface: geometry {in_geometry}, sprites {in_sprites}",
+                );
+            }
+            _ => panic!(
+                "({x}, {y}) is a kind colour nothing draws: {:?}",
+                &kinds[at..at + 3],
+            ),
+        }
+    }
+
+    // **And the frame was worth asking.** A viewport of nothing but background
+    // passes every assertion above, and a street that drew no static would leave
+    // the one case with two possible answers untested.
+    assert!(
+        counted[0] > 0,
+        "no background pixel, so the painted control was never looked at",
+    );
+    assert!(counted[1] > 0, "no land pixel in a frame drawn on a street");
+    assert!(counted[2] > 0, "no static pixel at Britain's house corner");
+}
+
+/// **Ticking a producer off narrows the drawing and leaves the lighting whole.**
+///
+/// `frame::Draw` exists because a G-buffer holds one answer per pixel: the way to
+/// look at a wall something is standing in front of is to draw a frame that thing
+/// is not in. What makes that a *diagnostic* rather than a second world is the
+/// half this pins — the grid, the flames and the ambient are collected from
+/// everything whatever is ticked, so the wall in the narrowed frame is lit
+/// exactly as the wall in the full one.
+///
+/// The opposite implementation is the one a person would reach for first and it
+/// is a trap: reaching the same picture by handing `assemble` fewer statics takes
+/// them out of the occlusion grid too, and a room with its walls "not drawn"
+/// would quietly light up. Both halves are asserted, because the picture alone
+/// cannot tell the two apart — the statics are missing either way.
+#[test]
+fn ticking_a_producer_off_narrows_the_drawing_and_not_the_light() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let whole = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING);
+    let land_only = draw_britain(
+        &device,
+        &queue,
+        &dir,
+        frame::Draw {
+            statics: false,
+            ..frame::Draw::EVERYTHING
+        },
+    );
+
+    assert!(
+        whole.statics_collected > 0,
+        "no static at Britain's house corner, so nothing was narrowed",
+    );
+    assert_eq!(
+        land_only.statics_collected, 0,
+        "the statics were ticked off and the frame collected them anyway",
+    );
+    assert_eq!(
+        land_only.land_collected, whole.land_collected,
+        "ticking the statics off moved the land",
+    );
+
+    // **And the light is the whole world's.** Every box of the grid and every
+    // flame, in a frame that drew none of the statics they belong to.
+    assert_eq!(
+        land_only.lighting.occlusion.boxes().count(),
+        whole.lighting.occlusion.boxes().count(),
+        "the statics left the occlusion grid with the drawing",
+    );
+    assert_eq!(
+        land_only.lighting.lights.len(),
+        whole.lighting.lights.len(),
+        "the statics took their flames with them",
+    );
+    assert!(
+        whole.lighting.occlusion.boxes().count() > 0,
+        "an empty grid agrees with an empty grid, so the two counts above said nothing",
+    );
 }

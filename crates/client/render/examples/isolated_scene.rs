@@ -850,6 +850,13 @@ fn main() {
             true => openshard_client_render::frame::Impostor::Met,
             false => openshard_client_render::frame::Impostor::Billboards,
         },
+        // **This tool filters earlier and by name**, so it asks for everything
+        // here: `OPENSHARD_SCENE_STATICS`/`_SHARD`/`_GROUND` decide what is in
+        // the scene at all, which for a tool that *builds* a place is the
+        // stronger knob — it takes a thing out of the grid and out of the light
+        // too. `frame::Draw` is the client's version of the same question, where
+        // the world is given and only the drawing can be narrowed.
+        draw: openshard_client_render::frame::Draw::EVERYTHING,
         view: wanted_view,
     };
     // **What this frame was asked for**, printed and written beside the picture.

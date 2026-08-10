@@ -229,6 +229,7 @@ fn assemble_and_draw(
         bake: None,
         highlight: None,
         impostor: Impostor::Met,
+        draw: frame::Draw::EVERYTHING,
         view: View::Lit,
     };
 

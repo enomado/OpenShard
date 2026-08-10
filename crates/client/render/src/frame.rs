@@ -71,11 +71,61 @@ pub enum Impostor {
     Billboards,
 }
 
+/// Which of the world's producers this frame draws at all.
+///
+/// **A subset of the world, not a subset of the picture.** The G-buffer holds one
+/// answer per pixel, so a diagnostic that wants to look at the walls cannot get
+/// them out of a frame where a body is standing in front of one: whatever the
+/// blit paints, that pixel belongs to the body. The way to see the wall is to
+/// draw a frame the body is not in — and then the wall is *there*, with its own
+/// normal and its own solid, rather than a hole shaped like a person.
+///
+/// **It filters the drawing and never the lighting.** Everything still stands in
+/// the occlusion grid, still casts its shadow and still burns if it is a flame:
+/// a wall lit as it really is, with the barrel in front of it not drawn, is the
+/// picture a person is after. A knob that took the barrel out of the world too
+/// would answer about a different world, and the difference would be invisible.
+///
+/// The tools have had this as three environment variables since before there was
+/// a client that could ask for it (`OPENSHARD_SCENE_STATICS`, `_SHARD`,
+/// `_GROUND`); this is that capability where the client can reach it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Draw {
+    /// The land: every tile's own diamond.
+    pub land: bool,
+    /// The statics built into the map — walls, floors, roofs, and the furniture
+    /// an artist put in a building.
+    pub statics: bool,
+    /// What the server put on the ground: dropped items and a pack's
+    /// decorations, which reach the same pass through [`crate::items::collect`].
+    pub items: bool,
+    /// Mobiles — **honoured by the caller and not here.** This module does not
+    /// collect them (see the module's own note), so nothing in [`assemble`] reads
+    /// this field; the client's own mobile pass does.
+    ///
+    /// It is a field all the same, because [`Inputs::summary`] is what two dumps
+    /// are diffed by: a frame drawn with the crowd and a frame drawn without it
+    /// would otherwise carry identical summaries, which is the exact false
+    /// negative `docs/parity.md` exists about.
+    pub mobiles: bool,
+}
+
+impl Draw {
+    /// The whole world, which is what the client draws when nobody has ticked
+    /// anything off — and what every caller that is not a diagnostic wants.
+    pub const EVERYTHING: Self = Self {
+        land: true,
+        statics: true,
+        items: true,
+        mobiles: true,
+    };
+}
+
 /// Everything one frame is assembled out of.
 ///
 /// **Every field a caller has ever differed on is a field here**, and none of
 /// them has a default: a default is how the divergences this module exists to
-/// remove got in, one call site at a time. A struct literal names all eighteen,
+/// remove got in, one call site at a time. A struct literal names all nineteen,
 /// which is the point — a caller that wants the client's frame writes the
 /// client's values, and a caller that wants something else can be read off
 /// against it.
@@ -154,6 +204,9 @@ pub struct Inputs<'a> {
     /// Whether the statics are met against this frame's boxes — see
     /// [`Impostor`].
     pub impostor: Impostor,
+    /// Which producers this frame draws at all — see [`Draw`]. The lighting is
+    /// collected from the whole world whatever this says.
+    pub draw: Draw,
     /// Which of the pass's own values to draw instead of the lit frame. A
     /// property of the person looking, which is why it is set on the way out
     /// rather than walked with the tiles.
@@ -242,6 +295,29 @@ impl Inputs<'_> {
         );
         line("highlight", format!("{:?}", self.highlight));
         line("impostor", format!("{:?}", self.impostor));
+        // **Named producers and not `{:?}` of the struct**, because this is the
+        // line a person scans for "why is there no floor in this dump": four
+        // booleans in field order read as four booleans, and `land statics` reads
+        // as what was drawn. `everything` is the ordinary frame, said in a word
+        // so that a filtered dump stands out beside an unfiltered one.
+        let drawn: Vec<&str> = [
+            (self.draw.land, "land"),
+            (self.draw.statics, "statics"),
+            (self.draw.items, "items"),
+            (self.draw.mobiles, "mobiles"),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, name)| name)
+        .collect();
+        line(
+            "draw",
+            match (self.draw == Draw::EVERYTHING, drawn.is_empty()) {
+                (true, _) => "everything".to_owned(),
+                (false, true) => "nothing".to_owned(),
+                (false, false) => drawn.join(" "),
+            },
+        );
         line("view", self.view.name().to_owned());
         out
     }
@@ -299,6 +375,7 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
         bake,
         highlight,
         impostor,
+        draw,
         view,
     } = inputs;
 
@@ -333,7 +410,14 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     }
     lighting.view = view;
 
-    let ground = crate::ground::collect(map, camera, land, texmaps, cutaway);
+    // **The lighting above was collected from the whole world, and only the
+    // drawing below is filtered** — see [`Draw`]. A frame with the crowd ticked
+    // off is the same street, lit the same way, with nobody standing in front of
+    // the wall a person is trying to look at.
+    let ground = match draw.land {
+        true => crate::ground::collect(map, camera, land, texmaps, cutaway),
+        false => Vec::new(),
+    };
 
     // What the sprites are met against. `Occlusion::EMPTY` is not a second way
     // to assemble a frame — it is what [`Impostor::Billboards`] *is*, named at
@@ -347,13 +431,23 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
         Impostor::Billboards => &no_grid,
     };
 
-    let mut geometry = crate::statics::collect(map, camera, tiledata, animations, statics, cutaway, met);
+    // **An empty list and not an empty *map*.** Both halves below are switched
+    // off by collecting nothing, which leaves everything else about the frame —
+    // the grid, the flames, the ambient the tiles were given — exactly as it was.
+    // Reaching the same picture by handing this function fewer items would be a
+    // different world, lit differently, and the summary would not say so.
+    let mut geometry = match draw.statics {
+        true => crate::statics::collect(map, camera, tiledata, animations, statics, cutaway, met),
+        false => StaticGeometry::default(),
+    };
     // Through the same pass as the map's statics, because they are the same
     // atlas: one draw call binds one texture, and what covers what is the depth
     // these carry rather than the order they are appended in.
-    geometry.absorb(crate::items::collect(
-        items, camera, tiledata, animations, statics, cutaway, highlight, met,
-    ));
+    if draw.items {
+        geometry.absorb(crate::items::collect(
+            items, camera, tiledata, animations, statics, cutaway, highlight, met,
+        ));
+    }
 
     Frame {
         lighting,

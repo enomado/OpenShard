@@ -3335,3 +3335,31 @@ outlive the track and belong in this list, since this is the live one:
   *whether anything was measured*, and nothing in the G-buffer answers the second
   question outright. A producer that ever gives an unmeasured static a facing
   breaks the derived test, and there is no assertion anywhere that would notice.
+- **A diagnostic layer that keeps a landmark is not a layer.** The two normal
+  layers claim to hold one category each, and `KIND_NOTHING` broke the claim:
+  every diagnostic passes a pixel nothing drew straight through, on purpose, so
+  the world's silhouette stays findable — which put a speaker's letters in the
+  *geometry* picture, reported from a client dump. The three views whose subject
+  is which pixels are which now paint it black instead. Worth keeping as a shape:
+  a view that answers "what is here" can afford the passthrough, a view that
+  answers "is anything here that should not be" cannot.
+- **A gate over a real frame can be vacuous in the direction that matters.** The
+  test built for the above was green with the rule deleted from the shader: this
+  fixture draws no text, so its only `KIND_NOTHING` pixels are the background,
+  and the background is black either way. The fix was a positive control — one
+  background pixel painted white in a *copy* of the world image, which is the text
+  pass's own shape (write the image, leave the id plane alone) with none of its
+  machinery. Measured both ways: red with the control and the rule removed, green
+  with the rule. Any future test about "a pixel nothing drew" needs the same
+  planted pixel, because no scene in this repository's fixtures has speech in it.
+- **`frame::Draw` filters the drawing and never the lighting**, and the two are
+  one line apart in `assemble` with nothing but a comment keeping them apart. The
+  cheaper implementation — hand the function fewer statics — reaches the same
+  picture and silently empties the occlusion grid with it, so a room whose walls
+  are "not drawn" would light up. `ticking_a_producer_off_narrows_the_drawing_and_not_the_light`
+  asserts both halves because the picture cannot tell them apart. What is still
+  unmodelled: `Draw::mobiles` is honoured by the *caller* (the client's own mobile
+  pass), since `assemble` does not collect mobiles at all — a second caller that
+  collects them and ignores the field would differ from the client with nothing
+  to notice, and `Inputs::summary` printing the field is the only thing standing
+  in that gap.

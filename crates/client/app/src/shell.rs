@@ -179,6 +179,9 @@ pub struct Hud {
     /// is what makes its numbers holdable still long enough to copy — the
     /// live hover moves out from under the cursor the moment it does.
     pub selected: Option<PickedTile>,
+    /// Which producers the client is drawing, for the boxes that say so — see
+    /// [`openshard_client_render::frame::Draw`].
+    pub draw: openshard_client_render::frame::Draw,
     /// Whether the terrain overlay is switched on, for the checkbox that says so.
     pub show_terrain: bool,
     /// What that overlay draws, gathered only while it is on: see
@@ -336,6 +339,14 @@ pub struct Request {
     /// walkability lookup per visible tile and a fresh plan per frame, and that
     /// is a bill the client should only pay while somebody is looking at it.
     pub show_terrain: Option<bool>,
+    /// Which of the world's producers to draw from now on, on the frame a box
+    /// was ticked — see [`openshard_client_render::frame::Draw`].
+    ///
+    /// The whole set and not one field, because the boxes are read against each
+    /// other: "walls only" is three of them off, and a request that carried one
+    /// change at a time would put a frame between the ticks with a picture nobody
+    /// asked for.
+    pub draw: Option<openshard_client_render::frame::Draw>,
     /// Switch the occluder wireframe on or off, on the frame the box was ticked.
     ///
     /// Sent on the change and not every frame, like the terrain overlay, and for
@@ -783,7 +794,7 @@ fn layout(root: &mut egui::Ui, hud: &Hud, desk: &mut Desk) -> Request {
                 Tab::Camera => camera_panel(ui, hud, &mut request),
                 Tab::Rig => rig_panel(ui, hud, &mut request),
                 Tab::Frames => frames_panel(ui, hud),
-                Tab::World => world_panel(ui, hud),
+                Tab::World => world_panel(ui, hud, &mut request),
                 Tab::Tile => tile_tab(ui, hud, &mut request),
                 Tab::Light => light_panel(ui, &mut desk.light),
             });
@@ -959,7 +970,47 @@ fn camera_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
 }
 
 /// What the view has decoded, with the serials the renderer drops.
-fn world_panel(ui: &mut egui::Ui, hud: &Hud) {
+fn world_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
+    // **What the frame draws**, which is the only way to look at a surface
+    // something else is standing in front of: the G-buffer holds one answer per
+    // pixel, so a wall behind a body is not dimmed or half-shown in a diagnostic,
+    // it is simply not in the picture — the body's pixels are the body's. Ticking
+    // the crowd off draws the same street with nobody in it.
+    //
+    // Everything still stands in the occlusion grid and still casts its own
+    // shadow whatever is ticked here — see `frame::Draw`. That is the difference
+    // between this and a world with the thing taken out of it, and it is why the
+    // label says *drawn*.
+    ui.label("Drawn");
+    let mut draw = hud.draw;
+    let mut changed = false;
+    for (on, label) in [
+        (&mut draw.land, "land"),
+        (
+            &mut draw.statics,
+            "the map's statics — walls, floors, roofs, furniture",
+        ),
+        (
+            &mut draw.items,
+            "the server's items — what was dropped and what a pack placed",
+        ),
+        (&mut draw.mobiles, "mobiles"),
+    ] {
+        changed |= ui.checkbox(on, label).changed();
+    }
+    if changed {
+        request.draw = Some(draw);
+    }
+    ui.label(
+        egui::RichText::new(
+            "Unticked is not removed: the light, the shadows and the grid are the \
+             whole world's either way.",
+        )
+        .small()
+        .weak(),
+    );
+
+    ui.separator();
     ui.label(format!(
         "{} mobiles, {} ground items",
         hud.mobiles.len(),
