@@ -423,7 +423,7 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     // nothing. After the sort, and `hold` is what says this flame is never the
     // one dropped when a tavern's candles fill the array.
     if let Some((at, offset, facing)) = carried.filter(|_| sky.is_some()) {
-        lighting.hold(tuning.applied(light::carried(at, offset, facing, flame_time)));
+        lighting.hold(tuning.applied_headlight(light::carried(at, offset, facing, flame_time)));
     }
     lighting.view = view;
 

@@ -2306,10 +2306,18 @@ impl std::fmt::Display for Stopper {
 /// The *why* is the point: a pool that is missing has one of three causes — the
 /// flame is too far, the ray was stopped, or the flame was never collected — and
 /// a picture cannot tell the first two apart. This does.
+/// Which of [`Lighting::lights`] a [`Reach`] is about.
+///
+/// The sun's own [`Reach`] carries one past the end of `lights` on purpose —
+/// see the constructor at the bottom of [`sample_with`] — so this is never
+/// mistaken for any other index into a light-shaped list in this module.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LightIdx(pub usize);
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Reach {
     /// Which of [`Lighting::lights`] this is, by index.
-    pub light: usize,
+    pub light: LightIdx,
     /// How far the flame is, in tiles, with `z` divided into tiles — the same
     /// three-dimensional distance the falloff uses.
     pub distance: f32,
@@ -2427,7 +2435,7 @@ impl std::fmt::Display for Sample {
             self.multiplier[2],
         )?;
         for reach in &self.reaches {
-            write!(f, "  light {}: {:.2} tiles", reach.light, reach.distance)?;
+            write!(f, "  light {}: {:.2} tiles", reach.light.0, reach.distance)?;
             // In the order the questions are asked: is it near enough, is
             // anything in between, and how much of the flame this surface was
             // turned towards in the end — see [`Reach::delivered`], which is the
@@ -2520,7 +2528,7 @@ fn sample_with(
         // `docs/lighting_rebuild.md` phase 5b.
         if distance - lighting.flame_radius >= light.radius.max(0.001) {
             reaches.push(Reach {
-                light: index,
+                light: LightIdx(index),
                 distance,
                 within: false,
                 through: 0.0,
@@ -2550,7 +2558,7 @@ fn sample_with(
             *total += channel;
         }
         reaches.push(Reach {
-            light: index,
+            light: LightIdx(index),
             distance,
             within: true,
             through: arrival.visible,
@@ -2571,7 +2579,7 @@ fn sample_with(
             // The sun is not one of `lights`, and the index says so by being
             // past the end of it rather than by being a zero somebody might read
             // as "the first flame".
-            light: lighting.lights.len(),
+            light: LightIdx(lighting.lights.len()),
             distance: f32::INFINITY,
             within: true,
             through,

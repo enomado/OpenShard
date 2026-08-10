@@ -1021,18 +1021,33 @@ fn light_panel(ui: &mut egui::Ui, light: &mut crate::desk::Light) {
             .small()
             .weak(),
     );
+
+    ui.separator();
+    ui.label("Lanterns");
     ui.horizontal(|ui| {
         ui.label("colour");
-        ui.color_edit_button_rgb(&mut light.flame_color);
+        ui.color_edit_button_rgb(&mut light.lantern_color);
     });
     ui.label(
         egui::RichText::new(
-            "A tint over every flame in the world — white leaves a torch and a \
-             campfire their own colour. Global until light.mul is read, so one \
-             lantern cannot yet be told from another.",
+            "A tint over every lantern the map itself burns — white leaves a \
+             torch and a campfire their own colour. Global until light.mul is \
+             read, so one lantern cannot yet be told from another.",
         )
         .small()
         .weak(),
+    );
+
+    ui.separator();
+    ui.label("Headlight");
+    ui.horizontal(|ui| {
+        ui.label("colour");
+        ui.color_edit_button_rgb(&mut light.headlight_color);
+    });
+    ui.label(
+        egui::RichText::new("A tint over the player's own light — the lanterns above are untouched by it.")
+            .small()
+            .weak(),
     );
 
     ui.separator();
@@ -1055,6 +1070,15 @@ fn light_panel(ui: &mut egui::Ui, light: &mut crate::desk::Light) {
         .small()
         .weak(),
     );
+    ui.horizontal(|ui| {
+        ui.label("colour");
+        ui.color_edit_button_rgb(&mut light.ambient_color);
+    });
+    ui.label(
+        egui::RichText::new("A tint over both the sky and the floor above, on top of their own brightness.")
+            .small()
+            .weak(),
+    );
 
     ui.separator();
     ui.label("Sun (F8)");
@@ -1073,6 +1097,10 @@ fn light_panel(ui: &mut egui::Ui, light: &mut crate::desk::Light) {
             .text("intensity")
             .fixed_decimals(3),
     );
+    ui.horizontal(|ui| {
+        ui.label("colour");
+        ui.color_edit_button_rgb(&mut light.sun_color);
+    });
 
     ui.separator();
     // The way back. Every number above is remembered across launches, which is

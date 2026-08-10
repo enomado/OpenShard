@@ -79,6 +79,19 @@ pub struct HarvestResource {
     pub hue: Hue,
 }
 
+/// Which of a definition's `resources` a vein points at.
+///
+/// Its own index space, never a [`VeinIdx`] — a definition's `resources` and
+/// `veins` are different lists of different lengths, and a bare `usize` would
+/// let one be handed to the other's lookup without a compile error.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ResourceIdx(pub usize);
+
+/// Which of a definition's `veins` a bank holds. See [`ResourceIdx`] — the
+/// index space this is not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct VeinIdx(pub usize);
+
 /// One vein of a bank — which resource it holds and how often it disappoints.
 #[derive(Clone, Copy, Debug)]
 pub struct HarvestVein {
@@ -89,10 +102,10 @@ pub struct HarvestVein {
     /// being pure valorite.
     pub fallback_chance: u32,
     /// Index into the definition's `resources`.
-    pub primary: usize,
+    pub primary: ResourceIdx,
     /// What it yields instead, where it has one. Iron, for every ore vein but
     /// iron's own.
-    pub fallback: Option<usize>,
+    pub fallback: Option<ResourceIdx>,
 }
 
 /// The clilocs one definition speaks with. ServUO keeps these as loose `object`
@@ -305,7 +318,7 @@ pub struct Bank {
     /// The tick it repays on, once something has been taken.
     pub next_respawn: u64,
     /// Which vein this block holds, as an index into the definition's `veins`.
-    pub vein: usize,
+    pub vein: VeinIdx,
 }
 
 /// Every facet's harvest banks.
@@ -388,9 +401,9 @@ impl Bank {
 /// a vein rolled on the world's `Rng` would move at every restart, and a valorite
 /// vein that wanders is a different game. This is a small integer hash over the
 /// same three inputs, which has the property ServUO's arithmetic was there for.
-fn default_vein(def: &HarvestDef, bank_x: u16, bank_y: u16, facet: u8) -> usize {
+fn default_vein(def: &HarvestDef, bank_x: u16, bank_y: u16, facet: u8) -> VeinIdx {
     if def.veins.len() == 1 {
-        return 0;
+        return VeinIdx(0);
     }
     let mut h = u64::from(bank_x) * 17 + u64::from(bank_y) * 11 + u64::from(facet) * 3;
     // A cheap avalanche (splitmix64's finaliser): the raw sum alone is smooth
@@ -403,14 +416,14 @@ fn default_vein(def: &HarvestDef, bank_x: u16, bank_y: u16, facet: u8) -> usize 
 }
 
 /// Pick a vein from a draw in hundredths of a percent — ServUO's `GetVeinFrom`.
-fn roll_vein(def: &HarvestDef, mut draw: u32) -> usize {
+fn roll_vein(def: &HarvestDef, mut draw: u32) -> VeinIdx {
     for (index, vein) in def.veins.iter().enumerate() {
         if draw <= vein.chance {
-            return index;
+            return VeinIdx(index);
         }
         draw -= vein.chance;
     }
-    def.veins.len() - 1
+    VeinIdx(def.veins.len() - 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -641,15 +654,15 @@ const fn ore(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestReso
 /// and every richer vein disappointing into iron one swing in two hundred.
 #[rustfmt::skip]
 static ORE_VEINS: &[HarvestVein] = &[
-    vein(4960,  0, 0, None),    // iron
-    vein(1120, 50, 1, Some(0)), // dull copper
-    vein( 980, 50, 2, Some(0)), // shadow iron
-    vein( 840, 50, 3, Some(0)), // copper
-    vein( 700, 50, 4, Some(0)), // bronze
-    vein( 560, 50, 5, Some(0)), // gold
-    vein( 420, 50, 6, Some(0)), // agapite
-    vein( 280, 50, 7, Some(0)), // verite
-    vein( 140, 50, 8, Some(0)), // valorite
+    vein(4960,  0, ResourceIdx(0), None),                    // iron
+    vein(1120, 50, ResourceIdx(1), Some(ResourceIdx(0))), // dull copper
+    vein( 980, 50, ResourceIdx(2), Some(ResourceIdx(0))), // shadow iron
+    vein( 840, 50, ResourceIdx(3), Some(ResourceIdx(0))), // copper
+    vein( 700, 50, ResourceIdx(4), Some(ResourceIdx(0))), // bronze
+    vein( 560, 50, ResourceIdx(5), Some(ResourceIdx(0))), // gold
+    vein( 420, 50, ResourceIdx(6), Some(ResourceIdx(0))), // agapite
+    vein( 280, 50, ResourceIdx(7), Some(ResourceIdx(0))), // verite
+    vein( 140, 50, ResourceIdx(8), Some(ResourceIdx(0))), // valorite
 ];
 
 /// The seven woods — ServUO's ML table, with `CraftResources.GetHue`'s colours.
@@ -689,13 +702,13 @@ const fn wood(req: i32, min: i32, max: i32, cliloc: u32, hue: u16) -> HarvestRes
 /// ServUO's seven wood veins.
 #[rustfmt::skip]
 static WOOD_VEINS: &[HarvestVein] = &[
-    vein(4900,  0, 0, None),    // regular
-    vein(3000, 50, 1, Some(0)), // oak
-    vein(1000, 50, 2, Some(0)), // ash
-    vein( 500, 50, 3, Some(0)), // yew
-    vein( 300, 50, 4, Some(0)), // heartwood
-    vein( 200, 50, 5, Some(0)), // bloodwood
-    vein( 100, 50, 6, Some(0)), // frostwood
+    vein(4900,  0, ResourceIdx(0), None),                    // regular
+    vein(3000, 50, ResourceIdx(1), Some(ResourceIdx(0))), // oak
+    vein(1000, 50, ResourceIdx(2), Some(ResourceIdx(0))), // ash
+    vein( 500, 50, ResourceIdx(3), Some(ResourceIdx(0))), // yew
+    vein( 300, 50, ResourceIdx(4), Some(ResourceIdx(0))), // heartwood
+    vein( 200, 50, ResourceIdx(5), Some(ResourceIdx(0))), // bloodwood
+    vein( 100, 50, ResourceIdx(6), Some(ResourceIdx(0))), // frostwood
 ];
 
 /// Sand, one grade, and it wants a real miner: ServUO bands it `70.0..100.0`.
@@ -722,12 +735,17 @@ static FISHES: &[HarvestResource] = &[HarvestResource {
 static ONE_VEIN: &[HarvestVein] = &[HarvestVein {
     chance: 10_000,
     fallback_chance: 0,
-    primary: 0,
+    primary: ResourceIdx(0),
     fallback: None,
 }];
 
 /// A vein row.
-const fn vein(chance: u32, fallback_chance: u32, primary: usize, fallback: Option<usize>) -> HarvestVein {
+const fn vein(
+    chance: u32,
+    fallback_chance: u32,
+    primary: ResourceIdx,
+    fallback: Option<ResourceIdx>,
+) -> HarvestVein {
     HarvestVein {
         chance,
         fallback_chance,
@@ -811,9 +829,9 @@ mod tests {
     fn a_veins_indices_point_at_real_resources() {
         for def in DEFINITIONS_ML.iter().chain(DEFINITIONS_PRE_ML) {
             for vein in def.veins {
-                assert!(vein.primary < def.resources.len(), "{:?}", def.kind);
+                assert!(vein.primary.0 < def.resources.len(), "{:?}", def.kind);
                 if let Some(fallback) = vein.fallback {
-                    assert!(fallback < def.resources.len(), "{:?}", def.kind);
+                    assert!(fallback.0 < def.resources.len(), "{:?}", def.kind);
                 }
             }
         }
@@ -849,7 +867,7 @@ mod tests {
         let mut seen = [0usize; 9];
         for x in 0..64u16 {
             for y in 0..64u16 {
-                seen[default_vein(def, x, y, 0)] += 1;
+                seen[default_vein(def, x, y, 0).0] += 1;
             }
         }
         assert!(

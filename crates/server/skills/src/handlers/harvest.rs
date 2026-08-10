@@ -23,7 +23,8 @@ use openshard_protocol::wire::{ClilocId, CursorId, Graphic, Hue};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::components::{Client, Harvesting, Position, Tool};
 use openshard_state::harvest::{
-    Bank, HarvestAction, HarvestDef, HarvestKind, HarvestResource, TileSource, definition_for, tool_data,
+    Bank, HarvestAction, HarvestDef, HarvestKind, HarvestResource, TileSource, VeinIdx, definition_for,
+    tool_data,
 };
 use openshard_state::{Action, Skill, TargetPurpose, WorldState, in_range};
 
@@ -416,7 +417,7 @@ fn with_bank<T>(
 }
 
 /// Which vein the bank under a spot holds.
-fn bank_vein(state: &mut WorldState, harvester: EntityId, def: &'static HarvestDef, at: Point) -> usize {
+fn bank_vein(state: &mut WorldState, harvester: EntityId, def: &'static HarvestDef, at: Point) -> VeinIdx {
     with_bank(state, harvester, def, at, |bank, _| bank.vein)
 }
 
@@ -452,11 +453,11 @@ fn choose_resource(
     state: &mut WorldState,
     harvester: EntityId,
     def: &'static HarvestDef,
-    vein_index: usize,
+    vein_index: VeinIdx,
 ) -> &'static HarvestResource {
-    let vein = &def.veins[vein_index];
-    let primary = &def.resources[vein.primary];
-    let Some(fallback) = vein.fallback.map(|index| &def.resources[index]) else {
+    let vein = &def.veins[vein_index.0];
+    let primary = &def.resources[vein.primary.0];
+    let Some(fallback) = vein.fallback.map(|index| &def.resources[index.0]) else {
         return primary;
     };
     if vein.fallback_chance > state.rng.below(10_000) {

@@ -81,7 +81,7 @@ fn main() {
                 .map(|reach| {
                     format!(
                         "[{}] visible {:.2} delivers {:.2}{}",
-                        reach.light,
+                        reach.light.0,
                         reach.through,
                         reach.delivered,
                         match reach.stopped_by {

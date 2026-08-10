@@ -1,5 +1,13 @@
 use openshard_protocol::serial::Serial;
 
+/// Which objective a quest definition's `objectives` names — the same index a
+/// `QuestState::progress` slot is at. Crosses the event bus into scripting
+/// (Community Pack content reads it), so a bare `usize` here would be a plain
+/// integer at the one boundary where a pack author has nothing else to check
+/// it against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ObjectiveIndex(pub usize);
+
 /// A player accepted a quest.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct QuestAccepted {
@@ -35,7 +43,7 @@ pub struct QuestObjectiveUpdated {
     /// Which quest, by the pack's key.
     pub key: String,
     /// Which objective, by its index in the definition.
-    pub objective: usize,
+    pub objective: ObjectiveIndex,
     /// How far it has got now.
     pub progress: u16,
     /// How far it needs to get.

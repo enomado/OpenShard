@@ -27,7 +27,7 @@ use openshard_state::components::{Escortable, QuestLog};
 use openshard_state::quest::ObjectiveKind;
 use openshard_state::{QuestSection, TICKS_PER_SECOND, WorldState};
 
-use crate::events::{QuestFailed, QuestObjectiveUpdated};
+use crate::events::{ObjectiveIndex, QuestFailed, QuestObjectiveUpdated};
 use crate::gump::{self, sound};
 
 /// How often the obtain pass looks, in ticks. Twice a second, the status bar's
@@ -83,7 +83,7 @@ pub fn refresh_obtain(state: &mut WorldState, contents: &Contents) {
             continue;
         };
         let mut changed = false;
-        let mut updates: Vec<(String, usize, u16, u16)> = Vec::new();
+        let mut updates: Vec<(String, ObjectiveIndex, u16, u16)> = Vec::new();
         let mut log = log;
         for quest in &mut log.active {
             let Some(def) = state.quests.get(&quest.key) else {
@@ -105,7 +105,7 @@ pub fn refresh_obtain(state: &mut WorldState, contents: &Contents) {
                 *slot = held;
                 changed = true;
                 if rising {
-                    updates.push((quest.key.clone(), index, held, objective.count));
+                    updates.push((quest.key.clone(), ObjectiveIndex(index), held, objective.count));
                 }
             }
         }
@@ -272,7 +272,7 @@ pub(crate) fn advance(state: &mut WorldState, player: EntityId, matches: impl Fn
     let Some(serial) = state.registry.serial_of(player) else {
         return;
     };
-    let mut updates: Vec<(String, usize, u16, u16)> = Vec::new();
+    let mut updates: Vec<(String, ObjectiveIndex, u16, u16)> = Vec::new();
     for quest in &mut log.active {
         if quest.failed {
             continue;
@@ -291,7 +291,7 @@ pub(crate) fn advance(state: &mut WorldState, player: EntityId, matches: impl Fn
                 continue;
             }
             *slot += 1;
-            updates.push((quest.key.clone(), index, *slot, objective.count));
+            updates.push((quest.key.clone(), ObjectiveIndex(index), *slot, objective.count));
         }
     }
     if updates.is_empty() {
@@ -309,7 +309,7 @@ fn announce(
     player: EntityId,
     serial: Serial,
     key: &str,
-    objective: usize,
+    objective: ObjectiveIndex,
     progress: u16,
     goal: u16,
 ) {
@@ -416,7 +416,7 @@ pub fn deliver_to(state: &mut WorldState, player: EntityId, destination: EntityI
     let Some(serial) = state.registry.serial_of(player) else {
         return false;
     };
-    let mut updates: Vec<(String, usize, u16, u16)> = Vec::new();
+    let mut updates: Vec<(String, ObjectiveIndex, u16, u16)> = Vec::new();
     for quest in &mut log.active {
         if quest.failed {
             continue;
@@ -445,7 +445,12 @@ pub fn deliver_to(state: &mut WorldState, player: EntityId, destination: EntityI
                 continue;
             }
             *slot = objective.count;
-            updates.push((quest.key.clone(), index, objective.count, objective.count));
+            updates.push((
+                quest.key.clone(),
+                ObjectiveIndex(index),
+                objective.count,
+                objective.count,
+            ));
         }
     }
     if updates.is_empty() {

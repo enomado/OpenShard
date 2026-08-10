@@ -2743,6 +2743,127 @@ riding along with this one.
 - `crates/client/artscan` had no candidates — its public API is already fully
   typed. Re-checked in this pass: still true.
 
+### Backlog from the server/common/render newtype hunt
+
+A pass over `crates/server/*` and `crates/common/{entities,movement,config,metrics,uofiles}`
+plus `crates/client/render` (the crate the client sweep above excluded on
+purpose) for the same class of gap: an id or index that already has a name
+somewhere and is bare where it crosses a boundary. `entities`, `config` and
+`metrics` came back clean — `entities`'s newtypes already follow house style
+throughout, `config`'s bare integers are gameplay quantities the protocol
+sweep's own ALLOWLIST precedent already excludes, and `metrics` is an
+unimplemented stub.
+
+The single largest finding is out of scope for one pass and is recorded
+rather than attempted: **`Facet` — `protocol::world::Facet(pub u8)` — is typed
+correctly in exactly the places `world::tick::command` already uses it, and a
+bare `facet: u8` everywhere else**, which by grep is upward of eighty
+signatures across `ai`, `npc`, `items`, `world`, `magic`, `scripting`,
+`skills`, `state` and their tests. This is the same shape and the same scale
+as the `protocol` crate's own N1–N10 sweep, and wants the same treatment: a
+dedicated multi-session pass with its own machine-checked coverage, not a
+slice riding along with something else. `persistence::record`'s bare
+`facet: u8` fields are not part of that count — they are the disk boundary,
+where `.0` is expected to surface once the fields above it carry the type.
+
+Fixed in this pass, each contained to one or two files and verified with a
+full `cargo check`/`test`/`clippy`/`fmt` of the crates touched:
+
+- ~~**`state::harvest`'s two index spaces shared one `usize`.**~~ Fixed:
+  `HarvestVein::primary`/`fallback` (index into a definition's `resources`)
+  and `Bank::vein` (index into its `veins`) are `ResourceIdx`/`VeinIdx` now —
+  two different lists of different lengths, previously indistinguishable at
+  a glance and only bounds-checked by two tests that happened to be right.
+  `skills::handlers::harvest::{bank_vein, choose_resource}` carry the type
+  through instead of re-losing it one file over.
+- ~~**`items::trade`'s active-trade index was a bare `usize` in eleven
+  functions.**~~ Fixed: `TradeIndex`, local to `trade.rs` — every external
+  caller already goes through `cancel_for`/`cancel_all_trades`/
+  `validate_trades`, none of which took a raw index, so the type stops at
+  the crate's own door with nothing to convert at a boundary.
+- ~~**`quests::events::QuestObjectiveUpdated::objective` was a bare `usize`
+  crossing the event bus into scripting.**~~ Fixed: `ObjectiveIndex`, next to
+  the event in `events.rs`; `progress.rs`'s three near-identical
+  advance/refresh/deliver blocks all build and pass it the same way now.
+- ~~**`client_render::light::Reach::light` was a bare `usize`** — the same
+  open shape `pathtrace::Image::visibility`'s `light: usize` still is,
+  below.~~ Fixed: `LightIdx`. The sun's own `Reach` deliberately carries one
+  past the end of `Lighting::lights`, which is exactly the kind of fact a
+  bare integer does not say and a named type's doc comment does.
+
+Still open, ranked by how strong the case is:
+
+- **`Skill` (`state::skill`, with `.id()`/`from_id()`) is unwrapped at its own
+  component.** `state::components::Skills::{get, set, lock, set_lock, cap,
+  set_cap}` all take `skill: u8`, and the byte radiates from there through
+  `skills::{lib.rs, check.rs}` and `combat::{weapons.rs, lib.rs}` — the widest
+  single leak found, because the wrap already exists and is discarded at the
+  first call in nearly every reader and writer of a mobile's skill sheet.
+- **`Direction` (`protocol::direction`, with `from_bits`/`to_bits`) is
+  unwrapped through `ai`'s pathing core.** `ai::{step_toward, think_one,
+  kite_step}` return `Option<u8>`; `state::components::ChasePath::steps:
+  Vec<u8>` stores a route the same way. Every caller re-derives the enum on
+  the far side.
+- **`Notoriety` (`protocol::mobile`) is unwrapped in `npc::spawn::SpawnSpec`.**
+  `notoriety: u8`, restored with `Notoriety::from_bits` some 150 lines later
+  in the same file — the wrap belongs on the field.
+- **`DamageType` (`state::components`) is unwrapped in the component that
+  names it.** `RangedAttack::kind: u8` — the field's own doc comment says
+  "the damage type's wire value (see `DamageType::from_u8`)", i.e. names the
+  gap it leaves open. Feeds `npc::spawn::SpawnSpec::ranged_kind: u8` and
+  `persistence::record`'s mirror of the same byte.
+- **No `SpellId` exists anywhere in the codebase.** `magic::spells::info`
+  indexes its table with a bare `spell: u16`, and the same untyped `u16`
+  names a spell on `SpellCast`, `Cast`, `Command::RequestCast` and
+  `ScriptEvent::SpellCast`. `protocol::casting::RawSpellId::interpret`'s own
+  doc comment already says the number is left bare because `magic` has
+  nowhere typed to hand it — this is that missing destination.
+- **The animation triple `(body: u16, group: u8, direction: u8)` is
+  duplicated four ways with no shared name.** `uofiles::anim::{has_frames,
+  frames}`, `client_render::atlas::{frame_count, FrameKey}` (a named struct,
+  but with public bare fields), `client_render::mobiles::needed_animations`
+  (an unnamed tuple) and `client_render::mobiles::Mobile{body, group}` (whose
+  very next field, `facing: Direction`, is typed) all carry the same three
+  values apart. Root cause: `uofiles::equipconv::resolve(body, item_anim_id)`
+  and `client_render::paperdoll::gump_of(body, anim_id, ...)`, one call
+  removed from each other, both bare.
+- **`uofiles::map::StaticItem{tile: u16, hue: u16}` unwraps `Graphic`/`Hue`
+  at the one struct every static on the map is read into.** Both types are
+  already used consistently by neighbours in the same workspace
+  (`Hues::get(hue: Hue)`, `Gumps::gump(graphic: Graphic)`); the leak radiates
+  into `movement::Terrain::{land_tile, statics_at}`, bare in a trait where
+  `item_blocks`/`item_layer` two methods over already take `Graphic`.
+  `uofiles::map::LandCell::tile: u16` is the same shape in the *other* tile-id
+  space (land, not static) — distinct sibling types would close both leaks
+  and stop the two id spaces being interchangeable at a call site.
+- **`state::harvest`'s sibling gap, `items::trade`'s sibling gap and
+  `quests`'s sibling gap all had one thing in common that a fourth case does
+  not yet: `client_render`'s `Option<usize>` "index into `items`"**, repeated
+  identically across `frame.rs`, `items.rs` (twice) and `mobiles.rs` (twice),
+  and three separate `BTreeMap<usize, Hit/DollButton>` keyed "index into
+  `pictures`" in `gump.rs`, `paperdoll.rs` and `skills.rs` — `ItemIndex` and
+  `PictureIndex` respectively, one name each instead of five and three.
+- **`(u16, u16)` is `render`'s ad-hoc `Tile` in five places** —
+  `debug::around`, `scene::{room_wall_tiles, DOORWAY}`, `select::{Selection,
+  Selection::on}` — because `render` does not depend on `movement` today and
+  so never reaches for the `Tile` type its sibling client crates already
+  settled on (see the client sweep above, `app::clutter`).
+- **`occlusion::bvh::Leaf::first: u32`** indexes `Bvh::order`, right beside a
+  `NodeIdx` whose own doc comment already argues "a place in the primitives
+  ... is a different list" from a node index — the argument was made and the
+  field it was made about is still bare.
+- **`pathtrace::Image::visibility(x: u32, y: u32, light: usize)`** — unchanged
+  from the client sweep above; `LightIdx` fixed the identical shape in
+  `render`'s own `light.rs` this pass, so the type to reuse now exists one
+  crate over.
+- Weaker, mentioned for completeness: `impostor::Volume::of(..., solid: u32)`
+  unwraps `SolidId` one call earlier than the GPU-byte boundary needs; three
+  `opaque_at(&self, ..., x: u16, y: u16)` picture-local pixel coordinates sit
+  bare next to a crate that otherwise names every other pixel space
+  (`WorldPixel`, `ViewPixel`, `RealPixel`, `GumpPixel`); `uofiles::animdata::
+  sequence(graphic: u16)` is the one parser in its crate that does not take
+  `Graphic` where every sibling parser does.
+
 ### Backlog: a gump dialog's own captions still can't draw Cyrillic
 
 `--ttf-font`/`OPENSHARD_TTF_FONT` (`fonts.mul` has no glyph past `0xFF`, so no

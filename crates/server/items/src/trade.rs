@@ -72,17 +72,29 @@ pub fn is_player(state: &WorldState, entity: EntityId) -> bool {
     state.registry.has::<Body>(entity) && state.registry.has::<Client>(entity)
 }
 
+/// Which of `WorldState::trades` a trade is.
+///
+/// Nothing but that one `Vec` — an entity count, a sector bucket or any other
+/// `usize` in scope at a call site here would otherwise typecheck in its place.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TradeIndex(pub usize);
+
 /// The trade `player` is in, by index.
-fn trade_index(state: &WorldState, player: EntityId) -> Option<usize> {
-    state.trades.iter().position(|trade| trade.involves(player))
+fn trade_index(state: &WorldState, player: EntityId) -> Option<TradeIndex> {
+    state
+        .trades
+        .iter()
+        .position(|trade| trade.involves(player))
+        .map(TradeIndex)
 }
 
 /// The trade drawn on `container`, by index.
-fn trade_of_container(state: &WorldState, container: Serial) -> Option<usize> {
+fn trade_of_container(state: &WorldState, container: Serial) -> Option<TradeIndex> {
     state
         .trades
         .iter()
         .position(|trade| trade.from.container_serial == container || trade.to.container_serial == container)
+        .map(TradeIndex)
 }
 
 /// A held item was dropped on another player: open a trade, or add to the one
@@ -117,8 +129,8 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
     // A trade already open with *this* partner takes the item rather than
     // opening a second window; both references do this.
     if let Some(index) = trade_index(state, player) {
-        if state.trades[index].involves(target) {
-            let container = state.trades[index]
+        if state.trades[index.0].involves(target) {
+            let container = state.trades[index.0]
                 .sides_for(player)
                 .map(|(mine, _)| mine.container_serial);
             match container {
@@ -192,7 +204,7 @@ pub fn offer(state: &mut WorldState, connection: ConnectionId, held: HeldItem, t
         watchers.insert(partner_connection);
     }
 
-    let index = state.trades.len() - 1;
+    let index = TradeIndex(state.trades.len() - 1);
     draw_window(state, index);
     // And in goes what was dropped, through the ordinary door — at the origin
     // of the escrow's gump, for the reason above: the drop was onto a person,
@@ -222,8 +234,8 @@ fn new_escrow(state: &mut WorldState, player: EntityId) -> Option<(EntityId, Ser
 /// The repeated `Update` sends are in the reference; a client that is told its
 /// checkboxes only once draws them unset and then never redraws until something
 /// else moves, so they are kept.
-fn draw_window(state: &mut WorldState, index: usize) {
-    let Some(trade) = state.trades.get(index) else {
+fn draw_window(state: &mut WorldState, index: TradeIndex) {
+    let Some(trade) = state.trades.get(index.0) else {
         return;
     };
     let sides = [
@@ -258,8 +270,8 @@ fn draw_window(state: &mut WorldState, index: usize) {
 ///
 /// Each is addressed on *its own* container with its own flag first, which is
 /// what makes the same two booleans read correctly on two screens.
-fn send_checks(state: &mut WorldState, index: usize) {
-    let Some(trade) = state.trades.get(index) else {
+fn send_checks(state: &mut WorldState, index: TradeIndex) {
+    let Some(trade) = state.trades.get(index.0) else {
         return;
     };
     let (from, to) = (trade.from.clone(), trade.to.clone());
@@ -287,7 +299,7 @@ pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container:
     let Some(index) = trade_of_container(state, container) else {
         return;
     };
-    let trade = &mut state.trades[index];
+    let trade = &mut state.trades[index.0];
     if trade.from.player == player {
         trade.from.accepted = accepted;
     } else if trade.to.player == player {
@@ -300,13 +312,13 @@ pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container:
     let both = trade.from.accepted || trade.to.accepted;
     if both {
         let witnessed = escrowed(state, index);
-        state.trades[index].witnessed = witnessed;
+        state.trades[index.0].witnessed = witnessed;
     }
     send_checks(state, index);
 
     let settled = state
         .trades
-        .get(index)
+        .get(index.0)
         .is_some_and(|trade| trade.from.accepted && trade.to.accepted);
     if settled {
         complete(state, index);
@@ -315,8 +327,8 @@ pub fn set_accepted(state: &mut WorldState, connection: ConnectionId, container:
 
 /// Every item in either escrow, sorted, as the fingerprint a change is noticed
 /// against.
-fn escrowed(state: &WorldState, index: usize) -> Vec<Serial> {
-    let Some(trade) = state.trades.get(index) else {
+fn escrowed(state: &WorldState, index: TradeIndex) -> Vec<Serial> {
+    let Some(trade) = state.trades.get(index.0) else {
         return Vec::new();
     };
     let mut items: Vec<Serial> = state
@@ -332,8 +344,8 @@ fn escrowed(state: &WorldState, index: usize) -> Vec<Serial> {
 }
 
 /// Both boxes are ticked: swap the two offerings and close.
-fn complete(state: &mut WorldState, index: usize) {
-    let Some(trade) = state.trades.get(index).cloned() else {
+fn complete(state: &mut WorldState, index: TradeIndex) {
+    let Some(trade) = state.trades.get(index.0).cloned() else {
         return;
     };
     // Collected first, never iterated live: moving an item mutates the very
@@ -398,8 +410,8 @@ fn contents_of_entity(state: &WorldState, container: Serial) -> Vec<EntityId> {
 /// Every exit runs through here — the client's cancel, a step out of range, a
 /// death, a logout, a shutdown — so there is one place that can lose an item and
 /// it is tested.
-pub fn cancel(state: &mut WorldState, index: usize) {
-    let Some(trade) = state.trades.get(index).cloned() else {
+pub fn cancel(state: &mut WorldState, index: TradeIndex) {
+    let Some(trade) = state.trades.get(index.0).cloned() else {
         return;
     };
     let from_items = contents_of_entity(state, trade.from.container_serial);
@@ -414,11 +426,11 @@ pub fn cancel(state: &mut WorldState, index: usize) {
 ///
 /// Called only once the contents have been dealt with: it despawns, and an item
 /// still inside would go with it.
-fn close(state: &mut WorldState, index: usize) {
-    if index >= state.trades.len() {
+fn close(state: &mut WorldState, index: TradeIndex) {
+    if index.0 >= state.trades.len() {
         return;
     }
-    let trade = state.trades.remove(index);
+    let trade = state.trades.remove(index.0);
     // Each client is told about *its own* half — ServUO's `Close`, which sends
     // one packet per side. The client shuts the whole window on it.
     for side in [&trade.from, &trade.to] {
@@ -448,7 +460,7 @@ pub fn cancel_by_container(state: &mut WorldState, connection: ConnectionId, con
     let Some(index) = trade_of_container(state, container) else {
         return;
     };
-    if !state.trades[index].involves(player) {
+    if !state.trades[index.0].involves(player) {
         return;
     }
     cancel(state, index);
@@ -468,7 +480,7 @@ pub fn cancel_for(state: &mut WorldState, player: EntityId) {
 /// two packs, which *are* saved, so a clean stop cannot cost anybody anything.
 pub fn cancel_all_trades(state: &mut WorldState) {
     while !state.trades.is_empty() {
-        cancel(state, 0);
+        cancel(state, TradeIndex(0));
     }
 }
 
@@ -478,20 +490,20 @@ pub fn cancel_all_trades(state: &mut WorldState) {
 /// ServUO's `NetState.ValidateAllTrades` plus `SecureTradeContainer.ClearChecks`,
 /// found rather than announced. See the module note.
 pub fn validate_trades(state: &mut WorldState) {
-    let mut index = 0;
-    while index < state.trades.len() {
+    let mut index = TradeIndex(0);
+    while index.0 < state.trades.len() {
         if !still_valid(state, index) {
             cancel(state, index);
             continue;
         }
         clear_checks_if_changed(state, index);
-        index += 1;
+        index = TradeIndex(index.0 + 1);
     }
 }
 
 /// Whether both parties are still online, alive, on one facet and within reach.
-fn still_valid(state: &WorldState, index: usize) -> bool {
-    let Some(trade) = state.trades.get(index) else {
+fn still_valid(state: &WorldState, index: TradeIndex) -> bool {
+    let Some(trade) = state.trades.get(index.0) else {
         return false;
     };
     for side in [&trade.from, &trade.to] {
@@ -516,18 +528,18 @@ fn still_valid(state: &WorldState, index: usize) -> bool {
 /// The fingerprint is only taken while somebody has agreed to something: an
 /// unticked pair has nothing to clear, and [`escrowed`] walks the whole
 /// `Contained` column, which is not a thing to do every tick for every trade.
-fn clear_checks_if_changed(state: &mut WorldState, index: usize) {
-    let Some(trade) = state.trades.get(index) else {
+fn clear_checks_if_changed(state: &mut WorldState, index: TradeIndex) {
+    let Some(trade) = state.trades.get(index.0) else {
         return;
     };
     if !trade.from.accepted && !trade.to.accepted {
         return;
     }
     let now = escrowed(state, index);
-    if now == state.trades[index].witnessed {
+    if now == state.trades[index.0].witnessed {
         return;
     }
-    let trade = &mut state.trades[index];
+    let trade = &mut state.trades[index.0];
     trade.witnessed = now;
     trade.from.accepted = false;
     trade.to.accepted = false;

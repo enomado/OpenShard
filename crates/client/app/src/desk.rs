@@ -123,12 +123,23 @@ pub struct Light {
     pub sun_azimuth: f32,
     /// how steeply it climbs, in tiles up per tile along,
     pub sun_rise: f32,
-    /// and how much it adds where it reaches.
+    /// how much it adds where it reaches,
     pub sun_intensity: f32,
-    /// A tint every flame in the world is multiplied through — see
-    /// [`light::Tuning::flame_color`]. `[1.0, 1.0, 1.0]` leaves torches and
+    /// and its colour — [`light::SunTuning::color`], a literal rather than a
+    /// tint, for the reason stated there.
+    pub sun_color: [f32; 3],
+    /// A tint the player's own light is multiplied through — see
+    /// [`light::Tuning::headlight_color`]. `[1.0, 1.0, 1.0]` leaves it whatever
+    /// colour it was built as.
+    pub headlight_color: [f32; 3],
+    /// A tint every lantern the map itself burns is multiplied through — see
+    /// [`light::Tuning::lantern_color`]. `[1.0, 1.0, 1.0]` leaves torches and
     /// campfires their own colour.
-    pub flame_color: [f32; 3],
+    pub lantern_color: [f32; 3],
+    /// A tint the sky and the floor under a roof are each multiplied through
+    /// — see [`light::Tuning::ambient_color`]. `[1.0, 1.0, 1.0]` leaves the
+    /// ambient the colour it was authored as.
+    pub ambient_color: [f32; 3],
 }
 
 impl Light {
@@ -157,15 +168,12 @@ impl Light {
             sun: light::SunTuning {
                 azimuth_degrees: self.sun_azimuth,
                 rise_per_tile: self.sun_rise,
-                // Not a knob. A sun's colour is three numbers and a person asking
-                // for a warmer afternoon is asking for a time of day, which is
-                // the shard's to say and is not on the wire yet — see
-                // `light::midday`. Kept at whatever that is rather than at a
-                // literal, so the day this becomes a slider it is one field.
-                color: light::SunTuning::MIDDAY.color,
+                color: self.sun_color,
                 intensity: self.sun_intensity,
             },
-            flame_color: self.flame_color,
+            headlight_color: self.headlight_color,
+            lantern_color: self.lantern_color,
+            ambient_color: self.ambient_color,
         }
         .clamped()
     }
@@ -182,7 +190,10 @@ impl Light {
             sun_azimuth: tuning.sun.azimuth_degrees,
             sun_rise: tuning.sun.rise_per_tile,
             sun_intensity: tuning.sun.intensity,
-            flame_color: tuning.flame_color,
+            sun_color: tuning.sun.color,
+            headlight_color: tuning.headlight_color,
+            lantern_color: tuning.lantern_color,
+            ambient_color: tuning.ambient_color,
         }
     }
 }
@@ -524,7 +535,10 @@ mod tests {
                 sun_azimuth: 90.0,
                 sun_rise: 0.5,
                 sun_intensity: 0.4,
-                flame_color: [1.0, 0.5, 0.2],
+                sun_color: [1.0, 0.9, 0.7],
+                headlight_color: [1.0, 0.8, 0.6],
+                lantern_color: [1.0, 0.5, 0.2],
+                ambient_color: [0.8, 0.9, 1.0],
             },
             chat: Chat {
                 scale: ChatScale::new(3),
