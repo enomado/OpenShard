@@ -2509,6 +2509,37 @@ Things noticed while writing this, not blocking any phase:
   report, and it is the same sentence as the reporter's first picture: a short
   red stroke on the join between a green face and the blue above it.
   <br>
+  ✅ **And the cause, measured end to end by `examples/seam_probe.rs`** — which
+  prints, for the real graphics on the real tiles, the box each static stands and
+  whether it has height. At `(1501, 1659)`:
+  <br>
+  - `0x04AC` "wooden boards", `FLOOR|NO_SHOOT|PLATFORM`, box `z 27.0..27.0` — a
+    **lid**. `meets`'s `hi.z > lo.z` guard means a fragment of it *cannot* come
+    back `+x` or `+y`. So the dashed line is not the floor's own pixels, and the
+    whole "which slab wins the tie at the shared plane" reading above is wrong.
+  - `0x0B01` `BLOCK|PLATFORM` at `z 27.0..30.0`, `0x0AFE` at `z 30.0..35.0`,
+    `0x0E29` at `z 30.0..31.0` — the furniture standing *on* that floor. Every
+    one of them has height, and every one is **`opacity 0`, `CLEAR`**: the same
+    "point of nothing" the cornice entry above is about. `Builder::add` pushes
+    nothing, `id_of` has no name — which is exactly the 32 of 66 specks that name
+    no primitive at all — and `push_volumes` hands the impostor a `boxes_of` box
+    regardless.
+  <br>
+  So the speck is a pixel of a *piece of furniture's* sprite overhanging its own
+  box: a **miss**, clamped to the nearest point on the box, and along a
+  silhouette the nearest face is a side one. It lands on the floor because that
+  is what the sprite overhangs onto, and it repeats on a lattice of one tile
+  because the boxes are per tile and the furniture tiles across the room.
+  <br>
+  **Which makes this the fringe, not a new defect** — the same open item the
+  cornice case ends on, with the same three ways out already written there (keep
+  it; give a miss no facing, which `blit.wesl` shades as lit from every side; or
+  give a miss the face the sprite's own volume presents rather than the nearest
+  one). What this session adds is that the fringe is not a rare corner: it is a
+  dashed line across every floor a person stands on indoors, and the pieces
+  making it are `CLEAR` ones the grid holds nothing for, so no identity can
+  excuse them either.
+  <br>
   **What is left of the difference, ranked, and none of it measured yet:** the
   frame's rectangle and the live `Cutaway` (both feed the partition above); the
   **anchor** — the tool translates the place onto `SYN_ANCHOR (100,100)` while
