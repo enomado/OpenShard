@@ -355,7 +355,36 @@ pub fn boxes_of(
     // one and the drawn height on the other — `Sphere` halves it,
     // `movement::scene::stair` stands a walker half way up it — so the
     // measurement is what this believes.
-    if let (true, Some(prism)) = (tile.flags.is_climbable(), &shape.prism) {
+    // **And a picture the client calls a PLATFORM is a solid too, on the same
+    // terms.** A table, a counter, a display case: `Shape::of` fits a prism to
+    // every picture the wall detector called a corner, and a tabletop drawn as
+    // a diamond *is* one — `0x0B06` reads `Corner { East, South }` with a prism
+    // scoring `0.902` beside it. Without this, that measurement is thrown away
+    // and the table is stood up as two `PANEL_THICKNESS` slabs on two edges of
+    // its tile, which is a wall's geometry under furniture: half the picture is
+    // then a point of no surface, and a person reported exactly that at
+    // Britain's `(1496, 1663)`.
+    //
+    // **The bit is the client's own and the score could not have done it.**
+    // `boxes_of`'s argument for asking `CLIMBABLE` first is that a fit alone
+    // cannot decide, and the numbers say so outright: over Britain's 121×121 a
+    // stone wall (`0x00C7`) scores `0.936` against its best prism and a display
+    // case (`0x0B06`) `0.902`, so no threshold separates them. `PLATFORM` does,
+    // and it is a statement rather than a guess — the walls and chimneys in that
+    // set carry `WALL|NO_SHOOT`, the tables and counters carry `BLOCK|PLATFORM`.
+    //
+    // `BACKGROUND` is excluded because a floor board is a diamond as well:
+    // `0x04AD` "wooden boards" reads as a corner with a flat prism, and a lid is
+    // what it is. That gate is asked here rather than left to the one below,
+    // since this branch returns before reaching it.
+    //
+    // Measured before it landed (`examples/discard_census.rs`): **21 placements
+    // of three graphics** over that window, **none of them occluders** — every
+    // one is `CLEAR`, so this moves surfaces and not a single shadow ray.
+    if let (true, Some(prism)) = (
+        tile.flags.is_climbable() || (tile.flags.is_platform() && !tile.flags.is_background()),
+        &shape.prism,
+    ) {
         // **One box a tread, in climb order, and it is a body.**
         //
         // This was two — a lid at the tread's own height and a panel for the rise
@@ -2906,6 +2935,71 @@ mod tests {
                 && (unread.max.y - 101.0).abs() < 1e-9,
             "a picture with no measured footprint should keep the whole tile, it is {:?}",
             unread,
+        );
+    }
+
+    /// A picture the client calls a `PLATFORM` and the art fits a prism to
+    /// stands as that prism's **body**; one it calls a `WALL` still stands as
+    /// panels, with the same shape offered to both.
+    ///
+    /// Both halves, and the second is what makes this a statement about
+    /// furniture rather than about every corner in the world: over Britain a
+    /// stone wall scores `0.936` against its best prism and a display case
+    /// `0.902`, so a threshold on the fit cannot tell them apart and a test that
+    /// only offered the table would pass with the gate deleted.
+    #[test]
+    fn a_platform_the_art_fits_a_box_to_stands_as_the_box_and_a_wall_does_not() {
+        use crate::facing::{Face, Facing, Prism};
+
+        // The reading a tabletop actually gets: a corner of two walls, with a
+        // prism measured off the same picture. See `Shape::of`.
+        let shape = Shape {
+            facing: Some(Facing::Corner {
+                right: Face::East,
+                left: Face::South,
+            }),
+            prism: Some(Prism::box_of(4)),
+            ..Shape::UNREAD
+        };
+
+        let mut table = Vec::new();
+        boxes_of(
+            100,
+            100,
+            0,
+            &tile(TileFlags::PLATFORM, 6),
+            &shape,
+            |_, edges, space| table.push((edges, space)),
+        );
+        assert_eq!(table.len(), 1, "one body, not two panels: {table:?}");
+        let (edges, body) = table[0];
+        assert_eq!(edges, Edges::ANY, "a body is solid on every side");
+        assert!(
+            (body.min.x - 100.0).abs() < 1e-9
+                && (body.max.x - 101.0).abs() < 1e-9
+                && (body.min.y - 100.0).abs() < 1e-9
+                && (body.max.y - 101.0).abs() < 1e-9
+                && (body.max.z - 4.0).abs() < 1e-9,
+            "the box is the prism's own, art-measured height and all: {body:?}",
+        );
+
+        // The same shape on a wall, which is the mutation the first half cannot
+        // catch. `NO_SHOOT` rides with `WALL` on every one of them and neither
+        // bit is a platform.
+        let mut wall = Vec::new();
+        boxes_of(
+            100,
+            100,
+            0,
+            &tile(TileFlags::WALL | TileFlags::NO_SHOOT, 6),
+            &shape,
+            |_, edges, space| wall.push((edges, space)),
+        );
+        assert_eq!(wall.len(), 2, "a corner is still two panels: {wall:?}");
+        assert!(
+            wall.iter()
+                .all(|(_, space)| space.max.x - space.min.x < 1.0 || space.max.y - space.min.y < 1.0),
+            "and each of them is still a slab of PANEL_THICKNESS: {wall:?}",
         );
     }
 

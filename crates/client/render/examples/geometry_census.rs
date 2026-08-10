@@ -113,11 +113,17 @@ fn main() {
                 let tile = tiledata.static_tile(graphic.0);
                 let shape = occlusion::shape_of(Some(&atlas), graphic);
 
-                let claim = if tile.flags.is_climbable() {
-                    match shape.prism.is_some() {
-                        true => Claim::Prism,
-                        false => Claim::WholeTileClimbable,
-                    }
+                // `boxes_of`'s own order, and it has to stay its order: a
+                // climbable or a **platform** whose art fits a prism is a body
+                // (a stair, a table), a climbable that fits none is a whole
+                // tile, a `BACKGROUND` piece is a lid, and everything else is
+                // read off its silhouette.
+                let body =
+                    tile.flags.is_climbable() || (tile.flags.is_platform() && !tile.flags.is_background());
+                let claim = if body && shape.prism.is_some() {
+                    Claim::Prism
+                } else if tile.flags.is_climbable() {
+                    Claim::WholeTileClimbable
                 } else if tile.flags.is_background() {
                     Claim::Lid
                 } else {

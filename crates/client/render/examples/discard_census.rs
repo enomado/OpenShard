@@ -195,6 +195,21 @@ struct Tally {
     /// because a share of discarded pixels that does not say *whose* pixels is
     /// a number nobody can act on.
     claim: &'static str,
+    /// **A picture that is given panels and has a fitted prism sitting unused.**
+    ///
+    /// `Shape::of` measures a prism for every picture the wall detector called a
+    /// corner, and `boxes_of` reads one only where the client's own `CLIMBABLE`
+    /// bit is set — so a table whose art fits a box is stood up as two
+    /// `PANEL_THICKNESS` slabs on two edges of its tile, and the measurement
+    /// that would have made it a box is thrown away. That is what a person
+    /// reported at Britain's `(1496, 1663)`: `0x0B06`, a display case, read as
+    /// `Corner { East, South }` with `prism E 4` beside it.
+    ///
+    /// Counted rather than argued because believing the prism outside
+    /// `CLIMBABLE` is a decision with a blast radius — a house's own corner is
+    /// a corner of two walls and fits a prism too — and the first thing that
+    /// decision needs is how many pictures and placements it would move.
+    prism_unused: bool,
 }
 
 /// The one claim this plan is about, named once so that the class is defined by
@@ -211,11 +226,15 @@ const NARROWED: &str = "a measured footprint, narrower than the whole tile";
 /// `examples/geometry_census.rs` counts them by. Kept in the same order and the
 /// same names deliberately: the two tools answer about one class between them.
 fn claim_of(tile: &StaticTile, shape: &Shape) -> &'static str {
+    // `boxes_of`'s own order: a climbable or a PLATFORM whose art fits a prism
+    // is a body, a climbable that fits none is a whole tile, a BACKGROUND piece
+    // is a lid, and the rest are read off the silhouette.
+    let body = tile.flags.is_climbable() || (tile.flags.is_platform() && !tile.flags.is_background());
+    if body && shape.prism.is_some() {
+        return "a fitted prism, one body a tread";
+    }
     if tile.flags.is_climbable() {
-        return match shape.prism.is_some() {
-            true => "a fitted prism, one body a tread",
-            false => "whole tile, a climbable that would not fit",
-        };
+        return "whole tile, a climbable that would not fit";
     }
     if tile.flags.is_background() {
         return "a lid — measured, but a plane with no thickness";
@@ -305,6 +324,10 @@ fn main() {
                 tally.claim = claim_of(tile, &shape);
                 tally.art = (image.width(), image.height());
                 tally.roof = tile.flags.is_roof();
+                tally.prism_unused = tile.flags.is_platform()
+                    && !tile.flags.is_climbable()
+                    && !tile.flags.is_background()
+                    && shape.prism.is_some();
                 tally.height = now
                     .iter()
                     .map(|volume| (volume.hi[2] - volume.lo[2]) as i32)
@@ -317,13 +340,14 @@ fn main() {
         }
     }
 
-    report(&tiledata, &tallies, placements, packed, (cx, cy), radius);
+    report(&tiledata, &images, &tallies, placements, packed, (cx, cy), radius);
 }
 
 /// The three questions in the order S4 asks them: what the discard is now, what
 /// the footprint added to it, and whether any of it can move a shadow.
 fn report(
     tiledata: &TileData,
+    images: &BTreeMap<u16, Image>,
     tallies: &BTreeMap<u16, Tally>,
     placements: u32,
     packed: usize,
@@ -465,6 +489,41 @@ fn report(
             tally.art.1,
             tally.height,
             tiledata.static_tile(**graphic).name,
+        );
+    }
+    println!();
+
+    // **The measurement that is already made and thrown away.** See
+    // `Tally::prism_unused`: how much of the world is stood up as panels or as
+    // a whole tile while its own art has a prism fitted to it.
+    let unused: Vec<(&u16, &Tally)> = tallies.iter().filter(|(_, tally)| tally.prism_unused).collect();
+    let unused_placements: u32 = unused.iter().map(|(_, tally)| tally.placements).sum();
+    let unused_shadowing: u32 = unused.iter().map(|(_, tally)| tally.in_the_grid).sum();
+    println!(
+        "  {unused_placements:>9}  placements of {} graphics the client calls a PLATFORM and the art\n\
+         \x20            fits a prism to, which `boxes_of` never reads because the tile is not\n\
+         \x20            CLIMBABLE — {unused_shadowing} of them are occluders, so believing the prism\n\
+         \x20            moves their shadow as well as their surface\n",
+        unused.len(),
+    );
+    let mut worst_unused: Vec<&(&u16, &Tally)> = unused.iter().collect();
+    worst_unused.sort_by_key(|(_, tally)| std::cmp::Reverse(tally.missed_now));
+    println!("    graphic  placements   discarded   prism fit   name");
+    for (graphic, tally) in worst_unused.iter().take(10) {
+        // **The score, because a threshold is what any such decision would have
+        // to be made of.** `facing::PRISM_FITS` is 0.9 and every graphic here
+        // already passed it; what separates a display case from a wall — if
+        // anything does — is how much *further* past it they sit, and a list
+        // with no scores in it cannot say whether a threshold exists.
+        let fit = images
+            .get(graphic)
+            .map_or(0.0, |image| openshard_client_render::facing::best_prism(image).1);
+        println!(
+            "    0x{graphic:04X}  {:>10}  {:>10}  {fit:>10.3}   {} ({:.1}% of its art)",
+            tally.placements,
+            tally.missed_now,
+            tiledata.static_tile(**graphic).name,
+            pct(tally.missed_now, tally.drawn),
         );
     }
     println!();
