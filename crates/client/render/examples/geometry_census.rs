@@ -108,6 +108,12 @@ fn main() {
     let mut clear = 0u32;
     let mut clear_with_height = 0u32;
     let mut total = 0u32;
+    // Front A's own question: how much of the whole-tile stand-in is a roof,
+    // which is not a box a height alone would fix — a sloped plate is not an
+    // AABB. Counted apart from `claims` because it cuts across both whole-tile
+    // variants, not just the unread one.
+    let mut whole_tile = 0u32;
+    let mut whole_tile_roof = 0u32;
 
     for x in cx - radius..=cx + radius {
         for y in cy - radius..=cy + radius {
@@ -142,6 +148,10 @@ fn main() {
                 match claim.measured() {
                     true => measured += 1,
                     false => invented += 1,
+                }
+                if matches!(claim, Claim::WholeTileUnread | Claim::WholeTileClimbable) {
+                    whole_tile += 1;
+                    whole_tile_roof += u32::from(tile.flags.is_roof());
                 }
 
                 if occlusion::opacity(graphic, tile) == occlusion::CLEAR {
@@ -185,5 +195,14 @@ fn main() {
          \x20         which is a side face a fragment can be answered with and no id to excuse it",
         pct(clear),
         pct(clear_with_height),
+    );
+    let whole_tile_pct = |n: u32| 100.0 * f64::from(n) / f64::from(whole_tile.max(1));
+    println!(
+        "\n  {whole_tile:>6}  {:>5.1}%  whole-tile stand-ins (of {total}), of which\n\
+           {whole_tile_roof:>6}  {:>5.1}%  ({:>5.1}% of the whole-tile share) are ROOF — a sloped\n\
+         \x20         plate, not an AABB, so height alone would not retire them",
+        pct(whole_tile),
+        whole_tile_pct(whole_tile_roof),
+        pct(whole_tile_roof),
     );
 }

@@ -159,7 +159,12 @@ it 44–53% — `0x05A2` "slate roof" is 48×76 pixels of picture standing on a 
 three `z` units tall. Every fringe artefact below is downstream of it.
 [`footprints.md`](footprints.md) deliberately measured the *footprint* and left
 the height as a carried item, with `blocks_silhouette` named as the instrument
-that would score it.
+that would score it. **Measured 2026-08-10** (`geometry_census`, same window):
+of the 3,388 whole-tile stand-ins, **2,825 (83.4%)** carry `ROOF` — a sloped
+plate, which height alone does not turn into an AABB. The other **563
+(16.6%)** are the actual target of "grow the box to the silhouette"; roofs are
+a separate primitive question, not a height question, and stay out of A-2's
+scope.
 
 **2. The fringe, and it is one decision with two candidates.** A pixel whose ray
 misses its box is clamped to the nearest point on it. That is better than the
