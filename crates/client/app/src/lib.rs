@@ -623,6 +623,8 @@ pub fn run<D: Dial + Send + 'static>(
         // And a torch in hand for when it is not daylight: see `App::lantern`.
         lantern: true,
         light_view: View::Lit,
+        frame_dump: None,
+        frame_dumps: 0,
         flame_clock: std::time::Duration::ZERO,
         map,
         art,
@@ -1400,6 +1402,24 @@ struct App {
     /// and the field is written onto the frame's `Lighting` on its way to the
     /// blit. `docs/lighting.md`, decision 8.
     light_view: View,
+    /// Where the next frame writes itself out, when somebody has pressed F12.
+    ///
+    /// **`docs/parity.md`'s first backlog item.** The tools could always dump a
+    /// picture and the client — the thing that is actually broken — could dump
+    /// nothing, so every artefact a person reported was *searched for* in a
+    /// tool's frame rather than compared against this one's. A defect visible in
+    /// one and absent in the other says nothing about either until both can be
+    /// laid side by side.
+    ///
+    /// Armed here and spent in [`App::draw`], because what is dumped has to be a
+    /// frame drawn the ordinary way through the ordinary passes. A dump
+    /// assembled on the spot for the camera would be a fourteenth assembly, and
+    /// a picture of one.
+    frame_dump: Option<std::path::PathBuf>,
+    /// How many have been written this run — the number in each dump's own
+    /// directory name, so a second press does not overwrite the picture the
+    /// first one was taken to compare against.
+    frame_dumps: u32,
     /// How long the flames have been burning, in the same span every other clock
     /// in the frame is advanced by.
     ///
@@ -2146,6 +2166,21 @@ impl ApplicationHandler<link::Update> for App {
                     KeyCode::F11 => {
                         self.light_view = self.light_view.next();
                         tracing::info!(view = self.light_view.name(), "lighting view");
+                        true
+                    }
+                    // This frame, written out: every plane the blit can draw of
+                    // it, plus the inputs it was assembled from. See
+                    // [`App::frame_dump`] for why the client having none was the
+                    // thing standing in front of `docs/parity.md`'s gate, and
+                    // [`frame_dump_root`] for where it lands.
+                    //
+                    // A key and not a setting, for the reason F5, F8 and F10 are
+                    // keys and more so: what is being dumped is the instant a
+                    // person is looking at, and anything that had to be switched
+                    // on beforehand would dump a different one.
+                    KeyCode::F12 => {
+                        self.frame_dump = Some(frame_dump_root().join(format!("frame-{}", self.frame_dumps)));
+                        self.frame_dumps += 1;
                         true
                     }
                     _ => false,
@@ -5330,17 +5365,7 @@ impl App {
         // caller may honestly differ on is a field of `frame::Inputs` now, so
         // what this frame is can be compared against what a tool's frame is
         // rather than pieced together from two call sites.
-        let frame::Frame {
-            lighting,
-            ground: quads,
-            statics:
-                statics::StaticGeometry {
-                    quads: static_quads,
-                    mesh_vertices,
-                    mesh_rows,
-                    boxes: static_boxes,
-                },
-        } = frame::assemble(frame::Inputs {
+        let inputs = frame::Inputs {
             map: &self.map,
             items: &self.items,
             camera: &camera,
@@ -5386,7 +5411,24 @@ impl App {
             // checking the place channel wants to see, without having to make it
             // night first.
             view: self.light_view,
-        });
+        };
+        // **What the frame was asked for**, kept beside the pictures the dump
+        // below writes. A picture on its own cannot be reproduced: two frames
+        // that differ say nothing about *which* input differed, and the client's
+        // arguments were readable until now only by reading this function. Only
+        // when a dump is armed — `summary` walks every field and allocates.
+        let asked_for = self.frame_dump.as_ref().map(|_| inputs.summary());
+        let frame::Frame {
+            lighting,
+            ground: quads,
+            statics:
+                statics::StaticGeometry {
+                    quads: static_quads,
+                    mesh_vertices,
+                    mesh_rows,
+                    boxes: static_boxes,
+                },
+        } = frame::assemble(inputs);
 
         // What a click is holding, placed exactly as the picture placed it —
         // `statics::selected` is `statics::collect`'s own arithmetic — so the
@@ -6325,6 +6367,80 @@ impl App {
             ui_cost += painting.elapsed();
         }
         window.queue.submit([encoder.finish()]);
+        // **This frame, written out** — F12, and `docs/parity.md`'s first
+        // backlog item. After the submit above and not beside the blit, because
+        // what is read back has to be pixels the device has actually been given
+        // the commands for; the world image, the G-buffer and the instance
+        // buffers all still hold this frame's own, since nothing writes them
+        // again until the next one.
+        //
+        // Not the surface: what is presented has the HUD, the panels and the
+        // solids overlay on top of it, and a tool's frame has none of those.
+        // What a comparison wants is the world as the blit left it, so the blit
+        // is run again into a texture of its own — the same pass, the same
+        // lighting, the same rect — once per plane. `docs/parity.md` D5.
+        if let Some(into) = self.frame_dump.take() {
+            let dump = window.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("frame dump"),
+                size: wgpu::Extent3d {
+                    width: window.config.width,
+                    height: window.config.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // The surface's own, because the blit's pipeline is built for it
+                // — see `Screen::blit`. A texture of any other format is a
+                // pipeline this pass cannot draw with.
+                format: window.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let dump_view = dump.create_view(&wgpu::TextureViewDescriptor::default());
+            let planes = openshard_client_render::dump::planes(
+                &window.device,
+                &window.queue,
+                &mut window.blit,
+                &dump,
+                blit::Frame {
+                    // A view of `dump`, made one line above it: `dump::planes`'s
+                    // own contract, and the whole of what this call site has to
+                    // keep true.
+                    target: &dump_view,
+                    world: &world_view,
+                    gbuffer: &gbuffer_views,
+                    face_instances: window.statics.instances_buffer(),
+                    mobile_instances: window.mobile_pass.instances_buffer(),
+                    mesh_instances: window.mesh_pass.rows_buffer(),
+                    ground_instances: window.renderer.instances_buffer(),
+                    zoom: camera.zoom(),
+                    rect: viewport,
+                },
+                &lighting,
+                // Every one of them. A dump taken because something looked wrong
+                // is taken once, and a plane left out is a plane somebody has to
+                // reproduce the moment they want it — by which time the frame is
+                // gone.
+                &View::ALL,
+            );
+            match write_frame_dump(
+                &into,
+                &planes,
+                asked_for
+                    .as_deref()
+                    .expect("the summary is taken whenever a dump is armed, above"),
+            ) {
+                Ok(()) => tracing::info!(
+                    into = %into.display(),
+                    planes = planes.len(),
+                    "frame dumped",
+                ),
+                // A dump that could not be written is a diagnostic that failed,
+                // not a frame that failed: the client goes on drawing.
+                Err(error) => tracing::warn!(into = %into.display(), %error, "dumping the frame"),
+            }
+        }
         // Presentation moved onto the queue in wgpu 30; the texture is consumed.
         window.queue.present(frame);
         // And the next frame is asked for here rather than through the timer,
@@ -6361,6 +6477,44 @@ impl App {
         );
         self.last_frame = started;
     }
+}
+
+/// Where a frame dump goes: `OPENSHARD_FRAME_DUMP_DIR`, or a directory of our
+/// own under the system temp.
+///
+/// Never the source tree — one dump is thirteen uncompressed pictures and none
+/// of them belongs in a diff. The same rule, and the same shape, as
+/// [`dst::dump_dir`](crate::dst)'s.
+///
+/// **Not `OPENSHARD_FRAME_DUMP`**, which the render crate's own tools already
+/// read as the *file* their one picture is written to
+/// (`examples/isolated_scene.rs`, `tests/cost.rs`). One name meaning a file to
+/// one caller and a directory to another is precisely the quiet difference
+/// `docs/parity.md` exists to stop, so the client's knob is its own name — and a
+/// directory, because what the client has to dump is every plane at once plus
+/// the inputs they came from.
+fn frame_dump_root() -> std::path::PathBuf {
+    std::env::var_os("OPENSHARD_FRAME_DUMP_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("openshard-frame"))
+}
+
+/// One dump: a directory holding a picture per plane, named for the plane, and
+/// the inputs the frame was assembled from.
+///
+/// The summary is written last on purpose — a directory that has `inputs.txt` in
+/// it has every picture beside it, so a reader never compares a half-written
+/// dump against a whole one.
+fn write_frame_dump(
+    into: &std::path::Path,
+    planes: &[(View, Vec<u8>)],
+    asked_for: &str,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(into)?;
+    for (view, png) in planes {
+        std::fs::write(into.join(format!("{}.png", view.name())), png)?;
+    }
+    std::fs::write(into.join("inputs.txt"), asked_for)
 }
 
 /// The heading from one point on the screen to another, as one of the eight
@@ -6452,6 +6606,47 @@ mod tests {
     /// and not about the ring it fell in.
     fn heading_to(body: camera::WorldPixel, cursor: camera::WorldPixel) -> Option<Heading> {
         ask_between(body, cursor).map(steer::Ask::heading)
+    }
+
+    /// A dump is a directory holding one picture per plane, named for the plane,
+    /// and the inputs the frame was assembled from.
+    ///
+    /// The naming is the contract: `docs/parity.md`'s gate compares a client's
+    /// plane against a tool's, and it finds them by name. A dump that wrote
+    /// `0.png` … `12.png` would be a dump whose reader has to keep
+    /// [`View::ALL`]'s order by hand — the shape the plan complains about, since
+    /// that order has already shifted twice.
+    #[test]
+    fn a_dump_is_a_picture_per_plane_named_for_it_and_the_inputs_beside_them() {
+        let into = std::env::temp_dir().join("openshard-frame-dump-test");
+        // Whatever a previous run left: this asserts on the directory's whole
+        // contents, so a stale file is a false failure — or worse, a false pass
+        // for a picture this run never wrote.
+        let _ = std::fs::remove_dir_all(&into);
+
+        let planes: Vec<(View, Vec<u8>)> = View::ALL.iter().map(|&view| (view, vec![1, 2, 3])).collect();
+        write_frame_dump(&into, &planes, "view = lit\n").expect("a directory under the temp dir");
+
+        for view in View::ALL {
+            let picture = into.join(format!("{}.png", view.name()));
+            assert!(
+                picture.is_file(),
+                "no {} plane at {}",
+                view.name(),
+                picture.display()
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(into.join("inputs.txt")).expect("the summary"),
+            "view = lit\n",
+            "the inputs are written beside the pictures, verbatim",
+        );
+        let written = std::fs::read_dir(&into).expect("the dump directory").count();
+        assert_eq!(
+            written,
+            View::ALL.len() + 1,
+            "a dump is every plane and the summary, and nothing else",
+        );
     }
 
     /// A paperdoll window, for the pairing tests below.

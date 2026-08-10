@@ -153,10 +153,63 @@ decision for P2 and not an oversight.
 *Done when:* the four collectors have no caller outside the assembly. D3 lands
 here: `cost.rs` prices a real grid, and its number changes — record both.
 
+### The dump ✅ 2026-08-10 — P3's prerequisite
+
+**Both ends can now be asked for a frame, and both answer in the same bytes.**
+This was the first backlog item and it stood in front of P3: the gate needs two
+frames of one place and only the tools' existed.
+
+`client/render/src/dump.rs` is the one readback. [`dump::planes`] draws one
+assembled frame once per [`debug::View`] — the same blit, the same lighting, the
+same world image and G-buffer, nothing collected in between — and hands back a
+PNG a plane. [`dump::read_rect`] is the copy underneath it, and it pads its own
+rows and honours its own origin, which is what lets a dump come off an
+arbitrarily-sized window and off a viewport a docked panel has pushed away from
+the corner.
+
+- **The client dumps on F12.** `App::frame_dump` is armed by the key and spent in
+  `App::draw` after the frame's own submit: the ordinary frame, drawn by the
+  ordinary passes, blitted again into a texture of its own once per plane. Not
+  the surface — what is presented has the HUD and the solids overlay on it, and a
+  tool's frame has neither. One directory a press, `<root>/frame-<n>/<plane>.png`,
+  under `OPENSHARD_FRAME_DUMP_DIR` or the system temp. **Not**
+  `OPENSHARD_FRAME_DUMP`, which the tools already read as the *file* their one
+  picture goes to; one name meaning two things is the divergence this plan is
+  about, in miniature.
+- **`frame::Inputs::summary` is the other half of a dump.** A picture nobody can
+  reproduce is what every dump before this one was: two frames that differ said
+  nothing about *which* input differed, and the client's arguments were readable
+  only by reading `App::draw`. Every field gets a line — including the four that
+  cannot be stated, which say so — so two dumps diff. `isolated_scene` writes it
+  beside its picture as `<dump>.inputs.txt` and prints it; the client writes it as
+  `inputs.txt` in the dump's own directory.
+- **`tests/dump.rs` assembles Britain's `(1501, 1659)` headlessly** — the map's
+  own statics, the player's own cutaway, night with a flame in hand — draws it,
+  and dumps every plane. It gates one picture per view at the size asked for, the
+  view *reaching the shader* (Lit, Place and Normal cannot agree on a real
+  street), and a readback off the corner at an unaligned width. Both controls
+  were witnessed by mutation: made to ignore the view, and made to ignore the
+  origin — each turns the gate red.
+- Two hand-rolled readbacks died with it (`plan.rs`'s and `isolated_scene`'s),
+  and with them `OPENSHARD_SCENE_VIEWPORT`'s 256-byte alignment rule, which was
+  only ever that copy showing through.
+
+*Not done, and it is the first backlog item below:* **nobody has pressed F12 in a
+live window.** What is gated is everything under it — `dump::planes`,
+`read_rect`, the naming — and what is not is the forty lines of wiring in
+`App::draw` that reach them.
+
 ### P3 — the gate
 
 A test that assembles one real place twice, once with the client's inputs and
 once with the tool's, and compares the G-buffer plane by plane.
+
+**Its prerequisite is built** — see the dump above, and `tests/dump.rs` is half
+of it already: it assembles a place the client's way and reads every plane back.
+What is left is the second frame in the same test, built the tool's way
+(`isolated_scene`'s synthetic map, its anchor, its cutaway), and the comparison —
+per plane, counting differing pixels, with the inputs that must differ set equal
+first (D6). The two summaries diffed are what says they were.
 
 *Done when:* it is green at three places with a house on them, and red when any
 one input is deliberately changed. The second half is the positive control and
@@ -193,14 +246,32 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
 
 ## Backlog
 
-- 🚩 **The client cannot dump a frame, so half of P1 is unwitnessed.** Everything
-  a person can inspect is a tool's picture; the thing that is broken is the one
-  that draws to a window and keeps nothing. Until `App` can be asked for its
-  G-buffer planes at one place — an `OPENSHARD_FRAME_DUMP` of its own, or a
-  headless run that assembles a frame and reads it back without a window — **P3
-  cannot be written at all**, because the gate needs two frames and only one of
-  them exists. This is the next thing to build, and it is a prerequisite rather
-  than a nicety.
+- 🚩 **F12 has never been pressed.** The dump above is gated everywhere except in
+  the client: `dump::planes`, `read_rect` and the file naming have tests with
+  positive controls, and the forty lines of `App::draw` that call them have been
+  read. The next person in front of the running client presses F12 once and looks
+  at `/tmp/openshard-frame/frame-0/` — thirteen pictures and an `inputs.txt`. It
+  is the same "verified by reading" this plan was written about, and it is cheap
+  to close.
+- 🚩 **The tool advances no animation clock at all.** The first thing
+  `Inputs::summary` caught, on the first run: `isolated_scene` passes
+  `StaticAnimations::default()` — nought cycles — where the client builds 1068
+  out of `animdata.mul`. So every animated static in a tool's frame draws its
+  base graphic while the client draws whatever the cycle is on, and a fire is the
+  most likely thing anyone points either at. A field on `Inputs` already; what is
+  missing is the tool building the table and a knob for the instant. P2's work,
+  named here because it is the first *found* divergence rather than a suspected
+  one.
+- 🚩 **A summary cannot state the files it read.** `map` says the facet and the
+  static count, the atlases say their sizes, and `tiledata` says only that it is
+  the client's own table. Two frames off two different installs compare equal in
+  every line. A digest of the loaded tables would close it, and until then the
+  gate's answer is "equal given the same client files".
+- 🚩 **Every GPU test binary keeps its own `gpu()` and `client_dir()`.**
+  `tests/frame.rs`, `tests/dump.rs`, `tests/cost.rs` and the rest each carry the
+  same adapter request and the same environment lookup, because integration test
+  binaries share nothing without a `mod common`. Four copies of a device request
+  that has to ask for `gbuffer::required_limits` is four places to forget it.
 - 🚩 **A parity gate needs a place where the lighting is reachable.** At Britain's
   `(1501, 1659)`, a torch dropped in by `OPENSHARD_SCENE_EXTRA` at the client's
   own default brightness and reach changes the Lit plane **not by one byte** — it

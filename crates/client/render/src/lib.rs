@@ -46,6 +46,7 @@ pub mod cutaway;
 pub mod debug;
 pub mod depth;
 pub mod doors;
+pub mod dump;
 pub mod facing;
 pub mod follow;
 pub mod frame;

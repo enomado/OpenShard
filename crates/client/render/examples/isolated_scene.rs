@@ -56,9 +56,10 @@
 //!   client's F10 is this switch and nothing else as far as `View::Normal` is
 //!   concerned, so two dumps either side of it are what a face that "disappears
 //!   when the light goes on" actually is. Default `1`.
-//! - `OPENSHARD_SCENE_VIEWPORT=960x720` — must keep `width * 4` a multiple of
-//!   256 (`wgpu`'s row-copy alignment) or the readback panics; the default is
-//!   already aligned.
+//! - `OPENSHARD_SCENE_VIEWPORT=960x720` — any size: the readback
+//!   ([`openshard_client_render::dump::read_rect`]) pads its own rows. It used
+//!   to want `width * 4` a multiple of 256 and panic otherwise, which was this
+//!   file's own copy of the arithmetic showing through.
 //! - `OPENSHARD_FLAME_RADIUS`, `OPENSHARD_SHADOW_RAYS`,
 //!   `OPENSHARD_LIGHT_BRIGHTNESS`, `OPENSHARD_LIGHT_REACH`,
 //!   `OPENSHARD_LIGHT_SKY`, `OPENSHARD_LIGHT_GROUND` — the client's own Light
@@ -471,6 +472,10 @@ fn unshift(anchor: (u16, u16), syn: (u16, u16)) -> (u16, u16) {
 
 /// Reads `surface` back to PNG bytes — the one step every mode of this
 /// tool ends in, whatever filled the texture before it was called.
+///
+/// Through `dump::read_rect`, which is the client's own readback: this file used
+/// to carry a fourth copy of the padded-row arithmetic, and the copy is what
+/// made `OPENSHARD_SCENE_VIEWPORT` insist on a 256-byte-aligned width.
 fn dump_frame(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -478,48 +483,30 @@ fn dump_frame(
     viewport: (u32, u32),
 ) -> Vec<u8> {
     let (w, h) = viewport;
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback"),
-        size: u64::from(w) * u64::from(h) * 4,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: surface,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(w * 4),
-                rows_per_image: Some(h),
-            },
-        },
-        wgpu::Extent3d {
+    let pixels = openshard_client_render::dump::read_rect(
+        device,
+        queue,
+        surface,
+        ViewportRect {
+            x: 0,
+            y: 0,
             width: w,
             height: h,
-            depth_or_array_layers: 1,
         },
     );
-    queue.submit([encoder.finish()]);
-    let slice = readback.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        result.expect("mapping a buffer this example just wrote");
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("waiting on our own submission");
-    let pixels = slice
-        .get_mapped_range()
-        .expect("the map completed above")
-        .to_vec();
-
     openshard_client_render::png::encode_rgba(w, h, &pixels)
+}
+
+/// The picture where `OPENSHARD_FRAME_DUMP` asked for it, and the inputs it was
+/// assembled from beside it under the same name.
+///
+/// Both, always, and through one function so that neither mode of this tool can
+/// write a picture nobody can reproduce — which is what every dump before this
+/// one was. The client's F12 writes the same summary from the same
+/// [`Inputs::summary`](openshard_client_render::frame::Inputs::summary).
+fn write_dump(path: &std::path::Path, png: &[u8], asked_for: &str) {
+    std::fs::write(path, png).expect("writing the frame");
+    std::fs::write(path.with_extension("inputs.txt"), asked_for).expect("writing the frame's inputs");
 }
 
 fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -543,15 +530,13 @@ fn viewport() -> (u32, u32) {
     let (w, h) = spec
         .split_once('x')
         .unwrap_or_else(|| panic!("OPENSHARD_SCENE_VIEWPORT: {spec:?}"));
-    let (w, h): (u32, u32) = (
+    // No alignment to keep any more: `dump::read_rect` pads the copy and strips
+    // the padding back off, the way the client's own dump does. A width is
+    // whatever the picture wants to be.
+    (
         w.trim().parse().unwrap_or_else(|_| panic!("width: {w:?}")),
         h.trim().parse().unwrap_or_else(|_| panic!("height: {h:?}")),
-    );
-    assert!(
-        w * 4 % 256 == 0,
-        "OPENSHARD_SCENE_VIEWPORT width {w} isn't 256-byte-row aligned (wants a multiple of 64)"
-    );
-    (w, h)
+    )
 }
 
 fn main() {
@@ -720,19 +705,7 @@ fn main() {
     // The land atlas is empty under `_GROUND=0`, so there is no branch here for
     // it: a ground pass over an atlas holding nothing paints nothing, and it
     // still clears the targets exactly as the live one does.
-    let openshard_client_render::frame::Frame {
-        lighting,
-        ground: ground_quads,
-        statics:
-            openshard_client_render::statics::StaticGeometry {
-                quads: item_quads,
-                mesh_vertices,
-                mesh_rows,
-                // The impostor's boxes — `docs/lighting_rebuild.md` phase 6c —
-                // which this scene's own pixels are met against.
-                boxes,
-            },
-    } = openshard_client_render::frame::assemble(openshard_client_render::frame::Inputs {
+    let inputs = openshard_client_render::frame::Inputs {
         map: &synthetic,
         items: &items,
         camera: &camera,
@@ -784,7 +757,26 @@ fn main() {
             false => openshard_client_render::frame::Impostor::Billboards,
         },
         view: wanted_view,
-    });
+    };
+    // **What this frame was asked for**, printed and written beside the picture.
+    // The client's F12 dump writes the same block from the same function, so two
+    // frames that disagree are diffed here first: an input that differs is set
+    // the same or the case is not compared at all — `docs/parity.md` D6.
+    let asked_for = inputs.summary();
+    eprint!("{asked_for}");
+    let openshard_client_render::frame::Frame {
+        lighting,
+        ground: ground_quads,
+        statics:
+            openshard_client_render::statics::StaticGeometry {
+                quads: item_quads,
+                mesh_vertices,
+                mesh_rows,
+                // The impostor's boxes — `docs/lighting_rebuild.md` phase 6c —
+                // which this scene's own pixels are met against.
+                boxes,
+            },
+    } = openshard_client_render::frame::assemble(inputs);
 
     let format = openshard_client_render::blit::WORLD_FORMAT;
     let world = openshard_client_render::blit::world_texture(&device, width, height);
@@ -1009,7 +1001,7 @@ fn main() {
 
         let png = dump_frame(&device, &queue, &surface, viewport);
         let path = PathBuf::from(env("OPENSHARD_FRAME_DUMP"));
-        std::fs::write(&path, png).expect("writing the frame");
+        write_dump(&path, &png, &asked_for);
         eprintln!(
             "wrote {} ({count} solids, {mode}, edges {}, opaque {})",
             path.display(),
@@ -1049,6 +1041,6 @@ fn main() {
 
     let png = dump_frame(&device, &queue, &surface, viewport);
     let path = PathBuf::from(env("OPENSHARD_FRAME_DUMP"));
-    std::fs::write(&path, png).expect("writing the frame");
+    write_dump(&path, &png, &asked_for);
     eprintln!("wrote {} ({:?})", path.display(), wanted_view);
 }

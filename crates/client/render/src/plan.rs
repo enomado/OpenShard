@@ -804,65 +804,11 @@ fn drawn(
         &lighting,
     );
     queue.submit([encoder.finish()]);
-    (read_back(device, queue, &surface, width, height), named)
-}
-
-/// An RGBA8 texture, as rows with the copy's padding taken off.
-///
-/// The padding is why this is here rather than in a test: a buffer copy wants
-/// rows a multiple of 256 bytes, and a plan view's width is a tile count times a
-/// scale — a number nobody should have to choose for the alignment's sake.
-fn read_back(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let padded = width * 4 + (align - (width * 4) % align) % align;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("plan readback"),
-        size: u64::from(padded * height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-
-    let slice = buffer.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| result.expect("mapping the plan"));
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("the queue drains");
-    let mapped = slice.get_mapped_range().expect("the buffer maps");
-    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-    for row in 0..height {
-        let start = (row * padded) as usize;
-        pixels.extend_from_slice(&mapped[start..start + (width * 4) as usize]);
-    }
-    drop(mapped);
-    buffer.unmap();
-    pixels
+    let whole = crate::blit::ViewportRect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    (crate::dump::read_rect(device, queue, &surface, whole), named)
 }

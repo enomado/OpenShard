@@ -160,6 +160,93 @@ pub struct Inputs<'a> {
     pub view: View,
 }
 
+impl Inputs<'_> {
+    /// **What this frame was asked for, one field a line.**
+    ///
+    /// A picture on its own cannot be reproduced: two frames that differ say
+    /// nothing about *which* input differed, and a person reading a client's
+    /// dump beside a tool's has to reconstruct the client's arguments by reading
+    /// its source — which is the exact failure `docs/parity.md` was written
+    /// about. So a dumped frame carries this beside it, and two of them diff.
+    ///
+    /// **Every field gets a line, including the four this cannot state.** A
+    /// summary that quietly omitted the map and the atlases would be a second
+    /// list of what a frame is made of, kept by hand, going out of step the
+    /// first time [`Inputs`] grows a field — the shape this module exists to
+    /// stop. What can be said about each of them is said (a facet's name, a
+    /// static count, an atlas's size and revision), and where nothing can be, it
+    /// says so in as many words rather than leaving the reader to notice a gap.
+    ///
+    /// Not [`std::fmt::Debug`]: `{:?}` on these fields is a whole facet's land
+    /// and three atlases' pixels.
+    pub fn summary(&self) -> String {
+        let mut out = String::new();
+        let mut line = |field: &str, value: String| {
+            out.push_str(field);
+            out.push_str(" = ");
+            out.push_str(&value);
+            out.push('\n');
+        };
+        line(
+            "map",
+            format!("{}, {} statics", self.map.facet_name(), self.map.static_count()),
+        );
+        line("items", format!("{} on the ground", self.items.len()));
+        let (image_width, image_height) = self.camera.image_size();
+        let (eye_x, eye_y) = self.camera.eye_tile();
+        let eye = self.camera.eye_at();
+        // The tile first, because that is what a caller *aims* — the pixel is
+        // what the aiming came out as, and a difference of a pixel between two
+        // frames aimed at one tile is a real difference this would otherwise
+        // round away.
+        line(
+            "camera",
+            format!(
+                "eye tile ({eye_x}, {eye_y}), pixel ({:.3}, {:.3}), zoom {:?}, image {image_width}x{image_height}",
+                eye.x,
+                eye.y,
+                self.camera.zoom(),
+            ),
+        );
+        // Two facts about the client's own files, which a summary cannot check
+        // are the same two files. Named anyway: a reader comparing two dumps has
+        // to be told what is *not* being compared, or an equal summary reads as
+        // an equal frame.
+        line("tiledata", "the client's own table (not summarised)".to_owned());
+        line("animations", format!("{} cycles", self.animations.len()));
+        line("cutaway", format!("{:?}", self.cutaway));
+        line("land", format!("{} graphics", self.land.len()));
+        line("texmaps", format!("{} textures", self.texmaps.len()));
+        line(
+            "statics",
+            format!(
+                "{} graphics, revision {}",
+                self.statics.len(),
+                self.statics.revision()
+            ),
+        );
+        line("sky", format!("{:?}", self.sky));
+        line("sun", format!("{:?}", self.sun));
+        line("carried", format!("{:?}", self.carried));
+        line("tuning", format!("{:?}", self.tuning));
+        line("flame_time", format!("{:.6}s", self.flame_time));
+        // Whether, and not what: a bake is a cost rather than a picture (see the
+        // field), so what a comparison wants to know is which of the two ways to
+        // reach the same grid this caller took.
+        line(
+            "bake",
+            match self.bake {
+                Some(_) => "kept across frames".to_owned(),
+                None => "built from nothing".to_owned(),
+            },
+        );
+        line("highlight", format!("{:?}", self.highlight));
+        line("impostor", format!("{:?}", self.impostor));
+        line("view", self.view.name().to_owned());
+        out
+    }
+}
+
 /// One frame's geometry and the light on it.
 ///
 /// The three lists are exactly what the passes take, and they are separate
