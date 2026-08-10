@@ -608,6 +608,9 @@ pub fn measure_footprint(image: &Image) -> Result<Footprint, Refusal> {
     let (width, height) = (image.width(), image.height());
     let base = base_edge(image);
     let columns: Vec<(u16, u16)> = base.columns().collect();
+    if std::env::var_os("OPENSHARD_DEBUG_FOOTPRINT").is_some() {
+        eprintln!("columns: {columns:?}");
+    }
     let (Some(first), Some(last)) = (columns.first(), columns.last()) else {
         return Err(Refusal::Empty);
     };
@@ -717,9 +720,13 @@ pub fn measure_footprint(image: &Image) -> Result<Footprint, Refusal> {
     // Rounded **outward** to eighths, never inward: an eighth is 5.5 pixels and
     // the art's own border is worth two of them, so the choice is between a box
     // marginally larger than the picture and one marginally smaller. Larger is
-    // the safe direction — `statics.wesl` discards a fragment whose view ray
-    // meets no box, so a box that has shrunk below its art takes pixels off the
-    // screen, while one that has grown takes nothing.
+    // the safe direction, and it stayed the safe direction when the cost
+    // changed: a fragment whose ray meets no box was *discarded* when this was
+    // written, so a box shrunk below its art took pixels off the screen; it is
+    // clamped onto the nearest box now, so what a shrunk box takes is the
+    // *truth of the position* instead — the pixel is answered at the box's rim
+    // rather than where the picture drew it. A box that has grown still takes
+    // nothing either way.
     //
     // **And clamped to the tile, which is a decision and not a `clamp` that fell
     // out.** Real furniture is drawn wider than its cell: `0x0A97`'s own base
@@ -2920,9 +2927,11 @@ mod tests {
     ///
     /// **Containment and not equality, and that is the contract rather than a
     /// slack tolerance.** [`footprint_of`] rounds outward, so what it promises is
-    /// a box no smaller than the picture — the direction that matters, since
-    /// `statics.wesl` discards a fragment whose view ray meets no box and a box
-    /// that had shrunk below its art would take pixels off the screen.
+    /// a box no smaller than the picture — the direction that matters, since a
+    /// box shrunk below its art is a box its own pixels fall outside of. That
+    /// cost pixels off the screen while `statics.wesl` discarded such a
+    /// fragment, and costs a *wrong position* now that it clamps one onto the
+    /// nearest box instead; outward is the safe rounding under either rule.
     ///
     /// **One eighth is the whole of the error and it is a column's own width.**
     /// The two far coordinates are *exact*: each is the median of a value the

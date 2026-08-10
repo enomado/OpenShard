@@ -75,11 +75,16 @@ const IDS_ID_MASK: u32 = 0xFFFFFFu;
 // **They are not two halves of one outline.** A box miss is no longer discarded
 // (`statics.wesl`, and see its own account of the census that reversed it), so
 // the picture's silhouette is the art's and only the art's; what the box bit
-// marks is an edge *inside* the picture — the rim of the region anything was
-// measured for, with the unmeasured remainder of the same sprite carrying on
-// past it at the tile's centre with no facing. One outline and one seam, and
-// the seam is visible in a lit frame because the two sides of it are lit by
-// different rules.
+// marks is an edge *inside* the picture — the rim of the region a box genuinely
+// covers, with the rest of the same sprite carrying on past it **clamped onto
+// the box it came nearest**.
+//
+// So the seam is no longer a line between two lighting rules — both sides carry
+// a measured face now — and it is still a line worth marking: past it a
+// fragment's position is the nearest point of a box rather than a point the ray
+// went through, and how far that is from the picture is `Meeting::outside`. A
+// wide band of box-edge is a box that does not fit its art, which is
+// `docs/footprints.md`'s whole subject.
 //
 // That is the plan's own first question answered on the way past: the zigzag is
 // the art's, and the fragment-fine line beside it is not a silhouette at all.

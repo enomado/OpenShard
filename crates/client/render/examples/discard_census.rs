@@ -1,14 +1,20 @@
 //! How much of each sprite hangs outside the box it is met against — before and
 //! after the measured footprint narrowed it.
 //!
-//! `statics.wesl` discards a fragment whose view ray meets none of its static's
-//! boxes, so **every pixel of art that overhangs its own volume is a pixel that
-//! leaves the screen**. `docs/lighting_rebuild.md` measured that trade once, on
-//! the whole-tile geometry, and stated it beside the `discard` itself: 4460
-//! pixels of 187,086 at Britain's `(1501, 1659)`, 2.38%. `docs/footprints.md`'s
-//! S4 is the other half of it — a narrower box is a box the art overhangs
-//! *more*, and the plan says outright that "a footprint that eats a tabletop's
-//! overhang is a finding, not a cost to accept quietly".
+//! **What the overhang costs has changed twice; what it *is* has not**, and
+//! that is why this tool still counts the same thing. `statics.wesl` discarded
+//! a fragment whose view ray met none of its static's boxes, so every
+//! overhanging pixel left the screen — `docs/lighting_rebuild.md` measured that
+//! trade at 4460 pixels of 187,086, 2.38%. Then a miss became "no measurement",
+//! lit from every side. It is clamped onto the nearest box now
+//! (`docs/silhouettes.md`), so what an overhanging pixel loses is the *truth of
+//! its own position*: it is answered at a box's rim rather than where the
+//! picture drew it, and `Meeting::outside` is how far that is.
+//!
+//! So the counts below are a count of pixels whose position is invented, and
+//! `docs/footprints.md`'s S4 is still the other half of it — a narrower box is a
+//! box the art overhangs *more*, and the plan says outright that "a footprint
+//! that eats a tabletop's overhang is a finding, not a cost to accept quietly".
 //!
 //! So this counts the same thing twice over one neighbourhood: once with each
 //! static's boxes as `boxes_of` gives them today, and once with

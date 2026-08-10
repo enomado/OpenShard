@@ -146,8 +146,17 @@ longer two candidate bounds on one outline:
 - the **art's** edge is the picture's silhouette, all of it, and it is
   texel-quantised — `scale` real pixels a step, and it cannot be finer;
 - the **box's** edge is a seam *inside* the picture, one real pixel a step, where
-  the measured region of a sprite ends and the unmeasured remainder carries on at
-  the tile's centre with no facing.
+  the region a box genuinely covers ends and the rest of the sprite carries on.
+
+**Amended twice since, and the second half of that sentence is what moved.** The
+remainder past the seam carried on "at the tile's centre with no facing" when Z1
+was written, and a zero normal is lit from every side — which is what made the
+seam a line between two *lighting rules* and, on a floor, a glowing grid. It is
+clamped onto the box it came nearest now (see the two sections below), so both
+sides of the seam carry a measured face and the seam marks a weaker thing: past
+it, a fragment's position is a box's rim rather than a point its ray went
+through. A wide band of it is a box that does not fit its art, which is
+`docs/footprints.md`.
 
 That answers the backlog's first 🚩 outright: the zigzag a person points at is
 the art's outline, and the fragment-fine line beside it is not a silhouette at
@@ -257,9 +266,40 @@ on the shader's copy of the number.
 **And what it leaves.** The line was one of two populations, not the whole of
 them: 11.83% of drawn art still misses, running out to 133 fragments, and that
 is real overhang for `docs/footprints.md` rather than sampling. A roof gives up
-40% of its art; a whole-tile claim, 30%. Those pixels are still drawn unmeasured
-and still lit from every side — which is now the *only* reason a pixel is, and a
-much better place to argue from than a seam.
+40% of its art; a whole-tile claim, 30%.
+
+### Which is why the clamp came back
+
+With the seam gone, "no measurement" was left standing for the overhang alone —
+and *lit from every side* is not a defensible answer for it either. So the rule
+is the one the shape of the problem always asked for: **a fragment is a picture
+of one static, the grid holds volumes for that static, so which volume is a
+question the ray answers and whether the ray landed inside one is not a question
+about whether anything was measured.** The nearest box wins outright, hit or
+miss; "no measurement" now means a static the grid holds no boxes for at all.
+
+The clamp had been tried and killed once, by the lattice of wall-shaded dots —
+a fragment falling sideways off a *lid* takes whichever face exits first, which
+is a side one. That is cured at the root rather than avoided:
+`impostor::shows_a_side` refuses a face thinner than the grid that reads it, and
+a lid's side face is `LID_THICKNESS` tall — a **sixteenth of a pixel**. The old
+rule compared against zero, which was exact only while a lid was a plane.
+Counted before the change: 338 pixels over Britain's 121×121 would have taken
+one; after, none.
+
+**Read back off a client dump rather than off the gates**, since the census and
+the pass share `impostor::meets` and cannot independently confirm each other:
+
+```
+zero normals in one frame     2.07% of it   →   none
+side faces ringed by lid      the lattice   →   none
+```
+
+What is *not* established is that a clamped position is a good position where
+the overhang is large. A roof's art stands 76 pixels over a box three `z` units
+tall, so a pixel of it is now answered four tiles from where it was drawn — a
+different lie from the tile's centre, not obviously a smaller one, and the
+shadow ray starts at whichever it is. That is the backlog entry below.
 
 ### Z2 — the ratio, before
 
@@ -307,13 +347,14 @@ their own**, because a box that fits the art clips more of the outline.
 - 🚩 **`docs/pixels.md` owes this plan the art texel's own row.** It is the one
   grid with no type and no document, and it is the grid this whole file is
   about.
-- 🚩 **An unmeasured fragment is lit from every side, and that is now the whole
-  of what the state means.** With the seam gone, every pixel left in it is real
-  overhang — 11.83% of drawn art, 40% of a roof's — and each is *brighter* than
-  the measured surface it hangs off, because a zero normal takes no cosine. The
-  brightness was never argued; it fell out of "no facing" meaning "every
-  facing". `docs/footprints.md` shrinks the population; nothing yet decides what
-  the remainder should be lit like.
+- 🚩 **A clamped position is invented, and nothing bounds how far.** The state
+  it replaced was *lit from every side*, which was worse, but the new one is not
+  free: 11.83% of drawn art is answered at a box's rim rather than where it was
+  drawn, and the worst is 133 fragments — four tiles. A roof is the whole class.
+  The shadow walk starts from that point and the distance to a flame is measured
+  from it, so a large overhang is now a *wrong* answer where it used to be an
+  absent one. `docs/footprints.md` shrinks the population; what nobody has
+  measured is whether the remaining lie shows on a lit roof.
 - 🚩 **The 1-to-2-fragment population, 135k pixels of Britain's window.** The
   tolerance cuts at one fragment because that is where a neighbouring sample
   exists to tell the difference. The bucket just past it is 8% of what is left
