@@ -37,14 +37,14 @@
 //! side in terms of the shadow side would mean threading an axis through a
 //! function whose every caller wants a fraction.
 
-use crate::light::{TileVec, Z_PER_TILE};
+use crate::light::{TileVec, WorldVec, Z_PER_TILE};
 
 /// The direction every screen pixel's world line runs in, in world units —
 /// tiles on `x` and `y`, `z` units on `z`.
 ///
 /// See the module doc for the derivation. It points **towards the camera**: a
 /// point further along it draws to the same pixel and stands in front.
-pub const VIEW: [f32; 3] = [1.0, 1.0, Z_PER_TILE];
+pub const VIEW: WorldVec = WorldVec::new(1.0, 1.0, Z_PER_TILE);
 
 /// A tile's width in virtual pixels — `camera::TILE_WIDTH`, restated as a float
 /// because every arithmetic here is one.
@@ -93,6 +93,34 @@ const TILE_WIDTH: f32 = crate::camera::TILE_WIDTH as f32;
 /// is the same grid at every rung of the ladder.
 pub const FRAGMENT: f32 = std::f32::consts::SQRT_2 / TILE_WIDTH;
 
+/// How many virtual pixels tall one `z` unit draws — `camera::Z_STEP`, restated
+/// here as the division of the two constants this module already carries so
+/// that it cannot drift from either.
+const Z_STEP: f32 = TILE_WIDTH / Z_PER_TILE;
+
+/// Whether a box `lo.z..hi.z` tall has side faces a sample could ever land on.
+///
+/// **The same argument as [`FRAGMENT`], one dimension over.** A box's side face
+/// draws as a band `(hi.z − lo.z) · Z_STEP` virtual pixels tall; under one
+/// pixel, no fragment centre falls inside it, so naming it is answering with a
+/// surface the picture does not contain. [`meets`] picks the face whose *exit*
+/// comes first, and on the rim of a flat box that is a side one — a wall's
+/// cosine in the middle of a floor, which is the lattice
+/// `docs/lighting_rebuild.md` phase 6i names and `discard` was once introduced
+/// for.
+///
+/// This used to be `hi.z > lo.z`, which was exact while a lid was a *plane*.
+/// `docs/parity.md`'s P4 step 1 gave it `occlusion::LID_THICKNESS` — `1/64` of a
+/// `z` unit, a **sixteenth of a pixel** tall — and the comparison against zero
+/// stopped standing for anything: the face has area, and no screen this renderer
+/// draws on can show it. Nothing else in the grid is near the line, which is
+/// what makes one pixel a safe place to put it rather than a number to tune: a
+/// panel and a body are whole `z` units tall, four pixels and up, and a lid is
+/// a sixteenth. There is nothing between.
+pub fn shows_a_side(lo_z: f32, hi_z: f32) -> bool {
+    (hi_z - lo_z) * Z_STEP > 1.0
+}
+
 /// One point of the view ray through a sprite fragment: the point at the
 /// static's own base height.
 ///
@@ -109,14 +137,14 @@ pub const FRAGMENT: f32 = std::f32::consts::SQRT_2 / TILE_WIDTH;
 /// pinned to an edge, a height recovered from `pixel_y` — is the same ray met
 /// with a different plane, guessed from a stance instead of measured against a
 /// box.
-pub fn ray_from(tile: (i32, i32), base: f32, across: f32, down: f32) -> [f32; 3] {
+pub fn ray_from(tile: (i32, i32), base: f32, across: f32, down: f32) -> WorldVec {
     // `u − v = across/22` and `u + v = down/22 + 1`, solved. Written over the
     // whole tile width rather than the half so that neither line divides twice.
-    [
+    WorldVec::new(
         tile.0 as f32 + (across + down) / TILE_WIDTH + 0.5,
         tile.1 as f32 + (down - across) / TILE_WIDTH + 0.5,
         base,
-    ]
+    )
 }
 
 /// Where a fragment of a **billboard** is: the point of its own view ray on the
@@ -149,12 +177,12 @@ pub fn ray_from(tile: (i32, i32), base: f32, across: f32, down: f32) -> [f32; 3]
 /// had wrong was `x` and `y`, and that is the whole of this function.
 ///
 /// `statics.wesl`'s `billboard_at`, and the two are one formula.
-pub fn billboard_at(tile: (i32, i32), base: f32, across: f32, down: f32) -> [f32; 3] {
-    [
+pub fn billboard_at(tile: (i32, i32), base: f32, across: f32, down: f32) -> WorldVec {
+    WorldVec::new(
         tile.0 as f32 + 0.5 + across / TILE_WIDTH,
         tile.1 as f32 + 0.5 - across / TILE_WIDTH,
         base - down * Z_PER_TILE / TILE_WIDTH,
-    ]
+    )
 }
 
 /// The billboard plane's own normal: `(1, 1, 0)` normalised, [`VIEW`]'s
@@ -208,9 +236,9 @@ pub struct Range {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Volume {
     /// The low corner, in world units.
-    pub lo: [f32; 3],
+    pub lo: WorldVec,
     /// And the high one.
-    pub hi: [f32; 3],
+    pub hi: WorldVec,
     /// Which solid of this frame's grid a fragment of this box is a point of —
     /// `occlusion::SolidId::word`, so `SolidId::NOBODY` where the grid has none
     /// (a static the cutaway hid, or one past the draw ceiling).
@@ -234,8 +262,8 @@ impl Volume {
     /// becomes geometry.
     pub fn of(space: &crate::solid::Solid, solid: u32) -> Self {
         Self {
-            lo: [space.min.x as f32, space.min.y as f32, space.min.z as f32],
-            hi: [space.max.x as f32, space.max.y as f32, space.max.z as f32],
+            lo: WorldVec::new(space.min.x as f32, space.min.y as f32, space.min.z as f32),
+            hi: WorldVec::new(space.max.x as f32, space.max.y as f32, space.max.z as f32),
             solid,
         }
     }
@@ -256,11 +284,11 @@ impl Volume {
     /// in `statics.wesl`, and `a_volume_is_thirty_two_bytes_the_shader_can_read`
     /// is what holds the two together.
     pub fn write(&self, out: &mut Vec<u8>) {
-        for value in self.lo {
+        for value in self.lo.array() {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out.extend_from_slice(&0f32.to_le_bytes());
-        for value in self.hi {
+        for value in self.hi.array() {
             out.extend_from_slice(&value.to_le_bytes());
         }
         out.extend_from_slice(&self.solid.to_le_bytes());
@@ -271,10 +299,10 @@ impl Volume {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Meeting {
     /// The point, in world units, clamped into the box — see [`Meeting::outside`].
-    pub at: [f32; 3],
+    pub at: WorldVec,
     /// Which way the surface it met looks: the box's own camera-facing face on
     /// one axis, so always one of `+x`, `+y`, `+z`.
-    pub normal: [f32; 3],
+    pub normal: WorldVec,
     /// How far, in **tiles**, the ray passed outside the box before the clamp
     /// pulled it back — at most [`FRAGMENT`] for a ray this grid can tell from
     /// one that went through, and [`Meeting::hit`] is that comparison spelled
@@ -347,20 +375,36 @@ impl Meeting {
 /// is handed and not about where that geometry came from: a caller may state a
 /// degenerate box (`tests/frame.rs` and this module's own cases do), and a face
 /// of no area is not one whatever authored it.
-pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
+///
+/// **And "no area" is measured against the grid, not against zero** — see
+/// [`shows_a_side`]. Giving a lid a span brought the lattice partly back:
+/// `LID_THICKNESS` is `1/64` of a `z` unit, so its side faces stopped being
+/// lines and became a *quarter of a pixel* tall, which is still a surface no
+/// sample can land on but is no longer caught by `hi.z > lo.z`. Measured by
+/// `examples/discard_census`: 338 pixels over Britain's 121×121 would take a
+/// side face off a flat box — the same order as the fourteen a person once
+/// reported as holes in a roof.
+pub fn meets(from: WorldVec, lo: WorldVec, hi: WorldVec) -> Meeting {
+    // The internal slab test picks an axis (0/1/2) at runtime, which is
+    // exactly why `[f32; 3]` is right here and nowhere else in this module —
+    // see `WorldVec::array`.
+    let (from, lo, hi) = (from.array(), lo.array(), hi.array());
+    let view = VIEW.array();
     // The `z` face, which every box in this grid has: `Solid::box_of` gives a
     // panel `PANEL_THICKNESS` and everything else a whole tile, so `x` and `y`
     // are never degenerate and this face never has zero area.
     let mut axis = 2;
-    let mut exit = (hi[2] - from[2]) / VIEW[2];
+    let mut exit = (hi[2] - from[2]) / view[2];
     // And the two side faces, which a lid does not have: both of their areas
-    // carry the `z` extent as a factor, so one test retires both.
-    if hi[2] > lo[2] {
+    // carry the `z` extent as a factor, so one test retires both. The test is
+    // [`shows_a_side`] — thinner than the grid that reads it, and there is no
+    // face here to name.
+    if shows_a_side(lo[2], hi[2]) {
         for a in [1, 0] {
             // No `abs(delta) < eps` case: every component of `VIEW` is positive,
             // so `lo` is always the near end of the slab and `hi` the far one,
             // and neither division can be by zero.
-            let far = (hi[a] - from[a]) / VIEW[a];
+            let far = (hi[a] - from[a]) / view[a];
             if far < exit {
                 exit = far;
                 axis = a;
@@ -371,7 +415,7 @@ pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
     // The exit axis's own coordinate is **stated** and not computed. `exit` is
     // the `t` at which this ray reaches the plane `hi[axis]`, so the meeting is
     // on that plane by definition; `from + exit * VIEW` is a division and a
-    // multiplication that only round back to it, and `VIEW[2]` is `Z_PER_TILE`
+    // multiplication that only round back to it, and `VIEW.z` is `Z_PER_TILE`
     // — eleven, and no power of two — so the `z` round trip has nothing exact
     // about it and a GPU contracting the pair into an `fma` need not land where
     // a CPU does. Everything downstream leans on a fragment being a point *of*
@@ -379,9 +423,9 @@ pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
     // `tests/frame.rs`'s `a_sprite_fragment_is_a_point_of_the_primitive_it_
     // names` holds it as an equality, and `impostor.wesl`'s `meets` is the twin.
     let mut at = [
-        from[0] + exit * VIEW[0],
-        from[1] + exit * VIEW[1],
-        from[2] + exit * VIEW[2],
+        from[0] + exit * view[0],
+        from[1] + exit * view[1],
+        from[2] + exit * view[2],
     ];
     at[axis] = hi[axis];
     let clamped = [
@@ -393,13 +437,13 @@ pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
     // out sideways and a third of a tile out in height are the same miss, and
     // three `z` units are not. [`crate::light::TileVec`] is that space, and
     // `between` is the only place the division is written.
-    let outside = TileVec::between(clamped, at).length();
+    let outside = TileVec::between(WorldVec::from_array(clamped), WorldVec::from_array(at)).length();
 
     let mut normal = [0.0; 3];
     normal[axis] = 1.0;
     Meeting {
-        at: clamped,
-        normal,
+        at: WorldVec::from_array(clamped),
+        normal: WorldVec::from_array(normal),
         // A distance rather than the slab test's own `enter <= exit` predicate,
         // and the two cannot disagree because this one *is* the clamp above: a
         // ray that goes through the box is clamped by nothing and measures zero.
@@ -425,9 +469,9 @@ pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
 /// `None` only for an empty iterator, which is a static the grid holds nothing
 /// for — dropped by the cutaway, or past the draw ceiling. Its caller has to
 /// have an answer for that; there is no box to invent one from here.
-pub fn nearest<T, I>(from: [f32; 3], boxes: I) -> Option<(T, Meeting)>
+pub fn nearest<T, I>(from: WorldVec, boxes: I) -> Option<(T, Meeting)>
 where
-    I: IntoIterator<Item = (T, [f32; 3], [f32; 3])>,
+    I: IntoIterator<Item = (T, WorldVec, WorldVec)>,
 {
     let mut best: Option<(T, Meeting)> = None;
     for (what, lo, hi) in boxes {
@@ -456,8 +500,11 @@ mod tests {
     use super::*;
 
     /// The unit cube on tile `(100, 101)`, ten `z` tall.
-    fn cube() -> ([f32; 3], [f32; 3]) {
-        ([100.0, 101.0, 0.0], [101.0, 102.0, 10.0])
+    fn cube() -> (WorldVec, WorldVec) {
+        (
+            WorldVec::new(100.0, 101.0, 0.0),
+            WorldVec::new(101.0, 102.0, 10.0),
+        )
     }
 
     /// **A billboard's fragment is on the plane, and the plane is turned towards
@@ -477,18 +524,19 @@ mod tests {
             for down in [-8.0, 0.0, 4.0, 37.0] {
                 let at = billboard_at(tile, base, across, down);
                 // In the plane: the normal is `(1, 1, 0)` and the centre is on it.
-                let off_plane = (at[0] - centre[0]) + (at[1] - centre[1]);
+                let off_plane = (at.x - centre[0]) + (at.y - centre[1]);
                 assert!(off_plane.abs() < 1e-5, "{across}/{down}: {off_plane}");
                 // And on the fragment's own view ray, which is what says it draws
                 // on the pixel it was drawn on: the two differ by a multiple of
                 // `VIEW` and by nothing else.
                 let start = ray_from(tile, base, across, down);
-                let along = [at[0] - start[0], at[1] - start[1], at[2] - start[2]];
-                let t = along[0] / VIEW[0];
+                let along = [at.x - start.x, at.y - start.y, at.z - start.z];
+                let view = VIEW.array();
+                let t = along[0] / view[0];
                 for axis in 0..3 {
                     assert!(
-                        (along[axis] - t * VIEW[axis]).abs() < 1e-4,
-                        "{across}/{down}: axis {axis} of {along:?} is not {t} of {VIEW:?}",
+                        (along[axis] - t * view[axis]).abs() < 1e-4,
+                        "{across}/{down}: axis {axis} of {along:?} is not {t} of {view:?}",
                     );
                 }
             }
@@ -506,7 +554,7 @@ mod tests {
     fn a_billboards_height_is_what_the_pass_already_drew() {
         for down in [-8.0, 0.0, 4.0, 37.0, 130.0] {
             let at = billboard_at((100, 101), 7.0, 13.0, down);
-            assert_eq!(at[2], 7.0 - down / crate::camera::Z_STEP as f32, "at {down}");
+            assert_eq!(at.z, 7.0 - down / crate::camera::Z_STEP as f32, "at {down}");
         }
     }
 
@@ -520,8 +568,8 @@ mod tests {
         // own test was written from.
         let mut out = Vec::new();
         Volume {
-            lo: [100.0, 101.0, 3.0],
-            hi: [101.0, 102.0, 7.0],
+            lo: WorldVec::new(100.0, 101.0, 3.0),
+            hi: WorldVec::new(101.0, 102.0, 7.0),
             solid: 9,
         }
         .write(&mut out);
@@ -539,8 +587,8 @@ mod tests {
         // The derivation in the module doc, restated as the thing a reader can
         // check: `Z_PER_TILE` is the whole of the third component, so a step of
         // one tile along `x` and along `y` is a step of one *tile* of height.
-        assert_eq!(VIEW, [1.0, 1.0, 11.0]);
-        assert_eq!(VIEW[2] / Z_PER_TILE, 1.0);
+        assert_eq!(VIEW, WorldVec::new(1.0, 1.0, 11.0));
+        assert_eq!(VIEW.z / Z_PER_TILE, 1.0);
     }
 
     #[test]
@@ -551,9 +599,9 @@ mod tests {
         for (across, down) in [(0.0, 0.0), (7.0, 3.0), (-11.0, 20.0), (21.5, -9.25)] {
             let at = ray_from((100, 101), 5.0, across, down);
             let point = crate::camera::project_exact(crate::camera::WorldSpot {
-                x: f64::from(at[0]),
-                y: f64::from(at[1]),
-                z: f64::from(at[2]),
+                x: f64::from(at.x),
+                y: f64::from(at.y),
+                z: f64::from(at.z),
             });
             let centre = crate::camera::project_exact(crate::camera::WorldSpot {
                 x: 100.5,
@@ -584,15 +632,15 @@ mod tests {
         // null direction, so walking along it does not move the picture.
         let from = ray_from((100, 101), 0.0, 4.0, -6.0);
         let start = crate::camera::project_exact(crate::camera::WorldSpot {
-            x: f64::from(from[0]),
-            y: f64::from(from[1]),
-            z: f64::from(from[2]),
+            x: f64::from(from.x),
+            y: f64::from(from.y),
+            z: f64::from(from.z),
         });
         for t in [-3.0f32, 0.25, 1.0, 17.5] {
             let at = crate::camera::project_exact(crate::camera::WorldSpot {
-                x: f64::from(from[0] + t * VIEW[0]),
-                y: f64::from(from[1] + t * VIEW[1]),
-                z: f64::from(from[2] + t * VIEW[2]),
+                x: f64::from(from.x + t * VIEW.x),
+                y: f64::from(from.y + t * VIEW.y),
+                z: f64::from(from.z + t * VIEW.z),
             });
             assert!(
                 (at.x - start.x).abs() < 1e-9 && (at.y - start.y).abs() < 1e-9,
@@ -608,14 +656,14 @@ mod tests {
         // a cube ten `z` tall — forty pixels of lift, at four a unit — is the
         // middle of its top face.
         let met = meets(ray_from((100, 101), 0.0, 0.0, -40.0), lo, hi);
-        assert_eq!(met.normal, [0.0, 0.0, 1.0], "at: {:?}", met.at);
+        assert_eq!(met.normal, WorldVec::new(0.0, 0.0, 1.0), "at: {:?}", met.at);
         assert!(met.hit(), "{met:?}");
         assert!(
-            (met.at[0] - 100.5).abs() < 1e-4 && (met.at[1] - 101.5).abs() < 1e-4,
+            (met.at.x - 100.5).abs() < 1e-4 && (met.at.y - 101.5).abs() < 1e-4,
             "the middle of the lid: {:?}",
             met.at
         );
-        assert!((met.at[2] - 10.0).abs() < 1e-4, "at: {:?}", met.at);
+        assert!((met.at.z - 10.0).abs() < 1e-4, "at: {:?}", met.at);
     }
 
     #[test]
@@ -624,18 +672,18 @@ mod tests {
         // Right of the sprite's own column and below the lid's near corner: the
         // hexagon's lower-right facet, which `crate::solid::Side::East` names.
         let met = meets(ray_from((100, 101), 0.0, 14.0, 0.0), lo, hi);
-        assert_eq!(met.normal, [1.0, 0.0, 0.0], "at: {:?}", met.at);
+        assert_eq!(met.normal, WorldVec::new(1.0, 0.0, 0.0), "at: {:?}", met.at);
         assert!(met.hit(), "{met:?}");
-        assert!((met.at[0] - 101.0).abs() < 1e-4, "at: {:?}", met.at);
+        assert!((met.at.x - 101.0).abs() < 1e-4, "at: {:?}", met.at);
     }
 
     #[test]
     fn a_pixel_on_the_lower_left_of_a_cube_meets_its_south_face() {
         let (lo, hi) = cube();
         let met = meets(ray_from((100, 101), 0.0, -14.0, 0.0), lo, hi);
-        assert_eq!(met.normal, [0.0, 1.0, 0.0], "at: {:?}", met.at);
+        assert_eq!(met.normal, WorldVec::new(0.0, 1.0, 0.0), "at: {:?}", met.at);
         assert!(met.hit(), "{met:?}");
-        assert!((met.at[1] - 102.0).abs() < 1e-4, "at: {:?}", met.at);
+        assert!((met.at.y - 102.0).abs() < 1e-4, "at: {:?}", met.at);
     }
 
     #[test]
@@ -651,12 +699,12 @@ mod tests {
                 let from = ray_from((100, 101), 0.0, step_across as f32, step_down as f32);
                 let met = meets(from, lo, hi);
                 assert!(
-                    met.normal.iter().all(|n| *n >= 0.0),
+                    met.normal.array().iter().all(|n| *n >= 0.0),
                     "a face turned away from the camera: {:?}",
                     met.normal
                 );
                 if met.hit() {
-                    let axis = met.normal.iter().position(|n| *n == 1.0).unwrap();
+                    let axis = met.normal.array().iter().position(|n| *n == 1.0).unwrap();
                     seen[axis] = true;
                 } else {
                     outside = outside.max(met.outside);
@@ -690,6 +738,8 @@ mod tests {
     #[test]
     fn a_ray_through_a_boxs_own_corner_is_answered_by_the_order_of_three_ifs() {
         let (lo, hi) = cube();
+        let (lo, hi) = (lo.array(), hi.array());
+        let view = VIEW.array();
 
         // **The vertical corner**: the `x` and `y` exits are equal and the lid
         // is further on. Built by hand and not through `ray_from`, so the tie is
@@ -702,10 +752,14 @@ mod tests {
             hi[1] - from[1],
             "the premise: this ray reaches the `x` plane and the `y` plane at one `t`",
         );
-        let met = meets(from, lo, hi);
+        let met = meets(
+            WorldVec::from_array(from),
+            WorldVec::from_array(lo),
+            WorldVec::from_array(hi),
+        );
         assert_eq!(
             met.normal,
-            [0.0, 1.0, 0.0],
+            WorldVec::new(0.0, 1.0, 0.0),
             "a ray through the vertical corner is answered `+Y` — docs/parity.md's window-parity \
              entry, recorded here and not repaired",
         );
@@ -717,16 +771,21 @@ mod tests {
         let nudged = |axis: usize, by: f32| {
             let mut at = from;
             at[axis] = by;
-            meets(at, lo, hi).normal
+            meets(
+                WorldVec::from_array(at),
+                WorldVec::from_array(lo),
+                WorldVec::from_array(hi),
+            )
+            .normal
         };
         assert_eq!(
             nudged(0, f32::from_bits(from[0].to_bits() - 1)),
-            [0.0, 1.0, 0.0],
+            WorldVec::new(0.0, 1.0, 0.0),
             "one ulp further from the `x` plane and `y` still exits first",
         );
         assert_eq!(
             nudged(1, f32::from_bits(from[1].to_bits() - 1)),
-            [1.0, 0.0, 0.0],
+            WorldVec::new(1.0, 0.0, 0.0),
             "one ulp further from the `y` plane and the same corner reads `+X`",
         );
 
@@ -735,21 +794,31 @@ mod tests {
         // through the top edge leaves two — `hi[2] > lo[2]` lets the side faces
         // be considered at all, and neither is kept without a strict `<`.
         let corner = [100.5, 101.5, 4.5];
-        assert_eq!((hi[0] - corner[0]) / VIEW[0], (hi[2] - corner[2]) / VIEW[2]);
+        assert_eq!((hi[0] - corner[0]) / view[0], (hi[2] - corner[2]) / view[2]);
         assert_eq!(
-            meets(corner, lo, hi).normal,
-            [0.0, 0.0, 1.0],
+            meets(
+                WorldVec::from_array(corner),
+                WorldVec::from_array(lo),
+                WorldVec::from_array(hi)
+            )
+            .normal,
+            WorldVec::new(0.0, 0.0, 1.0),
             "ties go to `z`: the lid is the surface a shared edge belongs to",
         );
         let edge = [100.0, 101.5, 4.5];
-        assert_eq!((hi[1] - edge[1]) / VIEW[1], (hi[2] - edge[2]) / VIEW[2]);
+        assert_eq!((hi[1] - edge[1]) / view[1], (hi[2] - edge[2]) / view[2]);
         assert!(
-            (hi[0] - edge[0]) / VIEW[0] > (hi[2] - edge[2]) / VIEW[2],
+            (hi[0] - edge[0]) / view[0] > (hi[2] - edge[2]) / view[2],
             "and `x` is not in this tie"
         );
         assert_eq!(
-            meets(edge, lo, hi).normal,
-            [0.0, 0.0, 1.0],
+            meets(
+                WorldVec::from_array(edge),
+                WorldVec::from_array(lo),
+                WorldVec::from_array(hi)
+            )
+            .normal,
+            WorldVec::new(0.0, 0.0, 1.0),
             "the `y`/`z` edge is the lid's too",
         );
     }
@@ -764,14 +833,14 @@ mod tests {
     /// reports.
     #[test]
     fn a_lid_answers_with_its_own_plane_at_the_corner_a_body_would_call_a_wall() {
-        let lo = [100.0, 101.0, 7.0];
-        let hi = [101.0, 102.0, 7.0];
+        let lo = WorldVec::new(100.0, 101.0, 7.0);
+        let hi = WorldVec::new(101.0, 102.0, 7.0);
         // The same vertical-corner ray as above, and the same exact tie.
-        let from = [100.9, 101.9, 7.0];
-        assert_eq!(hi[0] - from[0], hi[1] - from[1]);
+        let from = WorldVec::new(100.9, 101.9, 7.0);
+        assert_eq!(hi.x - from.x, hi.y - from.y);
         assert_eq!(
             meets(from, lo, hi).normal,
-            [0.0, 0.0, 1.0],
+            WorldVec::new(0.0, 0.0, 1.0),
             "a face with no area is not a face: a lid's only face is its plane",
         );
     }
@@ -786,9 +855,10 @@ mod tests {
         assert!(met.outside > 0.0, "this ray misses: {met:?}");
         // Whatever it answers is a point *of the box* — that is what the clamp
         // buys, and it is the property every reader downstream leans on.
+        let (at, lo, hi) = (met.at.array(), lo.array(), hi.array());
         for a in 0..3 {
             assert!(
-                met.at[a] >= lo[a] - 1e-5 && met.at[a] <= hi[a] + 1e-5,
+                at[a] >= lo[a] - 1e-5 && at[a] <= hi[a] + 1e-5,
                 "axis {a} left the box: {:?}",
                 met.at
             );
@@ -799,18 +869,18 @@ mod tests {
     fn a_lid_with_no_thickness_is_met_on_its_own_plane() {
         // A floor: `min.z == max.z`, which `crate::solid::Solid`'s own doc says
         // is a legal box and means the plane it lies at.
-        let lo = [100.0, 101.0, 7.0];
-        let hi = [101.0, 102.0, 7.0];
+        let lo = WorldVec::new(100.0, 101.0, 7.0);
+        let hi = WorldVec::new(101.0, 102.0, 7.0);
         let met = meets(ray_from((100, 101), 0.0, 0.0, -28.0), lo, hi);
         assert!(met.hit(), "{met:?}");
-        assert_eq!(met.normal, [0.0, 0.0, 1.0]);
-        assert!((met.at[2] - 7.0).abs() < 1e-4, "at: {:?}", met.at);
+        assert_eq!(met.normal, WorldVec::new(0.0, 0.0, 1.0));
+        assert!((met.at.z - 7.0).abs() < 1e-4, "at: {:?}", met.at);
 
         // A pixel just inside the south-west rim, where the `z` slab and the `y`
         // slab all but run out together: still a lid.
         let rim = meets(ray_from((100, 101), 0.0, -21.12, -28.0), lo, hi);
         assert!(rim.hit(), "{rim:?}");
-        assert_eq!(rim.normal, [0.0, 0.0, 1.0], "at: {:?}", rim.at);
+        assert_eq!(rim.normal, WorldVec::new(0.0, 0.0, 1.0), "at: {:?}", rim.at);
 
         // And **on** the corner itself, which is where this test used to stop.
         // It said: the two slabs do not tie at all, their `t`s differ by
@@ -842,13 +912,10 @@ mod tests {
             assert!(corner.hit(), "{which}: {corner:?}");
             assert_eq!(
                 corner.normal,
-                [0.0, 0.0, 1.0],
+                WorldVec::new(0.0, 0.0, 1.0),
                 "{which}: a lid has no side face to be met on: {corner:?}",
             );
-            assert_eq!(
-                corner.at[2], hi[2],
-                "{which}: off the lid's own plane: {corner:?}"
-            );
+            assert_eq!(corner.at.z, hi.z, "{which}: off the lid's own plane: {corner:?}");
         }
     }
 
@@ -857,8 +924,14 @@ mod tests {
         // Two cubes on one line of sight, one a tile further along `VIEW` than
         // the other. The near one is the one with the larger `x + y + z`, which
         // is what `crate::depth` sorts on.
-        let far = ([100.0, 101.0, 0.0], [101.0, 102.0, 10.0]);
-        let near = ([101.0, 102.0, 11.0], [102.0, 103.0, 21.0]);
+        let far = (
+            WorldVec::new(100.0, 101.0, 0.0),
+            WorldVec::new(101.0, 102.0, 10.0),
+        );
+        let near = (
+            WorldVec::new(101.0, 102.0, 11.0),
+            WorldVec::new(102.0, 103.0, 21.0),
+        );
         let from = ray_from((100, 101), 0.0, 0.0, 0.0);
         let (which, met) = nearest(from, [("far", far.0, far.1), ("near", near.0, near.1)]).unwrap();
         assert_eq!(which, "near", "{met:?}");
@@ -872,7 +945,10 @@ mod tests {
         let (lo, hi) = cube();
         // A box the ray passes a hair beside, offered first, and the cube it
         // goes through, offered second.
-        let beside = ([103.0, 101.0, 0.0], [103.01, 102.0, 10.0]);
+        let beside = (
+            WorldVec::new(103.0, 101.0, 0.0),
+            WorldVec::new(103.01, 102.0, 10.0),
+        );
         let from = ray_from((100, 101), 0.0, 0.0, 0.0);
         let (which, met) = nearest(from, [("beside", beside.0, beside.1), ("cube", lo, hi)]).unwrap();
         assert_eq!(which, "cube", "{met:?}");
@@ -881,8 +957,8 @@ mod tests {
 
     #[test]
     fn nothing_to_meet_is_answered_with_nothing() {
-        let empty: [(u32, [f32; 3], [f32; 3]); 0] = [];
-        assert!(nearest([100.5, 101.5, 0.0], empty).is_none());
+        let empty: [(u32, WorldVec, WorldVec); 0] = [];
+        assert!(nearest(WorldVec::new(100.5, 101.5, 0.0), empty).is_none());
     }
 
     #[test]
@@ -900,10 +976,10 @@ mod tests {
         // runs *away* from the camera, which is the case with a seam in it —
         // see the sibling test for the other direction, where the flight turns
         // its own back and there is no vertical surface at all.
-        let lid_low = ([100.0, 101.5, 3.0], [101.0, 102.0, 3.0]);
-        let riser_low = ([100.0, 102.0, 0.0], [101.0, 102.0, 3.0]);
-        let lid_high = ([100.0, 101.0, 6.0], [101.0, 101.5, 6.0]);
-        let riser_high = ([100.0, 101.5, 3.0], [101.0, 101.5, 6.0]);
+        let lid_low = (WorldVec::new(100.0, 101.5, 3.0), WorldVec::new(101.0, 102.0, 3.0));
+        let riser_low = (WorldVec::new(100.0, 102.0, 0.0), WorldVec::new(101.0, 102.0, 3.0));
+        let lid_high = (WorldVec::new(100.0, 101.0, 6.0), WorldVec::new(101.0, 101.5, 6.0));
+        let riser_high = (WorldVec::new(100.0, 101.5, 3.0), WorldVec::new(101.0, 101.5, 6.0));
 
         let mut surfaces = Vec::new();
         // A quarter of a pixel a step, down the sprite's own middle column,
@@ -975,8 +1051,14 @@ mod tests {
             // diamond's bottom vertex, half a tile below it. `statics::stand_on`,
             // and the same convention `discard_census` reads a picture in.
             let centre_row = f32::from(height) - (crate::camera::TILE_HEIGHT / 2) as f32;
-            let (lo, hi) = ([0.0, 0.0, 0.0], [1.0, 1.0, f32::from(top)]);
-            let far = ([100.0, 100.0, 0.0], [101.0, 101.0, f32::from(top)]);
+            let (lo, hi) = (
+                WorldVec::new(0.0, 0.0, 0.0),
+                WorldVec::new(1.0, 1.0, f32::from(top)),
+            );
+            let far = (
+                WorldVec::new(100.0, 100.0, 0.0),
+                WorldVec::new(101.0, 101.0, f32::from(top)),
+            );
 
             let (mut drawn, mut missed, mut missed_far, mut worst) = (0u32, 0u32, 0u32, 0.0f32);
             for row in 0..height {

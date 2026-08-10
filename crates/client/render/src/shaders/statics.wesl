@@ -575,57 +575,62 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         let choice = nearest(start, in.volumes);
         let best = choice.met;
         let best_at = choice.at;
-        // **A pixel whose ray meets no box keeps the answer a static with no box
-        // at all keeps** — the state this branch was entered in: the tile's own
-        // centre, the zero normal, `SOLID_NOBODY`, and the stance the art was
-        // read as. Everything below is inside the `hit`, and a miss writes
-        // nothing.
+        // **The nearest box wins outright, hit or miss** — the pixel is a
+        // picture of *this* static, the grid holds volumes for it, so which
+        // volume is a question the ray answers and whether the ray landed inside
+        // one is not a question about whether anything was measured.
         //
-        // This is one decision reversed twice and both reasons are worth
-        // keeping. `docs/lighting_rebuild.md`'s "One silhouette" first gave a
-        // miss the *nearest point on the box*, which leaves a fringe: a fragment
-        // clamped onto an edge takes whichever face is nearest, and along a
-        // silhouette that is a side one, so a lattice of wall-shaded dots
-        // appears on floors and roofs, one per tile. `discard` replaced that on
-        // a measurement of **4460 pixels of 187086 in one frame — 2.38%**.
+        // This decision has been reversed three times and each reason is worth
+        // keeping, because the third is the two earlier ones read together.
         //
-        // **That measurement counted the wrong set.** It counted pixels that
-        // *changed in one frame with the roof cut*, and a discarded pixel with
-        // another static drawn behind it changes nothing. Counted per picture
-        // instead — `examples/discard_census.rs`, `docs/footprints.md`'s S4,
-        // Britain's 121×121 — the discard throws away **11.09% of every panel's
-        // art and 32.69% of every whole-tile one**. A table
-        // (`0x0B06`, a display case) is read as a corner of two walls, so it
-        // stands as two `PANEL_THICKNESS` panels and its whole top meets
-        // neither: it left the screen, and a person reported the furniture with
-        // a hole through it.
+        // `docs/lighting_rebuild.md`'s "One silhouette" clamped a miss onto its
+        // box, and a clamp names whichever face exits first — along a silhouette
+        // that is a *side* one, so a lattice of wall-shaded dots appeared on
+        // floors and roofs, one per tile corner. `discard` replaced the clamp on
+        // a measurement of 4460 pixels of 187086 in one frame, 2.38%.
         //
-        // So a miss is now neither clamped nor discarded. It is a *measurement
-        // that is missing*, which this pass already has a name and a treatment
-        // for — see `at`'s own default above and `docs/lighting_rebuild.md`
-        // phase 6c: the tile's centre, and the zero normal `blit.wesl` reads as
-        // "no facing at all", lit from every side. The fringe pixels the discard
-        // was introduced for land in the same state, which is what makes this
-        // one answer rather than a third: neither of them is a point of a
-        // surface anybody measured, and neither of them now claims to be.
-        if hit(best) {
-            at = best.at;
-            normal = best.normal;
-            mine = volumes[best_at].solid;
-            // **And the stance the met face is**, which overrides the art's
-            // reading above for every static the grid holds a shape for. See
-            // `stance_of`: the corner branch is a statement about the *picture*,
-            // and a fragment that has met a box has a better one about itself.
-            // What is left of the branch is the `id` — a corner's two halves
-            // address two instance rows, and a box carries no row number to
-            // choose between them, which is this phase's own remaining join.
-            stance = stance_of(normal);
-            // And the box half of the pair, which only exists where a box does,
-            // and only for a fragment that is *on* one: a fragment whose ray met
-            // no box is not on an outline, it is behind one.
-            if box_edge(tile, base, across, down, in.volumes) {
-                edges = edges | IDS_EDGE_BOX;
-            }
+        // **That measurement counted the wrong set**: pixels that *changed in
+        // one frame with the roof cut*, and a discarded pixel with another
+        // static behind it changes nothing. Counted per picture instead —
+        // `examples/discard_census.rs`, `docs/footprints.md`'s S4 — the discard
+        // throws away 11.09% of every panel's art and 32.44% of every whole-tile
+        // one. A display case (`0x0B06`) read as a corner of two walls stands as
+        // two `PANEL_THICKNESS` panels and its whole top meets neither: it left
+        // the screen, and a person reported the furniture with a hole in it. So
+        // a miss became a *measurement that is missing* — the tile's centre and
+        // the zero normal, which `blit.wesl` lights from every side.
+        //
+        // **And that state, lit from every side, is brighter than the measured
+        // surface beside it.** On a floor it drew as a lit grid: a dashed line
+        // along every tile seam where the sample fell a pixel outside the box it
+        // was plainly a pixel of. `impostor::FRAGMENT` took the seam; what it
+        // left was the case for keeping the clamp at all, since the two states
+        // differ by which lie a pixel tells — a position off by the overhang, or
+        // a facing that is every facing.
+        //
+        // The clamp is back, and the lattice that killed it the first time is
+        // gone at its own root rather than avoided: `shows_a_side` refuses a
+        // face thinner than the grid that reads it, so a flat box answers with
+        // its lid to its own rim and there is no side face to be handed. Counted
+        // before the change: 338 pixels over Britain's 121×121 would have taken
+        // one.
+        at = best.at;
+        normal = best.normal;
+        mine = volumes[best_at].solid;
+        // **And the stance the met face is**, which overrides the art's
+        // reading above for every static the grid holds a shape for. See
+        // `stance_of`: the corner branch is a statement about the *picture*,
+        // and a fragment that has met a box has a better one about itself.
+        // What is left of the branch is the `id` — a corner's two halves
+        // address two instance rows, and a box carries no row number to
+        // choose between them, which is this phase's own remaining join.
+        stance = stance_of(normal);
+        // The box half of the silhouette pair stays behind the `hit`, and that
+        // is the one thing here the clamp does not change: the bit marks the rim
+        // of the region a box genuinely covers, so a fragment reaching it from
+        // outside is behind that rim rather than on it. `docs/silhouettes.md`.
+        if hit(best) && box_edge(tile, base, across, down, in.volumes) {
+            edges = edges | IDS_EDGE_BOX;
         }
     }
 

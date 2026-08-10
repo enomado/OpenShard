@@ -24,7 +24,7 @@ use openshard_client_render::geometry::{Rect, Vec2};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::impostor::{Range, Volume};
-use openshard_client_render::light::{Light, Lighting, Surface};
+use openshard_client_render::light::{Light, Lighting, Surface, WorldVec};
 
 /// The reach the lighting tests give their flame, in tiles.
 ///
@@ -2599,13 +2599,13 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
     // non-consecutive on purpose: nothing here may pass by counting.
     let boxes = [
         Volume {
-            lo: [300.0, 400.5, 0.0],
-            hi: [301.0, 401.0, 3.0],
+            lo: WorldVec::new(300.0, 400.5, 0.0),
+            hi: WorldVec::new(301.0, 401.0, 3.0),
             solid: 7,
         },
         Volume {
-            lo: [300.0, 400.0, 0.0],
-            hi: [301.0, 400.5, 6.0],
+            lo: WorldVec::new(300.0, 400.0, 0.0),
+            hi: WorldVec::new(301.0, 400.5, 6.0),
             solid: 11,
         },
         // And a lid, flat: `lo.z == hi.z`, which is what the grid stands for a
@@ -2616,8 +2616,8 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
         // and `impostor::tests::a_lid_with_no_thickness_is_met_on_its_own_plane`
         // is where that case is constructed rather than hoped for.
         Volume {
-            lo: [300.0, 400.0, 9.0],
-            hi: [301.0, 401.0, 9.0],
+            lo: WorldVec::new(300.0, 400.0, 9.0),
+            hi: WorldVec::new(301.0, 401.0, 9.0),
             solid: 13,
         },
     ];
@@ -2687,63 +2687,47 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
             )
             .expect("two boxes");
 
-            // **A miss is drawn, and drawn as a measurement that is missing** —
-            // `statics.wesl`'s own branch, and the assertion is the state it
-            // leaves rather than the pixel's absence. The discard this used to
-            // hold to went out with `62a18a5`: it threw away 11.09% of every
-            // panel's art and 32.44% of every whole-tile one, a display case
-            // losing its whole top, so a fragment whose ray meets nothing keeps
-            // the answer a static with no boxes at all keeps — the tile's centre,
-            // the zero normal, `SolidId::NOBODY`.
+            // **A miss is answered by the box it came nearest, exactly as a hit
+            // is** — so every assertion below is asked of every texel, and
+            // `outside` is a *count* rather than a branch.
             //
-            // Held to all three and not to the kind alone, because the zero
-            // normal is what `blit.wesl` reads as "no facing, lit from every
-            // side": a producer that quietly gave one of these a face would light
-            // it brighter than the measured surface beside it, which is what a
-            // dashed glowing line along a floor's tile seams was.
+            // Three states in three commits, and this is the third. The clamp
+            // was replaced by `discard` because it handed a fragment whichever
+            // face exits first, which along a silhouette is a side one: a
+            // lattice of wall-shaded dots on floors and roofs. `discard` was
+            // replaced by "a measurement that is missing" — the tile's centre and
+            // the zero normal — because it threw away 11.09% of every panel's art
+            // and 32.44% of every whole-tile one, a display case losing its whole
+            // top. And that state is *lit from every side*, so it draws brighter
+            // than the measured surface beside it: on a floor it was a dashed
+            // glowing line along every tile seam.
+            //
+            // The clamp is back because its own defect is now cured at the root
+            // rather than avoided — `impostor::shows_a_side` refuses a face
+            // thinner than the grid that reads it, so a flat box answers with its
+            // lid all the way to its rim and there is no side face to hand out.
+            // What is left of "no measurement" is the honest case: a static the
+            // grid holds no boxes for at all, which this fixture is not.
             if !met.hit() {
                 outside += 1;
                 worst = worst.max(met.outside);
-                assert_eq!(
-                    gbuffer::ids_kind(places.at(x, y)),
-                    Some(Kind::Static),
-                    "({x}, {y}) misses every box by {} of a tile and was not drawn",
-                    met.outside,
-                );
-                assert_eq!(
-                    places.normal_at(x, y),
-                    gbuffer::pack_normal([0.0; 3]),
-                    "({x}, {y}) missed every box and was given a facing anyway",
-                );
-                let point = places.position_at(x, y);
-                assert_eq!(
-                    gbuffer::unpack_solid(point[3]),
-                    openshard_client_render::occlusion::SolidId::NOBODY,
-                    "({x}, {y}) missed every box and named one",
-                );
-                for (axis, want) in [(0, f32::from(at.x) + 0.5), (1, f32::from(at.y) + 0.5)] {
-                    assert!(
-                        (point[axis] - want).abs() < 1e-4,
-                        "({x}, {y}) missed every box and is not at its tile's centre: {point:?}",
-                    );
-                }
-                continue;
             }
             assert_eq!(
                 gbuffer::ids_kind(places.at(x, y)),
                 Some(Kind::Static),
-                "({x}, {y}) meets a box and was not drawn",
+                "({x}, {y}) was not drawn",
             );
 
             assert_eq!(
                 places.normal_at(x, y),
-                gbuffer::pack_normal(met.normal),
+                gbuffer::pack_normal(met.normal.array()),
                 "({x}, {y}) met a different face on the GPU: {met:?}",
             );
             let point = places.position_at(x, y);
+            let met_at = met.at.array();
             for (axis, name) in [(0, 'x'), (1, 'y'), (2, 'z')] {
                 assert!(
-                    (point[axis] - met.at[axis]).abs() < 1e-4,
+                    (point[axis] - met_at[axis]).abs() < 1e-4,
                     "({x}, {y}) landed elsewhere on {name}: {point:?} against {:?}",
                     met.at,
                 );
@@ -2754,9 +2738,10 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
             // rather than as a bound on `outside`, because a bound is a number
             // somebody would have to pick and this is the claim itself.
             let volume = &boxes[which];
+            let (volume_lo, volume_hi) = (volume.lo.array(), volume.hi.array());
             for axis in 0..3 {
                 assert!(
-                    met.at[axis] >= volume.lo[axis] - 1e-5 && met.at[axis] <= volume.hi[axis] + 1e-5,
+                    met_at[axis] >= volume_lo[axis] - 1e-5 && met_at[axis] <= volume_hi[axis] + 1e-5,
                     "({x}, {y}) was answered off its own box on axis {axis}: {:?}",
                     met.at,
                 );
@@ -2773,7 +2758,12 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
                 gbuffer::unpack_solid(point[3]),
             );
             compared += 1;
-            faces[met.normal.iter().position(|n| *n == 1.0).expect("one axis")] += 1;
+            faces[met
+                .normal
+                .array()
+                .iter()
+                .position(|n| *n == 1.0)
+                .expect("one axis")] += 1;
         }
     }
 
@@ -2785,26 +2775,27 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
          {outside} of them fell outside their own volume, the worst by {worst} of a tile",
         faces[0], faces[1], faces[2],
     );
-    // Every texel of the quad is accounted for, as one or the other: the two
-    // counts partition the rectangle, so a rule that drew nothing and a rule
-    // that drew everything both fail here rather than one of them slipping past.
+    // **Every texel of the quad was compared**, and that is the assertion the
+    // clamp's return makes possible: a static the grid holds boxes for has no
+    // unanswered pixels at all now, so this is the whole rectangle rather than
+    // a partition of it. A rule that drew nothing fails here; so does one that
+    // left a fragment unmeasured and hoped nobody swept it.
     assert_eq!(
-        compared + outside,
+        compared,
         u32::from(WIDE) * u32::from(TALL),
-        "every texel of an opaque sprite is either met or discarded",
+        "every texel of an opaque sprite is a point of one of its boxes",
     );
     assert!(
         faces.iter().all(|seen| *seen > 100),
         "the sweep should meet all three of a box's camera-facing sides: {faces:?}",
     );
-    // And that the miss case was reached at all — the positive control for the
-    // discard assertion above, which says nothing on a fixture where every texel
-    // hits. **How far** a real static's art overhangs its own fitted prism is
-    // the number phase 6's own "done when" asks for, and it is not this: this
-    // fixture's picture is a plain rectangle nobody fitted to anything, so its
-    // overhang is a property of the fixture — and here it is nearly half the
-    // sprite, which is the cost of the discard at its worst. See that phase's
-    // backlog.
+    // And that the miss case was reached at all — the positive control for
+    // "answered by the nearest box" being a rule this sweep actually exercised,
+    // which it says nothing about on a fixture where every texel hits. **How
+    // far** a real static's art overhangs its own fitted prism is the number
+    // phase 6's own "done when" asks for, and it is not this: this fixture's
+    // picture is a plain rectangle nobody fitted to anything, so its overhang is
+    // a property of the fixture — and here it is nearly half the sprite.
     assert!(outside > 0, "a rectangle over two strips should overhang them");
 }
 

@@ -51,6 +51,19 @@ const VIEW: vec3<f32> = vec3<f32>(1.0, 1.0, Z_PER_TILE);
 // for.
 const FRAGMENT: f32 = 0.032141216;
 
+// How many virtual pixels tall one `z` unit draws — `camera::Z_STEP`, written as
+// the division of the two constants above so it cannot drift from either.
+const Z_STEP: f32 = TILE_WIDTH / Z_PER_TILE;
+
+// Whether a box this tall has side faces a sample could land on: the band they
+// draw as is `(hi.z - lo.z) * Z_STEP` virtual pixels, and under one pixel there
+// is no fragment centre inside it. `impostor::shows_a_side` carries the
+// argument — this was `hi.z > lo.z` while a lid was a plane, and a lid is
+// `LID_THICKNESS` deep now, a sixteenth of a pixel.
+fn shows_a_side(lo_z: f32, hi_z: f32) -> bool {
+    return (hi_z - lo_z) * Z_STEP > 1.0;
+}
+
 // Where the view ray through one sprite fragment starts: the point at the
 // static's own base height.
 //
@@ -168,7 +181,12 @@ fn meets(start: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> Meeting {
     // each shaded as a wall in the middle of a floor. `impostor::meets` has the
     // whole account, including why no box `Solid::box_of` builds is flat any
     // more (`docs/parity.md` P4 step 1) and why the rule stays regardless.
-    if hi.z > lo.z {
+    //
+    // **And "no area" is measured against the grid rather than against zero.**
+    // A side face draws as a band `(hi.z - lo.z) * Z_STEP` virtual pixels tall,
+    // and `LID_THICKNESS` is a sixteenth of one — a face with area that no
+    // sample can land on. `impostor::shows_a_side` is the twin.
+    if shows_a_side(lo.z, hi.z) {
         if far.y < exit {
             exit = far.y;
             normal = vec3<f32>(0.0, 1.0, 0.0);
