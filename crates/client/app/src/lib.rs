@@ -6517,6 +6517,14 @@ fn frame_dump_root() -> std::path::PathBuf {
 /// The summary is written last on purpose — a directory that has `inputs.txt` in
 /// it has every picture beside it, so a reader never compares a half-written
 /// dump against a whole one.
+///
+/// **`inputs.txt` is written verbatim and gets no line of its own from here**,
+/// which is worth stating because one line of it reads oddly beside the
+/// directory: `view` is what the *window* was showing when the key was pressed,
+/// while each picture beside it is named for the plane it actually is. Adding a
+/// note to explain that would be a line the tool's own summary does not have,
+/// and the two are written to be diffed — an extra line here is a difference in
+/// every comparison, forever, to save one sentence of documentation.
 fn write_frame_dump(
     into: &std::path::Path,
     planes: &[(View, Vec<u8>)],

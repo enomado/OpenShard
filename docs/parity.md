@@ -216,8 +216,30 @@ Two things came out of it, and the second is the point:
   surface's format is a fact about the compositor, and a comparison cannot depend
   on one.
 
-*Not done, and it is the first backlog item below:* **no F12 press has yet
-written a directory.** The failure was witnessed; the success has not been.
+**Then it worked, and this is what a press leaves.** Two dumps from one session
+at Britain, `/tmp/openshard-frame/frame-0/` and `frame-1/`: thirteen pictures of
+`1919x2077` — the viewport at the magnifying zoom the client was on — and an
+`inputs.txt` each. Their diff is four lines, and every one of them is something a
+person did between the two presses:
+
+```
+camera     eye tile (1503, 1654) → (1505, 1657)      the body walked
+sky        None → Some(Ambient { … })                F10, night on
+flame_time 3.443795s → 13.605293s                    ten seconds passed
+view       lit → normal                              F11
+```
+
+That is the whole of what the summary is for. Nothing else moved — the same
+facet, the same 2,906,871 statics, the same cutaway (`max_z: 47`,
+`no_draw_roofs: true`: the player is indoors), the same tuning, `bake = kept
+across frames`, `impostor = Met` — so a difference between these two frames is a
+difference in those four lines and in nothing that had to be reconstructed by
+reading `App::draw`.
+
+One line of `inputs.txt` reads oddly beside the directory and is deliberately
+left alone: `view` is what the *window* was showing, while each picture beside it
+is named for the plane it is. A note explaining that would be a line the tool's
+summary does not have, and the two exist to be diffed.
 
 ### P3 — the gate
 
@@ -298,15 +320,14 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
   for the server is serial and here is a nested `x`/`y` loop), and `highlight`.
   D1 gave the two a shared assembly; it did not give them a shared *route
   through* it, and no gate compares the two routes on one place.
-- 🚩 **No F12 press has written a directory yet.** The first one panicked on the
-  surface's format (above, now fixed and gated); the fixed path has been read and
-  not run. Press it once in the live client and look at
-  `/tmp/openshard-frame/frame-0/` — thirteen pictures and an `inputs.txt`. Worth
-  noting what the failure cost, since it is this plan's own argument in
-  miniature: a client that dies on a diagnostic keypress takes the frame a person
-  was looking at with it, which is exactly the instant the dump exists to keep.
-  A dump that cannot be taken twice from one session is a tool with a rationed
-  answer.
+- 🚩 **A dump is 156 MB and the pictures are uncompressed.** Thirteen planes of a
+  `1919x2077` viewport is twelve megabytes apiece, because `png.rs` writes stored
+  deflate blocks on the argument that a debug dump is a file nobody keeps — which
+  was true when a dump was one picture from a tool. A press of F12 is now
+  thirteen, and a session's worth of presses fills a temp directory faster than
+  anyone will think to empty it. `png.rs`'s own doc names the answer (the `png`
+  crate as a dev-dependency) and rules it out for the library; the client is not
+  the library, and a dump is exactly the caller that changes the arithmetic.
 - 🚩 **The tool advances no animation clock at all.** The first thing
   `Inputs::summary` caught, on the first run: `isolated_scene` passes
   `StaticAnimations::default()` — nought cycles — where the client builds 1068
