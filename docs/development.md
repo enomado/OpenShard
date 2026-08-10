@@ -136,3 +136,22 @@ drift is latent, not a build failure yet. Not fixed here (found while
 rewriting the lighting docs, out of scope for that pass): if a future
 `cargo update` or a clean environment on an older toolchain hits this, pin
 `wesl` the way `tokio-postgres` was pinned above.
+
+## The toolchain is newer than the lints the tree was written against
+
+`cargo clippy --workspace --all-targets` is expected to be silent — it is what
+CI runs — and on the local toolchain it is not, as of 2026-08-11. The warnings
+are all one shape: lints that did not exist when the code was written, firing on
+code nobody has touched.
+
+```
+chunks_exact_to_as_chunks   crates/common/protocol/src/{codec,speech}.rs,
+                            crates/client/render/src/png.rs, and several tests
+```
+
+Nothing here is a defect, and none of it is a reason to edit a file a session is
+not otherwise in: a sweep like this belongs to one pass over the workspace with
+one commit, not to whichever session happens to run clippy next. **What matters
+while it lasts is reading the output rather than the exit code** — a session's
+own warning is easy to miss in a list of a dozen inherited ones, so check the
+paths, not the count.

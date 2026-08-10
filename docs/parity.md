@@ -564,6 +564,16 @@ and both mistakes are the kind that repeat.
 - **Record the candidate you refuted.** The selection loop looked like a second
   tie and is not one; without that written down the next session proposes it
   again and spends the same hour.
+- **A share is not a picture, and only one of the two answers "is this the thing
+  a person is pointing at".** The fourth, and it nearly cost a repair. The rim
+  rule's own probe reported 46 of 1,010 side-face fragments inside the quantum;
+  read as 4.5% that is a fringe, and it was written down as *refuted*. Drawn, the
+  same 46 are a band one fragment wide running the whole length of both of a
+  body's top edges — and a line is the one shape the report was about. A ratio
+  answers "how much of this population", never "what shape is it", and a defect
+  reported as a *line* has already told you which question to ask. See
+  `docs/lighting_rebuild.md`'s seam-probe entry for the numbers and the picture
+  side by side.
 - **A pass no tool draws is an input no tool varies** — the third one, added
   2026-08-10 and the first to cost a *feature* rather than a measurement. The
   client's frame has a pass in it that nothing else here draws
@@ -933,6 +943,16 @@ a test red, and the test names which grid met which.
 
 ## Backlog
 
+- 🚩 **A dump overwrites the last one, and the pair it exists to make is the
+  pair it destroys.** `App::frame_dumps` counts from nought at every launch, so
+  the second run's first press lands on `frame-0` — the directory the first
+  run's first press wrote. Two dumps to be diffed therefore survive only inside
+  one session of the client, which is exactly the case a person does not have
+  when they close the window, rebuild, and press F12 again to see whether a fix
+  landed. It cost real evidence this session: the frame the seam's first
+  measurements were taken from is gone. The counter wants to continue from what
+  the directory already holds, which is one read of `frame_dump_root()` at
+  start-up.
 - 🚩 **`inputs.txt` does not say which fringe drew the frame, and a key now
   changes it between two presses.** `frame::Inputs::summary` states every field
   of a `Frame`, and `impostor::Fringe` is not one — it lives on the renderer
