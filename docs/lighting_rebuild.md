@@ -2656,13 +2656,24 @@ Things noticed while writing this, not blocking any phase:
   touch it.
   <br>
   **Which makes seven of them the fringe, not a new defect** — the same open item the
-  cornice case ends on, with the same three ways out already written there (keep
-  it; give a miss no facing, which `blit.wesl` shades as lit from every side; or
-  give a miss the face the sprite's own volume presents rather than the nearest
-  one). What this session adds is that the fringe is not a rare corner: it is a
-  dashed line across every floor a person stands on indoors, and the pieces
-  making it are `CLEAR` ones the grid holds nothing for, so no identity can
-  excuse them either.
+  cornice case ends on, and **not with the same three ways out**, which this
+  paragraph got wrong when it was written: the cornice entry names its own
+  candidates "the zero vector is not one of them", ruling out a no-facing miss
+  by reasoning alone — a fringe with no facing is lit from every side, which
+  makes a *blaze* brighter, not fainter. What is actually open there is two,
+  not three: keep the clamp, or give a miss the face the sprite's own volume
+  presents. No-facing is a live, unmeasured candidate for a *different*
+  backlog item (the serrated-edge entry below), not for this one — and
+  `statics.wesl`'s own history ("One silhouette", read at
+  `docs/parity.md`'s P4 step 2) is a third, prior data point again: giving
+  every miss no facing, tried globally rather than scoped to either of these
+  cases, measured a worse artefact (a lattice of lit dots across every floor
+  and roof seam) and was reverted. Three mentions of the same shape of fix
+  reaching three different verdicts is itself worth having written down.
+  What this session adds beyond that correction is that the fringe is not a
+  rare corner: it is a dashed line across every floor a person stands on
+  indoors, and the pieces making it are `CLEAR` ones the grid holds nothing
+  for, so no identity can excuse them either.
   <br>
   **What is left of the difference, ranked, and none of it measured yet:** the
   frame's rectangle and the live `Cutaway` (both feed the partition above); the

@@ -662,10 +662,28 @@ The order follows the counts and the blast radius:
 
 1. **A floor is a body** ✅ 2026-08-10 — see below.
 2. **A `CLEAR` piece with a box** — 15.1%, and the pair that ends both the
-   cornice entry and the floor entry. Two honest answers and the plan picks one:
-   it stands in the grid (and has a name), or it is given no box (and is a
-   billboard). Phase 6c refused the second; this is where that gets revisited
-   with the census in hand.
+   cornice entry and the floor entry. **Reframed 2026-08-10, not resolved: the
+   two-way choice this line offered was never the one the code or the defect
+   are shaped like.** Phase 6c already settled "stand in the grid or be a
+   billboard" — every such piece has had a real box regardless of grid
+   membership since then (`statics::push_volumes` calls `boxes_of`
+   unconditionally). What none of them get is a *name* (`SolidId::NOBODY`), a
+   third state this line never named, and "stand in the grid" would not have
+   fixed the defect this line is paired with even if it were still open: the
+   cornice glow and the furniture-seam dashes
+   (`docs/lighting_rebuild.md`'s cornice entry and its seam-probe follow-up)
+   come from a *neighbouring* lid's shadow test deciding a missed pixel by
+   clamp geometry, and a piece's own identity only ever exempts it from
+   shadowing *itself*. The candidates that would touch it are the cornice
+   entry's own two ("keep the clamp" or "give a miss the sprite's own volume's
+   face") — a third, "give the miss no facing instead of clamping it", is
+   *ruled out there by the cornice entry's own reasoning* (lit from every side
+   makes a blaze brighter) and was, separately, already tried as a *global*
+   policy in `statics.wesl` ("One silhouette") and reverted for measuring a
+   worse artefact elsewhere (a lattice of lit dots across every floor and roof
+   seam, 2.38% of one frame). The seam-probe entry had mis-cited this as one
+   of the cornice entry's own three ways out; both docs are corrected now. No
+   code changed this session — this is a documentation-only pass.
 3. **The whole-tile stand-in** — 31.6%, the expensive one, because reducing it
    means measuring more art rather than writing a rule.
 4. **`PANEL_THICKNESS`** — one slab straddling the tile boundary instead of two
