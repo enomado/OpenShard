@@ -250,7 +250,7 @@ use std::path::PathBuf;
 
 use openshard_client_render::atlas::{LandAtlas, TexmapAtlas};
 use openshard_client_render::blit::Frame as BlitFrame;
-use openshard_client_render::camera::{Camera, WorldSpot, Zoom, project_exact};
+use openshard_client_render::camera::{Camera, RealPixel, WorldSpot, Zoom, project_exact};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::depth;
@@ -717,7 +717,7 @@ fn main() {
     for _ in 0..zoom_notches {
         zoom = zoom.scale_up();
     }
-    camera.zoom_about((width / 2) as i32, (height_px / 2) as i32, zoom);
+    camera.zoom_about(RealPixel::new((width / 2) as i32, (height_px / 2) as i32), zoom);
 
     let projection = camera.projection();
     // Where a world position lands in this frame, in real pixels — stated once.

@@ -5020,7 +5020,7 @@ mod tests {
         while !zoom.is_widest() {
             zoom = zoom.scale_down();
         }
-        camera.zoom_about(0, 0, zoom);
+        camera.zoom_about(crate::camera::RealPixel::new(0, 0), zoom);
         let animations = crate::animate::StaticAnimations::default();
         let atlas = crate::atlas::StaticAtlas::build(
             &art,

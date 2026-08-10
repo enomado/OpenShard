@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use crate::camera::{Camera, WorldPoint, Zoom};
+use crate::camera::{Camera, RealPixel, WorldPoint, Zoom};
 use crate::follow::{Follower, Gaze, Rig};
 
 /// Whether the camera is tied to the body or the mouse.
@@ -44,7 +44,7 @@ pub enum Follow {
 struct Drag {
     /// Where the cursor was last seen, in physical pixels from the viewport's
     /// top-left. Needed by the wheel, which is told a delta and not a position.
-    cursor: (i32, i32),
+    cursor: RealPixel,
     /// Whether the middle button is down.
     panning: bool,
 }
@@ -146,7 +146,7 @@ impl Control {
     }
 
     /// Where the cursor was last seen, in viewport pixels.
-    pub fn cursor(&self) -> (i32, i32) {
+    pub fn cursor(&self) -> RealPixel {
         self.drag.cursor
     }
 
@@ -225,9 +225,9 @@ impl Control {
     /// Answers whether the eye actually moved: at zoom 4 most one-pixel drags
     /// move nothing, and asking for a redraw for each of them would be a frame
     /// per mouse report showing the same picture.
-    pub fn cursor_moved(&mut self, x: i32, y: i32) -> bool {
-        let (dx, dy) = (x - self.drag.cursor.0, y - self.drag.cursor.1);
-        self.drag.cursor = (x, y);
+    pub fn cursor_moved(&mut self, at: RealPixel) -> bool {
+        let (dx, dy) = (at.x - self.drag.cursor.x, at.y - self.drag.cursor.y);
+        self.drag.cursor = at;
         self.drag.panning && self.pan(dx, dy)
     }
 
@@ -276,12 +276,12 @@ impl Control {
         // which is a fight rather than a camera. Unlocked, it is about the
         // cursor, which is the difference between a camera that feels placed and
         // one that feels shoved.
-        let (anchor_x, anchor_y) = match self.follow {
-            Follow::Body => (self.camera.width as i32 / 2, self.camera.height as i32 / 2),
+        let anchor = match self.follow {
+            Follow::Body => RealPixel::new(self.camera.width as i32 / 2, self.camera.height as i32 / 2),
             Follow::Free => self.drag.cursor,
         };
         let mut probe = self.camera;
-        probe.zoom_about(anchor_x, anchor_y, wanted);
+        probe.zoom_about(anchor, wanted);
         if let Some(refusal) = self.refuses(&probe) {
             return Err(refusal);
         }
@@ -314,8 +314,8 @@ impl Control {
             refusal.get_or_insert(too_large);
             // About the middle: this is not somebody's wheel, it is the device
             // saying no, and there is no cursor that asked for it.
-            let (cx, cy) = (self.camera.width as i32 / 2, self.camera.height as i32 / 2);
-            self.camera.zoom_about(cx, cy, tighter);
+            let centre = RealPixel::new(self.camera.width as i32 / 2, self.camera.height as i32 / 2);
+            self.camera.zoom_about(centre, tighter);
         }
         // The zoom in force is the one this settled on, not the one the first
         // rung refused.
@@ -481,11 +481,14 @@ mod tests {
     #[test]
     fn the_cursor_moves_the_eye_only_while_the_button_is_down() {
         let mut control = control();
-        assert!(!control.cursor_moved(400, 300), "no button, no pan");
-        assert_eq!(control.cursor(), (400, 300));
+        assert!(
+            !control.cursor_moved(RealPixel::new(400, 300)),
+            "no button, no pan"
+        );
+        assert_eq!(control.cursor(), RealPixel::new(400, 300));
         let before = control.camera().eye();
         control.set_panning(true);
-        assert!(control.cursor_moved(410, 300));
+        assert!(control.cursor_moved(RealPixel::new(410, 300)));
         assert_eq!(control.camera().eye().x, before.x - 10);
     }
 
@@ -522,7 +525,7 @@ mod tests {
     fn a_locked_zoom_is_about_the_middle() {
         let mut locked = control();
         locked.set_panning(false);
-        locked.cursor_moved(0, 0);
+        locked.cursor_moved(RealPixel::new(0, 0));
         let eye = locked.camera().eye();
         assert!(locked.zoom(true).unwrap());
         assert_eq!(locked.camera().eye(), eye, "the middle does not move");
@@ -531,10 +534,10 @@ mod tests {
         // still instead — which moves the eye.
         let mut free = control();
         free.unlock();
-        free.cursor_moved(0, 0);
-        let under_cursor = free.camera().pick(0, 0);
+        free.cursor_moved(RealPixel::new(0, 0));
+        let under_cursor = free.camera().pick(RealPixel::new(0, 0));
         assert!(free.zoom(true).unwrap());
-        assert_eq!(free.camera().pick(0, 0), under_cursor);
+        assert_eq!(free.camera().pick(RealPixel::new(0, 0)), under_cursor);
         assert_ne!(free.camera().eye(), eye);
     }
 

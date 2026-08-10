@@ -170,7 +170,7 @@ mod oracle;
 use std::path::PathBuf;
 
 use openshard_client_render::blit::{Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, WorldSpot, Zoom, project_exact};
+use openshard_client_render::camera::{Camera, RealPixel, WorldSpot, Zoom, project_exact};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::facing::{Face, Prism};
@@ -1764,7 +1764,7 @@ fn main() {
     for _ in 0..zoom_notches {
         zoom = zoom.scale_up();
     }
-    camera.zoom_about((width / 2) as i32, (height / 2) as i32, zoom);
+    camera.zoom_about(RealPixel::new((width / 2) as i32, (height / 2) as i32), zoom);
 
     const DEPTH: f32 = 0.5;
     let mut vertices: Vec<MeshFaceVertex> = Vec::new();

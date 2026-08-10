@@ -43,7 +43,7 @@
 mod oracle;
 
 use openshard_client_pathtrace::trace as pt_trace;
-use openshard_client_render::camera::{Camera, TileBounds, WorldSpot, Zoom, project_exact};
+use openshard_client_render::camera::{Camera, RealPixel, TileBounds, WorldSpot, Zoom, project_exact};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::depth;
@@ -459,7 +459,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
     for _ in 0..zoom_notches {
         zoom = zoom.scale_up();
     }
-    camera.zoom_about((SIDE / 2) as i32, (SIDE / 2) as i32, zoom);
+    camera.zoom_about(RealPixel::new((SIDE / 2) as i32, (SIDE / 2) as i32), zoom);
     let projection = camera.projection();
     // Where a world position lands in this frame, in real pixels. The tracer's
     // camera is *measured* through this closure and never restates it — see

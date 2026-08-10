@@ -26,7 +26,7 @@ use openshard_uofiles::tiledata::TileData;
 
 use crate::animate::StaticAnimations;
 use crate::atlas::StaticAtlas;
-use crate::camera::Camera;
+use crate::camera::{Camera, RealPixel};
 use crate::cutaway::Cutaway;
 use crate::depth;
 use crate::sprite::SpriteQuad;
@@ -285,9 +285,9 @@ pub fn pick(
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
-    cursor: (i32, i32),
+    cursor: RealPixel,
 ) -> Option<usize> {
-    let in_view = camera.to_view(camera.pick(cursor.0, cursor.1));
+    let in_view = camera.to_view(camera.pick(cursor));
     let mut hit: Option<(depth::Order, usize)> = None;
     for (index, item) in items.iter().enumerate() {
         let Some(placed) = place(item, camera, tiledata, animations, atlas, cutaway) else {
@@ -473,12 +473,12 @@ mod tests {
 
     /// The viewport pixel a point in the drawn image sits at — the inverse of
     /// what [`pick`] undoes, so a test can click on a sprite it has placed.
-    fn cursor_over(camera: &Camera, at: crate::camera::ViewPoint, dx: f32, dy: f32) -> (i32, i32) {
+    fn cursor_over(camera: &Camera, at: crate::camera::ViewPoint, dx: f32, dy: f32) -> RealPixel {
         let spot = camera.to_viewport(crate::camera::ViewPixel {
             x: (at.x + dx) as i32,
             y: (at.y + dy) as i32,
         });
-        (spot.x as i32, spot.y as i32)
+        RealPixel::new(spot.x as i32, spot.y as i32)
     }
 
     /// Art with a hole in it: the left half transparent, the right half drawn.

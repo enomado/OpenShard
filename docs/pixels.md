@@ -370,14 +370,33 @@ item and `docs/silhouettes.md`'s subject. A test cannot stand in for it.
   typed, the twelve-line body inside it is untouched. No `Index`/`Deref`: the
   house style's reason against `Deref` on newtypes applies the same way to
   `Index` here, and the escape hatch already had a name.
-- 🚩 **The *whole* real pixel is still untyped, and it is the one the cursor
-  arrives on.** `RealPoint` is the fraction; `Camera::pick(x: i32, y: i32)`,
-  `Camera::width`/`height`, `image_size` and `ViewportRect` are all whole real
-  pixels as bare integers. Nothing collides today — `pick` consumes its pair in
-  the same call, as the old module doc said — but the pair is two `i32`s that a
-  caller with a `ViewPixel` in hand can pass by mistake, which is exactly the
-  shape `WorldPixel`/`ViewPixel` exist to refuse. Small and mechanical; it wants
-  the app crate's event handling looked at in the same pass.
+- ✅ **The whole real pixel — the one the cursor arrives on — resolved
+  2026-08-10, by [`camera::RealPixel`](../crates/client/render/src/camera.rs).**
+  `RealPoint` was the fraction; `Camera::pick(x: i32, y: i32)` was the pair a
+  caller holding a `ViewPixel` could pass by mistake and have it compile —
+  exactly the shape `WorldPixel`/`ViewPixel` exist to refuse, and it was not
+  only `pick`'s: `mobiles::pick`, `items::pick` and `statics::pick` each took
+  the identical bare `cursor: (i32, i32)`, four sites repeating one collision.
+  `RealPixel` is now what all four take, what `Camera::zoom_about` anchors on,
+  and what `Control` carries as its own cursor — `Control::cursor()`,
+  `Control::cursor_moved`, `Drag::cursor`. The app crate's
+  `WindowEvent::CursorMoved` handler builds one `RealPixel` from the physical
+  position once, and everything downstream — panning, zooming, `ask_to_cursor`,
+  `pick_tile`, the three pass-level `pick`s — takes it from there rather than
+  re-deriving a pair of `i32`s at each site, which is the event-handling sweep
+  the previous note asked for.
+
+  **`Camera::width`/`height`, `image_size` and `ViewportRect` stay bare
+  integers, deliberately.** They are extents, not points — a count of real
+  pixels rather than a position in real-pixel space — and nothing in this
+  crate confuses an extent with the point space it bounds; a `ViewPixel` was
+  never at risk of being passed where a width is expected, or the reverse.
+  Giving them `RealPixel`'s type would conflate the two kinds of quantity this
+  page has kept apart everywhere else (a tile is a size, `WorldSpot` is a
+  point, and neither borrows the other's type). Same reasoning P3 already
+  wrote down for `geometry::Rect`: a shape shared by several spaces is a
+  different problem from two spaces sharing one number, and solving it here
+  would be inventing the fix before the problem is the one in front of it.
 - 🚩 **`geometry::Vec2` means a *tile-space* position in `light.rs`.** `Light.at`
   and `Spot::at` are `x`, `y` in tiles — `Vec2::new(100.5, 100.5)` is the middle
   of tile 100,100, not a pixel of anything. That is a seventh meaning for the

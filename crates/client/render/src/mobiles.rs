@@ -42,7 +42,7 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::equipconv::EquipConv;
 
 use crate::atlas::{AnimAtlas, FrameKey};
-use crate::camera::{Camera, ViewPixel, ViewPoint, WorldPoint};
+use crate::camera::{Camera, RealPixel, ViewPixel, ViewPoint, WorldPoint};
 use crate::cutaway::Cutaway;
 use crate::depth;
 use crate::follow::Gaze;
@@ -556,9 +556,9 @@ pub fn pick(
     atlas: &AnimAtlas,
     cutaway: &Cutaway,
     equip_conv: &EquipConv,
-    cursor: (i32, i32),
+    cursor: RealPixel,
 ) -> Option<usize> {
-    let in_view = camera.to_view(camera.pick(cursor.0, cursor.1));
+    let in_view = camera.to_view(camera.pick(cursor));
     let mut hit: Option<(depth::Order, usize)> = None;
     for (index, mobile) in mobiles.iter().enumerate() {
         if !cutaway.shows_mobile(mobile.at.z) {
@@ -704,12 +704,12 @@ mod tests {
 
     /// The viewport pixel a point in the drawn image sits at — the inverse of
     /// what [`pick`] undoes, so a test can click on a sprite it has placed.
-    fn cursor_over(camera: &Camera, at: Rect, dx: f32, dy: f32) -> (i32, i32) {
+    fn cursor_over(camera: &Camera, at: Rect, dx: f32, dy: f32) -> RealPixel {
         let spot = camera.to_viewport(ViewPixel {
             x: (at.x + dx) as i32,
             y: (at.y + dy) as i32,
         });
-        (spot.x as i32, spot.y as i32)
+        RealPixel::new(spot.x as i32, spot.y as i32)
     }
 
     /// Where a mobile's body lands, asked the way the passes ask it.

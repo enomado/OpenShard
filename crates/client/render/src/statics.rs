@@ -24,7 +24,7 @@ use openshard_uofiles::tiledata::TileData;
 
 use crate::animate::StaticAnimations;
 use crate::atlas::{Sprite, StaticAtlas};
-use crate::camera::{Camera, TILE_HEIGHT, TileBounds, ViewPoint};
+use crate::camera::{Camera, RealPixel, TILE_HEIGHT, TileBounds, ViewPoint};
 use crate::cutaway::{self, Cutaway};
 use crate::depth;
 use crate::geometry::Rect;
@@ -524,9 +524,9 @@ pub fn pick(
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
-    cursor: (i32, i32),
+    cursor: RealPixel,
 ) -> Option<PickedStatic> {
-    let in_view = camera.to_view(camera.pick(cursor.0, cursor.1));
+    let in_view = camera.to_view(camera.pick(cursor));
     let mut hit: Option<(depth::Order, PickedStatic)> = None;
     for_each_static_in(map, camera.visible_tiles(), |item| {
         let at = Point::new(item.x, item.y, item.z);
@@ -695,12 +695,12 @@ mod tests {
 
     /// The viewport pixel a point in the drawn image sits at — the inverse of
     /// what [`pick`] undoes, so a test can click on a sprite it has placed.
-    fn cursor_over(camera: &Camera, at: ViewPoint, dx: f32, dy: f32) -> (i32, i32) {
+    fn cursor_over(camera: &Camera, at: ViewPoint, dx: f32, dy: f32) -> RealPixel {
         let spot = camera.to_viewport(crate::camera::ViewPixel {
             x: (at.x + dx) as i32,
             y: (at.y + dy) as i32,
         });
-        (spot.x as i32, spot.y as i32)
+        RealPixel::new(spot.x as i32, spot.y as i32)
     }
 
     /// A click on a wall's own pixels picks that wall, and a click through the
@@ -888,7 +888,7 @@ mod tests {
 
         // And the other arithmetic: the ground the cursor points at, read at the
         // ground's own height, which is what `App::pick_tile` resolves.
-        let (x, y) = crate::camera::unproject(camera.pick(cursor.0, cursor.1), 0);
+        let (x, y) = crate::camera::unproject(camera.pick(cursor), 0);
         assert_ne!(
             (x, y),
             (i32::from(stands.x), i32::from(stands.y)),

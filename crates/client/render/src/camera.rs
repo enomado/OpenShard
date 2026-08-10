@@ -242,6 +242,36 @@ impl RealPoint {
     }
 }
 
+/// The same space as [`RealPoint`], to a whole pixel — what the compositor
+/// hands us and what the mouse is reported in.
+///
+/// The one place this arrives is the cursor: `winit` reports a physical
+/// position and [`Camera::pick`] takes it whole, because a display has no
+/// sub-pixel cursor to lose. It is a pair of `i32`s for the same reason
+/// [`WorldPixel`] and [`ViewPixel`] are — a signed offset from the viewport's
+/// own corner is ordinary, not an error, on a cursor that has strayed past an
+/// edge — and it is its own type for their reason too: [`Camera::pick`] used
+/// to take `(x: i32, y: i32)` directly, which is exactly the shape a caller
+/// holding a [`ViewPixel`] could pass by mistake and have it compile.
+///
+/// No `From` or `Into` from any other space — the same rule [`RealPoint`]
+/// states, for the same reason: the zoom and the eye's own fraction are what
+/// [`Camera::pick`] spends to leave this space, and nothing here is exact
+/// without a [`Camera`] to ask.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RealPixel {
+    /// Rightwards.
+    pub x: i32,
+    /// Downwards.
+    pub y: i32,
+}
+
+impl RealPixel {
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+}
+
 /// A place in the world's own coordinates, between the tiles as well as on them.
 ///
 /// The world the map states is a lattice — a tile is a whole `x`, a whole `y`
@@ -1039,14 +1069,14 @@ impl Camera {
     /// magnifying direction by construction — several viewport pixels share one
     /// world pixel at zoom 4 — which is the honest answer, since the world has
     /// no finer position to name.
-    pub fn pick(&self, x: i32, y: i32) -> WorldPixel {
+    pub fn pick(&self, at: RealPixel) -> WorldPixel {
         let den = self.zoom.denominator() as i32;
         let num = self.zoom.numerator() as i32;
         // About the centre, because that is where the blit is anchored: the
         // offscreen image is drawn over the viewport rect whole, so the two
         // centres coincide whatever the rounding did to the edges.
-        let dx = (x - self.width as i32 / 2) * den / num;
-        let dy = (y - self.height as i32 / 2) * den / num;
+        let dx = (at.x - self.width as i32 / 2) * den / num;
+        let dy = (at.y - self.height as i32 / 2) * den / num;
         let eye = self.eye();
         WorldPixel {
             x: eye.x + dx,
@@ -1059,10 +1089,10 @@ impl Camera {
     /// The whole reason the inverse exists. Hold `pick(cursor)` fixed across the
     /// change and solve for the new eye — one line, and it is the difference
     /// between a camera that feels placed and one that feels shoved.
-    pub fn zoom_about(&mut self, cursor_x: i32, cursor_y: i32, zoom: Zoom) {
-        let before = self.pick(cursor_x, cursor_y);
+    pub fn zoom_about(&mut self, at: RealPixel, zoom: Zoom) {
+        let before = self.pick(at);
         self.zoom = zoom;
-        let after = self.pick(cursor_x, cursor_y);
+        let after = self.pick(at);
         // Snapped to the *new* zoom's lattice, and by `look_at` rather than by
         // hand: a third of a pixel is on the lattice at 3x and is not at 2x, so
         // an eye carried across a rung unchanged would sit between two real
@@ -1429,7 +1459,7 @@ mod tests {
             for _ in 0..rungs {
                 zoom = zoom.scale_up();
             }
-            camera.zoom_about(400, 300, zoom);
+            camera.zoom_about(RealPixel::new(400, 300), zoom);
             assert!(!camera.minifies());
             assert_eq!(camera.image_size(), (800, 600), "the viewport's own resolution");
 
@@ -1467,7 +1497,7 @@ mod tests {
     #[test]
     fn minified_the_image_is_the_worlds_extent_and_the_scale_is_one() {
         let mut camera = Camera::new(Point::new(300, 300, 0), 800, 600);
-        camera.zoom_about(400, 300, Zoom::ONE.scale_down());
+        camera.zoom_about(RealPixel::new(400, 300), Zoom::ONE.scale_down());
         assert!(camera.minifies());
         assert_eq!(camera.projection().scale, 1.0);
         assert_eq!(
@@ -1494,7 +1524,7 @@ mod tests {
             zoom = down;
         }
         loop {
-            camera.zoom_about(400, 300, zoom);
+            camera.zoom_about(RealPixel::new(400, 300), zoom);
             let (width, height) = camera.image_size();
             let middle = real(camera.projection(), (width, height), camera.to_view(camera.eye()));
             assert_eq!(
@@ -1695,13 +1725,13 @@ mod tests {
     #[test]
     fn zooming_keeps_what_is_under_the_cursor_under_it() {
         let mut camera = Camera::new(Point::new(1495, 1629, 0), 1024, 768);
-        let (cx, cy) = (200, 700);
-        let before = camera.pick(cx, cy);
+        let cursor = RealPixel::new(200, 700);
+        let before = camera.pick(cursor);
         let mut zoom = camera.zoom();
         for _ in 0..8 {
             zoom = zoom.scale_up();
-            camera.zoom_about(cx, cy, zoom);
-            let after = camera.pick(cx, cy);
+            camera.zoom_about(cursor, zoom);
+            let after = camera.pick(cursor);
             assert!(
                 (after.x - before.x).abs() <= 1 && (after.y - before.y).abs() <= 1,
                 "{zoom}: {before:?} drifted to {after:?}",

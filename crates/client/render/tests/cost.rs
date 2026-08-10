@@ -65,7 +65,7 @@ use std::time::{Duration, Instant};
 use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, Zoom};
+use openshard_client_render::camera::{Camera, RealPixel, Zoom};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Lighting};
@@ -313,7 +313,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
 
     let (point, zoom) = frame_point_and_zoom();
     let mut camera = Camera::new(point, VIEWPORT.0, VIEWPORT.1);
-    camera.zoom_about(0, 0, zoom);
+    camera.zoom_about(RealPixel::new(0, 0), zoom);
     let (width, height) = camera.image_size();
     if point == BRITAIN {
         assert!(camera.minifies(), "the widest rung of the ladder minifies");

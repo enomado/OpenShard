@@ -121,7 +121,7 @@ use openshard_client_render::atlas::{
 };
 use openshard_client_render::bench::{self, Metrics, Scope, Script};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
-use openshard_client_render::camera::{self, Camera, TileBounds, ViewPixel};
+use openshard_client_render::camera::{self, Camera, RealPixel, TileBounds, ViewPixel};
 use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
@@ -2269,7 +2269,7 @@ impl ApplicationHandler<link::Update> for App {
                 let origin = self.shell.as_ref().map_or((0, 0), |shell| {
                     (shell.viewport().x as i32, shell.viewport().y as i32)
                 });
-                let (x, y) = (position.x as i32 - origin.0, position.y as i32 - origin.1);
+                let cursor = RealPixel::new(position.x as i32 - origin.0, position.y as i32 - origin.1);
                 // The interface's cursor is measured from the surface's own
                 // corner and in gump pixels, which is what everything drawn by
                 // the gump pass is placed in.
@@ -2278,7 +2278,7 @@ impl ApplicationHandler<link::Update> for App {
                     (position.x as f32 / scale) as i32,
                     (position.y as f32 / scale) as i32,
                 );
-                let mut changed = self.control.cursor_moved(x, y);
+                let mut changed = self.control.cursor_moved(cursor);
                 changed |= self.drag_own_window();
                 changed |= self.drag_thumb();
                 // Held, the button steers: a heading toward wherever the cursor
@@ -2720,10 +2720,10 @@ impl App {
     /// `None` when the cursor is on the body: no bearing exists, and picking
     /// one would be inventing an ask.
     fn ask_to_cursor(&self, camera: Camera) -> Option<steer::Ask> {
-        let (cursor_x, cursor_y) = self.control.cursor();
+        let cursor = self.control.cursor();
         // The body's *drawn* pixel, height and all: what a player aims relative
         // to is the sprite they can see, not the tile beneath it.
-        ask_between(camera::project(self.player.at), camera.pick(cursor_x, cursor_y))
+        ask_between(camera::project(self.player.at), camera.pick(cursor))
     }
 
     /// Double-click whatever the cursor is over: ask the shard to use it.
@@ -4055,8 +4055,8 @@ impl App {
     /// picture being drawn, and reading it from a camera that has moved since is
     /// how the highlight ends up a frame away from the ground under it.
     fn pick_tile(&self, camera: Camera) -> Option<shell::PickedTile> {
-        let (cursor_x, cursor_y) = self.control.cursor();
-        let world_px = camera.pick(cursor_x, cursor_y);
+        let cursor = self.control.cursor();
+        let world_px = camera.pick(cursor);
         let near = i32::from(self.player.at.z);
         let (mut x, mut y) = camera::unproject(world_px, self.player.at.z);
         if let Some((ux, uy)) = Self::in_bounds(x, y, &self.map) {

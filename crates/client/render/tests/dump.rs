@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, Zoom};
+use openshard_client_render::camera::{Camera, RealPixel, Zoom};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::frame::{self, Impostor};
@@ -144,7 +144,7 @@ fn draw_britain(
     // About the middle, so the place the frame is *of* stays the place it is of
     // at every rung — `Camera::zoom_about` holds what is under the cursor fixed,
     // and the corner would slide the house out of a magnified frame.
-    camera.zoom_about(VIEWPORT.0 as i32 / 2, VIEWPORT.1 as i32 / 2, zoom);
+    camera.zoom_about(RealPixel::new(VIEWPORT.0 as i32 / 2, VIEWPORT.1 as i32 / 2), zoom);
     let cutaway = Cutaway::at(&map, &tiledata, at, true);
 
     let land_wanted = ground::visible_graphics(&map, &camera);

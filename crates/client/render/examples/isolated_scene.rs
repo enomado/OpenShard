@@ -176,7 +176,7 @@ use std::path::PathBuf;
 use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
-use openshard_client_render::camera::{Camera, Zoom};
+use openshard_client_render::camera::{Camera, RealPixel, Zoom};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::geometry::Vec2;
 use openshard_client_render::ground;
@@ -773,7 +773,10 @@ fn main() {
     // scene is built around `look`, which `Camera::new` already centred.
     // Zooming about `(0, 0)` would hold the *corner* fixed instead and walk
     // the framed static out from under the crop this tool's callers take.
-    camera.zoom_about((viewport.0 / 2) as i32, (viewport.1 / 2) as i32, zoom);
+    camera.zoom_about(
+        RealPixel::new((viewport.0 / 2) as i32, (viewport.1 / 2) as i32),
+        zoom,
+    );
     let (width, height) = camera.image_size();
 
     let land_atlas = if want_ground {

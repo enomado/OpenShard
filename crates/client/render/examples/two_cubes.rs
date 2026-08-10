@@ -79,7 +79,7 @@
 
 use std::path::PathBuf;
 
-use openshard_client_render::camera::{Camera, TileBounds, Zoom};
+use openshard_client_render::camera::{Camera, RealPixel, TileBounds, Zoom};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::occlusion::{Builder, Shape};
 use openshard_client_render::solids::{Frame, SolidsRenderer, Style};
@@ -294,7 +294,7 @@ fn main() {
     for _ in 0..zoom_notches {
         zoom = zoom.scale_up();
     }
-    camera.zoom_about((width / 2) as i32, (height_px / 2) as i32, zoom);
+    camera.zoom_about(RealPixel::new((width / 2) as i32, (height_px / 2) as i32), zoom);
 
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let base = env_opt("OPENSHARD_FRAME_DUMP").unwrap_or_else(|| "two_cubes".to_string());

@@ -4159,7 +4159,7 @@ mod tests {
         let mut camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let mut zoom = camera.zoom();
         loop {
-            camera.zoom_about(400, 300, zoom);
+            camera.zoom_about(crate::camera::RealPixel::new(400, 300), zoom);
             let lighting = collect(
                 &bare(),
                 &items,
@@ -4220,7 +4220,7 @@ mod tests {
             zoom = zoom.scale_down();
         }
         loop {
-            camera.zoom_about(400, 300, zoom);
+            camera.zoom_about(crate::camera::RealPixel::new(400, 300), zoom);
             let bounds = lit_tiles(&camera, &Tuning::DEFAULT);
             let drawn = camera.visible_tiles();
 
@@ -4319,7 +4319,7 @@ mod tests {
         while !zoom.is_widest() {
             zoom = zoom.scale_down();
         }
-        camera.zoom_about(960, 540, zoom);
+        camera.zoom_about(crate::camera::RealPixel::new(960, 540), zoom);
         let bounds = lit_tiles(&camera, &Tuning::DEFAULT);
         let bytes = bounds.width() * bounds.height() * 4;
         assert!(

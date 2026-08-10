@@ -17,7 +17,7 @@ use openshard_client_render::atlas::FrameKey;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
 use openshard_client_render::camera::ViewPoint;
-use openshard_client_render::camera::{Camera, Projection, WorldPoint, Zoom};
+use openshard_client_render::camera::{Camera, Projection, RealPixel, WorldPoint, Zoom};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::geometry::{Rect, Vec2};
@@ -4030,7 +4030,7 @@ fn a_third_of_a_virtual_pixel_moves_a_magnified_frame_one_real_pixel() {
     for _ in 0..2 {
         zoom = zoom.scale_up();
     }
-    camera.zoom_about(256, 128, zoom);
+    camera.zoom_about(RealPixel::new(256, 128), zoom);
     assert_eq!(camera.zoom().to_string(), "3x", "the rung this test is about");
     assert!(
         !camera.minifies(),
@@ -4142,7 +4142,7 @@ fn a_magnified_sprite_translates_texel_for_texel() {
     for _ in 0..2 {
         zoom = zoom.scale_up();
     }
-    camera.zoom_about(256, 128, zoom);
+    camera.zoom_about(RealPixel::new(256, 128), zoom);
     assert_eq!(camera.zoom().to_string(), "3x");
 
     // A static's sprite, drawn through the same pass a mobile uses: what is
