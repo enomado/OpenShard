@@ -322,21 +322,67 @@ picture, a different world.
 of code away from each of them, and each is its own decision about what its
 answer is *about*.
 
-### P3 — the gate
+### P3 — the gate ✅ 2026-08-10
 
-A test that assembles one real place twice, once with the client's inputs and
-once with the tool's, and compares the G-buffer plane by plane.
+`tests/parity.rs`: one real place, assembled twice — the map's own statics
+through `statics::collect` (the client's route) and the same statics pulled
+into `GroundItem`s and drawn through `items::collect` (the tool's route) — and
+every one of `View::ALL`'s G-buffer planes compared, pixel for pixel. The list is
+read off `View::ALL` rather than counted here, because it grows: it was thirteen
+planes when this was written and fifteen by the time the gate first ran green,
+`normal` having been split into `normal-geometry` and `normal-sprites` by work
+landing beside it (`5e52279`).
+`dump::plane_bytes` is the prerequisite's other half: `dump::planes` with the
+PNG step split off, so a comparison zips raw bytes instead of decoding files.
 
-**Its prerequisite is built** — see the dump above, and `tests/dump.rs` is half
-of it already: it assembles a place the client's way and reads every plane back.
-What is left is the second frame in the same test, built the tool's way
-(`isolated_scene`'s synthetic map, its anchor, its cutaway), and the comparison —
-per plane, counting differing pixels, with the inputs that must differ set equal
-first (D6). The two summaries diffed are what says they were.
+**The anchor is real, not translated.** `isolated_scene`'s ordinary anchor
+(`SYN_ANCHOR_NEAR_THE_ORIGIN`) moves a place next to the synthetic map's
+origin, which is irrelevant to a byte comparison and worse than irrelevant: a
+G-buffer's position and place planes carry absolute world coordinates, so two
+frames anchored at different numbers differ everywhere before a single input
+is allowed to. The gate's own synthetic map is `Map::from_blocks` filled from
+the real map's own land, one for one, wide enough to hold every place it
+looks at — D4's own knob (`OPENSHARD_SCENE_ANCHOR_REAL`) with the cost it
+asked to have measured: 32ms in a debug build for a block covering all three
+places below. D4's backlog item is closed for the size this gate needs; the
+live tool's own default is untouched.
 
-*Done when:* it is green at three places with a house on them, and red when any
-one input is deliberately changed. The second half is the positive control and
-is not optional: a gate that cannot be made to fail is not gating.
+**Two real divergences turned up before it was green, and both were the
+gate's inputs rather than the assembly it was gating:**
+
+- **The occlusion grid is wider than what is drawn.** `light::collect` builds
+  its grid over `light::lit_tiles` — `Camera::visible_tiles` grown by the
+  widest flame's own reach — and the first version of this gate pulled the
+  tool's statics over the narrower `visible_tiles` alone. A wall standing in
+  that margin (off screen, still occluding) was missing from the tool's grid
+  and present in the client's, and every plane downstream of the grid's shape
+  disagreed by about 1.2% at all three places: `place`/`kind`/`height`/
+  `normal`/`solid` from a fragment meeting a differently-shaped neighbour,
+  `occluders` and `sky` from the grid itself. Pulling over `lit_tiles` instead
+  closed it everywhere except the second finding below.
+- **An atlas grown for what is drawn is not always an atlas grown for what
+  occludes.** `occlusion::shape_of` reads a graphic's facing off the same
+  static atlas the sprite pass uses, and falls back to the whole tile when the
+  atlas does not hold it. The tool's item list already spanned `lit_tiles`
+  (the first fix), but its atlas was still built from the *narrow* bound
+  (`statics::visible_graphics`, `Camera::visible_tiles`) — the same bound the
+  live client's own atlas grows from (`App::wanted_now`). A margin-band wall
+  therefore had a real shape on the side whose atlas happened to hold its
+  graphic for some other reason and the whole-tile fallback on the other, for
+  the same occluder: forty-six percent of `solid` at the stair corner
+  (`1497,1626,10`) before this was found, nothing at the corner this file
+  already dumps (`1501,1659`), where no such graphic exists only in the
+  margin. Both routes now grow their atlas over `lit_tiles` too, which is
+  correct for what this gate is asking and is not a claim about whether the
+  *live* client ever meets the same gap — see the backlog entry below.
+
+*Done:* green at `(1501,1659)`, `(1497,1626,10)` and `(1504,1655,27)` —
+5,507, 6,744 and 6,127 items respectively, every plane byte-identical at each. `the_gate_is_red_when_the_tool_forgets_the_maps_statics` is the
+positive control: the map's statics dropped from the tool's route on purpose,
+and every plane downstream of a drawn fragment goes red. `cargo test -p
+openshard-client-render` is green apart from one failure in `tests/frame.rs`
+already present in the tree from work landing concurrently with this
+session's own (`843fec1`, unrelated to `dump.rs`/`frame.rs`'s assembly).
 
 ### P4 — the geometry, in census order
 
@@ -369,6 +415,44 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
 
 ## Backlog
 
+- ✅ **The live client's own atlas may be narrower than the grid it is read
+  for** — fixed 2026-08-10. Found while building P3's gate, and not something
+  the gate itself needed to fix: `App::wanted_now`/`wanted_since` grew the
+  client's static atlas over `camera.visible_tiles()`, but `light::collect`
+  builds the occlusion grid over the wider `light::lit_tiles` — the same
+  bound, grown by the widest flame's own reach — and reads *that same atlas*
+  for an occluder's facing (`occlusion::shape_of`). A wall standing only in
+  the margin between the two bounds — off screen, still occluding — fell back
+  to the whole-tile shape there whenever no other reason had already put its
+  graphic in the atlas, on the *live* client and not only in a tool. P3's own
+  gate had already closed this gap for the tool by growing both routes' atlas
+  over `lit_tiles`; the live client's three atlas-growing call sites
+  (`wanted_now`, `wanted_since`, and the eviction-rebuild fallback in
+  `draw()`) now do the same — `light::lit_tiles(camera, tuning)` in place of
+  `camera.visible_tiles()`, with `tuning` threaded into `wanted_since` for it
+  and `self.covered` set from the same widened rectangle at every write, so
+  the band-difference walk stays in one convention throughout. `cargo test -p
+  openshard-client-app` (143 tests), clippy and fmt are silent.
+  **Still unverified: nobody has walked a build past a margin-band wall
+  before/after this to see the picture actually change** — no test in
+  `client/app` asserts what rectangle an atlas is grown over, and this fix
+  closes the gap by reading rather than by a gate. That absence of coverage,
+  not the wiring, is what is left to look at next.
+- 🚩 **P3's positive control moves nine planes and leaves five of the lighting's
+  own untouched.** Dropping every one of the map's statics from the tool's route
+  at `(1501, 1659)` reddens `lit`, `place`, `kind`, `height`, `normal`,
+  `normal-geometry`, `solid`, `occluders` and `sky` — and `light`, `flames`,
+  `shadow`, `reach` and `sun` come back **0 of 630,000**, alongside
+  `normal-sprites`, which has no geometry in it by construction. `occluders`
+  differing by 1,513 pixels while `shadow` does not is the one that wants
+  reading: a frame whose occluder grid demonstrably changed casts, so far as
+  that plane can say, exactly the same shadows. Either those planes are
+  genuinely blind to a difference this large (in which case the gate is green
+  about them for a reason nobody has written down) or they are not being drawn
+  from the frame under test at all — which is the black `View::Solid` of
+  `tests/cost.rs` again, and the last backlog item below is the same suspicion
+  from the other end. Nothing here is diagnosed; it is what the control printed
+  on 2026-08-10, recorded before it is explained.
 - 🚩 **The other three tools still read no shard database.** `isolated_scene` now
   does (see the section above), and `tile_probe`, `onsite.rs` and
   `geometry_census.rs` do not — so each of them still answers "there is no

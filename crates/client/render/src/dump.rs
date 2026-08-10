@@ -60,6 +60,32 @@ pub fn planes(
     lighting: &Lighting,
     views: &[View],
 ) -> Vec<(View, Vec<u8>)> {
+    plane_bytes(device, queue, blit, into, frame, lighting, views)
+        .into_iter()
+        .map(|(view, pixels)| {
+            (
+                view,
+                crate::png::encode_rgba(frame.rect.width, frame.rect.height, &pixels),
+            )
+        })
+        .collect()
+}
+
+/// [`planes`] without the PNG step: one blit per view, read back as raw RGBA8.
+///
+/// `docs/parity.md` P3 wants this half and not the picture — a gate counts
+/// *differing pixels*, which means two runs of raw bytes to zip, not two files
+/// to open. `planes` is this with an encode on the end, kept as the one place
+/// the loop over views is written.
+pub fn plane_bytes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    blit: &mut Blit,
+    into: &wgpu::Texture,
+    frame: Frame<'_>,
+    lighting: &Lighting,
+    views: &[View],
+) -> Vec<(View, Vec<u8>)> {
     // **The world's format and not a surface's**, and it is checked here rather
     // than assumed: what comes back is written out as RGBA8 bytes, so a texture
     // in any other format is either a picture with its channels swapped or —
@@ -83,11 +109,7 @@ pub fn planes(
             });
             blit.render(device, queue, &mut encoder, frame, &shown);
             queue.submit([encoder.finish()]);
-            let pixels = read_rect(device, queue, into, frame.rect);
-            (
-                view,
-                crate::png::encode_rgba(frame.rect.width, frame.rect.height, &pixels),
-            )
+            (view, read_rect(device, queue, into, frame.rect))
         })
         .collect()
 }

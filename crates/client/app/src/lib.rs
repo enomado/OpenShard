@@ -4659,7 +4659,7 @@ impl App {
         .map_err(StartupError::Atlas)?;
         // What the atlases were built for, which is what the band walk in
         // `draw` subtracts from on the next frame.
-        self.covered = Some(self.control.camera().visible_tiles());
+        self.covered = Some(light::lit_tiles(self.control.camera(), &self.tuning()));
         // The world passes draw into the world texture, so they take *its*
         // format and not the surface's — the two differ on an HDR display,
         // where the first non-sRGB surface format is `Rgba16Float`.
@@ -4808,12 +4808,19 @@ impl App {
     /// The whole-viewport walk, which is what a rebuild needs and what an
     /// ordinary frame must not do: [`App::wanted_since`] is the frame's version
     /// of the same question and walks only the band the camera crossed.
+    ///
+    /// [`light::lit_tiles`], not `camera.visible_tiles`: the occlusion grid
+    /// `light::collect` builds is grown by the widest flame's own reach, and
+    /// reads this same static atlas for an occluder's facing. A wall standing
+    /// only in the margin between the two bounds fell back to the whole-tile
+    /// shape whenever nothing else had put its graphic in the atlas first —
+    /// see `docs/parity.md`'s backlog.
     fn wanted_now(&self) -> Wanted {
-        self.wanted_in([self.control.camera().visible_tiles()])
+        self.wanted_in([light::lit_tiles(self.control.camera(), &self.tuning())])
     }
 
-    /// What the camera has walked onto since `covered` was the visible
-    /// rectangle, plus everything that is not a question about the map at all.
+    /// What the camera has walked onto since `covered` was the lit rectangle,
+    /// plus everything that is not a question about the map at all.
     ///
     /// The saving this whole arrangement is for. A frame used to walk the
     /// visible rectangle twice — once for the land graphics and once for the
@@ -4830,9 +4837,12 @@ impl App {
     ///
     /// `camera` is the frame's snapshot — see [`App::hud`]. What the atlases are
     /// grown for has to be what the passes below then draw, or a band is packed
-    /// for one rectangle and sampled for another.
-    fn wanted_since(&self, camera: Camera, covered: Option<TileBounds>) -> Wanted {
-        let bounds = camera.visible_tiles();
+    /// for one rectangle and sampled for another — which is why `bounds` is
+    /// [`light::lit_tiles`] and not `camera.visible_tiles`: `light::collect`
+    /// reads this atlas over the wider bound, and `covered` has to name
+    /// whichever rectangle was actually packed.
+    fn wanted_since(&self, camera: Camera, tuning: &light::Tuning, covered: Option<TileBounds>) -> Wanted {
+        let bounds = light::lit_tiles(&camera, tuning);
         let bands = match covered {
             Some(covered) => bounds.difference(covered),
             None => [Some(bounds), None, None, None],
@@ -5109,19 +5119,21 @@ impl App {
             self.pending = request.clone();
         }
 
+        // The Light tab's own numbers, which live in the shell — read here,
+        // once for the whole frame: the flames, the ambient and the sun below
+        // are all turned by them, and so is `want` just below, since the
+        // atlases have to be grown for the same bound `light::collect` reads
+        // them over.
+        let tuning = self.tuning();
         // What the camera has walked onto since the atlases were last grown.
         // Gathered before the window is borrowed, and not inside the borrow: it
         // reads the whole of `self`, and the window is part of it.
-        let want = camera.visible_tiles();
-        let wanted = self.wanted_since(camera, self.covered);
+        let want = light::lit_tiles(&camera, &tuning);
+        let wanted = self.wanted_since(camera, &tuning, self.covered);
         let mut drawn = self.drawn_mobiles();
         // Likewise: the cut the solids view is drawn under reads the player, and
         // the pass that uses it runs inside the window's borrow.
         let solid_cut = self.solid_cut();
-        // And likewise the Light tab's own numbers, which live in the shell —
-        // read here for the same reason, and once for the whole frame: the
-        // flames, the ambient and the sun below are all turned by them.
-        let tuning = self.tuning();
 
         let Some(window) = self.window.as_mut() else {
             return;
@@ -5172,7 +5184,7 @@ impl App {
                     &mut self.anim,
                     &wanted_in(
                         &self.map,
-                        [camera.visible_tiles()],
+                        [want],
                         &self.items,
                         &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
                         &self.tile_animations,
