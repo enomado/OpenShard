@@ -141,18 +141,31 @@ fn hit(met: Meeting) -> bool {
 fn meets(start: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> Meeting {
     // No parallel-axis branch: every component of `VIEW` is positive, so `lo` is
     // always the near end of a slab and `hi` the far one, and no division here
-    // can be by zero. A degenerate box gives one `t` twice, which is a plane met
-    // at a point and correct as it stands.
+    // can be by zero.
     let far = (hi - start) / VIEW;
+    // The `z` face, which every box in this grid has — `Solid::box_of` gives a
+    // panel `PANEL_THICKNESS` and everything else a whole tile, so `x` and `y`
+    // are never degenerate.
     var exit = far.z;
     var normal = vec3<f32>(0.0, 0.0, 1.0);
-    if far.y < exit {
-        exit = far.y;
-        normal = vec3<f32>(0.0, 1.0, 0.0);
-    }
-    if far.x < exit {
-        exit = far.x;
-        normal = vec3<f32>(1.0, 0.0, 0.0);
+    // **A face with no area is not a face.** A lid is flat in `z`, so the faces
+    // its `x` and `y` slabs would present are lines and the only face of it a
+    // ray can meet is its own plane. Both those areas carry the `z` extent as a
+    // factor, so one test retires both. Ordering the tie towards `z` used to
+    // stand in for this and covered only the *exact* tie: a ray leaving the
+    // footprint one rounding before it reaches the plane is a miss, and it was
+    // answered with a side face's normal — one pixel per tile corner, a lattice
+    // of dots over a roof, each shaded as a wall in the middle of a floor.
+    // `impostor::meets` has the whole account.
+    if hi.z > lo.z {
+        if far.y < exit {
+            exit = far.y;
+            normal = vec3<f32>(0.0, 1.0, 0.0);
+        }
+        if far.x < exit {
+            exit = far.x;
+            normal = vec3<f32>(1.0, 0.0, 0.0);
+        }
     }
 
     // The exit axis's own coordinate is **stated** and not computed: `exit` is

@@ -2211,6 +2211,17 @@ Things noticed while writing this, not blocking any phase:
   produces it is not the one reconstructed here. **What the next attempt needs
   is the frame**: the camera and the light the person actually had, since the
   coordinates alone did not rebuild it.
+  <br>
+  **And that is what it was — the impostor, not the walk.** The person reported
+  it a second time with the tile they were standing on (`1492, 1643`, stand
+  `z 20`), `isolated_scene` there reproduced the lattice at once, and reading the
+  G-buffer settled it in one row: at a bright pixel `View::Shadow` and
+  `View::Height` read **exactly what its neighbours read** and `View::Normal`
+  does not. The dots are not lit more; they are *facing* differently. Fourteen
+  of them, on a lattice of exactly `TILE_WIDTH` — one per tile corner — each
+  carrying a side face's normal on a surface whose every other pixel carries
+  `+z`, at `z ≈ 40`: a lid. A wall's cosine in the middle of a roof. See
+  `impostor::meets`.
 - 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
   showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the

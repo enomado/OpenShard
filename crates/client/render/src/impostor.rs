@@ -284,26 +284,39 @@ impl Meeting {
 /// reaches first, and `min` over the three exit parameters is that face.
 ///
 /// **Ties go to `z`, then `y`, then `x`, and that order is a decision.** Two
-/// exits are equal exactly on an edge or a corner of the box — and on a
-/// *degenerate* box they are equal over the whole of it, since a lid's `z` slab
-/// is a point and its outer edge leaves both slabs at once. Preferring `z` is
-/// what makes a lid read as a lid all the way to its own rim rather than turning
-/// into a vertical face along it; the same choice, one dimension down, is why
-/// [`nearest`] gives a tread's shared edge to the tread's top.
+/// exits are equal exactly on an edge or a corner of the box. Preferring `z` is
+/// what gives a shared edge to the surface above it; the same choice, one
+/// dimension down, is why [`nearest`] gives a tread's shared edge to the tread's
+/// top.
+///
+/// **A face with no area is not a face, and that is a rule rather than a tie.**
+/// A lid is flat in `z`, so the faces its `x` and `y` slabs would present are
+/// *lines*: the only face of a lid a ray can meet is its own plane. Ordering the
+/// tie towards `z` used to stand in for that and it only ever covered the exact
+/// tie — a ray that leaves the footprint one rounding *before* it reaches the
+/// plane is not a tie, it is a miss, and it was answered with a side face's
+/// normal. On the isometric grid that is one pixel per tile corner, since the
+/// projection puts a tile's corner on a whole pixel: a lattice of dots over a
+/// roof, each shaded as a wall in the middle of a floor. Reported twice, and it
+/// is the second cause `docs/lighting_rebuild.md` phase 6i's floor entry names.
 pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
+    // The `z` face, which every box in this grid has: `Solid::box_of` gives a
+    // panel `PANEL_THICKNESS` and everything else a whole tile, so `x` and `y`
+    // are never degenerate and this face never has zero area.
     let mut axis = 2;
-    let mut exit = f32::INFINITY;
-    for a in [2, 1, 0] {
-        // No `abs(delta) < eps` case: every component of `VIEW` is positive, so
-        // `lo` is always the near end of the slab and `hi` the far one, and
-        // neither division can be by zero. A *degenerate* box — a lid, whose `z`
-        // extent is nothing at all — gives `lo == hi` on that axis and therefore
-        // one `t` twice, which is a plane met at a point and correct as it
-        // stands.
-        let far = (hi[a] - from[a]) / VIEW[a];
-        if far < exit {
-            exit = far;
-            axis = a;
+    let mut exit = (hi[2] - from[2]) / VIEW[2];
+    // And the two side faces, which a lid does not have: both of their areas
+    // carry the `z` extent as a factor, so one test retires both.
+    if hi[2] > lo[2] {
+        for a in [1, 0] {
+            // No `abs(delta) < eps` case: every component of `VIEW` is positive,
+            // so `lo` is always the near end of the slab and `hi` the far one,
+            // and neither division can be by zero.
+            let far = (hi[a] - from[a]) / VIEW[a];
+            if far < exit {
+                exit = far;
+                axis = a;
+            }
         }
     }
 
@@ -641,22 +654,49 @@ mod tests {
         assert!((met.at[2] - 7.0).abs() < 1e-4, "at: {:?}", met.at);
 
         // A pixel just inside the south-west rim, where the `z` slab and the `y`
-        // slab all but run out together: still a lid, which is the tie rule
-        // `meets` documents and the one thing about a degenerate box that is not
-        // forced by the geometry.
+        // slab all but run out together: still a lid.
         let rim = meets(ray_from((100, 101), 0.0, -21.12, -28.0), lo, hi);
         assert!(rim.hit(), "{rim:?}");
         assert_eq!(rim.normal, [0.0, 0.0, 1.0], "at: {:?}", rim.at);
 
-        // And **on** the corner itself the two slabs do not tie at all: their
-        // `t`s differ by `3.5e-6` of a tile, so which face is named there is
-        // decided by rounding rather than by the rule above. That is one pixel
-        // of a picture and no claim is made about it — what is claimed is that
-        // it is still a point of the lid, which is what [`TANGENT`] is sized
-        // for and what a reader downstream depends on.
-        let corner = meets(ray_from((100, 101), 0.0, -22.0, -28.0), lo, hi);
-        assert!(corner.hit(), "{corner:?}");
-        assert!(corner.outside > 0.0, "the measurement is real: {corner:?}");
+        // And **on** the corner itself, which is where this test used to stop.
+        // It said: the two slabs do not tie at all, their `t`s differ by
+        // `3.5e-6` of a tile, so which face is named there is decided by
+        // rounding rather than by the tie rule — "that is one pixel of a picture
+        // and no claim is made about it".
+        //
+        // **One pixel of a picture per tile corner** is what that came to. The
+        // isometric projection puts a tile's corner on a whole pixel, so the ray
+        // that leaves the footprint a rounding before it reaches the plane is
+        // drawn once per corner and nowhere else, and it was answered with a
+        // *side* face's normal — a wall's cosine in the middle of a roof. A
+        // person reported it twice as holes in the roofs, and the second report
+        // named the tile: `1492, 1643`. Measured on that frame in `View::Light`:
+        // fourteen isolated bright pixels on a lattice of exactly `TILE_WIDTH`,
+        // now none, and thirty pixels of the whole frame changed.
+        //
+        // It is a claim now, and it is not the tie rule doing the work: a lid's
+        // side faces have no area, so `meets` does not offer them at all. Both
+        // corners of the sprite, since the two halves of the lattice run out on
+        // different slabs — the `y` one first and then the `x` one.
+        //
+        // The `3.5e-6` is gone from the answer as well, and that is the same
+        // sentence rather than a second effect: the exit is solved for the plane
+        // the lid *is*, so a corner ray lands on it exactly and `outside` reads
+        // `0.0` instead of a rounding's worth of miss.
+        for (across, which) in [(-22.0, "the west corner"), (22.0, "the east corner")] {
+            let corner = meets(ray_from((100, 101), 0.0, across, -28.0), lo, hi);
+            assert!(corner.hit(), "{which}: {corner:?}");
+            assert_eq!(
+                corner.normal,
+                [0.0, 0.0, 1.0],
+                "{which}: a lid has no side face to be met on: {corner:?}",
+            );
+            assert_eq!(
+                corner.at[2], hi[2],
+                "{which}: off the lid's own plane: {corner:?}"
+            );
+        }
     }
 
     #[test]
