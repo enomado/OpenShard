@@ -2463,6 +2463,36 @@ Things noticed while writing this, not blocking any phase:
   the count by nothing at three of the four and by thirteen wedged runs at
   `1497,1626`, which is the one place worth going back to with a picture.
   <br>
+  **And then the person showed a picture, and the thing they were reporting was
+  never a stripe.** At Britain's `(1501, 1659)` — a counter (`0x0B40`,
+  `BLOCK|PLATFORM`, height 6) and boards on the tile, shingles overhead — what a
+  `View::Normal` crop holds is isolated **specks**: single pixels carrying a side
+  face's normal with lid on all four sides of each, spaced **exactly
+  `TILE_WIDTH`** apart. It reproduces in `isolated_scene` at once — seven of
+  them, two naming no primitive at all and every one naming a primitive its
+  surroundings do not — and it reproduces **identically at both anchors**, so it
+  was in every frame this session had already drawn.
+  <br>
+  **The measurement was wrong, not the renders.** Every census run above counted
+  *runs*: a foreign face wedged between two of the same, run-length one. A speck
+  has no run — its neighbours along the row are lid on both sides only because
+  the neighbours in the column are too — so a run-length detector reports zero on
+  a frame full of them. `docs/style.md`'s own moral, from the other end: a
+  detector must be able to say what it counted, and this one was blind to the
+  shape it was hunting.
+  <br>
+  **Where it is not.** `examples/speck_probe.rs` sweeps a body's whole top face
+  through `impostor::meets` at the sub-pixel step the projection actually puts
+  fragments on — corners inclusive, since the tie rule is written for them — and
+  **0 of 7921** samples come back a side face, at Britain's magnitude and near
+  the origin alike. So the face choice for one box is not it, and neither is the
+  `hi.z > lo.z` guard, which covers a lid and was never about a body. What is
+  left is which *box* the fragment is given: each speck names a different
+  primitive from everything around it, which is `impostor::nearest` picking
+  another of the static's own volumes — or `push_volumes` handing it a list the
+  sprite is not a picture of. That is the next thing to instrument, and it wants
+  the real `boxes_of` for `0x0B40`/`0x0B01` rather than a synthetic pair.
+  <br>
   **What is left of the difference, ranked, and none of it measured yet:** the
   frame's rectangle and the live `Cutaway` (both feed the partition above); the
   **anchor** — the tool translates the place onto `SYN_ANCHOR (100,100)` while
