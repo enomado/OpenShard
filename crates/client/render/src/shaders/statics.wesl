@@ -446,6 +446,31 @@ fn fs_main(in: VertexOut) -> FragmentOut {
                 best_at = in.volumes.x + k;
             }
         }
+        // **A pixel whose ray meets no box is not drawn**, and this reverses what
+        // `docs/lighting_rebuild.md`'s "One silhouette" section used to decide.
+        //
+        // That section rejected clipping the sprite to the prism on the grounds
+        // that the art is the artist's statement of the shape, and gave a miss the
+        // nearest point on the box instead. What nobody had measured is what the
+        // fringe that leaves *looks* like: a fragment clamped onto a box's edge
+        // takes whichever face is nearest, and along a silhouette that is a side
+        // one, so a lattice of wall-shaded dots appears on floors and roofs, one
+        // per tile. `docs/lighting_rebuild.md`'s floor entry is the report.
+        //
+        // Measured before it landed, at Britain's `(1501, 1659)` with the roof
+        // cut: **4460 pixels of 187086 static ones change — 2.38%** — and the two
+        // pictures are indistinguishable side by side, because a fringe pixel is
+        // by construction one the volume does not describe. What it buys is that
+        // every pixel left is a point *of* the box it names, which is the property
+        // every plane downstream already assumed.
+        //
+        // The cost is stated rather than hidden: a static whose prism fits its art
+        // badly loses the art that hangs outside it. `best_prism` scores a plain
+        // wall at `0.81`, so this is not nothing — and it is why the number above
+        // is in this comment rather than a guess.
+        if !hit(best) {
+            discard;
+        }
         at = best.at;
         normal = best.normal;
         mine = volumes[best_at].solid;

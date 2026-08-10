@@ -270,6 +270,24 @@ overlap constant. A pixel of the sprite whose ray misses the prism takes the
 nearest point on it — the art overhangs its own volume by a pixel or two and that
 is what it means.
 
+**Amended 2026-08-10: a pixel whose ray misses is not drawn at all.** The
+paragraph above stands for everything except that last sentence, and what
+retired it is the fringe it describes. A fragment clamped onto a box's edge takes
+whichever face is nearest, and along a silhouette that is a *side* one — so the
+overhang reads as a lattice of wall-shaded dots on every floor and roof, one per
+tile, which is what a person kept reporting and what this document's floor entry
+spent a session chasing. `statics.wesl` now discards a fragment whose ray met no
+box, which is the clipping this section rejected.
+
+The trade was measured before it was made rather than argued: at Britain's
+`(1501, 1659)` with the roof cut, **4460 pixels of 187,086 static ones change —
+2.38%** — and the two pictures are indistinguishable side by side, because a
+fringe pixel is by construction one the volume does not describe. The cost is
+real where a prism fits its art badly (`best_prism` scores a plain wall at
+`0.81`), and it is stated in the shader beside the `discard` so the next person
+weighing it has the number. What it buys is that every pixel left is a point *of*
+the box it names — the property every plane downstream already assumed.
+
 ### Billboards
 
 A mobile is a sprite with no volume, and `N·L` needs a normal. Two candidates,

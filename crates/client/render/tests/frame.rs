@@ -2664,11 +2664,16 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
 
     let (mut compared, mut outside, mut worst) = (0u32, 0u32, 0.0f32);
     let mut faces = [0u32; 3];
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            if gbuffer::ids_kind(places.at(x, y)) != Some(Kind::Static) {
-                continue;
-            }
+    // **The sprite's own rectangle, not "wherever a static was drawn"** — which
+    // is the difference the discard makes and the whole of what this sweep now
+    // states. A texel whose ray misses every box is no longer drawn at all
+    // (`statics.wesl`, and the amendment in `docs/lighting_rebuild.md`'s "One
+    // silhouette"), so filtering on `Kind::Static` would quietly skip exactly the
+    // pixels the rule is about and the test would agree with any rule at all.
+    // Walked as the quad's own texels instead, and each one is asked the
+    // question the shader was asked.
+    for y in ORIGIN as u32..ORIGIN as u32 + u32::from(TALL) {
+        for x in ORIGIN as u32..ORIGIN as u32 + u32::from(WIDE) {
             let across = x as f32 + 0.5 - middle_x;
             let down = y as f32 + 0.5 - (bottom_y - half_tile_height);
             let start = impostor::ray_from((i32::from(at.x), i32::from(at.y)), f32::from(at.z), across, down);
@@ -2680,6 +2685,25 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
                     .map(|(n, volume)| (n, volume.lo, volume.hi)),
             )
             .expect("two boxes");
+
+            // A miss is not drawn, and that is the assertion rather than a
+            // filter: the pixel must carry no static at all.
+            if !met.hit() {
+                outside += 1;
+                worst = worst.max(met.outside);
+                assert_ne!(
+                    gbuffer::ids_kind(places.at(x, y)),
+                    Some(Kind::Static),
+                    "({x}, {y}) misses every box by {} of a tile and was drawn anyway",
+                    met.outside,
+                );
+                continue;
+            }
+            assert_eq!(
+                gbuffer::ids_kind(places.at(x, y)),
+                Some(Kind::Static),
+                "({x}, {y}) meets a box and was not drawn",
+            );
 
             assert_eq!(
                 places.normal_at(x, y),
@@ -2720,10 +2744,6 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
             );
             compared += 1;
             faces[met.normal.iter().position(|n| *n == 1.0).expect("one axis")] += 1;
-            if !met.hit() {
-                outside += 1;
-                worst = worst.max(met.outside);
-            }
         }
     }
 
@@ -2735,21 +2755,26 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
          {outside} of them fell outside their own volume, the worst by {worst} of a tile",
         faces[0], faces[1], faces[2],
     );
+    // Every texel of the quad is accounted for, as one or the other: the two
+    // counts partition the rectangle, so a rule that drew nothing and a rule
+    // that drew everything both fail here rather than one of them slipping past.
     assert_eq!(
-        compared,
+        compared + outside,
         u32::from(WIDE) * u32::from(TALL),
-        "the sweep should reach every texel of an opaque sprite",
+        "every texel of an opaque sprite is either met or discarded",
     );
     assert!(
         faces.iter().all(|seen| *seen > 100),
         "the sweep should meet all three of a box's camera-facing sides: {faces:?}",
     );
-    // And that the miss case was reached at all, which is what says the
-    // containment check above is about more than the pixels that hit. **How
-    // far** a real static's art overhangs its own fitted prism is the number
-    // phase 6's own "done when" asks for, and it is not this: this fixture's
-    // picture is a plain rectangle nobody fitted to anything, so its overhang is
-    // a property of the fixture. See that phase's backlog.
+    // And that the miss case was reached at all — the positive control for the
+    // discard assertion above, which says nothing on a fixture where every texel
+    // hits. **How far** a real static's art overhangs its own fitted prism is
+    // the number phase 6's own "done when" asks for, and it is not this: this
+    // fixture's picture is a plain rectangle nobody fitted to anything, so its
+    // overhang is a property of the fixture — and here it is nearly half the
+    // sprite, which is the cost of the discard at its worst. See that phase's
+    // backlog.
     assert!(outside > 0, "a rectangle over two strips should overhang them");
 }
 
@@ -3051,8 +3076,16 @@ fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
     // What the sweep actually reached: a pass that drew nothing, or named no
     // solid for anything, would satisfy every assertion above by never
     // running one.
+    // The floor moved from ten thousand to five, and **the reason is the
+    // discard**: a fragment whose ray meets no box is no longer drawn
+    // (`statics.wesl`, and the amendment in `docs/lighting_rebuild.md`'s "One
+    // silhouette"), so the fringe this sweep used to count is not in the frame
+    // any more. It reached 7,382 the first time it ran under the new rule. A
+    // floor is here at all so that a pass drawing nothing cannot satisfy every
+    // assertion above by never running one — and lowering it is only honest
+    // because what left is a stated change rather than an unexplained loss.
     assert!(
-        compared > 10_000,
+        compared > 5_000,
         "only {compared} fragments named a primitive: the sweep reached too little to say anything",
     );
 }
