@@ -94,11 +94,20 @@ struct Volume {
 // bits `blit.wesl` masks with its own `EDGE_MASK`.
 //
 // **What it means is that the art named none of them.** `edges_of(None)` is
-// where it comes from: a thing that stands up whose facing the silhouette
-// detector would not say, plus a climbable's treads, which are solid by
-// construction. A literal here and pinned from this source by `grids.rs` —
-// `docs/pixels.md` rule 6 — because there is no compiler on either side of this
-// wire.
+// where it comes from, and nowhere else: a thing that stands up whose facing the
+// silhouette detector would not say. A literal here and pinned from this source
+// by `grids.rs` — `docs/pixels.md` rule 6 — because there is no compiler on
+// either side of this wire.
+//
+// **A climbable's treads used to be in that set and are not.** They were,
+// because this word carried `occlusion::boxes_of`'s mask, and that branch
+// overrides the art's answer with `Edges::ANY` deliberately — to pick the exact
+// slab test a solid takes over a lid's crossing test. Read here it said the
+// opposite of what the picture says: a flight's treads and risers are planes
+// `facing::Prism` measured, and every staircase in the world came out with no
+// facing and no shading of its own. `occlusion::named_edges` is what fills this
+// word now — what the *art* named, which is a different question from what the
+// grid occludes with.
 const EDGES_ANY: u32 = 15u;
 
 @group(0) @binding(5) var<storage, read> volumes: array<Volume>;

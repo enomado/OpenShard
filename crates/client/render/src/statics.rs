@@ -359,7 +359,17 @@ pub(crate) fn push_volumes(
 ) -> crate::impostor::Range {
     let offset = out.len() as u32;
     let (x, y) = (i32::from(at.x), i32::from(at.y));
-    crate::occlusion::boxes_of(x, y, at.z, tile, shape, |part, edges, space| {
+    // **What the art named, which is not what `boxes_of` occludes with.** The
+    // shader asks this mask one question — did the art name a face of this box
+    // at all — and `boxes_of`'s own mask cannot answer it: on a **climbable** it
+    // is `Edges::ANY` by override, chosen to pick the slab test a solid takes,
+    // and read as "the art named none" that put every fitted staircase in the
+    // class of pictures with no facing. A flight's treads and risers are planes
+    // `facing::Prism` measured off the picture. See `occlusion::named_edges`,
+    // which is the expression `boxes_of` starts from, and
+    // `docs/lighting_rebuild.md`'s backlog for the frame this was found on.
+    let named_edges = crate::occlusion::named_edges(tile, shape);
+    crate::occlusion::boxes_of(x, y, at.z, tile, shape, |part, _occluding, space| {
         let named = occlusion.id_of(x, y, owner, part);
         // The grid's own primitive where there is one — merged, and therefore
         // continuous across every tile this piece runs over. See the doc above.
@@ -367,15 +377,16 @@ pub(crate) fn push_volumes(
             Some(id) => occlusion.solid(id).space,
             None => space,
         };
-        // **The mask comes from `boxes_of` and not from the merged solid.** A
-        // run's own `Edges` is the union `Cell` folds a tile's solids into, and
-        // what the shader asks of it is whether *this* piece's art named a side
-        // — see `crate::impostor::Volume::edges`. The two agree for every shape
-        // S3b merges, since a run is coplanar pieces of one owner, and the
-        // question is about the picture rather than about the run.
+        // **And not from the merged solid either.** A run's own `Edges` is the
+        // union `Cell` folds a tile's solids into, and what the shader asks is
+        // whether *this piece's* art named a side — see
+        // `crate::impostor::Volume::edges`. The question is about the picture
+        // rather than about the run, which is why it is answered off the
+        // graphic's own `Shape` above and not off anything this closure is
+        // handed.
         out.push(crate::impostor::Volume::of(
             &space,
-            edges,
+            named_edges,
             crate::occlusion::SolidId::word(named),
         ));
     });
@@ -1376,6 +1387,90 @@ mod tests {
                 (volume.lo.x, volume.hi.x),
                 (100.0, 101.0),
                 "a box reached past its tile across the climb: {volume:?}"
+            );
+        }
+    }
+
+    /// **A flight's boxes carry the facing its art named; a body's carry none.**
+    ///
+    /// The one claim that separates the two questions one mask was answering.
+    /// `occlusion::boxes_of` hands a tread `Edges::ANY` on purpose — it picks
+    /// the exact slab test a solid takes over a lid's crossing test — and
+    /// `statics.wesl` reads `Edges::ANY` in this field as *the art named no
+    /// face* and writes no facing at all. Filled from `boxes_of`, the two
+    /// sentences met on every staircase in the world: a person reported one at
+    /// Britain's `(1454, 1728)` with no shading of its own, lit from every side.
+    ///
+    /// So the fixture is the pair, and it is the pair that makes it a claim
+    /// rather than a reading: **the same tile, the same flags, the same
+    /// prism** — only the `facing` the art measured differs. Restore
+    /// `boxes_of`'s own mask in `push_volumes` and the first half goes red while
+    /// the second stays green, which is the direction that matters: the rule may
+    /// not be "a climbable keeps its faces", it has to be "the *art's* answer is
+    /// the one this field carries".
+    #[test]
+    fn a_flights_volumes_name_the_faces_its_art_named_and_a_bodys_name_none() {
+        let (prism, tile) = flight();
+        let graphic = Graphic(0x0736);
+        // What the detector reads off a real flight, and what the art table
+        // holds for the stairs the defect was reported on: a stair's base is
+        // pixel for pixel what two walls meeting at a corner leave. See
+        // `occlusion::boxes_of`'s own doc.
+        let corner = crate::facing::Facing::Corner {
+            right: crate::facing::Face::East,
+            left: crate::facing::Face::South,
+        };
+        let volumes_of = |shape: crate::occlusion::Shape| {
+            let mut builder = crate::occlusion::Builder::new(grid_bounds());
+            builder.add(100, 100, 0, graphic, &tile, shape);
+            let occlusion = builder.finish(&Cutaway::OPEN);
+            let mut boxes = Vec::new();
+            push_volumes(
+                &mut boxes,
+                Point::new(100, 100, 0),
+                &tile,
+                &shape,
+                crate::occlusion::Owner::new(0, graphic),
+                &occlusion,
+            );
+            boxes
+        };
+
+        let fitted = volumes_of(crate::occlusion::Shape {
+            facing: Some(corner),
+            prism: Some(prism),
+            ..crate::occlusion::Shape::UNREAD
+        });
+        assert_eq!(fitted.len(), 3, "three treads, three boxes");
+        for volume in &fitted {
+            assert_eq!(
+                volume.edges,
+                crate::occlusion::Edges::EAST | crate::occlusion::Edges::SOUTH,
+                "a tread carries what the art named, not what the grid occludes \
+                 it with: {volume:?}"
+            );
+            assert_ne!(
+                volume.edges,
+                crate::occlusion::Edges::ANY,
+                "`Edges::ANY` here is `statics.wesl`'s own \"no facing\", and this \
+                 picture named a corner: {volume:?}"
+            );
+        }
+
+        // The other half, and the reason the first is not just "a climbable is
+        // special": a picture the detector would not read is a **body**, and a
+        // body genuinely has no face to give a fragment. The prism is still
+        // here, so what moved is the art's answer and nothing else.
+        let unread = volumes_of(crate::occlusion::Shape {
+            prism: Some(prism),
+            ..crate::occlusion::Shape::UNREAD
+        });
+        assert_eq!(unread.len(), 3, "three treads either way");
+        for volume in &unread {
+            assert_eq!(
+                volume.edges,
+                crate::occlusion::Edges::ANY,
+                "the art named nothing, and this field is where that is said: {volume:?}"
             );
         }
     }

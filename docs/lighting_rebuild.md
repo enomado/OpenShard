@@ -3673,3 +3673,60 @@ outlive the track and belong in this list, since this is the live one:
   `PLATFORM` — `examples/geometry_census.rs` already walks that window and counts
   the fitted-prism class as one line (3.2%), without separating the climbable
   from the tables and counters that reach the same branch.
+  <br>
+  ✅ **Fixed 2026-08-11 — `occlusion::named_edges`.** One expression with two
+  readers now: `boxes_of` starts from it and keeps its own override, and
+  `statics::push_volumes` asks the *graphic* rather than the box. The gate is
+  `a_flights_volumes_name_the_faces_its_art_named_and_a_bodys_name_none`, and it
+  is a **pair on purpose** — the same tile, the same flags, the same prism, only
+  the measured `facing` differing — so the rule it holds is "the art's answer is
+  what this field carries" and not "a climbable is special". Fault-injected: put
+  `boxes_of`'s mask back and the first half goes red at `Edges(15)` against
+  `Edges(6)` while the second stays green.
+  <br>
+  ⚠ **And it does not change the frame the defect was reported on.** Measured on
+  the flight's own 20,321 fragments: with the art's mask they come out at mean
+  **111.8** of 765 and standard deviation **59.0** — *identical to the frame
+  before the body rule landed*, which is the frame in the report. What the fix
+  actually bought is that the staircase did not become the flat, formless 260.7
+  the body rule was about to make it: the zero-normal share on the flight is
+  **0.0%**, where it had been **100%**. The thing a person is looking at is the
+  entry below, and this one had to land first for it to be visible at all.
+- 🚩 **Nine pixels in ten of a staircase are answered "tread top".** The
+  measurement the entry above made possible, on the same frame — Britain's
+  `(1454, 1728)`, the flight's 20,321 own fragments, classified by the face
+  `impostor::meets` handed each one:
+  <br>
+
+  | face met | fragments | share | mean of 765 |
+  |---|---:|---:|---:|
+  | the **lid**, `+z` | 18,012 | **88.6%** | 118.7 |
+  | **south**, `+y` | 2,300 | 11.3% | 56.8 |
+  | **east**, `+x` | **9** | 0.04% | 235.8 |
+
+  <br>
+  **The east column is the one that says this is a defect and not a lighting
+  question.** A box seen on this projection presents its east and its south face
+  at the same area — the isometric is symmetric about the tile's column — so
+  2,300 against 9 is not a rounding difference or a tie going one way. And a lid
+  is a horizontal plane: a lamp standing *beside* a flight is nearly in it, so
+  `max(N·L, 0)` is small across the whole 88.6%, which is exactly the report —
+  a staircase with no shading of its own and a bright hairline along each step,
+  the hairline being what is left of the 11.3%.
+  <br>
+  **What it is not.** Not the height: `0x0750`, `0x0751`, `0x0752` and `0x0756`
+  are all 44×65 pictures, and 43 + 4·5 is 63 — the fitted prism's five `z` are
+  the art's own, so this is not the whole-tile stand-in's missing height
+  ([`footprints.md`](footprints.md)) reaching a climbable. Not the shadow walk
+  either: the same fragments average 248.8 of 255 on the shadow term.
+  <br>
+  **Where to look, in order.** The run merges — `push_volumes` swaps a tread's
+  own box for the merged solid's space where the grid holds one — so a flight
+  running along `x` has no per-tile east face left, by construction and
+  correctly. Whether that accounts for 9 is the first thing to measure, and
+  `examples/seam_probe.rs` already prints the box each static stands and is the
+  tool that answered the last question of this shape. After it: `RIM`
+  (`ec7121e`, a side face winning only by more than the picture can show) and
+  the `z`-then-`y`-then-`x` tie in `impostor::meets`, both of which move
+  fragments *onto* the lid and neither of which has ever been counted over a
+  climbable.

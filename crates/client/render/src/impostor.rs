@@ -410,8 +410,16 @@ pub struct Volume {
     /// origin-touch rule already excuses. Carrying a second id a box would be a
     /// second answer to a question one rule has already closed.
     pub solid: u32,
-    /// Which sides of its tile the **art** named for this box — the same four
-    /// bits `blit.wesl` mirrors, [`crate::occlusion::boxes_of`]'s own answer.
+    /// Which sides of its tile the **art** named for this picture — the same
+    /// four bits `blit.wesl` mirrors, and
+    /// [`crate::occlusion::named_edges`]'s answer rather than
+    /// [`crate::occlusion::boxes_of`]'s.
+    ///
+    /// **The two are a different question and they differ on a climbable.**
+    /// `boxes_of` answers *how this box is occluded with*, and it overrides the
+    /// art on a fitted prism — `Edges::ANY`, to pick the exact slab test a solid
+    /// takes. Filled from there, this field said a staircase named no face,
+    /// which is the opposite of what its picture says; see `named_edges`.
     ///
     /// **The one thing about a box that says whether its faces are surfaces.**
     /// A panel's named side and a lid's `z` face are planes somebody drew: the

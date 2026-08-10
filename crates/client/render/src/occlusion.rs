@@ -345,6 +345,41 @@ pub fn edges_of(facing: Option<crate::facing::Facing>) -> Edges {
     facing.faces().map(edge_of).fold(Edges::NONE, Edges::union)
 }
 
+/// **What the art named for one graphic** — as against what [`boxes_of`]
+/// occludes its boxes with, which is a different question with a different
+/// answer on exactly one branch.
+///
+/// The two coincide for everything the silhouette detector read, and this is
+/// the expression [`boxes_of`] itself starts from: the client's own
+/// `BACKGROUND` bit says a picture is horizontal and names no side, and
+/// everything that stands up takes [`edges_of`]. They part company on a
+/// **climbable**, where `boxes_of` overrides the art's answer with
+/// [`Edges::ANY`] in order to pick an occlusion *test* — the exact slab test a
+/// solid takes, rather than a lid's crossing test or a panel's run masking.
+/// `Edges::ANY` is a fine answer to "how is this box occluded with" and a false
+/// one to "did the art name a face": a stair's treads and risers are planes
+/// somebody drew, and [`crate::facing::Prism`] fitted them off the picture.
+///
+/// So this is the reader for anything asking about the **surface**, and
+/// `boxes_of`'s own mask stays the reader for anything asking about the
+/// **shadow**. `crate::statics::push_volumes` is the one caller: a fragment's
+/// facing is a statement about the art, and taking it off the occlusion mask
+/// instead put every staircase in the world in the class of pictures that name
+/// no side. `docs/lighting_rebuild.md`'s backlog has the frame and the numbers.
+///
+/// **A property of the graphic and not of the box**, which is why it takes a
+/// `Shape` rather than riding beside each `Solid`. The one reader asks whether
+/// the art named a side *at all* — one bit — so a corner's two panels carrying
+/// the union here rather than one side each costs that reader nothing. A reader
+/// that ever needs the side wants the mask beside each box instead, and
+/// `boxes_of` is where it would come from.
+pub fn named_edges(tile: &StaticTile, shape: &Shape) -> Edges {
+    match tile.flags.is_background() {
+        true => Edges::NONE,
+        false => edges_of(shape.facing),
+    }
+}
+
 /// **What shape one static standing at one place is**: its boxes, each with the
 /// side of its tile it stands on and the [`Part`] number that names it.
 ///
@@ -497,10 +532,11 @@ pub fn boxes_of(
     // already a lid — and a rule that moves every roof in the world is not
     // landed on an argument. Whoever picks it up wants a frame with a `ROOF`
     // graphic in it first. See `docs/lighting_rebuild.md` phase 6i.
-    let edges = match tile.flags.is_background() {
-        true => Edges::NONE,
-        false => edges_of(shape.facing),
-    };
+    //
+    // One expression with two readers now, which is what gave it a name:
+    // [`named_edges`] is what the *art* said, and on this path it is also what
+    // the grid occludes with. The two branches above are where they part.
+    let edges = named_edges(tile, shape);
     match edges {
         // A lid: one surface, and the mask is the whole of what says which of
         // the walk's two rules it takes.
