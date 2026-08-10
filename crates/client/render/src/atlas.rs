@@ -2215,6 +2215,7 @@ mod tests {
                 hole: Some(WINDOW),
                 prism: None,
                 blocks: crate::facing::Blocks::EMPTY,
+                footprint: None,
             },
         );
 

@@ -5836,6 +5836,7 @@ fn the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside() {
             hole: None,
             prism: None,
             blocks: openshard_client_render::facing::Blocks::EMPTY,
+            footprint: None,
         },
     );
 

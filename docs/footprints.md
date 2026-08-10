@@ -182,8 +182,16 @@ D5a and D5b rather than quietly fixed: the tile-span refusal (it refused the
 bookcase this plan was written for) and the two-column plateau cap (47.3% of the
 class).
 
-**S2 — the table.** `Shape::footprint`, the `arttable` column, `DETECTOR` +1,
-and the authored-row precedence extended to it.
+**S2 — the table.** ✅ 2026-08-10. `Shape::footprint`, on `facing: None` only
+(D4, one level up from `boxes_of`'s own gate); `arttable`'s `footprint x0 x1 y0
+y1` column, restricted to a `none` verdict in the grammar itself; `FORMAT` 4→5
+and `DETECTOR` 2→3, both with the same trap the prism and the hole each closed
+for themselves recorded in their own doc comments; and `derive`'s "was
+anything read" test grown to three terms so a measured footprint with no face
+and no prism is not mistaken for nothing having been read and dropped as a
+refusal. The shipped `data/overrides.table` carries the bump too — an
+`include_str!` parsed with `.expect`, so a forgotten sheet would have failed
+at test time rather than at review.
 
 **S3 — the consumption.** `boxes_of`'s branch, under D4's condition. *Gate:*
 `examples/geometry_census.rs` grows a row — "a measured footprint" — and the

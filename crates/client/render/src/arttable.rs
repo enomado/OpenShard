@@ -22,8 +22,8 @@
 //! is that a shard fixing one wall edits a file rather than patching a detector:
 //!
 //! ```text
-//! table 4
-//! detector 2
+//! table 5
+//! detector 3
 //! art artLegacyMUL.uop 447160596
 //! examined 15234
 //! 0x0007 face S
@@ -32,6 +32,7 @@
 //! 0x0166 corner E S prism W 1 3 5
 //! 0x0171 none authored
 //! 0x0736 none block 0 2 0 8 0 20 block 6 8 0 8 0 20 block 0 8 0 8 15 20 authored
+//! 0x0A97 none footprint 0 8 3 8
 //! ```
 //!
 //! A `hole` is the second verdict [`crate::facing`] reads off the same picture —
@@ -59,6 +60,15 @@
 //! profile can be fitted to, which is what `prism` is. It may accompany any
 //! verdict, including `none`, because nothing about it is a claim about which
 //! edge a plane stands on.
+//!
+//! `footprint` is the fifth: `x0 x1 y0 y1`, the horizontal box
+//! [`crate::facing::measure_footprint`] reads off a picture's own base edge, in
+//! eighths of the tile like `block` — `docs/footprints.md`'s S1 and S2. Unlike
+//! `block` it *is* derived, and unlike `hole` and `prism` it belongs to the
+//! *absence* of a verdict: only a `none` row may carry one, because a face or a
+//! corner already answers which edge the picture stands on, and a footprint
+//! beside either would be a second, independent claim about the same base with
+//! nothing saying which one [`crate::occlusion::boxes_of`] should read.
 //!
 //! **This is what a table is for.** The prism search is the whole cost of a scan —
 //! seconds against milliseconds for the faces — and a table that could not carry
@@ -94,7 +104,7 @@ use std::fmt;
 
 use openshard_protocol::wire::Graphic;
 
-use crate::facing::{Block, Blocks, Face, Facing, Hole, Prism};
+use crate::facing::{Block, Blocks, Face, Facing, Footprint, Hole, Prism};
 use crate::occlusion::Shape;
 
 /// The version of this file format.
@@ -124,7 +134,15 @@ use crate::occlusion::Shape;
 /// only, the same trap as the prism's: a format-3 reader would silently drop
 /// every block a person had placed, and a table that had never carried one
 /// would look exactly like a table that could not.
-pub const FORMAT: u32 = 4;
+///
+/// **Five** for the footprint, `docs/footprints.md`'s S2: a row may now carry
+/// the horizontal box S1 measures off a `none` verdict's own base edge —
+/// derived, unlike the block list, and the same trap as the hole's and the
+/// prism's each: a format-4 reader would answer `footprint: None` for every
+/// row that has one, and look exactly as fresh as a table written after,
+/// while the fallback it was meant to replace keeps drawing every one of
+/// those statics a whole tile wide.
+pub const FORMAT: u32 = 5;
 
 /// What a table was measured from, and by which rules.
 ///
@@ -202,17 +220,17 @@ impl ArtTable {
         if self.rows.get(&graphic).is_some_and(|row| row.authored) {
             return;
         }
-        match (shape.facing, shape.prism) {
+        match (shape.facing, shape.prism, shape.footprint) {
             // A refusal is the absence of a row: writing fifteen thousand
             // `none`s would bury the two hundred lines a person might want to
             // read, and `examined` is what makes the absence mean something.
             //
             // What decides is whether anything about the *shape* was read — a
-            // facing or a prism. A hole is not on that list because it is not a
-            // third answer: it is a rectangle in a plane, so without the plane
-            // there is nothing to write down, and `aperture_of` refuses one for
-            // the same reason at the other end.
-            (None, None) => self.rows.remove(&graphic),
+            // facing, a prism, or now a footprint. A hole is not on that list
+            // because it is not a third answer: it is a rectangle in a plane, so
+            // without the plane there is nothing to write down, and
+            // `aperture_of` refuses one for the same reason at the other end.
+            (None, None, None) => self.rows.remove(&graphic),
             _ => self.rows.insert(
                 graphic,
                 Row {
@@ -312,6 +330,20 @@ impl ArtTable {
         self.rows.values().filter(|row| row.shape.prism.is_some()).count()
     }
 
+    /// And how many carry a footprint — `docs/footprints.md`'s S1 and S2, and
+    /// its own number for the same reason [`holed`] and [`prisms`] are: a share
+    /// of the whole table would hide a gate that quietly stopped admitting them
+    /// going to zero.
+    ///
+    /// [`holed`]: Self::holed
+    /// [`prisms`]: Self::prisms
+    pub fn footprints(&self) -> usize {
+        self.rows
+            .values()
+            .filter(|row| row.shape.footprint.is_some())
+            .count()
+    }
+
     /// How many rows it holds at all — the decided ones and the hand-written
     /// refusals together.
     pub fn len(&self) -> usize {
@@ -379,9 +411,16 @@ impl ArtTable {
                     block.x.0, block.x.1, block.y.0, block.y.1, block.z.0, block.z.1
                 ));
             }
+            let footprint = match row.shape.footprint {
+                None => String::new(),
+                Some(footprint) => format!(
+                    " footprint {} {} {} {}",
+                    footprint.x.0, footprint.x.1, footprint.y.0, footprint.y.1
+                ),
+            };
             let authored = if row.authored { " authored" } else { "" };
             out.push_str(&format!(
-                "{:#06X} {verdict}{hole}{prism}{blocks}{authored}\n",
+                "{:#06X} {verdict}{hole}{prism}{blocks}{footprint}{authored}\n",
                 graphic.0
             ));
         }
@@ -611,6 +650,32 @@ fn row(
         at,
         detail: "a row may carry at most facing::MAX_BLOCKS blocks",
     })?;
+    // The footprint, if the row states one: the horizontal box
+    // `facing::measure_footprint` reads off the art's own base edge, in eighths
+    // of the tile like `block`. **Only a `none` verdict may carry one** —
+    // `docs/footprints.md`'s D4, the mirror of the hole's and the prism's own
+    // restrictions: a face or a corner already says which edge the picture
+    // stands on, and a footprint beside either would be a second, independent
+    // answer about the same base with nothing saying which one `boxes_of`
+    // should read.
+    let footprint = match words.clone().next() {
+        Some("footprint") => {
+            words.next();
+            if facing.is_some() {
+                return Err(TableError::Line {
+                    at,
+                    detail: "only a `none` verdict may carry a footprint",
+                });
+            }
+            let mut span = || number::<u8>(words, at, "a footprint is `x0 x1 y0 y1`");
+            let (x0, x1, y0, y1) = (span()?, span()?, span()?, span()?);
+            Some(Footprint::new((x0, x1), (y0, y1)).ok_or(TableError::Line {
+                at,
+                detail: "a footprint's spans must be non-empty and at most 8",
+            })?)
+        }
+        _ => None,
+    };
     let authored = match words.clone().next() {
         Some("authored") => {
             words.next();
@@ -626,6 +691,7 @@ fn row(
                 hole,
                 prism,
                 blocks,
+                footprint,
             },
             authored,
         },
@@ -704,6 +770,7 @@ mod tests {
                 hole: Some(WINDOW),
                 prism: None,
                 blocks: Blocks::EMPTY,
+                footprint: None,
             },
         );
         table.derive(
@@ -781,7 +848,7 @@ mod tests {
     /// format with a precedence rule to argue about.
     #[test]
     fn an_override_sheet_hands_its_rows_to_a_measured_table() {
-        let sheet = ArtTable::parse("table 4\n0x02D8 face W authored\n0x0100 face N\n")
+        let sheet = ArtTable::parse("table 5\n0x02D8 face W authored\n0x0100 face N\n")
             .expect("a sheet of overrides");
         assert!(sheet.stamp().is_none());
         assert!(!sheet.fresh(&stamp()), "a sheet describes no install");
@@ -823,15 +890,16 @@ mod tests {
         );
         assert_eq!(ArtTable::parse("0x0007 face S\n"), Err(TableError::NoFormat));
         assert_eq!(
-            ArtTable::parse("table 4\nart artLegacyMUL.uop 12\n"),
+            ArtTable::parse("table 5\nart artLegacyMUL.uop 12\n"),
             Err(TableError::HalfStamped)
         );
         // And the formats this one replaced, which is the case the bump is for: a
         // table of faces measured before holes existed reads every window as
         // solid stone and says nothing about it, one measured before prisms
-        // existed reads every staircase as a corner of two walls, and one
-        // measured before blocks existed silently drops every arch a person had
-        // authored by hand.
+        // existed reads every staircase as a corner of two walls, one measured
+        // before blocks existed silently drops every arch a person had authored
+        // by hand, and one measured before footprints existed answers
+        // `footprint: None` for every bookcase drawn narrower than its tile.
         assert_eq!(
             ArtTable::parse("table 1\n0x0007 face S\n"),
             Err(TableError::Format { found: 1 })
@@ -844,6 +912,12 @@ mod tests {
             ArtTable::parse("table 3\n0x0166 corner E S prism W 1 3 5\n"),
             Err(TableError::Format { found: 3 })
         );
+        assert_eq!(
+            ArtTable::parse(
+                "table 4\n0x0736 none block 0 2 0 8 0 20 block 6 8 0 8 0 20 block 0 8 0 8 15 20 authored\n"
+            ),
+            Err(TableError::Format { found: 4 })
+        );
     }
 
     /// And a row that says nothing readable says which line it is on.
@@ -855,13 +929,13 @@ mod tests {
     #[test]
     fn an_unreadable_row_names_its_line() {
         for text in [
-            "table 4\n0x0007 face Q\n",
-            "table 4\n0x0007 corner S E\n",
-            "table 4\n0x0007 wall\n",
-            "table 4\nnotahex face S\n",
-            "table 4\n0x0007 face S and more\n",
-            "table 4\n0x0007 face S hole 93 185 10\n",
-            "table 4\n0x0007 face S hole 93 185 10 300\n",
+            "table 5\n0x0007 face Q\n",
+            "table 5\n0x0007 corner S E\n",
+            "table 5\n0x0007 wall\n",
+            "table 5\nnotahex face S\n",
+            "table 5\n0x0007 face S and more\n",
+            "table 5\n0x0007 face S hole 93 185 10\n",
+            "table 5\n0x0007 face S hole 93 185 10 300\n",
         ] {
             let error = ArtTable::parse(text).expect_err(text);
             assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
@@ -877,14 +951,14 @@ mod tests {
     #[test]
     fn only_a_face_may_carry_a_hole() {
         assert!(matches!(
-            ArtTable::parse("table 4\n0x0104 corner E S hole 93 185 10 15\n"),
+            ArtTable::parse("table 5\n0x0104 corner E S hole 93 185 10 15\n"),
             Err(TableError::Line { at: 2, .. })
         ));
         assert!(matches!(
-            ArtTable::parse("table 4\n0x0104 none hole 93 185 10 15\n"),
+            ArtTable::parse("table 5\n0x0104 none hole 93 185 10 15\n"),
             Err(TableError::Line { at: 2, .. })
         ));
-        let table = ArtTable::parse("table 4\n0x003C face E hole 93 185 10 15 authored\n").expect("a row");
+        let table = ArtTable::parse("table 5\n0x003C face E hole 93 185 10 15 authored\n").expect("a row");
         assert_eq!(table.shape(Graphic(0x003C)).hole, Some(WINDOW));
         assert_eq!(table.authored(), 1, "the marker after the hole is still read");
     }
@@ -910,6 +984,7 @@ mod tests {
                 hole: None,
                 prism: Some(stair),
                 blocks: Blocks::EMPTY,
+                footprint: None,
             },
         );
         // And a person's own: a solid with no facing at all, which is what
@@ -946,16 +1021,16 @@ mod tests {
     #[test]
     fn a_prism_row_states_only_what_a_detector_would() {
         for text in [
-            "table 4\n0x0007 face S prism W 1 3 5\n",
-            "table 4\n0x0104 corner E S prism Q 1\n",
-            "table 4\n0x0104 corner E S prism W\n",
-            "table 4\n0x0104 corner E S prism W 1 2 3 4 5\n",
-            "table 4\n0x0104 corner E S prism W 300\n",
+            "table 5\n0x0007 face S prism W 1 3 5\n",
+            "table 5\n0x0104 corner E S prism Q 1\n",
+            "table 5\n0x0104 corner E S prism W\n",
+            "table 5\n0x0104 corner E S prism W 1 2 3 4 5\n",
+            "table 5\n0x0104 corner E S prism W 300\n",
         ] {
             let error = ArtTable::parse(text).expect_err(text);
             assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
         }
-        let table = ArtTable::parse("table 4\n0x0104 none prism W 1 3 5 authored\n").expect("a row");
+        let table = ArtTable::parse("table 5\n0x0104 none prism W 1 3 5 authored\n").expect("a row");
         assert_eq!(
             table.shape(Graphic(0x0104)).prism,
             Prism::new(Face::West, &[1, 3, 5]),
@@ -1013,13 +1088,81 @@ mod tests {
     #[test]
     fn a_block_states_a_non_empty_span_and_a_row_states_at_most_max_blocks() {
         for text in [
-            "table 4\n0x0007 none block 4 4 0 8 0 20\n",
-            "table 4\n0x0007 none block 0 4 4 4 0 20\n",
-            "table 4\n0x0007 none block 0 4 0 8 5 5\n",
-            "table 4\n0x0007 none block 0 9 0 8 0 20\n",
-            "table 4\n0x0007 none block 0 8 0 9 0 20\n",
-            "table 4\n0x0007 none block 0 1 0 1 0 1 block 1 2 0 1 0 1 \
+            "table 5\n0x0007 none block 4 4 0 8 0 20\n",
+            "table 5\n0x0007 none block 0 4 4 4 0 20\n",
+            "table 5\n0x0007 none block 0 4 0 8 5 5\n",
+            "table 5\n0x0007 none block 0 9 0 8 0 20\n",
+            "table 5\n0x0007 none block 0 8 0 9 0 20\n",
+            "table 5\n0x0007 none block 0 1 0 1 0 1 block 1 2 0 1 0 1 \
              block 2 3 0 1 0 1 block 3 4 0 1 0 1 block 4 5 0 1 0 1\n",
+        ] {
+            let error = ArtTable::parse(text).expect_err(text);
+            assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
+        }
+    }
+
+    /// **A bookcase survives the file**, `docs/footprints.md`'s S1 and S2: a
+    /// picture the wall detector named no edge for, with the box its own base
+    /// edge states written down beside the `none` verdict.
+    #[test]
+    fn a_footprint_survives_the_round_trip_on_a_none_verdict() {
+        let footprint = Footprint::new((0, 8), (3, 8)).expect("a box narrower on one axis");
+        let mut table = ArtTable::measured(stamp());
+        table.derive(
+            Graphic(0x0A97),
+            Shape {
+                footprint: Some(footprint),
+                ..Shape::UNREAD
+            },
+        );
+        table.derive(Graphic(0x0007), faced(Face::South));
+
+        let read = ArtTable::parse(&table.to_text()).expect("its own text");
+        assert_eq!(read, table);
+        assert_eq!(read.footprints(), 1);
+        assert_eq!(read.shape(Graphic(0x0A97)).footprint, Some(footprint));
+        assert_eq!(
+            read.shape(Graphic(0x0A97)).facing,
+            None,
+            "a footprint states no facing of its own",
+        );
+        assert!(
+            read.shape(Graphic(0x0007)).footprint.is_none(),
+            "a plain wall was never offered one",
+        );
+    }
+
+    /// A footprint belongs to a `none` verdict, and a face or a corner may not
+    /// carry one — `docs/footprints.md`'s D4, the mirror of the hole's and the
+    /// prism's own restrictions stated in the grammar so a hand-written row
+    /// cannot say what no detector will.
+    #[test]
+    fn a_footprint_row_states_only_what_a_detector_would() {
+        for text in [
+            "table 5\n0x0007 face S footprint 0 8 3 8\n",
+            "table 5\n0x0104 corner E S footprint 0 8 3 8\n",
+        ] {
+            let error = ArtTable::parse(text).expect_err(text);
+            assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
+        }
+        let table = ArtTable::parse("table 5\n0x0A97 none footprint 0 8 3 8 authored\n").expect("a row");
+        assert_eq!(
+            table.shape(Graphic(0x0A97)).footprint,
+            Footprint::new((0, 8), (3, 8)),
+        );
+        assert_eq!(table.authored(), 1, "the marker after the spans is still read");
+    }
+
+    /// A footprint states a non-empty span on each axis, at most a whole tile —
+    /// the same discipline [`Block::new`] holds for its own spans, and a
+    /// hand-edit is exactly the place either bound would be tried.
+    #[test]
+    fn a_footprint_states_a_non_empty_span_at_most_a_tile() {
+        for text in [
+            "table 5\n0x0007 none footprint 4 4 0 8\n",
+            "table 5\n0x0007 none footprint 0 4 4 4\n",
+            "table 5\n0x0007 none footprint 0 9 0 8\n",
+            "table 5\n0x0007 none footprint 0 8 0 9\n",
         ] {
             let error = ArtTable::parse(text).expect_err(text);
             assert!(matches!(error, TableError::Line { at: 2, .. }), "{text}: {error}");
@@ -1031,7 +1174,7 @@ mod tests {
     #[test]
     fn comments_and_blank_lines_are_skipped() {
         let table =
-            ArtTable::parse("# what this is\ntable 4\n\n0x0007 face S  # the south face of a marble wall\n")
+            ArtTable::parse("# what this is\ntable 5\n\n0x0007 face S  # the south face of a marble wall\n")
                 .expect("a commented sheet");
         assert_eq!(table.facing(Graphic(0x0007)), Some(Facing::One(Face::South)));
     }

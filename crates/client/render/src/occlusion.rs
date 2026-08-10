@@ -500,6 +500,18 @@ pub struct Shape {
     /// re-derivation exactly the way an authored `prism` does, because nothing
     /// but a person's own `author` call ever sets it.
     pub blocks: crate::facing::Blocks,
+    /// The horizontal box the art's own base edge states, where the picture is
+    /// one and nothing else already answered for it.
+    ///
+    /// `docs/footprints.md`'s D1 and D2. Only ever `Some` beside `facing: None`:
+    /// a face or a corner already says which edge the picture stands on, and a
+    /// second, independent box on the same row would be two answers about the
+    /// same base with nothing saying which one [`boxes_of`] should read — the
+    /// same reasoning [`Shape::hole`] and [`Shape::prism`] each restrict the
+    /// other way. `None` here is what today's whole-tile fallback already draws,
+    /// so a table with no rows of this kind degrades to exactly what shipped
+    /// before it.
+    pub footprint: Option<crate::facing::Footprint>,
 }
 
 impl Shape {
@@ -509,6 +521,7 @@ impl Shape {
         hole: None,
         prism: None,
         blocks: crate::facing::Blocks::EMPTY,
+        footprint: None,
     };
 
     /// A graphic whose face the art named and whose hole it did not — which is
@@ -519,6 +532,7 @@ impl Shape {
             hole: None,
             prism: None,
             blocks: crate::facing::Blocks::EMPTY,
+            footprint: None,
         }
     }
 
@@ -529,6 +543,7 @@ impl Shape {
             hole: None,
             prism: Some(prism),
             blocks: crate::facing::Blocks::EMPTY,
+            footprint: None,
         }
     }
 
@@ -540,6 +555,7 @@ impl Shape {
             hole: None,
             prism: None,
             blocks,
+            footprint: None,
         }
     }
 
@@ -577,6 +593,16 @@ impl Shape {
                 _ => None,
             },
             blocks: crate::facing::Blocks::EMPTY,
+            // **Only offered to a picture the wall detector named neither edge
+            // for.** The mirror of the prism's own gate above: a face or a
+            // corner already answers which edge the picture stands on, so a
+            // second box measured off the same base would be a second, unrelated
+            // claim about it. `docs/footprints.md`'s S1 census is this same gate,
+            // one level up — it counts the class this reaches.
+            footprint: match facing {
+                None => crate::facing::footprint_of(image),
+                _ => None,
+            },
         }
     }
 }
@@ -2633,6 +2659,9 @@ pub fn shape_of(atlas: Option<&crate::atlas::StaticAtlas>, graphic: Graphic) -> 
         hole: atlas.and_then(|atlas| atlas.hole(graphic)),
         prism: atlas.and_then(|atlas| atlas.prism(graphic)),
         blocks: crate::facing::Blocks::EMPTY,
+        // Not yet read off the atlas — `docs/footprints.md`'s S3, the branch
+        // that would consume one, does not exist yet either.
+        footprint: None,
     }
 }
 
@@ -2821,6 +2850,7 @@ mod tests {
             hole: None,
             prism: None,
             blocks: crate::facing::Blocks::EMPTY,
+            footprint: None,
         };
         let (lower, upper) = (Graphic(0x0006), Graphic(0x0007));
         let mut occlusion = Builder::new(bounds());
@@ -3144,6 +3174,7 @@ mod tests {
                 hole: Some(hole),
                 prism: None,
                 blocks: crate::facing::Blocks::EMPTY,
+                footprint: None,
             },
         );
         // A graphic the art would not name is a body, and drops it.
@@ -3158,6 +3189,7 @@ mod tests {
                 hole: Some(hole),
                 prism: None,
                 blocks: crate::facing::Blocks::EMPTY,
+                footprint: None,
             },
         );
         // And a floor is a lid, whatever its silhouette read as.
@@ -3172,6 +3204,7 @@ mod tests {
                 hole: Some(hole),
                 prism: None,
                 blocks: crate::facing::Blocks::EMPTY,
+                footprint: None,
             },
         );
         // A corner is two panels and the hole is on both.
@@ -3189,6 +3222,7 @@ mod tests {
                 hole: Some(hole),
                 prism: None,
                 blocks: crate::facing::Blocks::EMPTY,
+                footprint: None,
             },
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
@@ -3281,6 +3315,7 @@ mod tests {
                 }),
                 prism: None,
                 blocks: crate::facing::Blocks::EMPTY,
+                footprint: None,
             },
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
@@ -3365,6 +3400,7 @@ mod tests {
                 }),
                 prism: None,
                 blocks: crate::facing::Blocks::EMPTY,
+                footprint: None,
             },
         );
         let occlusion = occlusion.finish(&Cutaway::OPEN);
@@ -4751,6 +4787,7 @@ mod tests {
             hole: atlas.hole(graphic),
             prism: None,
             blocks: crate::facing::Blocks::EMPTY,
+            footprint: None,
         };
         let floor = |x: u16, y: u16| map.land(x, y).map_or(0, |cell| cell.z);
 

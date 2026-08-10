@@ -1999,6 +1999,7 @@ fn wall_with_hole(hole: openshard_client_render::facing::Hole) -> occlusion::Occ
             hole: Some(hole),
             prism: None,
             blocks: openshard_client_render::facing::Blocks::EMPTY,
+            footprint: None,
         },
     );
     grid.finish(&Cutaway::OPEN)
@@ -2473,6 +2474,7 @@ fn a_vertical_ray_meets_what_stands_over_it_whatever_shape_it_is() {
                 hole: None,
                 prism: None,
                 blocks: Blocks::EMPTY,
+                footprint: None,
             },
         );
         grid.finish(&Cutaway::OPEN)

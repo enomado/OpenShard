@@ -91,16 +91,22 @@ use openshard_uofiles::image::Image;
 ///
 /// **Bump it when a gate here changes** — `MIN_FILLED`, `SPILL`, `OVERHANG`,
 /// `STRAIGHT`, `SQUARE`, `OFF_EDGE`, `MIN_STANDING`, `HOLE_MIN_RUN`,
-/// `HOLE_MIN_RISE`, `HOLE_MARGIN`, or the shape of [`facing_of`] or
-/// [`aperture_of`]. Nothing enforces that, and nothing can: it is a claim about a
-/// diff. What catches a bump that was forgotten is the sweep in
-/// `openshard-client-artscan`, which reads a real install and compares every row
-/// of a table against a live measurement — see that crate's `agrees` test.
+/// `HOLE_MIN_RISE`, `HOLE_MARGIN`, `PLATEAU`, `MIN_FOOTPRINT_RUN`, or the shape
+/// of [`facing_of`], [`aperture_of`] or [`footprint_of`]. Nothing enforces
+/// that, and nothing can: it is a claim about a diff. What catches a bump that
+/// was forgotten is the sweep in `openshard-client-artscan`, which reads a real
+/// install and compares every row of a table against a live measurement — see
+/// that crate's `agrees` test.
 ///
 /// **Two** since the hole joined the face: a table written by detector 1 has a
 /// row for every window and a hole in none of them, and nothing else in the
 /// stamp could say so.
-pub const DETECTOR: u32 = 2;
+///
+/// **Three** for the footprint, `docs/footprints.md`'s S1: `PLATEAU` and
+/// `MIN_FOOTPRINT_RUN` are new gates nothing above tracked, and a table written
+/// before `measure_footprint` existed would look exactly as fresh as one
+/// written after — the same trap the hole closed for `aperture_of`.
+pub const DETECTOR: u32 = 3;
 
 /// Which edge of its tile a wall stands on.
 ///
