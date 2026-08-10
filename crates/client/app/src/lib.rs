@@ -6390,18 +6390,30 @@ impl App {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                // The surface's own, because the blit's pipeline is built for it
-                // — see `Screen::blit`. A texture of any other format is a
-                // pipeline this pass cannot draw with.
-                format: window.config.format,
+                // **The world's format and not the surface's**, which is what
+                // the first press of F12 found: a surface is whatever the
+                // compositor offered — here `Rgba16Float`, eight bytes a texel
+                // — and reading it back as RGBA8 is a copy `wgpu` refuses. Even
+                // where it is four (`Bgra8Unorm`) it is the wrong four: the
+                // picture would come out with its red and blue swapped, and
+                // nothing would say so. `isolated_scene` has always drawn into
+                // this format, and a dump exists to be compared with that one.
+                format: blit::WORLD_FORMAT,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
             let dump_view = dump.create_view(&wgpu::TextureViewDescriptor::default());
+            // A second pipeline for that format, built here and dropped with the
+            // dump: `Screen::blit` is bound to the surface's format and cannot
+            // draw into this target. The same shader and the same uniforms — the
+            // format is the whole of the difference — and it is built per press
+            // rather than kept, because every frame that is not being dumped
+            // would otherwise carry a pipeline nobody draws with.
+            let mut dump_blit = Blit::new(&window.device, blit::WORLD_FORMAT);
             let planes = openshard_client_render::dump::planes(
                 &window.device,
                 &window.queue,
-                &mut window.blit,
+                &mut dump_blit,
                 &dump,
                 blit::Frame {
                     // A view of `dump`, made one line above it: `dump::planes`'s

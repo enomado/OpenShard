@@ -60,6 +60,19 @@ pub fn planes(
     lighting: &Lighting,
     views: &[View],
 ) -> Vec<(View, Vec<u8>)> {
+    // **The world's format and not a surface's**, and it is checked here rather
+    // than assumed: what comes back is written out as RGBA8 bytes, so a texture
+    // in any other format is either a picture with its channels swapped or —
+    // where a texel is not four bytes at all — a readback that cannot even be
+    // asked for. A window's surface is whatever the compositor offered
+    // (`Bgra8Unorm`, `Rgba16Float`), so the client's dump goes through a target
+    // and a pipeline of its own; the tool's already did. Two dumps are
+    // comparable byte for byte or they are not a comparison.
+    assert_eq!(
+        into.format(),
+        crate::blit::WORLD_FORMAT,
+        "a dump is read back as RGBA8, so it is drawn into the world's own format",
+    );
     let mut shown = lighting.clone();
     views
         .iter()
@@ -79,7 +92,7 @@ pub fn planes(
         .collect()
 }
 
-/// A rectangle of an RGBA8 texture, as tight rows.
+/// A rectangle of a texture, as tight rows of its own texels.
 ///
 /// **The padding is the whole reason this is not three lines at each call site.**
 /// A texture-to-buffer copy wants every row a multiple of
@@ -89,17 +102,29 @@ pub fn planes(
 /// this crate had its own copy of this arithmetic, and the ones that "did not
 /// need it" were the ones whose width happened to be aligned.
 ///
-/// `texture` must carry [`wgpu::TextureUsages::COPY_SRC`] and contain `rect`.
-/// The wait is unconditional: what comes back is this submission's own pixels,
-/// not whatever the last frame left.
+/// **The texel's size comes from the format** rather than from the four bytes
+/// every caller here happens to want. A window's surface is whatever the
+/// compositor offered — `Rgba16Float` is eight — and a row measured as
+/// `width * 4` against it is not a shorter row, it is a copy `wgpu` refuses
+/// outright ("bytes per row is less than the number of bytes in a complete
+/// row"). What comes back is therefore *bytes of `texture.format()`*, and
+/// turning them into a picture is the caller's business.
+///
+/// `texture` must carry [`wgpu::TextureUsages::COPY_SRC`], contain `rect`, and
+/// be an uncompressed colour format. The wait is unconditional: what comes back
+/// is this submission's own pixels, not whatever the last frame left.
 pub fn read_rect(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     rect: ViewportRect,
 ) -> Vec<u8> {
+    let texel = texture
+        .format()
+        .block_copy_size(None)
+        .expect("an uncompressed colour format, whose block is one texel");
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let row = rect.width * 4;
+    let row = rect.width * texel;
     let padded = row + (align - row % align) % align;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("frame readback"),

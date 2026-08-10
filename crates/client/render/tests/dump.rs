@@ -236,6 +236,55 @@ fn png_size(png: &[u8]) -> (u32, u32) {
     (width, height)
 }
 
+/// **A row is measured in the texture's own texels, not in four bytes.**
+///
+/// The defect the first press of F12 found, and the reason this test needs
+/// neither client files nor a drawn frame: the client dumped into a texture of
+/// the *surface's* format, and this machine's compositor offers `Rgba16Float` —
+/// eight bytes a texel. A row measured as `width * 4` against that is not a
+/// shorter row, it is a copy `wgpu` refuses outright, and the client died on the
+/// keypress.
+///
+/// Both halves matter and both are here: the format's own texel size, and the
+/// alignment padding on top of it. `301 * 8 = 2408` is aligned to neither.
+#[test]
+fn a_readback_measures_a_row_in_the_textures_own_texels() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    let rect = ViewportRect {
+        x: 0,
+        y: 0,
+        width: 301,
+        height: 97,
+    };
+    for (format, texel) in [
+        (blit::WORLD_FORMAT, 4),
+        (wgpu::TextureFormat::Bgra8Unorm, 4),
+        (wgpu::TextureFormat::Rgba16Float, 8),
+    ] {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("a texture of some format"),
+            size: wgpu::Extent3d {
+                width: rect.width,
+                height: rect.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        assert_eq!(
+            dump::read_rect(&device, &queue, &texture, rect).len(),
+            (rect.width * rect.height * texel) as usize,
+            "{format:?} is {texel} bytes a texel and the readback came back a different length",
+        );
+    }
+}
+
 #[test]
 fn a_frame_dumps_one_picture_per_view_at_the_size_asked_for() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {

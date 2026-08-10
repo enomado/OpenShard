@@ -194,10 +194,30 @@ the corner.
   and with them `OPENSHARD_SCENE_VIEWPORT`'s 256-byte alignment rule, which was
   only ever that copy showing through.
 
-*Not done, and it is the first backlog item below:* **nobody has pressed F12 in a
-live window.** What is gated is everything under it — `dump::planes`,
-`read_rect`, the naming — and what is not is the forty lines of wiring in
-`App::draw` that reach them.
+**The first press killed the client, and that is the entry worth keeping.** The
+dump drew into a texture of the *surface's* format, on the reasoning that the
+blit's pipeline is built for it — and a surface is whatever the compositor
+offered. Here it is `Rgba16Float`: eight bytes a texel, against a readback
+measuring a row as `width * 4`, which is not a shorter row but a copy `wgpu`
+refuses outright. Every test passed, because every test drew into
+[`blit::WORLD_FORMAT`] — the tools' own format, four bytes, the one place this
+could not go wrong.
+
+Two things came out of it, and the second is the point:
+
+- `dump::read_rect` takes the texel's size from `texture.format()`, and
+  `tests/dump.rs` reads a rect out of `Rgba8Unorm`, `Bgra8Unorm` and
+  `Rgba16Float` — a test that needs neither client files nor a drawn frame, and
+  that fails on the old arithmetic.
+- **The dump draws into `WORLD_FORMAT` and builds its own blit pipeline for it.**
+  Even a four-byte surface would have been the wrong four: `Bgra8Unorm` reads
+  back with red and blue swapped and nothing says so, and a dump exists to be
+  compared against `isolated_scene`'s picture, which has always been RGBA8. The
+  surface's format is a fact about the compositor, and a comparison cannot depend
+  on one.
+
+*Not done, and it is the first backlog item below:* **no F12 press has yet
+written a directory.** The failure was witnessed; the success has not been.
 
 ### P3 — the gate
 
@@ -278,13 +298,15 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
   for the server is serial and here is a nested `x`/`y` loop), and `highlight`.
   D1 gave the two a shared assembly; it did not give them a shared *route
   through* it, and no gate compares the two routes on one place.
-- 🚩 **F12 has never been pressed.** The dump above is gated everywhere except in
-  the client: `dump::planes`, `read_rect` and the file naming have tests with
-  positive controls, and the forty lines of `App::draw` that call them have been
-  read. The next person in front of the running client presses F12 once and looks
-  at `/tmp/openshard-frame/frame-0/` — thirteen pictures and an `inputs.txt`. It
-  is the same "verified by reading" this plan was written about, and it is cheap
-  to close.
+- 🚩 **No F12 press has written a directory yet.** The first one panicked on the
+  surface's format (above, now fixed and gated); the fixed path has been read and
+  not run. Press it once in the live client and look at
+  `/tmp/openshard-frame/frame-0/` — thirteen pictures and an `inputs.txt`. Worth
+  noting what the failure cost, since it is this plan's own argument in
+  miniature: a client that dies on a diagnostic keypress takes the frame a person
+  was looking at with it, which is exactly the instant the dump exists to keep.
+  A dump that cannot be taken twice from one session is a tool with a rationed
+  answer.
 - 🚩 **The tool advances no animation clock at all.** The first thing
   `Inputs::summary` caught, on the first run: `isolated_scene` passes
   `StaticAnimations::default()` — nought cycles — where the client builds 1068
