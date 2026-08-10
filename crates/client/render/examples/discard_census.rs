@@ -50,6 +50,7 @@ use openshard_client_render::camera::TileBounds;
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::facing::{Block, Blocks, Footprint, blocks_silhouette};
 use openshard_client_render::impostor::{self, Volume};
+use openshard_client_render::light::WorldVec;
 use openshard_client_render::occlusion::{self, Shape};
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::art::Art;
@@ -180,13 +181,33 @@ fn overhang(image: &Image, at: (i32, i32), z: i8, volumes: &[Volume]) -> (u32, u
             // moves, which is the question this histogram exists to settle. A
             // picture met against several boxes is as far outside as its *best*
             // box says, so the fold is a minimum and not a count.
-            let nearest = volumes
-                .iter()
-                .map(|volume| impostor::meets(start, volume.lo, volume.hi))
-                .fold(f32::INFINITY, |best, met| best.min(met.outside));
-            if nearest > impostor::FRAGMENT {
+            let Some((which, nearest)) = impostor::nearest(
+                start,
+                volumes
+                    .iter()
+                    .enumerate()
+                    .map(|(n, volume)| (n, volume.lo, volume.hi)),
+            ) else {
+                continue;
+            };
+            if !nearest.hit() {
                 missed += 1;
-                steps.count(nearest);
+                // **And what the nearest box would have answered**, which is the
+                // question "let the nearest box win outright" turns on. A miss is
+                // clamped onto the box, and the face that clamp names is the one
+                // whose exit came first — so a pixel that fell off a *lid*
+                // sideways is handed a side face, a wall's cosine in the middle
+                // of a floor. That is the lattice `discard` was introduced for
+                // and it is the whole cost of the rule; the count here is how big
+                // it actually is.
+                let face = nearest
+                    .normal
+                    .array()
+                    .iter()
+                    .position(|n| *n != 0.0)
+                    .expect("a meeting names one axis");
+                let volume = &volumes[which];
+                steps.count(nearest.outside, face, volume.hi.z - volume.lo.z);
             }
         }
     }
@@ -222,6 +243,26 @@ struct Steps {
     beyond: u64,
     /// The largest miss seen, in steps.
     worst: f32,
+    /// **What face the nearest box would name if a miss were let to keep it** —
+    /// `x`, `y`, `z`, counted separately.
+    ///
+    /// The question `docs/silhouettes.md` asks after the seam: a fragment that
+    /// missed every box is unmeasured today, and the alternative is to let the
+    /// box it came nearest win outright. What that costs is entirely in this
+    /// row, because the *position* a clamp gives is off by at most the overhang
+    /// while the *face* it gives is a different surface — the clamp names
+    /// whichever exit came first, so a pixel falling sideways off a lid is
+    /// handed a wall's cosine.
+    faces: [u64; 3],
+    /// The same three, counted only where the nearest box is a **lid** — a span
+    /// under one `z` unit, which is what `Solid::box_of` leaves a floor, a roof
+    /// or a plank.
+    ///
+    /// Split out because a side face is only *wrong* when the surface under the
+    /// pixel is flat. A fragment that falls off the end of a wall panel and is
+    /// handed that panel's side has been handed something defensible; a floor
+    /// pixel handed a side has not, and only this column can tell them apart.
+    lid_faces: [u64; 3],
 }
 
 /// One step of the fragment grid, in tiles: what a change of one virtual pixel
@@ -229,7 +270,10 @@ struct Steps {
 const STEP: f32 = std::f32::consts::SQRT_2 / (2.0 * HALF_TILE);
 
 impl Steps {
-    fn count(&mut self, outside: f32) {
+    /// `face` is the axis the nearest box's own clamp named, and `span` that
+    /// box's `z` extent — the two numbers the "let the nearest box win" rule
+    /// would act on.
+    fn count(&mut self, outside: f32, face: usize, span: f32) {
         let steps = outside / STEP;
         self.worst = self.worst.max(steps);
         *match steps {
@@ -239,6 +283,14 @@ impl Steps {
             s if s < 8.0 => &mut self.eight,
             _ => &mut self.beyond,
         } += 1;
+        self.faces[face] += 1;
+        // A lid is what `Solid::box_of` leaves flat-ish: `LID_THICKNESS` for the
+        // degenerate case, and anything under a whole `z` unit is a plank rather
+        // than a body. Read off the box itself and not off the claim, because the
+        // claim is per graphic and a piece stands several boxes.
+        if span < 1.0 {
+            self.lid_faces[face] += 1;
+        }
     }
 
     fn add(&mut self, other: &Steps) {
@@ -248,6 +300,10 @@ impl Steps {
         self.eight += other.eight;
         self.beyond += other.beyond;
         self.worst = self.worst.max(other.worst);
+        for axis in 0..3 {
+            self.faces[axis] += other.faces[axis];
+            self.lid_faces[axis] += other.lid_faces[axis];
+        }
     }
 
     fn total(&self) -> u64 {
@@ -320,13 +376,13 @@ fn controls(at: (i32, i32)) -> Vec<(u8, u32, u32, u32, Steps)> {
             let block = Block::new((0, 8), (0, 8), (0, top)).expect("a whole tile with a height");
             let image = blocks_silhouette(&Blocks::new(&[block]).expect("one block"));
             let own = Volume {
-                lo: [at.0 as f32, at.1 as f32, 0.0],
-                hi: [at.0 as f32 + 1.0, at.1 as f32 + 1.0, f32::from(top)],
+                lo: WorldVec::new(at.0 as f32, at.1 as f32, 0.0),
+                hi: WorldVec::new(at.0 as f32 + 1.0, at.1 as f32 + 1.0, f32::from(top)),
                 solid: 0,
             };
             let elsewhere = Volume {
-                lo: [own.lo[0] + 100.0, own.lo[1] + 100.0, own.lo[2]],
-                hi: [own.hi[0] + 100.0, own.hi[1] + 100.0, own.hi[2]],
+                lo: WorldVec::new(own.lo.x + 100.0, own.lo.y + 100.0, own.lo.z),
+                hi: WorldVec::new(own.hi.x + 100.0, own.hi.y + 100.0, own.hi.z),
                 solid: 0,
             };
             let (drawn, missed, steps) = overhang(&image, at, 0, std::slice::from_ref(&own));
@@ -543,7 +599,7 @@ fn main() {
                     && shape.prism.is_some();
                 tally.height = now
                     .iter()
-                    .map(|volume| (volume.hi[2] - volume.lo[2]) as i32)
+                    .map(|volume| (volume.hi.z - volume.lo.z) as i32)
                     .max()
                     .unwrap_or(0);
                 if occlusion::opacity(graphic, tile) != occlusion::CLEAR {
@@ -632,6 +688,27 @@ fn report(
         println!("    {name:>22}   {count:>9}  {:>5.2}%", pct(count, all));
     }
     println!("    {:>22}   {:>9.2}\n", "the worst", steps.worst);
+
+    // **And what letting the nearest box win would cost**, which is the rule
+    // `docs/silhouettes.md` weighs against the unmeasured state: every one of
+    // these pixels would take a real face instead of no facing, and the ones
+    // that take a *side* face off a **lid** are the lattice of wall-shaded dots
+    // that made `discard` look like the answer the first time round.
+    println!("  the face the nearest box would give each miss, if it won outright:");
+    for (name, count) in [
+        ("an east face (x)", steps.faces[0]),
+        ("a south face (y)", steps.faces[1]),
+        ("a lid (z)", steps.faces[2]),
+    ] {
+        println!("    {name:>22}   {count:>9}  {:>5.2}%", pct(count, all));
+    }
+    let lid_sides = steps.lid_faces[0] + steps.lid_faces[1];
+    let lid_all = lid_sides + steps.lid_faces[2];
+    println!(
+        "    {:>22}   {lid_sides:>9}  {:>5.2}% of the {lid_all} misses whose nearest box is one\n",
+        "a SIDE face off a lid",
+        pct(lid_sides, lid_all),
+    );
 
     // **And the same three with the roof cut**, which is the only condition the
     // one recorded measurement of this discard was ever taken under and is what
