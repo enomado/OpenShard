@@ -232,6 +232,31 @@ and walks in 15 and an animal does neither; an e2e in `crates/e2e/shard` that a
 `0x05` from this client's encoder reaches `combat::attack` and comes back as a
 `0xAA`.
 
+#### Built, and where D1 and D2 came out differently
+
+All seven items are in. Two changed shape once the code was in front of them,
+and both changes are in the same direction — one fact, one place:
+
+- **`view::Mobile::war` is a method, not a field.** D1 said "fold it into a new
+  field"; the view already stores the whole flag byte, so a `bool` beside it
+  would be the same state in two shapes, with the packet that forgot to refold
+  one of them drawing a body in the wrong stance. `Player::war` stays a field
+  because no `0x77` ever describes our own body — its answer comes from the
+  `0x72` and the `0x88`, which is a different fact with the same name.
+- **The stance rides `Crowd::see`/`snap`, not a setter of its own.** It arrives
+  in the packet that carries the position, so it is folded in where the position
+  is: one more argument, restated on every sighting, and `Tracked::war` beside
+  `Tracked::body` for the same stated reason — *a walk that ends has to know
+  what standing means*. There are four doors into a group change (first sight, a
+  stance change with no step, a step, and a walk timing out) and the test names
+  all four; the one that was easiest to forget is the third, which is a sword
+  nobody sees drawn until the body takes a step.
+
+What is **not** in P1, and was not planned to be: `0xAA` is still undecoded, so
+nothing is highlighted as the target; the e2e in `crates/e2e/shard` is not
+written, so what is gated is the round trip through the decoder in a unit test
+rather than through a socket.
+
 ---
 
 ### P2 — the bar over the head, and the status window
@@ -400,6 +425,16 @@ rule, not the client's).
   `CHARACTER_ANIMATION_DELAY` and P5 gives corpses their own copy of it. They
   are the same rate for the same reason, and a third caller (an effect, a door)
   would make it worth one type. Two is not enough to abstract.
+- **A server packet cannot be round-tripped in a `protocol` unit test.**
+  `decode_packet` asks the *client* length table whether to skip a variable
+  packet's length word, which is the wrong table for a `0x78` — and
+  `decode_server`, which asks the right one, is private to `server_packet`. So a
+  test that wants to prove "what this engine writes is what a client reads" has
+  to go through `ServerPacket::decode`, which is a dispatch as well as a
+  decoder. Found writing the stance test in P1, which does exactly that and says
+  so in a comment. Either `decode_server` becomes `pub(crate)`-plus-a-test-door,
+  or `decode_packet` takes the table as a parameter; the second is the honest
+  shape and the first is one line.
 - **The war stance is the first thing that reads equipment for a *reason*.**
   D2's deferred armed variants, `MobileView.IsCovered`, and P6's corpse layers
   are three features waiting on one field — the wire graphic `crowd::worn`
