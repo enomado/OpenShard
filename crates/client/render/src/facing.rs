@@ -420,6 +420,247 @@ pub fn facing_of(image: &Image) -> Option<Facing> {
     Some(Facing::Corner { right, left })
 }
 
+/// How many columns each of the two runs of a base edge must hold before its
+/// own line is fitted.
+///
+/// Two, which is an extent of `2/22` of a tile — under an eighth, so a run this
+/// short rounds outward to the smallest span [`Footprint`] can carry and nothing
+/// finer is being claimed. Under two there is no line: one column is a point,
+/// and a point has every slope.
+const MIN_FOOTPRINT_RUN: usize = 2;
+
+/// How many columns of flat base a footprint's own near corner may span before
+/// the base is a flat one rather than a corner.
+///
+/// Measured rather than chosen — see the census under `docs/footprints.md`'s S1,
+/// which is run at each of these: the class read climbs while the cap admits
+/// what antialiasing and a drawn foot leave, and levels off once it is admitting
+/// shapes whose base is genuinely flat across.
+const PLATEAU: usize = 6;
+
+/// **The box the art drew**, as a horizontal extent — or `None` where the
+/// picture is not a box.
+///
+/// `docs/footprints.md` is the plan; this is its S1. What it reads is the same
+/// base edge [`facing_of`] reads and a different question of it: that one asks
+/// *which edge of the tile* a plane stands on, and answers `None` for anything
+/// standing anywhere else — which over Britain is 31.6% of every static in the
+/// world, all of them then given a whole tile they do not fill.
+///
+/// # The model, and it is the projection rather than a fit
+///
+/// A world-axis-aligned rectangle projects to a parallelogram, and the two edges
+/// of it that face the camera are the ones the base edge shows: the footprint's
+/// `+x` edge, drawn descending to the right at exactly 45°, and its `+y` edge,
+/// drawn ascending to the right at exactly 45°. So each run carries **one**
+/// coordinate as its intercept and one as its far end:
+///
+/// - along the descending run `down − across` is constant and equal to
+///   `(2·y₁ − 1)·22`, so the run states `y₁` at every column of itself;
+/// - along the ascending run `down + across` is constant and equal to
+///   `(2·x₁ − 1)·22`, so it states `x₁`;
+/// - and the two outer ends state `x₀` and `y₀`, each read through the
+///   coordinate its own run already fixed.
+///
+/// The intercepts are taken as **medians over their whole run** rather than from
+/// the corner the two runs meet at. That corner is one antialiased pixel and it
+/// would move the whole footprint by an eighth on its own; a median over twenty
+/// columns does not care which run a column at the join was sorted into.
+///
+/// `across` and `down` are `crate::impostor::ray_from`'s own two numbers, in the
+/// convention [`Half::read`] already uses: `across` from the sprite's middle
+/// column, `down` below the tile's centre row, both at pixel centres. Nothing
+/// here re-derives the projection — see `docs/footprints.md` D6, and the test
+/// that round-trips every answer through [`blocks_silhouette`].
+///
+/// # What it refuses, and why each refusal is the picture rather than a tolerance
+///
+/// - **A base that is not one contiguous run of columns.** A table on four legs
+///   is not a box at floor level, and its base edge says so by having holes in
+///   it.
+/// - **A base that is not two 45° runs**, within [`STRAIGHT`] of the fitted
+///   lines. A tree's base is a blob.
+/// - **A footprint that leaves its own tile**, by more than [`OVERHANG`] pixels'
+///   worth. The picture is then of something bigger than one cell — a whole
+///   building, a multi-tile tree — exactly as [`Half::read`] refuses one.
+/// - **A picture that does not stand up**, by [`MIN_STANDING`]. A lid drawn as a
+///   flat diamond has a perfect V for a base and no volume at all.
+///
+/// A picture that fills its tile measures [`Footprint::WHOLE`], which is today's
+/// answer — so this degrades to the fallback it replaces rather than to a hole.
+///
+/// Pure, like [`facing_of`] and for the same reason: it is a property of one
+/// picture, read once while the atlas packs it.
+pub fn footprint_of(image: &Image) -> Option<Footprint> {
+    measure_footprint(image).ok()
+}
+
+/// Why a picture is not a box, for the one caller that has to *count* the
+/// refusals rather than act on them.
+///
+/// A detector with no breakdown is a detector that cannot say what it checked —
+/// `docs/style.md`'s own moral, and the reason this enum exists at all: the
+/// first run of `artscan`'s `footprints` census read 4.5% of the class and the
+/// number said nothing about whether the model was wrong or the tolerances
+/// were. See [`measure_footprint`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Refusal {
+    /// Nothing is drawn at all.
+    Empty,
+    /// The base edge has a gap in it: two posts, four legs, a picture that is
+    /// not one box at floor level.
+    Gapped,
+    /// The picture is drawn outside its own tile's column — of something bigger
+    /// than one cell.
+    Outside,
+    /// The lowest run of the base is flat over three columns or more, which no
+    /// rectangle's two edges draw.
+    Plateau,
+    /// One of the two runs is too short for a line to be fitted through it.
+    Short,
+    /// A run is not the 45° the projection makes of a world-axis-aligned edge.
+    Crooked,
+    /// The picture has no vertical extent where its own near corner is.
+    Flat,
+    /// The spans round to an empty box — a sliver under an eighth on one axis.
+    Sliver,
+}
+
+/// [`footprint_of`] with its refusal named. See [`Refusal`].
+pub fn measure_footprint(image: &Image) -> Result<Footprint, Refusal> {
+    let (width, height) = (image.width(), image.height());
+    let base = base_edge(image);
+    let columns: Vec<(u16, u16)> = base.columns().collect();
+    let (Some(first), Some(last)) = (columns.first(), columns.last()) else {
+        return Err(Refusal::Empty);
+    };
+    // Contiguous: every column between the ends is drawn. `columns()` skips the
+    // empty ones, so the count is the whole of the test.
+    if usize::from(last.0 - first.0) + 1 != columns.len() {
+        return Err(Refusal::Gapped);
+    }
+
+    let middle = f32::from(width) / 2.0;
+    // **The picture is of one cell.** The same gate [`Half::read`] opens with,
+    // and it is asked of the *drawing* rather than of the numbers derived from
+    // it: a whole building or a multi-tile tree is drawn past the tile's own
+    // column and no box in one cell is an answer about it. What it deliberately
+    // does not refuse is the furniture drawn a little wider than its tile, which
+    // is most of it — see the clamp at the end.
+    let edge_of_tile = HALF_TILE_WIDTH + OVERHANG;
+    if (f32::from(first.0) + 0.5 - middle).abs() > edge_of_tile
+        || (f32::from(last.0) + 0.5 - middle).abs() > edge_of_tile
+    {
+        return Err(Refusal::Outside);
+    }
+    // Where the tile's own centre row is, in the same edge coordinates
+    // [`Half::read`] measures `edge_at` in: the sprite's bottom edge stands on
+    // the diamond's bottom vertex (`statics::stand_on`), which is
+    // `HALF_TILE_WIDTH` below the centre.
+    let centre_row = f32::from(height) - HALF_TILE_WIDTH;
+    let across = |column: u16| f32::from(column) + 0.5 - middle;
+    let down = |row: u16| f32::from(row) + 0.5 - centre_row;
+
+    // The near corner: the lowest drawn pixel on the screen, which is the
+    // footprint's own `(x₁, y₁)`. Where two columns share it the model's corner
+    // is between them, and both runs keep their own — the medians below are what
+    // makes that harmless.
+    // Every column is `Some` — `columns()` yields only drawn ones and the list is
+    // non-empty above — so these three cannot fail; the `expect` states that
+    // rather than inventing an eighth refusal for it.
+    let deepest = columns.iter().map(|(_, row)| *row).max().expect("a drawn column");
+    let peak_lo = columns
+        .iter()
+        .position(|(_, row)| *row == deepest)
+        .expect("the deepest row is one of them");
+    let peak_hi = columns
+        .iter()
+        .rposition(|(_, row)| *row == deepest)
+        .expect("and it is one of them from the other end too");
+    // **A flat stretch at the bottom belongs to neither run**, and the cap is on
+    // how wide it may be rather than on whether it exists.
+    //
+    // The model's two edges meet at a point, so the ideal plateau is one column
+    // or two straddling a pixel boundary. Real art is not ideal: a drawn foot, a
+    // rounded corner or a row of shadow leaves a few flat pixels there, and the
+    // first version of this refused **47.3%** of the class on it — the largest
+    // single refusal by four times, and every one of them measured by the two
+    // lines either side of it. Excluding it costs nothing, because the
+    // intercepts are medians over whole runs and a corner column was never what
+    // fixed them; what a wide one *would* mean is a base that is genuinely flat
+    // across, and [`PLATEAU`] is where that begins.
+    if peak_hi - peak_lo >= PLATEAU {
+        return Err(Refusal::Plateau);
+    }
+    let descending = &columns[..=peak_lo];
+    let ascending = &columns[peak_hi..];
+    if descending.len() < MIN_FOOTPRINT_RUN || ascending.len() < MIN_FOOTPRINT_RUN {
+        return Err(Refusal::Short);
+    }
+
+    // Each run's own intercept, as a median: the value the model says is the
+    // same at every column of it.
+    let intercept = |run: &[(u16, u16)], sign: f32| {
+        let mut values: Vec<f32> = run
+            .iter()
+            .map(|(column, row)| down(*row) + sign * across(*column))
+            .collect();
+        values.sort_by(f32::total_cmp);
+        values[values.len() / 2]
+    };
+    let along_x = intercept(descending, -1.0);
+    let along_y = intercept(ascending, 1.0);
+    // Straight, and against the fitted line rather than against the ends: a
+    // chevron has the same endpoints as the line through them, which is the
+    // check `Half::read` spells for its own run and the reason it spells it.
+    for (run, sign, fitted) in [(descending, -1.0, along_x), (ascending, 1.0, along_y)] {
+        for (column, row) in run {
+            let value = down(*row) + sign * across(*column);
+            if (value - fitted).abs() > STRAIGHT as f32 {
+                return Err(Refusal::Crooked);
+            }
+        }
+    }
+
+    // `down − across = (2·y₁ − 1)·22` and `down + across = (2·x₁ − 1)·22`,
+    // solved. Both are exact statements about the projection, not fits.
+    let far_y = (along_x / HALF_TILE_WIDTH + 1.0) / 2.0;
+    let far_x = (along_y / HALF_TILE_WIDTH + 1.0) / 2.0;
+    // And the outer end of each run, read through the coordinate that run fixed.
+    let near_x = far_y + across(first.0) / HALF_TILE_WIDTH;
+    let near_y = far_x - across(last.0) / HALF_TILE_WIDTH;
+
+    // And it stands up. Asked at the near corner's own column, which is the one
+    // column every footprint has: an end column of a run can be a single
+    // antialiased pixel.
+    if base.standing(i32::from(columns[peak_lo].0)) < MIN_STANDING {
+        return Err(Refusal::Flat);
+    }
+
+    // Rounded **outward** to eighths, never inward: an eighth is 5.5 pixels and
+    // the art's own border is worth two of them, so the choice is between a box
+    // marginally larger than the picture and one marginally smaller. Larger is
+    // the safe direction — `statics.wesl` discards a fragment whose view ray
+    // meets no box, so a box that has shrunk below its art takes pixels off the
+    // screen, while one that has grown takes nothing.
+    //
+    // **And clamped to the tile, which is a decision and not a `clamp` that fell
+    // out.** Real furniture is drawn wider than its cell: `0x0A97`'s own base
+    // states a box 1.11 tiles across, since the artist drew twenty-five columns
+    // of descent where a tile's edge is twenty-two. Clipping that to the tile
+    // gives back exactly what the whole-tile fallback already gave on that axis
+    // and keeps the *other* one, which is the whole gain — refusing it instead
+    // would throw the measurement away over the axis that was never wrong. The
+    // column gate above is what separates this from a picture of a building.
+    let eighth_lo = |v: f32| (v * 8.0).floor().clamp(0.0, 8.0) as u8;
+    let eighth_hi = |v: f32| (v * 8.0).ceil().clamp(0.0, 8.0) as u8;
+    Footprint::new(
+        (eighth_lo(near_x), eighth_hi(far_x)),
+        (eighth_lo(near_y), eighth_hi(far_y)),
+    )
+    .ok_or(Refusal::Sliver)
+}
+
 /// A hole in a wall, measured off the wall's own picture, in the surface's own
 /// coordinates.
 ///
@@ -1457,6 +1698,56 @@ pub fn best_prism(image: &Image) -> (Prism, f32) {
 /// posts and a lintel — with one spare.
 pub const MAX_BLOCKS: u16 = 4;
 
+/// A static's **horizontal** extent, measured off its own art — the two spans
+/// [`footprint_of`] reads out of the base edge, in eighths of the tile like
+/// [`Block`].
+///
+/// Deliberately not a [`Block`], and `docs/footprints.md`'s D1 and D2 are the two
+/// halves of why. **D1:** this says nothing vertical, because the art's own
+/// height is a separate measurement with a separate census and a box that
+/// answered both at once would be a box no run could attribute. The top stays
+/// [`occlusion::calc_height`](crate::occlusion::calc_height)'s. **D2:** a
+/// [`Blocks`] list is what a *person* authors for a shape no measurement
+/// reaches, and a derived value sharing that field would make "who wrote this"
+/// unanswerable — which is the one question `ArtTable`'s authored-row precedence
+/// exists to keep answerable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Footprint {
+    /// `(min, max)` along the map's `x`, both `0..=8`, `min < max`.
+    pub x: (u8, u8),
+    /// And along `y`.
+    pub y: (u8, u8),
+}
+
+impl Footprint {
+    /// The whole tile — what [`crate::occlusion::edges_of`] answers for a picture
+    /// nothing was measured off, and what a picture that genuinely fills its tile
+    /// measures as. Named so the degenerate case can be *asserted* rather than
+    /// spelled out at each reader.
+    pub const WHOLE: Self = Self { x: (0, 8), y: (0, 8) };
+
+    /// `None` for an empty or an out-of-range span, the refusal [`Block::new`]
+    /// makes for the same reason: a hand-written row is not an invariant.
+    pub fn new(x: (u8, u8), y: (u8, u8)) -> Option<Self> {
+        if x.0 >= x.1 || y.0 >= y.1 || x.1 > 8 || y.1 > 8 {
+            return None;
+        }
+        Some(Self { x, y })
+    }
+
+    /// The spans as fractions of the tile, `0.0..=1.0` — the form
+    /// [`crate::occlusion::Solid`] wants, since a solid's coordinates are
+    /// absolute world units and a tile is one of them.
+    pub fn spans(self) -> (f32, f32, f32, f32) {
+        (
+            f32::from(self.x.0) / 8.0,
+            f32::from(self.x.1) / 8.0,
+            f32::from(self.y.0) / 8.0,
+            f32::from(self.y.1) / 8.0,
+        )
+    }
+}
+
 /// One axis-aligned box in a graphic's own tile-local coordinates: a post, a
 /// lintel, one leaf of a shape [`Prism`]'s single climb profile cannot
 /// describe. An arch is a post, a post and a lintel — the gap between the two
@@ -2412,6 +2703,78 @@ mod tests {
                 "a box {height} tall",
             );
         }
+    }
+
+    /// And the answer the same picture gives to the *other* question, which is
+    /// `docs/footprints.md`'s whole subject: the box the detector above calls a
+    /// corner of a house measures as the tile it actually fills.
+    #[test]
+    fn a_picture_that_fills_its_tile_measures_the_whole_tile() {
+        for height in [5u8, 10, 20] {
+            assert_eq!(
+                footprint_of(&prism_silhouette(&Prism::box_of(height))),
+                Some(Footprint::WHOLE),
+                "a box {height} tall",
+            );
+        }
+    }
+
+    /// **The measurement against the drawing, not against itself.**
+    /// `docs/footprints.md` D6: [`footprint_of`] inverts a projection that is
+    /// spelled elsewhere, so what keeps it honest is that every answer is read
+    /// back off a picture [`blocks_silhouette`] drew from the block it is being
+    /// compared to.
+    ///
+    /// **Containment and not equality, and that is the contract rather than a
+    /// slack tolerance.** [`footprint_of`] rounds outward, so what it promises is
+    /// a box no smaller than the picture — the direction that matters, since
+    /// `statics.wesl` discards a fragment whose view ray meets no box and a box
+    /// that had shrunk below its art would take pixels off the screen.
+    ///
+    /// **One eighth is the whole of the error and it is a column's own width.**
+    /// The two far coordinates are *exact*: each is the median of a value the
+    /// projection makes constant along a whole run. What is inexact is the two
+    /// outer ends, where the sweep paints the column the corner falls inside and
+    /// the column's centre is up to half a pixel past it — 5.5 pixels being an
+    /// eighth, half of one rounds a boundary out by at most one.
+    #[test]
+    fn a_footprint_measures_the_block_that_drew_it() {
+        for (x, y, z) in [
+            ((0, 8), (0, 8), (0, 10)),
+            ((0, 8), (1, 4), (0, 12)),
+            ((2, 6), (2, 6), (0, 8)),
+            ((0, 4), (4, 8), (0, 6)),
+            ((3, 8), (0, 3), (0, 20)),
+        ] {
+            let block = Block::new(x, y, z).expect("a legal span");
+            let blocks = Blocks::new(&[block]).expect("one block");
+            let read = footprint_of(&blocks_silhouette(&blocks))
+                .unwrap_or_else(|| panic!("the block x {x:?} y {y:?} z {z:?} is a box"));
+            for (axis, drawn, measured) in [("x", x, read.x), ("y", y, read.y)] {
+                let slack = (drawn.0 - measured.0, measured.1 - drawn.1);
+                assert!(
+                    measured.0 <= drawn.0 && measured.1 >= drawn.1,
+                    "{axis} of x {x:?} y {y:?} z {z:?}: {measured:?} does not contain {drawn:?}",
+                );
+                assert!(
+                    slack.0 <= 1 && slack.1 <= 1,
+                    "{axis} of x {x:?} y {y:?} z {z:?}: {measured:?} is {slack:?} eighths wide of {drawn:?}",
+                );
+            }
+        }
+    }
+
+    /// **A gap in the base is a picture that is not one box**, and the refusal is
+    /// the shape rather than a tolerance: an arch's two posts leave a hole
+    /// between them at floor level, and no rectangle draws a base edge with a
+    /// hole in it.
+    ///
+    /// The same fixture the arch test above uses, asked the other question.
+    #[test]
+    fn two_posts_are_not_one_footprint() {
+        let post = |x: (u8, u8)| Block::new(x, (0, 8), (0, 10)).expect("a legal post");
+        let posts = Blocks::new(&[post((0, 2)), post((6, 8))]).expect("two blocks");
+        assert_eq!(footprint_of(&blocks_silhouette(&posts)), None);
     }
 
     /// A stair's treads are flats in the picture, and they climb towards the side
