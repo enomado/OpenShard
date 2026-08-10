@@ -814,20 +814,21 @@ impl Aperture {
 ///
 /// [`Solid::space`] is where it stands, in the world's own coordinates, and it is
 /// the only geometry: what a view draws and what the walk is tested against come
-/// from one record, which is the whole of what step 23.1 buys. What it is *not*
-/// yet is a slab — the box of a panel and of a lid is the plane the walk crosses,
-/// flat on the axis it has no thickness on, and that is deliberate. A nominal
-/// thickness stored here would be a number the walk does not read sitting in the
-/// field a reader would take for geometry; the thickness a *drawing* wants is the
-/// view's, and [`crate::solid::drawn`] is where it lives.
+/// from one record, which is the whole of what step 23.1 buys. **Every kind is a
+/// real slab now** — a panel is [`PANEL_THICKNESS`] deep into the tile it stands
+/// on, and a lid hangs one `z` unit below the surface it is (`docs/parity.md`'s
+/// P4 step 1). Both numbers are the geometry the walk itself reads rather than a
+/// nominal thickness sitting in the field beside it; the thickness a *drawing*
+/// wants is still the view's, and [`crate::solid::drawn`] is where that lives.
 ///
 /// [`Solid::edges`] is the kind, carried rather than derived, and that was step
 /// 23.1's one deliberate choice. Deriving it from the box — flat in `z` is a lid,
-/// flat in `x` or `y` is a panel — reads well and is wrong on a case the map is
+/// flat in `x` or `y` is a panel — reads well and was wrong on a case the map is
 /// full of: a static whose `tiledata` height is zero is a **body** with a
-/// degenerate span, and it is flat in `z` exactly as a floor is. It would become
-/// a lid, silently, and a lid is travelled through by a different rule. The kind
-/// goes when step 23.5 replaces the rules that ask it, not before.
+/// degenerate span, flat in `z` exactly as a floor used to be, and it would have
+/// become a lid silently. The two boxes are no longer alike — a lid is given
+/// thickness and a zero-height body is not — but the kind stays carried, because
+/// what it names is what the art said and not what the numbers came out as.
 ///
 /// The span is in `z` units — the map's own, not pixels — and it is inclusive of
 /// [`Solid::bottom`] and [`Solid::top`]. A wall based at `z = 0` and 20 tall
@@ -838,9 +839,11 @@ pub struct Solid {
     /// Where it stands, in world coordinates: `min` the low corner on all three
     /// axes and `max` the high one.
     ///
-    /// Flat on the axis the thing has no extent on — a panel's box is its plane,
-    /// a lid's is the height it lies at, a body's is its whole tile. See the type
-    /// doc for why nothing nominal is stored here.
+    /// A real volume whatever the kind — a panel is [`PANEL_THICKNESS`] deep
+    /// inward from the plane its face pixels lie on, a lid hangs one `z` unit
+    /// below the surface it is, a body fills its whole tile. See
+    /// [`Solid::box_of`] for each, and the type doc for why nothing nominal is
+    /// stored here.
     pub space: crate::solid::Solid,
     /// How much of a ray crossing it is stopped.
     pub opacity: u8,
@@ -977,10 +980,12 @@ impl Solid {
     /// chances to put a panel on the wrong edge — which decision 39.8's test
     /// caught once already, in the view, where it read as a defect in the map.
     ///
-    /// A lid comes out *flat*: its box is the plane the walk crosses. A panel is
-    /// a real slab, [`PANEL_THICKNESS`] deep, fattened inward from the plane its
-    /// face pixels lie on — see that constant for why the record carries a
-    /// number rather than staying flat, the way a lid still does.
+    /// Every kind comes out a real volume. A lid hangs one `z` unit below the
+    /// height it lies at — see the branch itself for why the thickness is that
+    /// number and why it is taken off the bottom. A panel is a slab,
+    /// [`PANEL_THICKNESS`] deep, fattened inward from the plane its face pixels
+    /// lie on — see that constant for why the record carries a number rather
+    /// than staying flat.
     ///
     /// `pub(crate)` since `docs/lighting_raymarch.md`'s point 4:
     /// `light::walk_the_wire` reconstructs a solid's box from exactly
@@ -1015,12 +1020,40 @@ impl Solid {
             },
         );
         match edges {
-            // A lid — a floor, a roof, a plank. The whole tile across, at the
-            // height it lies at: the walk crosses its top and nothing else, so
-            // that is the whole of the box. `bottom` and `top` are both kept
-            // because a static with a height is a lid whose span really is deep
-            // — a plank is not, a sloped roof section is.
-            Edges::NONE | Edges::ANY => {}
+            // A lid — a floor, a roof, a plank. The whole tile across, hanging
+            // one `z` unit below the height it lies at.
+            //
+            // **A floor is a body**, `docs/parity.md`'s P4 step 1 and
+            // `docs/lighting_rebuild.md`'s floor entry: a lid used to come out
+            // *flat*, `min.z == max.z`, and every defect involving a floor was a
+            // consequence of that degeneracy rather than of any one rule — the
+            // corner leak (an interval of no length), the strictness [`crosses`]
+            // needed for a candle on the floor it lights, a fragment sitting
+            // exactly *in* the plane and so on neither side of it, and
+            // [`crate::impostor::meets`] having to be told that a lid's side
+            // faces are lines. Given real bounds each of those dissolves rather
+            // than being ruled about: a ray from its top going up never enters
+            // it, one going down does, and its faces have area.
+            //
+            // **The thickness is one `z` unit and that is the one number here to
+            // justify rather than pick.** [`crate::camera::Z_STEP`] is what one
+            // step of height *is* on this wire; a floor thinner than the quantum
+            // its own height is stated in is a floor the protocol cannot
+            // describe, and a thicker one would swallow whatever stands on the
+            // storey below.
+            //
+            // **It hangs below the surface, and only when there is no span
+            // already.** What a lid *is* is its top — that is the plane a walk
+            // crosses and the plane the art draws — so the unit is taken off the
+            // bottom. `bottom` and `top` are both kept because a static with a
+            // height is a lid whose span really is deep (a plank is not, a sloped
+            // roof section is), and such a lid is a body already: `min(bottom,
+            // top - 1)` leaves it exactly where it stood and only ever moves the
+            // degenerate case.
+            Edges::NONE => min.z = f64::from(bottom.min(top - 1)),
+            // A body: the whole tile it stands on, from its base to its height,
+            // which is what every fallback in this module falls back to.
+            Edges::ANY => {}
             // A panel: a slab standing on the named edge, `PANEL_THICKNESS` deep
             // into the tile it stands on and never past it — two walls on the
             // shared edge of neighbouring tiles must not draw one inside the
@@ -4121,45 +4154,56 @@ mod tests {
                 "{face:?}: the span held is not the span the walk tests",
             );
 
-            // And the drawing: since the record already is a slab, `drawn`
-            // leaves a panel's `x` and `y` exactly as they stand.
-            let picture = crate::solid::drawn(&stands);
-            assert_eq!(
-                (picture.min.x, picture.min.y, picture.max.x, picture.max.y),
-                (solid.min.x, solid.min.y, solid.max.x, solid.max.y),
-                "{face:?}: a panel's box is already the picture, `drawn` moved it",
+            // And the depth is the record's own, on the axis the panel stands
+            // across: `PANEL_THICKNESS` inward from the plane its face pixels lie
+            // on, and never the whole tile. This used to be said as "`drawn`
+            // leaves a panel where it stands" — `docs/parity.md`'s P4 step 1
+            // retired that function, so it is said about the box itself.
+            let (thin_from, thin_to) = match along {
+                0 => (solid.min.y, solid.max.y),
+                _ => (solid.min.x, solid.max.x),
+            };
+            assert!(
+                (thin_to - thin_from - PANEL_THICKNESS).abs() < 1e-9,
+                "{face:?}: a panel is a slab {PANEL_THICKNESS} deep, it is {thin_from}..{thin_to}",
             );
         }
     }
 
-    /// And the other two kinds: a lid is the plane a ray crosses it at and is
-    /// drawn hanging under it, and a body is exactly its tile in both.
+    /// And the other two kinds: a lid hangs one `z` unit under the surface it
+    /// is, and a body is exactly its tile.
     ///
-    /// The companion to the test above, and the same argument. A lid is *stopped
-    /// at* by [`crate::light`]'s `crosses`, which asks whether the ray got to the
-    /// other side of the span — so what a person has to be able to see is the
-    /// top, and a slab drawn hanging *above* its own plane would put a floor at
-    /// the height of the storey over it. A body is travelled through and its
-    /// extent is the tile, which is the one kind that is a box in both.
+    /// The companion to the test above, and the same argument said about the
+    /// kind `docs/parity.md`'s P4 step 1 moved. The surface a lid *is* is its
+    /// top — that is the plane the art drew and the plane a walk is stopped at —
+    /// so the thickness goes downwards, and a slab hanging *above* it would put
+    /// a floor at the height of the storey over it. A body is travelled through
+    /// and its extent is the tile.
+    ///
+    /// **And the view is the record**, which is the other half of that step:
+    /// `solid::drawn` fattened a lid by a `DRAWN_LID_THICKNESS` of two for a
+    /// person to see, and a debug view drawing a floor twice as deep as the walk
+    /// meets it is a picture of somewhere the renderer is not. Both are gone; the
+    /// numbers below are the geometry, and there is no second spelling of them.
     #[test]
     fn a_lid_is_drawn_hanging_under_its_plane_and_a_body_is_its_tile() {
-        use crate::solid::{DRAWN_LID_THICKNESS, drawn};
-
         let (x, y) = (1500, 1600);
-        // A floor as the map has one: a lid whose span is the height it lies at,
-        // which is what `calc_height` gives a `FLOOR` static of no height.
-        let flat = stands_at(x, y, 20, 20, Edges::NONE);
+        // A floor as the map has one: a lid of no height at all, which is what
+        // `calc_height` gives a `FLOOR` static — 4,534 of the 4,647 lids over the
+        // block of Britain `artscan`'s `column` example reads.
+        let lid = stands_at(x, y, 20, 20, Edges::NONE).space;
         assert!(
-            (flat.space.min.z - 20.0).abs() < 1e-9 && (flat.space.max.z - 20.0).abs() < 1e-9,
-            "a lid the world owns is the plane it lies in, it is {:?}",
-            flat.space,
+            (lid.max.z - 20.0).abs() < 1e-9 && (lid.min.z - 19.0).abs() < 1e-9,
+            "a lid's top is the height it lies at and it hangs one z unit under it, it is {lid:?}",
         );
-        let lid = drawn(&flat);
+        // A lid that has a span of its own — a `FLOOR` static with a height, a
+        // sloped roof section — is a body already and keeps every unit of it.
+        let deep = stands_at(x, y, 20, 25, Edges::NONE).space;
         assert!(
-            (lid.max.z - 20.0).abs() < 1e-9 && (lid.min.z - (20.0 - DRAWN_LID_THICKNESS)).abs() < 1e-9,
-            "a lid's top is its plane and it is drawn hanging under it, it is {lid:?}",
+            (deep.min.z - 20.0).abs() < 1e-9 && (deep.max.z - 25.0).abs() < 1e-9,
+            "a lid with a span of its own is left exactly where it stood, it is {deep:?}",
         );
-        let body = drawn(&stands_at(x, y, 0, 20, Edges::ANY));
+        let body = stands_at(x, y, 0, 20, Edges::ANY).space;
         assert!(
             (body.min.x - f64::from(x)).abs() < 1e-9
                 && (body.max.x - f64::from(x) - 1.0).abs() < 1e-9

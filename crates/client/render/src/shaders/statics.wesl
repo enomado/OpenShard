@@ -29,11 +29,11 @@
 
 import package::place_format::{
     KIND_MASK, KIND_MOBILE, STANCE_FLAT, STANCE_FACE_NORTH, STANCE_FACE_EAST,
-    STANCE_FACE_SOUTH, STANCE_CORNER, pack_ids,
+    STANCE_FACE_SOUTH, STANCE_CORNER, IDS_EDGE_ART, IDS_EDGE_BOX, pack_ids,
 };
 import package::normal_format::pack_normal;
 import package::solid_format::{SOLID_NOBODY, pack_solid};
-import package::impostor::{billboard_at, billboard_normal, hit, meets, ray_from};
+import package::impostor::{Meeting, billboard_at, billboard_normal, hit, meets, ray_from};
 
 struct Viewport {
     // The target's size in *real* pixels — see `ground.wgsl`, which documents
@@ -121,6 +121,13 @@ struct VertexOut {
     // `(_, 0)` for a picture the grid holds no shape for. See
     // `crate::impostor::Range`.
     @location(9) @interpolate(flat) volumes: vec2<u32>,
+    // Where this sprite sits in the atlas, as the vertex stage was handed it —
+    // `(u, v, du, dv)`. The fragment stage reads it for one thing only: a
+    // neighbouring *texel* of the art may belong to the sprite packed next to
+    // this one, and the art's own alpha edge is exactly the line where this
+    // sprite's rectangle ends. Without the rectangle, `art_edge` would ask a
+    // stranger's alpha and answer about the atlas's packing.
+    @location(10) @interpolate(flat) region: vec4<f32>,
 };
 
 // Virtual pixels one unit of height lifts a sprite up the screen —
@@ -172,6 +179,139 @@ fn stance_of(normal: vec3<f32>) -> u32 {
 // but a person reading both files can check that these agree with them.
 const STANCE_SHIFT: u32 = 16u;
 const STANCE_MASK: u32 = 15u;
+
+// Which box of an instance's own run a view ray landed on, and the meeting
+// itself.
+//
+// The pair travels together because `meets` answers about a pair of corners and
+// has no notion of whose they were: re-finding the winner afterwards by
+// comparing `t`s would be a second rule that could disagree with the one that
+// chose it. `crate::impostor::nearest` is the Rust twin, and returns the same
+// two things for the same reason.
+struct Choice {
+    met: Meeting,
+    // Which row of `volumes` — an absolute index, not an offset into the run.
+    at: u32,
+};
+
+// **Which of this instance's boxes the ray through `start` belongs to.**
+//
+// `impostor::nearest`, spelled here because the boxes are a binding rather than
+// an argument. The box in *front* wins among those the ray genuinely goes
+// through — the largest `t` along the view direction — and if it goes through
+// none of them, the one it passes closest to. That last case is the sprite
+// overhanging its own volume, and `Meeting::outside` is how far; the caller
+// decides what to do about it.
+//
+// A function and not an inlined loop because there are four more callers than
+// there used to be: `box_edge` below asks the same question of this fragment's
+// four screen neighbours, and a second copy of the selection rule is a second
+// chance to disagree with it — which is the same argument the pairing above
+// carries one level down.
+fn nearest(start: vec3<f32>, run: vec2<u32>) -> Choice {
+    var best = meets(start, volumes[run.x].lo, volumes[run.x].hi);
+    var best_at = run.x;
+    for (var k = 1u; k < run.y; k = k + 1u) {
+        let volume = volumes[run.x + k];
+        let met = meets(start, volume.lo, volume.hi);
+        // A real hit always beats a miss, however near the miss came; two hits
+        // are decided by which is in front, and two misses by which came closer.
+        // Ties go to the box the list holds first, which for a flight is the
+        // grid's own order — a tread's top before the tread above it.
+        var better = false;
+        if hit(best) == hit(met) {
+            if hit(met) {
+                better = met.t > best.t;
+            } else {
+                better = met.outside < best.outside;
+            }
+        } else {
+            better = hit(met);
+        }
+        if better {
+            best = met;
+            best_at = run.x + k;
+        }
+    }
+    var choice: Choice;
+    choice.met = best;
+    choice.at = best_at;
+    return choice;
+}
+
+// The four screen neighbours a silhouette test asks about, as `(across, down)`
+// steps. Diagonals are left out on purpose: an outline that steps by a whole
+// texel and one that steps by a whole fragment are both 4-connected, and adding
+// the corners would mark the inside of every staircase as an edge.
+const NEIGHBOURS: array<vec2<f32>, 4> = array<vec2<f32>, 4>(
+    vec2<f32>(-1.0, 0.0),
+    vec2<f32>(1.0, 0.0),
+    vec2<f32>(0.0, -1.0),
+    vec2<f32>(0.0, 1.0),
+);
+
+// **Is this fragment on the art's own alpha edge** — does a neighbouring *texel*
+// of the sprite fail the alpha test this fragment passed?
+//
+// The quantum here is a texel and not a pixel, and that is the point rather than
+// an approximation: the quad is the sprite's own rectangle in virtual pixels and
+// the sampler is `nearest`, so one texel is `Projection::scale` real pixels
+// square and the art's outline *cannot* step more finely than that. At `4x` the
+// band this marks is four real pixels wide, which is exactly the stair a person
+// sees. `docs/silhouettes.md`.
+//
+// Off the end of the sprite's own rectangle counts as an edge. The atlas packs
+// other graphics against this one, so the neighbour texel there belongs to a
+// stranger — and a rectangle's last column is an outline whether or not the art
+// bothered to draw a transparent margin round itself.
+//
+// `textureLoad` and not `textureSample`: an exact texel is wanted, this is the
+// only sampling in the pass that does not want the sampler's opinion, and a load
+// has no uniformity condition to satisfy.
+fn art_edge(uv: vec2<f32>, region: vec4<f32>) -> bool {
+    let dims = vec2<f32>(textureDimensions(atlas_texture));
+    // The sprite's own rectangle, in texels. `round` and not `floor`: the region
+    // is a rectangle of whole texels expressed as a fraction of the atlas, so
+    // the product is a whole number to within a rounding, and flooring it would
+    // land one short whenever the division came out just under.
+    let lo = round(region.xy * dims);
+    let hi = lo + round(region.zw * dims);
+    let here = floor(uv * dims);
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        let there = here + NEIGHBOURS[k];
+        if any(there < lo) || any(there >= hi) {
+            return true;
+        }
+        if textureLoad(atlas_texture, vec2<i32>(there), 0).a < 0.5 {
+            return true;
+        }
+    }
+    return false;
+}
+
+// **And is it on the box's edge** — does a neighbouring *fragment*'s view ray
+// miss every box this instance stands as, where this one hit?
+//
+// The other half of the pair, at the other resolution. A box's silhouette is
+// decided by `nearest` per fragment, so it steps once a *real* pixel — which is
+// why the step is `1 / viewport.scale` virtual pixels rather than one. The two
+// numbers this pass hands the fragment stage are in virtual pixels; the picture
+// a person is looking at is in real ones.
+//
+// Only asked of a static the grid holds a shape for. A mobile and a static with
+// no volume are art-bounded by construction — there is no box to end them —
+// which is what makes them this view's own positive control.
+fn box_edge(tile: vec2<f32>, base: f32, across: f32, down: f32, run: vec2<u32>) -> bool {
+    let step = 1.0 / viewport.scale;
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        let offset = NEIGHBOURS[k] * step;
+        let start = ray_from(tile, base, across + offset.x, down + offset.y);
+        if !hit(nearest(start, run).met) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // What one fragment of a world pass writes: the picture, and where in the world
 // it came from.
@@ -241,6 +381,7 @@ fn vs_main(
     // centre. No half-texel inset: unlike a stretched land texture, nothing
     // here samples the far edge of the region at a vertex.
     out.uv = region.xy + corner * region.zw;
+    out.region = region;
     out.hue = hue;
     out.place = place;
     out.pixel_y = pixel.y;
@@ -412,79 +553,80 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // a point of nothing, exempt from nothing.
     var normal = vec3<f32>(0.0);
     var mine = SOLID_NOBODY;
+    // **The two edges this frame draws, at their two resolutions** — the art's
+    // alpha at one *texel* a step, the box's rim at one *fragment* a step.
+    // `docs/silhouettes.md` phase Z1, and `place_format.wesl` carries the account
+    // of what each one is and why this pass is the only place either can be
+    // measured.
+    //
+    // The art half is asked of every fragment. Its edge is a fact about the
+    // picture, and every one of these is a picture whether or not a shape was
+    // ever measured for it — a mobile and a static the grid refused included,
+    // which is what makes those two this view's own positive control: they can
+    // carry the art bit and never the box one.
+    var edges = 0u;
+    if art_edge(in.uv, in.region) {
+        edges = edges | IDS_EDGE_ART;
+    }
     if is_mobile {
         normal = billboard_normal();
     } else if in.volumes.y != 0u {
         let start = ray_from(tile, base, across, down);
-        // `impostor::nearest`, spelled here because the boxes are a binding: the
-        // box in *front* wins among those the ray genuinely goes through — the
-        // largest `t` along the view direction — and if it goes through none of
-        // them, the one it passes closest to. That last case is the sprite
-        // overhanging its own volume, and `met.outside` is how far.
-        var best = meets(start, volumes[in.volumes.x].lo, volumes[in.volumes.x].hi);
-        // Which box that was, carried beside the meeting rather than recovered
-        // afterwards: `meets` answers about a pair of corners and has no notion
-        // of whose they were, and re-finding the winner by comparing `t`s would
-        // be a second rule that could disagree with the one below.
-        var best_at = in.volumes.x;
-        for (var k = 1u; k < in.volumes.y; k = k + 1u) {
-            let volume = volumes[in.volumes.x + k];
-            let met = meets(start, volume.lo, volume.hi);
-            // A real hit always beats a miss, however near the miss came; two
-            // hits are decided by which is in front, and two misses by which came
-            // closer. Ties go to the box the list holds first, which for a flight
-            // is the grid's own order — a tread's top before the tread above it.
-            var better = false;
-            if hit(best) == hit(met) {
-                if hit(met) {
-                    better = met.t > best.t;
-                } else {
-                    better = met.outside < best.outside;
-                }
-            } else {
-                better = hit(met);
-            }
-            if better {
-                best = met;
-                best_at = in.volumes.x + k;
+        let choice = nearest(start, in.volumes);
+        let best = choice.met;
+        let best_at = choice.at;
+        // **A pixel whose ray meets no box keeps the answer a static with no box
+        // at all keeps** — the state this branch was entered in: the tile's own
+        // centre, the zero normal, `SOLID_NOBODY`, and the stance the art was
+        // read as. Everything below is inside the `hit`, and a miss writes
+        // nothing.
+        //
+        // This is one decision reversed twice and both reasons are worth
+        // keeping. `docs/lighting_rebuild.md`'s "One silhouette" first gave a
+        // miss the *nearest point on the box*, which leaves a fringe: a fragment
+        // clamped onto an edge takes whichever face is nearest, and along a
+        // silhouette that is a side one, so a lattice of wall-shaded dots
+        // appears on floors and roofs, one per tile. `discard` replaced that on
+        // a measurement of **4460 pixels of 187086 in one frame — 2.38%**.
+        //
+        // **That measurement counted the wrong set.** It counted pixels that
+        // *changed in one frame with the roof cut*, and a discarded pixel with
+        // another static drawn behind it changes nothing. Counted per picture
+        // instead — `examples/discard_census.rs`, `docs/footprints.md`'s S4,
+        // Britain's 121×121 — the discard throws away **11.09% of every panel's
+        // art and 32.69% of every whole-tile one**. A table
+        // (`0x0B06`, a display case) is read as a corner of two walls, so it
+        // stands as two `PANEL_THICKNESS` panels and its whole top meets
+        // neither: it left the screen, and a person reported the furniture with
+        // a hole through it.
+        //
+        // So a miss is now neither clamped nor discarded. It is a *measurement
+        // that is missing*, which this pass already has a name and a treatment
+        // for — see `at`'s own default above and `docs/lighting_rebuild.md`
+        // phase 6c: the tile's centre, and the zero normal `blit.wesl` reads as
+        // "no facing at all", lit from every side. The fringe pixels the discard
+        // was introduced for land in the same state, which is what makes this
+        // one answer rather than a third: neither of them is a point of a
+        // surface anybody measured, and neither of them now claims to be.
+        if hit(best) {
+            at = best.at;
+            normal = best.normal;
+            mine = volumes[best_at].solid;
+            // **And the stance the met face is**, which overrides the art's
+            // reading above for every static the grid holds a shape for. See
+            // `stance_of`: the corner branch is a statement about the *picture*,
+            // and a fragment that has met a box has a better one about itself.
+            // What is left of the branch is the `id` — a corner's two halves
+            // address two instance rows, and a box carries no row number to
+            // choose between them, which is this phase's own remaining join.
+            stance = stance_of(normal);
+            // And the box half of the pair, which only exists where a box does,
+            // and only for a fragment that is *on* one: a fragment whose ray met
+            // no box is not on an outline, it is behind one.
+            if box_edge(tile, base, across, down, in.volumes) {
+                edges = edges | IDS_EDGE_BOX;
             }
         }
-        // **A pixel whose ray meets no box is not drawn**, and this reverses what
-        // `docs/lighting_rebuild.md`'s "One silhouette" section used to decide.
-        //
-        // That section rejected clipping the sprite to the prism on the grounds
-        // that the art is the artist's statement of the shape, and gave a miss the
-        // nearest point on the box instead. What nobody had measured is what the
-        // fringe that leaves *looks* like: a fragment clamped onto a box's edge
-        // takes whichever face is nearest, and along a silhouette that is a side
-        // one, so a lattice of wall-shaded dots appears on floors and roofs, one
-        // per tile. `docs/lighting_rebuild.md`'s floor entry is the report.
-        //
-        // Measured before it landed, at Britain's `(1501, 1659)` with the roof
-        // cut: **4460 pixels of 187086 static ones change — 2.38%** — and the two
-        // pictures are indistinguishable side by side, because a fringe pixel is
-        // by construction one the volume does not describe. What it buys is that
-        // every pixel left is a point *of* the box it names, which is the property
-        // every plane downstream already assumed.
-        //
-        // The cost is stated rather than hidden: a static whose prism fits its art
-        // badly loses the art that hangs outside it. `best_prism` scores a plain
-        // wall at `0.81`, so this is not nothing — and it is why the number above
-        // is in this comment rather than a guess.
-        if !hit(best) {
-            discard;
-        }
-        at = best.at;
-        normal = best.normal;
-        mine = volumes[best_at].solid;
-        // **And the stance the met face is**, which overrides the art's reading
-        // above for every static the grid holds a shape for. See `stance_of`:
-        // the corner branch is a statement about the *picture*, and a fragment
-        // that has met a box has a better one about itself. What is left of the
-        // branch is the `id` — a corner's two halves address two instance rows,
-        // and a box carries no row number to choose between them, which is this
-        // phase's own remaining join.
-        stance = stance_of(normal);
     }
 
     // The stance rides into the id word above the kind, and **it is not a
@@ -502,7 +644,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // every one of a sprite's pixels; the height and the fraction went to the
     // position plane at `docs/lighting_rebuild.md` phase 2, since both are this
     // fragment's own and both were being quantised on the way.
-    out.ids = pack_ids(id, stance, (in.place.y >> 8u) & KIND_MASK);
+    out.ids = pack_ids(id, stance, (in.place.y >> 8u) & KIND_MASK) | edges;
     // The fourth channel is the solid this fragment is a point of, not a
     // homogeneous `1.0` — `solid_format.wesl`, and the only place in this pass
     // that a *name* rides beside a position.

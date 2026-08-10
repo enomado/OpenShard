@@ -614,7 +614,7 @@ fn the_edge_of_a_beam_is_a_gradient_of_the_stated_width() {
     let mut values = Vec::new();
     for step in 0..=50 {
         let across = step as f32 / 10.0;
-        values.push(beam.lights([4.0, across, 0.0]));
+        values.push(beam.lights(light::TileVec::new(4.0, across, 0.0)));
     }
     let spill = light::BEAM_SPILL;
     let partial = values.iter().filter(|v| **v > spill + 0.01 && **v < 0.99).count();

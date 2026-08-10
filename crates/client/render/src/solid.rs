@@ -175,63 +175,29 @@ impl Solid {
     }
 }
 
-/// How thick a lid is drawn, in `z` units.
-///
-/// Two, which is 8 pixels of visible side band at 1:1. Chosen to be *seen* —
-/// the art cannot measure a wall's depth (decision 3) and a lid stays flat
-/// where a panel no longer does (see
-/// [`occlusion::PANEL_THICKNESS`](crate::occlusion::PANEL_THICKNESS)), so this
-/// is still a drawing number rather than one a ray is tested against.
-///
-/// **`DRAWN_` is the whole of the name and it is a fence.** A panel had one of
-/// these too, once — before step 23.5 gave `Solid::box_of` a real slab, the
-/// view was the only reader thick enough to find a wall the eye could not.
-/// Now the grid's own box already has the depth, [`drawn`] draws a panel
-/// exactly as it stands, and the fence only ever guarded the one kind that
-/// still needs it.
-pub const DRAWN_LID_THICKNESS: f64 = 2.0;
-
-/// The box a view draws for one solid: its own, with whatever it is flat on
-/// given a thickness to be seen by.
-///
-/// **A drawing, not a measurement — and since step 23.5, almost the identity.**
-/// The grid's box is the geometry the walk is tested against, and since
-/// `Solid::box_of` gave a panel a real slab, that box is already what a person
-/// needs to find it: only a lid's height is still fattened, downwards by
-/// [`DRAWN_LID_THICKNESS`], so a floor and the tile under it stop telling the
-/// same story. A body and a panel are already boxes and pass through untouched.
-///
-/// **The `z` is no longer clamped into an `i8`, because the wire no longer is.**
-/// It used to be, and for a good reason — a view of the grid draws where the
-/// *shader* believes a box is rather than where the map says, and the upload
-/// pinned a span to `Z_FLOOR ..= Z_CEILING`. `docs/occluders.md`'s S1 took that
-/// pin away: a primitive carries its own `f32`, so a spire through the top of
-/// the world is on the wire at its own height, and a view that went on clamping
-/// would be the one thing an instrument may not be — a picture of somewhere the
-/// renderer is not.
-///
-/// The rounding the wire *does* still cost is
-/// [`Solid::wire_box`](crate::occlusion::Solid::wire_box)'s, and it is under a
-/// pixel by a wide margin at every `z` a map has; this draws the record.
-pub fn drawn(solid: &crate::occlusion::Solid) -> Solid {
-    let space = solid.space;
-    let (mut min, max) = (space.min, space.max);
-    if solid.edges == crate::occlusion::Edges::NONE {
-        // A lid — a floor, a roof, a plank. A slab hanging under the height it
-        // lies at: the surface a ray is stopped by is the top one, so the
-        // thickness goes downwards.
-        //
-        // The bottom is *replaced* and not lowered to reach, which is what step
-        // 23.0 drew and is kept here to the pixel. It means a lid with a span of
-        // its own — a static with a `FLOOR` bit and a height — is drawn two `z`
-        // deep rather than as deep as it stops light over, and that is a real
-        // thing to look at rather than a rounding: `docs/lighting.md`'s backlog
-        // carries it, because changing it is a picture moving and step 23.1's
-        // whole claim is that no picture moved.
-        min.z = max.z - DRAWN_LID_THICKNESS;
-    }
-    Solid { min, max }
-}
+// **`DRAWN_LID_THICKNESS` and `drawn` stood here**, and `docs/parity.md`'s P4
+// step 1 retired both: **a view of the grid draws the grid**.
+//
+// `drawn` was the box a view drew for one solid — its own, with whatever it was
+// flat on given a thickness to be seen by. Two kinds needed that once. A panel
+// stopped needing it at step 23.5, when `Solid::box_of` gave it a real
+// `PANEL_THICKNESS` slab; a lid stopped needing it here, when the same function
+// gave a floor a `z` unit of its own. `DRAWN_LID_THICKNESS` was two `z` units —
+// eight pixels of side band at 1:1, chosen to be *seen* — and the difference
+// between it and the one unit the record now holds is exactly the reason it had
+// to go: an instrument that draws a floor twice as deep as the shadow walk meets
+// it is a picture of somewhere the renderer is not, which is the one failure a
+// view of the geometry may not have. Four pixels of band is what a floor really
+// is, and if that reads too thin the answer is a view that says so rather than a
+// second number.
+//
+// What it did *not* do is worth keeping too: it stopped clamping `z` into an
+// `i8` when `docs/occluders.md`'s S1 took that pin off the wire, for the same
+// argument in the same direction — a spire through the top of the world is on
+// the wire at its own height, and a view may not clamp what the renderer does
+// not. The rounding the wire does still cost is `Solid::wire_box`'s, under a
+// pixel at every `z` a map has, and the view draws the record rather than the
+// wire.
 
 /// What colour a solid is drawn in — **the hue is the kind**.
 ///
@@ -349,7 +315,10 @@ pub fn standing(occlusion: &crate::occlusion::Occlusion, cut: Cut) -> Vec<(Solid
     });
     found
         .into_iter()
-        .map(|(_, _, solid)| (drawn(solid), kind_colour(solid)))
+        // The record's own box, undecorated — see the grave note above `Solid`'s
+        // `kind_colour` for why there is no longer a drawing thickness between
+        // this view and the geometry it is a view of.
+        .map(|(_, _, solid)| (solid.space, kind_colour(solid)))
         .collect()
 }
 

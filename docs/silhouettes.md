@@ -25,6 +25,12 @@ four-pixel stairs.
 **The colloquial name for it is the zigzags, and this plan is what turns that
 into a measurement.**
 
+**Z1 has since amended this.** The second line is not an outline at all: a box
+miss is no longer discarded, so the picture's silhouette is the art's and all of
+it, and what the fragment grid draws is a *seam inside* the picture. The section
+below is the question as it was asked; the phase records what it turned out to
+be.
+
 ## What has *not* been established, and it is the first thing to fix
 
 The 4-row number above was measured on a **mobile**, and a mobile is the one
@@ -54,27 +60,43 @@ outline". Then, with the attribution in hand, a decision about the coarse one.
 
 ## The decisions to make, and the candidates
 
-**S1. What the split is read off.** The precedent is instructive: the normal
-split's first rule was "the solid the fragment names" and a dump of it *refuted*
-that rule, because a static can meet a real volume the grid holds no solid for.
-The rule that survived was read off the vector itself. So the criterion here has
-to be something the fragment already computes, not something inferred beside it.
+**S1. What the split is read off. — SETTLED, and both of the cheap candidates
+were refuted before a line was written.** The precedent held: the normal split's
+first rule was "the solid the fragment names" and a dump of it *refuted* that
+rule. Here the refutation came off the code rather than off a picture.
 
-1. **`Meeting::outside`, carried into the G-buffer.** It already exists in the
-   shader, it is already the number `docs/lighting_rebuild.md` phase 6 asks its
-   own done-when to carry, and it is exactly "how far this fragment is outside
-   the box it names". A fragment at the box's rim sits at the tangent limit; one
-   in the art's interior sits near zero. **Cheapest, and it needs no
-   neighbourhood.** Start here.
-2. **A neighbourhood test in the blit.** A fragment is on a silhouette if a
-   4-neighbour holds no static; classify by which mask ended. Answers the
-   question directly and costs a second pass over the G-buffer, which the blit
-   is already doing.
-3. **The texel grid, drawn.** Colour by the art texel index's parity, so the
-   `scale × scale` blocks are visible where the art rules and invisible where
-   the fragments do. Not an attribution — a *picture* of the quantum, which is
-   what a person actually wants to look at, and it composes with either of the
-   above.
+1. ~~**`Meeting::outside`, carried into the G-buffer.**~~ **Vacuous.**
+   `impostor::hit` *is* `outside <= TANGENT`, and `TANGENT` is `1e-4` of a tile
+   — a numerical epsilon for a ray that reaches a box's own corner, not a rim.
+   While the box-miss discard stood, every surviving fragment therefore measured
+   at most that, and the plan's own sentence above — "a fragment at the box's rim
+   sits at the tangent limit; one in the art's interior sits near zero" — is
+   wrong in both halves: both sit at zero. The number carries no information
+   about a neighbour, because it was never about one.
+2. ~~**A neighbourhood test in the blit.**~~ **Cannot attribute.** The blit sees
+   *that* a neighbour is not a static and never *why*: the G-buffer holds one
+   answer per pixel and no record of the art rectangle a pixel came from, so it
+   cannot re-ask either mask. It can find a silhouette; it cannot name what
+   ended one.
+3. **The texel grid, drawn.** Still unbuilt, and no longer needed for the
+   attribution — see the backlog, where it survives as a picture of the quantum.
+
+**4. Both masks tested in the producer, four screen neighbours each. — BUILT.**
+`statics.wesl` is the one place both are alive. Two bits ride at the top of the
+id word (`place_format.wesl`'s `IDS_EDGE_ART` / `IDS_EDGE_BOX`, which cost the
+row field two of its twenty-six bits and left twenty-four), and two views draw
+them: `View::SilhouetteArt` and `View::SilhouetteBox`.
+
+- `art_edge` — a neighbouring **texel** fails the alpha test this fragment
+  passed, or lies outside the sprite's own rectangle in the atlas.
+- `box_edge` — a neighbouring **fragment**, one real pixel away
+  (`1 / viewport.scale` virtual pixels), meets none of this instance's boxes.
+
+The cost is four `textureLoad`s and four extra runs of the selection loop per
+static fragment, always on. It was gated on the view for one draft and the gate
+was taken out: a G-buffer whose content depends on which picture is being asked
+for is exactly the coincidence `docs/parity.md` is about, and it would have made
+the flag travel from a diagnostic into a world pass.
 
 **S2. What to do about the coarse edge, once it is attributed.** Not decided,
 and the three are not variations of one answer:
@@ -103,16 +125,52 @@ worked on at the time.
 
 ## Phases
 
-### Z1 — the attribution
+### Z1 — the attribution — **done, and it answered a different question**
 
-S1's cheapest candidate wired through the G-buffer, both views in
-`debug::View::ALL`, and a picture of Britain's `(1501, 1659)` with the count of
-fragments in each layer beside it.
+S1.4 wired through the G-buffer, both views in `debug::View::ALL`, and the
+counts at Britain's `(1501, 1659)`. `tests/dump.rs`'s
+`the_two_silhouette_layers_are_two_lines_and_a_frame_agrees_about_both` is the
+gate: the six colours the branch spells and nothing else, the two views agreeing
+pixel for pixel, land and background in neither layer, and — the rule made to
+answer wrongly — **every fragment in the box layer carries a measured normal**,
+which a `box_edge` that had quietly been reading the art's alpha would break on
+the unmeasured remainder of every sprite.
 
-*Done when:* every silhouette fragment in one real frame is in exactly one of
-the two layers, and the count of each is written here — with the same mutation
-witness the normal split used, a rule made to answer wrongly and the picture
-that shows it.
+**The finding, and it is not the one the plan expected.** While Z1 was being
+built, a parallel change took the box-miss discard out of `statics.wesl` (its own
+census: the discard threw away 11.09% of every panel's art and 32.69% of every
+whole-tile one — a display case lost its whole top). So the two edges are no
+longer two candidate bounds on one outline:
+
+- the **art's** edge is the picture's silhouette, all of it, and it is
+  texel-quantised — `scale` real pixels a step, and it cannot be finer;
+- the **box's** edge is a seam *inside* the picture, one real pixel a step, where
+  the measured region of a sprite ends and the unmeasured remainder carries on at
+  the tile's centre with no facing.
+
+That answers the backlog's first 🚩 outright: the zigzag a person points at is
+the art's outline, and the fragment-fine line beside it is not a silhouette at
+all. It is still a visible line — the two sides of it are lit by different rules
+— which is why both layers are kept.
+
+**Britain `(1501, 1659)`, 900×700, night, roof cut, `1:1`:**
+
+```
+art only    155        the picture's outline where no box ran out under it
+box only     96        the measured region's seam, strictly inside the art
+both        473        the seam reaching the outline
+            ---
+            724 edge fragments of 8075 static ones, 0 mobile
+```
+
+Two thirds of the edge is *both*, which is the box fitting the art's outline
+well; the 96 are where it does not, and they are the pixels `docs/footprints.md`
+is about.
+
+**What Z1 did not get: the widths.** The two edges are two *rules* at every
+magnification and two different *widths* only above `1:1`, so the plan's root
+claim — one steps by `scale` pixels, the other by one — needs a magnified frame,
+and one cannot be assembled today. See the backlog.
 
 ### Z2 — the ratio, before
 
@@ -131,11 +189,27 @@ their own**, because a box that fits the art clips more of the outline.
 
 ## Backlog
 
-- 🚩 **Whether the zigzag a person points at is even a silhouette.** It may also
-  be an interior edge — two adjacent art texels of different colours, magnified.
-  Nothing about that is a defect at all, and telling the two apart is a question
-  Z1's picture answers on the way past. State which one the complaint was about
-  before spending a phase on the other.
+- 🚩🚩 **A frame at `4x` collects no statics at all.** Found on the way to Z1's
+  own measurement and it is much bigger than this plan. The camera is right —
+  `render 225x175`, `image 900x700`, `scale 4`, the eye unmoved at Britain — and
+  `frame::assemble` returns **595 quads of land and zero static quads**, where
+  `statics::visible_graphics` over the same camera found 140 graphics for the
+  atlas. So the rejection is between `visible_graphics` and `collect`:
+  `statics::place` returning `None`, or `on_screen` against `render_width`.
+  Reproduce by handing `tests/dump.rs`'s `draw_britain` anything but `Zoom::ONE`.
+  Every width measurement this plan wants is behind it, and so, presumably, is
+  the client at any magnification.
+- ✅ ~~**Whether the zigzag a person points at is even a silhouette.**~~ Answered
+  by Z1: it is the art's outline. The finer line beside it is the measured
+  region's own seam, not a silhouette. What is *not* ruled out is the third
+  candidate the entry named — an interior edge between two art texels of
+  different colours, which is not a defect at all and which neither layer marks.
+  A person pointing at a magnified frame may still mean that one.
+- 🚩 **S1.3, the texel grid drawn.** Colour by the art texel index's parity, so
+  the `scale × scale` blocks are visible where the art rules and invisible where
+  the fragments do. Not an attribution — a *picture* of the quantum, which is
+  what a person actually wants to look at, and it is the one instrument that
+  would show the interior-edge case the entry above cannot rule out.
 - 🚩 **The minifying rungs are the untested half.** Everything above is about
   magnification, where one texel is several pixels. Below `1:1` several texels
   land on one pixel and the blit's linear sampler is the filter — a different

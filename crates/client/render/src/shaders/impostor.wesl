@@ -135,9 +135,9 @@ fn hit(met: Meeting) -> bool {
 //
 // The face is the one whose *exit* comes first. **Ties go to `z`, then `y`, then
 // `x`**, which is a decision and not an accident: two exits are equal exactly on
-// an edge or a corner, and on a degenerate box — a lid, whose `z` slab is a
-// point — they are equal over the whole of it. Preferring `z` is what makes a
-// lid read as a lid all the way to its own rim. `crate::impostor::meets`.
+// an edge or a corner, and on a degenerate box — whose `z` slab is a point —
+// they are equal over the whole of it. Preferring `z` is what makes such a box
+// read as a lid all the way to its own rim. `crate::impostor::meets`.
 fn meets(start: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> Meeting {
     // No parallel-axis branch: every component of `VIEW` is positive, so `lo` is
     // always the near end of a slab and `hi` the far one, and no division here
@@ -148,15 +148,16 @@ fn meets(start: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> Meeting {
     // are never degenerate.
     var exit = far.z;
     var normal = vec3<f32>(0.0, 0.0, 1.0);
-    // **A face with no area is not a face.** A lid is flat in `z`, so the faces
-    // its `x` and `y` slabs would present are lines and the only face of it a
-    // ray can meet is its own plane. Both those areas carry the `z` extent as a
-    // factor, so one test retires both. Ordering the tie towards `z` used to
-    // stand in for this and covered only the *exact* tie: a ray leaving the
-    // footprint one rounding before it reaches the plane is a miss, and it was
-    // answered with a side face's normal — one pixel per tile corner, a lattice
-    // of dots over a roof, each shaded as a wall in the middle of a floor.
-    // `impostor::meets` has the whole account.
+    // **A face with no area is not a face.** A box flat in `z` presents `x` and
+    // `y` faces that are lines, and the only face of it a ray can meet is its own
+    // plane. Both those areas carry the `z` extent as a factor, so one test
+    // retires both. Ordering the tie towards `z` used to stand in for this and
+    // covered only the *exact* tie: a ray leaving the footprint one rounding
+    // before it reaches the plane is a miss, and it was answered with a side
+    // face's normal — one pixel per tile corner, a lattice of dots over a roof,
+    // each shaded as a wall in the middle of a floor. `impostor::meets` has the
+    // whole account, including why no box `Solid::box_of` builds is flat any
+    // more (`docs/parity.md` P4 step 1) and why the rule stays regardless.
     if hi.z > lo.z {
         if far.y < exit {
             exit = far.y;

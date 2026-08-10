@@ -252,13 +252,25 @@ impl Inputs<'_> {
         // what the aiming came out as, and a difference of a pixel between two
         // frames aimed at one tile is a real difference this would otherwise
         // round away.
+        //
+        // **And the extent's own parity, spelled out** — `docs/parity.md` P5's
+        // G3. It is derivable from the two numbers beside it and it is written
+        // anyway, because the whole of the window-parity finding is that nobody
+        // ever read it *as an input*: an odd extent centres the world half a
+        // pixel differently and every tool ever built has drawn on an even one
+        // by unanimous accident. A person diffing two dumps scans field names,
+        // and "image 1919x2077" does not have one.
+        let parity = |extent: u32| if extent.is_multiple_of(2) { "even" } else { "odd" };
         line(
             "camera",
             format!(
-                "eye tile ({eye_x}, {eye_y}), pixel ({:.3}, {:.3}), zoom {:?}, image {image_width}x{image_height}",
+                "eye tile ({eye_x}, {eye_y}), pixel ({:.3}, {:.3}), zoom {:?}, image \
+                 {image_width}x{image_height} ({} by {})",
                 eye.x,
                 eye.y,
                 self.camera.zoom(),
+                parity(image_width),
+                parity(image_height),
             ),
         );
         // Two facts about the client's own files, which a summary cannot check

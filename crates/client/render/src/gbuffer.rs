@@ -166,13 +166,39 @@ pub const IDS_STANCE_SHIFT: u32 = 2;
 /// The stance's mask: `place_format.wesl`'s `IDS_STANCE_MASK`.
 pub const IDS_STANCE_MASK: u32 = 15;
 
-/// And where the row's own number rides, above both: twenty-six bits.
+/// And where the row's own number rides, above both: twenty-four bits, under
+/// the two edge bits at the very top.
 ///
 /// Not a budget anyone is near — an id is a row in one of four instance
 /// buffers and the widest frame this client has drawn is in the low thousands
 /// — but a real ceiling rather than an unstated one, which is why
 /// [`pack_ids`] asserts against it.
 pub const IDS_ID_SHIFT: u32 = 6;
+
+/// How much of the word above [`IDS_ID_SHIFT`] is the row: twenty-four bits,
+/// `place_format.wesl`'s `IDS_ID_MASK`.
+///
+/// It was twenty-six until the two bits below took the top of the word. A
+/// *stated* ceiling rather than "whatever is left", so that a reader of
+/// [`ids_id`] can see where the row stops and the edges begin.
+pub const IDS_ID_MASK: u32 = 0x00FF_FFFF;
+
+/// **The two edges a magnified frame draws** — `docs/silhouettes.md`, and
+/// `place_format.wesl`'s `IDS_EDGE_ART` / `IDS_EDGE_BOX`, which is where the
+/// argument for the layout lives.
+///
+/// They are drawn at two resolutions: the art's alpha steps once a texel, the
+/// impostor box's rim once a fragment. Only the statics pass sets either bit,
+/// because it is the one place both masks are alive at once. The ground and the
+/// mesh pass leave both clear, which is the honest answer and not a gap — see
+/// [`crate::debug::View::SilhouetteArt`].
+///
+/// Both set is a real state and the one the plan is about: the seam reaching the
+/// outline, where the two resolutions meet along one line.
+pub const IDS_EDGE_ART: u32 = 0x4000_0000;
+
+/// See [`IDS_EDGE_ART`].
+pub const IDS_EDGE_BOX: u32 = 0x8000_0000;
 
 /// One id word, from the three things it is made of — the Rust twin of
 /// `place_format.wesl`'s `pack_ids`.
@@ -182,7 +208,7 @@ pub const IDS_ID_SHIFT: u32 = 6;
 /// See [`Fragment`], which is what they actually call.
 pub fn pack_ids(id: u32, stance: crate::place::Stance, kind: crate::place::Kind) -> u32 {
     debug_assert!(
-        id < 1 << (32 - IDS_ID_SHIFT),
+        id <= IDS_ID_MASK,
         "an instance id past what an id word holds: {id}",
     );
     kind as u32 | (stance as u32) << IDS_STANCE_SHIFT | id << IDS_ID_SHIFT
@@ -214,7 +240,17 @@ pub fn ids_stance(word: u32) -> u32 {
 
 /// See [`ids_stance`].
 pub fn ids_id(word: u32) -> u32 {
-    word >> IDS_ID_SHIFT
+    (word >> IDS_ID_SHIFT) & IDS_ID_MASK
+}
+
+/// And which of the two masks ended this fragment's outline: [`IDS_EDGE_ART`],
+/// [`IDS_EDGE_BOX`], both, or neither.
+///
+/// `place_format.wesl`'s `ids_edges`, for a test that reads a rendered plane
+/// back — which is the only reader on this side, the pictures being
+/// [`crate::debug::View::SilhouetteArt`]'s business.
+pub fn ids_edges(word: u32) -> u32 {
+    word & (IDS_EDGE_ART | IDS_EDGE_BOX)
 }
 
 /// Where each pixel's fragment is in the world, and **which solid of the grid it
@@ -710,18 +746,38 @@ mod tests {
     /// The case worth the test is the **top** one: an id is shifted six bits
     /// left, so a row number near the ceiling is exactly where a field would
     /// start losing its high end silently — a wrong picture rather than a
-    /// fault.
+    /// fault. Since `docs/silhouettes.md`'s two edge bits took the top of the
+    /// word, that ceiling has a neighbour above it, and the case worth the test
+    /// is that the two do not reach into each other.
     #[test]
     fn an_id_word_holds_three_things_and_gives_all_three_back() {
         use crate::place::{Kind, Stance};
 
-        for id in [0, 1, 4095, (1 << 26) - 1] {
+        for id in [0, 1, 4095, IDS_ID_MASK] {
             for stance in [Stance::Upright, Stance::Flat, Stance::MeshFace] {
                 for kind in [Kind::Land, Kind::Static, Kind::Mobile] {
                     let word = pack_ids(id, stance, kind);
                     assert_eq!(ids_id(word), id, "{id}/{stance:?}/{kind:?}");
                     assert_eq!(ids_stance(word), stance as u32, "{id}/{stance:?}/{kind:?}");
                     assert_eq!(ids_kind(word), Some(kind), "{id}/{stance:?}/{kind:?}");
+                    assert_eq!(ids_edges(word), 0, "{id}/{stance:?}/{kind:?}");
+                    // And the edges on top of a full row, which is the pair the
+                    // narrowing was for: neither field may read the other's bits.
+                    for edges in [IDS_EDGE_ART, IDS_EDGE_BOX, IDS_EDGE_ART | IDS_EDGE_BOX] {
+                        let marked = word | edges;
+                        assert_eq!(ids_edges(marked), edges, "{id}/{stance:?}/{kind:?}/{edges:#x}");
+                        assert_eq!(ids_id(marked), id, "{id}/{stance:?}/{kind:?}/{edges:#x}");
+                        assert_eq!(
+                            ids_stance(marked),
+                            stance as u32,
+                            "{id}/{stance:?}/{kind:?}/{edges:#x}"
+                        );
+                        assert_eq!(
+                            ids_kind(marked),
+                            Some(kind),
+                            "{id}/{stance:?}/{kind:?}/{edges:#x}"
+                        );
+                    }
                 }
             }
         }

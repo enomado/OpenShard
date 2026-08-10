@@ -43,11 +43,12 @@ const SUB_TILE: f32 = 127.0;
 // Where the stance and the id ride above the kind in that word.
 //
 // Two bits of kind, four of stance — ten values, one flat, one unknown, four
-// wall faces, four corners, and the mesh-face sentinel above them — and the
-// twenty-six left over are the id. `crate::gbuffer::IDS_STANCE_SHIFT` and
-// `IDS_ID_SHIFT` are the same two numbers in Rust.
+// wall faces, four corners, and the mesh-face sentinel above them — then
+// twenty-four of id, and the two edge bits below at the very top.
+// `crate::gbuffer::IDS_STANCE_SHIFT`, `IDS_ID_SHIFT` and `IDS_ID_MASK` are the
+// same three numbers in Rust.
 //
-// Twenty-six bits is not a budget anyone is near: an id is a row in one of
+// Twenty-four bits is not a budget anyone is near: an id is a row in one of
 // four instance buffers and the widest frame this client has drawn is in the
 // low thousands. What the layout is actually chosen for is the *bottom* —
 // `KIND_NOTHING` is zero and so is the plane's clear value, so a pixel nothing
@@ -56,6 +57,49 @@ const SUB_TILE: f32 = 127.0;
 const IDS_STANCE_SHIFT: u32 = 2u;
 const IDS_STANCE_MASK: u32 = 15u;
 const IDS_ID_SHIFT: u32 = 6u;
+const IDS_ID_MASK: u32 = 0xFFFFFFu;
+
+// **The two edges a magnified frame draws, and they are drawn at two different
+// resolutions** — in the two bits the id's own ceiling gave up for them.
+// `docs/silhouettes.md`, phase Z1.
+//
+// - `IDS_EDGE_ART` — a neighbouring *texel* of the sprite failed the alpha test
+//   this fragment passed. One texel is `Projection::scale` real pixels square
+//   and the sampler is `nearest`, so this edge **cannot** step more finely than
+//   that: at `4x` it is a four-pixel stair, which is the thing a person points
+//   at and calls the zigzags.
+// - `IDS_EDGE_BOX` — a neighbouring *fragment*'s view ray met none of the boxes
+//   this instance stands as, where this one's did. Decided per fragment, so it
+//   steps once a real pixel however far the frame is magnified.
+//
+// **They are not two halves of one outline.** A box miss is no longer discarded
+// (`statics.wesl`, and see its own account of the census that reversed it), so
+// the picture's silhouette is the art's and only the art's; what the box bit
+// marks is an edge *inside* the picture — the rim of the region anything was
+// measured for, with the unmeasured remainder of the same sprite carrying on
+// past it at the tile's centre with no facing. One outline and one seam, and
+// the seam is visible in a lit frame because the two sides of it are lit by
+// different rules.
+//
+// That is the plan's own first question answered on the way past: the zigzag is
+// the art's, and the fragment-fine line beside it is not a silhouette at all.
+//
+// **Why the producer stamps it.** Both masks are alive in exactly one place.
+// `Meeting::outside` cannot answer instead — it is `impostor::hit`'s own
+// operand, a per-fragment number with no notion of a neighbour, and while the
+// discard stood it was bounded by `TANGENT` for every surviving fragment, which
+// is a numerical epsilon and not a rim. Nor can a neighbourhood test in
+// `blit.wesl`: the G-buffer holds one answer per pixel and no record of the art
+// rectangle a pixel came from, so the blit can see *that* a neighbour is
+// unmeasured and never *which* mask made it so.
+//
+// Both bits set is not a contradiction and not a bucket to fold away — it is
+// the seam reaching the outline, which is where the two resolutions genuinely
+// do meet along one line. `crate::gbuffer::IDS_EDGE_ART` and `IDS_EDGE_BOX` are
+// the Rust twins.
+const IDS_EDGE_ART: u32 = 0x40000000u;
+const IDS_EDGE_BOX: u32 = 0x80000000u;
+const IDS_EDGE_MASK: u32 = 0xC0000000u;
 
 // `crate::place::Stance`, in the four bits above.
 const STANCE_UPRIGHT: u32 = 0u;
@@ -124,5 +168,16 @@ fn ids_stance(word: u32) -> u32 {
 }
 
 fn ids_id(word: u32) -> u32 {
-    return word >> IDS_ID_SHIFT;
+    return (word >> IDS_ID_SHIFT) & IDS_ID_MASK;
+}
+
+// And which masks ended this fragment's outline: `IDS_EDGE_ART`, `IDS_EDGE_BOX`,
+// both, or neither. See their own doc above.
+//
+// Only `statics.wesl` ever sets them. The ground writes a patch that has no
+// silhouette of its own and the mesh pass writes a face whose whole outline is
+// geometry, so both answer "neither" — which is the honest answer rather than a
+// gap, and `blit.wesl`'s two silhouette views draw them as such.
+fn ids_edges(word: u32) -> u32 {
+    return word & IDS_EDGE_MASK;
 }

@@ -330,6 +330,23 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
     let quads = ground::collect(&map, &camera, &land, &texmaps, &Cutaway::OPEN);
     let static_atlas = StaticAtlas::build(&art, statics::visible_graphics(&map, &camera, &animations))
         .expect("a screen of statics fits");
+    // The frame's own grid, built once and not timed here — `light::collect`
+    // below builds one of its own for the readings that follow, and this one
+    // exists only so the statics pass meets real boxes. `Occlusion::EMPTY` used
+    // to stand in for it (`docs/parity.md`'s D3): every fragment took the
+    // billboard fallback, `View::Normal` was not the client's own and
+    // `View::Solid` came out uniformly black. Built over `light::lit_tiles`,
+    // the same rectangle `light::collect` grows its own grid over, so a wall in
+    // the margin between the camera's bounds and the lit tiles meets the same
+    // boxes here as it would in the frame the readings below light.
+    let met_grid = openshard_client_render::occlusion::collect(
+        &map,
+        &[],
+        light::lit_tiles(&camera, &light::Tuning::DEFAULT),
+        &tiledata,
+        &Cutaway::OPEN,
+        Some(&static_atlas),
+    );
     let static_geometry = statics::collect(
         &map,
         &camera,
@@ -337,13 +354,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         &animations,
         &static_atlas,
         &Cutaway::OPEN,
-        // **Empty, and that is why this harness does not price the impostor.**
-        // A static's boxes come out of the grid, so with none there is no box to
-        // meet and every fragment of the statics pass takes the billboard
-        // fallback — see `statics.wesl`. What is measured below is the *lighting*
-        // pass, which reads the planes rather than writing them; a real grid here
-        // is what would put the meeting on the clock too.
-        &openshard_client_render::occlusion::Occlusion::EMPTY,
+        &met_grid,
     );
     let static_quads = static_geometry.quads;
     // `docs/gbuffer.md` step 2: the id width has to be sized against a real

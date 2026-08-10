@@ -101,15 +101,15 @@ pub struct Light {
 ///
 /// Both ends of the cone are cosines rather than angles because the test is a
 /// dot product: the direction from the flame to the spot against the axis, both
-/// unit vectors in the same units the distance is in — `x` and `y` in tiles and
-/// `z` in tiles as well, which is [`Z_PER_TILE`]'s doing and is what keeps a
-/// beam pointing along the ground from lighting the storey above.
+/// unit vectors in the same units the distance is in — [`TileVec`]'s space,
+/// which is what keeps a beam pointing along the ground from lighting the storey
+/// above.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Beam {
     /// Where it points, unit length. Built by [`Beam::towards`], which is the
     /// only thing that makes one — a direction of some other length would make
     /// the dot product below mean nothing.
-    pub toward: [f32; 3],
+    pub toward: TileVec,
     /// The cosine of its half-angle: the rim of the cone. A spot whose direction
     /// is below this gets nothing at all.
     pub cos_half: f32,
@@ -160,14 +160,13 @@ impl Beam {
         };
         let length = (dx * dx + dy * dy + rise * rise).sqrt();
         Self {
-            toward: [dx / length, dy / length, rise / length],
+            toward: TileVec::new(dx / length, dy / length, rise / length),
             cos_half: (degrees.to_radians() / 2.0).cos(),
         }
     }
 
-    /// How much of this beam falls on a spot `offset` away from the flame —
-    /// `x` and `y` in tiles, `z` in tiles as well, pointing *from* the flame
-    /// *to* the spot.
+    /// How much of this beam falls on a spot `offset` away from the flame — in
+    /// [`TileVec`]'s space, pointing *from* the flame *to* the spot.
     ///
     /// `blit.wgsl`'s `cone`, arithmetic for arithmetic, and the parity test of
     /// `docs/lighting.md`'s decision 9 is what says so. The smoothstep is
@@ -178,16 +177,12 @@ impl Beam {
     /// gets the whole of it — there is no direction from a point to itself, and
     /// the tile a lantern is standing on is not the place to start refusing
     /// light.
-    pub fn lights(self, offset: [f32; 3]) -> f32 {
-        let length = offset.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+    pub fn lights(self, offset: TileVec) -> f32 {
+        let length = offset.length();
         if length < 1e-6 {
             return 1.0;
         }
-        let along = offset
-            .iter()
-            .zip(self.toward)
-            .map(|(axis, toward)| axis / length * toward)
-            .sum::<f32>();
+        let along = self.toward.dot(offset.divided(length));
         let inner = self.cos_half + (1.0 - self.cos_half) * BEAM_EDGE;
         let t = ((along - self.cos_half) / (inner - self.cos_half).max(1e-6)).clamp(0.0, 1.0);
         BEAM_SPILL + (1.0 - BEAM_SPILL) * t * t * (3.0 - 2.0 * t)
@@ -204,11 +199,11 @@ impl Beam {
 /// floor behind it. `docs/lighting.md`, decision 12.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Sun {
-    /// Which way the sun is, from anywhere: `x` and `y` in tiles and `z` in
-    /// tiles as well — the same unit the distance to a flame is in, so that an
-    /// elevation of 45° really is one tile up per tile along. Normalised by
-    /// [`Sun::towards`], which is the only thing that builds one.
-    pub toward: [f32; 3],
+    /// Which way the sun is, from anywhere, in [`TileVec`]'s space — the same
+    /// unit the distance to a flame is in, so that an elevation of 45° really is
+    /// one tile up per tile along. Normalised by [`Sun::towards`], which is the
+    /// only thing that builds one.
+    pub toward: TileVec,
     /// Its colour, linear.
     pub color: [f32; 3],
     /// How much it adds where it reaches. Zero is "no sun", and the blit skips
@@ -236,7 +231,7 @@ impl Sun {
         };
         let length = (dx * dx + dy * dy + rise * rise).sqrt();
         Self {
-            toward: [dx / length, dy / length, rise / length],
+            toward: TileVec::new(dx / length, dy / length, rise / length),
             color,
             intensity,
         }
@@ -245,10 +240,11 @@ impl Sun {
     /// How steeply it climbs per tile along the ground: the slope
     /// [`Sun::towards`] was given back, whatever the direction was normalised to.
     pub fn rise_per_tile(self) -> f32 {
-        let horizontal = (self.toward[0] * self.toward[0] + self.toward[1] * self.toward[1]).sqrt();
+        let horizontal =
+            (self.toward.x * self.toward.x + self.toward.y * self.toward.y).sqrt();
         match horizontal < 1e-6 {
             true => f32::INFINITY,
-            false => self.toward[2] / horizontal,
+            false => self.toward.z / horizontal,
         }
     }
 }
@@ -272,6 +268,142 @@ pub const MAX_SUN_TILES: f32 = 32.0;
 /// flame reaches as far up and down as it does sideways — which is what stops a
 /// cellar's brazier from lighting the street even where nothing occludes.
 pub const Z_PER_TILE: f32 = (crate::camera::TILE_WIDTH / crate::camera::Z_STEP) as f32;
+
+/// A direction or an offset in **tile space**: all three axes in tiles.
+///
+/// `docs/pixels.md` P3, and the grid that phase found genuinely missing a type.
+/// Two three-vector spaces meet in this module and nothing but prose told them
+/// apart:
+///
+/// - **world units** — `x` and `y` in tiles, `z` in the map's own height units,
+///   which is what [`Light::z`], [`Spot::z`], [`crate::impostor::Volume`] and
+///   every position on the wire are stated in. Positions live here.
+/// - **tile space** — this. `z` divided by [`Z_PER_TILE`], so all three axes
+///   share a unit and a *length* means something. Every metric the lighting
+///   model states — a distance, a cosine, a beam's axis, a surface's normal —
+///   lives here, because a falloff measured with `z` in its own units would
+///   reach eleven times as far up as sideways.
+///
+/// The two are one multiplication apart, which is exactly why they were
+/// confusable: `[f32; 3]` from one appeared in the same expression as `[f32; 3]`
+/// from the other — [`flame_points`] adds a tile-space offset to a world-units
+/// centre, [`walk_sun`] turns a tile-space direction into a world-units step —
+/// and the compiler had nothing to say about it. [`TileVec::between`] and
+/// [`TileVec::in_world_units`] are now the only two crossings, so [`Z_PER_TILE`]
+/// appears in a metric expression exactly twice rather than at eight sites that
+/// each had to remember it.
+///
+/// Deliberately *not* an all-purpose vector type. It has the operations the
+/// lighting metric needs and no normaliser: the three places that normalise here
+/// guard a different epsilon each ([`lit_from`] at zero, [`Beam::lights`] and
+/// [`flame_points`] at `1e-6`), and folding them into one would change three
+/// answers to make one type tidier.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct TileVec {
+    /// East, in tiles.
+    pub x: f32,
+    /// South, in tiles.
+    pub y: f32,
+    /// Up, **in tiles** — the map's `z` already divided by [`Z_PER_TILE`].
+    pub z: f32,
+}
+
+impl TileVec {
+    /// A vector already stated in this space: a fixed normal, an axis a caller
+    /// described in tiles per tile.
+    pub const fn new(x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z }
+    }
+
+    /// The offset from one point to another, both in **world units**, expressed
+    /// in tile space.
+    ///
+    /// One of the two crossings, and the direction almost every caller wants:
+    /// what the world holds is positions, and what the lighting model asks about
+    /// is the vector between two of them.
+    pub fn between(from: [f32; 3], to: [f32; 3]) -> Self {
+        Self {
+            x: to[0] - from[0],
+            y: to[1] - from[1],
+            z: (to[2] - from[2]) / Z_PER_TILE,
+        }
+    }
+
+    /// Back to world units, for adding to a position or stepping a ray.
+    ///
+    /// The other crossing. Everything that walks the grid does so in world units,
+    /// because that is what the boxes in it are stated in.
+    pub fn in_world_units(self) -> [f32; 3] {
+        [self.x, self.y, self.z * Z_PER_TILE]
+    }
+
+    /// The three axes as they stand, for the one place a vector leaves Rust: the
+    /// uniform the shader reads. Not a general escape hatch — a caller that
+    /// wants arithmetic wants the methods below.
+    pub fn axes(self) -> [f32; 3] {
+        [self.x, self.y, self.z]
+    }
+
+    /// Its length, in tiles. The reason this space exists.
+    pub fn length(self) -> f32 {
+        (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
+    }
+
+    /// The dot product with another vector of the same space.
+    pub fn dot(self, other: Self) -> f32 {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
+
+    /// The cross product — a vector across both, which is what a disc's two
+    /// spanning directions are built from.
+    pub fn cross(self, other: Self) -> Self {
+        Self {
+            x: self.y * other.z - self.z * other.y,
+            y: self.z * other.x - self.x * other.z,
+            z: self.x * other.y - self.y * other.x,
+        }
+    }
+
+    /// Every axis multiplied by `k`.
+    pub fn scaled(self, k: f32) -> Self {
+        Self {
+            x: self.x * k,
+            y: self.y * k,
+            z: self.z * k,
+        }
+    }
+
+    /// Every axis divided by `k`.
+    ///
+    /// A sibling of [`TileVec::scaled`] and not sugar for it: `a / k` and
+    /// `a * (1 / k)` are two different roundings, and the walks here are compared
+    /// against a shader that writes the division.
+    pub fn divided(self, k: f32) -> Self {
+        Self {
+            x: self.x / k,
+            y: self.y / k,
+            z: self.z / k,
+        }
+    }
+
+    /// Axis by axis with another vector of the same space.
+    pub fn plus(self, other: Self) -> Self {
+        Self {
+            x: self.x + other.x,
+            y: self.y + other.y,
+            z: self.z + other.z,
+        }
+    }
+
+    /// The same vector pointing the other way.
+    pub fn negated(self) -> Self {
+        Self {
+            x: -self.x,
+            y: -self.y,
+            z: -self.z,
+        }
+    }
+}
 
 /// The light a place has before anything burns in it: the sky's share, and the
 /// floor under it.
@@ -1269,40 +1401,30 @@ impl Default for Tuning {
 /// byte's worth of light either way.
 const RAY_CUTOFF: f32 = 0.004;
 
-/// Whether a **lid** is in the way of a ray that runs from `from` to `to` in `z`
-/// across one cell: `1.0` where the ray went through the plane and out the other
-/// side, `0.0` where it stayed on one side of it.
-///
-/// **A lid is a plane and not a slab, and that is the whole of why this is not
-/// the length rule beside it.** A floor is `height 0` in `tiledata.mul` — 4,534
-/// of the 4,647 lids over the block of Britain `artscan`'s `column` example reads
-/// — so its span is zero deep, and a rule that scales what an occluder stops by
-/// how far the ray ran *inside* the span gets zero out of every floor in the
-/// world. That is what lit the storey above a torch through its own floorboards;
-/// see `scene::storey_over_a_torch`.
-///
-/// The crossing test is **strict**, and that is the one thing here that has to be
-/// argued rather than stated. A ray that runs exactly along the top of a lid — a
-/// candle standing on the floor it lights, both at one `z` — has not gone through
-/// anything, and a test that counted a touch would put half a floor's shadow
-/// across every room lit from inside it.
-///
-/// **It answers one ray, and one ray has no penumbra** —
-/// `docs/lighting_rebuild.md` phase 5. It used to take the flame's own `z` and
-/// its size and return the share of the source left on the lit side of the
-/// plane, which is the analytic soft shadow this pass drew instead of casting
-/// one: a single ray reporting what eight would have found. Eight are cast now,
-/// so this reports what its own ray found, and the share is what they disagree
-/// about. `source` and `spread` went with the band.
-///
-/// `blit.wgsl`'s `crosses`, and the two are one formula.
-fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
-    let (under, over) = (entering.min(leaving), entering.max(leaving));
-    match under >= high || over <= low {
-        true => 0.0,
-        false => 1.0,
-    }
-}
+// **`crosses` stood here, and `docs/parity.md`'s P4 step 1 deleted it** — with
+// `blit.wesl`'s copy, which is the only way a formula written in two languages
+// goes away at all.
+//
+// It answered whether a **lid** was in the way of a ray, as a crossing of a plane
+// rather than a passage through a box: `1.0` where the ray went through and out
+// the other side, `0.0` where it stayed on one side. It had to exist because a
+// lid *was* a plane — a floor is `height 0` in `tiledata.mul`, 4,534 of the 4,647
+// lids over the block of Britain `artscan`'s `column` example reads — so the
+// length rule beside it got zero out of every floor in the world, which is what
+// lit the storey above a torch through its own floorboards
+// (`scene::storey_over_a_torch`). Its strictness was the second half: a ray
+// running exactly along the top of a lid — a candle standing on the floor it
+// lights, both at one `z` — has not gone through anything, and counting that
+// touch would have laid half a floor's shadow across every room lit from inside
+// it.
+//
+// `occlusion::Solid::box_of` gives a lid a `z` unit of thickness now, so
+// `ray_vs_solid` is both halves: a ray from the storey above to the storey below
+// genuinely crosses a volume, and a ray in the top face's own plane is excused by
+// `on_the_lit_surface` on the same terms a run of wall is — the neighbouring
+// floor's extent along the fragment's normal ends exactly on the fragment's own
+// plane. `a_floor_stops_a_ray_through_it_and_not_one_along_it` is the same three
+// cases asked of the geometry instead.
 
 // **`STAND_OFF`, `ON_TOP` and `stand_clear` lived here**, and
 // `docs/lighting_rebuild.md` phase 4 is what deleted them. **The bias is zero.**
@@ -1615,7 +1737,9 @@ fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Op
 fn lit_plane(surface: Surface) -> Option<(usize, bool)> {
     match surface {
         Surface::Upright => None,
-        // A lid looks up, and its box is flat in `z`: both corners are the plane.
+        // A lid looks up, and the plane it looks out of is its box's `max.z` —
+        // the surface the art drew, with a `z` unit of the floor's own thickness
+        // hanging below it.
         Surface::Flat => Some((2, true)),
         Surface::Face(face) => {
             let [x, y] = face.outward();
@@ -1919,8 +2043,9 @@ pub enum Surface {
 }
 
 impl Surface {
-    /// Which way this surface looks, in tiles — `x` and `y` across the map and
-    /// `z` in tiles as well, which is the space a flame's offset is stated in.
+    /// Which way this surface looks, in [`TileVec`]'s space — the same space a
+    /// flame's offset is stated in, which is what makes the dot product between
+    /// them a cosine.
     ///
     /// `None` for [`Surface::Upright`], which is a statement about what is *not*
     /// known: a billboard has no side, so every flame that reaches it lights it.
@@ -1930,13 +2055,13 @@ impl Surface {
     /// standing beside a wall lit its top as fully as one standing over it —
     /// reported from the client as two walls "adding up" at a corner, and it is a
     /// bright diamond where a corner's cap is. `docs/lighting.md`, decision 27.
-    pub fn normal(self) -> Option<[f32; 3]> {
+    pub fn normal(self) -> Option<TileVec> {
         match self {
             Self::Upright => None,
-            Self::Flat => Some([0.0, 0.0, 1.0]),
+            Self::Flat => Some(TileVec::new(0.0, 0.0, 1.0)),
             Self::Face(face) => {
                 let [x, y] = face.outward();
-                Some([x, y, 0.0])
+                Some(TileVec::new(x, y, 0.0))
             }
         }
     }
@@ -1981,19 +2106,22 @@ impl Surface {
 /// has no length in it and the term is the same on every surface.
 ///
 /// `blit.wgsl`'s `lit_from`, and the two are one formula.
-fn lit_from(normal: [f32; 3], toward: [f32; 3]) -> f32 {
-    let length = toward.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+fn lit_from(normal: TileVec, toward: TileVec) -> f32 {
+    let length = toward.length();
     // A fragment standing exactly on the flame has no direction to be lit from,
     // and every direction is as good an answer as any other. Full is the one that
     // does not put a black dot in the middle of a pool.
     if length <= 0.0 {
         return 1.0;
     }
-    let cosine = normal
-        .iter()
-        .zip(toward)
-        .map(|(normal, axis)| normal * axis / length)
-        .sum::<f32>();
+    // Spelled out with the division inside each term rather than folded into
+    // [`TileVec::dot`]: `(n·t)/L`, `n·(t/L)` and this are three roundings of one
+    // number, and a cosine landing a bit either side of zero is a lit pixel or a
+    // black one. This is the grouping the shader writes and the one the parity
+    // test compares against, so it stays written out.
+    let cosine = normal.x * toward.x / length
+        + normal.y * toward.y / length
+        + normal.z * toward.z / length;
     cosine.clamp(0.0, 1.0)
 }
 
@@ -2269,12 +2397,11 @@ fn sample_with(
         .at(lighting.occlusion.sky_at(spot.tile.0, spot.tile.1));
     let mut reaches = Vec::with_capacity(lighting.lights.len());
     for (index, light) in lighting.lights.iter().enumerate() {
-        let offset = [
-            light.at.x - spot.at.x,
-            light.at.y - spot.at.y,
-            (light.z - spot.z) / Z_PER_TILE,
-        ];
-        let distance = offset.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+        let offset = TileVec::between(
+            [spot.at.x, spot.at.y, spot.z],
+            [light.at.x, light.at.y, light.z],
+        );
+        let distance = offset.length();
         // **The one thing still asked about the flame's centre, and it is
         // therefore conservative.** This is a broad phase: it decides which
         // flames to walk rays for and is forbidden to change the answer. A
@@ -2370,19 +2497,16 @@ fn sample_with(
 /// that shadowed itself would be black on the side the sun is on. The far end is
 /// *not* skipped — there is no tile there, only a point in the sky.
 fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
-    let horizontal = (sun.toward[0] * sun.toward[0] + sun.toward[1] * sun.toward[1]).sqrt();
+    let horizontal = (sun.toward.x * sun.toward.x + sun.toward.y * sun.toward.y).sqrt();
     if horizontal < 1e-6 {
         // Straight overhead: there is no direction to walk along the ground, and
         // the only thing that could shadow the spot is on its own tile — which is
         // exempt. Nothing stops it.
         return (1.0, None);
     }
-    // One tile of ground a unit, so `z` climbs by the sun's own slope.
-    let step = [
-        sun.toward[0] / horizontal,
-        sun.toward[1] / horizontal,
-        sun.toward[2] / horizontal * Z_PER_TILE,
-    ];
+    // One tile of ground a unit, so `z` climbs by the sun's own slope — and back
+    // into world units, because that is what the grid this walks is stated in.
+    let step = sun.toward.divided(horizontal).in_world_units();
     let mut tiles = MAX_SUN_TILES;
     if let (Some(ceiling), true) = (occlusion.tallest(), step[2] > 1e-6) {
         tiles = tiles.min((ceiling as f32 - spot.z) / step[2]);
@@ -2483,12 +2607,8 @@ const GOLDEN_ANGLE: f32 = 2.399_963_2;
 /// happened. What it shares with the thing under test is the scene, not the
 /// answer.
 pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32, rays: ShadowRays) -> FlamePoints {
-    let toward = [
-        flame[0] - spot.at.x,
-        flame[1] - spot.at.y,
-        (flame[2] - spot.z) / Z_PER_TILE,
-    ];
-    let span = toward.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+    let toward = TileVec::between([spot.at.x, spot.at.y, spot.z], flame);
+    let span = toward.length();
     if span < 1e-6 {
         // The spot is inside the flame. Every point of the sphere is as good as
         // any other and none of them has a direction, so every ray is the one to
@@ -2498,26 +2618,18 @@ pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32, rays: ShadowRays) 
             rays,
         };
     }
-    let normal = toward.map(|axis| axis / span);
+    let normal = toward.divided(span);
     // Two directions across the ray, built the textbook branching way: away from
     // whichever axis the ray is most nearly along, so the cross product is never
     // near zero. Any consistent pair does — the pattern is rotated per fragment
     // anyway — and what matters is only that `blit.wgsl` builds the same one.
-    let aside = match normal[0].abs() > 0.9 {
-        true => [0.0, 1.0, 0.0],
-        false => [1.0, 0.0, 0.0],
+    let aside = match normal.x.abs() > 0.9 {
+        true => TileVec::new(0.0, 1.0, 0.0),
+        false => TileVec::new(1.0, 0.0, 0.0),
     };
-    let cross = |a: [f32; 3], b: [f32; 3]| {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    };
-    let across = cross(aside, normal);
-    let length = across.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
-    let across = across.map(|axis| axis / length);
-    let up = cross(normal, across);
+    let across = aside.cross(normal);
+    let across = across.divided(across.length());
+    let up = normal.cross(across);
 
     let phase = dither([spot.at.x, spot.at.y, spot.z]) * std::f32::consts::TAU;
     // Every slot of the array is filled, and only the first `rays` of them are
@@ -2528,10 +2640,19 @@ pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32, rays: ShadowRays) 
         let angle = phase + GOLDEN_ANGLE * ray as f32;
         let radius = radius * ((ray as f32 + 0.5) / rays.count() as f32).sqrt();
         let (sin, cos) = angle.sin_cos();
+        // The disc is spanned in tile space and the point put back into world
+        // units on the way out — the one line that used to carry `Z_PER_TILE` on
+        // its `z` alone, with an offset and a position in one expression and
+        // nothing but the reader to tell them apart.
+        let offset = across
+            .scaled(cos)
+            .plus(up.scaled(sin))
+            .scaled(radius)
+            .in_world_units();
         [
-            flame[0] + (across[0] * cos + up[0] * sin) * radius,
-            flame[1] + (across[1] * cos + up[1] * sin) * radius,
-            flame[2] + (across[2] * cos + up[2] * sin) * radius * Z_PER_TILE,
+            flame[0] + offset[0],
+            flame[1] + offset[1],
+            flame[2] + offset[2],
         ]
     });
     FlamePoints { points, rays }
@@ -2660,14 +2781,9 @@ fn arrival(
     let mut visible = 0.0;
     let mut worst: Option<(f32, Stopper)> = None;
     for at in flame_points(spot, [light.at.x, light.at.y, light.z], radius, rays) {
-        // From the spot to *this point of the flame*, in the one metric: `z`
-        // divided into tiles, which is what the cosine, the falloff and the beam
-        // are all stated in.
-        let toward = [
-            at[0] - spot.at.x,
-            at[1] - spot.at.y,
-            (at[2] - spot.z) / Z_PER_TILE,
-        ];
+        // From the spot to *this point of the flame*, in the one metric — which
+        // is what the cosine, the falloff and the beam are all stated in.
+        let toward = TileVec::between([spot.at.x, spot.at.y, spot.z], at);
         let cosine = match normal {
             None => 1.0,
             Some(normal) => lit_from(normal, toward),
@@ -2681,13 +2797,13 @@ fn arrival(
         // had to be: the cull below is conservative, so a spot inside the pool by
         // the near edge of the sphere can be past the reach of its far side, and
         // `(1 - d)²` of a negative `1 - d` is a bright ring at the rim.
-        let distance = toward.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+        let distance = toward.length();
         let fall = (1.0 - distance / reach).max(0.0);
         // And which way the flame is pointing at this point of itself. The offset
         // runs from the spot to the flame and a beam's axis runs the other way,
         // so the sign flips here.
         let cone = match light.beam {
-            Some(beam) => beam.lights(toward.map(|axis| -axis)),
+            Some(beam) => beam.lights(toward.negated()),
             None => 1.0,
         };
         delivered += through * cosine * fall * fall * cone;
@@ -2947,43 +3063,32 @@ fn walk_primitives(
         ];
         let opacity = f32::from(stands.opacity) / 255.0;
         let by_surface = match stands.edges {
-            // A **lid**: two questions, and [`ray_vs_solid`] above has already
-            // answered the first. *Did the ray meet this lid at all* is a hit
-            // against the primitive's own box — its footprint and its `z` span
-            // together, so a ray grazing the tile's corner past a tread's real
-            // edge never reaches here. What is left is *did it get from one side
-            // of the lid to the other*, which is [`crosses`] over the segment's
-            // own two ends.
+            // A **lid is a body**, and this arm is the body's — `docs/parity.md`
+            // P4 step 1. A lid used to be a plane in `z` and needed a rule of its
+            // own: [`crosses`] over the segment's two ends, because a hit against
+            // a degenerate box says only that the ray touched the plane, and at a
+            // corner of the footprint it says that at one `t` where every `z`
+            // collapses to one number. A floor leaked one bright point per corner
+            // of the grid; reported at `(1492, 1642)`, `z 28`,
+            // `docs/lighting_rebuild.md` phase 6i, and cured there by a widening
+            // rather than by geometry.
             //
-            // **The ends of the segment, not the ends of the footprint.** A
-            // second `ray_vs_solid` against an infinite-`z` stand-in for the
-            // footprint stood here, so that a lid flat in `z`
-            // (`Solid::box_of`'s `min.z == max.z` for an ordinary floor) would
-            // not narrow both ends of the interval to the one instant the ray
-            // is at its height — which [`crosses`] reads as "never." That cured
-            // the flat lid and left the **corner**: a ray through a corner of
-            // the footprint enters and leaves it at one `t`, so the two `z`
-            // were again one number and every lid meeting at that corner
-            // answered "nothing crossed." A floor leaked one bright point per
-            // corner of the grid while every seam between two of its tiles
-            // held. Reported at `(1492, 1642)`, `z 28`;
-            // `docs/lighting_rebuild.md` phase 6i.
+            // [`crate::occlusion::Solid::box_of`] gives a lid a `z` unit of
+            // thickness now, so [`ray_vs_solid`]'s exact slab test answers it the
+            // way it answers every other box: a `Some` here means the segment
+            // genuinely went from one side of the floor to the other. What
+            // [`crosses`]'s strictness was protecting — a candle standing on the
+            // floor it lights, sending every ray from that floor's own plane —
+            // is protected by the geometry instead: those rays leave the top face
+            // and never enter the box below it, and where the floor is cut into
+            // more than one primitive [`on_the_lit_surface`] above is what says
+            // so, on the same terms it says it for a run of wall.
             //
-            // Over the whole segment nothing is degenerate: the hit is what
-            // says the crossing happened *here* and not a tile away, which
-            // leaves [`crosses`] free to be asked about the ray rather than
-            // about an interval of it. Its strictness is untouched, and is why
-            // this is not simply `opacity` the way a body's is: a candle
-            // standing on the floor it lights sends every ray from that floor's
-            // own plane, both ends on one side of it, and stops nothing.
-            Edges::NONE => opacity * crosses(from[2], to[2], low, high),
-            // A body is a real 3D box and [`ray_vs_solid`] is an exact slab test
-            // — a `Some` here already means the segment genuinely passed through
-            // it over `entered..leaves`, so occlusion is the body's own opacity
+            // A body is a real 3D box: occlusion is the primitive's own opacity
             // outright. No length-based fade, no per-side floor, no widened-corner
             // graze: those existed only to fake a penumbra a point flame does not
             // cast. See `docs/lighting_raymarch.md`'s "hard shadows" decision.
-            Edges::ANY => opacity,
+            Edges::NONE | Edges::ANY => opacity,
             // A panel: a named side, and what stops the ray is whether it crossed
             // the plane *inside* the panel's own drawn extent — [`pierced`], and
             // its hole. There was a gate before it, `edges & !same_run == 0`, and
@@ -3082,15 +3187,11 @@ fn walk_exact(spot: Spot, at: [f32; 3], occlusion: &Occlusion) -> (f32, Option<S
 /// [`walk_sun`], through [`walk_the_record`] instead of [`walk_the_wire`] —
 /// see [`walk_exact`].
 fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper>) {
-    let horizontal = (sun.toward[0] * sun.toward[0] + sun.toward[1] * sun.toward[1]).sqrt();
+    let horizontal = (sun.toward.x * sun.toward.x + sun.toward.y * sun.toward.y).sqrt();
     if horizontal < 1e-6 {
         return (1.0, None);
     }
-    let step = [
-        sun.toward[0] / horizontal,
-        sun.toward[1] / horizontal,
-        sun.toward[2] / horizontal * Z_PER_TILE,
-    ];
+    let step = sun.toward.divided(horizontal).in_world_units();
     let mut tiles = MAX_SUN_TILES;
     if let (Some(ceiling), true) = (occlusion.tallest(), step[2] > 1e-6) {
         tiles = tiles.min((ceiling as f32 - spot.z) / step[2]);
@@ -3324,14 +3425,7 @@ mod tests {
         let spread = |points: FlamePoints| {
             points
                 .iter()
-                .map(|point| {
-                    let away = [
-                        point[0] - flame[0],
-                        point[1] - flame[1],
-                        (point[2] - flame[2]) / Z_PER_TILE,
-                    ];
-                    away.iter().map(|axis| axis * axis).sum::<f32>().sqrt()
-                })
+                .map(|point| TileVec::between(flame, point).length())
                 .fold(0.0_f32, f32::max)
         };
         for rays in [2u32, 4, 8, 16] {
@@ -3387,32 +3481,51 @@ mod tests {
 
     /// A lid stops a ray that goes through it and nothing that runs along it.
     ///
-    /// The three cases [`crosses`] exists for, on a floor of the height a real
-    /// one has — **zero** — which is the number the rule it replaced could not
-    /// answer for. A candle standing on a floor and the floor it lights are at
-    /// one `z`, so the ray between them runs exactly along the plane; a test
-    /// that only asked about the crossing would pass with a rule that laid half
-    /// a floor's shadow across every room lit from inside it.
+    /// **The three cases [`crosses`] existed for, asked of the geometry that
+    /// retired it** — `docs/parity.md`'s P4 step 1. They are the same three and
+    /// they are the point of the whole change: a floor of the height a real one
+    /// has (**zero** in `tiledata.mul`, so `bottom == top`) is a box spanning
+    /// `19..20` now, and [`ray_vs_solid`] answers all three without being told
+    /// anything about lids. A candle standing on a floor and the floor it lights
+    /// are at one `z`, so the ray between them runs exactly along the top face;
+    /// what used to be a strictness argued for in two shading languages is now
+    /// the ordinary fact that a ray outside a box does not enter it.
     ///
-    /// **The flame's own `z` was the fifth argument and it is not one any more**
-    /// — `docs/lighting_rebuild.md` phase 5. A ray crossing a lid used to come
-    /// back with the share of the source left on the lit side of the plane, so a
-    /// flame standing exactly *in* the plane cut the answer to a half. This
-    /// function answers about one ray now, and one ray either went through the
-    /// plane or did not; a flame in the plane of a lid is eight rays, of which
-    /// four cross it, and the half is where it always belonged — in the
-    /// disagreement between rays rather than inside one of them.
+    /// Read with `walk_primitives`'s own `entered == 0.0 && leaves == 0.0` gate,
+    /// which is what turns the grazing case's zero-length touch into "went
+    /// through nothing" for the walk as a whole.
     #[test]
     fn a_floor_stops_a_ray_through_it_and_not_one_along_it() {
-        // A ray from a wall pixel at 25 down to a torch at 5, crossing this
-        // cell between 22 and 18: through the floor at 20.
-        assert_eq!(crosses(22.0, 18.0, 20.0, 20.0), 1.0);
-        // The same floor, and a flame standing on it: the ray runs along the
-        // plane and has gone through nothing.
-        assert_eq!(crosses(20.0, 20.0, 20.0, 20.0), 0.0);
+        let floor = crate::occlusion::Solid::box_of(0, 0, 20, 20, Edges::NONE);
+        assert_eq!(floor.min.z, 19.0, "a lid hangs one z unit below its own top");
+        assert_eq!(floor.max.z, 20.0);
+
+        // A ray from a wall pixel at 25 down to a torch at 5, straight through
+        // the floor at 20: a real interval inside the box.
+        let (entered, leaves) =
+            ray_vs_solid([0.5, 0.5, 25.0], [0.5, 0.5, 5.0], &floor).expect("it goes through");
+        assert!(entered < leaves, "{entered}..{leaves} is a crossing");
+        // The same floor, and a flame standing on it: the ray runs along the top
+        // face for its whole length, which the slab test reports as a hit — the
+        // face is the closed box's own boundary. **What excuses it is
+        // [`on_the_lit_surface`] and not a rule about lids**, on exactly the
+        // terms it excuses a run of wall: the fragment is a point of a floor
+        // whose own `max.z` is this number, the ray does not go below it, so
+        // every primitive whose top is that plane lies wholly behind it.
+        let along = ray_vs_solid([0.25, 0.25, 20.0], [0.75, 0.75, 20.0], &floor);
+        assert_eq!(along, Some((0.0, 1.0)), "it runs along the face, not through");
+        assert!(
+            on_the_lit_surface(
+                Surface::Flat,
+                &crate::occlusion::Solid::box_of(1, 1, 20, 20, Edges::NONE),
+                &floor,
+                [0.5, 0.5, 0.0],
+            ),
+            "the floor beside it shares that top plane and is exempt",
+        );
         // And a ray wholly above it — a lamp on the upper storey lighting the
-        // upper storey — is not touched by the floor under both of them.
-        assert_eq!(crosses(25.0, 23.0, 20.0, 20.0), 0.0);
+        // upper storey — misses the floor under both of them outright.
+        assert_eq!(ray_vs_solid([0.5, 0.5, 25.0], [0.5, 0.5, 23.0], &floor), None);
     }
 
     /// A one-tile-square, fully opaque panel or body, for the small pure
@@ -3712,14 +3825,17 @@ mod tests {
     /// the plane of would still be lit.
     #[test]
     fn lit_from_is_one_towards_the_light_and_zero_away_from_it() {
-        let toward = [1.0_f32, 0.0, 0.0];
-        assert_eq!(lit_from([1.0, 0.0, 0.0], toward), 1.0);
-        assert_eq!(lit_from([-1.0, 0.0, 0.0], toward), 0.0);
-        assert_eq!(lit_from([0.0, 1.0, 0.0], toward), 0.0);
+        let toward = TileVec::new(1.0, 0.0, 0.0);
+        assert_eq!(lit_from(TileVec::new(1.0, 0.0, 0.0), toward), 1.0);
+        assert_eq!(lit_from(TileVec::new(-1.0, 0.0, 0.0), toward), 0.0);
+        assert_eq!(lit_from(TileVec::new(0.0, 1.0, 0.0), toward), 0.0);
         // And the curve between them is the cosine itself, not a straight line
         // between the three: sixty degrees off is a half, which is the one point
         // that tells a cosine from a ramp.
-        let sixty = lit_from([1.0, 0.0, 0.0], [0.5, 0.75_f32.sqrt(), 0.0]);
+        let sixty = lit_from(
+            TileVec::new(1.0, 0.0, 0.0),
+            TileVec::new(0.5, 0.75_f32.sqrt(), 0.0),
+        );
         assert!((sixty - 0.5).abs() < 1e-6, "sixty degrees off came out {sixty}");
     }
 
@@ -3736,11 +3852,11 @@ mod tests {
     fn the_shading_term_is_an_angle_and_not_a_distance() {
         // Well off the axis, so the cosine is neither zero nor one and a bug that
         // clamped would not be able to hide in the saturated end of the curve.
-        let direction = [0.6_f32, 0.8, 0.0];
-        let normal = [1.0_f32, 0.0, 0.0];
-        let near = lit_from(normal, direction.map(|axis| axis * 0.1));
+        let direction = TileVec::new(0.6, 0.8, 0.0);
+        let normal = TileVec::new(1.0, 0.0, 0.0);
+        let near = lit_from(normal, direction.scaled(0.1));
         for scale in [1.0_f32, 3.0, 10.0] {
-            let far = lit_from(normal, direction.map(|axis| axis * scale));
+            let far = lit_from(normal, direction.scaled(scale));
             assert!(
                 (far - near).abs() < 1e-6,
                 "the same direction {scale} times further away answered {far} against {near}"
@@ -3782,23 +3898,19 @@ mod tests {
         // diagonally, and steeply up — the branch in `flame_points`'s own basis is
         // on `normal.x`, so a sweep that never crossed it would test one arm.
         for direction in [
-            [1.0_f32, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-            [0.6, 0.8, 0.0],
-            [0.3, 0.2, 0.93],
+            TileVec::new(1.0, 0.0, 0.0),
+            TileVec::new(0.0, 1.0, 0.0),
+            TileVec::new(0.0, 0.0, 1.0),
+            TileVec::new(0.6, 0.8, 0.0),
+            TileVec::new(0.3, 0.2, 0.93),
         ] {
             for span in [0.2_f32, 1.0, 7.0] {
                 let spot = Spot::at(Vec2::new(100.0, 100.0), 0.0, (100, 100));
-                let flame = [
-                    100.0 + direction[0] * span,
-                    100.0 + direction[1] * span,
-                    direction[2] * span * Z_PER_TILE,
-                ];
-                let centre = span * (direction.iter().map(|a| a * a).sum::<f32>()).sqrt();
+                let offset = direction.scaled(span).in_world_units();
+                let flame = [100.0 + offset[0], 100.0 + offset[1], offset[2]];
+                let centre = span * direction.length();
                 for point in flame_points(spot, flame, FLAME_RADIUS, ShadowRays::DEFAULT) {
-                    let away = [point[0] - 100.0, point[1] - 100.0, point[2] / Z_PER_TILE];
-                    let distance = away.iter().map(|axis| axis * axis).sum::<f32>().sqrt();
+                    let distance = TileVec::between([100.0, 100.0, 0.0], point).length();
                     assert!(
                         distance >= centre - 1e-5,
                         "a sample at {distance} is nearer than the flame's own centre at {centre}: \

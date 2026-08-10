@@ -732,11 +732,15 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     // and the shader tests the intensity: one branch, and a night frame does not
     // pay for a sky it does not have.
     let sun = lighting.sun.unwrap_or(crate::light::Sun {
-        toward: [0.0; 3],
+        toward: crate::light::TileVec::default(),
         color: [0.0; 3],
         intensity: 0.0,
     });
-    for value in sun.toward {
+    // `axes` and not any arithmetic: this is the wire, and the shader reads the
+    // three numbers in tile space exactly as they stand. See
+    // [`crate::light::TileVec`] — the newtype is unwrapped at the serialisation
+    // boundary and nowhere else.
+    for value in sun.toward.axes() {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
     // `f32` and not an integer: the shader compares it against a ray's height,
@@ -755,9 +759,10 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
         // `cos_half > -1`, so an omnidirectional flame costs a comparison and
         // never a dot product. See `crate::light::Beam`.
         let beam = light.beam.unwrap_or(crate::light::Beam {
-            toward: [0.0; 3],
+            toward: crate::light::TileVec::default(),
             cos_half: -1.0,
         });
+        let toward = beam.toward.axes();
         for value in [
             light.at.x,
             light.at.y,
@@ -767,9 +772,9 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
             light.color[1],
             light.color[2],
             light.intensity,
-            beam.toward[0],
-            beam.toward[1],
-            beam.toward[2],
+            toward[0],
+            toward[1],
+            toward[2],
             beam.cos_half,
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());

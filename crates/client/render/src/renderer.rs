@@ -814,7 +814,16 @@ impl SpriteRenderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // **Both stages, and the fragment one is not decoration.**
+                    // The vertex stage turns virtual pixels into clip space with
+                    // it; the fragment stage reads `scale` alone, for the one
+                    // question whose answer is in *real* pixels — how far a
+                    // neighbouring fragment is, which is what `statics.wesl`'s
+                    // `box_edge` steps by. See `docs/silhouettes.md`: the whole
+                    // point of the pair of silhouette layers is that the art's
+                    // quantum is a texel and the box's is a fragment, and the
+                    // ratio between the two is this number.
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,

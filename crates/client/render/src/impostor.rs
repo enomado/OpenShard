@@ -37,7 +37,7 @@
 //! side in terms of the shadow side would mean threading an axis through a
 //! function whose every caller wants a fraction.
 
-use crate::light::Z_PER_TILE;
+use crate::light::{TileVec, Z_PER_TILE};
 
 /// The direction every screen pixel's world line runs in, in world units —
 /// tiles on `x` and `y`, `z` units on `z`.
@@ -290,15 +290,23 @@ impl Meeting {
 /// top.
 ///
 /// **A face with no area is not a face, and that is a rule rather than a tie.**
-/// A lid is flat in `z`, so the faces its `x` and `y` slabs would present are
-/// *lines*: the only face of a lid a ray can meet is its own plane. Ordering the
-/// tie towards `z` used to stand in for that and it only ever covered the exact
-/// tie — a ray that leaves the footprint one rounding *before* it reaches the
-/// plane is not a tie, it is a miss, and it was answered with a side face's
-/// normal. On the isometric grid that is one pixel per tile corner, since the
-/// projection puts a tile's corner on a whole pixel: a lattice of dots over a
-/// roof, each shaded as a wall in the middle of a floor. Reported twice, and it
-/// is the second cause `docs/lighting_rebuild.md` phase 6i's floor entry names.
+/// A box flat in `z` presents `x` and `y` faces that are *lines*: the only face
+/// of it a ray can meet is its own plane. Ordering the tie towards `z` used to
+/// stand in for that and it only ever covered the exact tie — a ray that leaves
+/// the footprint one rounding *before* it reaches the plane is not a tie, it is a
+/// miss, and it was answered with a side face's normal. On the isometric grid
+/// that is one pixel per tile corner, since the projection puts a tile's corner
+/// on a whole pixel: a lattice of dots over a roof, each shaded as a wall in the
+/// middle of a floor. Reported twice, and it is the second cause
+/// `docs/lighting_rebuild.md` phase 6i's floor entry names.
+///
+/// **No box `Solid::box_of` builds is flat any more** — `docs/parity.md`'s P4
+/// step 1 gave a lid a `z` unit of thickness, which is the same defect's other
+/// cure and the one that also answers for the lattice's *neighbours*, a rounding
+/// out on either side. The rule stays because it is a rule about the geometry it
+/// is handed and not about where that geometry came from: a caller may state a
+/// degenerate box (`tests/frame.rs` and this module's own cases do), and a face
+/// of no area is not one whatever authored it.
 pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
     // The `z` face, which every box in this grid has: `Solid::box_of` gives a
     // panel `PANEL_THICKNESS` and everything else a whole tile, so `x` and `y`
@@ -343,13 +351,9 @@ pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
     ];
     // In tiles, which means the `z` term is divided into them: a third of a tile
     // out sideways and a third of a tile out in height are the same miss, and
-    // three `z` units are not.
-    let miss = [
-        at[0] - clamped[0],
-        at[1] - clamped[1],
-        (at[2] - clamped[2]) / Z_PER_TILE,
-    ];
-    let outside = (miss[0] * miss[0] + miss[1] * miss[1] + miss[2] * miss[2]).sqrt();
+    // three `z` units are not. [`crate::light::TileVec`] is that space, and
+    // `between` is the only place the division is written.
+    let outside = TileVec::between(clamped, at).length();
 
     let mut normal = [0.0; 3];
     normal[axis] = 1.0;
@@ -621,6 +625,115 @@ mod tests {
         }
         assert_eq!(seen, [true; 3], "the sweep should reach all three faces");
         assert!(outside > 0.0, "a sweep this wide should also miss the cube");
+    }
+
+    /// **What a ray exactly through the box's own corner is answered with** —
+    /// `docs/parity.md` P5's G4, and it is a *record* rather than an
+    /// endorsement.
+    ///
+    /// Two exits are equal exactly on an edge of the box, and there the rule is
+    /// emergent from the order of three comparisons rather than stated anywhere:
+    /// the loop runs `[1, 0]` and keeps a face only on a strict `<`, so `z` wins
+    /// every tie it is in, and between `x` and `y` the answer is `+Y`. That last
+    /// one is the whole of the window-parity artefact: a ray through a wall's
+    /// **vertical** corner is answered with a face that has no area from here,
+    /// and in a `+X` wall it drew a green line one pixel wide down every tile.
+    ///
+    /// The centring repair took the *primary* samples off that edge — the proof
+    /// is `camera::tests::no_primary_sample_lands_on_a_whole_virtual_pixel` —
+    /// and left this rule exactly as it was, reachable by anything that samples
+    /// a boundary deliberately: `light::sample` at a face's own centre, a probe
+    /// handed whole coordinates, a test. So the rule is written down here, with
+    /// its ties built as exact `f32` equalities rather than approached, and the
+    /// backlog says what it honestly wants to be instead (the face the
+    /// *neighbouring* box continues, which no per-box meet can see).
+    #[test]
+    fn a_ray_through_a_boxs_own_corner_is_answered_by_the_order_of_three_ifs() {
+        let (lo, hi) = cube();
+
+        // **The vertical corner**: the `x` and `y` exits are equal and the lid
+        // is further on. Built by hand and not through `ray_from`, so the tie is
+        // an exact equality of two `f32`s rather than two roundings that nearly
+        // agree — and asserted as the premise, because a case that stopped being
+        // a tie would test nothing while still passing.
+        let from = [100.9, 101.9, 0.0];
+        assert_eq!(
+            hi[0] - from[0],
+            hi[1] - from[1],
+            "the premise: this ray reaches the `x` plane and the `y` plane at one `t`",
+        );
+        let met = meets(from, lo, hi);
+        assert_eq!(
+            met.normal,
+            [0.0, 1.0, 0.0],
+            "a ray through the vertical corner is answered `+Y` — docs/parity.md's window-parity \
+             entry, recorded here and not repaired",
+        );
+
+        // **And it is a knife edge.** One float either side of the tie flips the
+        // answer, which is what "emergent rather than stated" means: the face a
+        // corner pixel gets is decided by a rounding, and half the world's walls
+        // hide the result because their visible face is `+Y` anyway.
+        let nudged = |axis: usize, by: f32| {
+            let mut at = from;
+            at[axis] = by;
+            meets(at, lo, hi).normal
+        };
+        assert_eq!(
+            nudged(0, f32::from_bits(from[0].to_bits() - 1)),
+            [0.0, 1.0, 0.0],
+            "one ulp further from the `x` plane and `y` still exits first",
+        );
+        assert_eq!(
+            nudged(1, f32::from_bits(from[1].to_bits() - 1)),
+            [1.0, 0.0, 0.0],
+            "one ulp further from the `y` plane and the same corner reads `+X`",
+        );
+
+        // **The `z` ties, which the documented rule does cover.** A ray through
+        // the box's own top corner leaves all three slabs at one `t`, and one
+        // through the top edge leaves two — `hi[2] > lo[2]` lets the side faces
+        // be considered at all, and neither is kept without a strict `<`.
+        let corner = [100.5, 101.5, 4.5];
+        assert_eq!((hi[0] - corner[0]) / VIEW[0], (hi[2] - corner[2]) / VIEW[2]);
+        assert_eq!(
+            meets(corner, lo, hi).normal,
+            [0.0, 0.0, 1.0],
+            "ties go to `z`: the lid is the surface a shared edge belongs to",
+        );
+        let edge = [100.0, 101.5, 4.5];
+        assert_eq!((hi[1] - edge[1]) / VIEW[1], (hi[2] - edge[2]) / VIEW[2]);
+        assert!(
+            (hi[0] - edge[0]) / VIEW[0] > (hi[2] - edge[2]) / VIEW[2],
+            "and `x` is not in this tie"
+        );
+        assert_eq!(
+            meets(edge, lo, hi).normal,
+            [0.0, 0.0, 1.0],
+            "the `y`/`z` edge is the lid's too",
+        );
+    }
+
+    /// **A lid has no side faces, and a ray through its corner says so.**
+    ///
+    /// The other half of the rule above, and the one that *is* stated: the two
+    /// side slabs are only considered when `hi[2] > lo[2]`, so a flat box
+    /// answers with its own plane wherever a ray meets it. Without that guard
+    /// the tie order would stand in for it and only for the exact tie — which
+    /// is the lattice of wall-shaded dots over every roof that `meets`'s own doc
+    /// reports.
+    #[test]
+    fn a_lid_answers_with_its_own_plane_at_the_corner_a_body_would_call_a_wall() {
+        let lo = [100.0, 101.0, 7.0];
+        let hi = [101.0, 102.0, 7.0];
+        // The same vertical-corner ray as above, and the same exact tie.
+        let from = [100.9, 101.9, 7.0];
+        assert_eq!(hi[0] - from[0], hi[1] - from[1]);
+        assert_eq!(
+            meets(from, lo, hi).normal,
+            [0.0, 0.0, 1.0],
+            "a face with no area is not a face: a lid's only face is its plane",
+        );
     }
 
     #[test]

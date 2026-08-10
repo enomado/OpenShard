@@ -43,8 +43,11 @@ enum Claim {
     /// base edge measured — `docs/footprints.md`'s S3. The height is still
     /// whatever `tiledata` gives, unmeasured: D1's other half.
     Footprint,
-    /// A lid: a plane, `min.z == max.z`. Measured, but **degenerate** — it has
-    /// no side faces, no interior, and no ray can be inside it.
+    /// A lid: the whole tile across, one `z` unit deep. Measured, and a body
+    /// like every other since `docs/parity.md`'s P4 step 1 — it has side faces
+    /// with area and an interior a ray can be inside of. The one number it does
+    /// not measure is that depth, which is the `z` unit the wire states a height
+    /// in rather than anything the art said.
     Lid,
     /// One or two panels on the edges the silhouette named, each inset by
     /// `PANEL_THICKNESS` — a depth no art states.
@@ -60,7 +63,7 @@ impl Claim {
             Claim::WholeTileUnread => "whole tile, the art would not say",
             Claim::WholeTileClimbable => "whole tile, a climbable that would not fit",
             Claim::Footprint => "a measured footprint, narrower than the whole tile",
-            Claim::Lid => "a lid — measured, but a plane with no thickness",
+            Claim::Lid => "a lid — measured, one z unit deep",
             Claim::Panels => "panels on the named edges, PANEL_THICKNESS deep",
             Claim::Prism => "a fitted prism, one body a tread",
         }

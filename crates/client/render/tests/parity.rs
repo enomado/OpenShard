@@ -74,6 +74,16 @@ const PLACES: [Point; 3] = [
 
 const VIEWPORT: (u32, u32) = (900, 700);
 
+/// The same viewport one pixel wider and one taller — `docs/parity.md` P5's G2.
+///
+/// Every picture this repository has ever compared has been drawn on an even
+/// extent, by unanimous accident and never by a decision, and the client's own
+/// window is whatever the compositor hands it. An odd extent is the input whose
+/// *unanimity* hid a defect a person could see from across the room, so it is
+/// varied here: once as a second case of the route gate below, and once on its
+/// own, where the two extents are compared against each other.
+const ODD_VIEWPORT: (u32, u32) = (901, 701);
+
 fn client_dir() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("OPENSHARD_CLIENT")?))
 }
@@ -101,9 +111,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
 fn synthetic_map_covering(real: &Map, places: &[Point], tuning: &Tuning) -> Map {
     let mut furthest = (0i32, 0i32);
     for &at in places {
-        let bounds = light::lit_tiles(&Camera::new(at, VIEWPORT.0, VIEWPORT.1), tuning);
-        furthest.0 = furthest.0.max(bounds.max_x);
-        furthest.1 = furthest.1.max(bounds.max_y);
+        for viewport in [VIEWPORT, ODD_VIEWPORT] {
+            let bounds = light::lit_tiles(&Camera::new(at, viewport.0, viewport.1), tuning);
+            furthest.0 = furthest.0.max(bounds.max_x);
+            furthest.1 = furthest.1.max(bounds.max_y);
+        }
     }
     // A block of margin past the furthest bound, the same slack
     // `isolated_scene`'s own `blocks` closure leaves.
@@ -157,6 +169,13 @@ struct Drawn {
     ground: GroundRenderer,
     statics: SpriteRenderer,
     mesh: MeshFaceRenderer,
+    /// What this frame was asked for, as [`frame::Inputs::summary`] states it.
+    ///
+    /// Kept because a picture on its own cannot be reproduced and because P5's
+    /// G3 is about this string: two frames that differ by the window's width
+    /// have to *diff* here, or the summary is not naming an input that decides
+    /// the picture.
+    summary: String,
 }
 
 /// Assemble one frame — `map`'s own statics if `items` is empty, `items` if
@@ -233,6 +252,8 @@ fn assemble_and_draw(
         view: View::Lit,
     };
 
+    let summary = inputs.summary();
+
     let frame::Frame {
         lighting,
         ground: ground_quads,
@@ -278,6 +299,7 @@ fn assemble_and_draw(
         ground: ground_pass,
         statics: statics_pass,
         mesh: mesh_pass,
+        summary,
     }
 }
 
@@ -289,6 +311,7 @@ fn dump_all_planes(
     into: &wgpu::Texture,
     drawn: &Drawn,
     dummy_mobiles: &wgpu::Buffer,
+    viewport: (u32, u32),
 ) -> Vec<(View, Vec<u8>)> {
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
     let world_view = drawn.world.create_view(&wgpu::TextureViewDescriptor::default());
@@ -296,8 +319,8 @@ fn dump_all_planes(
     let rect = ViewportRect {
         x: 0,
         y: 0,
-        width: VIEWPORT.0,
-        height: VIEWPORT.1,
+        width: viewport.0,
+        height: viewport.1,
     };
     dump::plane_bytes(
         device,
@@ -351,8 +374,9 @@ fn gate_at(
     synthetic_map: &Map,
     at: Point,
     tool_items: &[GroundItem],
+    viewport: (u32, u32),
 ) -> Vec<(View, usize)> {
-    let camera = Camera::new(at, VIEWPORT.0, VIEWPORT.1);
+    let camera = Camera::new(at, viewport.0, viewport.1);
     // Read off the real map even for the tool's own frame — see this module's
     // own doc for why the synthetic map, carrying no statics, cannot answer it.
     let cutaway = Cutaway::at(real_map, tiledata, at, true);
@@ -388,12 +412,12 @@ fn gate_at(
         at,
     );
 
-    let into = openshard_client_render::blit::world_texture(device, VIEWPORT.0, VIEWPORT.1);
+    let into = openshard_client_render::blit::world_texture(device, viewport.0, viewport.1);
     let mut blit = Blit::new(device, blit::WORLD_FORMAT);
     let dummy_mobiles = blit::dummy_instances(device);
 
-    let client_planes = dump_all_planes(device, queue, &mut blit, &into, &client, &dummy_mobiles);
-    let tool_planes = dump_all_planes(device, queue, &mut blit, &into, &tool, &dummy_mobiles);
+    let client_planes = dump_all_planes(device, queue, &mut blit, &into, &client, &dummy_mobiles, viewport);
+    let tool_planes = dump_all_planes(device, queue, &mut blit, &into, &tool, &dummy_mobiles, viewport);
 
     client_planes
         .into_iter()
@@ -449,8 +473,104 @@ fn the_map_route_and_the_item_route_agree_pixel_for_pixel_at_three_real_places()
     let c = load(dir);
 
     for at in PLACES {
-        let tool_items = pull_map_statics(&c.real_map, &Camera::new(at, VIEWPORT.0, VIEWPORT.1), &c.tuning);
-        let diffs = gate_at(
+        // **Both parities of the viewport at every place** — P5's G2. It doubles
+        // this gate's cost and buys the half G1 cannot reach: G1 is arithmetic on
+        // `Camera` and says nothing about what the *shader* does with the numbers
+        // it is handed, and a commensurability nobody has thought of yet would
+        // show up here rather than there.
+        for viewport in [VIEWPORT, ODD_VIEWPORT] {
+            let tool_items =
+                pull_map_statics(&c.real_map, &Camera::new(at, viewport.0, viewport.1), &c.tuning);
+            let diffs = gate_at(
+                &device,
+                &queue,
+                &c.art,
+                &c.dir,
+                &c.tiledata,
+                &c.animations,
+                &c.hue_ramp,
+                &c.tuning,
+                &c.real_map,
+                &c.synthetic_map,
+                at,
+                &tool_items,
+                viewport,
+            );
+            for (view, count) in &diffs {
+                assert_eq!(
+                    *count,
+                    0,
+                    "at {at:?}, {}x{}: the {} plane differs in {count} of {} pixels between the map \
+                     route and the item route — D6 says an input that differs is set the same or the \
+                     case is not gated",
+                    viewport.0,
+                    viewport.1,
+                    view.name(),
+                    viewport.0 * viewport.1,
+                );
+            }
+            eprintln!(
+                "{at:?} at {}x{}: {} items, every plane byte-identical",
+                viewport.0,
+                viewport.1,
+                tool_items.len(),
+            );
+        }
+    }
+}
+
+/// **A frame drawn at an odd extent is the even one with a column added, not the
+/// even one shifted half a pixel** — `docs/parity.md` P5's G2, and the gate the
+/// window-parity repair itself is held by.
+///
+/// Everything upstream of the shader's last line is *identical* between a
+/// `900x700` camera and a `901x701` one, and by integer division rather than by
+/// coincidence: `render_width() / 2` is 450 for both, so the eye, the projection's
+/// origin, [`Camera::visible_tiles`] and therefore every collected static, every
+/// atlas and the whole occlusion grid come out the same. Both premises are
+/// asserted below rather than described, because the comparison is only about
+/// the one line if they hold.
+///
+/// What is left is `floor(viewport.size * 0.5)`. Floored, both frames centre the
+/// world on real pixel 450 and the odd one is the even one with a column and a
+/// row of extra world on its far edges. Unfloored, the odd frame centres on
+/// 450.5 — half a real pixel across the whole picture, which is what puts a
+/// primary sample on a box's own vertical corner and draws the green line down
+/// every `+X` wall.
+///
+/// **Removing the `floor` from any one of `ground.wesl`, `statics.wesl` or
+/// `mesh_face.wesl` turns this red, and it names which plane.** That is P5's own
+/// "done when", and it is what the three shaders had no gate for: every other
+/// picture test in this repository draws at an even extent, where `floor` of a
+/// whole number is that number and the mutation is invisible.
+#[test]
+fn a_frame_at_an_odd_extent_is_the_even_one_with_a_column_added() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let c = load(dir);
+    let at = PLACES[0];
+
+    let even_camera = Camera::new(at, VIEWPORT.0, VIEWPORT.1);
+    let odd_camera = Camera::new(at, ODD_VIEWPORT.0, ODD_VIEWPORT.1);
+    // The premises. Nothing but the target's own size may differ, or a
+    // difference below would be about which statics were collected.
+    assert_eq!(
+        even_camera.visible_tiles(),
+        odd_camera.visible_tiles(),
+        "one pixel of extent moved the tiles this frame is built from, so the comparison below \
+         would be about geometry rather than about centring",
+    );
+    assert_eq!(
+        even_camera.projection().origin,
+        odd_camera.projection().origin,
+        "one pixel of extent moved the projection's origin",
+    );
+    assert_eq!(even_camera.projection().scale, odd_camera.projection().scale);
+
+    let cutaway = Cutaway::at(&c.real_map, &c.tiledata, at, true);
+    let draw = |camera: &Camera| {
+        assemble_and_draw(
             &device,
             &queue,
             &c.art,
@@ -460,22 +580,82 @@ fn the_map_route_and_the_item_route_agree_pixel_for_pixel_at_three_real_places()
             &c.hue_ramp,
             &c.tuning,
             &c.real_map,
-            &c.synthetic_map,
+            &[],
+            camera,
+            &cutaway,
             at,
-            &tool_items,
-        );
-        for (view, count) in &diffs {
-            assert_eq!(
-                *count,
-                0,
-                "at {at:?}: the {} plane differs in {count} of {} pixels between the map route and the \
-                 item route — D6 says an input that differs is set the same or the case is not gated",
-                view.name(),
-                VIEWPORT.0 * VIEWPORT.1,
-            );
+        )
+    };
+    let even = draw(&even_camera);
+    let odd = draw(&odd_camera);
+
+    // **G3, in the one place it can be checked.** Two frames whose only
+    // difference is the window's width by one pixel used to diff in no line of
+    // `Inputs::summary` at all — which is precisely the failure the summary was
+    // built to end, on the input that decided the picture.
+    assert_ne!(
+        even.summary, odd.summary,
+        "the summary says nothing about an extent's parity, so two dumps a pixel apart read as \
+         one frame",
+    );
+    assert!(
+        odd.summary.contains("(odd by odd)") && even.summary.contains("(even by even)"),
+        "the summary names the parity as a field a person scans for:\n{}\n{}",
+        even.summary,
+        odd.summary,
+    );
+
+    let mut blit = Blit::new(&device, blit::WORLD_FORMAT);
+    let dummy_mobiles = blit::dummy_instances(&device);
+    let even_into = blit::world_texture(&device, VIEWPORT.0, VIEWPORT.1);
+    let odd_into = blit::world_texture(&device, ODD_VIEWPORT.0, ODD_VIEWPORT.1);
+    let even_planes = dump_all_planes(
+        &device,
+        &queue,
+        &mut blit,
+        &even_into,
+        &even,
+        &dummy_mobiles,
+        VIEWPORT,
+    );
+    let odd_planes = dump_all_planes(
+        &device,
+        &queue,
+        &mut blit,
+        &odd_into,
+        &odd,
+        &dummy_mobiles,
+        ODD_VIEWPORT,
+    );
+
+    // The odd picture's own overlap with the even one: rows of the even frame's
+    // width, taken off the corner the two share.
+    let overlapping = |pixels: &[u8]| {
+        let mut out = Vec::with_capacity((VIEWPORT.0 * VIEWPORT.1 * 4) as usize);
+        for row in 0..VIEWPORT.1 {
+            let from = (row * ODD_VIEWPORT.0 * 4) as usize;
+            out.extend_from_slice(&pixels[from..from + (VIEWPORT.0 * 4) as usize]);
         }
-        eprintln!("{at:?}: {} items, every plane byte-identical", tool_items.len());
+        out
+    };
+
+    for ((view, even_bytes), (_, odd_bytes)) in even_planes.into_iter().zip(odd_planes) {
+        let differing = differing_pixels(&even_bytes, &overlapping(&odd_bytes));
+        assert_eq!(
+            differing,
+            0,
+            "the {} plane differs in {differing} of {} shared pixels between a {}x{} frame and a \
+             {}x{} one — the world is centred differently at the two parities, which is \
+             docs/parity.md's window-parity entry",
+            view.name(),
+            VIEWPORT.0 * VIEWPORT.1,
+            VIEWPORT.0,
+            VIEWPORT.1,
+            ODD_VIEWPORT.0,
+            ODD_VIEWPORT.1,
+        );
     }
+    eprintln!("{at:?}: every plane of {VIEWPORT:?} is {ODD_VIEWPORT:?}'s own corner, byte for byte");
 }
 
 /// **The positive control.** D6 is not optional and neither is this: a gate
@@ -505,6 +685,7 @@ fn the_gate_is_red_when_the_tool_forgets_the_maps_statics() {
         at,
         // The mutation: the tool's own statics, dropped rather than pulled.
         &[],
+        VIEWPORT,
     );
     let total: usize = diffs.iter().map(|(_, count)| count).sum();
     assert!(

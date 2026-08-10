@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
-use openshard_client_render::camera::Camera;
+use openshard_client_render::camera::{Camera, Zoom};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::frame::{self, Impostor};
@@ -102,13 +102,17 @@ struct Drawn {
 /// with a flame in hand: the client's values, because a fixture that quietly
 /// chose easier ones is the coincidence `docs/parity.md` is about.
 ///
-/// `draw` is the one input a caller here varies: everything, or the subset a
-/// person has ticked in the World tab. See [`frame::Draw`].
+/// `draw` and `zoom` are the two inputs a caller here varies. `draw` is
+/// everything, or the subset a person has ticked in the World tab
+/// ([`frame::Draw`]); `zoom` is the magnification, which every question about
+/// `docs/silhouettes.md` needs because the two edges it is about are the same
+/// line at `1:1` and are not at `4x`.
 fn draw_britain(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     dir: &std::path::Path,
     draw: frame::Draw,
+    zoom: openshard_client_render::camera::Zoom,
 ) -> Drawn {
     let map = Map::load_facet(dir, 0).expect("Felucca");
     let art = Art::open(dir).expect("artLegacyMUL.uop");
@@ -116,7 +120,11 @@ fn draw_britain(
     let animdata = AnimData::load(dir).expect("animdata.mul");
     let animations = StaticAnimations::build(&animdata, &tiledata);
 
-    let camera = Camera::new(AT, VIEWPORT.0, VIEWPORT.1);
+    let mut camera = Camera::new(AT, VIEWPORT.0, VIEWPORT.1);
+    // About the middle, so the place the frame is *of* stays the place it is of
+    // at every rung — `Camera::zoom_about` holds what is under the cursor fixed,
+    // and the corner would slide the house out of a magnified frame.
+    camera.zoom_about(VIEWPORT.0 as i32 / 2, VIEWPORT.1 as i32 / 2, zoom);
     let cutaway = Cutaway::at(&map, &tiledata, AT, true);
 
     let land_wanted = ground::visible_graphics(&map, &camera);
@@ -307,7 +315,7 @@ fn a_frame_dumps_one_picture_per_view_at_the_size_asked_for() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING);
+    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -389,7 +397,7 @@ fn a_readback_off_the_corner_is_the_same_pixels_shifted() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING);
+    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -473,7 +481,7 @@ fn each_normal_layer_holds_its_own_category_and_nothing_else() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING);
+    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -673,6 +681,227 @@ fn each_normal_layer_holds_its_own_category_and_nothing_else() {
     assert!(counted[2] > 0, "no static pixel at Britain's house corner");
 }
 
+/// The five shades the two silhouette layers are allowed to be, as the floats
+/// `blit.wesl` states them — `debug_color`'s own branch, and the vocabulary this
+/// pair of views promises to draw and nothing else.
+const SILHOUETTE_SHADES: [(&str, [f32; 3]); 5] = [
+    ("nothing", [0.0, 0.0, 0.0]),
+    ("inside", [0.05, 0.05, 0.06]),
+    ("the other layer", [0.16, 0.16, 0.20]),
+    ("this layer, art", [1.00, 0.35, 0.10]),
+    ("this layer, box", [0.25, 0.55, 1.00]),
+];
+
+/// White, which is *both* layers and is the same colour in both views.
+const BOTH: [f32; 3] = [1.0, 1.0, 1.0];
+
+/// Which of [`SILHOUETTE_SHADES`] (or [`BOTH`]) a pixel is, by name.
+///
+/// A colour no branch spells is a failure and never a sixth bucket: it would
+/// mean the view draws something this test does not know the rule for, and every
+/// count below would then be quietly skipping those pixels.
+fn shade_of(pixel: &[u8]) -> &'static str {
+    let is = |want: [f32; 3]| (0..3).all(|c| (f32::from(pixel[c]) - want[c] * 255.0).abs() <= 1.0);
+    if is(BOTH) {
+        return "both";
+    }
+    for (name, shade) in SILHOUETTE_SHADES {
+        if is(shade) {
+            return name;
+        }
+    }
+    panic!("a silhouette layer drew a colour no branch of it spells: {pixel:?}");
+}
+
+/// **The two edges a frame draws, and they are two different lines.**
+///
+/// `docs/silhouettes.md` phase Z1's own "done when". The plan set out to
+/// attribute a silhouette between two bounds and the pair of views answers
+/// something sharper: since a box miss stopped being discarded, the picture's
+/// outline is the art's alone and the box's line is a seam *inside* it. This
+/// holds the pair to the partition it claims.
+///
+/// Five things, and none of them is satisfied by an empty frame:
+///
+/// - every pixel of either view is one of the six colours the branch spells;
+/// - the two views agree, pixel for pixel, about which layer a fragment is in —
+///   they are one record read twice, so a disagreement is the bits not surviving
+///   the trip through the id plane;
+/// - a **mobile** is never in the box layer. It is a billboard by construction,
+///   with no volume for a ray to run out of;
+/// - a fragment in the box layer is always **measured geometry** — it met a box,
+///   so [`View::NormalGeometry`] holds it. This is the control that a rule made
+///   to answer wrongly fails: a `box_edge` that had quietly been reading the
+///   art's alpha would light up over the unmeasured remainder of a sprite,
+///   which is precisely the half [`View::NormalSprites`] holds;
+/// - land is in neither, and background is black.
+///
+/// The counts are printed rather than asserted against a number. They are the
+/// measurement Z2 asks for, and a literal here would be a snapshot of one
+/// afternoon's map data pretending to be an invariant.
+///
+/// **At `1:1`, and that is a limitation rather than a choice.** The two edges
+/// are two *rules* at every magnification and two different *widths* only above
+/// it, so a picture at `4x` is what the plan's root claim wants — and a frame at
+/// `4x` cannot be assembled today: the camera is right (`render 225x175`,
+/// `scale 4`) and `frame::assemble` collects 595 quads of land and **not one
+/// static**. That is its own defect, recorded in `docs/silhouettes.md`'s
+/// backlog, and the width half of Z1 waits on it.
+#[test]
+fn the_two_silhouette_layers_are_two_lines_and_a_frame_agrees_about_both() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
+    let format = blit::WORLD_FORMAT;
+    let into = dump_target(&device, format);
+    let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
+    let world_view = drawn.world.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer_views = drawn.gbuffer.views();
+    let mut blit = Blit::new(&device, format);
+    let dummy_mobiles = blit::dummy_instances(&device);
+    let rect = ViewportRect {
+        x: 0,
+        y: 0,
+        width: VIEWPORT.0,
+        height: VIEWPORT.1,
+    };
+
+    let mut plane_of = |view: View| {
+        let mut lighting = drawn.lighting.clone();
+        lighting.view = view;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("silhouette layer"),
+        });
+        blit.render(
+            &device,
+            &queue,
+            &mut encoder,
+            blit::Frame {
+                target: &into_view,
+                world: &world_view,
+                gbuffer: &gbuffer_views,
+                face_instances: drawn.statics.instances_buffer(),
+                mobile_instances: &dummy_mobiles,
+                mesh_instances: drawn.mesh.rows_buffer(),
+                ground_instances: drawn.ground.instances_buffer(),
+                zoom: Zoom::ONE,
+                rect,
+            },
+            &lighting,
+        );
+        queue.submit([encoder.finish()]);
+        dump::read_rect(&device, &queue, &into, rect)
+    };
+    let art = plane_of(View::SilhouetteArt);
+    let boxes = plane_of(View::SilhouetteBox);
+    let kinds = plane_of(View::Kind);
+    let geometry = plane_of(View::NormalGeometry);
+
+    // The kind view's own four colours — `debug_color`'s `VIEW_KIND` branch,
+    // stated the same way `each_normal_layer_holds_its_own_category_and_nothing_else`
+    // states them.
+    const NOTHING: [f32; 3] = [0.0, 0.0, 0.0];
+    const LAND: [f32; 3] = [0.20, 0.65, 0.30];
+    const STATIC: [f32; 3] = [0.25, 0.45, 1.00];
+    const MOBILE: [f32; 3] = [1.00, 0.40, 0.15];
+    let is = |pixel: &[u8], want: [f32; 3]| {
+        (0..3).all(|channel| (f32::from(pixel[channel]) - want[channel] * 255.0).abs() <= 1.0)
+    };
+
+    // Counted per layer rather than per pixel: how many fragments the art's own
+    // texel ended, how many the boxes ran out under, and how many are both.
+    let (mut only_art, mut only_box, mut both, mut statics_seen, mut mobiles_seen) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
+    for pixel in 0..(rect.width * rect.height) as usize {
+        let at = pixel * 4;
+        let (x, y) = (pixel as u32 % rect.width, pixel as u32 / rect.width);
+        let in_art = shade_of(&art[at..at + 3]);
+        let in_box = shade_of(&boxes[at..at + 3]);
+
+        // **One record read twice.** Each view draws its own layer bright and the
+        // other dim, so the two pictures are a transposition of each other — and
+        // a pair that disagreed would mean the bits are not surviving the id
+        // plane, which no single picture could show.
+        let agreed = matches!(
+            (in_art, in_box),
+            ("both", "both")
+                | ("inside", "inside")
+                | ("nothing", "nothing")
+                | ("this layer, art", "the other layer")
+                | ("the other layer", "this layer, box")
+        );
+        assert!(
+            agreed,
+            "({x}, {y}) is '{in_art}' in the art layer and '{in_box}' in the box layer: \
+             the two views are not reading one record",
+        );
+
+        match in_art {
+            "this layer, art" => only_art += 1,
+            "the other layer" => only_box += 1,
+            "both" => both += 1,
+            _ => {}
+        }
+
+        // **The rule made to answer wrongly, and the plane that shows it.** A
+        // fragment in the box layer met a box, so its normal is a measured face
+        // and `NormalGeometry` holds it — black there is the mark of "not in this
+        // layer", and a normal cannot reach black (`(-1, -1, -1)` is not a unit
+        // vector). A `box_edge` reading the art's alpha instead would mark the
+        // unmeasured remainder of a sprite too, and every one of those pixels is
+        // black here.
+        if in_box == "this layer, box" || in_box == "both" {
+            assert!(
+                geometry[at..at + 3] != [0, 0, 0],
+                "({x}, {y}) is in the box layer and carries no measured normal: the box edge is \
+                 being marked somewhere no box was met",
+            );
+        }
+
+        if is(&kinds[at..at + 3], NOTHING) {
+            assert_eq!(
+                in_art, "nothing",
+                "({x}, {y}) is background and stands in a layer"
+            );
+        } else if is(&kinds[at..at + 3], LAND) {
+            assert_eq!(
+                in_art, "inside",
+                "({x}, {y}) is land, which has no silhouette of its own, and it is on an edge",
+            );
+        } else if is(&kinds[at..at + 3], STATIC) {
+            statics_seen += 1;
+        } else if is(&kinds[at..at + 3], MOBILE) {
+            mobiles_seen += 1;
+            // **The positive control.** A billboard has no volume for a ray to
+            // run out of, so a mobile can carry the art bit and never the box
+            // one. A box bit here would mean the mark is coming from something
+            // other than the boxes this instance stands as.
+            assert!(
+                in_box != "this layer, box" && in_box != "both",
+                "({x}, {y}) is a mobile and stands in the box layer, which has no box to run out",
+            );
+        }
+    }
+
+    println!(
+        "silhouettes at 1:1, Britain {AT:?}: art only {only_art}, box only {only_box}, \
+         both {both}, of {statics_seen} static pixels and {mobiles_seen} mobile ones",
+    );
+    // **And the frame was worth asking.** Every assertion above passes over a
+    // viewport of background, and the two counts are the plan's own measurement:
+    // a zero in either is a layer that was never looked at.
+    assert!(statics_seen > 0, "no static pixel at Britain's house corner");
+    assert!(
+        only_art > 0,
+        "no fragment in the art layer, so its half of the pair said nothing"
+    );
+    assert!(
+        only_box > 0,
+        "no fragment in the box layer, so its half of the pair said nothing"
+    );
+}
+
 /// **Ticking a producer off narrows the drawing and leaves the lighting whole.**
 ///
 /// `frame::Draw` exists because a G-buffer holds one answer per pixel: the way to
@@ -692,7 +921,7 @@ fn ticking_a_producer_off_narrows_the_drawing_and_not_the_light() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let whole = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING);
+    let whole = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
     let land_only = draw_britain(
         &device,
         &queue,
@@ -701,6 +930,7 @@ fn ticking_a_producer_off_narrows_the_drawing_and_not_the_light() {
             statics: false,
             ..frame::Draw::EVERYTHING
         },
+        Zoom::ONE,
     );
 
     assert!(

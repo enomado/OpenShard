@@ -13,7 +13,7 @@
 
 import package::place_format::{
     KIND_NOTHING, KIND_LAND, KIND_STATIC,
-    ids_kind, ids_stance, ids_id,
+    ids_kind, ids_stance, ids_id, ids_edges, IDS_EDGE_ART, IDS_EDGE_BOX,
     STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
     STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
 };
@@ -241,6 +241,8 @@ const VIEW_NORMAL: u32 = 11u;
 const VIEW_SOLID: u32 = 12u;
 const VIEW_NORMAL_GEOMETRY: u32 = 13u;
 const VIEW_NORMAL_SPRITES: u32 = 14u;
+const VIEW_SILHOUETTE_ART: u32 = 15u;
+const VIEW_SILHOUETTE_BOX: u32 = 16u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
 
@@ -509,33 +511,27 @@ const RAY_TANGENT_TOLERANCE: f32 = 1.0e-6;
 // it was handed, at that crossing's own midpoint. So what it added was the band,
 // and the band is eight rays now.
 
-// Whether a **lid** is in the way of a ray that runs from `from` to `to` in `z`
-// across one cell: 1 where the ray went through the plane and out the other side,
-// 0 where it stayed on one side of it.
+// **`crosses` lived here, and `docs/parity.md`'s P4 step 1 deleted it** — with
+// `light::crosses`, its twin, which is the only way a formula in two languages
+// goes away at all.
 //
-// **A lid is a plane and not a slab**, which is why this is not the length rule
-// beside it. A floor is `height 0` in `tiledata.mul` — 4,534 of the 4,647 lids
-// over the block of Britain `artscan`'s `column` example reads — so its span is
-// zero deep, and scaling what it stops by how far the ray ran *inside* that span
-// gets zero out of every floor in the world. That is what lit the storey above a
-// torch through its own floorboards; see `scene::storey_over_a_torch`.
+// It answered whether a **lid** was in the way of a ray, as a crossing of a plane
+// rather than a passage through a box: 1 where the ray went through and out the
+// other side, 0 where it stayed on one side. It had to exist because a lid *was*
+// a plane — a floor is `height 0` in `tiledata.mul`, 4,534 of the 4,647 lids over
+// the block of Britain `artscan`'s `column` example reads — so the length rule
+// beside it got zero out of every floor in the world, which is what lit the
+// storey above a torch through its own floorboards (`scene::storey_over_a_torch`).
+// Its strictness was the second half: a ray running exactly along the top of a lid
+// — a candle standing on the floor it lights — has not gone through anything, and
+// counting that touch would have laid half a floor's shadow across every room lit
+// from inside it.
 //
-// The crossing test is **strict**: a ray running exactly along the top of a lid —
-// a candle standing on the floor it lights — has not gone through anything, and
-// counting a touch would lay half a floor's shadow across every room lit from
-// inside it.
-//
-// **It answers one ray, and one ray has no penumbra** — phase 5. `source` and
-// `spread` were the flame's own `z` and size, and what they bought was the share
-// of the source left on the lit side of the plane: an analytic soft shadow, cast
-// by a single ray on behalf of the eight that are cast now.
-//
-// `light::crosses`, and the two are one formula.
-fn crosses(entering: f32, leaving: f32, low: f32, high: f32) -> f32 {
-    let under = min(entering, leaving);
-    let over = max(entering, leaving);
-    return select(1.0, 0.0, under >= high || over <= low);
-}
+// A lid is a box a `z` unit deep now (`occlusion::Solid::box_of`), so both halves
+// are `ray_vs_solid`'s: a ray that leaves the top face never enters the box below
+// it, and one that goes from the storey above to the storey below genuinely
+// crosses a volume. A plane's worth of special pleading in two shading languages
+// is what giving a floor real bounds bought.
 
 // **`STAND_OFF` and `ON_TOP` lived here**, and `docs/lighting_rebuild.md` phase 4
 // deleted them: **the bias is zero.** They were two steps of the seven-bit
@@ -654,7 +650,9 @@ fn own_side(stance: u32) -> u32 {
 // side. `light::lit_plane`, and the same absence.
 fn lit_plane(stance: u32) -> vec2<f32> {
     switch stance {
-        // A lid looks up, and its box is flat in `z`: both corners are the plane.
+        // A lid looks up, and the plane it looks out of is its box's `hi` corner
+        // — the surface the art drew, with a `z` unit of the floor's own
+        // thickness hanging below it.
         case STANCE_FLAT: { return vec2<f32>(2.0, 1.0); }
         case STANCE_FACE_NORTH: { return vec2<f32>(1.0, -1.0); }
         case STANCE_FACE_SOUTH: { return vec2<f32>(1.0, 1.0); }
@@ -1070,44 +1068,28 @@ fn primitive_stopped(
     // ask whether the ray went through a window.
     let middle = (hit.entered + hit.leaves) * 0.5;
     let opacity = f32(stands.opacity) / 255.0;
-    if edges == 0u {
-        // A **lid** — a floor, a rug, a plank. Two questions, and the first of
-        // them is already answered: *did the ray meet this lid at all*, which is
-        // `hit` against the primitive's own box, footprint and `z` span
-        // together. What is left is the second — *did it get from one side of
-        // the lid to the other* — and that is `crosses` over the segment's own
-        // two ends.
-        //
-        // **The ends of the segment, not the ends of the footprint.** A second
-        // `ray_vs_solid` against an infinite-`z` stand-in for the footprint
-        // stood here and handed `crosses` the ray's `z` where it entered and
-        // left the lid's own horizontal extent. That interval is empty for a ray
-        // through a **corner** of the footprint — it enters and leaves at one
-        // `t` — so both `z` were one number and `crosses` honestly reported that
-        // nothing had crossed anything over an interval of no length. All four
-        // lids meeting at a tile corner answered alike, and a floor leaked one
-        // bright point per corner of the grid while its seams held. Reported at
-        // `(1492, 1642)`, `z 28`; `docs/lighting_rebuild.md` phase 6i.
-        //
-        // Over the whole segment there is no degenerate case: `hit` is what says
-        // the crossing happened *here* rather than a tile away, so `crosses` is
-        // free to be asked about the ray rather than about an interval of it.
-        // The strictness it exists for is untouched and is the reason this is not
-        // simply `opacity`: a candle standing on the floor it lights sends every
-        // ray from that floor's own plane, so both ends are on one side of it and
-        // nothing is stopped. `light::walk_primitives`'s `Edges::NONE` arm is the
-        // twin, and the same shape.
-        return opacity * crosses(lit.z, lit.z + delta.z, low, high);
-    }
-    if edges == EDGE_MASK {
+    if edges == 0u || edges == EDGE_MASK {
         // A **body** — a whole tile that stands up and whose art would
-        // not say which way. `ray_vs_solid` is an exact slab test, so a
-        // hit already means the segment genuinely passed through the
-        // box over `hit.entered..hit.leaves`: occlusion is the body's
-        // own opacity outright. `light::walk_primitives`'s own mirror; see
+        // not say which way, **or a lid**: a floor, a rug, a plank, which is a
+        // body one `z` unit deep and no longer a rule of its own.
+        // `ray_vs_solid` is an exact slab test, so a hit already means the
+        // segment genuinely passed through the box over
+        // `hit.entered..hit.leaves`: occlusion is the primitive's own opacity
+        // outright. `light::walk_primitives`'s own mirror; see
         // `docs/lighting_raymarch.md`'s "hard shadows" decision for why the
         // length-and-pierce grading this used to do (and the widened-corner
         // graze feeding it) are both gone.
+        //
+        // **A lid took `crosses(lit.z, lit.z + delta.z, low, high)` here**, and
+        // `docs/parity.md`'s P4 step 1 is what retired it: a lid was a plane in
+        // `z`, so a hit said only that the ray touched it, and at a corner of the
+        // footprint it said so at one `t` where both ends of the `z` interval
+        // were one number — a floor leaking one bright point per corner of the
+        // grid, reported at `(1492, 1642)`, `z 28`. `Solid::box_of` gives a lid a
+        // `z` unit of thickness now, and the strictness `crosses` was protecting
+        // — a candle standing on the floor it lights, both ends of every ray on
+        // that floor's own plane — is what the geometry says by itself: those
+        // rays leave the top face and never enter the box beneath it.
         return opacity;
     }
     // A **panel** — a wall standing on one side of its tile. A
@@ -1477,6 +1459,10 @@ fn debug_color(
     // Which solid of the grid the fragment is a point of — `SOLID_NOBODY` for a
     // point of none. See `VIEW_SOLID`.
     mine: u32,
+    // Which of the two masks ended this fragment's outline, as the id word's own
+    // two top bits carry it — `place_format.wesl`'s `ids_edges`. See the pair of
+    // silhouette views below.
+    edges: u32,
     kind: u32,
     tile: vec2<f32>,
     at: vec3<f32>,
@@ -1567,6 +1553,61 @@ fn debug_color(
             return normal * 0.5 + vec3<f32>(0.5);
         }
         return vec3<f32>(0.0);
+    }
+    if view == VIEW_SILHOUETTE_ART || view == VIEW_SILHOUETTE_BOX {
+        // **The two edges a magnified frame draws, each in its own picture** —
+        // `docs/silhouettes.md`, and the pair is one instrument rather than two
+        // views that happen to sit next to each other.
+        //
+        // The art's alpha steps once a *texel*, which is `Projection::scale` real
+        // pixels square and cannot be finer; the impostor box's rim is decided per
+        // *fragment*, so it steps once a real pixel. Neither is a defect. What a
+        // person sees is the two of them adjacent — a crisp line against a
+        // four-pixel stair on the same wall — and until these two views there was
+        // no picture that said which line was which.
+        //
+        // **They are not two halves of one outline**, and this pair is how that
+        // was established rather than assumed. Since a box miss stopped being
+        // discarded, the picture's silhouette is entirely the art's; the box bit
+        // marks a seam *inside* it, between the part of a sprite something was
+        // measured for and the part carrying on unmeasured. Both are still lines
+        // on the screen at two resolutions, which is why both are still drawn.
+        //
+        // **White is both**, and it is the same white in both views on purpose:
+        // the seam reaching the outline is where the two resolutions genuinely
+        // meet along one line, and a rule that folded such a fragment into one
+        // layer would delete the subject to satisfy a partition.
+        //
+        // The other mask is drawn dim rather than black. A line is read by
+        // comparing it against the one beside it, and a layer that blacked the
+        // other one out would leave a person matching two pictures by eye across
+        // a keypress. Dim enough that nothing in it can be mistaken for this
+        // layer's own answer, present enough to locate it.
+        //
+        // Only `statics.wesl` stamps these bits, so the ground and a mesh face
+        // read as interior — which is honest: a land patch has no silhouette of
+        // its own, and a mesh face's whole outline is geometry. See
+        // `place_format.wesl`.
+        let art = (edges & IDS_EDGE_ART) != 0u;
+        let box_ = (edges & IDS_EDGE_BOX) != 0u;
+        if art && box_ {
+            return vec3<f32>(1.0);
+        }
+        let mine_ = select(box_, art, view == VIEW_SILHOUETTE_ART);
+        if mine_ {
+            // Orange for the art's own quantum, blue for the fragment grid's, so
+            // that a person flicking between the two views is comparing two
+            // colours and not two greys.
+            return select(vec3<f32>(0.25, 0.55, 1.00), vec3<f32>(1.00, 0.35, 0.10), view == VIEW_SILHOUETTE_ART);
+        }
+        if art || box_ {
+            return vec3<f32>(0.16, 0.16, 0.20);
+        }
+        // Drawn, and on neither outline: the inside of a sprite, the ground, a
+        // mesh face. Dark rather than black so that the frame's own extent is
+        // still visible under the two outlines — a silhouette with nothing behind
+        // it is a shape nobody can place.
+        return vec3<f32>(0.05, 0.05, 0.06);
     }
     if view == VIEW_SOLID {
         // Which primitive this pixel is a point of, as a colour — see
@@ -1700,15 +1741,25 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // every one of these is read by comparing a shape against the picture it
     // came from.
     //
-    // **Three exceptions, and all three are views whose subject is which pixels
-    // are which.** The kind view's whole content is that question. And the two
-    // normal layers make a claim a passed-through pixel breaks: each says it
+    // **Five exceptions, and every one of them is a view whose subject is which
+    // pixels are which.** The kind view's whole content is that question. And the
+    // two normal layers make a claim a passed-through pixel breaks: each says it
     // holds *its own category and nothing else*, so a speaker's letters left
     // standing over the geometry layer are not a landmark, they are the layer
     // being wrong about itself. This was reported from a client dump — the text
     // over a head, drawn in a picture that had promised to be measured surfaces.
+    //
+    // The two silhouette layers are the same claim about a different partition:
+    // they draw the *inside* of a drawn thing as a near-black of their own, and a
+    // passed-through background pixel that kept the world image would be a shade
+    // nothing in the layer's own vocabulary spells.
     if ids_kind(ids) == KIND_NOTHING {
-        if view == VIEW_KIND || view == VIEW_NORMAL_GEOMETRY || view == VIEW_NORMAL_SPRITES {
+        if view == VIEW_KIND
+            || view == VIEW_NORMAL_GEOMETRY
+            || view == VIEW_NORMAL_SPRITES
+            || view == VIEW_SILHOUETTE_ART
+            || view == VIEW_SILHOUETTE_BOX
+        {
             return vec4<f32>(0.0, 0.0, 0.0, color.a);
         }
         return color;
@@ -1887,8 +1938,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if view != VIEW_LIT {
         return vec4<f32>(
             debug_color(
-                view, mine, kind, tile, at, normal, sub, lit, flames, reached, nearest, nearest_through,
-                sun_through, share,
+                view, mine, ids_edges(ids), kind, tile, at, normal, sub, lit, flames, reached, nearest,
+                nearest_through, sun_through, share,
             ),
             color.a,
         );

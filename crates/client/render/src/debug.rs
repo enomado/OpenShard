@@ -171,11 +171,55 @@ pub enum View {
     /// of the two pictures a fringe appears in names the producer that drew it,
     /// which a single normal plane cannot do.
     NormalSprites = 14,
+    /// **The picture's own outline, at the art's resolution** — the fragments a
+    /// neighbouring *texel* of the sprite ended, in orange.
+    ///
+    /// A magnified frame draws two edges at two resolutions. This one steps once
+    /// a texel: one texel is [`crate::camera::Projection`]'s `scale` real pixels
+    /// square, and `nearest` sampling means it cannot be finer, so at `4x` it is
+    /// a four-pixel stair. That stair is what a person points at and calls the
+    /// zigzags. [`View::SilhouetteBox`] is the other, one real pixel a step, and
+    /// the two are one instrument.
+    ///
+    /// **They are not two halves of one outline, and this pair is how that was
+    /// established.** Since a box miss stopped being discarded, the silhouette of
+    /// the picture is entirely the art's and this layer is the whole of it; the
+    /// box's line is a seam *inside* the picture. `docs/silhouettes.md`'s backlog
+    /// asked whether the zigzag a person points at is even a silhouette, and it
+    /// is — the finer line beside it is not.
+    ///
+    /// The other layer is drawn dim in this picture, because a line is read
+    /// against the one beside it rather than across a keypress.
+    ///
+    /// **White is both, and it is the same white in [`View::SilhouetteBox`].**
+    /// Not an overlap to be resolved: it is the seam reaching the outline, which
+    /// is where the two resolutions genuinely meet along one line, and folding
+    /// such a fragment into one layer would delete the subject to satisfy a
+    /// partition.
+    ///
+    /// Only the statics pass stamps these bits, and only it can — see
+    /// `place_format.wesl` for why neither `Meeting::outside` nor a
+    /// neighbourhood test in `blit.wgsl` can answer instead.
+    SilhouetteArt = 15,
+    /// **And the seam inside it, at the fragment's resolution** — where the boxes
+    /// an instance stands as run out and the rest of the same sprite carries on
+    /// unmeasured, in blue, one real pixel a step.
+    ///
+    /// The line matters beyond its sharpness: the two sides of it are lit by
+    /// different rules. Inside, a fragment is a point of a measured face and
+    /// takes that face's normal; outside, it sits at the tile's centre with no
+    /// facing and is lit from every side. See [`View::SilhouetteArt`] for the
+    /// pair.
+    ///
+    /// A mobile, and a static the occlusion grid holds no shape for, can never
+    /// appear in this layer — there is no box to run out — which is what makes
+    /// the two of them its positive control.
+    SilhouetteBox = 16,
 }
 
 impl View {
     /// Every view, in the order [`View::next`] walks them.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         Self::Lit,
         Self::Place,
         Self::Kind,
@@ -183,6 +227,8 @@ impl View {
         Self::Normal,
         Self::NormalGeometry,
         Self::NormalSprites,
+        Self::SilhouetteArt,
+        Self::SilhouetteBox,
         Self::Solid,
         Self::Occluders,
         Self::Light,
@@ -221,6 +267,8 @@ impl View {
             Self::Normal => "normal",
             Self::NormalGeometry => "normal-geometry",
             Self::NormalSprites => "normal-sprites",
+            Self::SilhouetteArt => "silhouette-art",
+            Self::SilhouetteBox => "silhouette-box",
             Self::Solid => "solid",
         }
     }
@@ -334,6 +382,8 @@ mod tests {
         assert_eq!(View::Solid as u32, 12);
         assert_eq!(View::NormalGeometry as u32, 13);
         assert_eq!(View::NormalSprites as u32, 14);
+        assert_eq!(View::SilhouetteArt as u32, 15);
+        assert_eq!(View::SilhouetteBox as u32, 16);
     }
 
     /// Cycling visits every view and comes back. The key that does it is the

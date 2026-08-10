@@ -517,6 +517,29 @@ pub struct Projection {
 }
 
 impl Projection {
+    /// Where the middle of the target lands, in the target's own real pixels.
+    ///
+    /// **The three world vertex stages' `floor(viewport.size * 0.5)`, on this
+    /// side of the wire, and the only copy of it here.** `ground.wesl` carries
+    /// the account of why the floor is there; the short of it is that an image
+    /// with an *odd* extent has a pixel in its middle rather than a join, and a
+    /// world centred on that pixel puts every primary sample on a whole virtual
+    /// pixel at some column — where a box's own corner is, and where
+    /// [`crate::impostor::meets`] answers the tie with a face that has no area.
+    /// `docs/parity.md`'s window-parity entry is the whole story.
+    ///
+    /// Integer division *is* that floor, and it is the same rounding
+    /// [`Camera::to_view`] and [`Camera::pick`] have always done — which is the
+    /// second reason this is one function: three roundings of one number have to
+    /// be one rounding, and they were not, at an odd extent, for as long as
+    /// [`Camera::to_viewport_exact`] halved a float.
+    ///
+    /// Gated by [`crate::camera::tests::no_primary_sample_lands_on_a_whole_virtual_pixel`]
+    /// on this side and by `tests/parity.rs`'s odd-extent case on the shader's.
+    pub fn centre(width: u32, height: u32) -> Vec2 {
+        Vec2::new((width / 2) as f32, (height / 2) as f32)
+    }
+
     /// The world drawn 1:1 into an image of this size, eye in the middle.
     ///
     /// What a frame test wants, and what the minifying path hands the passes:
@@ -527,7 +550,7 @@ impl Projection {
             // Halved as an integer for the reason `Camera::projection` gives at
             // length: `to_view` halves the extent the same way, and two
             // roundings of one number have to be one rounding.
-            origin: Vec2::new((width as i32 / 2) as f32, (height as i32 / 2) as f32),
+            origin: Projection::centre(width, height),
             scale: 1.0,
         }
     }
@@ -812,9 +835,17 @@ impl Camera {
         // the viewport is the same number on both paths even though the one in
         // the transform is not.
         let scale = self.zoom.numerator() as f32 / self.zoom.denominator() as f32;
+        // [`Projection::centre`] and not `width / 2.0`, for the reason that
+        // function is: the passes centre the world on `floor(size / 2)`, and a
+        // painter centring it on `size / 2` puts its highlight half a *real*
+        // pixel off the world it is drawn over at every odd extent — the finest
+        // offset a display can show, on the axis nothing here ever varied. It is
+        // also what [`Camera::pick`] has always done, so the two directions are
+        // now one rounding rather than two.
+        let centre = Projection::centre(self.width, self.height);
         Vec2::new(
-            (at.x - projection.origin.x) * scale + self.width as f32 / 2.0,
-            (at.y - projection.origin.y) * scale + self.height as f32 / 2.0,
+            (at.x - projection.origin.x) * scale + centre.x,
+            (at.y - projection.origin.y) * scale + centre.y,
         )
     }
 
@@ -966,10 +997,178 @@ mod tests {
     /// is one expression, it is written out in `Projection`'s own doc comment,
     /// and the frame tests are what keep the two honest.
     fn real(projection: Projection, target: (u32, u32), at: ViewPixel) -> Vec2 {
+        let centre = Projection::centre(target.0, target.1);
         Vec2::new(
-            (at.x as f32 - projection.origin.x) * projection.scale + target.0 as f32 / 2.0,
-            (at.y as f32 - projection.origin.y) * projection.scale + target.1 as f32 / 2.0,
+            (at.x as f32 - projection.origin.x) * projection.scale + centre.x,
+            (at.y as f32 - projection.origin.y) * projection.scale + centre.y,
         )
+    }
+
+    /// **The rungs where the window-parity repair does not reach, named.**
+    ///
+    /// The floor in the three vertex stages centres the world on a pixel *join*
+    /// at every extent, which makes a sample sit at a half-integer over `scale`
+    /// — and no integer `scale` divides a half-integer. That proof has a premise
+    /// nobody wrote down: it is about the extent, and the eye contributes a
+    /// fraction of its own to the same sum. The eye is snapped to
+    /// [`Camera::quantum`], `denominator / numerator`, and at `2/3x` that is
+    /// `1.5` — so half of all camera positions there put the eye exactly half a
+    /// virtual pixel off, the sum comes out whole, and the ray goes through the
+    /// box's corner again.
+    ///
+    /// Only this one rung. Magnifying, the quantum is `1 / scale` and every
+    /// fraction is `m / scale`, which is the case the proof covers; at `1/2x`
+    /// the quantum is `2` and the fraction is always zero; at `3/4x` it is
+    /// `4/3`, whose fractions are thirds and never a half.
+    ///
+    /// Recorded rather than repaired, because repairing it is a decision about
+    /// *motion* and not about centring — dropping the eye's fraction at the
+    /// minifying rungs costs a third of a real pixel of smoothness there, which
+    /// is `docs/camera.md` D11's own subject. `docs/parity.md`'s backlog carries
+    /// it; this constant is what keeps the gate above from being green about it
+    /// by accident.
+    const AN_EYE_ON_A_HALF_PIXEL_REACHES_THE_CORNER: [&str; 1] = ["2/3x"];
+
+    /// **No primary sample can land on a whole virtual pixel** — `docs/parity.md`
+    /// P5's G1, and the arithmetic half of the window-parity repair.
+    ///
+    /// The defect it states the absence of: a fragment samples at `i + 0.5` real
+    /// pixels, and the world coordinate behind that sample is
+    /// `(i + 0.5 - centre) / scale + origin`. A box's own corner sits at a whole
+    /// virtual pixel by construction, so a sample that lands on one is a view ray
+    /// passing exactly through a box's vertical edge — where `impostor::meets`'s
+    /// tie answers `+Y` and draws a one-pixel green line down every `+X` wall.
+    /// That is what the client showed and no tool ever did, because every tool's
+    /// viewport has been even.
+    ///
+    /// With [`Projection::centre`] flooring, the whole of `centre` and the whole
+    /// part of `origin` are integers and cancel, leaving `(i + m + 0.5) / scale`
+    /// for an integer `m` — a half-integer over an integer scale, which is never
+    /// a whole number. So the assertion is not "no case found": with the eye on a
+    /// whole virtual pixel the closest any sample comes to one is **exactly**
+    /// `0.5 / scale`, which is the property rather than the symptom, and the
+    /// minimum is reported rather than merely bounded.
+    ///
+    /// Every rung of the ladder, both parities of both axes, and every eye
+    /// fraction the quantum can express — the inputs whose *unanimity* hid this,
+    /// varied here on purpose. And varying the last of them is what found
+    /// [`AN_EYE_ON_A_HALF_PIXEL_REACHES_THE_CORNER`] below: the repair is a
+    /// statement about the *extent*, and the eye has a fraction of its own.
+    ///
+    /// **Witness it by mutation:** make [`Projection::centre`] halve as a float
+    /// and the odd extents turn red at once. It gates this side's copy of the
+    /// shader's last line; `tests/parity.rs`'s odd-extent case gates the shader.
+    #[test]
+    fn no_primary_sample_lands_on_a_whole_virtual_pixel() {
+        let mut zoom = Zoom::ONE;
+        while !zoom.is_widest() {
+            zoom = zoom.scale_down();
+        }
+        let mut rungs = 0;
+        let mut cases = 0;
+        // How often the recorded exception was actually met. A list of rungs
+        // nothing reached would be a list nobody could tell from a repair.
+        let mut reached_the_corner = 0;
+        loop {
+            for (width, height) in [(900, 700), (901, 700), (900, 701), (901, 701)] {
+                let mut camera = Camera::new(Point::new(1501, 1659, 0), width, height);
+                camera.zoom = zoom;
+                // Every eye the display can distinguish, which is the fraction
+                // that reaches `Projection::origin`: whole virtual pixels at 1:1,
+                // thirds at 3x, and only even ones at 1/2x.
+                let quantum = camera.quantum();
+                let base = camera.eye_at();
+                for step in 0..i64::from(zoom.numerator()) {
+                    camera.look_at(WorldPoint {
+                        x: base.x + step as f64 * quantum,
+                        y: base.y + step as f64 * quantum,
+                    });
+                    let projection = camera.projection();
+                    let (image_width, image_height) = camera.image_size();
+                    let centre = Projection::centre(image_width, image_height);
+                    let scale = f64::from(projection.scale);
+
+                    for (extent, middle, origin) in [
+                        (image_width, centre.x, projection.origin.x),
+                        (image_height, centre.y, projection.origin.y),
+                    ] {
+                        // A sample every real pixel across the image, and the
+                        // *smallest* distance any of them reaches — a detector
+                        // that reported only "none was zero" would be reporting
+                        // about its own tolerance.
+                        let mut nearest = f64::INFINITY;
+                        for pixel in 0..extent {
+                            let virtual_pixel =
+                                (f64::from(pixel) + 0.5 - f64::from(middle)) / scale + f64::from(origin);
+                            nearest = nearest.min((virtual_pixel - virtual_pixel.round()).abs());
+                            cases += 1;
+                        }
+                        // The eye's own fraction, which rides in `origin` beside
+                        // the centre and is the other half of where a sample
+                        // lands. Whole at 1:1, a third at 3x — and a *half* at
+                        // `2/3x`, which is the one rung the centring cannot
+                        // answer for. See the constant below.
+                        let fraction = f64::from(origin) - f64::from(origin).round();
+                        if nearest < 1e-6 {
+                            // **The recorded exception, and nothing else may
+                            // take shelter in it.** A rung not on the list turns
+                            // this red, which is what makes the list a statement
+                            // rather than a tolerance.
+                            assert!(
+                                AN_EYE_ON_A_HALF_PIXEL_REACHES_THE_CORNER
+                                    .contains(&zoom.to_string().as_str()),
+                                "at {zoom}, {width}x{height}, eye step {step}, eye fraction \
+                                 {fraction}: a sample lands on a whole virtual pixel, which is a \
+                                 view ray through a box's own vertical corner — docs/parity.md's \
+                                 window-parity entry, on a rung nothing has recorded it for",
+                            );
+                            assert!(
+                                (fraction.abs() - 0.5).abs() < 1e-6,
+                                "at {zoom}: the recorded exception is an eye on a half pixel, and \
+                                 this sample landed whole with the eye at {fraction}",
+                            );
+                            reached_the_corner += 1;
+                            continue;
+                        }
+                        // **The property**, where it holds: with the eye's own
+                        // fraction a multiple of `1 / scale` — every magnifying
+                        // rung, and a whole-pixel eye on the others — the
+                        // centring alone decides how close a sample comes, and
+                        // that is exactly half a real pixel's worth of virtual
+                        // one. `f32`'s noise is the only slack: the eye's
+                        // fraction is a third at 3x, exact in neither width.
+                        if scale > 1.0 || fraction.abs() < 1e-6 {
+                            let want = 0.5 / scale;
+                            assert!(
+                                (nearest - want).abs() < 1e-5,
+                                "at {zoom}, {width}x{height}, eye fraction {fraction}: the nearest \
+                                 sample came {nearest} of a virtual pixel from a whole one, against \
+                                 {want}",
+                            );
+                        }
+                    }
+                }
+            }
+            rungs += 1;
+            let next = zoom.scale_up();
+            if next == zoom {
+                break;
+            }
+            zoom = next;
+        }
+        assert_eq!(rungs, LADDER.len(), "every rung of the ladder was walked");
+        // What was counted, said out loud: a sweep that silently covered one
+        // column would satisfy every assertion above.
+        assert!(cases > 100_000, "only {cases} samples were looked at");
+        // And the exception is a case that happens, not a case that is allowed:
+        // if the eye at `2/3x` stops reaching a box's corner, this is what says
+        // so instead of the list quietly covering nothing.
+        assert!(
+            reached_the_corner > 0,
+            "no eye reached a box's own corner on any rung, so \
+             AN_EYE_ON_A_HALF_PIXEL_REACHES_THE_CORNER now names a defect that is gone — take it \
+             out, here and in docs/parity.md's backlog",
+        );
     }
 
     /// [`project`] now goes through [`project_exact`], and this is the gate on

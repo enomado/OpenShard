@@ -134,24 +134,84 @@ where it used to, that `Lighting::NONE.sun` is `None` so the unconditional
 collect site and the old adjustment site reads anything of `lighting` but
 `occlusion`.
 
-### P2 — the remaining callers
+### P2 — the remaining callers ✅ 2026-08-10, scoped down to what was real
 
-`tests/cost.rs`, `tests/frame.rs`, `tests/traced.rs`, `tests/attachment.rs`,
-`tests/onsite.rs`, `examples/two_cubes.rs`, `examples/boxes.rs`, and
-`client/artscan`'s `examples/probe.rs` and `examples/grid.rs`. **Nine, not the
-five this plan first named** — the two in `artscan` are a different crate and
-were missed entirely, and `onsite.rs` and `boxes.rs` were counted as scene
-fixtures rather than as assemblies. Some of these build synthetic scenes with no
-map at all and will pass fields the app never does; that is what the struct is
-for.
+The nine call sites this section used to list were never nine migrations —
+reading each of them (`tests/cost.rs`, `tests/frame.rs`, `tests/traced.rs`,
+`tests/attachment.rs`, `tests/onsite.rs`, `examples/two_cubes.rs`,
+`examples/boxes.rs`, `client/artscan`'s `examples/probe.rs` and `examples/grid.rs`)
+found that seven of them are hand-built diagnostic rigs whose whole point is to
+bypass one or more of the four collectors on purpose, and one entry
+(`artscan/examples/grid.rs`) never called any of the four collectors at all —
+it calls `occlusion::collect` directly, a level below the four `frame::assemble`
+wraps, and the count of "nine, not the five this plan first named" was wrong by
+one in the other direction.
 
-`client/render/src/scene.rs`'s `Scene::lighting` is a tenth, and a different
-kind: it collects lighting and nothing else, for scenes that have no art to draw.
-Whether it becomes an `Inputs` with empty atlases or stays what it is, is a
-decision for P2 and not an oversight.
+- **`tests/frame.rs`, `tests/traced.rs`, `tests/onsite.rs`,
+  `examples/two_cubes.rs`, `examples/boxes.rs`, `artscan/examples/probe.rs`**
+  stay outside the assembly. Each is a point-probe (`onsite.rs`, `probe.rs`
+  print numbers about one coordinate and draw nothing) or a research rig that
+  needs geometry no real static produces (`two_cubes.rs`, `boxes.rs`, most of
+  `frame.rs`'s 57 tests build quads by hand to test one shader in isolation;
+  `traced.rs` builds adversarial boxes to compare against a path tracer).
+  Forcing any of these through `Inputs` would not remove a divergence — it
+  would hide the fact that they are deliberately not drawing the client's
+  world.
+- **`artscan/examples/grid.rs`** is dropped from the list. It was never a
+  caller of `light::collect`/`ground::collect`/`statics::collect`/
+  `items::collect`; the original count was wrong.
+- **`client/render/src/scene.rs`'s `Scene::lighting`, and by extension
+  `tests/attachment.rs`'s use of it,** stay outside too, and this is not an
+  oversight left for later — `scene.rs`'s own module doc says why: "It has no
+  art. Nothing here can be drawn — `Scene::lighting` is the whole of what a
+  scene produces." `Inputs::land`/`texmaps` are non-optional references with
+  no honest empty value (D2: "a field that has no honest default has no
+  default"), so satisfying `frame::assemble`'s shape would mean inventing one
+  just to force a lighting-only fixture through a struct built for drawing.
+  `tests/attachment.rs` rides the same fixtures to check a G-buffer owner
+  attachment round-trips against the occlusion grid — a narrower question than
+  "is this a frame" — and its one `items::collect` call is answering that,
+  not standing in for `frame::assemble`.
+- **`tests/cost.rs`** was the one real migration candidate, and even it isn't
+  a `frame::assemble` caller: the whole file exists to time the collectors
+  *individually* (CPU per stage, GPU per pass), which is exactly what
+  `assemble()`'s one opaque call would stop being measurable. What was real
+  and still open was **D3**, named here since this plan was drafted and never
+  landed: `statics::collect` was still called against `Occlusion::EMPTY`,
+  pricing a frame where every fragment took the billboard fallback —
+  `View::Normal` not the client's own, `View::Solid` uniformly black, exactly
+  the defect the plan's own opening section describes. Fixed: a real grid,
+  built once over `light::lit_tiles` (the same rectangle `light::collect`
+  grows its own grid over) and not itself timed, replaces `EMPTY`.
 
-*Done when:* the four collectors have no caller outside the assembly. D3 lands
-here: `cost.rs` prices a real grid, and its number changes — record both.
+*Done:* zero of the nine originally-listed call sites needed to become
+`frame::assemble` callers; D3's fix is the one line of work P2 actually had.
+`cargo check`/`clippy -p openshard-client-render --all-targets` silent.
+
+*Measured, per D3's own "record both", `OPENSHARD_CLIENT=… cargo test --release
+-p openshard-client-render --test cost -- --ignored --nocapture` at
+`(1495,1629,0)`, widest zoom, before and after the grid swap:*
+
+```
+case    EMPTY grid   real grid
+copy       0.466ms     0.480ms
+dark       0.647ms     0.647ms
+far        0.654ms     0.656ms
+night      1.876ms     1.875ms
+sun        1.088ms     1.118ms
+```
+
+**The number D3 predicted moving does not move.** What was priced the whole
+time is the lighting pass's own walk — the light-source raymarch inside
+`statics.wesl`/the blit shader — and that reads `lighting.occlusion`, which
+`light::collect` builds fresh in every case regardless of what grid the
+*statics pass* met its boxes against. The grid this fix changed only decides
+where a static's fragment sits (a real box's plane, or the billboard
+fallback) — a correctness fact about the picture (`View::Normal`,
+`View::Solid`), not a term in this file's own timing loop. D3's text assumed
+the two were coupled; measuring says they are not, and that is worth having
+written down rather than re-discovered by whoever next reads for a
+performance regression here.
 
 ### The dump ✅ 2026-08-10 — P3's prerequisite
 
@@ -534,7 +594,83 @@ The order follows the counts and the blast radius:
 Each of the four re-runs the census as its own done-when, and the numbers go in
 `docs/lighting_rebuild.md`'s census section beside the ones above.
 
-### P5 — the window-parity finding, made permanent
+### P5 — the window-parity finding, made permanent ✅ 2026-08-10
+
+**It was held by an argument in a comment; it is held by four gates now, and
+building them found the case the argument was wrong about.**
+
+*Done:* removing the `floor` from `ground.wesl` turns
+`tests/parity.rs`'s `a_frame_at_an_odd_extent_is_the_even_one_with_a_column_added`
+red at **54,252 of 630,000 pixels**, and the failure names the plane. Witnessed
+by mutation, restored, green again. `cargo test -p openshard-client-render
+--lib` (465) and `--test parity` (3, at Britain with the client's own files) are
+green, clippy and fmt silent.
+
+**G1 ✅ `camera::tests::no_primary_sample_lands_on_a_whole_virtual_pixel`.** The
+arithmetic, no GPU: every rung of the ladder, both parities of both axes, every
+eye fraction the quantum can express, ~121,000 samples. It asserts the *quantity*
+and not the absence — with the eye on a whole virtual pixel the nearest any
+sample comes to one is exactly `0.5 / scale` — and it reports how many samples it
+looked at, because a sweep that silently covered one column would satisfy every
+assertion in it. Witnessed by mutation: `Projection::centre` halving as a float
+turns it red at the odd extents.
+
+`Projection::centre` is the new home of `floor(viewport.size * 0.5)` on this
+side, and making it one function found a second copy that had already
+diverged: **`Camera::to_viewport_exact` centred on `width / 2.0`** where the
+passes centre on `floor(width / 2)` and `Camera::pick` already floored. Half a
+*real* pixel of disagreement between where the world is drawn and where a
+highlight is painted over it, at every odd extent — the finest offset a display
+can show, on the axis nothing ever varied. Fixed with the rest.
+
+**G2 ✅ `tests/parity.rs`, and it is the gate the repair itself hangs on.** Two
+frames of one place, `900x700` and `901x701`, compared plane for plane over the
+rectangle they share. What makes it a comparison about *one line of shader* is
+integer division: `render_width() / 2` is 450 for both, so the eye, the
+projection's origin, `visible_tiles`, every collected static, every atlas and the
+whole occlusion grid are identical — both premises asserted in the test rather
+than described. All that is left to differ is `floor(viewport.size * 0.5)`, and
+floored, the odd frame is the even one with a column and a row added.
+
+The route gate runs at both parities at all three places too (six assemblies
+where there were three; the whole file still runs in six seconds).
+
+**G3 ✅** `Inputs::summary`'s camera line ends `image 901x701 (odd by odd)`. It is
+derivable from the two numbers beside it and it is written anyway, because the
+whole finding is that nobody ever read it *as an input*: a person diffing two
+dumps scans field names. Gated in G2's own test — two frames a pixel apart have
+to diff in the summary, and they do.
+
+**G4 ✅ `impostor::a_ray_through_a_boxs_own_corner_is_answered_by_the_order_of_three_ifs`.**
+The tie is now *stated*: a ray exactly through the vertical corner reads `+Y`,
+the `z` ties read `+Z`, and a lid answers with its own plane. The ties are built
+as exact `f32` equalities and each premise is asserted, so a case that stopped
+being a tie cannot pass quietly. And the knife edge is in it: one ulp either side
+of the corner flips the answer between `+X` and `+Y`, which is what "emergent
+rather than stated" means. It is a record and not an endorsement — the backlog
+entry above it stands unchanged.
+
+**What building the gates found, and it is a correction to this section's own
+proof.** "No integer `scale` divides a half-integer" is about the *extent*, and
+the eye contributes a fraction to the same sum. The eye is snapped to
+`quantum = denominator / numerator`, which at **`2/3x` is 1.5** — so half of all
+camera positions there put the eye exactly half a virtual pixel off, the sum
+comes out whole, and the ray goes through the box's corner again. Only that rung:
+magnifying, every fraction is `m / scale`, which is the case the proof covers; at
+`1/2x` the quantum is 2 and the fraction is always zero; at `3/4x` it is `4/3`,
+whose fractions are thirds. G1 names the rung in
+`AN_EYE_ON_A_HALF_PIXEL_REACHES_THE_CORNER`, asserts that the defect *reproduces*
+there, and turns red if any other rung reaches it — a list that covered nothing
+would be indistinguishable from a repair. The backlog carries what repairing it
+would cost.
+
+*Not done:* **`tests/dump.rs` still draws at even extents only.** G2 named it
+beside `tests/parity.rs` and it was left alone because another session was
+editing that file; the frame-comparison gate above is the stronger half and it is
+in place. One case at `901x701` there is still worth having, and it is a backlog
+item now.
+
+<details><summary>The plan as it was written</summary>
 
 **Today the fix is held by an argument in a comment.** Delete the `floor` and
 every test in this repository stays green, because every one of them draws at an
@@ -570,6 +706,8 @@ emergent from the order of three `if`s.
 *Done when:* removing the `floor` from any one of the three vertex stages turns
 a test red, and the test names which grid met which.
 
+</details>
+
 ## Backlog
 
 - 🚩 **`impostor::meets` still answers `+Y` for a ray through a box's vertical
@@ -578,7 +716,10 @@ a test red, and the test names which grid met which.
   screen and leaves the rule underneath as wrong as it was. It is reachable by
   anything that samples a boundary deliberately rather than through the pixel
   grid — `light::sample` at a face's own centre, a probe given whole
-  coordinates, a test. What the edge honestly wants is the face the
+  coordinates, a test. **P5's G4 is that test**, and it changes nothing here
+  except that the rule is now written down where it can be read (`+Y` at the
+  vertical corner, `+Z` at either `z` tie, a lid's own plane for a lid) with the
+  one-ulp flip beside it. What the edge honestly wants is the face the
   *neighbouring* box continues, which no per-box meet can see: flipping `x` and
   `y` in the tie only moves the artefact into `+Y` walls, where it happens to
   be invisible, so it is a change of which half of the world lies rather than a
@@ -587,13 +728,27 @@ a test red, and the test names which grid met which.
   volumes (`in.volumes.y`), and the neighbouring wall is a different instance
   decided by the sort and the depth test, so there is no adjacent box for it to
   have preferred.
-- 🚩 **Nothing gates a viewport whose extent is odd.** P3 runs at `900x700`,
-  `tests/dump.rs` at its own even sizes, `isolated_scene` defaults to one. Every
-  tool picture ever compared has been drawn on a grid the client's own window is
-  under no obligation to share. The cheap half is one more case in P3 at
-  `901x701`; the honest half is stating, somewhere a person will read it, that a
-  frame's parity is an input like any other and belongs in `Inputs::summary`
-  beside the camera.
+- 🚩 **At `2/3x` the eye's own quantum puts a sample back on a box's corner.**
+  Found by P5's G1, which is the first thing that ever varied an eye fraction
+  and an extent parity together. The centring repair proves a property of the
+  *extent*; the eye contributes a fraction to the same sum, and at `2/3x` the
+  quantum is `1.5`, so half of all camera positions there sit exactly half a
+  virtual pixel off and the sum comes out whole. Only that rung — see the P5
+  entry for why the other six are covered. What it costs on screen is milder
+  than the original artefact (minified, the blit's linear sampler blends the
+  column away) and the *G-buffer* is as wrong as it ever was, which is what the
+  lighting reads. Repairing it is a decision about **motion**, not about
+  centring: dropping the eye's fraction from `Projection::origin` on the
+  minifying path would cost about a third of a real pixel of smoothness at
+  `2/3x`, which is `docs/camera.md` D11's own subject and not something to
+  change in passing. `AN_EYE_ON_A_HALF_PIXEL_REACHES_THE_CORNER` in `camera.rs`
+  is the list, and G1 turns red if it ever covers nothing.
+- 🚩 **`tests/dump.rs` still draws at even extents only.** P5's G2 named it and
+  P5 did not do it — another session held the file. One case at `901x701` beside
+  its `900x700`, which is cheap, and `isolated_scene`'s own default is even too.
+  `tests/parity.rs`'s odd-extent comparison covers the *shader's* centring
+  already; what this would add is the readback and the PNG path at an unaligned
+  odd width.
 - ✅ **The live client's own atlas may be narrower than the grid it is read
   for** — fixed 2026-08-10. Found while building P3's gate, and not something
   the gate itself needed to fix: `App::wanted_now`/`wanted_since` grew the
