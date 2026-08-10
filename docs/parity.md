@@ -450,6 +450,27 @@ compositor hands it. **A gate that never varies a viewport's parity is green
 about a defect that a person can see from across the room**, and it would not
 say so.
 
+**Repaired where the sampling is, not where the tie is** ✅ 2026-08-10. The
+three vertex stages that end on `(pixel - origin) * scale + size * 0.5` —
+`ground.wesl`, `statics.wesl`, `mesh_face.wesl`, and they must end on the same
+line or they draw two pictures — now `floor` that centre. The world's middle
+then sits on a pixel join at every extent, a sample sits at a half-integer over
+`scale`, and no integer `scale` divides a half-integer: **no primary sample can
+land on a whole virtual pixel at any rung of the ladder**, which is a proof and
+not a margin. It costs half a real pixel of centring at an odd extent — below
+the quantum `Zoom` is built around — and is a literal no-op at an even one.
+
+*Measured, same scene, same command, only the build changed:* `1919x2077` at
+`4x` went from **3,484 one-pixel slivers to 0**, and its whole run distribution
+became the even viewport's, width for width — `4/8/12/29/44/264` against the
+odd build's `1/5/9/13/30/45/265`. `cargo test -p openshard-client-render` is
+green but for `frame.rs`'s `britains_statics_cover_part_of_a_frame_that_is_still_whole`,
+which was already failing in the tree before this session and cannot be this
+change: its viewport is `768x512` and `floor` of a whole number is that number.
+
+**What this does not do is repair `impostor::meets`,** and the backlog says so
+rather than letting a green screen stand in for a correct rule.
+
 ### P4 — the geometry, in census order
 
 `examples/geometry_census.rs` counts what each box claims. Over 11,184 statics
@@ -481,25 +502,21 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
 
 ## Backlog
 
-- 🚩 **A box's vertical corner edge is drawn as a `+Y` face, and the fix is a
-  decision.** The section above has the whole diagnosis; what is not decided is
-  where it is repaired, and the three candidates are not equivalent:
-  1. **In the tie** — `impostor::meets`, both the shader's and the Rust twin's.
-     Flipping `x` and `y` in the ordering only moves the artefact into `+Y`
-     walls, where it is invisible today, so it is not a fix but a change of
-     which half of the world lies. What the edge honestly wants is the face the
-     *neighbouring* box continues, which no per-box meet can see.
-  2. **In the selection loop** — at the corner the near box and its neighbour
-     exit at the same `t`, so the loop's "largest `t` is in front" is a tie too,
-     and it is won by the box whose leading edge the sliver is. Had the other
-     one won, the pixel would be `+X` and continuous with its neighbours. This
-     is the candidate that makes the picture right *by construction*, and it is
-     also the one whose blast radius is every fragment in the frame.
-  3. **In the centring** — `viewport.size * 0.5` floored, so no sample ever
-     lands on a whole virtual pixel at any zoom. It would take the artefact off
-     the screen tomorrow and is a fudge: the tie stays wrong and waits for the
-     next thing that samples a boundary exactly. `docs/style.md`'s own rule
-     about repairing geometry rather than nudging a constant applies.
+- 🚩 **`impostor::meets` still answers `+Y` for a ray through a box's vertical
+  corner, and nothing above reaches it any more.** The centring below makes a
+  primary sample unable to land on that edge, which takes the artefact off the
+  screen and leaves the rule underneath as wrong as it was. It is reachable by
+  anything that samples a boundary deliberately rather than through the pixel
+  grid — `light::sample` at a face's own centre, a probe given whole
+  coordinates, a test. What the edge honestly wants is the face the
+  *neighbouring* box continues, which no per-box meet can see: flipping `x` and
+  `y` in the tie only moves the artefact into `+Y` walls, where it happens to
+  be invisible, so it is a change of which half of the world lies rather than a
+  repair. **A candidate considered and refuted:** the selection loop in
+  `statics.wesl` is not a second tie — it ranges over the *one instance's* own
+  volumes (`in.volumes.y`), and the neighbouring wall is a different instance
+  decided by the sort and the depth test, so there is no adjacent box for it to
+  have preferred.
 - 🚩 **Nothing gates a viewport whose extent is odd.** P3 runs at `900x700`,
   `tests/dump.rs` at its own even sizes, `isolated_scene` defaults to one. Every
   tool picture ever compared has been drawn on a grid the client's own window is

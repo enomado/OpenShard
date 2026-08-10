@@ -84,8 +84,10 @@ fn vs_main(
     @location(6) colour: vec3<f32>,
 ) -> VertexOut {
     // Virtual pixels to real ones, the same single line `statics.wgsl`'s own
-    // vertex stage ends on.
-    let real = (screen - viewport.origin) * viewport.scale + viewport.size * 0.5;
+    // vertex stage ends on — `floor` included, for the reason `ground.wesl`
+    // states in full. A pass that centred differently from the other two would
+    // draw a second picture half a pixel from theirs.
+    let real = (screen - viewport.origin) * viewport.scale + floor(viewport.size * 0.5);
     let ndc = vec2<f32>(
         real.x / viewport.size.x * 2.0 - 1.0,
         1.0 - real.y / viewport.size.y * 2.0,

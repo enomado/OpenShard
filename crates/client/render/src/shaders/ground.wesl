@@ -202,7 +202,28 @@ fn vs_main(
     // Virtual pixels to real ones, and the only line in this pass that knows a
     // magnification exists. Everything above is the art's own grid, which is
     // what makes it comparable against the files texel for texel.
-    let real = (pixel - viewport.origin) * viewport.scale + viewport.size * 0.5;
+    //
+    // **`floor`, and it is the whole of `docs/parity.md`'s window-parity
+    // entry.** The world is centred on the image, and the middle of an image
+    // with an *odd* extent is the middle of a pixel rather than the join
+    // between two. Centred there, a fragment sampling at `i + 0.5` lands on a
+    // whole virtual pixel — every column at `1:1`, every `scale`-th one
+    // magnified — and a box's own corner is at a whole virtual pixel by
+    // construction, so a ray passes exactly through it and `impostor::meets`
+    // answers the tie with a face that has no area from here. That is a green
+    // line down every wall in the live client and in no tool ever built, since
+    // every tool's viewport has been even.
+    //
+    // Floored, the world's centre is on a pixel join at every extent, the
+    // sample sits at a half-integer over `scale`, and no integer `scale`
+    // divides a half-integer — so no primary sample can land on a whole
+    // virtual pixel at any rung of the ladder. That is a proof rather than a
+    // margin, which is why it is here and not a nudge somewhere. It costs half
+    // a real pixel of centring at an odd extent, which is below the quantum
+    // `Zoom` is built around, and it is a no-op at an even one — `floor` of a
+    // whole number. The other two passes end on this same line and must keep
+    // ending on it: two passes centring differently is two pictures.
+    let real = (pixel - viewport.origin) * viewport.scale + floor(viewport.size * 0.5);
 
     // Pixels to clip space. `y` flips: the viewport counts down from the top and
     // clip space counts up from the middle.

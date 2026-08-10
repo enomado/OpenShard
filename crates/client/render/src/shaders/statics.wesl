@@ -220,8 +220,11 @@ fn vs_main(
     @builtin(instance_index) instance_index: u32,
 ) -> VertexOut {
     let pixel = origin + corner * size;
-    // Virtual pixels to real ones, the same single line the ground pass ends on.
-    let real = (pixel - viewport.origin) * viewport.scale + viewport.size * 0.5;
+    // Virtual pixels to real ones, the same single line the ground pass ends on
+    // — `floor` included, and `ground.wesl` carries the account of why the
+    // centre of an odd-sized image may not be half a pixel. This pass is the
+    // one the defect showed in, because it is the one that meets a box.
+    let real = (pixel - viewport.origin) * viewport.scale + floor(viewport.size * 0.5);
 
     // Pixels to clip space, the same way the ground does it: `y` flips because
     // the viewport counts down from the top and clip space counts up from the

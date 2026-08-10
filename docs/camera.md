@@ -864,6 +864,35 @@ which fights a discrete ladder and would breathe.
 
 Found while planning this, and not to be lost in it.
 
+- 🚩 **An inventory of every pixel this engine has — its own session.** D11 names
+  two, the real one and the virtual one, and that was the whole argument it
+  needed. A frame has more, they meet in the same expressions, and no one
+  document lists them: the **real/screen pixel** the compositor hands us, the
+  **virtual/world pixel** the world is measured in (`WorldPixel`, `ViewPixel`),
+  the **tile** (44 × 44 virtual, half of it per axis step) and its **`Z_STEP`**
+  of 4, the **art texel** a sprite's own file is drawn in — one virtual pixel at
+  `1:1` and `scale` real ones magnified — and **clip space**, which is the only
+  one of them nothing else is measured against. What the session is for is not a
+  glossary: it is which conversions exist, which are exact, which round, and
+  which pairs are commensurate — because two grids that share a divisor are the
+  whole of the parity defect `docs/parity.md` records, and nobody knew they
+  shared one.
+- 🚩 **Two quantisations stand side by side in one magnified frame, and a person
+  reads the coarser one as a bug.** Measured at Britain on the client's own
+  4× dump (1919×2077), as the number of rows a silhouette holds one column
+  before stepping: an **impostor box's edge steps every 1–2 rows** — it is
+  decided per fragment, so it is as fine as the screen — while a **sprite's own
+  alpha silhouette steps in multiples of 4** (4, 8, 12, 16, 20, 28, 36, 56, 60
+  rows), because the quad is scaled by `Projection::scale` and sampled
+  `nearest`, so one art texel is `scale` real pixels square and its edge cannot
+  be finer. Both are correct and neither is a defect on its own; what is worth
+  writing down is that they are *adjacent* — a wall's box face and the same
+  wall's drawn silhouette meet along one line, one side crisp and one side in
+  4-pixel steps. Whether that is left alone (the art is pixel art, and
+  smoothing its edge is a different engine), stated in `docs/style.md`'s own
+  terms, or fixed by clipping the sprite to the box it already meets, is the
+  decision — and it wants the inventory above first, because the answer is
+  about which grid wins where.
 - ~~**`Control::follow_body` takes a rounded, `z`-folded pixel.**~~ It takes a
   `Gaze` (C0), and `world_position` is that rounded rather than a second formula.
 - **A packet is not a frame, and two call sites now say so with a zero.**
