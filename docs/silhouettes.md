@@ -169,8 +169,47 @@ is about.
 
 **What Z1 did not get: the widths.** The two edges are two *rules* at every
 magnification and two different *widths* only above `1:1`, so the plan's root
-claim — one steps by `scale` pixels, the other by one — needs a magnified frame,
-and one cannot be assembled today. See the backlog.
+claim — one steps by `scale` pixels, the other by one — needs a magnified frame.
+A magnified frame is now assemblable and the measurement is the next step; what
+stood in the way was not a defect. See "The `4x` frame, and the blocker that was
+not one" below.
+
+### The `4x` frame, and the blocker that was not one
+
+Z1 recorded a 🚩🚩 blocker: `frame::assemble` at `4x` over Britain's
+`(1501, 1659)` returns 595 quads of land and **zero** static quads, where
+`statics::visible_graphics` over the same camera offers 140 graphics for the
+atlas. The suspects named were `statics::place` returning `None` and `on_screen`
+against `render_width`.
+
+**Neither. The cull is right and the scene was the wrong scene.** Counted through
+the same public arithmetic the collector uses, at that eye tile:
+
+| zoom | drawn image | walked | placed | on screen |
+|---|---|---|---|---|
+| `1x` | 900×700 world px | 3513 | 1300 | **9** |
+| `2x` | 450×350 | 2019 | 502 | **0** |
+| `4x` | 225×175 | 1381 | 185 | **0** |
+
+The nine statics `(1501, 1659)` draws at `1:1` are one wall run at tiles
+`(1484..1487, 1663..1666)`, and every one of them lands in the **top-left corner**
+of the image — `x` from −34 to 32, `y` from −20 to 112, four hundred-odd pixels
+from an eye that sits at the middle of a 900×700 frame. Magnifying shrinks the
+drawn image around that eye (`render_width` is `world_pixels(900)` = 225 at `4x`),
+so the cluster leaves the frame, and a cull that kept it would be the defect.
+Nothing between `visible_graphics` and `collect` rejects anything it should not:
+the same three zooms over `(1486, 1664)` — standing *on* the wall run — collect
+109, 54 and 30 statics.
+
+The lesson is the plan's own, not the renderer's: **`docs/parity.md`'s coordinate
+is a `1:1` coordinate.** It is where a person stands to look at a lit house
+corner, and a magnified frame taken from it is a frame of ground. Every question
+this plan asks above `1:1` is asked from `ON_THE_WALLS` — `tests/dump.rs`'s
+`(1486, 1664)` — and `draw_britain` takes the eye tile as a parameter so that the
+two cannot be confused. `the_magnified_frame_over_a_wall_run_still_collects_its_statics`
+is the gate: every rung collects statics over the wall run, and the same `4x`
+that collects none over `AT` still collects its land, which is what attributes the
+zero to the place rather than to the zoom.
 
 ### Z2 — the ratio, before
 
@@ -189,16 +228,17 @@ their own**, because a box that fits the art clips more of the outline.
 
 ## Backlog
 
-- 🚩🚩 **A frame at `4x` collects no statics at all.** Found on the way to Z1's
-  own measurement and it is much bigger than this plan. The camera is right —
-  `render 225x175`, `image 900x700`, `scale 4`, the eye unmoved at Britain — and
-  `frame::assemble` returns **595 quads of land and zero static quads**, where
-  `statics::visible_graphics` over the same camera found 140 graphics for the
-  atlas. So the rejection is between `visible_graphics` and `collect`:
-  `statics::place` returning `None`, or `on_screen` against `render_width`.
-  Reproduce by handing `tests/dump.rs`'s `draw_britain` anything but `Zoom::ONE`.
-  Every width measurement this plan wants is behind it, and so, presumably, is
-  the client at any magnification.
+- ✅ ~~**A frame at `4x` collects no statics at all.**~~ Not a defect. The nine
+  statics that eye tile draws all stand in the corner of its `1:1` image, and
+  magnifying shrinks the image around the eye until they are outside it — the
+  section above has the counts and the gate. What it leaves behind is a habit
+  rather than a bug: **a scene chosen at `1:1` does not carry over to a magnified
+  frame**, and a diagnostic that changes the zoom has to change the eye tile too.
+- 🚩 **The widths, which is Z1's own unfinished half.** Now unblocked: a `4x`
+  frame over `ON_THE_WALLS` assembles, and the claim to measure in it is that a
+  run of `art_edge` pixels crossing the outline is `scale` real pixels wide while
+  a run of `box_edge` pixels is one. The instrument is the two views Z1 already
+  built; what is missing is the scan across the edge and a number.
 - ✅ ~~**Whether the zigzag a person points at is even a silhouette.**~~ Answered
   by Z1: it is the art's outline. The finer line beside it is the measured
   region's own seam, not a silhouette. What is *not* ruled out is the third

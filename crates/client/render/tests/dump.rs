@@ -50,6 +50,23 @@ use openshard_uofiles::tiledata::TileData;
 /// the frame the plan talks about.
 const AT: Point = Point::new(1501, 1659, 0);
 
+/// The same quarter of Britain, stood on the wall run itself rather than beside
+/// it — the eye tile a **magnified** frame has to use.
+///
+/// [`AT`] is a fine place to ask a question of a `1:1` frame and is not one to
+/// ask it of a `4x` frame, and that is a property of the *place* rather than a
+/// defect anywhere: the nine statics [`AT`] draws all stand in the top-left
+/// corner of its 900x700 image, some four hundred pixels from the eye. Magnify
+/// and the image shrinks around the eye — `225x175` world pixels at `4x` — so
+/// the whole cluster leaves the frame and a correct cull collects nothing.
+/// Measured rather than reasoned: at `AT`, `1x` collects 9 statics, `2x` and
+/// `4x` collect none; from here the same three zooms collect 109, 54 and 30.
+///
+/// Found by [`the_magnified_frame_over_a_wall_run_still_collects_its_statics`],
+/// which is what keeps the sentence above from becoming a comment nobody can
+/// fail.
+const ON_THE_WALLS: Point = Point::new(1486, 1664, 0);
+
 /// Deliberately not 256-byte-row aligned (`900 * 4 = 3600`), and deliberately
 /// not a round number of tiles: a readback that ignored the copy's padding would
 /// return a sheared picture here, and one that panicked on the assertion the
@@ -95,14 +112,16 @@ struct Drawn {
     land_collected: usize,
 }
 
-/// Assemble the frame at [`AT`] the way `App::draw` assembles one, draw its
-/// three world passes, and stop before the blit.
+/// Assemble a frame the way `App::draw` assembles one, draw its three world
+/// passes, and stop before the blit.
 ///
 /// The map's own statics and no server items, the player's own cutaway, night
 /// with a flame in hand: the client's values, because a fixture that quietly
 /// chose easier ones is the coincidence `docs/parity.md` is about.
 ///
-/// `draw` and `zoom` are the two inputs a caller here varies. `draw` is
+/// `at`, `draw` and `zoom` are the inputs a caller here varies. `at` is the eye
+/// tile — [`AT`] for every question asked at `1:1`, and [`ON_THE_WALLS`] for one
+/// asked of a magnified frame, for the reason written there. `draw` is
 /// everything, or the subset a person has ticked in the World tab
 /// ([`frame::Draw`]); `zoom` is the magnification, which every question about
 /// `docs/silhouettes.md` needs because the two edges it is about are the same
@@ -111,6 +130,7 @@ fn draw_britain(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     dir: &std::path::Path,
+    at: Point,
     draw: frame::Draw,
     zoom: openshard_client_render::camera::Zoom,
 ) -> Drawn {
@@ -120,12 +140,12 @@ fn draw_britain(
     let animdata = AnimData::load(dir).expect("animdata.mul");
     let animations = StaticAnimations::build(&animdata, &tiledata);
 
-    let mut camera = Camera::new(AT, VIEWPORT.0, VIEWPORT.1);
+    let mut camera = Camera::new(at, VIEWPORT.0, VIEWPORT.1);
     // About the middle, so the place the frame is *of* stays the place it is of
     // at every rung — `Camera::zoom_about` holds what is under the cursor fixed,
     // and the corner would slide the house out of a magnified frame.
     camera.zoom_about(VIEWPORT.0 as i32 / 2, VIEWPORT.1 as i32 / 2, zoom);
-    let cutaway = Cutaway::at(&map, &tiledata, AT, true);
+    let cutaway = Cutaway::at(&map, &tiledata, at, true);
 
     let land_wanted = ground::visible_graphics(&map, &camera);
     let land = LandAtlas::build(&art, land_wanted.iter().copied()).expect("a screen of land fits");
@@ -154,7 +174,7 @@ fn draw_britain(
         // frame's blit is a copy.
         sky: Some(light::NIGHT.flattened()),
         sun: None,
-        carried: Some((AT, Direction::South)),
+        carried: Some((at, Direction::South)),
         tuning: &tuning,
         flame_time: 0.0,
         bake: None,
@@ -315,7 +335,7 @@ fn a_frame_dumps_one_picture_per_view_at_the_size_asked_for() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
+    let drawn = draw_britain(&device, &queue, &dir, AT, frame::Draw::EVERYTHING, Zoom::ONE);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -397,7 +417,7 @@ fn a_readback_off_the_corner_is_the_same_pixels_shifted() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
+    let drawn = draw_britain(&device, &queue, &dir, AT, frame::Draw::EVERYTHING, Zoom::ONE);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -481,7 +501,7 @@ fn each_normal_layer_holds_its_own_category_and_nothing_else() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
+    let drawn = draw_britain(&device, &queue, &dir, AT, frame::Draw::EVERYTHING, Zoom::ONE);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -740,19 +760,20 @@ fn shade_of(pixel: &[u8]) -> &'static str {
 /// measurement Z2 asks for, and a literal here would be a snapshot of one
 /// afternoon's map data pretending to be an invariant.
 ///
-/// **At `1:1`, and that is a limitation rather than a choice.** The two edges
-/// are two *rules* at every magnification and two different *widths* only above
-/// it, so a picture at `4x` is what the plan's root claim wants — and a frame at
-/// `4x` cannot be assembled today: the camera is right (`render 225x175`,
-/// `scale 4`) and `frame::assemble` collects 595 quads of land and **not one
-/// static**. That is its own defect, recorded in `docs/silhouettes.md`'s
-/// backlog, and the width half of Z1 waits on it.
+/// **At `1:1`, which is where the two rules can be told apart from each other
+/// but not the two widths.** The two edges are two *rules* at every
+/// magnification and two different *widths* only above it, so the width half of
+/// Z1 wants a picture at `4x` — over [`ON_THE_WALLS`] and not over [`AT`], for
+/// the reason written on that constant. A magnified frame here collects no
+/// static, and that was read as a defect in the assembly until it was measured:
+/// it is the cull answering correctly about a place whose statics all stand four
+/// hundred pixels from the eye.
 #[test]
 fn the_two_silhouette_layers_are_two_lines_and_a_frame_agrees_about_both() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let drawn = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
+    let drawn = draw_britain(&device, &queue, &dir, AT, frame::Draw::EVERYTHING, Zoom::ONE);
     let format = blit::WORLD_FORMAT;
     let into = dump_target(&device, format);
     let into_view = into.create_view(&wgpu::TextureViewDescriptor::default());
@@ -902,6 +923,79 @@ fn the_two_silhouette_layers_are_two_lines_and_a_frame_agrees_about_both() {
     );
 }
 
+/// **Magnifying does not lose the statics — it loses the ones that were never
+/// near the eye.**
+///
+/// The measurement behind [`ON_THE_WALLS`], and the reason `docs/silhouettes.md`
+/// carried a blocker it did not have: a `4x` frame over [`AT`] collects land and
+/// not one static, which reads exactly like a cull that has gone wrong at
+/// magnification. It is not. The nine statics that place draws stand in the
+/// top-left corner of its `900x700` image; `4x` shrinks the drawn image to
+/// `225x175` **world** pixels around the same eye, and a corner four hundred
+/// pixels out is outside it. The cull is right and the scene is the wrong scene.
+///
+/// Two claims, and the pair is what makes this a control rather than an
+/// anecdote — either alone is satisfied by a cull that keeps everything or by
+/// one that keeps nothing:
+///
+/// - over a place whose statics stand **at** the eye, every rung of the ladder
+///   collects some, `4x` included;
+/// - over [`AT`], `4x` collects none while `1:1` collects some — the asymmetry
+///   this test exists to attribute to the place.
+///
+/// Counts are printed and not asserted against literals, for
+/// [`the_two_silhouette_layers_are_two_lines_and_a_frame_agrees_about_both`]'s
+/// own reason: they are one afternoon's map data.
+#[test]
+fn the_magnified_frame_over_a_wall_run_still_collects_its_statics() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let collected = |at, zoom| {
+        let drawn = draw_britain(&device, &queue, &dir, at, frame::Draw::EVERYTHING, zoom);
+        (drawn.statics_collected, drawn.land_collected)
+    };
+
+    for zoom in [
+        Zoom::ONE,
+        Zoom::ONE.scale_up(),
+        Zoom::ONE.scale_up().scale_up().scale_up(),
+    ] {
+        let (statics, land) = collected(ON_THE_WALLS, zoom);
+        println!("{zoom} over {ON_THE_WALLS:?}: {statics} statics, {land} land");
+        assert!(
+            statics > 0,
+            "{zoom} over a wall run collected no static: the cull loses geometry at magnification",
+        );
+        // The land is the positive control on the frame itself: a zoom that
+        // assembled nothing at all would satisfy nothing here, and would look
+        // the same from the statics' side.
+        assert!(
+            land > 0,
+            "{zoom} assembled no land either, so this frame is empty"
+        );
+    }
+
+    // And the other half — the place, not the zoom.
+    let (near, _) = collected(AT, Zoom::ONE);
+    let (magnified, land) = collected(AT, Zoom::ONE.scale_up().scale_up().scale_up());
+    println!("4x over {AT:?}: {magnified} statics, {land} land, against {near} at 1:1");
+    assert!(near > 0, "even 1:1 draws no static at Britain's house corner");
+    assert!(
+        land > 0,
+        "the magnified frame at Britain's house corner is empty of land too, \
+         so its lack of statics says nothing about the place",
+    );
+    // `<` and not `== 0`: what is being attributed is that magnifying *here*
+    // loses statics while magnifying over a wall run does not, and a literal
+    // zero would be this afternoon's map data written down as a law.
+    assert!(
+        magnified < near,
+        "{AT:?} kept all {near} of its statics at 4x, so the pair above is not an asymmetry \
+         and this test no longer says what it is for",
+    );
+}
+
 /// **Ticking a producer off narrows the drawing and leaves the lighting whole.**
 ///
 /// `frame::Draw` exists because a G-buffer holds one answer per pixel: the way to
@@ -921,11 +1015,12 @@ fn ticking_a_producer_off_narrows_the_drawing_and_not_the_light() {
     let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
         return;
     };
-    let whole = draw_britain(&device, &queue, &dir, frame::Draw::EVERYTHING, Zoom::ONE);
+    let whole = draw_britain(&device, &queue, &dir, AT, frame::Draw::EVERYTHING, Zoom::ONE);
     let land_only = draw_britain(
         &device,
         &queue,
         &dir,
+        AT,
         frame::Draw {
             statics: false,
             ..frame::Draw::EVERYTHING
