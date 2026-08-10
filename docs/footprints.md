@@ -240,8 +240,8 @@ A floor that did not grow with the box is what makes the shares below readable.
 
 | | before S3 | today | |
 |---|---|---|---|
-| every static | 18.20% | 18.30% | +14,580 px |
-| with the roof cut | 9.17% | 9.31% | +14,214 px |
+| every static | 13.45% | 13.55% | +14,580 px |
+| with the roof cut | 7.69% | 7.82% | +14,214 px |
 | **the 219 placements a footprint narrowed** | **7.72%** | **15.88%** | 13,796 → 28,376 px |
 
 **The class's own discard doubled**, and the pictures that pay it are the ones
@@ -287,7 +287,7 @@ Two of those groups read very differently and the split is the finding:
   the backlog.
 
 **And a number that is not this plan's but was found by its instrument.** The
-whole-tile class discards **45.75%** of its own art today, and the roofs inside
+whole-tile class discards **32.69%** of its own art today, and the roofs inside
 it 44–53% (`0x05A2` "slate roof", 48×76 pixels of picture over a box three `z`
 units tall). That is `docs/lighting_rebuild.md`'s D1 — the height nobody
 measures — showing up in pixels, and it dwarfs everything this plan moves.
@@ -336,8 +336,8 @@ must go red. Depends on the parity item below.
     third. `docs/lighting_rebuild.md`'s "One silhouette" is where that is
     argued; what this plan contributed is the number that reopened it — the
     2.38% on record counted *pixels that changed in one frame with the roof
-    cut*, and per picture the discard was throwing away 14.23% of every panel's
-    art and 45.75% of every whole-tile one.
+    cut*, and per picture the discard was throwing away 11.09% of every panel's
+    art and 32.69% of every whole-tile one.
   - **the geometry**, and the answer is that a table is a box. `0x0B06` reads as
     `Corner { East, South }` because a tabletop drawn as a diamond has the base
     edge two walls meeting leave, so it stood as two `PANEL_THICKNESS` slabs —

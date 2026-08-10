@@ -293,8 +293,8 @@ number cannot.** `client/render/examples/discard_census.rs`
 (`docs/footprints.md`'s S4) walks every opaque pixel of every static in a window
 rather than the ones a camera happens to show, so it is the upper bound of the
 same phenomenon and it can say *whose* pixels they are. At Britain's `121×121`
-around `(1501, 1659)`: **a lid loses 1.50% of its art, a fitted prism 0.51%,
-panels 14.23% — and the whole-tile class 45.75%**, with the roofs inside it at
+around `(1501, 1659)`: **a lid loses 1.43% of its art, a fitted prism 0.35%,
+panels 11.09% — and the whole-tile class 32.69%**, with the roofs inside it at
 44–53% (`0x05A2` "slate roof" is 48×76 pixels of picture standing on a box three
 `z` units tall). The discard is therefore mostly a measurement of *the height
 nobody takes*, not of the impostor: a picture five times taller than the box

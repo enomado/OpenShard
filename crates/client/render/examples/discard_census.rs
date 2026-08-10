@@ -46,6 +46,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use openshard_client_render::atlas::StaticAtlas;
+use openshard_client_render::camera::TileBounds;
+use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::facing::{Block, Blocks, Footprint, blocks_silhouette};
 use openshard_client_render::impostor::{self, Volume};
 use openshard_client_render::occlusion::{self, Shape};
@@ -62,21 +64,89 @@ use openshard_uofiles::tiledata::{StaticTile, TileData};
 const HALF_TILE: f32 = 22.0;
 
 /// Every box one placement stands as, in the form the fragment shader meets
-/// them in.
+/// them in — **`statics::push_volumes`'s own rule, not `boxes_of`'s alone**.
 ///
-/// [`crate::statics::push_volumes`] is the live route and it does one thing
-/// more: where the occlusion grid holds a *named* primitive for a piece, the
-/// box a fragment is met against is the grid's own merged solid rather than
-/// this per-tile one. That difference cannot reach the class under measurement
-/// — a merged primitive exists only for a piece the grid took in, and the
-/// report below counts how many of those there are precisely so that this
-/// sentence stays true rather than being assumed.
-fn volumes_of(x: i32, y: i32, z: i8, tile: &StaticTile, shape: &Shape) -> Vec<Volume> {
+/// The difference is one line and it is the whole reason this function exists
+/// rather than a bare `boxes_of` call: where the occlusion grid holds a *named*
+/// primitive for a piece, the box a fragment is met against is **the grid's own
+/// merged solid**, continuous across every tile the piece runs over, and not
+/// the per-tile box `boxes_of` yielded. A wall that runs ten tiles is one solid
+/// there and ten boxes here, and a ray that misses the tenth box does not miss
+/// the wall.
+///
+/// This tool claimed for a session that the difference could not reach what it
+/// measures, on the grounds that only a piece the grid took in has a merged
+/// primitive. That was too strong twice over: `docs/footprints.md`'s S4 found
+/// forty-two placements of its own class inside the grid, and every panel and
+/// whole-tile share this tool prints is about pieces that are mostly *walls*.
+/// So the grid is built and consulted, which is what the frame does.
+fn volumes_of(
+    x: i32,
+    y: i32,
+    z: i8,
+    graphic: Graphic,
+    tile: &StaticTile,
+    shape: &Shape,
+    occlusion: &occlusion::Occlusion,
+) -> Vec<Volume> {
+    let owner = occlusion::Owner::new(z, graphic);
     let mut out = Vec::new();
-    occlusion::boxes_of(x, y, z, tile, shape, |_, _, space| {
+    occlusion::boxes_of(x, y, z, tile, shape, |part, _, space| {
+        let space = match occlusion.id_of(x, y, owner, part) {
+            Some(id) => occlusion.solid(id).space,
+            None => space,
+        };
         out.push(Volume::of(&space, 0));
     });
     out
+}
+
+/// The occlusion grid over one window, built exactly as `light::collect` builds
+/// the frame's: every static offered to [`occlusion::Builder::add`], which
+/// drops the `CLEAR` ones itself.
+///
+/// The cutaway is [`Cutaway::OPEN`] — nothing hidden — because a census is about
+/// what the geometry *is*, not about what one player standing somewhere can see.
+/// A frame with a roof cut holds fewer solids and would merge differently, which
+/// is a second question and not this one.
+fn grid(
+    map: &Map,
+    tiledata: &TileData,
+    atlas: &StaticAtlas,
+    at: (i32, i32),
+    radius: i32,
+    footprints: bool,
+) -> occlusion::Occlusion {
+    let mut builder = occlusion::Builder::new(TileBounds {
+        min_x: at.0 - radius,
+        max_x: at.0 + radius,
+        min_y: at.1 - radius,
+        max_y: at.1 + radius,
+    });
+    for x in at.0 - radius..=at.0 + radius {
+        for y in at.1 - radius..=at.1 + radius {
+            for item in map.statics_at(x as u16, y as u16) {
+                let graphic = Graphic(item.tile);
+                let shape = occlusion::shape_of(Some(atlas), graphic);
+                let shape = match footprints {
+                    true => shape,
+                    false => Shape {
+                        footprint: None,
+                        ..shape
+                    },
+                };
+                builder.add(
+                    x as u16,
+                    y as u16,
+                    item.z,
+                    graphic,
+                    tiledata.static_tile(graphic.0),
+                    shape,
+                );
+            }
+        }
+    }
+    builder.finish(&Cutaway::OPEN)
 }
 
 /// One picture's pixels against one set of boxes: how many are drawn, and how
@@ -195,21 +265,19 @@ struct Tally {
     /// because a share of discarded pixels that does not say *whose* pixels is
     /// a number nobody can act on.
     claim: &'static str,
-    /// **A picture that is given panels and has a fitted prism sitting unused.**
+    /// **A picture the client calls a `PLATFORM` that stands as the box its art
+    /// fits** — a table, a counter, a display case.
     ///
-    /// `Shape::of` measures a prism for every picture the wall detector called a
-    /// corner, and `boxes_of` reads one only where the client's own `CLIMBABLE`
-    /// bit is set — so a table whose art fits a box is stood up as two
-    /// `PANEL_THICKNESS` slabs on two edges of its tile, and the measurement
-    /// that would have made it a box is thrown away. That is what a person
-    /// reported at Britain's `(1496, 1663)`: `0x0B06`, a display case, read as
-    /// `Corner { East, South }` with `prism E 4` beside it.
-    ///
-    /// Counted rather than argued because believing the prism outside
-    /// `CLIMBABLE` is a decision with a blast radius — a house's own corner is
-    /// a corner of two walls and fits a prism too — and the first thing that
-    /// decision needs is how many pictures and placements it would move.
-    prism_unused: bool,
+    /// The class this tool was pointed at when a person said the table at
+    /// Britain's `(1496, 1663)` had been chopped. `Shape::of` fits a prism to
+    /// every picture the wall detector called a corner, a tabletop drawn as a
+    /// diamond is one, and `boxes_of` used to read a prism only under
+    /// `CLIMBABLE` — so `0x0B06` stood as two `PANEL_THICKNESS` slabs with
+    /// `prism E 4` measured and unread beside it. It reads one under `PLATFORM`
+    /// now, and this counts what that moved: the share still overhanging its own
+    /// box is the column to watch, since it went from 53.3% to 2.6% on that
+    /// graphic.
+    platform_body: bool,
 }
 
 /// The one claim this plan is about, named once so that the class is defined by
@@ -282,6 +350,14 @@ fn main() {
         }
     }
 
+    // The two grids: the one the frame builds today, and the one it built
+    // before S3 gave `boxes_of` a footprint to read. Two rather than one because
+    // merging is a function of the boxes — a narrowed box may stop touching its
+    // neighbour — so a "before" measured against today's grid would be half of
+    // each answer.
+    let live = grid(&map, &tiledata, &atlas, (cx, cy), radius, true);
+    let before = grid(&map, &tiledata, &atlas, (cx, cy), radius, false);
+
     let mut tallies: BTreeMap<u16, Tally> = BTreeMap::new();
     let mut placements = 0u32;
     for x in cx - radius..=cx + radius {
@@ -302,14 +378,17 @@ fn main() {
                     ..shape
                 };
 
-                let now = volumes_of(x, y, item.z, tile, &shape);
+                let now = volumes_of(x, y, item.z, graphic, tile, &shape, &live);
                 let (drawn, missed_now) = overhang(image, (x, y), item.z, &now);
                 let missed_wide = match shape.footprint {
                     // Nothing to compare: the two shapes are the same shape, and
                     // walking the picture twice for one answer is only slower.
+                    // The two *grids* can still differ here — a neighbour's
+                    // narrowed box merges differently — but not for this piece,
+                    // whose own solids are the same solids either way.
                     None => missed_now,
                     Some(_) => {
-                        let boxes = volumes_of(x, y, item.z, tile, &wide);
+                        let boxes = volumes_of(x, y, item.z, graphic, tile, &wide, &before);
                         overhang(image, (x, y), item.z, &boxes).1
                     }
                 };
@@ -324,7 +403,7 @@ fn main() {
                 tally.claim = claim_of(tile, &shape);
                 tally.art = (image.width(), image.height());
                 tally.roof = tile.flags.is_roof();
-                tally.prism_unused = tile.flags.is_platform()
+                tally.platform_body = tile.flags.is_platform()
                     && !tile.flags.is_climbable()
                     && !tile.flags.is_background()
                     && shape.prism.is_some();
@@ -496,17 +575,17 @@ fn report(
     // **The measurement that is already made and thrown away.** See
     // `Tally::prism_unused`: how much of the world is stood up as panels or as
     // a whole tile while its own art has a prism fitted to it.
-    let unused: Vec<(&u16, &Tally)> = tallies.iter().filter(|(_, tally)| tally.prism_unused).collect();
-    let unused_placements: u32 = unused.iter().map(|(_, tally)| tally.placements).sum();
-    let unused_shadowing: u32 = unused.iter().map(|(_, tally)| tally.in_the_grid).sum();
+    let bodies: Vec<(&u16, &Tally)> = tallies.iter().filter(|(_, tally)| tally.platform_body).collect();
+    let unused_placements: u32 = bodies.iter().map(|(_, tally)| tally.placements).sum();
+    let unused_shadowing: u32 = bodies.iter().map(|(_, tally)| tally.in_the_grid).sum();
     println!(
-        "  {unused_placements:>9}  placements of {} graphics the client calls a PLATFORM and the art\n\
-         \x20            fits a prism to, which `boxes_of` never reads because the tile is not\n\
-         \x20            CLIMBABLE — {unused_shadowing} of them are occluders, so believing the prism\n\
-         \x20            moves their shadow as well as their surface\n",
-        unused.len(),
+        "  {unused_placements:>9}  placements of {} graphics the client calls a PLATFORM whose art fits\n\
+         \x20            a prism, so `boxes_of` stands them as that body rather than as two\n\
+         \x20            panels — {unused_shadowing} of them are occluders, which is how many shadows\n\
+         \x20            that moved\n",
+        bodies.len(),
     );
-    let mut worst_unused: Vec<&(&u16, &Tally)> = unused.iter().collect();
+    let mut worst_unused: Vec<&(&u16, &Tally)> = bodies.iter().collect();
     worst_unused.sort_by_key(|(_, tally)| std::cmp::Reverse(tally.missed_now));
     println!("    graphic  placements   discarded   prism fit   name");
     for (graphic, tally) in worst_unused.iter().take(10) {
