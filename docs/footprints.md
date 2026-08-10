@@ -492,13 +492,25 @@ above already carries.
   for the client's input. It reads `openshard.db` now, on by default, and the
   two bookcases at `(1505, 1656)`/`(1506, 1656)` come back out of it by name.
   S5 is unblocked.
-- 🚩 **`Crooked` is 356 placements and they have names.** `0x0B3F` and `0x0B40`
-  "counter", `0x0AA0`/`0x0AFE`/`0x0B01` "display case", `0x0B5F`/`0x0B60`
-  "bench", `0x1365`/`0x1366` "rock", `0x00CF`/`0x00D1` "stone arch". Two of them
-  are the sharpest case: **`0x0B3E` measures `x (0,4) y (0,4)` and `0x0B40`,
-  the same counter drawn the other way round, is refused** — so the refusal is
-  not "a counter is not a box", it is something about one of the two pictures.
-  That pair is a two-graphic fixture, which is the cheapest kind.
+- ✅ **`Crooked` is 356 placements and they have names** — read 2026-08-10,
+  columns dumped straight off `base_edge`, no rule changed. `0x0B3F` and
+  `0x0B40` "counter", `0x0AA0`/`0x0AFE`/`0x0B01` "display case", `0x0B5F`/
+  `0x0B60` "bench", `0x1365`/`0x1366` "rock", `0x00CF`/`0x00D1` "stone arch".
+  The sharpest pair turned out to be two different pictures, not one: `0x0B3D`
+  and `0x0B3E` are a bare counter, a clean monotonic V both ends (now
+  `Overhung`, D8's own refusal, not `Crooked` — S6 had already closed this
+  half). `0x0B3F` and `0x0B40` are **pixel-identical to each other** — the same
+  art shipped under two graphic ids — and their base is a counter *with wares
+  on it*: the per-column bottom edge runs three separate humps (`32→44`,
+  `64→67`, `49→51`, at columns 6, 19 and 37), which is three objects sitting at
+  three different depths, not one box's edge read wrong. The rest confirm the
+  same shape of answer rather than a new one: the bench's columns jump `36→19`
+  at one column (a leg, then open air, then the far leg), the stone arch's
+  jump `70→102` at another (the near jamb, then the opening behind it), the
+  rock is jagged the way a rock is. `Crooked` is doing its job across the
+  class — a picture standing on more than one thing, or on nothing between two
+  things, and none of the nine graphics checked is a detector defect wearing
+  that name.
 - 🚩 **The outer ends are half a pixel wide and the rounding pays for it.** The
   two far coordinates are exact (D5b); the two near ones are read from the end
   column's centre, and the sweep paints the column a corner falls *inside*, so

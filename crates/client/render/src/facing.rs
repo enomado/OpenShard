@@ -608,9 +608,6 @@ pub fn measure_footprint(image: &Image) -> Result<Footprint, Refusal> {
     let (width, height) = (image.width(), image.height());
     let base = base_edge(image);
     let columns: Vec<(u16, u16)> = base.columns().collect();
-    if std::env::var_os("OPENSHARD_DEBUG_FOOTPRINT").is_some() {
-        eprintln!("columns: {columns:?}");
-    }
     let (Some(first), Some(last)) = (columns.first(), columns.last()) else {
         return Err(Refusal::Empty);
     };

@@ -257,6 +257,6 @@ fn report(art: &Art, id: u16) {
         image.width(),
         image.height(),
         facing::facing_of(&image),
-        facing::footprint_of(&image),
+        facing::measure_footprint(&image),
     );
 }
