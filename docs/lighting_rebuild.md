@@ -1889,31 +1889,49 @@ against the silhouette's own inflated field, chosen by looking. The bands are
 gone either way; what the normal buys is the torch-side reading the *done when*
 asks for.
 
-🚩 **And the plane stands at the wrong place while a mobile walks — reported
-2026-08-10 as "vertical stripes, in motion".** Two expressions for one position,
-and only one of them moves. `mobiles::place` puts the sprite's rect at
-`cell_centre`, which is the *eased* body position between the tile it left and
-the tile it is walking to, snapped to the eye's own lattice (`docs/camera.md`
-D11). The `place` word beside it is `Place::of_mobile(mobile.at)` — the
-**destination tile, an integer**. `billboard_at` takes the tile and adds the
-fragment's own offset from the sprite's middle, so it answers *tile centre + the
-offset from where the figure is drawn*: standing still the two anchors are the
-same point and nothing is wrong, and mid-step they are up to a whole tile apart.
-The figure's light is computed for somewhere it is not, and the error slides
-smoothly and then snaps when `at` changes — which is the motion in the report.
+~~🚩 **And the plane stands at the wrong place while a mobile walks — reported
+2026-08-10 as "vertical stripes, in motion".**~~ **Fixed 2026-08-10,
+`f41dd86`.** Two expressions for one position, and only one of them moved.
+`mobiles::place` puts the sprite's rect at `cell_centre`, the *eased* body
+position between the tile it left and the tile it is walking to, snapped to
+the eye's own lattice (`docs/camera.md` D11). The `place` word beside it is
+`Place::of_mobile(mobile.at)` — the **destination tile, an integer**.
+`billboard_at` took the tile and added the fragment's own offset from the
+sprite's middle, so it answered *tile centre + the offset from where the
+figure is drawn*: standing still the two anchors were the same point and
+nothing was wrong, and mid-step they were up to a whole tile apart. The
+figure's light was computed for somewhere it was not, and the error slid
+smoothly and then snapped when `at` changed — which was the motion in the
+report.
 <br>
-Why it reads as *vertical* stripes rather than as a wobble is the plane itself:
+Why it read as *vertical* stripes rather than as a wobble is the plane itself:
 a screen **column** of a billboard is one `(x, y)` — only `z` runs down it — so
 every shadow boundary crossing a figure is a vertical edge by construction, and
-sliding the anchor sweeps those edges across the sprite. `dither`'s quantum
-sharpens them: it hashes the position to a hundred-and-twenty-eighth of a tile,
+sliding the anchor swept those edges across the sprite. `dither`'s quantum
+sharpened them: it hashes the position to a hundred-and-twenty-eighth of a tile,
 and one screen pixel across a billboard is `1/44` of a tile, so neighbouring
-columns draw unrelated turns of the eight-ray spiral.
+columns drew unrelated turns of the eight-ray spiral.
 <br>
-The fix is one anchor rather than two, and the shape of it is a decision, not
-this entry's to make: the drawn position is fractional and `Place` carries whole
-tiles. The instance has a word free for it — `SpriteQuad::owner` and
-`mobile_instances[].owner` are kept for stride and read by no shader since 6f.
+**The fix is one anchor rather than two** — `mobiles::billboard_offset` reads
+how far `Mobile::drawn` sits past `Mobile::at`'s tile (a new exact inverse,
+`camera::unproject_ground`) and packs it as two fixed-point `i16`s into the
+word that was free. **Not `SpriteQuad::owner`, though an earlier draft of this
+entry named that one** — `owner` is compared against `OwnerId::NONE` by the
+shadow walk's own-run test for every row, mobile included, so it is live.
+`twin` is the one a mobile never reads: its stance is always `Upright`, so it
+never draws a corner, which is `twin`'s only other job. `impostor.wesl`'s own
+`billboard_offset` unpacks the word back and `billboard_at` is handed
+`tile + billboard_offset(in.twin)` instead of the bare tile.
+<br>
+**Gate:** `tests/frame.rs`'s
+`a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going`
+(`957b8f0`) walks a billboard through five points of one step and checks the
+position G-buffer's own `(x, y)` against `camera::unproject_ground(Mobile::
+drawn)` computed independently — the same "two spellings compared" shape
+`a_billboards_normal_is_the_plane_it_is_drawn_on` already holds the normal to.
+Fault-injected back to the bare tile, it fails at up to a whole tile off
+(`301.5` vs `300.5` at `left = 1.0`, one step in); with the fix, agreement to
+`1e-4` of a tile.
 
 *The camera-facing half is landed, 2026-08-09, and the inflated-silhouette half
 is not started.* Before this a mobile fell into the same branch as a static
