@@ -1946,6 +1946,35 @@ there is no picture to choose between two candidates with yet.
 **Phase 8 — the sun.** A direction, the same BRDF, the same rays, sky visibility
 as ambient occlusion.
 
+## What is measured and what is invented, counted
+
+`examples/geometry_census.rs`, over Britain — `121x121` tiles around
+`(1501, 1659)`, 11,184 statics, 480 distinct graphics. The question it answers is
+"what of this geometry is a claim about the art, and what is a stand-in":
+
+| | |
+|---:|---|
+| **3.2%** | a fitted prism, one body a tread — the only box whose *shape* came out of the picture |
+| **39.6%** | a lid: measured, but a plane with `min.z == max.z` |
+| **25.4%** | panels on the edges the silhouette named, each inset by `PANEL_THICKNESS` |
+| **0.2%** | a whole tile, a climbable the prism search could not fit |
+| **31.6%** | **a whole tile, because the art would not say** |
+
+So **68.2% is measured off the art in some way and 31.8% is a whole tile standing
+in for a shape nobody has** — and the biggest single class in the world is a
+*plane*, which is the degeneracy the floor entry in the backlog is about.
+
+Crossed with the other axis: **32.7% of statics are a point of no primitive at
+all** — `occlusion::opacity` reads them `CLEAR`, `Builder::add` pushes nothing,
+`Occlusion::id_of` has no name — and **15.1% of the world is a `CLEAR` piece that
+is nevertheless handed a box with real height** by `statics::push_volumes`. That
+combination is the one this document's cornice and floor entries both end at: a
+side face a fragment can be answered with, and no identity to excuse it by.
+
+These are the numbers to re-run after anything on the backlog lands, and the
+reason they are in the document rather than in a session note: every "how much of
+this is a crutch" argument on this track has so far been made from memory.
+
 ## Accepted costs
 
 - **The picture changes, and nothing in the renderer compensates.** Pre-shaded art
