@@ -2947,39 +2947,36 @@ fn walk_primitives(
         ];
         let opacity = f32::from(stands.opacity) / 255.0;
         let by_surface = match stands.edges {
-            Edges::NONE => {
-                // **Not the lid's own `entered`/`leaves`.** A lid is flat in `z`
-                // (`Solid::box_of`'s `min.z == max.z` for an ordinary floor), so
-                // the `z` slab narrows both ends to the exact same instant the
-                // ray crosses that one height — correct as a crossing *point*,
-                // but [`crosses`] needs the ray's `z` on each side of that point
-                // to tell "crossed through" from "never came close," and a
-                // from/to that are already equal answers every comparison in
-                // [`crosses`] as "never." What it needs is the ray's `z` where it
-                // enters and leaves the lid's own real horizontal footprint, over
-                // an unconstrained `z` — the lid's own box and not its tile's: a
-                // tread's top is a lid narrower than its tile, and asking a wider
-                // box than the lid actually is would let a ray graze the tile's
-                // corner past the tread's real edge read as "crossed through" the
-                // tread.
-                let footprint = crate::solid::Solid {
-                    min: crate::camera::WorldSpot {
-                        x: space.min.x,
-                        y: space.min.y,
-                        z: -1e6,
-                    },
-                    max: crate::camera::WorldSpot {
-                        x: space.max.x,
-                        y: space.max.y,
-                        z: 1e6,
-                    },
-                };
-                let (tile_entered, tile_leaves) =
-                    ray_vs_solid(from, to, &footprint).unwrap_or((entered, leaves));
-                let from_z = from[2] + delta[2] * tile_entered;
-                let to_z = from[2] + delta[2] * tile_leaves;
-                opacity * crosses(from_z, to_z, low, high)
-            }
+            // A **lid**: two questions, and [`ray_vs_solid`] above has already
+            // answered the first. *Did the ray meet this lid at all* is a hit
+            // against the primitive's own box — its footprint and its `z` span
+            // together, so a ray grazing the tile's corner past a tread's real
+            // edge never reaches here. What is left is *did it get from one side
+            // of the lid to the other*, which is [`crosses`] over the segment's
+            // own two ends.
+            //
+            // **The ends of the segment, not the ends of the footprint.** A
+            // second `ray_vs_solid` against an infinite-`z` stand-in for the
+            // footprint stood here, so that a lid flat in `z`
+            // (`Solid::box_of`'s `min.z == max.z` for an ordinary floor) would
+            // not narrow both ends of the interval to the one instant the ray
+            // is at its height — which [`crosses`] reads as "never." That cured
+            // the flat lid and left the **corner**: a ray through a corner of
+            // the footprint enters and leaves it at one `t`, so the two `z`
+            // were again one number and every lid meeting at that corner
+            // answered "nothing crossed." A floor leaked one bright point per
+            // corner of the grid while every seam between two of its tiles
+            // held. Reported at `(1492, 1642)`, `z 28`;
+            // `docs/lighting_rebuild.md` phase 6i.
+            //
+            // Over the whole segment nothing is degenerate: the hit is what
+            // says the crossing happened *here* and not a tile away, which
+            // leaves [`crosses`] free to be asked about the ray rather than
+            // about an interval of it. Its strictness is untouched, and is why
+            // this is not simply `opacity` the way a body's is: a candle
+            // standing on the floor it lights sends every ray from that floor's
+            // own plane, both ends on one side of it, and stops nothing.
+            Edges::NONE => opacity * crosses(from[2], to[2], low, high),
             // A body is a real 3D box and [`ray_vs_solid`] is an exact slab test
             // — a `Some` here already means the segment genuinely passed through
             // it over `entered..leaves`, so occlusion is the body's own opacity
@@ -4527,6 +4524,113 @@ mod tests {
         assert!(
             streaming > 0.99 && exact > 0.99,
             "the higher treads are strips of `y` this ray is never over: \
+             streaming {streaming}, exact {exact}",
+        );
+    }
+
+    /// **A floor is one surface at the point four of its tiles meet, and a ray
+    /// through that point is stopped** — `docs/lighting_rebuild.md` phase 6i.
+    ///
+    /// Reported by a person playing: a lattice of bright points over a floor at
+    /// `(1492, 1642)`, `z 28`, **one to a tile corner** and nothing along the
+    /// seams between two tiles. The lattice is the diagnosis. A leak along a
+    /// seam is an interval question and would have shown as a line; a leak at a
+    /// point is a *degenerate* one, and the only interval this walk had that
+    /// collapses to a point at a corner was the one the lid rule was asked
+    /// over — the ray's run inside the lid's own horizontal footprint. A ray
+    /// through a corner enters and leaves that footprint at one `t`, so both
+    /// ends of it carried one `z` and [`crosses`] answered, honestly, that
+    /// nothing had crossed anything over an interval of no length. All four
+    /// lids sharing the corner answered alike, which is what left a hole.
+    ///
+    /// The scene is the smallest thing that can pose it: four floor tiles round
+    /// `(101, 101)`, a fragment over one of them and a flame under the tile
+    /// diagonally opposite, so the segment passes through the shared corner at
+    /// exactly the floor's own height. Both walks, since the leak was in the
+    /// rule and not in either walk's traversal, and the shader carries the same
+    /// arm again in `blit.wesl`.
+    ///
+    /// The positive control is the geometry: the assertion below would pass for
+    /// a ray that missed the corner by a tile, so the midpoint of the segment is
+    /// checked to *be* the corner first. `flame_radius` is `0.0` for the same
+    /// reason — eight samples on a disc would put seven of them off the corner,
+    /// and the leak this is about is what one exact ray does.
+    #[test]
+    fn a_ray_through_the_point_four_floor_tiles_share_is_stopped_by_them() {
+        use crate::occlusion::{Builder, Shape};
+
+        // `FLOOR` is the whole of what makes a lid — `occlusion::boxes_of` asks
+        // `is_background()` and nothing else, deliberately, so that a floor
+        // whose silhouette read as a wall is still a floor.
+        let floor = StaticTile {
+            flags: TileFlags::new(TileFlags::FLOOR | TileFlags::NO_SHOOT),
+            height: 0,
+            ..StaticTile::default()
+        };
+        let mut occlusion = Builder::new(crate::camera::TileBounds {
+            min_x: 95,
+            max_x: 105,
+            min_y: 95,
+            max_y: 105,
+        });
+        // Four tiles round one corner, each its own graphic: `occlusion::merge`
+        // folds a floor of one graphic into a single primitive, and a single
+        // primitive has no corner shared between two of its pieces to leak at.
+        // That the merge would have hidden this defect is worth stating in the
+        // fixture rather than discovering later — a real floor is laid out of
+        // several graphics and a merged one is the easier case.
+        for (at, graphic) in [
+            ((100u16, 100u16), 0x0400u16),
+            ((101, 100), 0x0401),
+            ((100, 101), 0x0402),
+            ((101, 101), 0x0403),
+        ] {
+            occlusion.add(at.0, at.1, 0, Graphic(graphic), &floor, Shape::UNREAD);
+        }
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        // Over the middle of the first tile, and the flame under the middle of
+        // the one diagonally opposite: the segment's midpoint is the corner all
+        // four share, at the floors' own `z`.
+        let from = Vec2::new(100.5, 100.5);
+        let to = Vec2::new(101.5, 101.5);
+        let (above, below) = (10.0f32, -10.0f32);
+        assert_eq!(
+            [
+                (from.x + to.x) * 0.5,
+                (from.y + to.y) * 0.5,
+                (above + below) * 0.5
+            ],
+            [101.0, 101.0, 0.0],
+            "the fixture's ray does not pass through the corner these tiles share, so it cannot be \
+             about one",
+        );
+
+        let lighting = Lighting {
+            ambient: NIGHT,
+            lights: vec![Light {
+                at: to,
+                z: below,
+                radius: 40.0,
+                color: [1.0, 1.0, 1.0],
+                intensity: 1.0,
+                beam: None,
+            }],
+            occlusion,
+            sun: None,
+            view: crate::debug::View::default(),
+            // One exact ray — see this test's own doc.
+            flame_radius: 0.0,
+            shadow_rays: ShadowRays::DEFAULT,
+        };
+        // A point of no primitive: the fragment is in the air over the floor, so
+        // no exemption is in play and what answers is the lid rule alone.
+        let spot = Spot::flat(from, above, (100, 100));
+        let streaming = sample(spot, &lighting).reaches[0].through;
+        let exact = sample_exact(spot, &lighting).reaches[0].through;
+        assert!(
+            streaming == 0.0 && exact == 0.0,
+            "the ray passes through the point four floors share and reaches the flame anyway: \
              streaming {streaming}, exact {exact}",
         );
     }

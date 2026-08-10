@@ -1068,35 +1068,33 @@ fn primitive_stopped(
     let middle = (hit.entered + hit.leaves) * 0.5;
     let opacity = f32(stands.opacity) / 255.0;
     if edges == 0u {
-        // A **lid** — a floor, a rug, a plank. What crosses it is asked
-        // over the ray's whole run inside the lid's own real horizontal
-        // footprint (an infinite-`z` box, since a lid's own box above is
-        // flat in `z` and would only ever catch the instant the ray is
-        // exactly at its height), not over `hit`'s own thin interval.
-        // `crosses` does the actual plane test on the `z` that gives it.
-        // The primitive's own `x`/`y`, not the whole cell — a tread's
-        // own top is a lid narrower than its tile, and asking a wider
-        // box than the lid actually is would read a ray grazing the
-        // tile's corner past the tread's real edge as "crossed through"
-        // it. `docs/lighting_raymarch.md`'s "second bigger idea".
-        let unbounded = ray_vs_solid(
-            start,
-            finish,
-            vec3<f32>(stands.lo.x, stands.lo.y, -1.0e6),
-            vec3<f32>(stands.hi.x, stands.hi.y, 1.0e6),
-        );
-        var tile_entered = hit.entered;
-        var tile_leaves = hit.leaves;
-        if unbounded.hit {
-            tile_entered = unbounded.entered;
-            tile_leaves = unbounded.leaves;
-        }
-        return opacity * crosses(
-            lit.z + delta.z * tile_entered,
-            lit.z + delta.z * tile_leaves,
-            low,
-            high,
-        );
+        // A **lid** — a floor, a rug, a plank. Two questions, and the first of
+        // them is already answered: *did the ray meet this lid at all*, which is
+        // `hit` against the primitive's own box, footprint and `z` span
+        // together. What is left is the second — *did it get from one side of
+        // the lid to the other* — and that is `crosses` over the segment's own
+        // two ends.
+        //
+        // **The ends of the segment, not the ends of the footprint.** A second
+        // `ray_vs_solid` against an infinite-`z` stand-in for the footprint
+        // stood here and handed `crosses` the ray's `z` where it entered and
+        // left the lid's own horizontal extent. That interval is empty for a ray
+        // through a **corner** of the footprint — it enters and leaves at one
+        // `t` — so both `z` were one number and `crosses` honestly reported that
+        // nothing had crossed anything over an interval of no length. All four
+        // lids meeting at a tile corner answered alike, and a floor leaked one
+        // bright point per corner of the grid while its seams held. Reported at
+        // `(1492, 1642)`, `z 28`; `docs/lighting_rebuild.md` phase 6i.
+        //
+        // Over the whole segment there is no degenerate case: `hit` is what says
+        // the crossing happened *here* rather than a tile away, so `crosses` is
+        // free to be asked about the ray rather than about an interval of it.
+        // The strictness it exists for is untouched and is the reason this is not
+        // simply `opacity`: a candle standing on the floor it lights sends every
+        // ray from that floor's own plane, so both ends are on one side of it and
+        // nothing is stopped. `light::walk_primitives`'s `Edges::NONE` arm is the
+        // twin, and the same shape.
+        return opacity * crosses(lit.z, lit.z + delta.z, low, high);
     }
     if edges == EDGE_MASK {
         // A **body** — a whole tile that stands up and whose art would

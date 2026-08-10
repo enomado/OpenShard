@@ -2068,8 +2068,11 @@ Things noticed while writing this, not blocking any phase:
   candidate for anything tile-shaped — and the knobs may be off their defaults.
   Pinning it wants the client's own `View::Normal` of the same frame, which
   separates a geometry answer from a walk answer, plus the tab's numbers.
-- 🚩 **Light comes through a floor at the *corner points* between its tiles, and
-  it is one line of `primitive_stopped`.** Seen from under a ceiling at
+- 🟡 **Light comes through a floor at the *corner points* between its tiles, and
+  it is one line of `primitive_stopped`.** **The hole is closed and the report is
+  not explained** — the two halves came apart when the fix was measured, and
+  what follows the original entry says which is which. Seen from under a ceiling
+  at
   Britain's `(1492, 1642)`, `z 28` under statics at `z 40` and `z 23`: a regular
   lattice of bright dots, one per tile **corner**, and nothing along the joins
   between them. The lattice is the tell — a leak along a join is an interval
@@ -2100,6 +2103,36 @@ Things noticed while writing this, not blocking any phase:
   and moves with it; the gates are `tests/lighting.rs`'s floor scenes and
   `scene::storey_over_a_torch`, which is the fixture the *opposite* defect (a
   floor stopping nothing at all) was found on.
+  <br>
+  **Done 2026-08-10, and smaller still than the entry proposed.** The pierce
+  does not have to be computed: `primitive_stopped` has already run
+  `ray_vs_solid` against the lid's own box — footprint *and* `z` span — and
+  returned early when it missed, so *did the ray meet this lid* is answered
+  before the arm begins. What was left was *did it get from one side to the
+  other*, and that is `crosses` over the **segment's own two ends**. One line in
+  each twin, the sentinel box gone from both. The gate is
+  `light::tests::a_ray_through_the_point_four_floor_tiles_share_is_stopped_by_
+  them` — four floor tiles of four graphics (a merged floor is one primitive
+  with no interior corner to leak at), a fragment over one and a flame under the
+  one diagonally opposite, so the segment's midpoint *is* the shared corner.
+  Confirmed to have teeth by fault injection: the old arm makes it read
+  `streaming 1, exact 1` where it now reads `0`.
+  <br>
+  🚩 **What is not confirmed is that this is what the person saw**, and the
+  measurements say so plainly. A sweep of 40,000 fragments across four tiles of
+  a floor standing in the shadow of a storey ten `z` above it, at
+  `FLAME_RADIUS`, leaks **nothing** — under the old arm as much as the new one,
+  which is why that sweep is not in the tree: a gate that cannot fail is worse
+  than none. And `examples/isolated_scene` at `1492,1642,28`, with a flame added
+  above the `z 40` lid, renders **byte-identical** in `View::Light` under the two
+  arms. Both readings say the same thing: the corner case is a set of measure
+  zero for an ordinary ray, so it cannot on its own paint one dot per corner over
+  a floor. Either the lattice has a second cause — the impostor naming one of
+  four coplanar lids at a fragment that sits exactly on their shared corner is
+  the nearest candidate, and it is a 6f-shaped question — or the arrangement that
+  produces it is not the one reconstructed here. **What the next attempt needs
+  is the frame**: the camera and the light the person actually had, since the
+  coordinates alone did not rebuild it.
 - 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
   showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the
