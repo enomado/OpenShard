@@ -55,10 +55,11 @@
 //!   so this says what it is instead — and the oracle below is what says which
 //!   of the two, if either, is the renderer being wrong.
 //! - `OPENSHARD_LIGHT_Z` / `OPENSHARD_LIGHT_RADIUS` — default `2` and `6`.
-//! - `OPENSHARD_FRAME_VIEW=n` — an index into `debug::View::ALL`; `7` is
-//!   `Shadow`. Default `0`, `Lit` — mostly uninformative here, since this
-//!   scene draws no billboard under the mesh, but the same index every other
-//!   tool in this crate uses.
+//! - `OPENSHARD_FRAME_VIEW=n` — an index into `debug::View::ALL` and not the
+//!   enum's own numbering; `9` is `Shadow` and `5` is `Solid`. Default `0`,
+//!   `Lit` — mostly uninformative here, since this scene draws no billboard
+//!   under the mesh, but the same index every other tool in this crate uses.
+//!   See `isolated_scene`'s header for the whole order.
 //! - `OPENSHARD_SCENE_ZOOM=n` — notches of `Zoom::scale_up`. Default `3`,
 //!   already the ladder's own maximum (`4:1`) from `Zoom::ONE`.
 //! - `OPENSHARD_STAIR_PROBE=x,y,z[,surface];…` — one `light::sample` report per

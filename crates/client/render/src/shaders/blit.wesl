@@ -238,6 +238,7 @@ const VIEW_SUN: u32 = 8u;
 const VIEW_SKY: u32 = 9u;
 const VIEW_FLAMES: u32 = 10u;
 const VIEW_NORMAL: u32 = 11u;
+const VIEW_SOLID: u32 = 12u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
 
@@ -1471,6 +1472,9 @@ fn knee(value: f32) -> f32 {
 // `crate::debug::View` for what each one is for.
 fn debug_color(
     view: u32,
+    // Which solid of the grid the fragment is a point of — `SOLID_NOBODY` for a
+    // point of none. See `VIEW_SOLID`.
+    mine: u32,
     kind: u32,
     tile: vec2<f32>,
     at: vec3<f32>,
@@ -1516,6 +1520,23 @@ fn debug_color(
         // grey rather than a colour is the point: nothing about it reads as a
         // direction, because it is not one.
         return normal * 0.5 + vec3<f32>(0.5);
+    }
+    if view == VIEW_SOLID {
+        // Which primitive this pixel is a point of, as a colour — see
+        // `debug::View::Solid` for why this plane deserves a picture. Black for
+        // a point of none, which is the honest answer for the ground, for a
+        // mobile and for a static the grid holds no shape for, and it has to be
+        // told apart from every id: hence the `+ 1` inside the moduli, so no
+        // real id lands on black.
+        if mine == SOLID_NOBODY {
+            return vec3<f32>(0.0);
+        }
+        let n = f32(mine + 1u);
+        // Three primes, so that ids one apart are far apart in all three
+        // channels: the only question a picture of an identity answers is
+        // *same or different*, and neighbouring primitives are exactly the
+        // pair a seam is made of.
+        return vec3<f32>(fract(n / 7.0), fract(n / 13.0), fract(n / 29.0)) * 0.85 + vec3<f32>(0.15);
     }
     if view == VIEW_PLACE {
         // A checkerboard of tiles with the sub-tile fraction laid over it: the
@@ -1812,7 +1833,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if view != VIEW_LIT {
         return vec4<f32>(
             debug_color(
-                view, kind, tile, at, normal, sub, lit, flames, reached, nearest, nearest_through,
+                view, mine, kind, tile, at, normal, sub, lit, flames, reached, nearest, nearest_through,
                 sun_through, share,
             ),
             color.a,

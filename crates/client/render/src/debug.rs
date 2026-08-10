@@ -120,16 +120,36 @@ pub enum View {
     /// a mobile and for a tree today, and phases 6 and 7 are the work of leaving
     /// less of it in a frame.
     Normal = 11,
+    /// **Which primitive of the occlusion grid each pixel is a point of** — the
+    /// `SolidId` the position plane's fourth channel carries, hashed to a
+    /// colour, and black where a pixel is a point of none.
+    ///
+    /// The instrument four defects in a row asked for. 6f (a fragment of a
+    /// flight naming the wrong tread), 6h (a fragment met against a face buried
+    /// inside a merged solid), the lid whose corner pixel took a side face, and
+    /// the seam that still lights up are all one sentence — *the fragment names
+    /// the wrong box* — and every one of them was read by hand-decoding this
+    /// channel through a throwaway edit to the shader. It is the join every
+    /// shadow rule turns on: identity, D2's plane and the walk's own exemption
+    /// all start from this number, and until now it was the one plane of the
+    /// G-buffer with no picture.
+    ///
+    /// The colour carries no meaning beyond *same or different*, which is the
+    /// whole question a picture of an identity can answer: three prime moduli
+    /// over the id, so neighbouring ids are far apart in all three channels and
+    /// a seam between two primitives reads at a glance.
+    Solid = 12,
 }
 
 impl View {
     /// Every view, in the order [`View::next`] walks them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Lit,
         Self::Place,
         Self::Kind,
         Self::Height,
         Self::Normal,
+        Self::Solid,
         Self::Occluders,
         Self::Light,
         Self::Flames,
@@ -165,6 +185,7 @@ impl View {
             Self::Sky => "sky",
             Self::Flames => "flames",
             Self::Normal => "normal",
+            Self::Solid => "solid",
         }
     }
 }
