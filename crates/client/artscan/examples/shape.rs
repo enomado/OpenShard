@@ -19,15 +19,24 @@ fn main() {
             facing::facing_of(&image),
             facing::facing_of(&image).and_then(|f| facing::aperture_of(&image, f)),
         );
-        // The silhouette's top edge per column: where the picture starts.
+        // **Both edges, and the bottom one is the verdict's own input.**
+        // `facing::facing_of` reads `base_edge`'s *bottom* row per column and
+        // asks whether it is a straight 45° run confined to one half of the
+        // tile's column — the top row is never looked at. This printed only the
+        // top for a session, which is how a reader ends up explaining a `None`
+        // from the wrong line.
         let mut tops = Vec::new();
+        let mut bottoms = Vec::new();
         for x in 0..image.width() {
-            let top = (0..image.height()).find(|y| image.pixel(x, *y).is_some_and(|px| px.0 != 0));
-            tops.push(match top {
+            let drawn = |y: &u16| image.pixel(x, *y).is_some_and(|px| px.0 != 0);
+            let cell = |row: Option<u16>| match row {
                 Some(y) => format!("{y:>3}"),
                 None => "  .".to_string(),
-            });
+            };
+            tops.push(cell((0..image.height()).find(drawn)));
+            bottoms.push(cell((0..image.height()).rev().find(drawn)));
         }
-        println!("  top per column: {}", tops.join(""));
+        println!("  top per column:    {}", tops.join(""));
+        println!("  bottom per column: {}", bottoms.join(""));
     }
 }
