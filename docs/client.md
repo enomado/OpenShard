@@ -1386,6 +1386,70 @@ does not carry yet.
    the grant comes back. Nothing else could have caught the missing decode arm:
    every unit test on either side of it passed while the toggle was dead.
 
+9. **The skill window is a tree, and both of its tables are the client's own
+   files.** The second window here that is nobody's layout: the shard sends
+   numbers and nothing else. What a skill is *called* is `skills.mul` and which
+   heading it is filed under is `skillgrp.mul`, and neither had a reader —
+   `openshard_uofiles::skills` and `openshard_uofiles::skillgrp` are new. Two id
+   spaces, two newtypes: `SkillId` indexes the names, `GroupId` the headings,
+   and a window that mixed them would draw the right names under the wrong
+   headings while never being out of range.
+
+   `skillgrp.mul` is a file nothing but UOFiddler has ever read, and its shape
+   is worth writing down: a count, then `count - 1` fixed-width names, then one
+   `int32` per skill numbering **from one** into those names — zero means the
+   group the file never names, which the reference tooling calls *Misc* and
+   which holds eight of the fifty-eight. Read as zero-based, every skill comes
+   out one heading early and nothing looks broken.
+
+   **The `0x3A` is two packets sharing an id**, told apart by the byte after the
+   length: `0x00`–`0x03` is the whole list (ids one-based, zero-terminated),
+   `0xFF`/`0xDF` is one line (zero-based), `0xFE` is the shard sending its own
+   skill *names*. That byte is also what says whether the rows carry a cap, and
+   **it is the byte that is believed and not the version** — the version says
+   what a shard should send, and a decoder that asked it would read every field
+   of every row two bytes out of place the day the two disagreed. Two forms are
+   refused by name rather than read as the form we know: the `0xFE` table, and
+   the capless rows of a pre-4.0.0a client, which the reference hands a cap of
+   1000 that nobody sent.
+
+   **The window opens on the button and the packet only fills it.** The shard
+   sends the whole list at world entry too, so a window that opened when a
+   `0x3A` arrived would open itself at every login. `App::skills` is `Some` when
+   the window is up *and* holds the tree — one field on purpose, since a
+   `skills_open: bool` beside it could say the window was shut while its scroll
+   position stood. It is the one window kind whose existence `WorldView` cannot
+   answer for.
+
+   **A list that scrolls needed a scissor, and there was none.** `Scissor` is a
+   box applied on the processor: a quad straddling its edge is cut, rectangle
+   shortened and region moved by the same fraction, which is exact for a sprite
+   that is never rotated and needs no second pass. It rides on the `Picture`,
+   because a picture is *picked* as well as drawn and a hit test reading a
+   different box answers for a row scrolled out of the window. It is **not**
+   `GumpLabel::clip`, which is `{ croppedtext }` — that one drops whole
+   characters off the end of a line, ellipsis and all, and was checked against
+   `FontsLoader.GetTextByWidthASCII` rather than assumed.
+
+   **What the picture said that no test did.** Drawn and looked at, three
+   things were wrong at once. Every window's text was being overwritten by the
+   chat — one `GumpRenderer`, one instance buffer, and a queued write that lands
+   before the encoder is submitted, so two `render` calls a frame draw the
+   second call's quads twice and lose the first's; a defect the paperdoll's name
+   plate has had for as long as there has been a journal line to overwrite it.
+   The viewport was forty pixels too tall, so the list ran under the frame's own
+   rule. And cutting *every* line to the list's box took the total with them,
+   which is written on the frame below where the list stops — a line carries its
+   own box now, exactly as a picture does.
+
+   `crates/e2e/shard/tests/skill_window.rs` is the gate, and it is on the whole
+   path rather than the decoder: the list a character is sent for entering the
+   world, and the button asking for it again with the table emptied first —
+   because with the login's own list still standing, every assertion in it
+   passes on a shard that ignores the request. Checked by mutation: with the
+   `0x3A` arm out of `ServerPacket::decode` both tests fail, and every unit test
+   on either side stays green. The picture is `gumpshot`'s `skills` scene.
+
 Done: double-clicking a mobile — or ourselves — opens a framed window that draws
 its body and its equipment in the reference's order and hues, with the backpack
 last; the window drags, raises and closes like a container's; a unit test says a
@@ -3714,9 +3778,60 @@ that the ring reaches it. What was found on the way and left undone:
   id, a doll's by window and button — so this is an observation and not a
   design: a fourth would make the pattern worth extracting, and until then a
   shared "gesture" type would be an abstraction over two examples.
-- **The status bar and the skill list are the next two windows.** The requests
-  go out (decision 8's table); `WorldView::apply` has no arm for the `0x11` or
-  the `0x3A` that come back, so the answers are dropped at the same seam the
-  entry above describes. Both want a window of the client's own — neither is a
-  shard-sent layout — and the skill list is the one the reference draws with a
-  scrollbar, which nothing here has yet either.
+- ~~**The status bar and the skill list are the next two windows.**~~ The skill
+  list is built — decision 9 — and it brought the scrollbar with it. What is
+  still missing is the **status bar**: the `0x34` goes out, the `0x11` comes
+  back, and `WorldView::apply` still has no arm for it.
+
+## Backlog, found while drawing the skill window
+
+- **A stat change moves every skill's value and no `0x3A` follows.** The value
+  the window draws is `openshard_skills::skill_value` — trained, plus what the
+  body's stats lend it — and `apply_stats` writes the stats without emitting a
+  `SkillChanged`, which is what the delta packet is sent from. So `.set str 100`
+  moves fifty-eight numbers on a shard and none of them on any window standing
+  in front of a player. The server's half: either the stat door emits for every
+  skill that leans on the stat it changed, or the window is re-sent. Neither is
+  a client fix, and the client cannot tell.
+- **The lock arrows are drawn and answer nothing, and no skill can be used from
+  the window.** Both packets exist and the shard decodes both — `0x3A` from the
+  client is `SkillLockRequest`, and "use skill N" is a `0x12` text command whose
+  `openshard_skills::use_skill_button` already refuses an id past the table. The
+  window draws the lock's *face* because a lock somebody set from another client
+  is a fact about the skill that would otherwise be invisible. `Standing::cap`
+  is read off the wire and drawn nowhere, which is `Paperdoll::can_lift`'s trap
+  again: the reference has a checkbox that swaps the value column for the base
+  or the cap, and until something like it exists the field has no reader.
+- **A `0x3A` of type `0x01` or `0x03` means "open the window" as well**, and
+  this client does not take it: its window opens when the player presses the
+  button. Nothing sends one today — this engine's own shard sends `0x00`/`0x02`
+  — so it costs nothing until a shard that does is on the other end.
+- **The shard's own skill-name table (`0x3A` type `0xFE`) is refused by name.**
+  It is how an emulator ships skills the client's `skills.mul` has never heard
+  of, and reading it would mean the name table is a *view* rather than a file
+  read once at startup. Refused rather than skipped, so the day one arrives it
+  says so instead of drawing the wrong names.
+- **`SkillUpdate` has no gate on a live wire.** The e2e covers the whole list
+  both ways; the one-line delta is unit-tested on both sides and never crosses a
+  socket in a test, because making a skill actually move means training one and
+  a gain is a dice roll. A staff command that sets a skill would make it
+  gateable — there is `.set` for stats and nothing for skills.
+- **Nothing stops a second `GumpRenderer::render` in a frame.** The rule is
+  written on the function now, and the app obeys it by collecting every line of
+  gump-space text into one list. It is still a rule and not a type: a third
+  caller would silently take the second's quads, which is exactly the shape the
+  bug had. The fix, if it is worth one, is a renderer that appends into its own
+  buffer and draws once at the end of the frame.
+- **The window has no memory and no minimise**, which the paperdoll's backlog
+  already says for both kinds: the tree — which headings are shut, where the
+  list is scrolled to — is thrown away when the window closes, and the reference
+  remembers both across sessions. `desk.rs` is where that belongs.
+- **The scrollbar is the client's first and it belongs to one window.** A
+  container with more in it than fits has the same problem and no bar; so does
+  the journal. What is reusable is already separate — `Scissor` cuts anything,
+  and the thumb's arithmetic is four constants — but "a list that scrolls" is
+  not a type yet, and it should not become one until the second caller says what
+  shape it wants.
+- **The names are `skills.mul`'s English, not the localized ones.** `SKILL30.ENU`
+  and its `.KOR`/`.JPN`/`.CHT` kin are a different file this crate does not read,
+  and a client installed in another language will draw English rows.
