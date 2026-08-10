@@ -906,6 +906,19 @@ a test red, and the test names which grid met which.
 
 ## Backlog
 
+- 🚩 **`inputs.txt` does not say which fringe drew the frame, and a key now
+  changes it between two presses.** `frame::Inputs::summary` states every field
+  of a `Frame`, and `impostor::Fringe` is not one — it lives on the renderer
+  (`SpriteRenderer::set_fringe`), read from the environment once at start-up and
+  cycled by F2 since `e4c51b2`. So the switch that changes **6.7% of a lit
+  frame** (`docs/lighting_state.md`'s own table for `discard`) is exactly the
+  kind of difference the summary exists to name, and two dumps of one session
+  can now differ in it while their `inputs.txt` diff is empty. This is the same
+  lesson as the window's parity one line over: *a detector must report what it
+  counted.* What it is **not** is a one-line addition — the field is on the
+  renderer and the summary is built from the frame, and `isolated_scene` reads
+  `OPENSHARD_FRINGE` for its own copy, so both halves of the diffed pair have to
+  gain the line together or the diff grows a permanent difference.
 - 🚩 **A body of no height is still the plane a lid stopped being.** P4.1 gave
   `Edges::NONE` a span; `Edges::ANY` with a `tiledata` height of zero comes out
   of `Solid::box_of` with `min.z == max.z` exactly as a floor used to, and every

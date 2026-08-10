@@ -2687,6 +2687,39 @@ Things noticed while writing this, not blocking any phase:
   a different picture with a different box); the server's **ground items**; and
   the camera, which follows a walking player at smoothed sub-tile positions
   rather than sitting on a tile anchor.
+  <br>
+  🚩 **And the dash has moved off the floor onto the furniture's own top**
+  — reported 2026-08-10 by a person looking at a client F12 dump (eye tile
+  `(1496, 1659)`, `1919x2077`, night, a torch in hand), read back off the planes
+  rather than argued: along an alchemist's counter, one stepped dashed line per
+  tile boundary, and the line is on the counter's *lid* rather than on the floor
+  beside it. Per pixel of a dash, against its own neighbours two rows away:
+  `kind` static in all three, `height` the same `z 33` surface on both sides of
+  the line, `shadow` white and `reach` unchanged — and `normal` flips from the
+  lid `(0,0,1)` to a **side** `(1,0,0)` while `flames` goes from `(19,9,2)` to
+  `(255,167,37)`. The light did not change; the facing did, and a vertical face
+  turned at the torch takes a full cosine where the lid took a grazing one.
+  Frame-wide, the signature — a static fragment whose normal is a side face with
+  a lid two rows above *and* below — is **464 pixels, 442 of them with the
+  sub-tile position pegged exactly to a tile edge**, 87 of them with the flame
+  term blown out, which is the part a person sees.
+  <br>
+  **Why the floor's cure does not reach it.** `shows_a_side` refuses a face
+  thinner than the grid that reads it, and that ends this for a floor because a
+  floor is a lid — `LID_THICKNESS`, a sixteenth of a pixel of side. A counter is
+  a *body*: its side face is several `z` tall, passes the same test honestly, and
+  is what the graze at the top edge is handed. So the two halves of that repair
+  (`FRAGMENT` for the seam, `shows_a_side` for the face) covered the population
+  they were measured on and left the abutting-body case standing.
+  <br>
+  **What is not yet separated is hit from miss**, and the instrument for it is
+  one keypress rather than a new tool: `Fringe::Discard` (F2, or
+  `OPENSHARD_FRINGE=discard`) takes a *missed* ray off the screen and leaves a
+  hit where it is, so a second dump of the same instant says which population
+  these 464 belong to. The entry above measured **59 of 66 to be hits** at
+  `(1501, 1659)` on a floor; nothing says the share is the same on a lid, and the
+  two answers point at different repairs — the fringe's face for a miss, and
+  `meets`'s own tie at the top edge of a body for a hit.
 - ~~🚩 **A sprite's own top edge is serrated**~~ **Measured 2026-08-10, and the
   clamp keeps the fringe.** The candidate this entry and the cornice entry both
   ended on — *give a miss the face the sprite's own volume presents* — was
