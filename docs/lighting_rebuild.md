@@ -3543,3 +3543,43 @@ outlive the track and belong in this list, since this is the live one:
   collects them and ignores the field would differ from the client with nothing
   to notice, and `Inputs::summary` printing the field is the only thing standing
   in that gap.
+- 🚩 **A climbable's tread is marked a body, and a staircase is the one shape
+  whose art does say which way a surface looks.** Reported by a person looking at
+  a lit frame at Britain's `(1454, 1728)` — stone stairs, `0x0752`, which the art
+  table reads as `corner E S prism W 1 3 5`: the flight comes out with no shading
+  of its own, and what is left on it is a hairline along each step.
+  <br>
+  `occlusion::boxes_of` hands every tread `Edges::ANY`, and its own comment says
+  why: *"a stair is solid: a body, whose occlusion is `ray_vs_solid`'s exact slab
+  test rather than a lid's crossing test and a panel's run masking."* That is a
+  statement about **which occlusion test this box takes**. The same mask is also
+  the only thing that says **whether the art named a face at all** — the question
+  the three open defects above are one question about — and for a tread the two
+  have different answers. A tread's lid is a plane somebody drew and so is its
+  riser on the climb axis; only the two faces *across* the climb are the tile's
+  own walls. One field, two domains.
+  <br>
+  **Measured**, `examples/isolated_scene.rs` at that place, radius 6, `800×600`
+  at `2:1`: 20,321 fragments in the flight's own window stand on a stair box. The
+  shadow term on those same fragments averages **248.8 of 255** — the flame
+  reaches them almost unobstructed, so what darkens the staircase is the cosine
+  and not the walk. With the met box face as the normal they mean **111.8** of
+  765 and 23.2% of them fall below 60; with the zero vector, lit from every side,
+  they mean **260.7** and are *flat* — a tread's top and its riser come out the
+  same colour and the flight loses every step it has. Neither answer is the
+  staircase's.
+  <br>
+  **And the answer already existed once.** Phase 2's own *done when* was
+  `two_mesh_faces_carry_their_own_two_normals` — "a tread's top and its riser,
+  one draw, two normals" — off `facing::Prism::mesh`, whose five normals
+  `place.rs` still round-trips in a test. Phase 6 replaced that pass with one
+  body box a tread and dropped both vectors; the measurement is still in the
+  `Prism` and nothing downstream asks it for a facing. So whatever the body
+  question is answered with, a tread wants to be outside its scope rather than
+  inside it, and the split wants to be two fields rather than one mask read twice.
+  <br>
+  Unmeasured, and the number that would size it: how many placements over
+  Britain's `121×121` stand as a fitted prism under `CLIMBABLE` or
+  `PLATFORM` — `examples/geometry_census.rs` already walks that window and counts
+  the fitted-prism class as one line (3.2%), without separating the climbable
+  from the tables and counters that reach the same branch.

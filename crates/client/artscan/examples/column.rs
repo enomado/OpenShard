@@ -64,11 +64,12 @@ fn main() {
             let atlas = StaticAtlas::build(&art, [Graphic(item.tile)]).expect("atlas");
             let facing = atlas.sprite(Graphic(item.tile)).and_then(|s| s.facing);
             println!(
-                "  static {:>5} (0x{:04X})  z {:>4}  h {:>3}  opacity {:>3}  facing {:?}  edges {:#06b}  {:?}",
+                "  static {:>5} (0x{:04X})  z {:>4}  h {:>3}  {:?}  opacity {:>3}  facing {:?}  edges {:#06b}  {:?}",
                 item.tile,
                 item.tile,
                 item.z,
                 tile.height,
+                tile.name,
                 occlusion::opacity(Graphic(item.tile), tile),
                 facing,
                 match tile.flags.is_background() {
