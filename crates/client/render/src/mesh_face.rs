@@ -6,7 +6,7 @@
 //! `renderer.rs` beside `GroundRenderer`/`SpriteRenderer`, the same split this
 //! crate already keeps between a pass's data and its pipeline.
 
-use crate::geometry::Vec2;
+use crate::camera::ViewPoint;
 use crate::place::Stance;
 
 /// One [`crate::mesh::Face`]'s own row, addressed by `blit.wgsl`'s
@@ -78,7 +78,7 @@ pub struct MeshFaceVertex {
     /// is measured in. The vertex shader applies the same `Viewport`-uniform
     /// step `statics.wgsl` does to reach real pixels; the projection is not
     /// repeated a second time here or there.
-    pub screen: Vec2,
+    pub screen: ViewPoint,
     /// This corner's true world position, carried *in addition to* `screen`
     /// rather than recomputed from it.
     ///
@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn a_vertex_writes_its_stride_and_nothing_more() {
         let vertex = MeshFaceVertex {
-            screen: Vec2::new(1.5, 2.5),
+            screen: ViewPoint::new(1.5, 2.5),
             world: [100.0, 101.0, 5.0],
             depth: 0.75,
             id: 0xABCD,

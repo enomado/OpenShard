@@ -56,21 +56,25 @@
 //! answers in real pixels from [`Camera::to_viewport`],
 //! [`Camera::to_viewport_exact`], [`Camera::tile_facet`] and
 //! [`Projection::centre`], and every one of them used to answer in the same bare
-//! [`Vec2`] that [`Camera::to_view_exact`] and [`Projection::origin`] answer in.
+//! [`Vec2`](crate::geometry::Vec2) that [`Camera::to_view_exact`] and
+//! [`Projection::origin`] answer in.
 //! Which meant [`Camera::to_viewport_exact`] — a function that *takes* a view
 //! pixel and *returns* a real one — compiled when fed its own output, silently
 //! applying the zoom twice.
 //!
-//! What is still bare is the *view* side of that pair. A fractional view pixel
-//! is a [`Vec2`], and it stays one for now because it does not stop where the
-//! camera does: it is what every quad, every [`Rect`](crate::geometry::Rect) and
-//! every atlas placement in this crate is measured in, so a type for it is a
-//! sweep through the sprite path rather than a change to this file.
-//! `docs/pixels.md` P3 carries that half.
+//! The *view* side of that pair is [`ViewPoint`], and it was bare for one
+//! release longer than the real one because it does not stop where the camera
+//! does: it is what every quad and every sprite placement in this crate is
+//! measured in, so typing it was a sweep through that path rather than a change
+//! to this file. Both ends of [`Camera::to_viewport_exact`] now name their own
+//! grid, which is the crossing that was silent.
+//!
+//! What is still bare, deliberately, is [`Rect`](crate::geometry::Rect): a
+//! sprite's rectangle is a [`ViewPoint`] and an extent, but the same type is
+//! also an atlas rectangle and a gump's place on the surface, and those are
+//! three spaces sharing one shape. `docs/pixels.md` P3 carries that half.
 
 use openshard_protocol::world::Point;
-
-use crate::geometry::Vec2;
 
 /// A land tile's sprite is this wide. Statics vary; the ground never does.
 pub const TILE_WIDTH: i32 = 44;
@@ -156,6 +160,50 @@ pub struct ViewPixel {
     pub x: i32,
     /// Downwards.
     pub y: i32,
+}
+
+/// The same space as [`ViewPixel`], to a fraction of one.
+///
+/// What [`Camera::to_view_exact`] answers in, what [`Projection::origin`] is
+/// measured in, and what every sprite this crate places is positioned in — the
+/// **art's own grid**, one unit per virtual pixel, which is what makes a quad
+/// comparable to the art file texel for texel and is why the pixel-exact tests
+/// assert about this space and not about the display's.
+///
+/// Fractional because two things reach it that are not on the lattice: a body
+/// mid-step, which is [`WorldPoint`]'s whole subject, and the eye's own
+/// remainder, which rides in [`Projection::origin`] rather than in any quad.
+/// Everything the *map* holds lands on a whole one by construction — a tile
+/// projects to a whole [`WorldPixel`] and [`Camera::to_view`] is an integer
+/// translation of that — which is `docs/pixels.md` P2's first two rows and the
+/// reason a whole value here is a box's own corner.
+///
+/// `f32` and not [`WorldPoint`]'s `f64`: the world's own space is 157,000 pixels
+/// across at the map's far corner, and this one is a viewport, a few thousand at
+/// most.
+///
+/// No `From` from [`RealPoint`] and none to it — [`Camera::to_viewport_exact`]
+/// is the only crossing, because the zoom and the eye's fraction are what the
+/// crossing consists of. [`ViewPoint::of`] widens a whole [`ViewPixel`] into
+/// this, which is not a crossing at all: it is the same grid, said to a
+/// fraction.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct ViewPoint {
+    /// Rightwards.
+    pub x: f32,
+    /// Downwards.
+    pub y: f32,
+}
+
+impl ViewPoint {
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    /// A whole view pixel, said to a fraction. Exact, and the same space.
+    pub fn of(pixel: ViewPixel) -> Self {
+        Self::new(pixel.x as f32, pixel.y as f32)
+    }
 }
 
 /// A place on the display's own grid, to a fraction of one of its pixels.
@@ -563,7 +611,7 @@ pub struct Projection {
     /// pixel, so at `3x` it carries thirds of a virtual one, and the remainder
     /// has nowhere else to go. Rounding it here would put the quantum back where
     /// D11 took it from.
-    pub origin: Vec2,
+    pub origin: ViewPoint,
     /// Real pixels per virtual pixel.
     pub scale: f32,
 }
@@ -626,7 +674,7 @@ impl Projection {
         // which type they hand back and nothing else.
         let half = half_extent(width, height);
         Self {
-            origin: Vec2::new(half.0, half.1),
+            origin: ViewPoint::new(half.0, half.1),
             scale: 1.0,
         }
     }
@@ -821,7 +869,7 @@ impl Camera {
         // `half_extent` and not a second `/ 2` written here: the same halving
         // `Projection::centre` does, so the two cannot drift apart.
         let half = half_extent(self.render_width(), self.render_height());
-        let origin = Vec2::new(
+        let origin = ViewPoint::new(
             half.0 + (self.eye.x - f64::from(rounded.x)) as f32,
             half.1 + (self.eye.y - f64::from(rounded.y)) as f32,
         );
@@ -857,9 +905,9 @@ impl Camera {
     ///
     /// A body mid-step, and nothing else so far: everything the map holds is on
     /// a tile, and a tile projects to a whole pixel by construction.
-    pub fn to_view_exact(&self, at: WorldPoint) -> Vec2 {
+    pub fn to_view_exact(&self, at: WorldPoint) -> ViewPoint {
         let eye = self.eye();
-        Vec2::new(
+        ViewPoint::new(
             (at.x - f64::from(eye.x)) as f32 + (self.render_width() as i32 / 2) as f32,
             (at.y - f64::from(eye.y)) as f32 + (self.render_height() as i32 / 2) as f32,
         )
@@ -890,7 +938,7 @@ impl Camera {
     /// painter can use. `f32` because a highlight is drawn at whatever
     /// magnification the blit lands on, not on a texel grid.
     pub fn to_viewport(&self, at: ViewPixel) -> RealPoint {
-        self.to_viewport_exact(Vec2::new(at.x as f32, at.y as f32))
+        self.to_viewport_exact(ViewPoint::of(at))
     }
 
     /// The same for a render-space point that is not on a whole virtual pixel.
@@ -902,13 +950,14 @@ impl Camera {
     /// plane. The integer entry point is this one at whole coordinates, so there
     /// is no second projection to disagree with.
     ///
-    /// `at` is a fractional *view* pixel and the answer is a [`RealPoint`], and
-    /// the two being different types is the point: this function **is** the
-    /// zoom, so feeding it its own output applies the zoom twice — which
-    /// compiled, for as long as both sides were a bare [`Vec2`], and would put a
-    /// highlight `zoom` times further from the middle of the viewport than the
-    /// world it is drawn over.
-    pub fn to_viewport_exact(&self, at: Vec2) -> RealPoint {
+    /// `at` is a [`ViewPoint`] and the answer is a [`RealPoint`], and the two
+    /// being different types is the point: this function **is** the zoom, so
+    /// feeding it its own output applies the zoom twice — which compiled, for as
+    /// long as both sides were a bare [`Vec2`](crate::geometry::Vec2), and would
+    /// put a highlight `zoom`
+    /// times further from the middle of the viewport than the world it is drawn
+    /// over.
+    pub fn to_viewport_exact(&self, at: ViewPoint) -> RealPoint {
         // From `projection`'s origin and not from half the extent, so the eye's
         // sub-virtual-pixel offset is in here too. Without it this lands where
         // the world *would* be if the camera were on a whole virtual pixel,
@@ -1082,9 +1131,9 @@ mod tests {
     /// GPU, an atlas and the client's files to say anything at all about it. It
     /// is one expression, it is written out in `Projection`'s own doc comment,
     /// and the frame tests are what keep the two honest.
-    fn real(projection: Projection, target: (u32, u32), at: ViewPixel) -> Vec2 {
+    fn real(projection: Projection, target: (u32, u32), at: ViewPixel) -> RealPoint {
         let centre = Projection::centre(target.0, target.1);
-        Vec2::new(
+        RealPoint::new(
             (at.x as f32 - projection.origin.x) * projection.scale + centre.x,
             (at.y as f32 - projection.origin.y) * projection.scale + centre.y,
         )

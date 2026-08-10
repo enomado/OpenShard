@@ -42,11 +42,11 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::equipconv::EquipConv;
 
 use crate::atlas::{AnimAtlas, FrameKey};
-use crate::camera::{Camera, ViewPixel, WorldPoint};
+use crate::camera::{Camera, ViewPixel, ViewPoint, WorldPoint};
 use crate::cutaway::Cutaway;
 use crate::depth;
 use crate::follow::Gaze;
-use crate::geometry::{Rect, Vec2};
+use crate::geometry::Rect;
 use crate::sprite::SpriteQuad;
 
 /// One creature to draw, as the client knows it.
@@ -174,7 +174,7 @@ pub fn world_position(mobile: &Mobile) -> WorldPoint {
 /// Fractional and not a [`ViewPixel`], because a third of a virtual pixel is a
 /// whole real one at `3x`: rounding here would put back exactly the quantum the
 /// snap above was chosen to keep.
-fn cell_centre(mobile: &Mobile, camera: &Camera) -> Vec2 {
+fn cell_centre(mobile: &Mobile, camera: &Camera) -> ViewPoint {
     camera.to_view_exact(camera.snap(world_position(mobile)))
 }
 

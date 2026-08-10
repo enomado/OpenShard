@@ -24,23 +24,26 @@ use openshard_uofiles::tiledata::TileData;
 
 use crate::animate::StaticAnimations;
 use crate::atlas::{Sprite, StaticAtlas};
-use crate::camera::{Camera, TILE_HEIGHT, TileBounds};
+use crate::camera::{Camera, TILE_HEIGHT, TileBounds, ViewPoint};
 use crate::cutaway::{self, Cutaway};
 use crate::depth;
-use crate::geometry::{Rect, Vec2};
+use crate::geometry::Rect;
 use crate::mesh_face::{MeshFaceRow, MeshFaceVertex};
 use crate::sprite::SpriteQuad;
 
-/// Where a sprite standing on a tile lands, in viewport pixels.
+/// Where a sprite standing on a tile lands, as a [`ViewPoint`] — the drawn
+/// image's own grid, before any zoom. The doc here said "viewport pixels" for
+/// as long as the answer was a bare `Vec2`; it never was, and the type says so
+/// now.
 ///
 /// The arithmetic in this module's own header, named so that it has one copy:
 /// a static read out of the map and an item the server put on the ground are
 /// the same picture standing the same way, and the second is
 /// [`crate::items`]. Centred on the tile's column, bottom edge on the
 /// diamond's bottom vertex — `View.DrawStatic`.
-pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> Vec2 {
+pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> ViewPoint {
     let at = camera.to_screen(at);
-    Vec2::new(
+    ViewPoint::new(
         // `>> 1` and not `/ 2.0`: an odd-width sprite lands half a pixel off
         // centre in the client too, and rounding it the other way shifts every
         // one of them against the ground.
@@ -63,7 +66,7 @@ pub fn stand_on(camera: &Camera, at: Point, sprite: &Sprite) -> Vec2 {
 /// exactly — a 250-pixel tree hangs five tiles up the screen out of its own
 /// cell, and a margin is what the client needs because it is testing a point
 /// that is not where the picture is.
-pub fn on_screen(camera: &Camera, at: Vec2, sprite: &Sprite) -> bool {
+pub fn on_screen(camera: &Camera, at: ViewPoint, sprite: &Sprite) -> bool {
     at.x + f32::from(sprite.width) > 0.0
         && at.x < camera.render_width() as f32
         && at.y + f32::from(sprite.height) > 0.0
@@ -402,7 +405,7 @@ pub(crate) struct Placed {
     /// Where it sorts against everything else drawn this frame.
     pub(crate) order: depth::Order,
     /// Its top-left corner in the drawn image.
-    pub(crate) at: Vec2,
+    pub(crate) at: ViewPoint,
     /// The atlas entry for the frame it is showing.
     pub(crate) sprite: Sprite,
     /// That frame's graphic, which is what the atlas is keyed by — not the
@@ -692,7 +695,7 @@ mod tests {
 
     /// The viewport pixel a point in the drawn image sits at — the inverse of
     /// what [`pick`] undoes, so a test can click on a sprite it has placed.
-    fn cursor_over(camera: &Camera, at: Vec2, dx: f32, dy: f32) -> (i32, i32) {
+    fn cursor_over(camera: &Camera, at: ViewPoint, dx: f32, dy: f32) -> (i32, i32) {
         let spot = camera.to_viewport(crate::camera::ViewPixel {
             x: (at.x + dx) as i32,
             y: (at.y + dy) as i32,
@@ -1113,7 +1116,7 @@ mod tests {
             },
             facing: None,
         };
-        let on = |x: f32, y: f32| on_screen(&camera, Vec2::new(x, y), &sprite);
+        let on = |x: f32, y: f32| on_screen(&camera, ViewPoint::new(x, y), &sprite);
 
         // Off the left: the sprite's right edge is at x + 30, so -30 is the
         // first placement with nothing on screen and -29 is the last with one

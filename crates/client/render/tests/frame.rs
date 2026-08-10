@@ -16,6 +16,7 @@ use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::FrameKey;
 use openshard_client_render::atlas::{AnimAtlas, LandAtlas, StaticAtlas, TexmapAtlas};
 use openshard_client_render::blit::{Blit, ViewportRect};
+use openshard_client_render::camera::ViewPoint;
 use openshard_client_render::camera::{Camera, Projection, WorldPoint, Zoom};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
@@ -3121,7 +3122,7 @@ fn a_mesh_face_pixel_carries_the_mesh_face_sentinel() {
     let tile = [300.0, 400.0];
     let world = [tile[0] + 0.5, tile[1] + 0.5, 15.0];
     let corner = |x: f32, y: f32| MeshFaceVertex {
-        screen: Vec2::new(x, y),
+        screen: ViewPoint::new(x, y),
         world,
         depth: 0.4,
         id: 0,
@@ -3209,7 +3210,7 @@ fn a_mesh_face_pixel_carries_its_exact_world_position() {
     let tile = [300.0, 400.0];
     let world = [tile[0] + 0.3, tile[1] + 0.7, 15.1];
     let corner = |x: f32, y: f32| MeshFaceVertex {
-        screen: Vec2::new(x, y),
+        screen: ViewPoint::new(x, y),
         world,
         depth: 0.4,
         id: 0,
@@ -3308,7 +3309,7 @@ fn two_mesh_faces_carry_their_own_two_normals() {
     // these are the pixels the two faces land on.
     let quad = |from: f32, id: u32, normal: [f32; 3]| {
         let corner = |x: f32, y: f32| MeshFaceVertex {
-            screen: Vec2::new(x, y),
+            screen: ViewPoint::new(x, y),
             world: [tile[0] + 0.5, tile[1] + 0.5, 15.0],
             depth: 0.4,
             id,

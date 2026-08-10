@@ -153,7 +153,7 @@ exactly the eleven-columns-per-tile pattern `docs/parity.md` measured. Every
 other pair in this table was never a candidate, which is the fact P1 makes
 checkable rather than argued.
 
-### P3 — the types that are missing
+### P3 — the types that are missing ✅ 2026-08-10
 
 The real pixel has no type; the art texel has no type; impostor tile space has
 no type and carries a `z` in different units from every other `z` in the
@@ -164,8 +164,10 @@ here rather than as a sweep is that P2 will have just named which confusions are
 *Done when:* each grid P2 shows can collide has a type that stops the collision
 at compile time, or a written reason it does not.
 
-**In progress.** Two of the three are done, and the first of them corrected what
-this phase thought the third one was.
+**Done.** All three, and the first of them corrected what this phase thought the
+third one was. The art texel is the one grid left untyped, with the reason
+written out below — which is what this phase's *done when* asks for, not an
+exception to it.
 
 #### The correction: there is no "impostor tile space"
 
@@ -247,18 +249,42 @@ which also pins the property `Camera::projection`'s comment argues at length and
 nothing asserted: at 1:1 `to_view` puts the eye exactly on `projection().origin`,
 at odd extents included.
 
+#### Done — [`camera::ViewPoint`](../crates/client/render/src/camera.rs#L161)
+
+The other half of that pair, and the sweep it needed turned out to be fifteen
+sites rather than the whole sprite path. `to_view_exact` and `Projection::origin`
+answer in it; `to_viewport_exact` **takes** it, so both ends of the one crossing
+this camera performs now name their own grid and the zoom cannot be applied
+twice in either direction. Then outward through what that value is:
+`statics::stand_on`, `statics::on_screen`, `Placed::at` — which `crate::items`
+shares, being the same picture standing the same way — `mobiles::cell_centre`
+and `MeshFaceVertex::screen`, whose doc already had to say *"in
+`Camera::to_view_exact`'s space"* in prose because nothing said it in types.
+[`ViewPoint::of`](../crates/client/render/src/camera.rs#L192) widens a whole
+`ViewPixel`, which is not a crossing: same grid, said to a fraction.
+
+**What typing it turned up.** `debug.rs`'s `middle` was fed to the sweep as a
+view point and the compiler refused it — correctly, and the *code* was right:
+that `Vec2` is a **tile-space position**, `Vec2::new(x + 0.5, y + 0.5)` being the
+middle of tile `(x, y)` on its way to `light::Spot::at`. It is the backlog's
+seventh-meaning item, met head-on: the refusal is the first time anything in the
+build has distinguished those two spaces, and it took one wrong annotation to
+find. Reverted, and left as `Vec2` until that space gets its own name — the
+point is that the reader was the only check and now is not.
+
+`stand_on`'s doc said its answer was *"in viewport pixels"*. It never was, for
+as long as the answer was a bare `Vec2` and nothing could tell; corrected in
+place rather than deleted.
+
 #### Still open
 
-- **The view pixel — the other half of that pair.** A fractional view pixel is
-  still a bare `Vec2`, and it is now the *only* untyped side of a crossing this
-  camera performs. Left so on purpose: unlike the real pixel it does not stop at
-  the camera. `to_view_exact`'s answer is what `statics::stand_on`,
-  `Placed::at`, `geometry::Rect`, every sprite quad and every atlas placement in
-  the crate are measured in, so the type that space actually wants is a `Rect`
-  with a space rather than a `ViewPoint` at the camera's edge — a sweep through
-  the sprite path, not a change to `camera.rs`. The collision P3 set out to stop
-  is stopped by one side of the pair carrying a type; this is the coverage that
-  is missing, and it is worth its own session.
+- **`geometry::Rect`.** A sprite's rectangle is a `ViewPoint` and an extent —
+  but the same `Rect` is also an atlas rectangle (`text.rs`, `sprite.rs`), a
+  gump's place on the surface, and a plan pixel's. Three spaces sharing one
+  shape, which is not the crossing P3 set out to stop and does not have the same
+  answer: a `Rect<Space>` costs a parameter at every one of those callers to
+  refuse a confusion none of them has yet made. Named here so the next reader
+  does not rediscover it as a gap.
 - **The art texel.** Left untyped on purpose for now. It is real (`Region`'s UV
   arithmetic, `Projection::scale`, every atlas rectangle), and P2's row about it
   found a genuine hazard — the land and statics atlases divide exactly while
@@ -341,7 +367,11 @@ item and `docs/silhouettes.md`'s subject. A test cannot stand in for it.
   of tile 100,100, not a pixel of anything. That is a seventh meaning for the
   type, sitting one file away from `TileVec`, which was introduced in this same
   phase for tile-space *offsets*. The two are the same space's point and vector;
-  only one of them has a name.
+  only one of them has a name. **Sharpened by `ViewPoint`:** the sweep annotated
+  `debug.rs`'s tile-space `middle` as a view point and the compiler caught it —
+  the first time the build has told those two apart, and evidence the confusion
+  is reachable rather than theoretical. A `TilePoint` beside `TileVec` is what
+  closes it.
 - 🚩 **Nothing states what a `ViewportRect` is measured in when a docked panel
   has moved it.** `dump::read_rect` honours an origin, the blit sets a viewport
   rect, and `Camera` knows an image size — three numbers about the same

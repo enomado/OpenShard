@@ -473,7 +473,7 @@ mod tests {
 
     /// The viewport pixel a point in the drawn image sits at — the inverse of
     /// what [`pick`] undoes, so a test can click on a sprite it has placed.
-    fn cursor_over(camera: &Camera, at: crate::geometry::Vec2, dx: f32, dy: f32) -> (i32, i32) {
+    fn cursor_over(camera: &Camera, at: crate::camera::ViewPoint, dx: f32, dy: f32) -> (i32, i32) {
         let spot = camera.to_viewport(crate::camera::ViewPixel {
             x: (at.x + dx) as i32,
             y: (at.y + dy) as i32,
