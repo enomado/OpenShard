@@ -2712,14 +2712,52 @@ Things noticed while writing this, not blocking any phase:
   (`FRAGMENT` for the seam, `shows_a_side` for the face) covered the population
   they were measured on and left the abutting-body case standing.
   <br>
-  **What is not yet separated is hit from miss**, and the instrument for it is
-  one keypress rather than a new tool: `Fringe::Discard` (F2, or
-  `OPENSHARD_FRINGE=discard`) takes a *missed* ray off the screen and leaves a
-  hit where it is, so a second dump of the same instant says which population
-  these 464 belong to. The entry above measured **59 of 66 to be hits** at
-  `(1501, 1659)` on a floor; nothing says the share is the same on a lid, and the
-  two answers point at different repairs — the fringe's face for a miss, and
-  `meets`'s own tie at the top edge of a body for a hit.
+  ✅ **Hit, not miss — settled by looking, once F2 could be believed.** The
+  switch had to be repaired first (`docs/lighting_state.md`'s fringe entry: the
+  silhouette pass was overwriting it inside the frame), and with all three states
+  reaching the screen the reporter's answer was *the picture changes and the
+  seams do not*. So the fringe is not this, on a lid, the way it was not this for
+  59 of the 66 specks on a floor.
+  <br>
+  ❌ **And the next candidate is refuted before it was built: it is not a tie at
+  the top edge either.** `meets` picks the face whose exit comes first, and the
+  natural repair — the [`FRAGMENT`] argument one dimension over, *prefer the lid
+  when the two exits are within one fragment of each other* — was priced against
+  the real function over the real fragment grid before writing it. A body of the
+  shape `seam_probe` prints for this furniture (one tile, five `z` units) across
+  its own sprite's samples: **1,010 fragments answered with a side face, the gap
+  to the lid's own exit running 0.000 to 0.827 tiles against a `FRAGMENT` of
+  0.032, and 46 of the 1,010 under it.** A one-sample rim, in the right place —
+  and the picture the probe draws is a *clean diagonal* between the lid and the
+  side, which is the box's own top edge answered correctly. Turning that rim into
+  lid would move 4.5% of a body's side-face fragments and would not be the dashed
+  line: the dashes lie **on the lid**, past the edge, where the art is the *next
+  piece's* top.
+  <br>
+  🚩 **What the planes actually say, and it is the one thing all of them agree
+  on: `SOLID_NOBODY`.** 270 of 270 in the second dump, 300 of 464 in the first
+  (that detector was the loose one — it takes genuine visible sides too). The
+  pieces making these runs are `CLEAR`, `opacity 0`, so `Builder::add` pushes
+  nothing and `id_of` has no name for them — which means `push_volumes` keeps the
+  **per-tile** box rather than `occlusion.solid(id).space`. And that substitution
+  is the whole difference: `merge::merged` folds abutting primitives into one
+  `Solid` whose space is the *union*, so a named run of counters is a single box
+  with no interior faces, while an unnamed run is N boxes each with four naked
+  sides. A fragment at the join meets an interior face **that a named run would
+  not have**. The seam is therefore not a defect in `meets`, in the fringe or in
+  the fit of any one box: it is the absence of a name, and the interior surface
+  that absence leaves standing.
+  <br>
+  Which makes `docs/parity.md`'s P4 step 2 the entry that owns this — *a `CLEAR`
+  piece with a box*, 15.1% of the world — and it is worth saying that the reason
+  written there for refusing it does **not** apply here. That paragraph refuses
+  "stand in the grid" as a fix for the *cornice glow*, correctly: a neighbouring
+  lid's shadow test is not fixed by a piece's own identity. This is the other
+  half of the same line, and identity is exactly what it wants — not to exempt a
+  piece from shadowing itself, but so the merge has something to fold. **The cost
+  is unpriced and it is not free**: naming a piece the light passes through means
+  building primitives at `opacity 0`, growing the grid by the same 15.1%, for
+  surfaces no ray is meant to stop at.
 - ~~🚩 **A sprite's own top edge is serrated**~~ **Measured 2026-08-10, and the
   clamp keeps the fringe.** The candidate this entry and the cornice entry both
   ended on — *give a miss the face the sprite's own volume presents* — was
