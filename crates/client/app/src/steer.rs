@@ -131,20 +131,40 @@
 //!
 //! A destination (Ctrl+drag) is answered differently, because it names a
 //! specific tile rather than a heading: [`Steering::go_to`] plans a route with
-//! `common/movement`'s `find_path` over the client's own map and `tiledata.mul`
-//! — the static half of the world — and the steps taken toward the destination
-//! are that route's, one per call. What a plan *cannot* answer for is the
-//! *dynamic* half of the world — a shut door, a placed crate — so a route found
-//! in good faith can still be refused, arriving as a `0x21` (see `client/net`'s
+//! `common/movement`'s `find_path`, and the steps taken toward the destination
+//! are that route's, one per call.
+//!
+//! What it plans over is a [`Ground`] — the same map read twice, once with
+//! everything the shard has put on it and once without (`clutter.rs`) — and the
+//! two halves are asked in that order, which is the whole of how a shut door is
+//! answered. The world as it stands answers first, and its route is the plan: a
+//! door with a way round is a longer walk and not a barred one. Only when there
+//! is no way through at all is the map asked on its own, where nothing the shard
+//! placed is in the way and every door therefore stands open — and *that* route
+//! is cut at the first step the real ground refuses, so the body walks up to
+//! whatever is in the way and stops in front of it. [`plan`] is where both
+//! halves live, and the client's own picture of the route is drawn from the same
+//! call: what a player sees green up to the door and red past it is the plan
+//! itself, not a second opinion about it.
+//!
+//! **A destination never walks at something this end can see is refused.** Where
+//! neither half has a way through — a tile clicked on a wall, on the far bank, or
+//! simply too far for the node budget — the plan is how far *toward* it the
+//! ground goes ([`find_path_toward`]), and the body stops there. It used to walk
+//! at the thing in a straight line instead, a step a hold until a patience ran
+//! out, and every one of those steps was a `0x21`: the shard refuses it, rolls
+//! the body back, and resets the walk sequence this end is counting. Walking up
+//! to something and standing is also what the reference client does with a click
+//! on a wall.
+//!
+//! Neither half can answer for what the shard knows and this end does not — a
+//! view a beat out of date, a body standing in the way — so a route found in
+//! good faith can still be refused, arriving as a `0x21` (see `client/net`'s
 //! `walk`). A refusal — the body did not move where the last step asked —
-//! replans from where it actually stands; when nothing can be planned at all
-//! (no route within budget, or the tile itself cannot be stood on), the
-//! fallback is the straight-line heading toward it, the same one [`steer`](Steering::steer)
-//! would use — a destination degrades to a heading rather than standing still,
-//! which is what the "or fall back" half of Ctrl+drag is for. Either way, a
-//! destination that is not getting anywhere after [`STUCK_STEPS`] steps is
-//! given up on; a heading, never — see the section above for why the two
-//! differ.
+//! replans from where it actually stands. And a destination that is not getting
+//! anywhere after [`STUCK_STEPS`] steps is given up on — the walk standing at a
+//! shut door included, which is what ends the order when nobody opens it — while
+//! a heading never is; see the section above for why the two differ.
 //!
 //! The plan itself is lazy: [`Steering::go_to`] is called on the click *and*
 //! again on every mouse-move while the button stays down, which is tens of raw
@@ -159,7 +179,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_movement::{
-    Around, Detour, Heading, Lean, Leeway, RUN_HOLD, Step, Terrain, WALK_HOLD, find_path, heading_toward,
+    Around, Detour, Heading, Lean, Leeway, RUN_HOLD, Step, Terrain, WALK_HOLD, find_path, find_path_toward,
+    step_allowed,
 };
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
@@ -265,6 +286,66 @@ impl Turning {
     }
 }
 
+/// The ground a route is planned over, read twice: as the world stands, and as
+/// it would be with every shut door standing open.
+///
+/// The two differ by exactly one thing — the tiles `clutter.rs` keeps as
+/// *potentially passable and currently closed*. A crate is in the way in both
+/// readings, because nobody can open a crate; a shut door is in the way in the
+/// first and not the second, because a player can walk up to one and open it.
+///
+/// A step is always decided against [`Ground::real`]. The second half exists so
+/// that a plan can say *why* there is no route — the way through is a doorway
+/// with a shut leaf in it, rather than a wall — and so a body can be walked up to
+/// that leaf instead of at nothing. See [`plan`].
+///
+/// The server keeps the same pair under the same name: `state::obstruct`'s
+/// `Obstacle::door` and `LiveTerrain::through_doors`, for the creature that
+/// plans a route it means to open its way along. That both ends draw the line in
+/// the same place, from the same door table, is the property worth having.
+#[derive(Clone, Copy)]
+pub struct Ground<'a> {
+    /// What a step is allowed by — the map with everything on it, doors shut.
+    pub real: &'a dyn Terrain,
+    /// The same ground with every shut door opened. Never what decides a step:
+    /// walking on its word is a step the shard refuses.
+    pub through_doors: &'a dyn Terrain,
+}
+
+/// A world with no doors in it, where the two readings are one terrain.
+///
+/// Test-only, the same way `Clutter::placed` is: every shipping caller has the
+/// shard's items laid over the map and must say which reading it is asking for.
+/// Not a shortcut for "the other half is not handy here" — the two being equal is
+/// a statement about the world, and a caller with a shut door that made it anyway
+/// would plan every route as though the door were a wall.
+#[cfg(test)]
+impl<'a> Ground<'a> {
+    pub const fn plain(terrain: &'a dyn Terrain) -> Self {
+        Self {
+            real: terrain,
+            through_doors: terrain,
+        }
+    }
+}
+
+/// A route to a destination, in the two halves [`plan`] finds it in.
+///
+/// Both are steps from the body's own tile, in the order they would be walked:
+/// [`Plan::barred`] carries on from where [`Plan::open`] stops.
+pub struct Plan {
+    /// The part of the way the world as it stands allows. What the walk takes,
+    /// and what a picture of the route draws as passable.
+    pub open: Vec<Direction>,
+    /// What is left of the way past the first thing standing in it — empty for
+    /// a route that reaches the destination, which is the ordinary answer.
+    ///
+    /// Never walked: the first of these steps is one this end has already proven
+    /// the shard would refuse. It is a *reason*, and the thing to draw so a
+    /// player can see where the way stopped and why.
+    pub barred: Vec<Direction>,
+}
+
 /// How many steps in a row may leave the body exactly where it was before a walk
 /// to a destination gives up.
 ///
@@ -304,11 +385,13 @@ pub struct Steering {
     /// Consumed one direction per step; emptied on a refusal and on every
     /// fresh [`Steering::go_to`], which invalidate it without replanning —
     /// [`Steering::take`] is the only place that actually calls [`plan`], and
-    /// only when this is empty and `goal` is not. Left empty with a `goal`
-    /// still set means `plan` found no route this beat — [`Steering::asking`]
-    /// falls back to a straight-line heading toward `goal` in that case,
-    /// rather than treat "not planned yet" and "no route exists" as the same
-    /// "nothing to do".
+    /// only when this is empty and `goal` is not.
+    ///
+    /// Empty *after* that replan is the one state worth naming: there is
+    /// nowhere left to walk from here — the body is standing at whatever is in
+    /// the way, or as close to the destination as the ground ever gets. Then
+    /// nothing is sent at all and the destination's patience is what ends the
+    /// order; see [`Steering::take`].
     route: VecDeque<Direction>,
     /// The earliest the next step may leave: the deadline of the step in flight.
     ///
@@ -396,19 +479,21 @@ impl Steering {
     /// already changed which way the step the walk owes will go, and that step
     /// leaves at its own deadline. See the queue rule in the module docs.
     ///
-    /// `from` and `terrain` exist for [`detour`] — routed through [`Steering::take`]
+    /// `from` and `ground` exist for [`detour`] — routed through [`Steering::take`]
     /// rather than answered here directly, so the very first step of a press
     /// gets the same corner-legal detour every step after it does. Without
     /// this, a player mashing the arrows at a wall would have every *held*
     /// retry detour and every *fresh* press walk straight at it — the
     /// opposite of what mashing a direction into a corner is trying to do.
+    /// Only [`Ground::real`] is read on this path: a held direction never plans,
+    /// so the map's door-free half has nothing here to answer.
     pub fn press(
         &mut self,
         direction: Direction,
         from: Point,
         now: Instant,
         facing: Direction,
-        terrain: &dyn Terrain,
+        ground: Ground<'_>,
     ) -> Option<Facing> {
         if !self.keys.press(direction) {
             // The operating system repeating a key that is already the one being
@@ -422,7 +507,7 @@ impl Steering {
         if !self.free(now) {
             return None;
         }
-        self.take(from, now, facing, terrain)
+        self.take(from, now, facing, ground)
     }
 
     /// An arrow came up.
@@ -470,8 +555,10 @@ impl Steering {
         self.turning = turning;
     }
 
-    /// Walk to `tile`, from wherever the body is standing now. Answers the step
-    /// to send this instant, if the clock is free for one.
+    /// Walk to `tile`, from wherever the body is standing now, or as close to it
+    /// as the ground allows — see [`plan`]. Answers the step to send this
+    /// instant, if the clock is free for one and there is one worth sending:
+    /// `None` also means a body already standing as close as it can get.
     ///
     /// Called on a click and again on every mouse move while the button is held,
     /// which is what makes dragging steer: the destination is replaced and the
@@ -487,7 +574,7 @@ impl Steering {
         from: Point,
         now: Instant,
         facing: Direction,
-        terrain: &dyn Terrain,
+        ground: Ground<'_>,
     ) -> Option<Facing> {
         self.mouse = None;
         if self.goal != Some(tile) {
@@ -504,7 +591,7 @@ impl Steering {
         if !self.free(now) {
             return None;
         }
-        self.take(from, now, facing, terrain)
+        self.take(from, now, facing, ground)
     }
 
     /// The mouse is asking for `ask` — or, at `None`, has nothing to ask (the
@@ -535,7 +622,7 @@ impl Steering {
     /// still updates `direction` for whenever the keyboard lets go, but the
     /// step answered (if any) is the keyboard's, from [`Steering::asking`].
     ///
-    /// `from` and `terrain` are [`detour`]'s, the same as [`Steering::press`]'s
+    /// `from` and `ground` are [`detour`]'s, the same as [`Steering::press`]'s
     /// — and matter more here than there: this is called on every raw
     /// mouse-move, so a player actively steering around an obstacle by
     /// adjusting the cursor sends a fresh ask on nearly every move. Answering
@@ -548,7 +635,7 @@ impl Steering {
         from: Point,
         now: Instant,
         facing: Direction,
-        terrain: &dyn Terrain,
+        ground: Ground<'_>,
     ) -> Option<Facing> {
         if self.mouse == ask {
             // The same ask restated — most mouse-move events while the cursor
@@ -570,7 +657,7 @@ impl Steering {
         if !self.free(now) {
             return None;
         }
-        self.take(from, now, facing, terrain)
+        self.take(from, now, facing, ground)
     }
 
     /// The button driving [`Steering::steer`] came up.
@@ -619,16 +706,6 @@ impl Steering {
         self.goal
     }
 
-    /// The steps left of the plan, in the order they will be walked.
-    ///
-    /// For the HUD's terrain overlay and nothing else: a route is walked from
-    /// the front by [`Steering::take`], so what is here is the *remaining* plan
-    /// and is empty both before the first plan and when no route could be found
-    /// — which the overlay draws the same way, as no line.
-    pub fn route(&self) -> impl ExactSizeIterator<Item = Direction> + '_ {
-        self.route.iter().copied()
-    }
-
     /// The step due by now, if one is.
     ///
     /// `from` is where the body stands — the server's last word on it, which is
@@ -636,17 +713,17 @@ impl Steering {
     /// charges one step per call rather than catching up on a stall: a window
     /// that was minimised for a minute has not banked a hundred and fifty steps,
     /// and sending them would be the flood this pacing exists to prevent.
-    /// `terrain` is what a stalled destination is replanned against — see
+    /// `ground` is what a stalled destination is replanned against — see
     /// [`Steering::take`].
     pub fn due(
         &mut self,
         now: Instant,
         from: Point,
         facing: Direction,
-        terrain: &dyn Terrain,
+        ground: Ground<'_>,
     ) -> Option<Facing> {
         match self.free(now) {
-            true => self.take(from, now, facing, terrain),
+            true => self.take(from, now, facing, ground),
             false => None,
         }
     }
@@ -665,13 +742,7 @@ impl Steering {
 
     /// Take the step that is due: work out which way, arm the next one, and give
     /// up on a destination that is not getting any closer.
-    fn take(
-        &mut self,
-        from: Point,
-        now: Instant,
-        facing: Direction,
-        terrain: &dyn Terrain,
-    ) -> Option<Facing> {
+    fn take(&mut self, from: Point, now: Instant, facing: Direction, ground: Ground<'_>) -> Option<Facing> {
         // The stall check is the destination's alone. An arrow held against a
         // wall is the player's own doing and stops when they let go.
         if self.keys.asking().is_none() && self.goal.is_some() {
@@ -695,34 +766,42 @@ impl Steering {
 
         // Plan lazily: only when there is a destination, nothing of the last
         // plan left to walk, and the body is not already standing on it. This
-        // is the only place `find_path` runs — `go_to` never calls it — so a
-        // search costs at most once per step, never once per mouse-move. A
-        // plan that finds nothing leaves `route` empty on purpose: `asking`
-        // reads that as "fall back to a heading toward `goal`" rather than
-        // this clearing the destination itself — see the module docs on why a
-        // destination degrades to a heading instead of standing still.
+        // is the only place a search runs — `go_to` never calls one — so a plan
+        // costs at most once per step, never once per mouse-move.
         if let Some(tile) = self.goal {
             if (from.x, from.y) == tile {
                 // Arrived — the ordinary way this ends.
                 self.goal = None;
                 self.route.clear();
             } else if self.route.is_empty() {
-                match plan(terrain, from, tile) {
-                    Some(route) => self.route = route,
-                    // No plannable route this beat — queue a single
-                    // straight-line step toward the tile, the same heading
-                    // `steer` would use, rather than commit to a whole route
-                    // that has nowhere to go. Recomputed fresh next beat: if
-                    // what blocked the plan was dynamic (another mobile
-                    // passing through, most likely) a real route may exist by
-                    // then.
-                    None => {
-                        if let Some(direction) = heading_toward(from, Point::new(tile.0, tile.1, from.z)) {
-                            self.route.push_back(direction);
-                        }
-                    }
-                }
+                // `plan` answers for every way this can end — through, up to
+                // what is in the way, or as close as the ground gets — so an
+                // empty route after it means one thing only: there is nowhere
+                // left to walk from here. That is the branch below.
+                self.route = plan(ground, from, tile)
+                    .map(|plan| plan.open)
+                    .unwrap_or_default()
+                    .into();
             }
+        }
+
+        // A destination with nothing walkable left: the body is standing at
+        // whatever is in the way — a shut door, most often, which this end can
+        // neither open nor walk through — or as close to the destination as the
+        // ground ever gets. Nothing is sent, for the reason a heading wedged in
+        // a corner sends nothing: the shard answers a step it refuses with a
+        // `0x21`, which rolls the body back and resets the walk sequence this
+        // end is counting. The clock is armed anyway so the retry comes at a
+        // walking pace — which is also what picks the walk straight back up the
+        // moment somebody opens the door — and `was` is set so the patience
+        // above is what ends the order.
+        //
+        // The keyboard is exempt, as it is for the stall check: an arrow held
+        // while a destination is still set outranks it and is answered below.
+        if self.keys.asking().is_none() && self.goal.is_some() && self.route.is_empty() {
+            self.was = Some(from);
+            self.arm(self.interval(), now);
+            return None;
         }
 
         let asking = self.asking();
@@ -751,7 +830,7 @@ impl Steering {
                 let step = match self.goal {
                     Some(_) => step,
                     None => match self.detour(
-                        terrain,
+                        ground.real,
                         from,
                         Heading {
                             direction: step.direction,
@@ -909,8 +988,9 @@ impl Steering {
     /// actually competes; it exists for the one input that outranks both. A
     /// `goal` with nothing in `route` to answer from has already been resolved
     /// one way or another by [`Steering::take`] before this runs — arrived, or
-    /// a fallback heading queued as the route's one entry — so a defensive
-    /// `None` here reads as "nothing to ask for", the same as arriving.
+    /// standing where the ground ran out and returned from there — so a
+    /// defensive `None` here reads as "nothing to ask for", the same as
+    /// arriving.
     /// The lean rides along, because only one of the three asks has one: an
     /// arrow key and a planned route point at a sector and nothing finer, and
     /// saying so with [`Heading::centred`] is the honest way to say it. Making
@@ -1006,15 +1086,89 @@ impl Steering {
     }
 }
 
-/// Plan a route from `from` to `tile` over `terrain`. `None` is
-/// [`find_path`]'s own answer for out of budget or genuinely walled in behind
-/// something the static map already shows — [`Steering::take`] gives the
-/// destination up on it rather than walking at it anyway. Never called with
-/// `from` already on `tile`; `find_path` would answer that with an empty
-/// route, which is a different thing from no route at all.
-fn plan(terrain: &dyn Terrain, from: Point, tile: (u16, u16)) -> Option<VecDeque<Direction>> {
+/// Plan a route from `from` to `tile`, in the two halves a walk and a picture of
+/// it both need.
+///
+/// **The world as it stands is asked first, and its route is the whole plan.** A
+/// shut door with a way round is a longer walk and not a barred one, and that
+/// longer walk is what the body takes — nothing here prefers a door to a detour.
+///
+/// Only when there is no way through at all is [`Ground::through_doors`] asked:
+/// the same ground with the shut doors opened. That route is then cut at the
+/// first step the real ground refuses — and because the two readings differ by
+/// nothing else, the cut lands on a shut door every time. What is left before it
+/// is a walk the body can really take; what is left after it is what that door
+/// is in the way of. The body walks the first half and stops in front of the
+/// leaf, which is what a player asking to go through a door expects of a client
+/// that cannot open it for them; the second half is what tells them *why* it
+/// stopped there.
+///
+/// **And where neither half has a way through, the answer is still a walk.** A
+/// destination nothing can reach — clicked on a wall, on the far bank, on a tile
+/// too far for [`PLAN_BUDGET`] — is planned as far toward it as the world as it
+/// stands allows ([`find_path_toward`]), and the body stops there. *Nothing here
+/// ever asks for a step this end can already see refused.* Walking at a wall in
+/// a straight line until a patience runs out is what this used to do, and every
+/// one of those steps was a `0x21`, a rollback, and a walk sequence reset.
+///
+/// **The one place either question is answered.** [`Steering::take`] walks the
+/// open half and `App`'s HUD draws both, so the green line a player sees is the
+/// route being walked rather than a second opinion that happens to agree with
+/// it. A cut written for the picture alone would be exactly the shape of bug
+/// `docs/parity.md` is about.
+///
+/// A `barred` half that comes back empty is a route with nothing standing in it:
+/// one that arrives, or one that stops where the ground itself does. It stays
+/// empty in the one case where the two readings disagree the other way — the real
+/// ground allows every step of a route only the doors-open one managed to *find*
+/// within [`PLAN_BUDGET`] — because a plan is barred by what stops a step, not by
+/// which search found it.
+///
+/// `None` means there is nowhere to go at all: the body already stands as close
+/// to the destination as the ground allows, or is walled in where it is.
+/// [`Steering::take`] stands on that rather than sending anything, and the
+/// destination's own patience is what ends the order. A plan with nothing in
+/// either half says the same for the one case that is not a refusal — `from`
+/// already standing on `tile`, a body that has arrived.
+pub fn plan(ground: Ground<'_>, from: Point, tile: (u16, u16)) -> Option<Plan> {
     let goal = Point::new(tile.0, tile.1, from.z);
-    Some(find_path(terrain, from, goal, PLAN_BUDGET)?.into())
+    if let Some(open) = find_path(ground.real, from, goal, PLAN_BUDGET) {
+        return Some(Plan {
+            open,
+            barred: Vec::new(),
+        });
+    }
+    let Some(through) = find_path(ground.through_doors, from, goal, PLAN_BUDGET) else {
+        // Not even with the doors open, so there is nothing to say about the
+        // far side of anything: no route through this destination's own tile is
+        // known, and drawing one would be inventing it. What is left is how
+        // close the world as it stands can get, which is a walk and not a guess.
+        let open = find_path_toward(ground.real, from, goal, PLAN_BUDGET)?;
+        return Some(Plan {
+            open,
+            barred: Vec::new(),
+        });
+    };
+    let mut open = Vec::new();
+    let mut barred = Vec::new();
+    // Walked over the ground as it really is until it refuses a step: `at` going
+    // absent is the cut, and everything from there on belongs to the far side of
+    // the door. `step_allowed` and not `can_step`, because the corner rule is
+    // half of what refuses a step and the walk this is a claim about obeys both.
+    let mut at = Some(from);
+    for direction in through {
+        match at.and_then(|point| step_allowed(ground.real, point, direction)) {
+            Some(next) => {
+                at = Some(next);
+                open.push(direction);
+            }
+            None => {
+                at = None;
+                barred.push(direction);
+            }
+        }
+    }
+    Some(Plan { open, barred })
 }
 
 /// Temporary: `OPENSHARD_DETOUR_DEBUG=1` prints every ask that met something
@@ -1061,21 +1215,36 @@ mod tests {
                 here(),
                 start,
                 Direction::NorthWest,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             Some(Facing::walking(Direction::NorthWest))
         );
         // Nothing is due until a whole step has passed.
         assert_eq!(
-            steering.due(at(start, 399), here(), Direction::NorthWest, &OpenWorld),
+            steering.due(
+                at(start, 399),
+                here(),
+                Direction::NorthWest,
+                Ground::plain(&OpenWorld)
+            ),
             None
         );
         assert_eq!(
-            steering.due(at(start, 400), here(), Direction::NorthWest, &OpenWorld),
+            steering.due(
+                at(start, 400),
+                here(),
+                Direction::NorthWest,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::NorthWest))
         );
         assert_eq!(
-            steering.due(at(start, 401), here(), Direction::NorthWest, &OpenWorld),
+            steering.due(
+                at(start, 401),
+                here(),
+                Direction::NorthWest,
+                Ground::plain(&OpenWorld)
+            ),
             None
         );
     }
@@ -1094,7 +1263,7 @@ mod tests {
                 here(),
                 start,
                 Direction::NorthWest,
-                &OpenWorld,
+                Ground::plain(&OpenWorld),
             )
             .unwrap();
         for repeat in 1..30 {
@@ -1104,7 +1273,7 @@ mod tests {
                     here(),
                     at(start, repeat * 10),
                     Direction::NorthWest,
-                    &OpenWorld
+                    Ground::plain(&OpenWorld)
                 ),
                 None
             );
@@ -1124,16 +1293,26 @@ mod tests {
                 here(),
                 start,
                 Direction::SouthEast,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             Some(Facing::running(Direction::SouthEast))
         );
         assert_eq!(
-            steering.due(at(start, 199), here(), Direction::SouthEast, &OpenWorld),
+            steering.due(
+                at(start, 199),
+                here(),
+                Direction::SouthEast,
+                Ground::plain(&OpenWorld)
+            ),
             None
         );
         assert_eq!(
-            steering.due(at(start, 200), here(), Direction::SouthEast, &OpenWorld),
+            steering.due(
+                at(start, 200),
+                here(),
+                Direction::SouthEast,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::running(Direction::SouthEast))
         );
     }
@@ -1146,21 +1325,42 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .press(Direction::North, here(), start, Direction::North, &OpenWorld)
+            .press(
+                Direction::North,
+                here(),
+                start,
+                Direction::North,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         steering.set_running(true);
         assert_eq!(
-            steering.due(at(start, 200), here(), Direction::North, &OpenWorld),
+            steering.due(
+                at(start, 200),
+                here(),
+                Direction::North,
+                Ground::plain(&OpenWorld)
+            ),
             None,
             "the walk's deadline stands"
         );
         assert_eq!(
-            steering.due(at(start, 400), here(), Direction::North, &OpenWorld),
+            steering.due(
+                at(start, 400),
+                here(),
+                Direction::North,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::running(Direction::North))
         );
         // And from there it is a runner's.
         assert_eq!(
-            steering.due(at(start, 600), here(), Direction::North, &OpenWorld),
+            steering.due(
+                at(start, 600),
+                here(),
+                Direction::North,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::running(Direction::North))
         );
     }
@@ -1171,12 +1371,23 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .press(Direction::West, here(), start, Direction::West, &OpenWorld)
+            .press(
+                Direction::West,
+                here(),
+                start,
+                Direction::West,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         steering.release(Direction::West);
         assert_eq!(steering.deadline(), None);
         assert_eq!(
-            steering.due(at(start, 10_000), here(), Direction::West, &OpenWorld),
+            steering.due(
+                at(start, 10_000),
+                here(),
+                Direction::West,
+                Ground::plain(&OpenWorld)
+            ),
             None
         );
     }
@@ -1189,7 +1400,13 @@ mod tests {
 
         // Three tiles east, at the same row.
         assert_eq!(
-            steering.go_to((103, 100), here(), start, Direction::East, &OpenWorld),
+            steering.go_to(
+                (103, 100),
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::East)),
             "the first step leaves at once"
         );
@@ -1197,7 +1414,12 @@ mod tests {
         for x in 101..=102 {
             now = at(start, 400 * u64::from(x - 100));
             assert_eq!(
-                steering.due(now, Point::new(x, 100, 0), Direction::East, &OpenWorld),
+                steering.due(
+                    now,
+                    Point::new(x, 100, 0),
+                    Direction::East,
+                    Ground::plain(&OpenWorld)
+                ),
                 Some(Facing::walking(Direction::East)),
                 "still short of it"
             );
@@ -1205,7 +1427,12 @@ mod tests {
         // Standing on it: nothing more is asked for, and the clock stops with
         // the asking.
         assert_eq!(
-            steering.due(at(now, 400), Point::new(103, 100, 0), Direction::East, &OpenWorld),
+            steering.due(
+                at(now, 400),
+                Point::new(103, 100, 0),
+                Direction::East,
+                Ground::plain(&OpenWorld)
+            ),
             None
         );
         assert_eq!(steering.goal(), None);
@@ -1219,7 +1446,13 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
         assert_eq!(
-            steering.go_to((105, 105), here(), start, Direction::SouthEast, &OpenWorld),
+            steering.go_to(
+                (105, 105),
+                here(),
+                start,
+                Direction::SouthEast,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::SouthEast))
         );
     }
@@ -1252,7 +1485,7 @@ mod tests {
         // greedy step would ask for East every time, walk into (101, 100) and
         // stall on it; the plan detours around it instead.
         let first = steering
-            .go_to((104, 100), here(), start, Direction::East, &wall)
+            .go_to((104, 100), here(), start, Direction::East, Ground::plain(&wall))
             .expect("a route around the wall exists");
         assert_ne!(
             first.direction,
@@ -1279,7 +1512,7 @@ mod tests {
         let mut now = start;
         for step in 1..10 {
             now = at(now, WALK_HOLD.as_millis() as u64);
-            let Some(facing) = steering.due(now, pos, Direction::East, &wall) else {
+            let Some(facing) = steering.due(now, pos, Direction::East, Ground::plain(&wall)) else {
                 break;
             };
             let (dx, dy) = facing.direction.step();
@@ -1302,33 +1535,95 @@ mod tests {
         assert_eq!(steering.goal(), None, "and let go of on arrival");
     }
 
-    /// A destination the static map already proves has no *planned* route —
-    /// clicked squarely on a wall, or a pillar with no way around it — still
-    /// degrades to a straight-line heading rather than standing still: the
-    /// same fallback Ctrl+drag is for. It is still a destination and not a
-    /// heading, though, so it still gives up after `STUCK_STEPS` refusals
-    /// rather than pressing at the wall forever the way a bare heading would.
+    /// A destination nothing can stand on — clicked squarely on a wall, on a
+    /// pillar, on a crate — is walked *up to* and stopped at. The one thing that
+    /// must not happen is a step into it: this end can already see the tile is
+    /// refused, and asking anyway buys a `0x21`, a rollback and a walk sequence
+    /// reset, once a hold, for as long as the patience lasts. That is what this
+    /// used to do.
     #[test]
-    fn a_destination_with_no_route_falls_back_to_a_heading_then_gives_up() {
+    fn a_destination_that_cannot_be_stood_on_is_walked_up_to_and_stopped_at() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        // The clicked tile itself is the blocked one: nothing can ever step
-        // onto it, so `find_path` never finds a route no matter how it searches.
+        // Four tiles east, and the clicked tile itself is the blocked one, so
+        // no search finds a route to it however it looks.
+        let wall = Wall { blocked: (104, 100) };
+
+        let mut pos = here();
+        let mut now = start;
+        assert_eq!(
+            steering.go_to((104, 100), pos, now, Direction::East, Ground::plain(&wall)),
+            Some(Facing::walking(Direction::East)),
+            "as close as the ground allows is still somewhere worth walking"
+        );
+        // Walk what it asks for, feeding the position back the way a `0x22`
+        // would, and check every step is one the ground actually allows.
+        for _ in 0..3 {
+            pos = Point::new(pos.x + 1, pos.y, pos.z);
+            now = at(now, 400);
+            let step = steering.due(now, pos, Direction::East, Ground::plain(&wall));
+            if step.is_none() {
+                break;
+            }
+            assert!(
+                wall.can_step(pos, Point::new(pos.x + 1, pos.y, pos.z)).is_some(),
+                "a step was asked for onto the blocked tile at {}, {}",
+                pos.x + 1,
+                pos.y
+            );
+        }
+        assert_eq!(
+            (pos.x, pos.y),
+            (103, 100),
+            "the body stops on the last tile before the one it was sent to"
+        );
+        // And there it stands: nothing is sent, the order is held for the usual
+        // patience, and then let go of.
+        for step in 1..u64::from(STUCK_STEPS) {
+            assert_eq!(
+                steering.due(at(now, 400 * step), pos, Direction::East, Ground::plain(&wall)),
+                None,
+                "beat {step} against the wall must send nothing"
+            );
+            assert_eq!(steering.goal(), Some((104, 100)), "and still hold the order");
+        }
+        assert_eq!(
+            steering.due(
+                at(now, 400 * u64::from(STUCK_STEPS)),
+                pos,
+                Direction::East,
+                Ground::plain(&wall)
+            ),
+            None
+        );
+        assert_eq!(steering.goal(), None, "and the destination is let go of");
+    }
+
+    /// The same, from a body that is already as close as it can get: there is
+    /// nothing to walk at all, so the order is held for its patience and ends
+    /// without a single packet.
+    #[test]
+    fn a_destination_with_nowhere_closer_to_stand_sends_nothing_at_all() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
         let wall = Wall { blocked: (101, 100) };
 
         assert_eq!(
-            steering.go_to((101, 100), here(), start, Direction::East, &wall),
-            Some(Facing::walking(Direction::East)),
-            "no planned route does not mean nothing worth trying"
+            steering.go_to((101, 100), here(), start, Direction::East, Ground::plain(&wall)),
+            None,
+            "the body is already against it; a step would only be refused"
         );
-        // The server refuses every one of those — the body never moves — and
-        // the click's own step is the first of the four `STUCK_STEPS` tries.
+        assert_eq!(steering.goal(), Some((101, 100)), "the order stands for now");
         for step in 1..u64::from(STUCK_STEPS) {
-            assert!(
-                steering
-                    .due(at(start, 400 * step), here(), Direction::East, &wall)
-                    .is_some(),
-                "step {step} is still worth trying"
+            assert_eq!(
+                steering.due(
+                    at(start, 400 * step),
+                    here(),
+                    Direction::East,
+                    Ground::plain(&wall)
+                ),
+                None,
+                "beat {step} still has nothing to send"
             );
         }
         assert_eq!(
@@ -1336,11 +1631,234 @@ mod tests {
                 at(start, 400 * u64::from(STUCK_STEPS)),
                 here(),
                 Direction::East,
-                &wall
+                Ground::plain(&wall)
             ),
             None
         );
         assert_eq!(steering.goal(), None, "and the destination is let go of");
+    }
+
+    /// A wall clean across the way with one doorway in it, and — in the world as
+    /// it stands — a shut leaf standing in that doorway.
+    ///
+    /// The shape [`Ground`]'s two readings exist for: with the door open there
+    /// is a way through and as the world stands there is none at all, so what
+    /// "no route" means can only be answered by asking both. `shut` stands in
+    /// for `clutter.rs`'s own list of doors, which is where a real client gets
+    /// the same two answers from one index.
+    struct Doorwall {
+        shut: bool,
+    }
+
+    /// The one gap in [`Doorwall`]'s line, three tiles east of the body.
+    const DOORWAY: (u16, u16) = (103, 100);
+
+    impl openshard_movement::Terrain for Doorwall {
+        fn can_step(&self, from: Point, to: Point) -> Option<Point> {
+            let barred = to.x == DOORWAY.0 && ((to.x, to.y) != DOORWAY || self.shut);
+            match barred {
+                true => None,
+                false => OpenWorld.can_step(from, to),
+            }
+        }
+    }
+
+    /// Two tiles past the doorway: a destination only reachable through it.
+    const BEYOND: (u16, u16) = (105, 100);
+
+    /// With the door open there is nothing to cut: the world as it stands
+    /// answers, and its answer is the whole plan.
+    #[test]
+    fn a_way_through_the_world_as_it_stands_is_the_whole_plan() {
+        let open = Doorwall { shut: false };
+        let plan = plan(Ground::plain(&open), here(), BEYOND).expect("the doorway is open");
+        assert_eq!(plan.open, vec![Direction::East; 5]);
+        assert!(
+            plan.barred.is_empty(),
+            "an open doorway is a route, and a route has nothing barred about it"
+        );
+    }
+
+    /// The whole point: a destination behind a shut door is planned up to the
+    /// door and named barred past it, rather than answered "no route" — which is
+    /// what the doors-open reading is asked for, and what makes the walk go
+    /// somewhere useful and the drawn line change colour at the door.
+    #[test]
+    fn a_shut_door_plans_up_to_it_and_names_the_rest_barred() {
+        let shut = Doorwall { shut: true };
+        let open = Doorwall { shut: false };
+        assert!(
+            find_path(&shut, here(), Point::new(BEYOND.0, BEYOND.1, 0), PLAN_BUDGET).is_none(),
+            "the premise: as the world stands there is no way through at all"
+        );
+        let plan = plan(
+            Ground {
+                real: &shut,
+                through_doors: &open,
+            },
+            here(),
+            BEYOND,
+        )
+        .expect("the map itself has a doorway");
+        assert_eq!(
+            plan.open,
+            vec![Direction::East; 2],
+            "the walk stops on the tile before the doorway, not in it"
+        );
+        assert_eq!(
+            plan.barred,
+            vec![Direction::East; 3],
+            "and the rest of the way is what the shut leaf is in the way of"
+        );
+    }
+
+    /// Something in the way with a route round it is a *longer walk*, never a
+    /// barred plan: the world as it stands is asked first, and its detour is the
+    /// answer. Getting this backwards would draw half the town red every time a
+    /// crate stood on the straight line.
+    #[test]
+    fn a_thing_in_the_way_with_a_route_round_it_is_not_barred() {
+        let wall = Wall { blocked: (101, 100) };
+        let plan = plan(
+            Ground {
+                real: &wall,
+                through_doors: &OpenWorld,
+            },
+            here(),
+            (104, 100),
+        )
+        .expect("there is a way round a single tile");
+        assert!(
+            plan.barred.is_empty(),
+            "a crate with a way round was planned as a barred route instead of a detour"
+        );
+        assert_ne!(
+            plan.open.first(),
+            Some(&Direction::East),
+            "east is the blocked tile; the plan must step around it"
+        );
+    }
+
+    /// The walk itself, end to end: it goes as far as the door, sends nothing
+    /// into it, and holds the order for [`STUCK_STEPS`] before giving it up.
+    ///
+    /// Nothing is sent at the door for the reason nothing is sent in a corner: a
+    /// step this end has already proven the shard refuses comes back as a
+    /// `0x21`, which rolls the body back and resets the walk sequence — a
+    /// rollback a hold, for as long as the player waits.
+    #[test]
+    fn a_destination_behind_a_shut_door_is_walked_up_to_and_no_further() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        let shut = Doorwall { shut: true };
+        let open = Doorwall { shut: false };
+        let ground = Ground {
+            real: &shut,
+            through_doors: &open,
+        };
+
+        assert_eq!(
+            steering.go_to(BEYOND, here(), start, Direction::East, ground),
+            Some(Facing::walking(Direction::East)),
+            "the way to the door is a way worth walking"
+        );
+        assert_eq!(
+            steering.due(at(start, 400), Point::new(101, 100, 0), Direction::East, ground),
+            Some(Facing::walking(Direction::East))
+        );
+        // On the tile before the doorway, which is as far as the ground goes.
+        let waiting = Point::new(102, 100, 0);
+        assert_eq!(
+            steering.due(at(start, 800), waiting, Direction::East, ground),
+            None,
+            "a step into the shut leaf is one the shard would refuse"
+        );
+        assert_eq!(
+            steering.goal(),
+            Some(BEYOND),
+            "the order is not given up on the moment it stops moving"
+        );
+        assert_eq!(
+            steering.deadline(),
+            Some(at(start, 1200)),
+            "and the retry is paced like a step rather than spun on a deadline already past"
+        );
+        for step in 1..u64::from(STUCK_STEPS) {
+            assert_eq!(
+                steering.due(at(start, 800 + 400 * step), waiting, Direction::East, ground),
+                None,
+                "beat {step} at the door still has nothing to send"
+            );
+            assert_eq!(steering.goal(), Some(BEYOND), "and still holds the order");
+        }
+        assert_eq!(
+            steering.due(
+                at(start, 800 + 400 * u64::from(STUCK_STEPS)),
+                waiting,
+                Direction::East,
+                ground
+            ),
+            None
+        );
+        assert_eq!(
+            steering.goal(),
+            None,
+            "a body that has stood at the door for four beats has been given up on"
+        );
+    }
+
+    /// And the other half of standing there: the walk picks itself back up the
+    /// moment somebody opens the door, with no fresh click. The clock armed at
+    /// the door is what makes that happen at a walking pace.
+    #[test]
+    fn the_walk_resumes_the_moment_the_door_opens() {
+        let start = Instant::now();
+        let mut steering = Steering::default();
+        let shut = Doorwall { shut: true };
+        let open = Doorwall { shut: false };
+
+        let waiting = Point::new(102, 100, 0);
+        steering
+            .go_to(
+                BEYOND,
+                here(),
+                start,
+                Direction::East,
+                Ground {
+                    real: &shut,
+                    through_doors: &open,
+                },
+            )
+            .unwrap();
+        steering.due(
+            at(start, 400),
+            Point::new(101, 100, 0),
+            Direction::East,
+            Ground {
+                real: &shut,
+                through_doors: &open,
+            },
+        );
+        assert_eq!(
+            steering.due(
+                at(start, 800),
+                waiting,
+                Direction::East,
+                Ground {
+                    real: &shut,
+                    through_doors: &open
+                }
+            ),
+            None,
+            "the premise: the body is standing at the shut door"
+        );
+        // The leaf swings: the same tile, now part of the world a step is
+        // allowed by.
+        assert_eq!(
+            steering.due(at(start, 1200), waiting, Direction::East, Ground::plain(&open)),
+            Some(Facing::walking(Direction::East)),
+            "the door opened and nothing asked again — the walk must carry on by itself"
+        );
     }
 
     /// Dragging the mouse across the ground restates the destination on every
@@ -1351,7 +1869,13 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .go_to((110, 100), here(), start, Direction::East, &OpenWorld)
+            .go_to(
+                (110, 100),
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         for tick in 1..20 {
             assert_eq!(
@@ -1360,7 +1884,7 @@ mod tests {
                     here(),
                     at(start, tick * 10),
                     Direction::East,
-                    &OpenWorld
+                    Ground::plain(&OpenWorld)
                 ),
                 None
             );
@@ -1394,7 +1918,13 @@ mod tests {
         let terrain = CountingTerrain::default();
 
         steering
-            .go_to((110, 100), here(), start, Direction::East, &terrain)
+            .go_to(
+                (110, 100),
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&terrain),
+            )
             .unwrap();
         let after_click = terrain.can_step_calls.get();
         assert!(after_click > 0, "the click itself plans a route");
@@ -1405,7 +1935,7 @@ mod tests {
                 here(),
                 at(start, tick * 10),
                 Direction::East,
-                &terrain,
+                Ground::plain(&terrain),
             );
         }
         assert_eq!(
@@ -1423,7 +1953,13 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .go_to((200, 100), here(), start, Direction::East, &OpenWorld)
+            .go_to(
+                (200, 100),
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         // The body never moves: every step is refused by the server, which
         // snaps it back to where it was. The click's own step is the first of
@@ -1431,7 +1967,12 @@ mod tests {
         for step in 1..u64::from(STUCK_STEPS) {
             assert!(
                 steering
-                    .due(at(start, 400 * step), here(), Direction::East, &OpenWorld)
+                    .due(
+                        at(start, 400 * step),
+                        here(),
+                        Direction::East,
+                        Ground::plain(&OpenWorld)
+                    )
                     .is_some(),
                 "step {step} is still worth trying"
             );
@@ -1441,7 +1982,7 @@ mod tests {
                 at(start, 400 * u64::from(STUCK_STEPS)),
                 here(),
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             None
         );
@@ -1455,7 +1996,13 @@ mod tests {
         let start = Instant::now();
         let mut steering = Steering::default();
         steering
-            .go_to((100, 130), here(), start, Direction::South, &OpenWorld)
+            .go_to(
+                (100, 130),
+                here(),
+                start,
+                Direction::South,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
 
         for y in 101..=120u16 {
@@ -1465,7 +2012,7 @@ mod tests {
             let position = Point::new(100, y - u16::from(y % 2 == 0), 0);
             assert!(
                 steering
-                    .due(now, position, Direction::South, &OpenWorld)
+                    .due(now, position, Direction::South, Ground::plain(&OpenWorld))
                     .is_some(),
                 "row {y}"
             );
@@ -1482,7 +2029,13 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .go_to((200, 100), here(), start, Direction::East, &OpenWorld)
+            .go_to(
+                (200, 100),
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         assert_eq!(
             steering.press(
@@ -1490,18 +2043,23 @@ mod tests {
                 here(),
                 at(start, 50),
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             None,
             "the step under way is not cut short"
         );
         assert_eq!(steering.goal(), None, "but the destination is dropped at once");
         assert_eq!(
-            steering.due(at(start, 399), here(), Direction::East, &OpenWorld),
+            steering.due(at(start, 399), here(), Direction::East, Ground::plain(&OpenWorld)),
             None
         );
         assert_eq!(
-            steering.due(at(start, 400), here(), Direction::NorthWest, &OpenWorld),
+            steering.due(
+                at(start, 400),
+                here(),
+                Direction::NorthWest,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::NorthWest)),
             "the keyboard's step, not the destination's"
         );
@@ -1520,7 +2078,13 @@ mod tests {
         let mut steering = Steering::default();
 
         assert_eq!(
-            steering.press(Direction::East, here(), start, Direction::East, &OpenWorld),
+            steering.press(
+                Direction::East,
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::East))
         );
         // Halfway across the tile, the player asks for the opposite direction.
@@ -1530,7 +2094,7 @@ mod tests {
                 here(),
                 at(start, 200),
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             None
         );
@@ -1542,7 +2106,7 @@ mod tests {
         // And it is the *new* direction that leaves at it: the queue is one step
         // deep and every press rebuilds it.
         assert_eq!(
-            steering.due(at(start, 400), here(), Direction::East, &OpenWorld),
+            steering.due(at(start, 400), here(), Direction::East, Ground::plain(&OpenWorld)),
             Some(Facing::walking(Direction::West))
         );
     }
@@ -1567,17 +2131,29 @@ mod tests {
         ];
 
         steering
-            .press(arrows[0], here(), start, Direction::East, &OpenWorld)
+            .press(
+                arrows[0],
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         for (tick, direction) in arrows.iter().cycle().take(30).enumerate() {
             let now = at(start, 10 * tick as u64 + 10);
             assert_eq!(
-                steering.press(*direction, here(), now, Direction::East, &OpenWorld),
+                steering.press(
+                    *direction,
+                    here(),
+                    now,
+                    Direction::East,
+                    Ground::plain(&OpenWorld)
+                ),
                 None,
                 "at {now:?}"
             );
             assert_eq!(
-                steering.due(now, here(), Direction::East, &OpenWorld),
+                steering.due(now, here(), Direction::East, Ground::plain(&OpenWorld)),
                 None,
                 "nor by asking the clock at {now:?}"
             );
@@ -1622,7 +2198,7 @@ mod tests {
                     here(),
                     now,
                     Direction::South,
-                    &OpenWorld,
+                    Ground::plain(&OpenWorld),
                 )
                 .is_some()
             {
@@ -1653,13 +2229,25 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .press(Direction::East, here(), start, Direction::East, &OpenWorld)
+            .press(
+                Direction::East,
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         for tap in 1..8 {
             let now = at(start, 40 * tap);
             steering.release(Direction::East);
             assert_eq!(
-                steering.press(Direction::East, here(), now, Direction::East, &OpenWorld),
+                steering.press(
+                    Direction::East,
+                    here(),
+                    now,
+                    Direction::East,
+                    Ground::plain(&OpenWorld)
+                ),
                 None,
                 "tap {tap} bought a step"
             );
@@ -1673,7 +2261,7 @@ mod tests {
                 here(),
                 at(start, 2_000),
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             Some(Facing::walking(Direction::East))
         );
@@ -1705,7 +2293,7 @@ mod tests {
                 here(),
                 start,
                 Direction::North,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             Some(Facing::walking(Direction::East))
         );
@@ -1715,14 +2303,24 @@ mod tests {
             "a turn's delay, not a whole hold and not nothing"
         );
         assert_eq!(
-            steering.due(at(start, turn - 1), here(), Direction::East, &OpenWorld),
+            steering.due(
+                at(start, turn - 1),
+                here(),
+                Direction::East,
+                Ground::plain(&OpenWorld)
+            ),
             None,
             "the body is squaring up; nothing else has come due"
         );
         // Facing east now — the shard has acked the turn — so this one is the
         // step the turn was for.
         assert_eq!(
-            steering.due(at(start, turn), here(), Direction::East, &OpenWorld),
+            steering.due(
+                at(start, turn),
+                here(),
+                Direction::East,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::East))
         );
         assert_eq!(
@@ -1754,7 +2352,7 @@ mod tests {
                 here(),
                 start,
                 Direction::North,
-                &wall
+                Ground::plain(&wall)
             ),
             Some(Facing::walking(Direction::East)),
             "the turn is sent; the body is facing north and was asked to face east"
@@ -1763,7 +2361,12 @@ mod tests {
         // now and there is nothing left to say.
         for step in 1..20u64 {
             assert_eq!(
-                steering.due(at(start, 400 * step), here(), Direction::East, &wall),
+                steering.due(
+                    at(start, 400 * step),
+                    here(),
+                    Direction::East,
+                    Ground::plain(&wall)
+                ),
                 None,
                 "step {step}: a turn-only ask sent something once it was already facing"
             );
@@ -1780,7 +2383,13 @@ mod tests {
         let east = Heading::centred(Direction::East);
 
         steering
-            .steer(Some(Ask::Turn(east)), here(), start, Direction::North, &OpenWorld)
+            .steer(
+                Some(Ask::Turn(east)),
+                here(),
+                start,
+                Direction::North,
+                Ground::plain(&OpenWorld),
+            )
             .expect("the turn");
         // Facing east and still inside the ring: nothing.
         assert_eq!(
@@ -1789,7 +2398,7 @@ mod tests {
                 here(),
                 at(start, 400),
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             None,
             "the same ask restated"
@@ -1801,7 +2410,7 @@ mod tests {
                 here(),
                 at(start, 500),
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             Some(Facing::walking(Direction::East)),
             "out past the ring, the same bearing is a walk"
@@ -1823,13 +2432,13 @@ mod tests {
                 here(),
                 start,
                 Direction::North,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             Some(Facing::walking(Direction::East)),
             "the turn"
         );
         assert_eq!(
-            steering.due(start, here(), Direction::East, &OpenWorld),
+            steering.due(start, here(), Direction::East, Ground::plain(&OpenWorld)),
             Some(Facing::walking(Direction::East)),
             "and the step it was for, in the same instant"
         );
@@ -1850,13 +2459,18 @@ mod tests {
                 here(),
                 start,
                 Direction::North,
-                &OpenWorld,
+                Ground::plain(&OpenWorld),
             )
             .expect("the turn");
         let turn = TURN_HOLD_FAST.as_millis() as u64;
         assert_eq!(steering.deadline(), Some(at(start, turn)));
         assert_eq!(
-            steering.due(at(start, turn), here(), Direction::East, &OpenWorld),
+            steering.due(
+                at(start, turn),
+                here(),
+                Direction::East,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::East))
         );
         assert_eq!(steering.deadline(), Some(at(start, turn + 400)));
@@ -1887,7 +2501,7 @@ mod tests {
                 here(),
                 now,
                 Direction::North,
-                &OpenWorld,
+                Ground::plain(&OpenWorld),
             ) {
                 // What the body was facing when this left — `asked` is set to
                 // this step's own direction by then, so the caller's facing is
@@ -1915,7 +2529,13 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .press(Direction::East, here(), start, Direction::East, &OpenWorld)
+            .press(
+                Direction::East,
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         // The shard refuses it and says the body is still facing north.
         steering.corrected(Direction::North);
@@ -1924,11 +2544,21 @@ mod tests {
         // whole hold, which is what it would be if the facing this end believed
         // in had survived the rollback.
         assert_eq!(
-            steering.due(at(start, 400), here(), Direction::North, &OpenWorld),
+            steering.due(
+                at(start, 400),
+                here(),
+                Direction::North,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::East))
         );
         assert_eq!(
-            steering.due(at(start, 400), here(), Direction::North, &OpenWorld),
+            steering.due(
+                at(start, 400),
+                here(),
+                Direction::North,
+                Ground::plain(&OpenWorld)
+            ),
             None,
             "the turn is a step of its own; the wake it left in owes nothing more"
         );
@@ -1937,7 +2567,7 @@ mod tests {
                 at(start, 400 + TURN_HOLD.as_millis() as u64),
                 here(),
                 Direction::North,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             Some(Facing::walking(Direction::East)),
             "the step the turn was for"
@@ -1951,14 +2581,31 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .press(Direction::South, here(), start, Direction::South, &OpenWorld)
+            .press(
+                Direction::South,
+                here(),
+                start,
+                Direction::South,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
-        steering.go_to((200, 200), here(), start, Direction::South, &OpenWorld);
+        steering.go_to(
+            (200, 200),
+            here(),
+            start,
+            Direction::South,
+            Ground::plain(&OpenWorld),
+        );
         steering.clear();
         assert_eq!(steering.goal(), None);
         assert_eq!(steering.deadline(), None);
         assert_eq!(
-            steering.due(at(start, 10_000), here(), Direction::South, &OpenWorld),
+            steering.due(
+                at(start, 10_000),
+                here(),
+                Direction::South,
+                Ground::plain(&OpenWorld)
+            ),
             None
         );
     }
@@ -1978,7 +2625,7 @@ mod tests {
                 here(),
                 start,
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             Some(Facing::walking(Direction::East))
         );
@@ -1988,7 +2635,7 @@ mod tests {
                 here(),
                 at(start, 10),
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             None,
             "the same heading restated is not a fresh ask"
@@ -2034,14 +2681,19 @@ mod tests {
                 here(),
                 start,
                 Direction::North,
-                &Boxed
+                Ground::plain(&Boxed)
             ),
             Some(Facing::walking(Direction::East)),
             "the turn into the corner is legal and is what the body is drawn doing"
         );
         for step in 1..20u64 {
             assert_eq!(
-                steering.due(at(start, 400 * step), here(), Direction::East, &Boxed),
+                steering.due(
+                    at(start, 400 * step),
+                    here(),
+                    Direction::East,
+                    Ground::plain(&Boxed)
+                ),
                 None,
                 "step {step}: facing it already, there is no step left that the shard would take"
             );
@@ -2064,7 +2716,7 @@ mod tests {
                 here(),
                 start,
                 Direction::North,
-                &Boxed,
+                Ground::plain(&Boxed),
             )
             .expect("the turn");
         // The turn is a step of its own, so the retries are measured from the
@@ -2073,7 +2725,12 @@ mod tests {
         assert_eq!(steering.deadline(), Some(at(start, turn)));
         for step in 0..3u64 {
             assert_eq!(
-                steering.due(at(start, turn + 400 * step), here(), Direction::East, &Boxed),
+                steering.due(
+                    at(start, turn + 400 * step),
+                    here(),
+                    Direction::East,
+                    Ground::plain(&Boxed)
+                ),
                 None
             );
             assert_eq!(
@@ -2084,7 +2741,12 @@ mod tests {
         }
         // The door opens, the crate is moved, the body in the way walks off.
         assert_eq!(
-            steering.due(at(start, turn + 400 * 3), here(), Direction::East, &OpenWorld),
+            steering.due(
+                at(start, turn + 400 * 3),
+                here(),
+                Direction::East,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::East)),
             "nothing was asked for again; the heading was held the whole time"
         );
@@ -2116,7 +2778,7 @@ mod tests {
                 here(),
                 start,
                 Direction::East,
-                &wall,
+                Ground::plain(&wall),
             )
             .expect("a sidestep is open");
         assert!(
@@ -2153,7 +2815,7 @@ mod tests {
                 here(),
                 start,
                 Direction::NorthEast,
-                &corner,
+                Ground::plain(&corner),
             )
             .expect("a flanking cardinal is open");
         assert!(
@@ -2198,14 +2860,19 @@ mod tests {
                 here(),
                 start,
                 Direction::North,
-                &wall
+                Ground::plain(&wall)
             ),
             Some(Facing::walking(Direction::East)),
             "the turn to face what it walked into is still legal and still sent"
         );
         for step in 1..6u64 {
             assert_eq!(
-                steering.due(at(start, 400 * step), here(), Direction::East, &wall),
+                steering.due(
+                    at(start, 400 * step),
+                    here(),
+                    Direction::East,
+                    Ground::plain(&wall)
+                ),
                 None,
                 "step {step}: stopped means stopped, and a refused step is not sent to say so"
             );
@@ -2214,7 +2881,7 @@ mod tests {
         // heading, with the sidestep allowed, walks.
         steering.set_leeway(Leeway::Quarter);
         let slid = steering
-            .due(at(start, 400 * 6), here(), Direction::East, &wall)
+            .due(at(start, 400 * 6), here(), Direction::East, Ground::plain(&wall))
             .expect("a sidestep is open");
         assert!(
             matches!(slid.direction, Direction::North | Direction::South),
@@ -2263,7 +2930,7 @@ mod tests {
                 here(),
                 start,
                 Direction::SouthEast,
-                &corner,
+                Ground::plain(&corner),
             )
             .expect("south is open");
         assert_eq!(
@@ -2308,7 +2975,7 @@ mod tests {
                 here(),
                 start,
                 Direction::East,
-                &Doorway,
+                Ground::plain(&Doorway),
             )
             .expect("north is open");
         assert_eq!(
@@ -2322,7 +2989,7 @@ mod tests {
         for step in 1..4u32 {
             now = at(now, u64::from(step) * WALK_HOLD.as_millis() as u64);
             let facing = steering
-                .due(now, pos, Direction::East, &Doorway)
+                .due(now, pos, Direction::East, Ground::plain(&Doorway))
                 .unwrap_or_else(|| panic!("step {step}: north keeps being open"));
             assert_eq!(
                 facing.direction,
@@ -2373,7 +3040,7 @@ mod tests {
                     here(),
                     start,
                     direction,
-                    &terrain,
+                    Ground::plain(&terrain),
                 )
                 .unwrap_or_else(|| panic!("{direction:?}: a heading never gives up, even on the first ask"));
 
@@ -2396,7 +3063,13 @@ mod tests {
         let mut steering = Steering::default();
 
         steering
-            .press(Direction::North, here(), start, Direction::North, &OpenWorld)
+            .press(
+                Direction::North,
+                here(),
+                start,
+                Direction::North,
+                Ground::plain(&OpenWorld),
+            )
             .unwrap();
         // Queued behind the keyboard's own step, same as any other input
         // mid-step — see the queue rule in the module docs.
@@ -2406,13 +3079,18 @@ mod tests {
                 here(),
                 at(start, 10),
                 Direction::North,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             None
         );
         steering.mouse_up();
         assert_eq!(
-            steering.due(at(start, 400), here(), Direction::North, &OpenWorld),
+            steering.due(
+                at(start, 400),
+                here(),
+                Direction::North,
+                Ground::plain(&OpenWorld)
+            ),
             Some(Facing::walking(Direction::North)),
             "the keyboard is untouched by the mouse letting go"
         );
@@ -2431,7 +3109,7 @@ mod tests {
                 here(),
                 start,
                 Direction::East,
-                &OpenWorld,
+                Ground::plain(&OpenWorld),
             )
             .unwrap();
         assert_eq!(
@@ -2440,13 +3118,13 @@ mod tests {
                 here(),
                 at(start, 50),
                 Direction::East,
-                &OpenWorld
+                Ground::plain(&OpenWorld)
             ),
             None,
             "the step under way is not cut short"
         );
         assert_eq!(
-            steering.due(at(start, 400), here(), Direction::West, &OpenWorld),
+            steering.due(at(start, 400), here(), Direction::West, Ground::plain(&OpenWorld)),
             Some(Facing::walking(Direction::West)),
             "the keyboard's heading, not the mouse's"
         );

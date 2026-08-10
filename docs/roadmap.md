@@ -2615,13 +2615,13 @@ riding along with this one.
   `connection.rs`, used by `Event::Undecoded` and `LoginError::OutOfTurn`.
 - ~~**`net::view::Item::amount` is the one untyped field next to
   `graphic`/`position`/`hue`.**~~ Fixed: `StackAmount`.
-- **`app::shell::PickedTile`, the coordinate half** — `x`/`y: u16`. The
-  earlier note here said no `TileCoord` exists to reuse, and that was wrong:
-  `openshard_movement::Tile` is exactly it — "a tile's column and row, with no
-  height", already the argument type of `Terrain::{ground_z, land_tile,
-  statics_at, stand_z, spawn_z, can_fit}`. So this is class A after all, not a
-  new type. It still touches every caller of `App::tile_info`/`in_bounds`, so
-  it stays its own pass — but a reuse pass, which is a smaller thing.
+- ~~**`app::shell::PickedTile`, the coordinate half** — `x`/`y: u16`.~~ Fixed:
+  the two fields are one `at: openshard_movement::Tile` now — "a tile's column
+  and row, with no height", already the argument type of `Terrain::{ground_z,
+  land_tile, statics_at, stand_z, spawn_z, can_fit}`, so this was class A and
+  not a new type. Every reader (`tile_ring`, the two HUD panels,
+  `draw_tile_highlight`, `App::{pick_tile, tile_info, walk_toward_cursor}` and
+  the click handler) reads `.at.x`/`.at.y` now instead of two loose fields.
 - ~~**`app::shell::PickedTile`, the graphic half.**~~ Fixed: `land` is
   `Option<Graphic>` and `statics` is `Vec<(Graphic, i8, Hue)>` — the types the
   neighbouring `Hud::mobiles`/`items` already carry, and no new type needed.
@@ -2629,22 +2629,38 @@ riding along with this one.
   which hold bare `u16`s of their own; `uofiles` is `common/`, so typing the
   format reader stays a separate decision and `App::tile_info` is the boundary
   the wrap happens at. The two HUD formatters destructure (`Some(Graphic(id))`,
-  `for &(Graphic(id), z, Hue(hue))`) rather than reading `.0` inline: a panel
-  printing an id in decimal *and* hex is the presentation seam, the same
-  licence the wire and SQL get.
-- **`app::shell::PickedTile`, the Z half** — `land_z` / `stand_z` / `corners` /
-  `levels` / `ceiling: i8`, and the wider split behind them. `Point::z`,
-  `Terrain::ground_z` and every wire value say `i8`; `Terrain::{stand_z,
-  spawn_z, can_fit}` and `predict_z` say `i32`, because a height gets added to.
-  The cost is visible: `lib.rs` writes `z.clamp(i32::from(i8::MIN),
-  i32::from(i8::MAX)) as i8` four times (3006, 3032, 3133, 3224), twice as a
-  local closure named `drawn_z`, each with its own copy of the comment
-  explaining why a corrupt block must not panic a HUD. That duplicated clamp is
-  the argument for the type, and it is a better one than the field list —
-  whichever shape it takes, the narrowing should be written once and named.
-  Note this contradicts nothing in `protocol_newtypes.md`: N1 amendment 2
-  allowlists `Point`'s components because *nothing reaches them except through
-  a `Point`*, and a free-floating `stand_z: i32` is precisely a z that does.
+  `for &(Graphic(id), Height(z), Hue(hue), PriorityZ(priority_z))`) rather than
+  reading `.0` inline: a panel printing an id in decimal *and* hex is the
+  presentation seam, the same licence the wire and SQL get. `statics` since
+  gained a fourth element, `PriorityZ` (below), and `PickedTile` gained
+  `tile_depth: TileDepth` and `mobile_order: Option<Order>` — the pair the Tile
+  panel already read against each other in words, now typed the same way.
+- ~~**`app::shell::PickedTile`, the Z half** — `land_z` / `stand_z` /
+  `corners` / `levels` / `ceiling: i8`.~~ Fixed: `shell::Height(pub i8)`. The
+  narrowing (`z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8`) that used
+  to run four times with its own copy of the "a corrupt block must not panic a
+  HUD" comment still runs once per site — `Height` did not collapse that
+  duplication, it named what the clamp was producing. `Point`, `Terrain` and
+  every wire value keep their bare `i8`/`i32`: `Height` is unwrapped (`.0`) at
+  exactly the two seams that meet them — `App::tile_info` building the struct,
+  and `draw_tile_highlight`'s `at` closure building a `Point`. This contradicts
+  nothing in `protocol_newtypes.md`: N1 amendment 2 allowlists `Point`'s
+  components because *nothing reaches them except through a `Point`*, and
+  `PickedTile`'s height fields are exactly the free-floating case the note
+  there flagged — read by two panels and a painter, independently of any
+  `Point`.
+  Two more depth-sort newtypes came out of the same pass, both local to
+  `shell.rs` rather than reused from `client_render::depth`: `TileDepth(pub
+  i32)` for `PickedTile::tile_depth` (the `x + y` half of a draw-order key,
+  alone) and `PriorityZ(pub i32)` for a static's own sort key inside
+  `PickedTile::statics`. `mobile_order` reuses `depth::Order` itself rather
+  than getting a third — its two fields are exactly `Order`'s `tile` and
+  `priority_z`. `depth::Order`'s own fields stay bare `i32`, which is now the
+  one visible seam: a mobile's sort key crosses into `PickedTile` typed, a
+  static's does not, because nothing paired the two at the source. Worth
+  closing if `Order` itself ever takes `TileDepth`/`PriorityZ` fields — not
+  attempted here, since that reaches every caller of `Order` across the render
+  pipeline, not just the HUD.
 - **`(u16, u16)` is the client's ad-hoc `Tile`, in ten remaining places.** The
   same reuse as `PickedTile`'s coordinate half, and the reason it deserves its
   own line is that the tuple has spread past one struct:
@@ -2751,6 +2767,65 @@ closes it.
 metric — see `BASELINE_SHARE`'s doc in `text.rs` for why (this crate never
 reads an `hhea` table) — worth revisiting if a real TrueType face ever reads
 visibly off its line.
+
+### The route a Ctrl-drag draws, and what is left around it
+
+Built: `steer::plan` reads the ground twice (`steer::Ground` — the map with the
+shard's items over it, and the map alone), so a destination sealed off by
+something placed is planned *up to* that thing rather than answered "no route";
+and where neither reading has a way through, `movement::find_path_toward` plans
+as far toward it as the ground goes. **A destination now never asks for a step
+this end can already see refused** — the straight-line fallback that used to
+shove at a wall until a patience ran out is gone, and every one of those steps
+was a `0x21` and a rollback. The walk takes the open half and stands at the
+obstacle; the client draws the whole plan green up to it and red past it,
+whether or not the terrain overlay is switched on (`App::route_shown`,
+`shell::draw_route`). What is left:
+
+- ~~**This end cannot tell a door from a crate.**~~ It can, and now does. The
+  fact was already in the tree: `client/render/src/doors.rs` carries ServUO's own
+  door families (`data/doors.json`), which is what `clutter.rs` now asks — so a
+  blocker is marked `door`, the tiles the shut ones stand on are the list of
+  "potentially passable, currently closed", and `Cluttered` reads either as the
+  world stands or with every door open. The two readings differ by exactly that
+  list, which is what makes the red half of a drawn route mean *a shut door*
+  rather than "something the shard placed". The wire needs no new flag.
+
+  **It found a bug on the way in.** `clutter.rs` used to argue that no door state
+  had to be tracked, because a door's graphic changes when it swings and only the
+  shut leaf is impassable. Measured against the real `tiledata.mul`: all 164 shut
+  leaves in the table are impassable, and **so are 132 of the open ones** — so
+  this end was refusing to walk through open doors, steps the shard allows. An
+  open leaf is now left out of the index entirely.
+- **Nothing opens the door.** The classic client's answer to arriving at one is
+  the player's double-click, and that is still the whole of ours. A walk that
+  ended in front of a shut door could reasonably send the `Use` it already knows
+  how to send (`link::Command::Use`) — deliberately not done here: it is a
+  gameplay decision (a locked door, a house that is not yours) and not a
+  rendering one.
+- **The patience is the ordinary one.** A body standing at a shut door is given
+  up on after `STUCK_STEPS` beats like any other stalled destination, so a door
+  opened more than about a second and a half later needs a fresh click. Holding
+  the order longer would want a reason to believe the door is *about* to open,
+  which nothing on this end has.
+- **A goal that cannot be *stood on*, in a room whose door is shut, walks to the
+  wrong side of the building.** `plan`'s middle step needs a full route over the
+  bare map to have something to cut, and a tile nothing can stand on (a table, a
+  chest, the wall itself) has none — so it falls through to "as close as the real
+  ground gets", which is the outside wall nearest the goal rather than the door.
+  Clicking the *door* is fine (the doorway is standable with the leaf gone), and
+  so is clicking furniture in a room that is open. Fixing it means cutting an
+  approach rather than a route — `find_path_toward` over the bare map, cut by the
+  real one — which is a third case in `plan` and was not worth the branch until
+  somebody hits it.
+- **The preview replans per frame while a destination is live** — the walk plans
+  at most once a step, and drawing from its stored route would blink the line out
+  on every mouse-move (see `App::route_shown`). Bounded by `PLAN_BUDGET` and paid
+  only while there is something to draw, but an unreachable destination pays up
+  to three full-budget searches a frame for the second and a half before the
+  order ends. If that ever shows up in a frame time, the fix is to cache the plan
+  against (body tile, goal, view generation) — not to give the picture a cheaper
+  rule of its own, which is how the two would start disagreeing.
 
 ## Later
 

@@ -66,6 +66,20 @@ pub fn is_open(graphic: Graphic) -> bool {
     matches!(offset_in_family(graphic), Some((_, offset)) if offset % 2 == 1)
 }
 
+/// Whether this graphic is a door leaf at all, either way round.
+///
+/// The question movement asks that [`is_open`] cannot answer: a shut door and a
+/// crate both stop a step, and only one of them is something a player can open —
+/// so only one of them is worth walking up to. See `client/app`'s `clutter.rs`,
+/// which keeps the tiles they stand on, and `steer::plan`, which plans a route
+/// through them to find out where the way *would* go.
+///
+/// A door this table does not know reads as not-a-door, which keeps it exactly
+/// as blocking as it is today — the same safe direction [`is_open`] takes.
+pub fn is_door(graphic: Graphic) -> bool {
+    offset_in_family(graphic).is_some()
+}
+
 /// Which family a graphic is in and how far into it, or `None` for neither.
 ///
 /// A binary search over thirteen sorted bases: `partition_point` gives the last

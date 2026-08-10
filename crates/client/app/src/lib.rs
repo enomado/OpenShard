@@ -125,6 +125,7 @@ use openshard_client_render::camera::{self, Camera, RealPixel, TileBounds, ViewP
 use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
+use openshard_client_render::depth;
 use openshard_client_render::follow::{Gaze, Rig};
 use openshard_client_render::frame::{self, Impostor};
 use openshard_client_render::gbuffer::Gbuffer;
@@ -737,9 +738,10 @@ pub fn run<D: Dial + Send + 'static>(
         last_frame: Instant::now(),
         window: None,
         pending: shell::Request::default(),
-        selected_tile: None,
         on_static: None,
-        selected_static: None,
+        on_mobile: None,
+        on_item: None,
+        selected: None,
         // No click has landed, so the next one cannot be the second of a pair.
         last_click: None,
         // Nobody has pointed at anything yet, and a window that opens under a
@@ -1287,6 +1289,39 @@ const CONTAINER_ORIGIN: GumpPixel = GumpPixel::new(120, 80);
 /// who opens a dozen bags does not push the last of them off the screen.
 const CONTAINER_CASCADE_LENGTH: i32 = 8;
 
+/// What a left click named, kept as identity rather than as data — see
+/// [`App::selected`] for why. [`App::resolve_selection`] is the only reader.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SelectedIdentity {
+    /// Bare ground: nothing with its own identity was under the cursor.
+    Tile { x: u16, y: u16 },
+    /// The map's own furniture — never moves, so the pick itself is kept
+    /// rather than just a reference to re-look-up.
+    Static(PickedStatic),
+    /// A creature, by [`Who`] — `None` for the player's own body.
+    Mobile(Who),
+    /// An item lying on the ground, by its serial.
+    Item(Serial),
+}
+
+impl SelectedIdentity {
+    /// The static half alone, for the two render passes that wash and mask
+    /// it — [`openshard_client_render::select`] and [`statics::selected`].
+    /// `None` whenever a click landed on anything else, which is what
+    /// switches both passes off.
+    ///
+    /// A free function on the value rather than a method on `App`: both call
+    /// sites read `self.selected` while `self.window` is already borrowed
+    /// mutably, and a method taking `&self` would borrow the whole struct
+    /// where a direct field read borrows only the one field.
+    fn as_static(self) -> Option<PickedStatic> {
+        match self {
+            SelectedIdentity::Static(picked) => Some(picked),
+            _ => None,
+        }
+    }
+}
+
 struct App {
     /// The facet, shared with the shard thread — see [`link::connect`].
     map: Arc<Map>,
@@ -1607,10 +1642,6 @@ struct App {
     /// keyboard and mouse event here already has: they arrive between frames and
     /// land on the next one.
     pending: shell::Request,
-    /// The tile a left click last landed on, kept until the next click — see
-    /// [`App::pick_tile`]. Separate from the live hover so a diagnosis does not
-    /// slide off the tile the moment the mouse does.
-    selected_tile: Option<(u16, u16)>,
     /// What the last drawn frame found the cursor on, when it was the map's own
     /// furniture and nothing nearer.
     ///
@@ -1623,21 +1654,21 @@ struct App {
     /// is what the click would take, so the diamond on the ground behind it must
     /// not be drawn as well. See [`shell::Hud::hover_lit`].
     on_static: Option<PickedStatic>,
-    /// The static a left click last landed on — a wall, a door frame, a stair —
-    /// kept until the next click, and washed along with the ground it stands on.
-    /// See `openshard_client_render::select`.
-    ///
-    /// Held rather than hovered, which is the whole difference from
-    /// [`App::lit_item`]'s ring: what this is for is looking at a piece of the
-    /// map — reading its graphic and its height off the panel, seeing which tile
-    /// it really stands on — and a highlight that moved with the mouse would be
-    /// gone by the time the eye reached the numbers.
-    ///
-    /// Not the same question as [`App::selected_tile`] and answered by a
-    /// different pick: the tile is where the *ground* under the cursor is, and a
-    /// wall's picture stands two tiles up the screen from the tile it is on. Both
-    /// are kept because both are asked — see [`statics::pick`].
-    selected_static: Option<PickedStatic>,
+    /// The same, one rung up the pick order: a creature under the cursor, by
+    /// identity rather than by the frame's own transient index — [`Who`] survives
+    /// to the click, an index into a `Vec` rebuilt every frame does not.
+    on_mobile: Option<Who>,
+    /// The same, for the shard's own items lying on the ground.
+    on_item: Option<Serial>,
+    /// What a left click last landed on, kept by *identity* until the next click
+    /// — a coordinate, a static's own graphic-and-place, or a creature's or
+    /// item's serial. Never the data itself: [`App::hud`] turns this into a
+    /// [`shell::Selection`] fresh every frame, the same way [`App::tile_info`]
+    /// always re-reads the column rather than remembering one — so a selected
+    /// mobile's row keeps up with it walking, and a selected item's row goes
+    /// away the moment it is picked up, instead of the panel quietly lying about
+    /// where either still is.
+    selected: Option<SelectedIdentity>,
     /// When the last left click landed, or `None` when the one before it
     /// already made a pair.
     ///
@@ -2042,13 +2073,17 @@ impl ApplicationHandler<link::Update> for App {
                 if let Some(direction) = keys::Held::direction_of(code) {
                     let step = match event.state {
                         ElementState::Pressed => {
-                            let terrain = self.clutter.over(&self.map, &self.tiledata);
+                            let opened = self.clutter.over_with_doors_open(&self.map, &self.tiledata);
+                            let cluttered = self.clutter.over(&self.map, &self.tiledata);
                             self.steer.press(
                                 direction,
                                 self.player.at,
                                 Instant::now(),
                                 self.player.facing,
-                                &terrain,
+                                steer::Ground {
+                                    real: &cluttered,
+                                    through_doors: &opened,
+                                },
                             )
                         }
                         ElementState::Released => {
@@ -2372,27 +2407,31 @@ impl ApplicationHandler<link::Update> for App {
                     // one the last frame was drawn with — the picture the player
                     // is clicking on.
                     let camera = *self.control.camera();
-                    // What the last frame found under the cursor, when it was a
-                    // piece of the map. `None` on bare ground, which is how a
-                    // selection is put out: there is nothing to select where
-                    // nothing is standing.
-                    self.selected_static = self.on_static;
-                    // **The tile is the selected thing's own, and only the ground
-                    // under a bare click is unprojected.** Those are two different
-                    // arithmetics and they answer differently on purpose: a wall's
-                    // picture stands up the screen from the cell it is built on,
-                    // so the ground *under the cursor* is the cell behind the
-                    // wall — two tiles behind it, for a wall of ordinary height.
-                    // Selecting a wall and marking that other tile is the client
-                    // saying "this one" about two places at once, which is what
-                    // this arm used to do.
+                    // What the last frame found under the cursor — by identity,
+                    // and in the same order the hover pick already answered
+                    // "what is the cursor on" in: a creature first, then an item,
+                    // then the map's own furniture, then bare ground. `None` all
+                    // the way down is how a selection is put out: there is
+                    // nothing to select where nothing is standing.
                     //
-                    // So the marker, the panel's readout and the wash all come off
-                    // one value now. Derived here rather than asserted anywhere:
-                    // there is no second source for them to drift from.
-                    self.selected_tile = match self.selected_static {
-                        Some(picked) => Some((picked.at.x, picked.at.y)),
-                        None => self.pick_tile(camera).map(|tile| (tile.x, tile.y)),
+                    // **The tile a bare click names is the ground under the
+                    // cursor; everything else's is its own.** Two different
+                    // arithmetics, on purpose: a wall's picture stands up the
+                    // screen from the cell it is built on, so the ground *under
+                    // the cursor* is the cell behind the wall — two tiles behind
+                    // it, for a wall of ordinary height. Selecting a wall and
+                    // marking that other tile is the client saying "this one"
+                    // about two places at once, which is what this arm used to
+                    // do; a mobile or an item stands exactly where it says it
+                    // does, so no such correction applies to either.
+                    self.selected = match (self.on_mobile, self.on_item, self.on_static) {
+                        (Some(who), _, _) => Some(SelectedIdentity::Mobile(who)),
+                        (None, Some(serial), _) => Some(SelectedIdentity::Item(serial)),
+                        (None, None, Some(picked)) => Some(SelectedIdentity::Static(picked)),
+                        (None, None, None) => self.pick_tile(camera).map(|tile| SelectedIdentity::Tile {
+                            x: tile.at.x,
+                            y: tile.at.y,
+                        }),
                     };
                     // And the second click of a pair is a *use*: a door opens, a
                     // container opens, food is eaten. Which of those it is, is
@@ -2489,8 +2528,17 @@ impl ApplicationHandler<link::Update> for App {
         // anything past it is a rate, which is what the clock is for.
         let mut moved = false;
         for _ in 0..2 {
-            let terrain = self.clutter.over(&self.map, &self.tiledata);
-            let Some(facing) = self.steer.due(now, self.player.at, self.player.facing, &terrain) else {
+            // Both halves of the ground, because this is where a destination
+            // replans: see `steer::Ground`. Built here rather than held, for the
+            // reason the single terrain always was — they borrow the map and the
+            // view, and the walk borrows `steer` mutably beside them.
+            let opened = self.clutter.over_with_doors_open(&self.map, &self.tiledata);
+            let cluttered = self.clutter.over(&self.map, &self.tiledata);
+            let ground = steer::Ground {
+                real: &cluttered,
+                through_doors: &opened,
+            };
+            let Some(facing) = self.steer.due(now, self.player.at, self.player.facing, ground) else {
                 break;
             };
             moved |= self.walk(facing);
@@ -2693,23 +2741,27 @@ impl App {
         let Some(tile) = self.pick_tile(*self.control.camera()) else {
             return false;
         };
+        let opened = self.clutter.over_with_doors_open(&self.map, &self.tiledata);
+        let cluttered = self.clutter.over(&self.map, &self.tiledata);
+        let ground = steer::Ground {
+            real: &cluttered,
+            through_doors: &opened,
+        };
         let facing = if self.ctrl_held {
-            let terrain = self.clutter.over(&self.map, &self.tiledata);
             self.steer.go_to(
-                (tile.x, tile.y),
+                (tile.at.x, tile.at.y),
                 self.player.at,
                 Instant::now(),
                 self.player.facing,
-                &terrain,
+                ground,
             )
         } else {
-            let terrain = self.clutter.over(&self.map, &self.tiledata);
             self.steer.steer(
                 self.ask_to_cursor(*self.control.camera()),
                 self.player.at,
                 Instant::now(),
                 self.player.facing,
-                &terrain,
+                ground,
             )
         };
         match facing {
@@ -3964,8 +4016,52 @@ impl App {
             // Wrapped here rather than in `uofiles`: `StaticItem` holds bare
             // `u16`s, and typing the format reader is a `common/` decision of
             // its own. This is the boundary the HUD's own types start at.
-            .map(|item| (Graphic(item.tile), item.z, Hue(item.hue)))
+            .map(|item| {
+                let priority_z = depth::static_priority_z(item.z, self.tiledata.static_tile(item.tile));
+                (
+                    Graphic(item.tile),
+                    shell::Height(item.z),
+                    Hue(item.hue),
+                    shell::PriorityZ(priority_z),
+                )
+            })
             .collect();
+        // A server item (the shard's own decoration, not the client's map art)
+        // sorts exactly like a static — `statics::place` reads it through the
+        // same `depth::static_priority_z` — but lives in a different list:
+        // `self.map.statics_at` only ever answers from the client's own files,
+        // so a sign or a prop the shard's script placed is invisible to it.
+        // Missing it here is what let a static-only panel misname what was
+        // actually drawing over a mobile on screen.
+        let items = self
+            .items
+            .iter()
+            .filter(|item| item.at.x == x && item.at.y == y)
+            .map(|item| {
+                let priority_z =
+                    depth::static_priority_z(item.at.z, self.tiledata.static_tile(item.graphic.0));
+                (
+                    item.graphic,
+                    shell::Height(item.at.z),
+                    item.hue,
+                    shell::PriorityZ(priority_z),
+                )
+            })
+            .collect();
+        let tile_depth = shell::TileDepth(depth::base_for(i32::from(x), i32::from(y)));
+        // Whichever drawn mobile — our own body included — is standing on this
+        // exact tile right now, so its order can be read against the statics
+        // above it: this is the comparison that tells "the coarse per-tile
+        // scheme is doing what it was ported to do" apart from "something here
+        // computed the wrong tile or z".
+        let mobile_order = self
+            .drawn_mobiles()
+            .into_iter()
+            .find(|(_, mobile)| mobile.at.x == x && mobile.at.y == y)
+            .map(|(_, mobile)| depth::Order {
+                tile: depth::mobile_tile(mobile.at, mobile.from),
+                priority_z: depth::mobile_priority_z(mobile.at.z),
+            });
         // The height anything drawn *on* this tile belongs at: the surface a body
         // would stand on, not the ground under it. On a pier those are thirteen
         // z-units apart — the land is water at -15 and the planks are at -3 — and
@@ -4013,7 +4109,7 @@ impl App {
         // where a floor *is* is a fact about the facet, and only whether a body
         // fits on it depends on what has been put there since.
         let cluttered = self.clutter.over(&self.map, &self.tiledata);
-        let mut levels: Vec<(i8, bool)> = terrain
+        let mut levels: Vec<(shell::Height, bool)> = terrain
             .surfaces(x, y)
             .into_iter()
             .map(|z| {
@@ -4023,7 +4119,7 @@ impl App {
                     z,
                     openshard_movement::PLAYER_HEIGHT,
                 );
-                (drawn_z(z), fits)
+                (shell::Height(drawn_z(z)), fits)
             })
             .collect();
         // Sorted so the diagram reads bottom to top, and deduplicated because a
@@ -4032,15 +4128,17 @@ impl App {
         levels.sort_unstable();
         levels.dedup();
         shell::PickedTile {
-            x,
-            y,
+            at: openshard_movement::Tile::new(x, y),
             land: land.map(|cell| Graphic(cell.tile)),
-            land_z: land.map_or(0, |cell| cell.z),
-            stand_z,
-            corners,
+            land_z: shell::Height(land.map_or(0, |cell| cell.z)),
+            stand_z: shell::Height(stand_z),
+            corners: corners.map(shell::Height),
             levels,
-            ceiling: terrain.ceiling(x, y).map(drawn_z),
+            ceiling: terrain.ceiling(x, y).map(drawn_z).map(shell::Height),
             statics,
+            items,
+            tile_depth,
+            mobile_order,
         }
     }
 
@@ -4068,8 +4166,8 @@ impl App {
                 if (dx, dy) == (0, 0) {
                     continue;
                 }
-                let x = i32::from(centre.x) + dx;
-                let y = i32::from(centre.y) + dy;
+                let x = i32::from(centre.at.x) + dx;
+                let y = i32::from(centre.at.y) + dy;
                 if let Some((x, y)) = Self::in_bounds(x, y, &self.map) {
                     ring.push(self.tile_info(x, y));
                 }
@@ -4112,27 +4210,64 @@ impl App {
         Some(self.tile_info(x, y))
     }
 
-    /// What `common/movement` makes of the ground on screen, and the way through
-    /// it — the HUD's terrain overlay, gathered only while it is switched on.
-    ///
-    /// **Not a second opinion about walkability.** Every answer here comes from
-    /// the same [`Terrain`] every step decision on this end asks — the client's
-    /// map with the shard's items laid over it — so a tile the picture calls
-    /// blocked is a tile the walk will refuse. A private "is this passable"
-    /// written for the overlay would be a second policy, and the first bug it hid
-    /// would be one of its own.
-    ///
-    /// Passability is asked per *tile* and not per step: `spawn_z` finds the
-    /// surface a body would stand on regardless of how far that is from the
-    /// player's own height — so a building's upper floor reads open from the
-    /// street rather than blocked — and `can_fit` is what says nothing solid is
-    /// standing in the body's space there, the clutter included.
-    ///
-    /// The route is the plan being walked, if there is one. When there is not,
-    /// it is the plan that *would* be walked to the tile under the cursor, which
-    /// is the question actually being asked while dragging the mouse over a
-    /// building looking for the way in. One [`find_path`] per frame, and only
-    /// while the overlay is on.
+    /// [`App::selected`] turned into what the panel actually shows — built
+    /// fresh every frame from the identity a click froze, the same way
+    /// [`App::tile_info`] always re-reads a column rather than remembering
+    /// one. A moving mobile's row this way keeps up with it; a picked-up
+    /// item's row goes away instead of the panel quietly lying about where it
+    /// still is.
+    fn resolve_selection(&self, identity: SelectedIdentity) -> shell::Selection {
+        match identity {
+            SelectedIdentity::Tile { x, y } => shell::Selection::Tile(self.tile_info(x, y)),
+            SelectedIdentity::Static(picked) => shell::Selection::Static {
+                static_: picked,
+                tile: self.tile_info(picked.at.x, picked.at.y),
+            },
+            SelectedIdentity::Mobile(who) => shell::Selection::Mobile(
+                self.drawn_mobiles()
+                    .into_iter()
+                    .find(|(drawn_who, _)| *drawn_who == who)
+                    .map(|(drawn_who, mobile)| {
+                        let order = depth::Order {
+                            tile: depth::mobile_tile(mobile.at, mobile.from),
+                            priority_z: depth::mobile_priority_z(mobile.at.z),
+                        };
+                        let picked = shell::PickedMobile {
+                            you: drawn_who.is_none(),
+                            serial: match drawn_who {
+                                Some(serial) => Some(serial),
+                                None => self.view.as_ref().map(|view| view.player.serial),
+                            },
+                            body: Graphic(mobile.body),
+                            hue: mobile.hue,
+                            at: mobile.at,
+                            order,
+                        };
+                        (picked, self.tile_info(mobile.at.x, mobile.at.y))
+                    }),
+            ),
+            SelectedIdentity::Item(serial) => {
+                shell::Selection::Item(self.item_serials.iter().position(|held| *held == serial).map(
+                    |index| {
+                        let item = self.items[index];
+                        let priority_z = shell::PriorityZ(depth::static_priority_z(
+                            item.at.z,
+                            self.tiledata.static_tile(item.graphic.0),
+                        ));
+                        let picked = shell::PickedItem {
+                            serial,
+                            graphic: item.graphic,
+                            hue: item.hue,
+                            at: item.at,
+                            priority_z,
+                        };
+                        (picked, self.tile_info(item.at.x, item.at.y))
+                    },
+                ))
+            }
+        }
+    }
+
     /// How much of the occlusion grid the two views of it draw this frame.
     ///
     /// The one place [`App::solids_everything`] — what the person picked — and
@@ -4167,8 +4302,27 @@ impl App {
             .map_or(light::Tuning::DEFAULT, shell::Shell::tuning)
     }
 
-    fn terrain_overlay(&self, camera: Camera, hover: Option<&shell::PickedTile>) -> shell::TerrainOverlay {
-        use openshard_movement::{PLAYER_HEIGHT, Tile, find_path, step_allowed};
+    /// What `common/movement` makes of the ground on screen — the HUD's terrain
+    /// overlay, gathered only while it is switched on.
+    ///
+    /// **Not a second opinion about walkability.** Every answer here comes from
+    /// the same [`Terrain`] every step decision on this end asks — the client's
+    /// map with the shard's items laid over it — so a tile the picture calls
+    /// blocked is a tile the walk will refuse. A private "is this passable"
+    /// written for the overlay would be a second policy, and the first bug it hid
+    /// would be one of its own.
+    ///
+    /// Passability is asked per *tile* and not per step: `spawn_z` finds the
+    /// surface a body would stand on regardless of how far that is from the
+    /// player's own height — so a building's upper floor reads open from the
+    /// street rather than blocked — and `can_fit` is what says nothing solid is
+    /// standing in the body's space there, the clutter included.
+    ///
+    /// The way *through* it is not here. A route is drawn whether this overlay
+    /// is on or not, so that a Ctrl-drag shows where the body is about to go
+    /// with no debugging switch thrown — see [`App::route_shown`].
+    fn terrain_overlay(&self, camera: Camera) -> shell::TerrainOverlay {
+        use openshard_movement::{PLAYER_HEIGHT, Tile};
 
         let terrain = self.clutter.over(&self.map, &self.tiledata);
         let near = i32::from(self.player.at.z);
@@ -4209,36 +4363,79 @@ impl App {
             }
         }
 
-        // Directions, from wherever they come from, walked out into the tiles
-        // they land on — `step_allowed` because it is what corrects a step's `z`
-        // to the surface it lands on, which is the height the marker is drawn at.
-        let mut steps: Vec<Direction> = self.steer.route().collect();
-        if steps.is_empty() {
-            if let Some(tile) = hover {
-                // The surface, like everything else here: a route planned to the
-                // water under a pier is a route to somewhere nobody is standing.
-                let to = Point {
-                    x: tile.x,
-                    y: tile.y,
-                    z: tile.stand_z,
-                };
-                steps = find_path(&terrain, self.player.at, to, steer::PLAN_BUDGET).unwrap_or_default();
-            }
-        }
-        let mut at = self.player.at;
-        let mut route = vec![at];
-        for direction in steps {
-            let Some(next) = step_allowed(&terrain, at, direction) else {
-                // The plan and the ground disagree, which is a thing worth
-                // seeing rather than papering over: the line stops where they
-                // parted company.
-                break;
-            };
-            at = next;
-            route.push(at);
-        }
+        shell::TerrainOverlay { open, blocked }
+    }
 
-        shell::TerrainOverlay { open, blocked, route }
+    /// The way to wherever the body was last told to go, as the two-coloured
+    /// line the player is owed for a Ctrl-drag — or, with no destination and the
+    /// terrain overlay switched on, the way that *would* be walked to the tile
+    /// under the cursor.
+    ///
+    /// **The plan itself, not a picture of one.** [`steer::plan`] is the same
+    /// call `Steering` walks by, so the green half is the route the body is
+    /// really taking, and the red half begins at a shut door — the only thing
+    /// the two readings of the ground differ by (see [`steer::Ground`]). A cut
+    /// written here for the drawing alone would be a second policy about the
+    /// same question, which `docs/parity.md` is the standing argument against.
+    ///
+    /// **One plan per frame, and only while there is something to draw.** The
+    /// walk plans on its own beat — at most once a step, by design, since a drag
+    /// restates the destination tens of times a second — so its stored route is
+    /// up to a step stale and is *cleared* the moment the destination moves.
+    /// Drawn from that, the line under a dragging cursor would blink out and
+    /// catch up a beat later, which is the opposite of what a preview is for.
+    /// The cost is one bounded [`find_path`] (two, where the way is barred)
+    /// while a destination is live, and nothing at all otherwise.
+    fn route_shown(&self, hover: Option<&shell::PickedTile>) -> Option<shell::Route> {
+        let opened = self.clutter.over_with_doors_open(&self.map, &self.tiledata);
+        let cluttered = self.clutter.over(&self.map, &self.tiledata);
+        let ground = steer::Ground {
+            real: &cluttered,
+            through_doors: &opened,
+        };
+        let goal = match self.steer.goal() {
+            Some(tile) => tile,
+            // No destination: the hover preview is the terrain overlay's own
+            // question — "where would a click here take me" — and is asked only
+            // while somebody has that overlay open to read the answer against.
+            None => {
+                let tile = hover.filter(|_| self.show_terrain)?;
+                (tile.at.x, tile.at.y)
+            }
+        };
+        let plan = steer::plan(ground, self.player.at, goal)?;
+        // Directions walked out into the tiles they land on. `step_allowed`
+        // because it is what corrects a step's `z` to the surface it lands on,
+        // which is the height the line is drawn at — and over each half's own
+        // ground, since the barred half is by construction made of steps the
+        // world as it stands refuses.
+        let walk_out = |terrain: &dyn openshard_movement::Terrain, from: Point, steps: Vec<Direction>| {
+            let mut at = from;
+            let mut tiles = Vec::with_capacity(steps.len());
+            for direction in steps {
+                let Some(next) = openshard_movement::step_allowed(terrain, at, direction) else {
+                    // The plan and the ground disagree, which is a thing worth
+                    // seeing rather than papering over: the line stops where
+                    // they parted company.
+                    break;
+                };
+                at = next;
+                tiles.push(at);
+            }
+            tiles
+        };
+        // The body's own tile leads the open half, so a route of one step is a
+        // line and not a dot. The barred half carries on from wherever the open
+        // one stopped — the body's tile when nothing at all is walkable, which
+        // is a body standing at the shut door.
+        let mut open = vec![self.player.at];
+        open.extend(walk_out(&cluttered, self.player.at, plan.open));
+        let from = *open.last().unwrap();
+        let mut barred = walk_out(&opened, from, plan.barred);
+        if !barred.is_empty() {
+            barred.insert(0, from);
+        }
+        Some(shell::Route { open, barred })
     }
 
     /// Do what the HUD asked for on the frame before this one.
@@ -4429,9 +4626,8 @@ impl App {
             lit_static: on_static,
             highlight: self.highlight,
             highlight_style: self.highlight_style,
-            terrain: self
-                .show_terrain
-                .then(|| self.terrain_overlay(camera, hover.as_ref())),
+            terrain: self.show_terrain.then(|| self.terrain_overlay(camera)),
+            route: self.route_shown(hover.as_ref()),
             show_occluders: self.show_occluders,
             show_solids: self.show_solids,
             solids_only: self.solids_only,
@@ -4463,8 +4659,7 @@ impl App {
             }),
             hover,
             neighbours,
-            selected: self.selected_tile.map(|(x, y)| self.tile_info(x, y)),
-            selected_static: self.selected_static,
+            selected: self.selected.map(|identity| self.resolve_selection(identity)),
             goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
         }
     }
@@ -5081,22 +5276,23 @@ impl App {
         // every later question is asked only where the earlier ones found
         // nothing — so "what is under the cursor" has exactly one answer and the
         // ring, the wash, the tile marker and the click cannot disagree about it.
-        let on_mobile = match owns_pointer {
-            true => self.window.as_ref().and_then(|window| {
-                mobiles::pick(
-                    &self
-                        .drawn_now(&window.atlases.mobiles)
-                        .into_iter()
-                        .map(|(_, mobile)| mobile)
-                        .collect::<Vec<_>>(),
-                    &camera,
-                    &window.atlases.mobiles,
-                    &cutaway,
-                    &self.equip_conv,
-                    cursor,
-                )
-            }),
-            false => None,
+        // Kept whole, and not just picked from: the click reads a mobile back by
+        // [`Who`] rather than by this index, which is only ever good for this
+        // one frame's own `Vec` — see `self.on_mobile` below.
+        let drawn_mobiles = self
+            .window
+            .as_ref()
+            .map(|window| self.drawn_now(&window.atlases.mobiles));
+        let on_mobile = match (owns_pointer, self.window.as_ref(), &drawn_mobiles) {
+            (true, Some(window), Some(drawn)) => mobiles::pick(
+                &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
+                &camera,
+                &window.atlases.mobiles,
+                &cutaway,
+                &self.equip_conv,
+                cursor,
+            ),
+            _ => None,
         };
         let on_item = match owns_pointer && on_mobile.is_none() {
             true => self.window.as_ref().and_then(|window| {
@@ -5143,7 +5339,20 @@ impl App {
         // picking again there is what makes the wash land on the wall the player
         // was looking at: a second pick would use a camera that has moved since,
         // and the two answers differ by however far the eye travelled in a frame.
+        //
+        // The mobile and item halves are kept by identity rather than by
+        // `on_mobile`/`on_item`'s own index, because those only index *this*
+        // frame's transient `Vec`s — a click between frames has no such `Vec` to
+        // read them back from, only a [`Who`] or a [`Serial`] that still means
+        // the same creature or item next frame.
         self.on_static = on_static;
+        self.on_mobile = on_mobile.and_then(|index| {
+            drawn_mobiles
+                .as_ref()
+                .and_then(|drawn| drawn.get(index))
+                .map(|(who, _)| *who)
+        });
+        self.on_item = on_item.map(|index| self.item_serials[index]);
         // What the mode allows to light up. `Tiles` lights neither, which is the
         // whole of that setting; the facts above are unchanged by it.
         let lit_mobile = on_mobile.filter(|_| self.highlight != shell::HighlightTarget::Tiles);
@@ -5530,7 +5739,7 @@ impl App {
             &self.tile_animations,
             &window.atlases.statics,
             &cutaway,
-            self.selected_static,
+            self.selected.and_then(SelectedIdentity::as_static),
         );
         // The same quads as the picture's, so the ring lands on the sprite
         // rather than beside it — see `items::outlined`.
@@ -5862,7 +6071,11 @@ impl App {
         //
         // Skipped when nothing is selected, and the whole cost of a frame with
         // nothing selected is that comparison: the mask is not drawn either.
-        if let Some(picked) = self.selected_static.filter(|_| !select_quads.is_empty()) {
+        if let Some(picked) = self
+            .selected
+            .and_then(SelectedIdentity::as_static)
+            .filter(|_| !select_quads.is_empty())
+        {
             window.select.render(
                 &window.device,
                 &window.queue,

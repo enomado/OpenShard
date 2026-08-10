@@ -164,21 +164,15 @@ pub struct Hud {
     pub highlight: HighlightTarget,
     /// And how an item says it, when it is the one lit.
     pub highlight_style: HighlightStyle,
-    /// The static a left click last landed on — a wall, a stair, a door frame —
-    /// kept until the next click and washed in the world by
-    /// `openshard_client_render::select`.
+    /// What a left click last landed on — a wall, a creature, an item, or bare
+    /// ground — kept until the next click, which is what makes its numbers
+    /// holdable still long enough to read and copy: the live hover moves out
+    /// from under the cursor the moment it does.
     ///
-    /// Named here as well as washed there, because the wash says *which* and this
-    /// says *what*: a graphic id and the height it stands at are what a person
-    /// looking at a piece of the map is after, and they are exactly what the
-    /// picture cannot show. It is also the companion the wash needs — a selection
-    /// that drew nothing and a selection that was never made are one blank screen
-    /// otherwise.
-    pub selected_static: Option<openshard_client_render::statics::PickedStatic>,
-    /// The tile a left click last landed on. Kept until the next click, which
-    /// is what makes its numbers holdable still long enough to copy — the
-    /// live hover moves out from under the cursor the moment it does.
-    pub selected: Option<PickedTile>,
+    /// Named explicitly as one of the four kinds a click can land on, rather
+    /// than folded into a bag of optional fields that all read the same for a
+    /// wall as for a body standing on it — see [`Selection`].
+    pub selected: Option<Selection>,
     /// Which producers the client is drawing, for the boxes that say so — see
     /// [`openshard_client_render::frame::Draw`].
     pub draw: openshard_client_render::frame::Draw,
@@ -187,6 +181,9 @@ pub struct Hud {
     /// What that overlay draws, gathered only while it is on: see
     /// [`TerrainOverlay`].
     pub terrain: Option<TerrainOverlay>,
+    /// The way to the tile the body was sent to, drawn whatever the overlay
+    /// above is doing — see [`Route`]. Absent when nothing has been asked for.
+    pub route: Option<Route>,
     /// Whether the occluder boxes are switched on, for the checkbox that says so.
     pub show_occluders: bool,
     /// And whether the same grid is being drawn as solids — step 23.0.
@@ -233,6 +230,26 @@ pub struct Hud {
     pub goal: Option<PickedTile>,
 }
 
+/// A z-height, as everything about one tile reads it — the wire's own unit,
+/// wrapped at the boundary [`PickedTile`] already draws: land, the surface a
+/// body stands on, a roof's underside. None of them is a coordinate or a
+/// draw-order key, so none of them stays a bare `i8` for the type system to
+/// mix up with one.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Height(pub i8);
+
+/// A draw-order key's tile component alone — `x + y`, before it is paired
+/// with anything drawn on the tile. See
+/// [`openshard_client_render::depth::Order::tile`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct TileDepth(pub i32);
+
+/// A draw-order key's `PriorityZ` component alone, for a static this tile
+/// carries and read against [`PickedTile::tile_depth`]. See
+/// [`openshard_client_render::depth::Order::priority_z`].
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct PriorityZ(pub i32);
+
 /// A tile, read straight from the map — for telling a rendering artifact apart
 /// from a gameplay one: is the graphic under a glitch the tile the client
 /// thinks is there, or something else entirely?
@@ -240,15 +257,13 @@ pub struct Hud {
 pub struct PickedTile {
     /// The tile coordinate, resolved from the cursor via [`Camera::pick`] and
     /// [`unproject`](openshard_client_render::camera::unproject).
-    pub x: u16,
-    /// The tile coordinate's other half.
-    pub y: u16,
+    pub at: openshard_movement::Tile,
     /// The land tile's graphic id, if the block loaded.
     pub land: Option<Graphic>,
     /// The ground's height here — what the land block stores, and nothing else.
     /// Shown in the panel as a fact about the map; it is *not* where a body
     /// stands, and nothing is drawn at it. See [`PickedTile::stand_z`].
-    pub land_z: i8,
+    pub land_z: Height,
     /// The height a body would stand at here: the ground, or the deck of
     /// whatever platform is on top of it.
     ///
@@ -258,7 +273,7 @@ pub struct PickedTile {
     /// height lies a tile and a half away from the boards on screen — and since
     /// the cursor is resolved against the same height, a pier tile could not be
     /// pointed at at all.
-    pub stand_z: i8,
+    pub stand_z: Height,
     /// The four corner heights of the surface [`PickedTile::stand_z`] names, in
     /// [`Camera::tile_facet`]'s order — top, right, bottom, left.
     ///
@@ -270,7 +285,7 @@ pub struct PickedTile {
     ///
     /// `[stand_z; 4]` when the surface is not the land — a pier's planks are
     /// flat however the water beneath them is shaped.
-    pub corners: [i8; 4],
+    pub corners: [Height; 4],
     /// Every height a body could stand at on this tile, and whether one
     /// actually fits there — sorted, and asked of the same terrain every step
     /// decision on this end asks, clutter included.
@@ -281,16 +296,114 @@ pub struct PickedTile {
     /// which of those a body fits on. `stand_z` names the one the cursor
     /// resolved to; this is the whole list it was chosen from, with the verdict
     /// beside each.
-    pub levels: Vec<(i8, bool)>,
+    pub levels: Vec<(Height, bool)>,
     /// How high the things on this tile reach — a roof over a room, the cap of
     /// a wall — or `None` where nothing stands on it.
     ///
     /// What the marker's column is drawn up to, so a tile indoors is a box from
     /// the datum to the ceiling rather than a box that stops at the floor and
     /// says nothing about the room it is in.
-    pub ceiling: Option<i8>,
-    /// Everything standing on top of the ground here: graphic id, height, hue.
-    pub statics: Vec<(Graphic, i8, Hue)>,
+    pub ceiling: Option<Height>,
+    /// Everything standing on top of the ground here: graphic id, height, hue,
+    /// and the draw-order key ([`openshard_client_render::depth::static_priority_z`])
+    /// it sorts at within the tile.
+    ///
+    /// The fourth number is what [`crate::shell`] surfaces to tell "a static's
+    /// sprite drew over a mobile it should have lost to" apart from "the mobile
+    /// really is on the farther tile" — the tile half of the sort
+    /// ([`PickedTile::tile_depth`]) is the other half of that comparison.
+    pub statics: Vec<(Graphic, Height, Hue, PriorityZ)>,
+    /// Everything the *shard* put on this tile — server items/decoration, as
+    /// opposed to [`PickedTile::statics`]'s map art. Same four numbers.
+    ///
+    /// A different source on purpose: `map.statics_at` only knows the client's
+    /// own files, and a sign or prop a shard's script placed is invisible to
+    /// it — so a static-only panel can misidentify what is actually drawing on
+    /// screen, the way this one did once.
+    pub items: Vec<(Graphic, Height, Hue, PriorityZ)>,
+    /// This tile's depth-sort key, `x + y` —
+    /// [`openshard_client_render::depth::Order::tile`] for anything standing
+    /// here. Compared against a neighbour's own to say which one wins a draw
+    /// order tie.
+    pub tile_depth: TileDepth,
+    /// The draw-order key a mobile standing on this exact tile sorts at, if
+    /// one is — held up against a static's own in [`PickedTile::statics`] to
+    /// tell a genuine mis-sort from the coarse per-tile scheme working as
+    /// ported.
+    pub mobile_order: Option<openshard_client_render::depth::Order>,
+}
+
+/// A creature identified by a click, and read fresh every frame — see
+/// [`Selection::Mobile`] for why this is never itself the thing kept between
+/// clicks.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PickedMobile {
+    /// Whether this is the player's own body — read before `serial`, since a
+    /// click on yourself is a real case (checking your own draw order against
+    /// a wall you are standing in) and "you" reads better than a number.
+    pub you: bool,
+    /// `None` only offline, where nothing has told this client its own serial
+    /// yet — never for another creature, which has no other way to be picked.
+    pub serial: Option<Serial>,
+    pub body: Graphic,
+    pub hue: Hue,
+    pub at: openshard_protocol::world::Point,
+    /// The draw-order key this mobile sorts at right now — the same pair
+    /// [`PickedTile::mobile_order`] carries for *whichever* mobile stands on a
+    /// tile, here named to the one actually picked.
+    pub order: openshard_client_render::depth::Order,
+}
+
+/// An item lying on the ground, identified by a click and read fresh every
+/// frame — [`PickedMobile`]'s reasoning, over the shard's own decoration
+/// instead of a creature.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PickedItem {
+    pub serial: Serial,
+    pub graphic: Graphic,
+    pub hue: Hue,
+    pub at: openshard_protocol::world::Point,
+    pub priority_z: PriorityZ,
+}
+
+/// What a left click actually landed on — the four kinds there are, named
+/// rather than folded into a bag of optional fields that read the same for a
+/// wall as for a body standing on it.
+///
+/// A click freezes *which* thing it landed on, by identity; what is shown for
+/// it is resolved fresh every frame from that identity — a `Serial`, a `Who`,
+/// or (for the map's own furniture, which cannot move) the pick itself. See
+/// `App::selected` and `App::resolve_selection`, on the other side of the
+/// panel/app boundary this type is drawn to cross.
+pub enum Selection {
+    /// Bare ground: nothing with its own identity was under the cursor.
+    Tile(PickedTile),
+    /// The map's own furniture.
+    Static {
+        static_: openshard_client_render::statics::PickedStatic,
+        tile: PickedTile,
+    },
+    /// A creature — `None` once the one the click landed on is no longer
+    /// drawn (walked out of range, or the shard forgot it), which is a
+    /// different fact from nothing having been clicked at all and is shown as
+    /// one.
+    Mobile(Option<(PickedMobile, PickedTile)>),
+    /// The shard's own decoration lying on the ground. The same "gone" shape
+    /// as `Mobile`, for the same reason — picked up, or out of view.
+    Item(Option<(PickedItem, PickedTile)>),
+}
+
+impl Selection {
+    /// The tile column to read the world's cyan diamond marker off, and what
+    /// [`tile_tab`] falls back to showing when nothing more specific is live.
+    pub fn tile(&self) -> Option<&PickedTile> {
+        match self {
+            Selection::Tile(tile) => Some(tile),
+            Selection::Static { tile, .. } => Some(tile),
+            Selection::Mobile(live) => live.as_ref().map(|(_, tile)| tile),
+            Selection::Item(live) => live.as_ref().map(|(_, tile)| tile),
+        }
+    }
 }
 
 /// The walkability of what is on screen, and the way through it.
@@ -309,9 +422,24 @@ pub struct TerrainOverlay {
     pub open: Vec<openshard_protocol::world::Point>,
     /// The tiles in view it cannot — no surface, or something solid in the way.
     pub blocked: Vec<openshard_protocol::world::Point>,
-    /// The route being walked, or the one that would be walked to the tile under
-    /// the cursor: the body's own tile first, then one point per step.
-    pub route: Vec<openshard_protocol::world::Point>,
+}
+
+/// The way to wherever the body is going, in the two halves it is drawn in.
+///
+/// Not a debugging picture and not switched by anything: a Ctrl-drag is a move
+/// *order*, and a client that plans a route around the far side of a building
+/// without showing which way it chose has answered a question the player cannot
+/// check. See `App::route_shown` for where it comes from, and `steer::plan` for
+/// what the halves mean — the split is the walk's own, not the drawing's.
+pub struct Route {
+    /// The part of the way the ground allows, beginning at the body's own tile:
+    /// where it is really going. Drawn green.
+    pub open: Vec<openshard_protocol::world::Point>,
+    /// What is left of the way past the first thing standing in it — a shut
+    /// door, most often. Empty for a route that arrives, which is the ordinary
+    /// case; otherwise it begins where [`Route::open`] stopped, so the two read
+    /// as one line changing colour at the obstacle. Drawn red.
+    pub barred: Vec<openshard_protocol::world::Point>,
 }
 
 /// What the panels asked for this frame.
@@ -1037,7 +1165,8 @@ fn world_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
 fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     let mut show = hud.show_terrain;
     if ui
-        .checkbox(&mut show, "terrain — walkable green, blocked red, route orange")
+        .checkbox(&mut show, "terrain — walkable green, blocked red")
+        .on_hover_text("the route to the cursor is drawn with this on, and to a Ctrl-drag's tile always")
         .changed()
     {
         request.show_terrain = Some(show);
@@ -1045,10 +1174,9 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     match &hud.terrain {
         Some(terrain) => {
             ui.label(format!(
-                "{} open, {} blocked, route {} steps",
+                "{} open, {} blocked",
                 terrain.open.len(),
                 terrain.blocked.len(),
-                terrain.route.len().saturating_sub(1),
             ));
         }
         // The counts are the overlay's own companion: an empty picture
@@ -1056,6 +1184,23 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         // nothing, and those look identical on the ground.
         None => {
             ui.label("off");
+        }
+    }
+    // The route's own counts, beside them and not inside them: it is drawn
+    // whether that overlay is on or off, and how far the way gets before
+    // something is in it is the number worth reading — "12 steps, barred after
+    // 5" is a shut door said in figures.
+    match &hud.route {
+        Some(route) => {
+            let walked = route.open.len().saturating_sub(1);
+            let label = match route.barred.len() {
+                0 => format!("route {walked} steps"),
+                barred => format!("route {walked} steps, then {barred} barred"),
+            };
+            ui.label(label);
+        }
+        None => {
+            ui.label("no route");
         }
     }
     ui.separator();
@@ -1217,32 +1362,101 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
             None => "—".to_string(),
         },
     ));
-    // The held tile first and the live one under it. The hover readout changes
-    // on every mouse move — a tile with six statics is several rows taller than
-    // an empty one — and whatever is drawn below it is moved by that. Above, the
-    // selection is the one thing on this tab that only changes when the player
-    // clicks, so it stays under the cursor long enough to be read and copied.
-    ui.label(
-        "selected — glows cyan; a click on a wall holds the wall's own tile, not the ground under the cursor",
-    );
-    // What the same click is holding of the map itself, above the tile's own
-    // rows: a click on a wall names both, and the wall is the thing that was
-    // pointed at while the tile is where the ground under the cursor was.
-    match &hud.selected_static {
-        Some(picked) => {
-            ui.label(format!(
-                "static 0x{:04X} at {}, {}, {} — washed with its ground",
-                picked.graphic.0, picked.at.x, picked.at.y, picked.at.z,
-            ));
-        }
-        None => {
-            ui.label("no static held — click a wall to wash it and the tile under it");
-        }
-    }
-    tile_panel(ui, "selected", hud.selected.as_ref());
+    // The held pick first and the live hover under it — glows cyan on the
+    // world. The hover readout changes on every mouse move, so the selection
+    // is the one thing on this tab that only changes when the player clicks,
+    // which is what makes it worth reading and copying.
+    selected_panel(ui, hud.selected.as_ref());
     ui.separator();
-    ui.label("hover — the ground under the cursor; marked yellow only while nothing is standing on it");
-    tile_panel(ui, "hover", hud.hover.as_ref());
+    ui.monospace("hover");
+    tile_panel(ui, "hover", hud.hover.as_ref(), None);
+}
+
+/// What a left click actually landed on, printed as one of the four things it
+/// could be rather than a shape that reads the same for a wall as for a body
+/// standing on it — see [`Selection`].
+fn selected_header(selection: &Selection) -> String {
+    match selection {
+        Selection::Tile(tile) => format!("selected: TILE  {}, {}", tile.at.x, tile.at.y),
+        Selection::Static { static_, .. } => {
+            let Graphic(id) = static_.graphic;
+            format!(
+                "selected: STATIC  {id} (0x{id:04X})  at {}, {}, {}",
+                static_.at.x, static_.at.y, static_.at.z
+            )
+        }
+        Selection::Mobile(Some((mobile, _))) => {
+            let Graphic(body) = mobile.body;
+            let Hue(hue) = mobile.hue;
+            let who = match (mobile.you, mobile.serial) {
+                (true, _) => "you".to_string(),
+                (false, Some(serial)) => serial.to_string(),
+                (false, None) => "?".to_string(),
+            };
+            format!(
+                "selected: MOBILE  {who}  body {body} (0x{body:04X})  hue {hue}  at {}, {}, {}",
+                mobile.at.x, mobile.at.y, mobile.at.z
+            )
+        }
+        Selection::Mobile(None) => "selected: MOBILE  — walked out of view".to_string(),
+        Selection::Item(Some((item, _))) => {
+            let Graphic(id) = item.graphic;
+            let Hue(hue) = item.hue;
+            format!(
+                "selected: ITEM  {}  {id} (0x{id:04X})  hue {hue}  at {}, {}, {}",
+                item.serial, item.at.x, item.at.y, item.at.z
+            )
+        }
+        Selection::Item(None) => "selected: ITEM  — no longer on the ground".to_string(),
+    }
+}
+
+/// Which single row of the tile column below [`selected_header`] is the thing
+/// the header just named — the header already gives its numbers, but among
+/// several statics or items on one tile only this says which line is which.
+fn selected_marked(selection: &Selection) -> Option<Marked> {
+    match selection {
+        Selection::Static { static_, .. } => Some(Marked::Static {
+            graphic: static_.graphic,
+            height: Height(static_.at.z),
+        }),
+        Selection::Item(Some((item, _))) => Some(Marked::Item {
+            graphic: item.graphic,
+            height: Height(item.at.z),
+        }),
+        _ => None,
+    }
+}
+
+/// What "copy" on the selected panel puts on the clipboard — the header and
+/// the tile column under it, the same two things the panel shows.
+fn selected_text(selection: &Selection) -> String {
+    let mut text = selected_header(selection);
+    text.push('\n');
+    if let Some(tile) = selection.tile() {
+        text.push_str(&tile_text(tile));
+    }
+    text
+}
+
+/// The panel for [`Hud::selected`]: an explicit header naming which of the
+/// four kinds a click landed on, and the tile column under it with that one
+/// row marked. Monospace throughout and nothing but `Label`s in it, so
+/// dragging across any part of it — the header, one row, or the whole box —
+/// selects that text the way a terminal does, with a `Ctrl+C` at the end of
+/// the drag rather than a "copy" button beside every number.
+fn selected_panel(ui: &mut egui::Ui, selection: Option<&Selection>) {
+    let Some(selection) = selection else {
+        ui.monospace("selected: —  (click the world to hold something)");
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.monospace(selected_header(selection));
+        if ui.small_button("copy").clicked() {
+            ui.ctx().copy_text(selected_text(selection));
+        }
+    });
+    tile_panel(ui, "selected", selection.tile(), selected_marked(selection));
 }
 
 /// The three things drawn *on* the world rather than beside it: the terrain
@@ -1280,6 +1494,12 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
     if let Some(occluders) = hud.occluders.as_ref().filter(|_| hud.show_occluders) {
         draw_occluders(&world, &hud.camera, occluders, hud.solid_cut, viewport.min);
     }
+    // The way the body is going, over the wash and under everything the cursor
+    // is doing: it is a standing answer to an order already given, and must not
+    // cover the marker that says what the *next* click would do.
+    if let Some(route) = &hud.route {
+        draw_route(&world, &hud.camera, route, viewport.min);
+    }
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
     // the client answering "what would a click do here" twice.
@@ -1312,7 +1532,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
             egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(255, 255, 0, 180)),
         );
     }
-    if let Some(tile) = &hud.selected {
+    if let Some(tile) = hud.selected.as_ref().and_then(Selection::tile) {
         draw_tile_highlight(
             &world,
             &hud.camera,
@@ -1741,9 +1961,43 @@ fn strips(ui: &mut egui::Ui, title: &str, series: &[Curve<'_>], span: f32) {
     }
 }
 
-/// One tile's numbers, each beside a button that puts it on the clipboard —
-/// the whole point of holding a selection still is being able to paste one of
-/// these into a bug report.
+/// Which single row of a tile's column [`tile_rows`] draws should flag as the
+/// thing a click actually landed on — [`selected_marked`] is the one caller
+/// that ever asks for this; `tile_panel`'s other caller (`hover`) always
+/// passes `None`, since a live hover has no held identity to mark.
+#[derive(Clone, Copy)]
+enum Marked {
+    Static { graphic: Graphic, height: Height },
+    Item { graphic: Graphic, height: Height },
+}
+
+impl Marked {
+    /// `"→ "` on the row this names, two spaces of the same width otherwise —
+    /// so every row still lines up in the monospace column regardless of
+    /// which one, if any, is marked.
+    fn arrow(marked: Option<Marked>, graphic: Graphic, height: Height) -> &'static str {
+        let hit = match marked {
+            Some(Marked::Static {
+                graphic: g,
+                height: h,
+            }) => (g, h) == (graphic, height),
+            Some(Marked::Item {
+                graphic: g,
+                height: h,
+            }) => (g, h) == (graphic, height),
+            None => false,
+        };
+        match hit {
+            true => "→ ",
+            false => "  ",
+        }
+    }
+}
+
+/// One tile's numbers, monospace and selectable by dragging across them —
+/// egui merges a drag across several `Label`s in one `Ui` into a single text
+/// selection, so the whole box copies with one drag and a `Ctrl+C` the same
+/// way a terminal's scrollback does.
 ///
 /// A fixed-height box, scrolled inside, and that is the point of it: a tile's
 /// readout is as many rows as it has statics, so a panel sized to its content
@@ -1751,7 +2005,7 @@ fn strips(ui: &mut egui::Ui, title: &str, series: &[Curve<'_>], span: f32) {
 /// the other tile panel — while it is being read. The height is spent whether
 /// or not there is a tile to put in it; `id` is what keeps the two boxes'
 /// scroll offsets apart, the same way the tabs' own salt does.
-fn tile_panel(ui: &mut egui::Ui, id: &str, tile: Option<&PickedTile>) {
+fn tile_panel(ui: &mut egui::Ui, id: &str, tile: Option<&PickedTile>, marked: Option<Marked>) {
     /// Four rows and a little: the header, the levels, the land, and one static
     /// — past that the box scrolls rather than grows.
     const HEIGHT: f32 = 108.0;
@@ -1759,64 +2013,74 @@ fn tile_panel(ui: &mut egui::Ui, id: &str, tile: Option<&PickedTile>) {
         .id_salt(id)
         .max_height(HEIGHT)
         .auto_shrink([false; 2])
-        .show(ui, |ui| tile_rows(ui, tile));
+        // Hidden rather than shown-when-needed: a bar down the right edge is a
+        // second draggable thing inside a box whose whole point is now that a
+        // drag anywhere in it selects text — the two fight over the same
+        // gesture, and the bar was winning it at the edge a drag most often
+        // starts from. The wheel still scrolls; only the widget is gone.
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| tile_rows(ui, tile, marked));
 }
 
 /// The rows themselves, inside the box [`tile_panel`] fixes the height of.
-fn tile_rows(ui: &mut egui::Ui, tile: Option<&PickedTile>) {
+fn tile_rows(ui: &mut egui::Ui, tile: Option<&PickedTile>, marked: Option<Marked>) {
     let Some(tile) = tile else {
-        ui.label("(none)");
+        ui.monospace("(none)");
         return;
     };
-    ui.horizontal(|ui| {
-        // Both heights, because the gap between them is the thing worth seeing:
-        // on a pier the land is water far below the deck a body stands on, and
-        // every marker on this tile is drawn at the second one.
-        ui.label(format!("tile {}, {}   stand z {}", tile.x, tile.y, tile.stand_z));
-        // The whole tile in one press. The per-graphic buttons below copy a
-        // number to paste into a lookup; this copies what a bug report wants,
-        // which is the column and everything standing in it.
-        if ui.small_button("copy all").clicked() {
-            ui.ctx().copy_text(tile_text(tile));
-        }
-    });
+    // Both heights, because the gap between them is the thing worth seeing:
+    // on a pier the land is water far below the deck a body stands on, and
+    // every marker on this tile is drawn at the second one.
+    ui.monospace(format!(
+        "tile {}, {}   stand z {}   depth {}",
+        tile.at.x, tile.at.y, tile.stand_z.0, tile.tile_depth.0
+    ));
+    // The mobile's own sort key, beside the statics below it — the two are
+    // meant to be read against each other: a static whose `priority_z` here is
+    // `>=` the mobile's, on this same `depth`, is what wins the draw order tie
+    // and covers it.
+    if let Some(order) = tile.mobile_order {
+        let (mobile_tile, mobile_priority_z) = (order.tile, order.priority_z);
+        ui.monospace(format!(
+            "mobile order: tile {mobile_tile}  priority_z {mobile_priority_z}"
+        ));
+    }
     // The column in words, in the same green and red the box is drawn in: the
     // picture says *where* the levels are and this says which, so a level hidden
     // behind a wall on screen is still countable here.
     ui.horizontal_wrapped(|ui| {
-        ui.label("levels");
-        for &(z, standable) in &tile.levels {
+        ui.monospace("levels");
+        for &(Height(z), standable) in &tile.levels {
             let colour = match standable {
                 true => STANDABLE,
                 false => BLOCKED,
             };
-            ui.colored_label(colour, format!("{z}"));
+            ui.label(egui::RichText::new(format!("{z}")).monospace().color(colour));
         }
-        if let Some(ceiling) = tile.ceiling {
-            ui.label(format!("· ceiling {ceiling}"));
+        if let Some(Height(ceiling)) = tile.ceiling {
+            ui.monospace(format!("· ceiling {ceiling}"));
         }
     });
-    ui.horizontal(|ui| match tile.land {
+    match tile.land {
         // `.0` here and below because this is the presentation seam: a panel
         // printing an id in decimal *and* hex is exactly the place a newtype is
         // supposed to be unwrapped, the same licence the wire and SQL get.
-        Some(Graphic(id)) => {
-            ui.label(format!("land {id} (0x{id:04X})  z {}", tile.land_z));
-            if ui.small_button("copy").clicked() {
-                ui.ctx().copy_text(id.to_string());
-            }
-        }
-        None => {
-            ui.label("land: block not loaded");
-        }
-    });
-    for &(Graphic(id), z, Hue(hue)) in &tile.statics {
-        ui.horizontal(|ui| {
-            ui.label(format!("static {id} (0x{id:04X})  z {z}  hue {hue}"));
-            if ui.small_button("copy").clicked() {
-                ui.ctx().copy_text(id.to_string());
-            }
-        });
+        Some(Graphic(id)) => ui.monospace(format!("land {id} (0x{id:04X})  z {}", tile.land_z.0)),
+        None => ui.monospace("land: block not loaded"),
+    };
+    for &(graphic @ Graphic(id), height @ Height(z), Hue(hue), PriorityZ(priority_z)) in &tile.statics {
+        let arrow = Marked::arrow(marked, graphic, height);
+        ui.monospace(format!(
+            "{arrow}static {id} (0x{id:04X})  z {z}  hue {hue}  priority_z {priority_z}"
+        ));
+    }
+    // The shard's own decoration — a different source from `statics` above,
+    // and the one a static-only panel missed: see `PickedTile::items`.
+    for &(graphic @ Graphic(id), height @ Height(z), Hue(hue), PriorityZ(priority_z)) in &tile.items {
+        let arrow = Marked::arrow(marked, graphic, height);
+        ui.monospace(format!(
+            "{arrow}item {id} (0x{id:04X})  z {z}  hue {hue}  priority_z {priority_z}"
+        ));
     }
 }
 
@@ -1832,13 +2096,20 @@ fn tile_text(tile: &PickedTile) -> String {
     use std::fmt::Write;
 
     let mut text = format!(
-        "tile {}, {}  stand z {}  land z {}\n",
-        tile.x, tile.y, tile.stand_z, tile.land_z
+        "tile {}, {}  stand z {}  land z {}  depth {}\n",
+        tile.at.x, tile.at.y, tile.stand_z.0, tile.land_z.0, tile.tile_depth.0
     );
+    if let Some(order) = tile.mobile_order {
+        let (mobile_tile, mobile_priority_z) = (order.tile, order.priority_z);
+        let _ = writeln!(
+            text,
+            "mobile order: tile {mobile_tile}  priority_z {mobile_priority_z}"
+        );
+    }
     text.push_str("levels");
     // The panel says "a body does not fit here" in red, and red does not
     // survive a paste; `!` after the height is the same fact in text.
-    for &(z, standable) in &tile.levels {
+    for &(Height(z), standable) in &tile.levels {
         let verdict = match standable {
             true => "",
             false => "!",
@@ -1847,18 +2118,27 @@ fn tile_text(tile: &PickedTile) -> String {
         // is infallible, which is why the result is dropped here.
         let _ = write!(text, " {z}{verdict}");
     }
-    if let Some(ceiling) = tile.ceiling {
+    if let Some(Height(ceiling)) = tile.ceiling {
         let _ = write!(text, " · ceiling {ceiling}");
     }
     text.push('\n');
     match tile.land {
         Some(Graphic(id)) => {
-            let _ = writeln!(text, "land {id} (0x{id:04X})  z {}", tile.land_z);
+            let _ = writeln!(text, "land {id} (0x{id:04X})  z {}", tile.land_z.0);
         }
         None => text.push_str("land: block not loaded\n"),
     }
-    for &(Graphic(id), z, Hue(hue)) in &tile.statics {
-        let _ = writeln!(text, "static {id} (0x{id:04X})  z {z}  hue {hue}");
+    for &(Graphic(id), Height(z), Hue(hue), PriorityZ(priority_z)) in &tile.statics {
+        let _ = writeln!(
+            text,
+            "static {id} (0x{id:04X})  z {z}  hue {hue}  priority_z {priority_z}"
+        );
+    }
+    for &(Graphic(id), Height(z), Hue(hue), PriorityZ(priority_z)) in &tile.items {
+        let _ = writeln!(
+            text,
+            "item {id} (0x{id:04X})  z {z}  hue {hue}  priority_z {priority_z}"
+        );
     }
     text
 }
@@ -1985,16 +2265,19 @@ fn draw_tile_highlight(
 ) {
     // The surface, not the land: on a pier the two are thirteen z-units apart
     // and the land's height puts the diamond in the water beside the boards.
-    let at = |z: i8, corners: [i8; 4]| {
+    // `.0` here is the presentation seam: `Point` stays a bare coordinate by
+    // project convention (`docs/protocol_newtypes.md`), so this is where
+    // `Height` is unwrapped to meet it.
+    let at = |z: Height, corners: [Height; 4]| {
         facet_corners(
             painter,
             camera,
             openshard_protocol::world::Point {
-                x: tile.x,
-                y: tile.y,
-                z,
+                x: tile.at.x,
+                y: tile.at.y,
+                z: z.0,
             },
-            corners,
+            corners.map(|Height(z)| z),
             viewport_origin,
         )
     };
@@ -2009,10 +2292,10 @@ fn draw_tile_highlight(
         Some(z) => at(z, [z; 4]),
         None => surface.clone(),
     };
-    let base = at(0, [0; 4]);
+    let base = at(Height(0), [Height(0); 4]);
     // A tile whose whole column lies in the datum plane has no box, and the loop
     // below would draw four zero-length segments over the diamond's own edges.
-    if lid.is_some() || tile.stand_z != 0 || tile.corners != [0; 4] {
+    if lid.is_some() || tile.stand_z != Height(0) || tile.corners != [Height(0); 4] {
         // The sides are quieter than the surface: the column is context for the
         // marker, not a second marker. A fill at full strength doubled up over
         // the ground wash and read as the brighter of the two shapes.
@@ -2070,7 +2353,7 @@ fn draw_tile_highlight(
     painter.add(egui::Shape::convex_polygon(surface, fill, stroke));
 }
 
-/// The walkability wash and the route over it.
+/// The walkability wash.
 ///
 /// Fills without strokes for the tiles: one outlined diamond per visible tile is
 /// a thousand strokes a frame and a picture nobody can read through, while a
@@ -2095,21 +2378,44 @@ fn draw_terrain(
             painter.add(egui::Shape::convex_polygon(corners, fill, egui::Stroke::NONE));
         }
     }
-    // The route last, over its own ground: a line through the tile centres, and
-    // a dot on each step so a diagonal can be told from a pair of orthogonals.
-    let centres: Vec<egui::Pos2> = terrain
-        .route
-        .iter()
-        .map(|&point| tile_centre(painter, camera, point, viewport_origin))
-        .collect();
-    if centres.len() > 1 {
-        painter.add(egui::Shape::line(
-            centres.clone(),
-            egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 160, 0)),
-        ));
+}
+
+/// The way the body is going: a line through the tile centres, with a dot on
+/// each step so a diagonal can be told from a pair of orthogonals.
+///
+/// **Green as far as the ground allows, red the rest of the way.** The two
+/// halves are [`Route`]'s and the split is the walk's own — where the red starts
+/// is where the body will stop, standing at whatever is in the way. The same
+/// green and red the walkability wash uses ([`STANDABLE`], [`BLOCKED`]), because
+/// it is the same question: this line is that wash asked along one route rather
+/// than over every tile on screen.
+///
+/// Full strength, unlike the wash. A route is what the player just asked for and
+/// is looking at; a tile wash is a diagnostic read against the art beneath it.
+fn draw_route(painter: &egui::Painter, camera: &Camera, route: &Route, viewport_origin: egui::Pos2) {
+    let centres = |tiles: &[openshard_protocol::world::Point]| -> Vec<egui::Pos2> {
+        tiles
+            .iter()
+            .map(|&point| tile_centre(painter, camera, point, viewport_origin))
+            .collect()
+    };
+    let open = centres(&route.open);
+    let barred = centres(&route.barred);
+    for (line, colour) in [(&open, STANDABLE), (&barred, BLOCKED)] {
+        if line.len() > 1 {
+            painter.add(egui::Shape::line(line.clone(), egui::Stroke::new(2.0, colour)));
+        }
     }
-    for centre in centres {
-        painter.circle_filled(centre, 2.5, egui::Color32::from_rgb(255, 200, 80));
+    // A dot per tile *stepped onto*, which is why both halves drop their first
+    // point: the open half begins on the tile the body is already standing on,
+    // and the barred half begins on the last tile it can reach — the one it will
+    // stand on and wait. A dot on either would read as a step still to take, and
+    // the red one would paint the tile the body *can* stand on in the colour of
+    // the ones it cannot.
+    for (line, colour) in [(&open, STANDABLE), (&barred, BLOCKED)] {
+        for centre in line.iter().skip(1) {
+            painter.circle_filled(*centre, 2.5, colour);
+        }
     }
 }
 

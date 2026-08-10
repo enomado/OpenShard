@@ -2446,6 +2446,13 @@ own understanding had written.
     lurch was never the fallback itself, it was the fallback firing for input
     that never meant to ask a pathfinding question in the first place.
 
+    That fallback is **gone** — see the entry below. It was the right *intent*
+    said the wrong way: walking up to an obstacle and stopping is what a move
+    order is owed, and a straight line at the obstacle is not that. It walked
+    into whatever was between the body and the goal, one refused step a hold,
+    for as long as the patience lasted; the way to walk up to something is to
+    plan a route that stops there, which is now `find_path_toward`'s job.
+
   `keys` still outranks both, and `go_to`/`steer` clear each other, so exactly
   one of "arrows", "heading" or "destination" drives a step at a time — see
   `Steering::asking`. `a_heading_held_in_a_corner_walks_the_instant_the_way_opens`,
@@ -2453,6 +2460,91 @@ own understanding had written.
   `the_keyboard_takes_over_from_a_heading` and
   `a_destination_with_no_route_falls_back_to_a_heading_then_gives_up`
   (`client/app/src/steer.rs`) are what pin the split.
+
+- **A move order that shows its work, and stops at the door rather than at
+  nothing.** Two complaints about the same idiom: a Ctrl-drag planned a route
+  and drew none of it, so a body setting off round the far side of a building
+  looked like a body that had misread the click; and a destination the shard's
+  own furniture had sealed off — the usual case being a shut door, the only way
+  into a room — was "no route", which degraded to walking at it in a straight
+  line and giving up four beats later somewhere that was not the door.
+
+  The plan now reads the ground twice. `steer::Ground` carries both halves: the
+  map with everything the shard placed over it (`clutter.rs`'s `Cluttered`,
+  which is what every step is decided against) and the bare map, which is the
+  same world with nothing placed in it and therefore every door open.
+  `steer::plan` asks them in that order — the world as it stands answers first,
+  so a door with a way round is a longer walk and never a barred one — and only
+  where there is no way through at all does it plan over the bare map and *cut
+  that route at the first step the real ground refuses*. The body walks the open
+  half and stands in front of whatever is in the way; the clock is armed but
+  nothing is sent, for the reason a heading wedged in a corner sends nothing (a
+  step this end has proven the shard refuses comes back as a `0x21` and a
+  rollback), so a door opened within the `STUCK_STEPS` patience picks the walk
+  straight back up with no fresh click.
+
+  **And where neither half has a way through, the answer is still a walk, never
+  a shove.** `movement::find_path_toward` is `find_path`'s other reading of the
+  same A*: where one says "no route", the other says how far the route got —
+  the reached tile closest to the goal, `None` only when nothing reachable is
+  any closer than where the body already stands. It costs the search nothing
+  (every candidate already carries its distance to the goal, which is what A*
+  orders the open list by), and it comes out of *one* search over one terrain,
+  so "there is no way" and "here is how far the way goes" cannot disagree about
+  which tiles were reachable. A destination clicked on a wall, on the far bank
+  or simply out of budget is now planned up to the last tile before it and
+  stopped at. The straight-line fallback is gone entirely, and with it the whole
+  class of client-side step the shard was only ever going to refuse: nothing a
+  destination sends is a step this end can already see is blocked.
+
+  The picture is the same call. `App::route_shown` runs `steer::plan` and draws
+  the open half green and the barred half red (`shell::draw_route`, the
+  `STANDABLE`/`BLOCKED` pair the walkability wash already speaks in), whether or
+  not the terrain overlay is switched on — a move order is not a debugging
+  question. It replans per frame rather than drawing `Steering`'s stored route,
+  because the walk plans at most once a step by design and clears its route the
+  moment a drag restates the destination, so a line drawn from it would blink
+  out under the moving cursor. What it must never be is a *second* cut: where
+  the red starts is where the body will stop, and both come off one function —
+  `docs/parity.md`'s standing argument, applied to a route.
+
+  **What the two readings differ by is a list, and the list is doors.** The first
+  cut of this had the optimistic half be the *bare map* — the client's files with
+  nothing the shard placed — on the standing belief that this end cannot tell a
+  door from a barrel. It can: `client/render/src/doors.rs` already carries
+  ServUO's door families for the occlusion pass, so `clutter.rs` marks each
+  blocker `door` and keeps the tiles the shut ones stand on. That matters for
+  what the picture *means*: with the bare map, a route "through" a stack of
+  crates nobody will ever move came back red and the body walked up to the
+  crates; with the list, only a door does that, and a crate is simply a thing to
+  route around or stop short of. It also matters for what the halves *are* — the
+  server has the same pair under the same name (`Obstacle::door`,
+  `LiveTerrain::through_doors`), so both ends draw the line in one place.
+
+  **And it turned up a live bug.** `clutter.rs` argued that no door state need be
+  tracked, since a door's graphic changes when it swings and only the shut leaf
+  is impassable. Measured against the real `tiledata.mul`: all 164 shut leaves in
+  the table are impassable and **so are 132 of the open ones**, so this end was
+  refusing to walk through open doors — steps the shard allows, the mirror-image
+  of the bug `clutter.rs` was written to fix, and invisible because the shard
+  simply rolled the body back. An open leaf is now left out of the index
+  entirely. `an_open_door_s_own_art_is_impassable_just_like_the_shut_one` pins
+  the measurement, `an_open_door_is_not_in_the_way` the fix, and
+  `a_shut_door_with_a_crate_in_it_is_not_potentially_passable` the case a naive
+  "is there a door on this tile" would get wrong.
+
+  `a_shut_door_plans_up_to_it_and_names_the_rest_barred`,
+  `a_thing_in_the_way_with_a_route_round_it_is_not_barred`,
+  `a_destination_behind_a_shut_door_is_walked_up_to_and_no_further`,
+  `the_walk_resumes_the_moment_the_door_opens`,
+  `a_destination_that_cannot_be_stood_on_is_walked_up_to_and_stopped_at` and
+  `a_destination_with_nowhere_closer_to_stand_sends_nothing_at_all`
+  (`client/app/src/steer.rs`) pin the claims, and
+  `an_unreachable_goal_is_walked_toward_until_the_ground_runs_out` /
+  `nothing_closer_to_stand_is_nothing_to_walk` /
+  `a_reachable_goal_is_the_same_route_either_way` (`common/movement/src/path.rs`)
+  pin the search under them. Opening the door is still nobody's job but the
+  player's — see the roadmap for why that stays a gameplay decision.
 
 - ~~**The walk stuttered once a tile.**~~ Three causes, all of them in the same
   400ms:
@@ -3231,10 +3323,14 @@ the way and not done:
   It is the same arithmetic on the same units and it decides whether two ends of
   a wire agree; it belongs in `common/movement` as one function the server's
   index and the client's both call.
-- **A client cannot tell a shut door from a barrel.** The wire carries a graphic,
-  not a kind, so `Cluttered::sight_clear` delegates to the map alone where the
-  server treats a shut door as opaque. Harmless while nothing here computes
-  line of sight for gameplay; it stops being harmless the moment something does.
+- **`Cluttered::sight_clear` still delegates to the map alone**, where the server
+  treats a shut door as opaque. The premise this was filed under — "a client
+  cannot tell a shut door from a barrel", the wire carrying a graphic and not a
+  kind — no longer holds: `clutter.rs` marks its blockers `door` off
+  `client/render`'s table, so the missing half of the server's rule is now one
+  `is_some_and` away. Still deliberately not drawn: nothing here computes line of
+  sight for gameplay, and a rule with no reader is one nobody notices going
+  wrong. It stops being harmless the moment something does.
 - **Neither end blocks a step on a mobile.** Nothing registers a body in
   `Obstructions`, so `Clutter` deliberately holds none either — two ends wrong
   the same way, which walks, rather than a client refusing steps the shard
@@ -3314,11 +3410,15 @@ the way and not done:
   parts of it separately — and it is one camera-move away from the click using a
   picture the player never saw. The fix is the frame keeping what it picked
   against, which is also what a "what am I pointing at" line in the HUD wants.
-- **Nothing on this end knows a door from a barrel, still.** The double-click
-  goes out for whatever was clicked and the shard decides; that is right. What
-  it costs is feedback — no cursor change over something usable, and a click on
-  scenery is silence rather than "you cannot reach that". The `0x1A` that comes
-  back is the only signal, and only when the shard did something.
+- **The double-click knows nothing about what it clicked, and that is still
+  right.** It goes out for whatever was under the cursor and the shard decides.
+  What it costs is feedback — no cursor change over something usable, and a click
+  on scenery is silence rather than "you cannot reach that"; the `0x1A` that
+  comes back is the only signal, and only when the shard did something. One
+  ingredient has since arrived: a door *is* now nameable on this end
+  (`clutter.rs`, off `client/render`'s table), so "the cursor says door" is
+  available whenever somebody wants to spend it. Everything else usable — a
+  container, a corpse, a lever — still is not.
 - **The pairing is time alone, with no gesture layer.** `App::last_click` is two
   fields and a comparison in the `MouseInput` arm. It matches the reference and
   it is enough for one button, but single click (`0x09`) is the same event

@@ -58,7 +58,7 @@ mod walk;
 
 pub use detour::{Around, Detour, Leeway, Step};
 pub use pace::{Pace, RUN_HOLD, RUN_INTERVAL, WALK_BUFFER, WALK_HOLD, WALK_INTERVAL, WalkPace};
-pub use path::find_path;
+pub use path::{find_path, find_path_toward};
 pub use sequence::{OutOfSequence, StepCounter, WalkSequence};
 pub use terrain::{MAX_STEP_UP, MapTerrain, PLAYER_HEIGHT};
 pub use walk::{

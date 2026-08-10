@@ -42,12 +42,75 @@ type OpenEntry = (u32, u32, u32, u16, u16);
 /// The budget bounds the cost: a search that would explore more than `budget`
 /// tiles gives up rather than spend the tick. A few hundred is ample for moving
 /// about a town; open-world roaming would want caching, not a bigger cap.
+///
+/// *Is there a way there* is what this answers, and `None` is a real answer to
+/// it. A caller that has to do something with an unreachable destination —
+/// a move order a player gave, which is owed a body that walks up to whatever
+/// stops it — wants [`find_path_toward`], which is the same search read for that
+/// question instead.
 #[must_use]
 pub fn find_path(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Option<Vec<Direction>> {
+    let search = search(terrain, from, to, budget);
+    search.arrived.then_some(search.route)
+}
+
+/// Plan a walk that gets as close to `to` as the ground allows, whether or not
+/// it can be reached.
+///
+/// The same search as [`find_path`], answered for a *move order* rather than for
+/// a question. A player who clicks on a wall, on the far bank of a river, or
+/// into a room whose only door is shut has asked to go **there**, and the body a
+/// client owes them walks up to whatever stops it and stands — which is the
+/// reference client's own answer, and the only one that does not have this end
+/// sending steps it already knows the shard will refuse.
+///
+/// The route ends on the reached tile closest to the goal, by the same Chebyshev
+/// measure the search steers by, with the shorter route winning a tie. `None`
+/// when nothing reachable is any closer than where the body already stands —
+/// walled in, or already as close as it gets; either way there is nothing worth
+/// walking. An empty `Vec` still means `from` stands on the goal tile.
+///
+/// The budget is the same bound and cuts the same way: what comes back is then
+/// the closest tile the search got to before it ran out, which is a route in the
+/// goal's direction rather than a refusal.
+#[must_use]
+pub fn find_path_toward(
+    terrain: &dyn Terrain,
+    from: Point,
+    to: Point,
+    budget: usize,
+) -> Option<Vec<Direction>> {
+    let search = search(terrain, from, to, budget);
+    (search.arrived || !search.route.is_empty()).then_some(search.route)
+}
+
+/// What one search found, before either entry point above reads it.
+struct Search {
+    /// Whether [`Search::route`] ends on the goal tile itself.
+    arrived: bool,
+    /// The steps to the goal, or — where it was never reached — to the tile that
+    /// came closest to it. Empty when nothing the search reached bettered its own
+    /// start: with `arrived`, that is a body already standing on the goal, and
+    /// without it, a body with nowhere closer to go.
+    route: Vec<Direction>,
+}
+
+/// A* over the terrain, once, with both answers kept: the goal's own route, and
+/// the best approach to it.
+///
+/// The approach costs the search nothing — every candidate already carries its
+/// distance to the goal, since that is what A* orders the open list by, so
+/// keeping the best one seen is a comparison per pop. What it buys is that
+/// "there is no way" and "here is how far the way goes" come out of *one*
+/// search over one terrain, and cannot disagree about which tiles were reachable.
+fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Search {
     let goal = Tile::new(to.x, to.y);
     let start = Tile::new(from.x, from.y);
     if start == goal {
-        return Some(Vec::new());
+        return Search {
+            arrived: true,
+            route: Vec::new(),
+        };
     }
 
     // The resolved point (with its real z) at each reached tile, the cheapest cost
@@ -74,22 +137,35 @@ pub fn find_path(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -
     cost.insert(start, 0);
     let h0 = heuristic(from, to);
     open.push(Reverse((h0, h0, manhattan(from, to), start.x, start.y)));
+    // How close a finalised tile has come to the goal, and what it cost to get
+    // there. Seeded with the start, so a tile takes the place only by being
+    // *strictly* closer: walking to somewhere no nearer than here is not getting
+    // closer, it is only walking. Among equally close tiles the cheaper route
+    // wins, which is the same "do not wander" preference the tie-break above is.
+    let mut closest = (h0, 0, start);
 
-    while let Some(Reverse((_f, _h, _m, cx, cy))) = open.pop() {
+    while let Some(Reverse((_f, h, _m, cx, cy))) = open.pop() {
         let tile = Tile::new(cx, cy);
         // Skip a tile already finalised by a cheaper pop.
         if !closed.insert(tile) {
             continue;
         }
         if tile == goal {
-            return Some(reconstruct(&came_from, start, goal));
+            return Search {
+                arrived: true,
+                route: reconstruct(&came_from, start, goal),
+            };
         }
-        if closed.len() > budget {
-            return None;
-        }
-
         let current = point_at[&tile];
         let here_cost = cost[&tile];
+        // The first pop of a tile is its cheapest, so this is its final cost —
+        // see `closed`.
+        if (h, here_cost) < (closest.0, closest.1) {
+            closest = (h, here_cost, tile);
+        }
+        if closed.len() > budget {
+            break;
+        }
         for dir in Direction::ALL {
             // `step_allowed`, not `can_step`: a diagonal may not clip a wall
             // corner, and that half of the rule is not the terrain's to answer
@@ -119,7 +195,14 @@ pub fn find_path(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -
             )));
         }
     }
-    None
+    // The goal was never popped: what there is to say is how far the way got.
+    Search {
+        arrived: false,
+        route: match closest.2 == start {
+            true => Vec::new(),
+            false => reconstruct(&came_from, start, closest.2),
+        },
+    }
 }
 
 /// Walk the parent chain from the goal back to the start, collecting the steps in
@@ -240,5 +323,65 @@ mod tests {
             opening_y: u16::MAX, // effectively no gap near the route
         };
         assert!(find_path(&world, Point::new(10, 10, 0), Point::new(14, 10, 0), 500).is_none());
+    }
+
+    /// The move order's answer to that same sealed wall: not "no", but "this
+    /// far". The route stops against the wall on the goal's own row — a body
+    /// walked up to what stopped it, which is what a player who clicked over
+    /// there is owed and what stops the client sending steps into it.
+    #[test]
+    fn an_unreachable_goal_is_walked_toward_until_the_ground_runs_out() {
+        let world = WalledWorld {
+            wall_x: 12,
+            wall_from: 0,
+            wall_to: u16::MAX,
+            opening_y: u16::MAX,
+        };
+        let from = Point::new(10, 10, 0);
+        let to = Point::new(14, 10, 0);
+        let path = find_path_toward(&world, from, to, 500).expect("there is somewhere closer to stand");
+        let end = walk_path(from, &path);
+        assert_eq!(
+            (end.x, end.y),
+            (11, 10),
+            "the walk stops on the last tile before the wall, on the goal's own row"
+        );
+    }
+
+    /// And when there is nowhere closer — the body is already against the thing
+    /// it was sent to — there is nothing to walk, which is not the same as a
+    /// route of length zero. Answering with one step "toward" it would be a step
+    /// away from the goal dressed up as progress.
+    #[test]
+    fn nothing_closer_to_stand_is_nothing_to_walk() {
+        let world = WalledWorld {
+            wall_x: 12,
+            wall_from: 0,
+            wall_to: u16::MAX,
+            opening_y: u16::MAX,
+        };
+        // Standing against the wall, sent to the tile on its far side.
+        let from = Point::new(11, 10, 0);
+        assert_eq!(find_path_toward(&world, from, Point::new(12, 10, 0), 500), None);
+    }
+
+    /// A goal that *is* reachable is answered the same way by both, so a caller
+    /// that only ever asks for the move order's version never gets a worse route
+    /// for it.
+    #[test]
+    fn a_reachable_goal_is_the_same_route_either_way() {
+        let world = WalledWorld {
+            wall_x: 12,
+            wall_from: 8,
+            wall_to: 12,
+            opening_y: 8,
+        };
+        let from = Point::new(10, 10, 0);
+        let to = Point::new(14, 10, 0);
+        assert_eq!(
+            find_path_toward(&world, from, to, 1000),
+            find_path(&world, from, to, 1000),
+            "the approach must not second-guess a route that arrives"
+        );
     }
 }

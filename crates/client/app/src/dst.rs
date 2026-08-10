@@ -82,6 +82,7 @@ use openshard_protocol::world::{Point, WalkAck, WalkReject, WalkRequest};
 
 use crate::GLIDE_INTERVAL;
 use crate::crowd::{Crowd, Ease, Who};
+use crate::steer::Ground;
 
 /// The body every scenario walks.
 const BODY: Graphic = Graphic(0x0190);
@@ -533,7 +534,7 @@ impl Sim {
                             self.player.at,
                             self.instant(),
                             self.player.facing,
-                            &OpenWorld,
+                            Ground::plain(&OpenWorld),
                         ) {
                             self.send(facing);
                         }
@@ -632,10 +633,12 @@ impl Sim {
         // Twice at most, exactly as `App::about_to_wait` does it: a turn costs
         // no time, so the step it precedes leaves in the same wake.
         for _ in 0..2 {
-            let Some(facing) =
-                self.steering
-                    .due(self.instant(), self.player.at, self.player.facing, &OpenWorld)
-            else {
+            let Some(facing) = self.steering.due(
+                self.instant(),
+                self.player.at,
+                self.player.facing,
+                Ground::plain(&OpenWorld),
+            ) else {
                 break;
             };
             self.send(facing);
