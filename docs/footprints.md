@@ -359,9 +359,29 @@ selector, not a gate. The fixture is now `0x0B80`'s own numbers painted out (66
 columns, the V from 9 to 53), because the refusal only fires where the clamp
 did and `blocks_silhouette` draws exactly one tile.
 
-**S5 — the frame gate.** The bookcase pair, `View::Normal`, asserting the lid
-shrinks to the measured slab, with the whole-tile footprint as the injection that
-must go red. Depends on the parity item below.
+**S5 — the frame gate.** ✅ 2026-08-10. The bookcase pair, `0x0A97`/`0x0A98` at
+`(1505, 1656)`/`(1506, 1656)` — `docs/parity.md`'s own "shard's own furniture"
+coordinates, since that item is what unblocked this one. `tests/lid.rs`, two
+tests: the mutation and the picture it proves is possible.
+
+The mutation is at the geometry layer, not the pixel one, and by necessity —
+`StaticAtlas`'s `footprints` table has no public way to lose an entry once real
+art has measured one; `state_hole`/`state_prism` exist for a scene that never
+had art to measure, and there is no `state_footprint`. So
+`occlusion::boxes_of` — the one function `frame::assemble` reads a lid's box
+from — is asked directly, twice: once with the `Shape` the real art measures
+and once with `footprint: None`, `occlusion::shape_of`'s own documented
+fallback. Both bookcases' slabs come back narrower than the whole tile
+(`< 1.0` of it), and losing the footprint stands both back up to exactly
+`1.0` — the injection, and it goes red.
+
+The picture is the positive control the mutation cannot be: a real frame over
+the pair, `View::NormalGeometry` read back, and the drawn pixels over each
+bookcase's own tile held under half of the tile's own bounding rectangle — a
+whole tile's diamond fills almost exactly half of it (`Solid::faces`'s own top
+face is that diamond), so a slab narrower on both axes draws measurably fewer.
+No second render forces the whole tile here; that claim is what the mutation
+above already carries.
 
 ## Not in scope, deliberately
 
