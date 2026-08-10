@@ -1351,6 +1351,16 @@ impl GumpRenderer {
     }
 
     /// Draw `quads` over what is already in `frame.target`.
+    /// Draw `quads` over what is already on the target.
+    ///
+    /// **Once per frame per renderer.** The instances live in one buffer that
+    /// this writes through [`wgpu::Queue::write_buffer`], and a queued write
+    /// lands *before* the encoder it was queued beside is submitted — so a
+    /// second call in the same frame does not add a second draw, it replaces
+    /// the instances the first one was going to draw and leaves that pass
+    /// drawing this call's quads instead. Collect everything and call once;
+    /// painter's order inside the list is the only order there is anyway, since
+    /// this pass has no depth.
     pub fn render(
         &mut self,
         device: &wgpu::Device,

@@ -5954,6 +5954,16 @@ impl App {
                 &quads,
             );
         }
+        // Every line of gump-space text this frame, from both the blocks below.
+        //
+        // **One list because there is one pass.** `GumpRenderer` holds a single
+        // instance buffer, and `queue.write_buffer` lands before the encoder is
+        // submitted — so two `render` calls in a frame do not draw twice, they
+        // draw the *second* call's instances twice and lose the first's. That
+        // is what happened to every window's text for as long as there was a
+        // line in the journal to overwrite it with: a paperdoll's name plate
+        // was written, cut, submitted, and then quietly replaced by the chat.
+        let mut text_quads: Vec<SpriteQuad> = Vec::new();
         // What the windows have written on them: a dialog's captions and
         // fields, and a paperdoll's name.
         //
@@ -6012,34 +6022,29 @@ impl App {
                     // because a glyph is a quad in the font atlas and has no
                     // picture to carry a box on — see `Scissor::cut`.
                     (WindowSubject::Skills, Drawn::Skills(sheet)) => {
-                        let lines: Vec<GumpLabel<'_>> = sheet.lines.iter().map(skills::Line::label).collect();
-                        let mut own = openshard_client_render::text::collect_gump(&lines, &self.font_atlas);
-                        sheet.viewport.cut(&mut own);
-                        cut.extend(own);
+                        for line in &sheet.lines {
+                            let mut quads = openshard_client_render::text::collect_gump(
+                                &[line.label()],
+                                &self.font_atlas,
+                            );
+                            // Its own box, and not the window's: the rows are cut
+                            // to the list and the total written under them is not
+                            // — see `skills::Line::scissor`, which is a
+                            // difference this found out by drawing it wrong.
+                            if let Some(scissor) = line.scissor {
+                                scissor.cut(&mut quads);
+                            }
+                            cut.extend(quads);
+                        }
                     }
                     _ => {}
                 }
             }
-            if !labels.is_empty() || !cut.is_empty() {
-                let mut quads = openshard_client_render::text::collect_gump(&labels, &self.font_atlas);
-                quads.extend(cut);
-                window.gump_text_pass.render(
-                    &window.device,
-                    &window.queue,
-                    &mut encoder,
-                    gump_art::Frame {
-                        target: &view,
-                        width: window.config.width,
-                        height: window.config.height,
-                        scale: self
-                            .shell
-                            .as_ref()
-                            .map(|shell| shell.pixels_per_point())
-                            .unwrap_or(1.0),
-                    },
-                    &quads,
-                );
-            }
+            text_quads.extend(openshard_client_render::text::collect_gump(
+                &labels,
+                &self.font_atlas,
+            ));
+            text_quads.extend(cut);
         }
         // The speech line and the journal above it, over the finished picture
         // and under egui's, the same corner `shell::speech_line`'s
@@ -6128,7 +6133,10 @@ impl App {
                     clip: None,
                 });
             }
-            let quads = text::collect_gump(&labels, &self.font_atlas);
+            text_quads.extend(text::collect_gump(&labels, &self.font_atlas));
+            // The one call, with the windows' lines already in front of the
+            // chat's: painter's order inside a single pass, and the only order
+            // there is — see `text_quads` for what a second call would cost.
             window.gump_text_pass.render(
                 &window.device,
                 &window.queue,
@@ -6139,7 +6147,7 @@ impl App {
                     height: window.config.height,
                     scale,
                 },
-                &quads,
+                &text_quads,
             );
         }
         // The UI over it, with no depth attachment: the world's depth buffer

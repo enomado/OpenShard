@@ -158,6 +158,15 @@ pub struct Line {
     pub font: Font,
     /// The wire hue to draw it in.
     pub hue: Hue,
+    /// The box it is cut to, or `None` for a line that is part of the frame.
+    ///
+    /// The same field [`Picture::scissor`] is and for the same reason, arrived
+    /// at the same way — by looking at the window. Cutting *every* line to the
+    /// viewport is what the caller did first, and the total under the list
+    /// vanished: it is written on the frame, below the rule the list stops at,
+    /// so the box that keeps a row inside the list is exactly the box that keeps
+    /// the total off the screen.
+    pub scissor: Option<Scissor>,
 }
 
 impl Line {
@@ -189,10 +198,9 @@ pub struct Sheet {
     pub lines: Vec<Line>,
     /// The box the rows are cut to.
     ///
-    /// The pictures carry it already (see [`Picture::scissor`]); it is on the
-    /// sheet as well because the *text* is cut after the fact, by the caller,
-    /// through [`Scissor::cut`] — a glyph is drawn out of the other atlas and
-    /// cannot carry a box of its own.
+    /// Every picture and every line in the list carries it already; it is on the
+    /// sheet as well because a caller wants it in one place — to hit-test
+    /// against, and to say what a wheel over the window is over.
     pub viewport: Scissor,
     /// Where the scrollbar is, so that a drag can be turned back into an offset
     /// — see [`Sheet::offset_at`].
@@ -255,8 +263,7 @@ const LOCK_HELD: Graphic = Graphic(0x082C);
 pub const WIDTH: i32 = 345;
 
 /// How tall. A fixed number, because the drag handle that resizes the
-/// reference's scroll is not ported — it is chosen so the viewport holds twelve
-/// rows, which is a whole heading and its skills for four of the seven groups.
+/// reference's scroll is not ported.
 pub const HEIGHT: i32 = 320;
 
 /// How tall the top piece is, and where the body starts.
@@ -271,14 +278,31 @@ const BODY_WIDTH: i32 = 302;
 /// How wide the bottom piece is.
 const BOTTOM_WIDTH: i32 = 314;
 
+/// Where the rule above the total sits, which is also where the list stops.
+const RULE_BOTTOM_Y: i32 = HEIGHT - BOTTOM_HEIGHT - 40;
+
+/// Where the plate the total is written beside sits.
+const TOTAL_PLATE_AT: GumpPixel = GumpPixel::new(25, HEIGHT - BOTTOM_HEIGHT - 31);
+
 /// The viewport: where the rows are drawn, and the box they are cut to.
-const VIEWPORT_AT: GumpPixel = GumpPixel::new(30, 56);
+///
+/// The `x` is not the reference's 22. Its scroll art is rolled at both edges,
+/// and a heading's arrow at 22 is drawn on the roll rather than on the
+/// parchment — which is what it looked like on the first frame this window was
+/// ever drawn on. Measured off that picture, not calculated.
+const VIEWPORT_AT: GumpPixel = GumpPixel::new(42, 56);
 
 /// How wide it is — the parchment, less the margin the bar sits in.
 const VIEWPORT_WIDTH: i32 = 246;
 
-/// How tall.
-const VIEWPORT_HEIGHT: i32 = 204;
+/// How tall: down to the rule above the total, and not a pixel past it.
+///
+/// The one number here that was wrong on the first frame and is arithmetic
+/// afterwards — `RULE_BOTTOM_Y - VIEWPORT_AT.y`, less a little air. Too tall by
+/// forty pixels, the list ran on *under* the rule and under the plate that says
+/// what the buttons do, and the row being cut by the viewport's edge was cut
+/// somewhere nobody could see it happen.
+const VIEWPORT_HEIGHT: i32 = RULE_BOTTOM_Y - VIEWPORT_AT.y - 4;
 
 /// How tall a heading's row is — the reference's `SkillsGroupControl.Height`.
 const HEADING_HEIGHT: i32 = 20;
@@ -489,10 +513,14 @@ pub fn window(
     // including the ones whose heading is shut — it is the character's total and
     // not the visible rows'.
     sheet.lines.push(Line {
-        at: at.offset(GumpPixel::new(25 + 210 + 5, HEIGHT - BOTTOM_HEIGHT - 26)),
+        // Beside the plate rather than on it — `_bottomComment.X + Width + 5`,
+        // five pixels past its right-hand edge.
+        at: at.offset(GumpPixel::new(TOTAL_PLATE_AT.x + 210 + 5, TOTAL_PLATE_AT.y + 5)),
         text: tenths(total.min(u32::from(u16::MAX)) as u16),
         font: TOTAL_FONT,
         hue: HEADING_HUE,
+        // Not cut: it is written on the frame, below where the list stops.
+        scissor: None,
     });
     sheet
 }
@@ -525,14 +553,8 @@ fn frame(sheet: &mut Sheet, at: GumpPixel) {
         // Centred on the top piece, `(_gumpTop.Width - _gumplingTitle.Width) >> 1`.
         Picture::plain(GumpArt::Gump(TITLE), at.offset(GumpPixel::new(140, 12))),
         Picture::plain(GumpArt::Gump(RULE), at.offset(GumpPixel::new(50, 42))),
-        Picture::plain(
-            GumpArt::Gump(RULE),
-            at.offset(GumpPixel::new(50, HEIGHT - BOTTOM_HEIGHT - 40)),
-        ),
-        Picture::plain(
-            GumpArt::Gump(TOTAL_PLATE),
-            at.offset(GumpPixel::new(25, HEIGHT - BOTTOM_HEIGHT - 31)),
-        ),
+        Picture::plain(GumpArt::Gump(RULE), at.offset(GumpPixel::new(50, RULE_BOTTOM_Y))),
+        Picture::plain(GumpArt::Gump(TOTAL_PLATE), at.offset(TOTAL_PLATE_AT)),
     ] {
         sheet.pictures.push(picture);
     }
@@ -562,6 +584,7 @@ fn heading(
         text: name.to_owned(),
         font: HEADING_FONT,
         hue: HEADING_HUE,
+        scissor: Some(sheet.viewport),
     });
     // `xx = width + 11 + 16`, ruled to the right-hand edge.
     let ruled = HEADING_NAME_X + width_of(name, HEADING_FONT) + 11;
@@ -595,6 +618,7 @@ fn skill_row(
         text: name.to_owned(),
         font: ROW_FONT,
         hue: ROW_HUE,
+        scissor: Some(sheet.viewport),
     });
     let Some(standing) = standing else {
         return;
@@ -606,6 +630,7 @@ fn skill_row(
         text: value,
         font: ROW_FONT,
         hue: ROW_HUE,
+        scissor: Some(sheet.viewport),
     });
     sheet.pictures.push(
         Picture::plain(
@@ -911,8 +936,39 @@ mod tests {
         }
         assert_eq!(
             sheet.viewport.at,
-            GumpPixel::new(130, 156),
+            GumpPixel::new(100 + VIEWPORT_AT.x, 100 + VIEWPORT_AT.y),
             "the window moved with `at`"
+        );
+    }
+
+    /// Which lines are cut and which are not, which is a difference the window
+    /// had to be *looked at* to find: cutting every line to the list's box takes
+    /// the total off the screen with them, since it is written on the frame
+    /// under the rule the list stops at.
+    #[test]
+    fn the_rows_are_cut_to_the_list_and_the_total_under_it_is_not() {
+        let (names, groups) = files();
+        let tree = Tree::default();
+        let sheet = window(
+            &names,
+            &groups,
+            &tree,
+            |_| Some(standing(500)),
+            width_of,
+            GumpPixel::new(0, 0),
+        );
+        let (total, rows) = sheet
+            .lines
+            .split_last()
+            .expect("a window writes at least the total");
+        assert_eq!(total.scissor, None, "the total is the frame's, not the list's");
+        assert!(
+            total.at.y > sheet.viewport.at.y + sheet.viewport.height,
+            "and it is written below where the list stops"
+        );
+        assert!(
+            rows.iter().all(|line| line.scissor == Some(sheet.viewport)),
+            "every line in the list carries the box the list is cut to"
         );
     }
 
