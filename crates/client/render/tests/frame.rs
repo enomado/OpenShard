@@ -2531,6 +2531,133 @@ fn a_billboards_normal_is_the_plane_it_is_drawn_on() {
     );
 }
 
+/// **The mob anchor defect, closed.** [`mobiles::cell_centre`] places a
+/// walking body's screen rect at its real, fractional drawn position, but
+/// [`Place::of_mobile`] carries only the whole tile it is arriving at — and
+/// before `crate::mobiles::billboard_offset` existed, `impostor.wesl`'s
+/// `billboard_at` read light from *that* tile, up to a whole tile short of
+/// where the sprite actually was. This walks a body through five points of
+/// one step and checks, at each, that the position plane's own `(x, y)`
+/// agrees with the fraction `camera::unproject_ground` reads out of
+/// [`Mobile::drawn`] directly — the GPU's own arithmetic against this crate's,
+/// the same shape [`a_billboards_normal_is_the_plane_it_is_drawn_on`] already
+/// holds the normal to.
+#[test]
+fn a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const BODY: u16 = 400;
+    // Odd and small: `center_x` lands exactly on `SIZE / 2`, which is what
+    // makes the sprite's screen anchor (`middle_x`) exactly `cell_centre.x` —
+    // see `mobiles::place`'s own doc on the anchor. A one-pixel image keeps
+    // `across` inside a single fragment's width so the readback names one
+    // texel unambiguously.
+    const SIZE: u16 = 8;
+
+    let frame = AnimFrame {
+        center_x: (SIZE / 2) as i16,
+        center_y: 0,
+        image: Image::new(
+            SIZE,
+            SIZE,
+            vec![Color16(0b0_00000_11111_00000); usize::from(SIZE) * usize::from(SIZE)],
+        ),
+    };
+    let atlas = AnimAtlas::pack([(
+        FrameKey {
+            body: BODY,
+            group: 4,
+            direction: 0,
+            frame: 0,
+        },
+        frame,
+    )])
+    .expect("one frame fits");
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let statics = StaticAtlas::pack([]).expect("nothing always fits");
+
+    let from = Point::new(300, 400, 0);
+    let to = Point::new(301, 400, 0);
+    let camera = Camera::new(from, 256, 256);
+
+    for left in [1.0, 0.75, 0.5, 0.25, 0.0] {
+        let drawn = openshard_client_render::follow::Gaze::on(to)
+            .back_towards(openshard_client_render::follow::Gaze::on(from), left);
+        let mobile = Mobile {
+            at: to,
+            body: BODY,
+            group: 4,
+            // `SouthEast` is the one facing stored unmirrored at direction
+            // `0` (`anim::facing`), which keeps the anchor at `center_x`
+            // rather than `width - center_x` — this test's own arithmetic
+            // for `middle_x` assumes the unmirrored case.
+            facing: Direction::SouthEast,
+            frame: 0,
+            from: Some(from),
+            hue: openshard_protocol::wire::Hue::NONE,
+            drawn,
+            equipment: Vec::new(),
+        };
+        let quads = mobiles::collect(
+            &[mobile],
+            &camera,
+            &atlas,
+            &Cutaway::OPEN,
+            &EquipConv::default(),
+            None,
+        );
+        assert_eq!(quads.len(), 1, "the frame is packed, so it draws");
+        let quad = &quads[0];
+
+        let places = render_places_with_mobile(
+            &device,
+            &queue,
+            &land,
+            &texmaps,
+            &[],
+            &statics,
+            &[],
+            atlas.pixels(),
+            std::slice::from_ref(quad),
+            256,
+        );
+
+        // The pixel this crate's own `middle_x` — `quad.rect.x +
+        // quad.rect.width / 2`, exact for this frame's centred `center_x` —
+        // lands nearest, so `across` at the point sampled is small and known
+        // rather than assumed zero.
+        let middle_x = quad.rect.x + quad.rect.width / 2.0;
+        let x = middle_x.round() as u32;
+        let y = (quad.rect.y + quad.rect.height / 2.0).round() as u32;
+        assert_eq!(
+            gbuffer::ids_kind(places.at(x, y)),
+            Some(Kind::Mobile),
+            "nothing was drawn at ({x}, {y}), left = {left}",
+        );
+
+        let across = (x as f32 + 0.5) - middle_x;
+        let (tx, ty) = openshard_client_render::camera::unproject_ground(drawn.x, drawn.y);
+        let tile_width = openshard_client_render::camera::TILE_WIDTH as f32;
+        let expected_x = tx as f32 + 0.5 + across / tile_width;
+        let expected_y = ty as f32 + 0.5 - across / tile_width;
+
+        let point = places.position_at(x, y);
+        assert!(
+            (point[0] - expected_x).abs() < 1e-4,
+            "left = {left}: x is {} but the drawn position names {expected_x}",
+            point[0],
+        );
+        assert!(
+            (point[1] - expected_y).abs() < 1e-4,
+            "left = {left}: y is {} but the drawn position names {expected_y}",
+            point[1],
+        );
+    }
+}
+
 /// The impostor is written twice — `impostor.wesl` and [`impostor`] — and this
 /// is the only thing that compares them.
 ///
@@ -3498,6 +3625,120 @@ fn render_places(
     // renderer's own order (`docs/gbuffer.md` step 4c), so depth and place
     // only ever tie or improve on what the billboard sprite just wrote.
     mesh_pass.render(device, queue, &mut encoder, target, mesh_vertices, mesh_rows);
+    let mut copy = |texture: &wgpu::Texture, buffer: &wgpu::Buffer, stride: u32| {
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * stride),
+                    rows_per_image: Some(size),
+                },
+            },
+            wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+        );
+    };
+    copy(gbuffer.ids(), &readback, 4);
+    copy(gbuffer.position(), &position_readback, 16);
+    copy(gbuffer.normal(), &normal_readback, 4);
+    queue.submit([encoder.finish()]);
+
+    let read = |buffer: &wgpu::Buffer| {
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |result| {
+            result.expect("mapping a buffer this test just wrote");
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("waiting on our own submission");
+        let bytes = slice
+            .get_mapped_range()
+            .expect("the map completed above")
+            .to_vec();
+        buffer.unmap();
+        bytes
+    };
+    Places {
+        width: size,
+        bytes: read(&readback),
+        positions: read(&position_readback),
+        normals: read(&normal_readback),
+    }
+}
+
+/// [`render_places`], with a second sprite pass for a mobile's own atlas —
+/// the shape [`render_both`] already uses for colour, here for the G-buffer
+/// instead. `mobile_quads` draws after `static_quads`, the real renderer's
+/// own order.
+#[allow(clippy::too_many_arguments)]
+fn render_places_with_mobile(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    quads: &[GroundQuad],
+    static_atlas: &StaticAtlas,
+    static_quads: &[SpriteQuad],
+    mobile_atlas: &[u8],
+    mobile_quads: &[SpriteQuad],
+    size: u32,
+) -> Places {
+    assert_eq!(size * 4 % 256, 0, "a row copy has to be 256-byte aligned");
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let world = openshard_client_render::blit::world_texture(device, size, size);
+    let world_view = world.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(device, size, size);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(device, size, size);
+    let gbuffer_views = gbuffer.views();
+    let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
+
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ids"),
+        size: u64::from(size) * u64::from(size) * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let position_readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("positions"),
+        size: u64::from(size) * u64::from(size) * 16,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let normal_readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("normals"),
+        size: u64::from(size) * u64::from(size) * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut ground_pass = GroundRenderer::new(device, queue, format, atlas, texmaps);
+    let mut sprite_pass = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), &hue_ramp);
+    let mut mobile_pass = SpriteRenderer::new(device, queue, format, mobile_atlas, &hue_ramp);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let target = Target::whole(&world_view, &depth_view, &gbuffer_views, size, size);
+    ground_pass.render(device, queue, &mut encoder, target, quads);
+    let instances = openshard_client_render::sprite::split_corners(static_quads.to_vec());
+    sprite_pass.render(
+        device,
+        queue,
+        &mut encoder,
+        target,
+        &instances.rows,
+        &[],
+        Some(instances.drawn),
+    );
+    mobile_pass.render(device, queue, &mut encoder, target, mobile_quads, &[], None);
     let mut copy = |texture: &wgpu::Texture, buffer: &wgpu::Buffer, stride: u32| {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
