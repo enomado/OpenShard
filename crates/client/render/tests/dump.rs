@@ -254,11 +254,22 @@ fn draw_britain(
 /// A texture the blit can draw into and a copy can read out of, at the size the
 /// surface would be.
 fn dump_target(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::Texture {
+    dump_target_sized(device, format, VIEWPORT.0, VIEWPORT.1)
+}
+
+/// [`dump_target`], for a surface bigger than [`VIEWPORT`] — what a window is
+/// once a docked panel has left the world less than the whole of it.
+fn dump_target_sized(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("dump target"),
         size: wgpu::Extent3d {
-            width: VIEWPORT.0,
-            height: VIEWPORT.1,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -479,6 +490,98 @@ fn a_readback_off_the_corner_is_the_same_pixels_shifted() {
             row + corner.y,
         );
     }
+}
+
+/// **A docked panel's offset survives the blit and the readback together, not
+/// just the readback's own arithmetic.**
+///
+/// The test above proves [`dump::read_rect`] honours an origin against one
+/// texture read twice. It never calls [`Blit::render`] with a non-zero `rect.x`
+/// or `rect.y` at all, so it cannot say whether the blit *places* the world at
+/// the surface's own corner — `Shell::viewport()`'s documented contract,
+/// `docs/pixels.md`'s backlog item about `ViewportRect`. This closes that gap
+/// end to end: the same drawn frame, blit once into a target exactly its own
+/// size at `(0, 0)`, and once into a bigger "window" texture at the corner a
+/// docked panel would leave it — then read back and compared byte for byte.
+/// Nothing here re-sizes the [`Camera`]; only the surface around the rect
+/// grows, which is the property `Camera::image_size` not carrying an origin
+/// (`docs/pixels.md`) relies on.
+#[test]
+fn a_docked_panels_offset_places_the_same_picture_it_shows_at_the_corner() {
+    let (Some(dir), Some((device, queue))) = (client_dir(), gpu()) else {
+        return;
+    };
+    let drawn = draw_britain(&device, &queue, &dir, AT, frame::Draw::EVERYTHING, Zoom::ONE);
+    let format = blit::WORLD_FORMAT;
+    let world_view = drawn.world.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer_views = drawn.gbuffer.views();
+    let mut blit = Blit::new(&device, format);
+    let dummy_mobiles = blit::dummy_instances(&device);
+
+    let frame = |rect: ViewportRect| blit::Frame {
+        target: &world_view, // overwritten per call below
+        world: &world_view,
+        gbuffer: &gbuffer_views,
+        face_instances: drawn.statics.instances_buffer(),
+        mobile_instances: &dummy_mobiles,
+        mesh_instances: drawn.mesh.rows_buffer(),
+        ground_instances: drawn.ground.instances_buffer(),
+        zoom: openshard_client_render::camera::Zoom::ONE,
+        rect,
+    };
+
+    let direct = dump_target(&device, format);
+    let direct_view = direct.create_view(&wgpu::TextureViewDescriptor::default());
+    let whole = ViewportRect {
+        x: 0,
+        y: 0,
+        width: VIEWPORT.0,
+        height: VIEWPORT.1,
+    };
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    blit.render(
+        &device,
+        &queue,
+        &mut encoder,
+        blit::Frame {
+            target: &direct_view,
+            ..frame(whole)
+        },
+        &drawn.lighting,
+    );
+    queue.submit([encoder.finish()]);
+    let direct_pixels = dump::read_rect(&device, &queue, &direct, whole);
+
+    // A window forty-some pixels bigger on each side than the world it shows —
+    // exactly what `Shell::viewport()` leaves once a docked panel has taken a
+    // slice off the top and the left.
+    let window = dump_target_sized(&device, format, VIEWPORT.0 + 50, VIEWPORT.1 + 50);
+    let window_view = window.create_view(&wgpu::TextureViewDescriptor::default());
+    let corner = ViewportRect {
+        x: 37,
+        y: 11,
+        width: VIEWPORT.0,
+        height: VIEWPORT.1,
+    };
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    blit.render(
+        &device,
+        &queue,
+        &mut encoder,
+        blit::Frame {
+            target: &window_view,
+            ..frame(corner)
+        },
+        &drawn.lighting,
+    );
+    queue.submit([encoder.finish()]);
+    let corner_pixels = dump::read_rect(&device, &queue, &window, corner);
+
+    assert_eq!(
+        direct_pixels, corner_pixels,
+        "the same frame blit at the window's corner is not the same picture blit at (0, 0): \
+         the docked-panel offset is not surviving the blit and the readback together",
+    );
 }
 
 /// **Each normal layer holds its own category and nothing else.**

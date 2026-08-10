@@ -1342,21 +1342,21 @@ mod tests {
         // function now that there is one shape rather than two.
         for volume in &boxes {
             let solid = occlusion.solid(crate::occlusion::SolidId::new(volume.solid));
-            assert_eq!(volume.lo[0], solid.space.min.x as f32);
-            assert_eq!(volume.lo[1], solid.space.min.y as f32);
-            assert_eq!(volume.lo[2], solid.space.min.z as f32);
-            assert_eq!(volume.hi[1], solid.space.max.y as f32);
-            assert_eq!(volume.hi[2], solid.space.max.z as f32);
+            assert_eq!(volume.lo.x, solid.space.min.x as f32);
+            assert_eq!(volume.lo.y, solid.space.min.y as f32);
+            assert_eq!(volume.lo.z, solid.space.min.z as f32);
+            assert_eq!(volume.hi.y, solid.space.max.y as f32);
+            assert_eq!(volume.hi.z, solid.space.max.z as f32);
         }
 
         // And they are volumes rather than the surfaces the grid used to hold:
         // every one stands from the static's own base up to its tread's height,
         // and the three heights are the profile.
         assert!(
-            boxes.iter().all(|volume| volume.lo[2] == 0.0),
+            boxes.iter().all(|volume| volume.lo.z == 0.0),
             "a tread that does not reach the ground is a surface, not a volume: {boxes:?}"
         );
-        let mut tops: Vec<f32> = boxes.iter().map(|volume| volume.hi[2]).collect();
+        let mut tops: Vec<f32> = boxes.iter().map(|volume| volume.hi.z).collect();
         tops.sort_by(f32::total_cmp);
         assert_eq!(tops, [1.0, 3.0, 5.0], "the profile, as three solid heights");
 
@@ -1366,7 +1366,7 @@ mod tests {
         // `WIDTH_OVERLAP` come back.
         for volume in &boxes {
             assert_eq!(
-                (volume.lo[0], volume.hi[0]),
+                (volume.lo.x, volume.hi.x),
                 (100.0, 101.0),
                 "a box reached past its tile across the climb: {volume:?}"
             );
@@ -1404,8 +1404,8 @@ mod tests {
         assert_eq!(range.count as usize, grid.len());
         assert!(!grid.is_empty(), "the fixture should stand something up");
         for (volume, (id, solid)) in boxes.iter().zip(&grid) {
-            assert_eq!(volume.lo[0], solid.space.min.x as f32);
-            assert_eq!(volume.hi[2], solid.space.max.z as f32);
+            assert_eq!(volume.lo.x, solid.space.min.x as f32);
+            assert_eq!(volume.hi.z, solid.space.max.z as f32);
             assert_eq!(volume.solid, crate::occlusion::SolidId::word(Some(*id)));
         }
     }
@@ -1449,7 +1449,10 @@ mod tests {
         assert_eq!(range.count, 1, "a refused wall is still one body");
         assert_eq!(
             (boxes[0].lo, boxes[0].hi),
-            ([100.0, 100.0, 0.0], [101.0, 101.0, 20.0]),
+            (
+                crate::light::WorldVec::new(100.0, 100.0, 0.0),
+                crate::light::WorldVec::new(101.0, 101.0, 20.0),
+            ),
             "and it is the box the tiledata's own height gives it",
         );
         // And it is a point of nothing, which is the honest name for a shape no

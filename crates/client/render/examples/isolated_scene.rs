@@ -40,10 +40,13 @@
 //!   town is not on the map**: a pack's decorations and everything anyone has
 //!   dropped live in `openshard.db`, and a tool that reads only `statics.mul`
 //!   answers "it does not reproduce" about every one of them. Both tables are
-//!   pulled over the same `_AT ± _RADIUS` window the statics are, and `_TILES`
-//!   filters them the same way. Turning it off is a legitimate answer — the
-//!   map's art alone — and it is why every failure to read is a panic naming
-//!   this knob rather than an empty result.
+//!   pulled over `_AT ± (_RADIUS + light::light_margin_tiles(tuning))`, wider
+//!   than the statics' own `_AT ± _RADIUS` — a lamp just outside `_RADIUS`
+//!   still lights the scene under it, and this reader has to see the lamp to
+//!   find that out. `_TILES` filters both windows the same way. Turning the
+//!   reader off is a legitimate answer — the map's art alone — and it is why
+//!   every failure to read is a panic naming this knob rather than an empty
+//!   result.
 //! - `OPENSHARD_SCENE_CONFIG=/path/openshard.toml` — whose shard. Default
 //!   `openshard.toml` in the current directory, and its `[persistence].database`
 //!   is where the world is (a relative path resolved against the config's own
@@ -590,6 +593,9 @@ fn main() {
                 .unwrap_or_else(|_| panic!("OPENSHARD_SCENE_RADIUS: {s:?}"))
         })
         .unwrap_or(0);
+    // Read early: the shard window below needs it to widen past `radius`, and
+    // `env_tuning` is pure — reading it twice would just be reading it twice.
+    let tuning = env_tuning();
     let want_statics = env_flag("OPENSHARD_SCENE_STATICS", true);
     let tile_filter: Option<Vec<u16>> =
         env_opt("OPENSHARD_SCENE_TILES").map(|s| s.split(',').map(parse_tile_id).collect());
@@ -661,12 +667,20 @@ fn main() {
 
     let from_the_map = items.len();
 
-    // **What the server placed**, read out of the shard's own database over the
-    // same window the statics came from — `docs/parity.md`'s first backlog
-    // entry. Half of what a player is looking at in a town is not on the map at
-    // all: a pack's decorations and anything anyone has dropped live in
-    // `openshard.db`, and a tool that reads only `statics.mul` answers "it does
-    // not reproduce" about every one of them.
+    // **What the server placed**, read out of the shard's own database over a
+    // window *wider* than the statics came from — `docs/parity.md`'s backlog:
+    // "the shard reader windows by the tool's radius; the client windows by
+    // what the server sent". `_RADIUS` is chosen to keep a house from standing
+    // beside the thing under test, and both tables here can carry a light (a
+    // street lamp is a `decorations` row, a dropped torch an `items` one) whose
+    // pool reaches past whatever stands beside it. The same margin
+    // `light::lit_tiles` grows the occlusion grid by — [`light::light_margin_tiles`]
+    // — widens this window too, so a lamp just outside `_RADIUS` is a lamp this
+    // frame's own lighting can still find, the way the client's does. Half of
+    // what a player is looking at in a town is not on the map at all: a pack's
+    // decorations and anything anyone has dropped live in `openshard.db`, and a
+    // tool that reads only `statics.mul` answers "it does not reproduce" about
+    // every one of them.
     //
     // On by default and loud when it cannot read, because the quiet failure is
     // exactly the one being removed — see [`shard::database_in`], every panic of
@@ -681,14 +695,16 @@ fn main() {
                 env_opt("OPENSHARD_SCENE_CONFIG").unwrap_or_else(|| "openshard.toml".to_owned()),
             )),
         };
+        let light_radius =
+            radius.saturating_add(u16::try_from(light::light_margin_tiles(&tuning)).unwrap_or(u16::MAX));
         let placed = shard::read(
             &database,
             shard::Window {
                 facet: FACET,
-                min_x: at.x.saturating_sub(radius),
-                max_x: at.x.saturating_add(radius),
-                min_y: at.y.saturating_sub(radius),
-                max_y: at.y.saturating_add(radius),
+                min_x: at.x.saturating_sub(light_radius),
+                max_x: at.x.saturating_add(light_radius),
+                min_y: at.y.saturating_sub(light_radius),
+                max_y: at.y.saturating_add(light_radius),
             },
         );
         let (mut ground, mut decorations) = (0u32, 0u32);
@@ -789,7 +805,6 @@ fn main() {
         .and_then(|v| v.parse::<usize>().ok())
         .and_then(|v| openshard_client_render::debug::View::ALL.get(v).copied())
         .unwrap_or_default();
-    let tuning = env_tuning();
 
     // **One assembly, the client's own** — `docs/parity.md`, decision D1. Every
     // way this tool used to differ from `App::draw` is a field below, so a

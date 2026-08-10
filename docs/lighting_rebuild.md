@@ -2086,6 +2086,24 @@ against. None of them is a reason to soften a phase above.
   instead of shading with ours belongs beside the deferred pipeline as a switch,
   not as a fork. See `lighting_archive.md`'s account of the reference client's
   arrangement, and `docs/client.md`'s own backlog line.
+  - Scoped 2026-08-10, not started: `crates/common/uofiles/src/tiledata.rs`
+    already parses `TileFlags::LIGHT_SOURCE` (`is_light_source()`, line 211-212),
+    but `StaticTiles` (fields at lines 276-319) carries no light-id field — that
+    parse is still missing. No reader for `light.mul`/`lightidx.mul` exists
+    anywhere in the workspace (confirmed by grep); ClassicUO's
+    `IO/Resources`-equivalent (`ClassicUO.Assets/LightsLoader.cs`) is the
+    reference: each entry is a small bitmap of 5-bit intensities (values above
+    `0x1F` bit-inverted), turned into a greyscale RGB blended additively at a
+    fixed *screen* position — no 3D, no occlusion test beyond one binary check
+    of the tile diagonally in front of the source
+    (`GameScene.AddLight`, `ClassicUO.Client/Game/Scenes/GameScene.cs:402-546`).
+    The natural composite point on our side is `crates/client/render/src/blit.rs`,
+    where lighting is already applied once on the way to the surface
+    (`docs/lighting.md:745-761`); a toggle would follow the existing `App`
+    boolean-plus-F-key pattern (`crates/client/app/src/lib.rs:2073-2144` — F10
+    night, F8 sunlit, F6 sky field, F7 lantern; F5 is the solids debug overlay,
+    next free key is open). Open question not yet decided: whether the mode
+    fully replaces the deferred pipeline's shading or composites on top of it.
 - **The stylised end, revisited as an experiment.** The dial between a half-space
   and Lambert is deleted from the plan, and the alternatives it came from are
   recorded in `lighting_archive.md`. Once phases 3–6 give frames a person is

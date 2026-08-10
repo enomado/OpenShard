@@ -320,11 +320,11 @@ impl TileVec {
     /// One of the two crossings, and the direction almost every caller wants:
     /// what the world holds is positions, and what the lighting model asks about
     /// is the vector between two of them.
-    pub fn between(from: [f32; 3], to: [f32; 3]) -> Self {
+    pub fn between(from: WorldVec, to: WorldVec) -> Self {
         Self {
-            x: to[0] - from[0],
-            y: to[1] - from[1],
-            z: (to[2] - from[2]) / Z_PER_TILE,
+            x: to.x - from.x,
+            y: to.y - from.y,
+            z: (to.z - from.z) / Z_PER_TILE,
         }
     }
 
@@ -332,8 +332,8 @@ impl TileVec {
     ///
     /// The other crossing. Everything that walks the grid does so in world units,
     /// because that is what the boxes in it are stated in.
-    pub fn in_world_units(self) -> [f32; 3] {
-        [self.x, self.y, self.z * Z_PER_TILE]
+    pub fn in_world_units(self) -> WorldVec {
+        WorldVec::new(self.x, self.y, self.z * Z_PER_TILE)
     }
 
     /// The three axes as they stand, for the one place a vector leaves Rust: the
@@ -400,6 +400,56 @@ impl TileVec {
             x: -self.x,
             y: -self.y,
             z: -self.z,
+        }
+    }
+}
+
+/// A position or offset in **world units**: `x` and `y` in tiles, `z` in the
+/// map's own height units — the other of the two spaces [`TileVec`]'s doc
+/// documents, `docs/pixels.md` P3.
+///
+/// This is what every position in the world is stated in: [`Light::z`],
+/// [`Spot::z`], [`crate::impostor::Volume`]'s corners, a ray's origin. Before
+/// this type the two spaces were both a bare `[f32; 3]`, told apart only by
+/// which variable name a reader happened to be looking at — a `lo`/`hi` pair
+/// in `impostor.rs` gave no sign of which of the two `z` units it held. The
+/// crossings into tile space are [`TileVec::between`] and
+/// [`TileVec::in_world_units`]; nothing else converts between the two, so a
+/// mismatch is now a type error rather than a wrong answer eleven times too
+/// large or too small.
+///
+/// Deliberately as bare as [`TileVec`]: no arithmetic beyond what a call site
+/// has actually needed, and [`WorldVec::array`]/[`WorldVec::from_array`] are
+/// the one escape hatch — for the wire, and for the handful of places that
+/// index an axis at runtime rather than name it — not a general `Index` impl.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct WorldVec {
+    /// East, in tiles.
+    pub x: f32,
+    /// South, in tiles.
+    pub y: f32,
+    /// Up, in the map's own height units — [`Z_PER_TILE`] of these make one
+    /// tile of [`TileVec::z`].
+    pub z: f32,
+}
+
+impl WorldVec {
+    pub const fn new(x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z }
+    }
+
+    /// The three axes as a plain array — for [`crate::impostor::meets`]'s
+    /// axis-generic slab test, which needs runtime indexing, and for the wire.
+    pub const fn array(self) -> [f32; 3] {
+        [self.x, self.y, self.z]
+    }
+
+    /// The inverse of [`WorldVec::array`].
+    pub const fn from_array(a: [f32; 3]) -> Self {
+        Self {
+            x: a[0],
+            y: a[1],
+            z: a[2],
         }
     }
 }
@@ -807,7 +857,13 @@ pub const FLAME_LIFT: f32 = Z_PER_TILE / 2.0;
 /// walls that far out, so the light beyond the old margin falls unshadowed. Both
 /// are edges of the frame rather than of the world, which is what makes them a
 /// bug and not a look.
-fn light_margin_tiles(tuning: &Tuning) -> i32 {
+///
+/// Public beyond [`lit_tiles`] because a caller with no [`Camera`] at all still
+/// needs it: a scene tool that windows a database query by a stated radius
+/// (`examples/shard/mod.rs`) has to widen that window by the same margin, or a
+/// lamp just outside the geometry it pulls is a lamp whose pool the frame draws
+/// with nothing making it.
+pub fn light_margin_tiles(tuning: &Tuning) -> i32 {
     (CAMPFIRE.radius * tuning.reach).ceil() as i32 + 1
 }
 
@@ -2396,7 +2452,10 @@ fn sample_with(
         .at(lighting.occlusion.sky_at(spot.tile.0, spot.tile.1));
     let mut reaches = Vec::with_capacity(lighting.lights.len());
     for (index, light) in lighting.lights.iter().enumerate() {
-        let offset = TileVec::between([spot.at.x, spot.at.y, spot.z], [light.at.x, light.at.y, light.z]);
+        let offset = TileVec::between(
+            WorldVec::new(spot.at.x, spot.at.y, spot.z),
+            WorldVec::new(light.at.x, light.at.y, light.z),
+        );
         let distance = offset.length();
         // **The one thing still asked about the flame's centre, and it is
         // therefore conservative.** This is a broad phase: it decides which
@@ -2504,23 +2563,23 @@ fn walk_sun(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<Stopper
     // into world units, because that is what the grid this walks is stated in.
     let step = sun.toward.divided(horizontal).in_world_units();
     let mut tiles = MAX_SUN_TILES;
-    if let (Some(ceiling), true) = (occlusion.tallest(), step[2] > 1e-6) {
-        tiles = tiles.min((ceiling as f32 - spot.z) / step[2]);
+    if let (Some(ceiling), true) = (occlusion.tallest(), step.z > 1e-6) {
+        tiles = tiles.min((ceiling as f32 - spot.z) / step.z);
     }
     if occlusion.tallest().is_none() || tiles <= 0.0 {
         // Nothing in the grid stops anything, or the spot is already above
         // everything that could — either way the ray is in the sky from here.
         return (1.0, None);
     }
-    let from = [spot.at.x, spot.at.y, spot.z];
-    let to = [
-        from[0] + step[0] * tiles,
-        from[1] + step[1] * tiles,
-        from[2] + step[2] * tiles,
-    ];
+    let from = WorldVec::new(spot.at.x, spot.at.y, spot.z);
+    let to = WorldVec::new(
+        from.x + step.x * tiles,
+        from.y + step.y * tiles,
+        from.z + step.z * tiles,
+    );
     // No tile to exempt at the far end, and no source size: the sun subtends half
     // a degree, which is a point at this scale.
-    walk_the_wire(from, to, LitEnd::of(spot), occlusion)
+    walk_the_wire(from.array(), to.array(), LitEnd::of(spot), occlusion)
 }
 
 /// The ray from a spot to a point of a flame: [`walk_the_wire`] with the
@@ -2603,7 +2662,10 @@ const GOLDEN_ANGLE: f32 = 2.399_963_2;
 /// happened. What it shares with the thing under test is the scene, not the
 /// answer.
 pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32, rays: ShadowRays) -> FlamePoints {
-    let toward = TileVec::between([spot.at.x, spot.at.y, spot.z], flame);
+    let toward = TileVec::between(
+        WorldVec::new(spot.at.x, spot.at.y, spot.z),
+        WorldVec::from_array(flame),
+    );
     let span = toward.length();
     if span < 1e-6 {
         // The spot is inside the flame. Every point of the sphere is as good as
@@ -2645,7 +2707,7 @@ pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32, rays: ShadowRays) 
             .plus(up.scaled(sin))
             .scaled(radius)
             .in_world_units();
-        [flame[0] + offset[0], flame[1] + offset[1], flame[2] + offset[2]]
+        [flame[0] + offset.x, flame[1] + offset.y, flame[2] + offset.z]
     });
     FlamePoints { points, rays }
 }
@@ -2775,7 +2837,10 @@ fn arrival(
     for at in flame_points(spot, [light.at.x, light.at.y, light.z], radius, rays) {
         // From the spot to *this point of the flame*, in the one metric — which
         // is what the cosine, the falloff and the beam are all stated in.
-        let toward = TileVec::between([spot.at.x, spot.at.y, spot.z], at);
+        let toward = TileVec::between(
+            WorldVec::new(spot.at.x, spot.at.y, spot.z),
+            WorldVec::from_array(at),
+        );
         let cosine = match normal {
             None => 1.0,
             Some(normal) => lit_from(normal, toward),
@@ -3185,19 +3250,19 @@ fn walk_sun_exact(spot: Spot, sun: Sun, occlusion: &Occlusion) -> (f32, Option<S
     }
     let step = sun.toward.divided(horizontal).in_world_units();
     let mut tiles = MAX_SUN_TILES;
-    if let (Some(ceiling), true) = (occlusion.tallest(), step[2] > 1e-6) {
-        tiles = tiles.min((ceiling as f32 - spot.z) / step[2]);
+    if let (Some(ceiling), true) = (occlusion.tallest(), step.z > 1e-6) {
+        tiles = tiles.min((ceiling as f32 - spot.z) / step.z);
     }
     if occlusion.tallest().is_none() || tiles <= 0.0 {
         return (1.0, None);
     }
-    let from = [spot.at.x, spot.at.y, spot.z];
-    let to = [
-        from[0] + step[0] * tiles,
-        from[1] + step[1] * tiles,
-        from[2] + step[2] * tiles,
-    ];
-    walk_the_record(from, to, LitEnd::of(spot), occlusion)
+    let from = WorldVec::new(spot.at.x, spot.at.y, spot.z);
+    let to = WorldVec::new(
+        from.x + step.x * tiles,
+        from.y + step.y * tiles,
+        from.z + step.z * tiles,
+    );
+    walk_the_record(from.array(), to.array(), LitEnd::of(spot), occlusion)
 }
 
 /// How wide the flame in a hand throws its light: the full angle, in degrees.
@@ -3417,7 +3482,9 @@ mod tests {
         let spread = |points: FlamePoints| {
             points
                 .iter()
-                .map(|point| TileVec::between(flame, point).length())
+                .map(|point| {
+                    TileVec::between(WorldVec::from_array(flame), WorldVec::from_array(point)).length()
+                })
                 .fold(0.0_f32, f32::max)
         };
         for rays in [2u32, 4, 8, 16] {
@@ -3826,9 +3893,9 @@ mod tests {
     fn tile_space_and_world_units_are_one_conversion_apart() {
         // Eleven `z` units are one tile, which is the whole of the space: a
         // vector eleven up and one along is at 45° here and nowhere else.
-        let up = TileVec::between([0.0, 0.0, 0.0], [0.0, 0.0, Z_PER_TILE]);
+        let up = TileVec::between(WorldVec::new(0.0, 0.0, 0.0), WorldVec::new(0.0, 0.0, Z_PER_TILE));
         assert_eq!(up.z, 1.0, "eleven `z` units are not one tile: {up:?}");
-        let diagonal = TileVec::between([0.0, 0.0, 0.0], [1.0, 0.0, Z_PER_TILE]);
+        let diagonal = TileVec::between(WorldVec::new(0.0, 0.0, 0.0), WorldVec::new(1.0, 0.0, Z_PER_TILE));
         assert_eq!(
             diagonal.length(),
             2.0_f32.sqrt(),
@@ -3836,8 +3903,9 @@ mod tests {
         );
         // And back out again, unchanged. The `z` term is the one that moves, so
         // a point with a `z` of nothing would pass either way round.
-        let far = [1500.0, 1600.0, 37.0];
-        let back = TileVec::between([0.0, 0.0, 0.0], far).in_world_units();
+        let far = WorldVec::new(1500.0, 1600.0, 37.0);
+        let back = TileVec::between(WorldVec::new(0.0, 0.0, 0.0), far).in_world_units();
+        let (back, far) = (back.array(), far.array());
         for axis in 0..3 {
             assert!(
                 (back[axis] - far[axis]).abs() < 1e-3,
@@ -3936,10 +4004,12 @@ mod tests {
             for span in [0.2_f32, 1.0, 7.0] {
                 let spot = Spot::at(Vec2::new(100.0, 100.0), 0.0, (100, 100));
                 let offset = direction.scaled(span).in_world_units();
-                let flame = [100.0 + offset[0], 100.0 + offset[1], offset[2]];
+                let flame = [100.0 + offset.x, 100.0 + offset.y, offset.z];
                 let centre = span * direction.length();
                 for point in flame_points(spot, flame, FLAME_RADIUS, ShadowRays::DEFAULT) {
-                    let distance = TileVec::between([100.0, 100.0, 0.0], point).length();
+                    let distance =
+                        TileVec::between(WorldVec::new(100.0, 100.0, 0.0), WorldVec::from_array(point))
+                            .length();
                     assert!(
                         distance >= centre - 1e-5,
                         "a sample at {distance} is nearer than the flame's own centre at {centre}: \

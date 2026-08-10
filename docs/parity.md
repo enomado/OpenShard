@@ -1005,15 +1005,25 @@ a test red, and the test names which grid met which.
   and dishonest to be read as a census of the world; a probe of a tile is
   dishonest either way, because a person points it at a place and not at a file.
   Say which in each tool's own doc, whichever way it goes.
-- 🚩 **The shard reader windows by the tool's radius; the client windows by what
-  the server sent.** `_AT ± _RADIUS` is a rectangle chosen to keep a house from
-  standing beside the thing under test, and it now decides which *lights* are in
-  the frame too — the street lamp four tiles outside it lights the pavement in
-  the client and nothing here. The same shape as the map-statics radius has
-  always had, and newly consequential: geometry outside the radius is missing
-  scenery, a flame outside it is a different picture everywhere. A gate at a
-  place with a lamp needs a radius chosen from the *lighting's* reach, or the
-  reader wants a second, wider window for the tables that carry light.
+- ✅ **The shard reader windows by the tool's radius; the client windows by what
+  the server sent** — fixed 2026-08-10. `_AT ± _RADIUS` is a rectangle chosen to
+  keep a house from standing beside the thing under test, and it decided which
+  *lights* were in the frame too — the street lamp four tiles outside it lit the
+  pavement in the client and nothing here. `light::light_margin_tiles`, the same
+  margin `light::lit_tiles` grows the occlusion grid by, is now public for
+  exactly this: a caller with no `Camera` (a database window keyed on a stated
+  point, not a viewport) still needs the reach a light can cross. `isolated_scene`
+  reads `env_tuning()` before building the shard window and pulls both
+  `items`/`decorations` over `_AT ± (_RADIUS + light_margin_tiles(tuning))` —
+  wider than the map statics' own `_AT ± _RADIUS`, which stays as it was: the
+  geometry a house is made of does not reach past its own walls, only the light
+  a lamp inside one does. `cargo test -p openshard-client-render` (468 + 6 in
+  `tests/shard.rs`), clippy and fmt are silent.
+  **Not done:** nobody has run this against a real lamp sitting in the widened
+  band to see the frame's own `light` plane actually pick it up — the fix closes
+  the window by reading `light_margin_tiles`'s own reasoning, not by a gate on a
+  place chosen for it. The item below (a gate needs a place where the lighting
+  is reachable) is the natural place to witness this once it is done.
 - 🚩 **A stacked ground item's graphic may not be the column's.** The reader
   takes `items.graphic` as it stands, and an `items` row also carries `amount` —
   which `crate::items`'s own doc says is deliberately not a `GroundItem` field,

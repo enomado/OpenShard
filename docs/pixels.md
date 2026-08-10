@@ -349,12 +349,27 @@ item and `docs/silhouettes.md`'s subject. A test cannot stand in for it.
 - 🚩 **The art texel is the one grid with no representation anywhere.** It is
   implicit in every atlas rectangle and in `Projection::scale`, and it is the
   grid `docs/silhouettes.md` is entirely about.
-- 🚩 **`Z_STEP` and `Z_PER_TILE` are one relationship written twice.**
-  `Z_PER_TILE` is *defined* as `TILE_WIDTH / Z_STEP`, so they cannot disagree —
-  but a reader meeting `lo.z`/`hi.z` in the impostor has no way to know which of
-  the two `z` units they are in without following the definition. P4 gated the
-  copies that *can* disagree (the shaders', `facing.rs`'s); what is left here is
-  the reading problem, which is a type's job and not a test's.
+- ✅ **`Z_STEP` and `Z_PER_TILE` are one relationship written twice — resolved
+  2026-08-10, by [`light::WorldVec`](../crates/client/render/src/light.rs).**
+  A reader meeting `lo.z`/`hi.z` in the impostor had no way to know which of
+  the two `z` units they are in without following the definition — the same
+  collision `TileVec` (P3) already fixed one side of. `WorldVec` is `TileVec`'s
+  sibling for the *other* space `light.rs`'s own module doc already named in
+  prose: `x`/`y` in tiles, `z` in the map's own height units. Threaded through
+  `impostor::Volume::lo/hi`, `Meeting::at`/`normal`, `VIEW`, `ray_from`,
+  `billboard_at`, `meets`, `nearest`, and `TileVec::between`/`in_world_units`'s
+  two crossings — every site P1's census had already found reading `[f32; 3]`
+  in this space.
+
+  **`meets`'s own slab test stays array-indexed inside its body, deliberately.**
+  It picks an axis (`0`/`1`/`2`) at runtime — `for a in [1, 0]`, a dynamic
+  `axis` — which is exactly why `[f32; 3]` was right there and is the one
+  place in the module a named `{x, y, z}` struct would fight the algorithm
+  rather than clarify it. `WorldVec::array`/`from_array` (`TileVec::axes`'s own
+  pattern, one more time) convert at the function's edges — the *signature* is
+  typed, the twelve-line body inside it is untouched. No `Index`/`Deref`: the
+  house style's reason against `Deref` on newtypes applies the same way to
+  `Index` here, and the escape hatch already had a name.
 - 🚩 **The *whole* real pixel is still untyped, and it is the one the cursor
   arrives on.** `RealPoint` is the fraction; `Camera::pick(x: i32, y: i32)`,
   `Camera::width`/`height`, `image_size` and `ViewportRect` are all whole real
