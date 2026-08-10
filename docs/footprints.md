@@ -266,3 +266,14 @@ must go red. Depends on the parity item below.
   what `a_footprint_measures_the_block_that_drew_it` asserts as slack rather than
   hides. Reading the column's inner boundary instead would halve it; worth doing
   only if S4 shows the impostor's discard cares.
+- 🚩 **`Solid::box_of`'s own doc gives a stale reason for its visibility**, found
+  while wiring S3 beside it. It says `pub(crate)` exists because
+  `light::walk_the_wire` reconstructs a solid's box from `(tile, edges, bottom,
+  top)` — true when `docs/lighting_raymarch.md`'s point 4 wrote it, not true
+  today: `occlusion::Occlusion::primitive_bytes` writes `solid.wire_box()`, each
+  primitive's own absolute corners, and `light::walk_the_wire` reads
+  `stands.wire_box()` the same way — `docs/occluders.md`'s D1 moved the wire to
+  absolute coordinates and nobody came back to this comment. Not fixed here:
+  it costs nothing correctness-wise (the visibility itself is still earned by
+  the same doc's second reason, `crate::impostor::Volume::of`), and touching it
+  is a different doc's territory than this plan's.
