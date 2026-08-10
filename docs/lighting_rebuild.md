@@ -3692,41 +3692,61 @@ outlive the track and belong in this list, since this is the live one:
   the body rule was about to make it: the zero-normal share on the flight is
   **0.0%**, where it had been **100%**. The thing a person is looking at is the
   entry below, and this one had to land first for it to be visible at all.
-- 🚩 **Nine pixels in ten of a staircase are answered "tread top".** The
-  measurement the entry above made possible, on the same frame — Britain's
-  `(1454, 1728)`, the flight's 20,321 own fragments, classified by the face
-  `impostor::meets` handed each one:
+- 🚩 **One flight of stairs, and its boxes disagree about which way it climbs.**
+  The reporter's own reading, and it is the right one: *there is garbage drawn
+  there.* Not shading — geometry. Britain's `(1454, 1728)`, ten tiles of one
+  staircase, 35,100 static fragments below `z 6.6`, classified by the face
+  `impostor::meets` handed each:
   <br>
 
-  | face met | fragments | share | mean of 765 |
+  | face met | fragments | share | flame term of 765 |
   |---|---:|---:|---:|
-  | the **lid**, `+z` | 18,012 | **88.6%** | 118.7 |
-  | **south**, `+y` | 2,300 | 11.3% | 56.8 |
-  | **east**, `+x` | **9** | 0.04% | 235.8 |
+  | the **lid**, `+z` | 25,216 | 71.8% | 11.6 |
+  | **east**, `+x` | 4,957 | 14.1% | **165.4** |
+  | **south**, `+y` | 4,927 | 14.0% | 12.7 |
 
   <br>
-  **The east column is the one that says this is a defect and not a lighting
-  question.** A box seen on this projection presents its east and its south face
-  at the same area — the isometric is symmetric about the tile's column — so
-  2,300 against 9 is not a rounding difference or a tie going one way. And a lid
-  is a horizontal plane: a lamp standing *beside* a flight is nearly in it, so
-  `max(N·L, 0)` is small across the whole 88.6%, which is exactly the report —
-  a staircase with no shading of its own and a bright hairline along each step,
-  the hairline being what is left of the 11.3%.
+  **The two side families are the same size** — 4,957 against 4,927, which is
+  the symmetry the projection has — **and they point at right angles to each
+  other inside one staircase.** Drawn over the art (the `Normal` layer masked
+  onto a frame with the flames turned off, which is the albedo), the south faces
+  run *along* the steps the artist drew and the east faces run *across* them.
+  The lamp stands east, so the family that is at ninety degrees to the picture is
+  the only one lit — 165.4 against 12.7 — and it draws as a set of bright strips
+  cutting over the treads. That is the report, exactly.
   <br>
-  **What it is not.** Not the height: `0x0750`, `0x0751`, `0x0752` and `0x0756`
-  are all 44×65 pictures, and 43 + 4·5 is 63 — the fitted prism's five `z` are
-  the art's own, so this is not the whole-tile stand-in's missing height
-  ([`footprints.md`](footprints.md)) reaching a climbable. Not the shadow walk
-  either: the same fragments average 248.8 of 255 on the shadow term.
+  **The cause is in the table, not in the renderer.** The six graphics of this
+  one flight are fitted with four different climb axes:
+  `0x0751` (three tiles) `prism N`, `0x0752` `prism W`, `0x0754` and `0x0758`
+  `prism E`, `0x0750` `prism E 5` (one tread, so a plain box), and `0x0756` no
+  prism at all. A staircase has one climb axis. `best_prism` scores each picture
+  alone, by silhouette IoU, with nothing that could notice that the piece next to
+  it disagrees.
   <br>
-  **Where to look, in order.** The run merges — `push_volumes` swaps a tread's
-  own box for the merged solid's space where the grid holds one — so a flight
-  running along `x` has no per-tile east face left, by construction and
-  correctly. Whether that accounts for 9 is the first thing to measure, and
-  `examples/seam_probe.rs` already prints the box each static stands and is the
-  tool that answered the last question of this shape. After it: `RIM`
-  (`ec7121e`, a side face winning only by more than the picture can show) and
-  the `z`-then-`y`-then-`x` tie in `impostor::meets`, both of which move
-  fragments *onto* the lid and neither of which has ever been counted over a
-  climbable.
+  **What it is not**, all measured on the same frame. Not the ground poking
+  through: `View::Kind` says *static* on every one of the strips' pixels. Not the
+  art: the same jump is in a frame rendered with `OPENSHARD_LIGHT_BRIGHTNESS=0`,
+  and under flat light the flight is an ordinary grey staircase with no strips in
+  it at all. Not the height: `0x0750`, `0x0751`, `0x0752`, `0x0754`, `0x0756` and
+  `0x0758` are all 44×65 pictures and 43 + 4·5 is 63, so the fitted five `z` are
+  the art's own — this is not [`footprints.md`](footprints.md)'s missing height
+  reaching a climbable. Not the shadow walk: visibility averages 248.8 of 255.
+  Not the merge either: no solid under the strips runs wider than 0.8 of a tile,
+  so the long bands are per-tile pieces lining up rather than one merged run.
+  <br>
+  **Where to start.** Per graphic, not per frame: draw each of the six alone
+  against its own art and ask whether `best_prism`'s axis is the one the picture
+  climbs. `examples/synthetic_stair.rs` builds a `Prism` by hand through the real
+  pipeline and `artscan`'s `shape` example prints the silhouette the detector
+  read, so the pair is already in the tree. If the fits are individually right,
+  then the pieces genuinely differ and what is missing is a rule above one
+  picture — a flight is a *run*, and `occlusion::merge` is the one place that
+  already knows a run when it sees one.
+  <br>
+  ⚠ **The first census of this was taken on the wrong set and is superseded by
+  the table above.** It classified only the fragments that *changed* between two
+  builds, which is a set defined by a shader rule rather than by the staircase,
+  and it came out 88.6% lid / 11.3% south / **9 pixels** east — from which the
+  east faces looked absent and the defect looked like a tie in `meets`. They are
+  not absent; they are half the sides and they are the lit half. A set chosen by
+  what moved is not a set chosen by what is there.
