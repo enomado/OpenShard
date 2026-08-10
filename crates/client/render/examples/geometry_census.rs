@@ -39,6 +39,10 @@ enum Claim {
     /// A climbable the prism search could not fit — one whole-tile body, which
     /// `boxes_of` argues for by name.
     WholeTileClimbable,
+    /// A body the art named no edge for, narrowed to the horizontal box its own
+    /// base edge measured — `docs/footprints.md`'s S3. The height is still
+    /// whatever `tiledata` gives, unmeasured: D1's other half.
+    Footprint,
     /// A lid: a plane, `min.z == max.z`. Measured, but **degenerate** — it has
     /// no side faces, no interior, and no ray can be inside it.
     Lid,
@@ -55,6 +59,7 @@ impl Claim {
         match self {
             Claim::WholeTileUnread => "whole tile, the art would not say",
             Claim::WholeTileClimbable => "whole tile, a climbable that would not fit",
+            Claim::Footprint => "a measured footprint, narrower than the whole tile",
             Claim::Lid => "a lid — measured, but a plane with no thickness",
             Claim::Panels => "panels on the named edges, PANEL_THICKNESS deep",
             Claim::Prism => "a fitted prism, one body a tread",
@@ -62,7 +67,7 @@ impl Claim {
     }
 
     fn measured(&self) -> bool {
-        matches!(self, Claim::Prism | Claim::Panels | Claim::Lid)
+        matches!(self, Claim::Prism | Claim::Panels | Claim::Lid | Claim::Footprint)
     }
 }
 
@@ -116,9 +121,10 @@ fn main() {
                 } else if tile.flags.is_background() {
                     Claim::Lid
                 } else {
-                    match shape.facing.is_some() {
-                        true => Claim::Panels,
-                        false => Claim::WholeTileUnread,
+                    match (shape.facing.is_some(), shape.footprint.is_some()) {
+                        (true, _) => Claim::Panels,
+                        (false, true) => Claim::Footprint,
+                        (false, false) => Claim::WholeTileUnread,
                     }
                 };
 

@@ -762,6 +762,14 @@ pub struct StaticAtlas {
     /// is a rarity in an install — 576 climbable statics of 39,189 pictures — so a
     /// map is the right shape for it and a field on every sprite is not.
     prisms: BTreeMap<Graphic, crate::facing::Prism>,
+    /// The horizontal box each graphic's own base edge states, where the
+    /// picture is one and nothing else already answered for it — see
+    /// [`Footprint`](crate::facing::Footprint) and `docs/footprints.md`'s S3.
+    ///
+    /// Beside the atlas for the same reason the holes and the prisms are: what
+    /// reads it is [`crate::occlusion::boxes_of`], walking the map, and no
+    /// per-quad drawing path has any use for it.
+    footprints: BTreeMap<Graphic, crate::facing::Footprint>,
     /// What was measured off this install's art before the client started, or
     /// `None` for an atlas that has to measure as it packs.
     ///
@@ -846,6 +854,7 @@ impl StaticAtlas {
             sprites: BTreeMap::new(),
             holes: BTreeMap::new(),
             prisms: BTreeMap::new(),
+            footprints: BTreeMap::new(),
             table: None,
             asked: BTreeSet::new(),
             revision: 0,
@@ -1004,6 +1013,9 @@ impl StaticAtlas {
             if let Some(prism) = shape.prism {
                 self.prisms.insert(graphic, prism);
             }
+            if let Some(footprint) = shape.footprint {
+                self.footprints.insert(graphic, footprint);
+            }
 
             self.sprites.insert(
                 graphic,
@@ -1062,6 +1074,14 @@ impl StaticAtlas {
         self.prisms.get(&graphic).copied()
     }
 
+    /// The horizontal box a graphic's own base edge states, or `None` where
+    /// nothing was measured — either because a face or a corner already named
+    /// which edge it stands on, or because the base is not two 45° runs at all.
+    /// See [`Footprint`](crate::facing::Footprint).
+    pub fn footprint(&self, graphic: Graphic) -> Option<crate::facing::Footprint> {
+        self.footprints.get(&graphic).copied()
+    }
+
     /// Say what solid a graphic is, without measuring one.
     ///
     /// The pair to [`StaticAtlas::state_hole`], and for the same reason: a built
@@ -1091,11 +1111,12 @@ impl StaticAtlas {
 
     /// How many times what this atlas says about a graphic's *shape* has changed.
     ///
-    /// Monotonic, and it counts three answers and no others:
-    /// [`sprite`](Self::sprite)'s facing, [`hole`](Self::hole) and
-    /// [`prism`](Self::prism) — which are exactly what
-    /// [`occlusion::Shape`](crate::occlusion::Shape) is made of, and therefore
-    /// exactly what a grid derived from this atlas depends on.
+    /// Monotonic, and it counts four answers and no others:
+    /// [`sprite`](Self::sprite)'s facing, [`hole`](Self::hole),
+    /// [`prism`](Self::prism) and [`footprint`](Self::footprint) — which are
+    /// exactly what [`occlusion::Shape`](crate::occlusion::Shape) is made of
+    /// (`blocks` excepted: no detector writes one), and therefore exactly what
+    /// a grid derived from this atlas depends on.
     ///
     /// It exists for [`occlusion::Bake`](crate::occlusion::Bake), and the failure
     /// it prevents is the quiet one. An atlas *grows*: a graphic the camera has
@@ -2218,16 +2239,31 @@ mod tests {
                 footprint: None,
             },
         );
+        // And a fourth that says this picture is a bookcase's own slab —
+        // `docs/footprints.md`'s S3: the footprint travels by the same lookup
+        // as the hole and the prism, none of it read off this east-facing wall.
+        let footprint = crate::facing::Footprint::new((0, 4), (3, 8)).expect("a narrower box");
+        table.author(
+            Graphic(4),
+            crate::occlusion::Shape {
+                facing: None,
+                hole: None,
+                prism: None,
+                blocks: crate::facing::Blocks::EMPTY,
+                footprint: Some(footprint),
+            },
+        );
 
         let atlas = StaticAtlas::pack_from(
             [
                 (Graphic(1), wall.clone()),
                 (Graphic(2), wall.clone()),
-                (Graphic(3), wall),
+                (Graphic(3), wall.clone()),
+                (Graphic(4), wall),
             ],
             Some(table),
         )
-        .expect("three sprites fit");
+        .expect("four sprites fit");
         assert_eq!(
             atlas.sprite(Graphic(1)).expect("packed").facing,
             Some(Facing::One(Face::South)),
@@ -2240,6 +2276,16 @@ mod tests {
         );
         assert_eq!(atlas.hole(Graphic(3)), Some(WINDOW), "the table's hole");
         assert_eq!(atlas.hole(Graphic(1)), None, "and a row with none has none");
+        assert_eq!(
+            atlas.footprint(Graphic(4)),
+            Some(footprint),
+            "the table's footprint"
+        );
+        assert_eq!(
+            atlas.footprint(Graphic(1)),
+            None,
+            "a face already named leaves no footprint to read",
+        );
     }
 
     /// `0x003C`'s hole, which is what the detector reads off the client's own

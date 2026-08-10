@@ -193,10 +193,27 @@ refusal. The shipped `data/overrides.table` carries the bump too — an
 `include_str!` parsed with `.expect`, so a forgotten sheet would have failed
 at test time rather than at review.
 
-**S3 — the consumption.** `boxes_of`'s branch, under D4's condition. *Gate:*
-`examples/geometry_census.rs` grows a row — "a measured footprint" — and the
-"whole tile, the art would not say" line drops by exactly what S1's census
-promised.
+**S3 — the consumption.** ✅ 2026-08-10. `boxes_of`'s `Edges::ANY` branch reads
+`shape.footprint` where it is `Some` — the one branch `edges_of(None)` reaches,
+so D4's gate falls out of the existing structure rather than needing a
+separate check: a face or a corner already routes through `named`, a lid
+through `Edges::NONE`, a climbable returns before either. `StaticAtlas` grew a
+`footprints` map beside `holes` and `prisms` — the same lookup, the same
+per-graphic seam — and `occlusion::shape_of` reads it instead of the S2
+placeholder `None`.
+
+*Gate:* `examples/geometry_census.rs` grew the row — "a measured footprint,
+narrower than the whole tile" — and on Britain's `121×121` around
+`(1501, 1659)` the "whole tile, the art would not say" line drops from 3534
+(31.6%) to 3315 (29.6%), a fall of **219**. Six more than S1's own placement
+count of 213: that census skips `ROOF` tiles before ever calling
+`measure_footprint`, a reporting choice for its own narrative ("a roof is not
+a box"), while `boxes_of` and `Shape::of` were never gated on the `ROOF` flag
+— a handful of roof pieces whose base happens to read as a clean two-run V get
+measured too, and now narrowed, exactly like any other picture. Not a defect:
+`examples/footprints.rs at 1501 1659 60`'s own split confirms it — 2825 roof
+placements minus 6 measured leaves 2819, plus 496 of the boxy 709 still
+refused, is 3315.
 
 **S4 — what it does to the picture, measured before it is believed.** Two
 numbers, both of which can go the wrong way:

@@ -434,9 +434,23 @@ pub fn boxes_of(
         false => edges_of(shape.facing),
     };
     match edges {
-        // A lid, or a body: one surface, and the mask is the whole of what says
-        // which of the walk's two rules it takes.
-        Edges::NONE | Edges::ANY => each(Part::ONLY, edges, Solid::box_of(x, y, bottom, top, edges)),
+        // A lid: one surface, and the mask is the whole of what says which of
+        // the walk's two rules it takes.
+        Edges::NONE => each(Part::ONLY, edges, Solid::box_of(x, y, bottom, top, edges)),
+        // A body the art named no edge for — the one branch `edges_of(None)`
+        // reaches, and so the one place D4 lets a measured footprint narrow the
+        // whole-tile fallback: a face or a corner already claimed the base
+        // before `edges` could come out `ANY`, and a footprint is only ever
+        // `Some` beside `facing: None` in the first place. `docs/footprints.md`
+        // S3.
+        Edges::ANY => each(
+            Part::ONLY,
+            edges,
+            match shape.footprint {
+                Some(footprint) => Solid::footprint_box_of(x, y, bottom, top, footprint),
+                None => Solid::box_of(x, y, bottom, top, edges),
+            },
+        ),
         named => {
             // A corner's panels are numbered in the order they are pushed, which
             // is the order this array names the sides in — see [`Part`].
@@ -996,6 +1010,36 @@ impl Solid {
             _ => {}
         }
         crate::solid::Solid { min, max }
+    }
+
+    /// The box a [`facing::Footprint`](crate::facing::Footprint) states: a body,
+    /// narrower than [`box_of`](Self::box_of)'s `Edges::ANY` whole tile on
+    /// either axis or both — `docs/footprints.md`'s S3. `bottom` and `top`
+    /// still come from `tiledata`, D1's other half: this is the box's floor
+    /// plan, not its height.
+    fn footprint_box_of(
+        x: i32,
+        y: i32,
+        bottom: i32,
+        top: i32,
+        footprint: crate::facing::Footprint,
+    ) -> crate::solid::Solid {
+        use crate::camera::WorldSpot;
+
+        let (min_x, max_x, min_y, max_y) = footprint.spans();
+        let (x, y) = (f64::from(x), f64::from(y));
+        crate::solid::Solid {
+            min: WorldSpot {
+                x: x + f64::from(min_x),
+                y: y + f64::from(min_y),
+                z: f64::from(bottom),
+            },
+            max: WorldSpot {
+                x: x + f64::from(max_x),
+                y: y + f64::from(max_y),
+                z: f64::from(top),
+            },
+        }
     }
 
     /// This solid's box as the wire carries it: the record's own six corners,
@@ -2325,9 +2369,10 @@ impl Builder {
     /// height derived from a [`StaticTile`].
     ///
     /// Everything else in this `impl` builds a [`Solid`]'s `space` from
-    /// `tiledata` — [`Solid::box_of`] always fills a whole tile for a body or
-    /// a thin strip for a panel — because that is what a real static's
-    /// footprint always is. A hand-built scene has no such art to read
+    /// `tiledata` — a whole tile for a body the art gave no narrower footprint,
+    /// the measured footprint's own box where it did
+    /// (`docs/footprints.md`'s S3), or a thin strip for a panel. A hand-built
+    /// scene has no such art to read
     /// (`examples/two_cubes.rs`'s own doc: no client files at all) and
     /// sometimes needs a box the tile grid was never asked to produce —
     /// narrower than a tile, or stacked on top of another box rather than
@@ -2645,9 +2690,9 @@ fn place(
 /// atlas by what is drawn, and those are not the same rectangle. Both fall back
 /// the same way.
 ///
-/// The hole and the prism come off the same lookup and for the same reasons: a
-/// graphic the atlas does not hold has neither, which is a solid wall, which is
-/// what all but fifty-eight of the install's pictures are.
+/// The hole, the prism and the footprint come off the same lookup and for the
+/// same reasons: a graphic the atlas does not hold has none of them, which is a
+/// solid wall, which is what all but fifty-eight of the install's pictures are.
 /// `pub` since `docs/lighting_rebuild.md` phase 6c: the impostor asks the same
 /// question of the same atlas, because a fragment's own shape is what
 /// [`boxes_of`] needs and this is where the art's answer to it lives.
@@ -2659,9 +2704,7 @@ pub fn shape_of(atlas: Option<&crate::atlas::StaticAtlas>, graphic: Graphic) -> 
         hole: atlas.and_then(|atlas| atlas.hole(graphic)),
         prism: atlas.and_then(|atlas| atlas.prism(graphic)),
         blocks: crate::facing::Blocks::EMPTY,
-        // Not yet read off the atlas — `docs/footprints.md`'s S3, the branch
-        // that would consume one, does not exist yet either.
-        footprint: None,
+        footprint: atlas.and_then(|atlas| atlas.footprint(graphic)),
     }
 }
 
@@ -2818,6 +2861,52 @@ mod tests {
         let mut occlusion = Builder::new(bounds());
         occlusion.shade(101, 100, 0, 0, open, &leaf);
         assert_eq!(occlusion.sky_at(101, 100), SKY_OPEN, "an open door took the sky");
+    }
+
+    /// `boxes_of`'s D4 gate, through `Builder::add`: a footprint narrows the
+    /// whole-tile fallback exactly where `edges_of(None)` would otherwise reach
+    /// `Edges::ANY`, and nowhere it would not — `docs/footprints.md`'s S3.
+    ///
+    /// Two tiles apart rather than one, so the second is the mutation the first
+    /// alone cannot catch: a wiring that always fell back to the whole tile
+    /// would still pass a test that only offered a footprint.
+    #[test]
+    fn a_footprint_narrows_the_whole_tile_fallback_and_only_the_fallback() {
+        use crate::facing::Footprint;
+
+        let wall = tile(TileFlags::NO_SHOOT, 20);
+        // A body a quarter the width on `x`, the full tile on `y` — a shape
+        // `Footprint::WHOLE` could not be mistaken for.
+        let footprint = Footprint::new((0, 2), (0, 8)).expect("a quarter-tile span");
+        let narrow = Shape {
+            footprint: Some(footprint),
+            ..Shape::UNREAD
+        };
+
+        let mut occlusion = Builder::new(bounds());
+        occlusion.add(100, 100, 0, NOT_A_DOOR, &wall, narrow);
+        occlusion.add(101, 100, 0, NOT_A_DOOR, &wall, Shape::UNREAD);
+        let occlusion = occlusion.finish(&Cutaway::OPEN);
+
+        let measured = occlusion.solids_at(100, 100).next().expect("one solid").space;
+        assert!(
+            (measured.min.x - 100.0).abs() < 1e-9
+                && (measured.max.x - 100.25).abs() < 1e-9
+                && (measured.min.y - 100.0).abs() < 1e-9
+                && (measured.max.y - 101.0).abs() < 1e-9,
+            "a measured footprint should narrow the box to its own span, it is {:?}",
+            measured,
+        );
+
+        let unread = occlusion.solids_at(101, 100).next().expect("one solid").space;
+        assert!(
+            (unread.min.x - 101.0).abs() < 1e-9
+                && (unread.max.x - 102.0).abs() < 1e-9
+                && (unread.min.y - 100.0).abs() < 1e-9
+                && (unread.max.y - 101.0).abs() < 1e-9,
+            "a picture with no measured footprint should keep the whole tile, it is {:?}",
+            unread,
+        );
     }
 
     /// A rectangle big enough for a few tiles around the origin of a test.
