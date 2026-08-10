@@ -382,6 +382,25 @@ pub fn unproject(at: WorldPixel, z: i8) -> (i32, i32) {
     )
 }
 
+/// Which fractional tile a world pixel at `z = 0` names — [`unproject`]'s exact
+/// counterpart, kept to a fraction rather than rounded to the tile it lands
+/// nearest, and in the same units as a [`Point`]'s own `x`/`y`: a body
+/// standing on tile `(100, 100)` reads back as `(100.0, 100.0)`, not the
+/// `(100.5, 100.5)` [`project_exact`] would answer for its *centre* — the
+/// `-0.5` [`WorldSpot::centre`] adds is undone here so a caller can subtract a
+/// [`Point`] straight off the result.
+///
+/// [`crate::follow::Gaze`]'s `x` and `y` are this same plane before its own
+/// `lift` channel folds the height back in, so this is how a walking
+/// [`crate::mobiles::Mobile`] recovers how far past its own
+/// [`crate::mobiles::Mobile::at`] tile its drawn position has actually
+/// gotten — [`crate::mobiles::billboard_offset`] is the one caller.
+pub fn unproject_ground(x: f64, y: f64) -> (f64, f64) {
+    let sum = y / f64::from(HALF_HEIGHT) + 1.0;
+    let diff = x / f64::from(HALF_WIDTH);
+    ((sum + diff) * 0.5 - 0.5, (sum - diff) * 0.5 - 0.5)
+}
+
 /// How far the world is magnified, as an exact ratio.
 ///
 /// A fraction from a fixed ladder and not an `f32`, for three reasons and the
@@ -1580,6 +1599,42 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// [`unproject_ground`] is [`project`]'s exact inverse at `z = 0`, fraction
+    /// and all — a standing body's own tile comes back whole, which is the
+    /// property [`crate::mobiles::billboard_offset`] leans on to recover how
+    /// far a walking body's drawn position sits past it.
+    #[test]
+    fn unproject_ground_undoes_project_at_a_fraction() {
+        for (x, y) in [
+            (0.0, 0.0),
+            (0.5, 0.5),
+            (1495.25, 6143.75),
+            (0.1, 0.9),
+            (-3.0, -3.0),
+        ] {
+            let spot = WorldSpot { x, y, z: 0.0 };
+            let projected = project_exact(spot);
+            let (tx, ty) = unproject_ground(projected.x, projected.y);
+            // `project_exact` reads a *spot*, half a tile off `Point`'s own
+            // lattice — `WorldSpot::centre`'s `+0.5` — and `unproject_ground`
+            // undoes exactly that, so the round trip lands half a tile short
+            // of the spot it started from.
+            assert!((tx - (x - 0.5)).abs() < 1e-9, "x: {tx} vs {}", x - 0.5);
+            assert!((ty - (y - 0.5)).abs() < 1e-9, "y: {ty} vs {}", y - 0.5);
+        }
+
+        // The natural form: a standing tile comes back whole. `z = 0` only —
+        // `unproject_ground` reads the same plane [`crate::follow::Gaze`]
+        // keeps `z` out of, so a nonzero one belongs in the caller's own
+        // `lift` channel, not folded into `y` the way `project` would.
+        for point in [Point::new(0, 0, 0), Point::new(1495, 6143, 0)] {
+            let world = project(point);
+            let (tx, ty) = unproject_ground(f64::from(world.x), f64::from(world.y));
+            assert!((tx - f64::from(point.x)).abs() < 1e-9, "x: {tx}");
+            assert!((ty - f64::from(point.y)).abs() < 1e-9, "y: {ty}");
         }
     }
 

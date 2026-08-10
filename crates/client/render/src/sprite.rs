@@ -48,15 +48,24 @@ pub struct SpriteQuad {
     /// [`crate::place`].
     pub place: crate::place::Place,
     /// The row index of this face's other half, or `0` for a row with no
-    /// other half.
+    /// other half — **for a static.**
     ///
     /// A corner static is one picture but two real faces — see
     /// `docs/gbuffer.md` decision 3 and step 4. `statics::collect` gives a
     /// corner's own drawn row a `twin` pointing at a second, undrawn row it
     /// appends for exactly this field; `statics.wgsl`'s fragment shader picks
     /// between the two ids per pixel, the same diagonal test that already
-    /// resolves which face's `Stance` a pixel gets. Every other row — a wall,
-    /// a floor, a mobile — never reads this field.
+    /// resolves which face's `Stance` a pixel gets. A floor or a ground-level
+    /// row with no corner leaves this `0`, which reads as no twin because an
+    /// id of `0` is a row's own atlas key and no static's twin is ever itself.
+    ///
+    /// A mobile draws no corner — its stance is always
+    /// [`crate::place::Stance::Upright`] — so it is free for
+    /// [`crate::mobiles::billboard_offset`] instead: how far the drawn sprite
+    /// has walked past the whole tile [`SpriteQuad::place`] carries, since
+    /// [`crate::place::Place`] has no bits for that fraction and the lighting
+    /// pass needs it to put a walking body's light where its picture actually
+    /// is.
     pub twin: u32,
     /// **Which occluder of its own tile the thing drawn here is**, or
     /// [`OwnerId::NONE`](crate::occlusion::OwnerId::NONE) for one that is no

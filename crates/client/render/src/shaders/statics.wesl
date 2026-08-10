@@ -33,7 +33,7 @@ import package::place_format::{
 };
 import package::normal_format::pack_normal;
 import package::solid_format::{SOLID_NOBODY, pack_solid};
-import package::impostor::{Meeting, billboard_at, billboard_normal, hit, meets, ray_from};
+import package::impostor::{Meeting, billboard_at, billboard_normal, billboard_offset, hit, meets, ray_from};
 
 struct Viewport {
     // The target's size in *real* pixels — see `ground.wgsl`, which documents
@@ -531,7 +531,13 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     var at = vec3<f32>(tile + vec2<f32>(0.5), base - down / Z_STEP);
     let is_mobile = ((in.place.y >> 8u) & KIND_MASK) == KIND_MOBILE;
     if is_mobile {
-        at = billboard_at(tile, base, across, down);
+        // `in.twin` carries no corner for a mobile — its stance is always
+        // `Stance::Upright` — so it is the fraction of a tile the body's
+        // drawn position has walked past `tile`, mid-step. Without adding it
+        // back the plane `billboard_at` builds stands at the tile the body is
+        // arriving at rather than where its picture is drawn, up to a whole
+        // tile off. See `crate::mobiles::billboard_offset`.
+        at = billboard_at(tile + billboard_offset(in.twin), base, across, down);
     }
     // **A billboard's normal is the plane's own, not the zero vector.**
     // `docs/lighting_rebuild.md` phase 7: a mobile has no volume for `meets` to

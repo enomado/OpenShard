@@ -178,6 +178,43 @@ fn cell_centre(mobile: &Mobile, camera: &Camera) -> ViewPoint {
     camera.to_view_exact(camera.snap(world_position(mobile)))
 }
 
+/// One tile unit, in the fixed point [`billboard_offset`] packs a step's
+/// fraction at — comfortably finer than a screen pixel resolves (a real pixel
+/// is at most `1 / 44` of a tile) and with headroom past a whole tile for an
+/// eased body's overshoot.
+const BILLBOARD_OFFSET_SCALE: f32 = 4096.0;
+
+/// How far a mobile's drawn position has walked past the tile [`Mobile::at`]
+/// names, packed as two fixed-point `i16`s — the low word `x`, the high word
+/// `y` — the way `impostor.wesl`'s `billboard_offset` takes it apart.
+///
+/// **The second anchor.** [`cell_centre`] places the sprite's screen rect at
+/// the body's actual, fractional position, but [`crate::place::Place`] has no
+/// bits for a fraction — `Place::of_mobile` carries only [`Mobile::at`], the
+/// whole tile — and `impostor.wesl`'s `billboard_at` rebuilds a fragment's lit
+/// position from *that* tile plus the screen offset the vertex stage handed
+/// it. Mid-step the two disagree by up to a tile: the screen rect is where the
+/// body really is, the lit position is where its last or next tile is. A
+/// person saw this as vertical seams down a walking figure — the light jumps
+/// once per screen column because `blit.wesl`'s dither turns each row's sample
+/// pattern by an angle that belongs to the position it was lit at, not the one
+/// it was drawn at.
+///
+/// A mobile never draws a corner (its stance is always
+/// [`crate::place::Stance::Upright`]), so [`crate::sprite::SpriteQuad::twin`]
+/// carries nothing else for one — this is what rides in it instead.
+fn billboard_offset(mobile: &Mobile) -> u32 {
+    let (tile_x, tile_y) = crate::camera::unproject_ground(mobile.drawn.x, mobile.drawn.y);
+    let dx = (tile_x - f64::from(mobile.at.x)) as f32;
+    let dy = (tile_y - f64::from(mobile.at.y)) as f32;
+    let pack = |v: f32| -> u32 {
+        let fixed = (v * BILLBOARD_OFFSET_SCALE).round();
+        let clamped = fixed.clamp(f32::from(i16::MIN), f32::from(i16::MAX));
+        (clamped as i16) as u16 as u32
+    };
+    pack(dx) | (pack(dy) << 16)
+}
+
 /// The body, group and stored direction a set of mobiles needs packed.
 ///
 /// Called before building the atlas, like its neighbours: the atlas has to
@@ -456,6 +493,7 @@ fn push_quads(
         return;
     };
     let order = placement.order;
+    let billboard = billboard_offset(mobile);
     out.push((
         order,
         SpriteQuad {
@@ -464,7 +502,7 @@ fn push_quads(
             depth: order.to_depth(base),
             hue: u32::from(hue.unwrap_or(mobile.hue).0),
             place: crate::place::Place::of_mobile(mobile.at),
-            twin: 0,
+            twin: billboard,
             // A billboard is no occluder, so it is exempt from nothing — a
             // creature standing on a walled tile is genuinely in that wall's
             // shadow. `docs/lighting_height.md` phase 3, and the one behaviour
@@ -491,7 +529,7 @@ fn push_quads(
                 // The body's tile, not the sprite's: a hat is lit as the
                 // head under it is, and it has no tile of its own.
                 place: crate::place::Place::of_mobile(mobile.at),
-                twin: 0,
+                twin: billboard,
                 owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
                 volumes: crate::impostor::Range::default(),
             },
@@ -1654,5 +1692,41 @@ mod tests {
             1,
             "only the body, the item's own AnimID was never packed"
         );
+    }
+
+    /// A body standing still names its own tile with no offset — `twin` packs
+    /// to zero, which is also what a static's unused row reads as.
+    #[test]
+    fn a_standing_body_has_no_billboard_offset() {
+        let mobile = body_at(100, Direction::South);
+        assert_eq!(billboard_offset(&mobile), 0);
+    }
+
+    /// Undoes [`billboard_offset`]'s packing the way `impostor.wesl`'s own
+    /// `billboard_offset` does, so this test can pin the two spellings against
+    /// each other without a GPU.
+    fn unpack_billboard_offset(word: u32) -> (f32, f32) {
+        let dx = (word & 0xFFFF) as u16 as i16;
+        let dy = (word >> 16) as u16 as i16;
+        (
+            f32::from(dx) / BILLBOARD_OFFSET_SCALE,
+            f32::from(dy) / BILLBOARD_OFFSET_SCALE,
+        )
+    }
+
+    /// Mid-step, a body's drawn position sits behind the tile it is arriving
+    /// at — [`Mobile::at`]'s own doc — and `billboard_offset` has to recover
+    /// exactly how far, or `impostor.wesl`'s billboard is lit at the wrong
+    /// point of the room. `docs/lighting_rebuild.md` phase 7's own defect.
+    #[test]
+    fn a_body_half_a_step_in_walks_half_a_tile_short_of_its_offset() {
+        let from = Gaze::on(Point::new(100, 100, 0));
+        let target = Gaze::on(Point::new(101, 100, 0));
+        let mut mobile = body_at(101, Direction::East);
+        mobile.drawn = target.back_towards(from, 0.5);
+
+        let (dx, dy) = unpack_billboard_offset(billboard_offset(&mobile));
+        assert!((dx - -0.5).abs() < 1e-3, "dx: {dx}");
+        assert!(dy.abs() < 1e-3, "dy: {dy}");
     }
 }

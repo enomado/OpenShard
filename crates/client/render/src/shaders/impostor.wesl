@@ -119,6 +119,30 @@ fn billboard_normal() -> vec3<f32> {
     return normalize(vec3<f32>(1.0, 1.0, 0.0));
 }
 
+// The fixed-point scale `crate::mobiles::billboard_offset` packs a step's
+// fraction at — the two spellings of one arithmetic, kept equal the way
+// `Z_PER_TILE` and `FRAGMENT` above are.
+const BILLBOARD_OFFSET_SCALE: f32 = 4096.0;
+
+// How far a mobile's drawn position has walked past the tile its own
+// `SpriteQuad::place` carries — two fixed-point `i16`s riding in `twin`, low
+// half `x` and high half `y`, the way `crate::mobiles::billboard_offset`
+// wrote them.
+//
+// **Why `billboard_at` needs this at all.** The screen quad is placed at the
+// body's real, fractional position (`mobiles::cell_centre`), but the tile
+// `billboard_at` is handed is the whole one `Place::of_mobile` carries —
+// `Place` has no bits for a fraction. Mid-step the two disagree by up to a
+// tile, and without this a walking figure was lit as though it stood on the
+// tile it is arriving at rather than where its picture actually is —
+// `crate::mobiles::billboard_offset`'s own doc has the account of what that
+// looked like on screen.
+fn billboard_offset(word: u32) -> vec2<f32> {
+    let dx = f32(extractBits(bitcast<i32>(word), 0u, 16u));
+    let dy = f32(extractBits(bitcast<i32>(word), 16u, 16u));
+    return vec2<f32>(dx, dy) / BILLBOARD_OFFSET_SCALE;
+}
+
 // Where the view ray meets one box, and which of its faces that is.
 struct Meeting {
     // The point, in world units, clamped into the box.
