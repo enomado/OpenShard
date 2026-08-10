@@ -275,6 +275,21 @@ fn utf16_be_to_string(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&units)
 }
 
+/// [`utf16_be_to_string`]'s twin: `0xC1`'s `arguments` are little-endian —
+/// see [`LocalizedMessage`]'s own doc for why that is the detail a copy from
+/// `0xAE` gets wrong.
+fn utf16_le_to_string(bytes: &[u8]) -> String {
+    let mut units = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let unit = u16::from_le_bytes([pair[0], pair[1]]);
+        if unit == 0 {
+            break;
+        }
+        units.push(unit);
+    }
+    String::from_utf16_lossy(&units)
+}
+
 /// `0x1C` — draw speech over a source and put it in the journal. Variable length.
 ///
 /// Ported from Sphere's `PacketMessageASCII`. A speaker of `None` is "the system
@@ -404,6 +419,48 @@ impl EncodePacket for LocalizedMessage {
             out.u16(unit.swap_bytes()); // little-endian, unlike 0xAE below
         }
         out.u16(0);
+    }
+}
+
+impl DecodePacket for LocalizedMessage {
+    const ID: u8 = 0xC1;
+
+    /// The client's direction of `0xC1` — this server never sends one to
+    /// decode, but a client reading one back is exactly how
+    /// `use_skill_button`'s "cannot be used directly" line, and every other
+    /// gate that answers through [`WorldState::localized_message`], is
+    /// observed at all. Mirrors [`SpokenMessage::decode_body`]'s sentinel
+    /// folding for `serial`/`graphic`, and reads `arguments` as
+    /// little-endian — see the struct's own doc for why that is not
+    /// [`utf16_be_to_string`].
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        let serial = match reader.u32()? {
+            SYSTEM_SERIAL => None,
+            raw => Some(Serial::new(raw).ok_or(DecodeError::UnknownValue {
+                field: "0xC1 speaker serial",
+                value: raw,
+            })?),
+        };
+        let graphic = match reader.u16()? {
+            NO_GRAPHIC => None,
+            raw => Some(Graphic(raw)),
+        };
+        let mode = RawTalkMode(reader.u8()?).interpret();
+        let hue = Hue(reader.u16()?);
+        let font = Font(reader.u16()?);
+        let cliloc = ClilocId(reader.u32()?);
+        let name = reader.fixed_string(NAME_LENGTH)?;
+        let arguments = utf16_le_to_string(reader.rest());
+        Ok(Self {
+            serial,
+            graphic,
+            mode,
+            hue,
+            font,
+            cliloc,
+            name,
+            arguments,
+        })
     }
 }
 
@@ -579,6 +636,37 @@ mod tests {
             args, expected,
             "the arguments are UTF-16 little-endian, not the big-endian 0xAE uses"
         );
+    }
+
+    /// The gap this crate had until now: `LocalizedMessage` had
+    /// `EncodePacket` but no `DecodePacket`, and no arm in
+    /// `ServerPacket::decode` — so a client asking for this cliloc, the one
+    /// `use_skill_button`'s "cannot be used directly" line and every other
+    /// gate through `WorldState::localized_message` answers through, read it
+    /// as `Unknown` and dropped it. Routed through the real dispatcher, the
+    /// same way `a_lock_click_reaches_the_server_as_the_request_it_means`
+    /// proves its own encoder, so a missing arm here fails this test and not
+    /// just a decode-only one.
+    #[test]
+    fn a_localized_message_decodes_back_through_the_dispatcher() {
+        let sent = LocalizedMessage {
+            serial: None,
+            graphic: None,
+            mode: TalkMode::Regular,
+            hue: Hue(0x03B2),
+            font: Font(3),
+            cliloc: ClilocId(500_014),
+            name: "System".to_owned(),
+            arguments: "Iolo".to_owned(),
+        };
+        let bytes = encode_packet(&sent, version());
+        let decoded = ServerPacket::decode(&bytes, version())
+            .expect("it decodes")
+            .expect("0xC1 has an arm now");
+        assert!(matches!(
+            decoded,
+            ServerPacket::LocalizedMessage(message) if message == sent
+        ));
     }
 
     /// The client's side of `0x1C`, round-tripped against our own encoder.

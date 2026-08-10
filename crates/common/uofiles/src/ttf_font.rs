@@ -51,7 +51,7 @@ use crate::image::Image;
 /// coverage curve trades a little of that smoothing for edges closer to the
 /// rest of the renderer's look, without going all the way to a 1-bit
 /// threshold, which on a curve this small starts dropping whole strokes.
-const EDGE_SHARPEN: f32 = 2.2;
+const EDGE_SHARPEN: f32 = 1.4;
 
 /// One coverage byte (0 to 255), quantized to the 5-bit grey
 /// [`statics.wgsl`](crate) reads as a hue-ramp index — see the module doc's
@@ -162,29 +162,85 @@ impl TtfFont {
     /// choice a missing `fonts.mul` byte does *not* get to make (see
     /// `crate::text::collect`'s doc), because there is no table here to fall
     /// silently short of.
+    ///
+    /// Directly at `pixel_height` — an earlier version asked `fontdue` for
+    /// four times that and boxed the result back down, on the theory that a
+    /// ~9-pixel letter has too little edge *area* for real antialiasing to
+    /// survive. Measured against plain `1x` at the same [`EDGE_SHARPEN`], the
+    /// boxed-down version's share of partially-covered pixels came out
+    /// 0.61–0.69 against 0.59–0.64 — inside rounding noise, not a real gain:
+    /// `fontdue` already computes exact analytic coverage at any size, so
+    /// there was no missing sample data for a bigger rasterization to
+    /// recover. The look this fixes was `EDGE_SHARPEN` alone.
     #[must_use]
     pub fn glyph(&self, ch: char, pixel_height: f32) -> TtfGlyph {
         let (metrics, coverage) = self.font.rasterize(ch, pixel_height);
         let pixels = coverage.into_iter().map(sharpened_grey).collect();
         let image = Image::new(metrics.width as u16, metrics.height as u16, pixels);
-        // `ymin` is the bitmap's bottom edge, offset from the baseline and
-        // signed — negative for a descender that reaches below it. The
-        // baseline therefore sits `height + ymin` pixels down from the image's
-        // top edge; a glyph with no ink at all (space) has zero height and
-        // this is just `-ymin`, which is what the doc above means by the
-        // offset exceeding the (empty) image's height.
-        let baseline_from_top = metrics.height as i32 - metrics.ymin;
         TtfGlyph {
             image,
-            baseline_from_top,
+            baseline_from_top: baseline_from_top(metrics.height as i32, metrics.ymin),
             advance: metrics.advance_width.ceil() as u16,
         }
     }
 }
 
+/// How far below a rasterized glyph's own top edge the baseline sits.
+///
+/// `ymin` is `fontdue`'s own `Metrics::ymin` — the bitmap's bottom edge,
+/// offset from the baseline and signed: negative for a descender that
+/// reaches below it, positive for a glyph whose ink stops short of the
+/// baseline (an apostrophe, a superscript figure). The top edge therefore
+/// sits `ymin + height` pixels above the baseline, so descending that far
+/// from the top lands exactly on it — a glyph with no ink at all (space) has
+/// zero height and this is just `ymin`, the offset exceeding the (empty)
+/// image's height that [`TtfGlyph::baseline_from_top`]'s own doc describes.
+///
+/// A `height - ymin` here — this function's first shape — agrees with
+/// `height + ymin` exactly when `ymin` is zero, which is most capitals and
+/// digits, and disagrees by `2 * ymin` everywhere else: a descender floats
+/// `2 * |ymin|` pixels too high, an overshoot glyph sinks the same amount too
+/// low. Pin this down with the two, not just the zero case, or a future
+/// "simplification" back to subtraction reads as correct again.
+fn baseline_from_top(height: i32, ymin: i32) -> i32 {
+    height + ymin
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A glyph that sits exactly on the baseline — `ymin` zero, most capitals
+    /// and digits — has its top edge `height` pixels above it: descending
+    /// `baseline_from_top` from the image's top lands on the image's own
+    /// bottom row, which is where `ymin == 0` says the baseline is. The one
+    /// case where `height - ymin` and `height + ymin` cannot be told apart,
+    /// which is exactly why the other two below matter.
+    #[test]
+    fn a_glyph_flush_with_the_baseline_has_no_offset_to_add() {
+        assert_eq!(baseline_from_top(14, 0), 14);
+    }
+
+    /// A descender — `ymin` negative, `g`/`y`/Cyrillic `ф` — sinks part of
+    /// its own bitmap below the baseline, so the top edge is *closer* to the
+    /// baseline than the image is tall: `height + ymin`, less than `height`.
+    /// The bug this pins: `height - ymin` computes `height + 4` here, `2 *
+    /// |ymin|` too far, which is what put a descender's top edge above where
+    /// a non-descending capital's own top edge sits — read at the anchor,
+    /// where every glyph draws from `anchor.y - baseline_from_top`, that is
+    /// the whole glyph floating `2 * |ymin|` pixels too high.
+    #[test]
+    fn a_descenders_top_sits_closer_to_the_baseline_than_its_own_height() {
+        assert_eq!(baseline_from_top(14, -4), 10, "14 - 4, not 14 + 4");
+    }
+
+    /// The opposite shape — `ymin` positive, ink that stops short of the
+    /// baseline, like an apostrophe — sits *farther* from the baseline than
+    /// the image is tall: `height + ymin`, more than `height`.
+    #[test]
+    fn a_glyph_that_stops_short_of_the_baseline_sits_farther_than_its_own_height() {
+        assert_eq!(baseline_from_top(6, 3), 9, "6 + 3, not 6 - 3");
+    }
 
     /// [`EDGE_SHARPEN`]'s whole job: a faint edge pixel is pushed to fully
     /// transparent, a strong one to fully opaque, and only genuinely

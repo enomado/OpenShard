@@ -27,7 +27,9 @@ use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::serial::Serial;
+use openshard_protocol::skill::SkillLock;
 use openshard_protocol::version::ClientVersion;
+use openshard_protocol::wire::RawSkillId;
 use openshard_protocol::world::ResyncRequest;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
@@ -126,6 +128,15 @@ pub enum Command {
     GuildMenu,
     /// Double-clicking the virtue scroll on a doll: whose virtues.
     Virtue(Serial),
+    /// A skill's lock arrow was clicked — the state asked for.
+    ///
+    /// Unanswered by design: see
+    /// [`openshard_client_net::skill::set_lock`]'s doc. The window has
+    /// already drawn this state by the time the command reaches here — see
+    /// `skills::Tree`'s lock override — so nothing waits on the wire for it.
+    SkillLock { skill: RawSkillId, lock: SkillLock },
+    /// A skill's use button was pressed.
+    UseSkill(RawSkillId),
 }
 
 /// A dialog answered: which window, which button, and what was set on it.
@@ -214,6 +225,16 @@ impl Link {
     /// Ask about a mobile's virtues.
     pub fn virtue(&self, mobile: Serial) {
         let _ = self.commands.send(Command::Virtue(mobile));
+    }
+
+    /// Ask to set a skill's lock. See [`Command::SkillLock`].
+    pub fn set_skill_lock(&self, skill: RawSkillId, lock: SkillLock) {
+        let _ = self.commands.send(Command::SkillLock { skill, lock });
+    }
+
+    /// Ask to use a skill — its own button, not the lock arrow.
+    pub fn use_skill(&self, skill: RawSkillId) {
+        let _ = self.commands.send(Command::UseSkill(skill));
     }
 }
 
@@ -425,6 +446,10 @@ async fn play<D: Dial>(
                     Command::Virtue(mobile) => {
                         openshard_client_net::doll::virtue(view.player.serial, mobile)
                     }
+                    Command::SkillLock { skill, lock } => {
+                        openshard_client_net::skill::set_lock(skill, lock)
+                    }
+                    Command::UseSkill(skill) => openshard_client_net::skill::use_skill(skill),
                     Command::AnswerGump(reply) => openshard_client_net::talk::answer_gump(
                         reply.key,
                         reply.gump_id,

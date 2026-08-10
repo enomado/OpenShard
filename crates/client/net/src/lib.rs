@@ -28,6 +28,7 @@ pub mod connection;
 pub mod doll;
 pub mod interact;
 pub mod session;
+pub mod skill;
 pub mod talk;
 pub mod transport;
 pub mod view;

@@ -126,6 +126,7 @@ use openshard_client_render::control::{Control, Follow};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::follow::{Gaze, Rig};
+use openshard_client_render::frame::{self, Impostor};
 use openshard_client_render::gbuffer::Gbuffer;
 // `gump_art` and not `gump`: this crate has a module of that name — the egui
 // half of the same window — and the two are deliberately not merged. One
@@ -135,7 +136,7 @@ use openshard_client_render::gump as gump_art;
 use openshard_client_render::gump::{GumpAtlas, GumpPixel, GumpRenderer};
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
-use openshard_client_render::light::{self, Lighting};
+use openshard_client_render::light;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::occlusion;
 use openshard_client_render::outline::{self, Outline, Ring};
@@ -153,9 +154,10 @@ use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::gump::GumpId;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::skill::SkillLock;
 use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
-use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::wire::{Graphic, Hue, RawSkillId};
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::Anim;
 use openshard_uofiles::animdata::AnimData;
@@ -1020,8 +1022,15 @@ struct Screen {
     ttf_atlas: Option<TtfAtlas>,
     /// The pass bound to [`Screen::ttf_atlas`]'s texture, rebuilt whenever that
     /// atlas is (see `App::draw`'s handling of [`AtlasError::Full`] there).
-    /// `None` exactly when `ttf_atlas` is.
-    ttf_pass: Option<SpriteRenderer>,
+    /// Bound to the *surface's* format, [`gump_text_pass`](Screen::gump_text_pass)'s
+    /// own reason: overhead speech and the HUD's speech line and journal both
+    /// draw through this, after the blit, rather than through a `SpriteRenderer`
+    /// bound to [`blit::WORLD_FORMAT`] the way [`Screen::text_pass`] is — see
+    /// `openshard_client_render::text::ScreenLabel`'s doc for why a TrueType
+    /// face's glyphs cannot go through the world passes' own camera-zoom
+    /// scaling the way `text_pass`'s `fonts.mul` glyphs do. `None` exactly
+    /// when `ttf_atlas` is.
+    ttf_gump_pass: Option<GumpRenderer>,
     /// Which outlined object each world pixel belongs to, or zero for none.
     ///
     /// Filled by the statics pass drawing silhouettes into it and read by
@@ -1061,10 +1070,38 @@ struct Screen {
     /// [`App::font_atlas`] instead of the gump atlas. Not an `Option`, and not
     /// tied to `App::gumps` the way `gump_pass` is: `font_atlas` is built at
     /// startup unconditionally (see `text_pass`, its world-space twin), so
-    /// there is nothing this has to wait for. The speech line and the journal
-    /// are its first callers; a gump dialog's own captions are its next one,
-    /// per `docs/client.md`'s "a third `GumpRenderer` bound to `App::font_atlas`".
+    /// there is nothing this has to wait for. A gump dialog's own captions are
+    /// its first caller; the speech line and the journal are too, except when
+    /// `App::ttf_font` is set — see `ttf_gump_pass`, its TrueType twin — per
+    /// `docs/client.md`'s "a third `GumpRenderer` bound to `App::font_atlas`".
     gump_text_pass: GumpRenderer,
+}
+
+impl Screen {
+    /// Copy whatever [`Screen::ttf_atlas`] has newly packed this frame onto
+    /// [`Screen::ttf_gump_pass`]'s texture.
+    ///
+    /// The single place both of `App::draw`'s callers route through — overhead
+    /// speech's own `atlas.add` and the HUD's — rather than each calling
+    /// [`TtfAtlas::take_dirty`] on its own: that method hands back the rows
+    /// written since the *last* call and then forgets them (see its doc), so
+    /// a second independent caller the same frame would find nothing to
+    /// upload — not because the texture was already current, but because the
+    /// first caller's `take_dirty` already took the only answer there was.
+    /// No-op with nothing dirty, or with no `ttf_atlas` at all — the
+    /// offline-map-viewer and no-`--ttf-font` cases both take this path
+    /// harmlessly every frame.
+    fn upload_ttf_dirty(&mut self) {
+        let Some(atlas) = self.ttf_atlas.as_mut() else {
+            return;
+        };
+        let Some(rows) = atlas.take_dirty() else {
+            return;
+        };
+        if let Some(pass) = &self.ttf_gump_pass {
+            pass.upload_rows(&self.queue, atlas.pixels(), rows);
+        }
+    }
 }
 
 /// One of this client's own windows, and the one thing about it the shard never
@@ -3070,6 +3107,31 @@ impl App {
                 }
             }
             skills::Hit::Thumb => {}
+            // Drawn back immediately rather than left to a reply that never
+            // comes — see `skills::Tree::lock_of`'s doc for why the shard
+            // sends nothing here.
+            skills::Hit::Lock(id) => {
+                let shard = self
+                    .view
+                    .as_ref()
+                    .and_then(|view| view.player.skills.get(&id.0))
+                    .map(|line| line.lock)
+                    .unwrap_or_default();
+                let next = match tree.lock_of(id, shard) {
+                    SkillLock::Up => SkillLock::Down,
+                    SkillLock::Down => SkillLock::Locked,
+                    SkillLock::Locked => SkillLock::Up,
+                };
+                tree.set_lock(id, next);
+                if let Some(link) = self.link.as_ref() {
+                    link.set_skill_lock(RawSkillId(id.0), next);
+                }
+            }
+            skills::Hit::Use(id) => {
+                if let Some(link) = self.link.as_ref() {
+                    link.use_skill(RawSkillId(id.0));
+                }
+            }
         }
     }
 
@@ -4606,17 +4668,15 @@ impl App {
         // `run` cannot ask before one does, and rebuilding a size already
         // packed at is exactly the "ten faces" cost `ttf_font`'s doc explains
         // this engine does not pay.
-        let (ttf_atlas, ttf_pass) = match &self.ttf_font {
+        let (ttf_atlas, ttf_gump_pass) = match &self.ttf_font {
             Some(_) => {
                 let atlas = TtfAtlas::empty(TTF_BASE_PIXEL_HEIGHT * window.scale_factor() as f32);
-                let pass = SpriteRenderer::new(
-                    &device,
-                    &queue,
-                    blit::WORLD_FORMAT,
-                    atlas.pixels(),
-                    &self.hue_ramp,
-                );
-                (Some(atlas), Some(pass))
+                // The surface's format, `gump_text_pass`'s own reason: overhead
+                // speech and the HUD's speech line and journal both draw over
+                // the finished frame, not into the world image — see
+                // `Screen::ttf_gump_pass`'s doc.
+                let gump_pass = GumpRenderer::new(&device, &queue, format, atlas.pixels(), &self.hue_ramp);
+                (Some(atlas), Some(gump_pass))
             }
             None => (None, None),
         };
@@ -4697,7 +4757,7 @@ impl App {
             atlases,
             text_pass,
             ttf_atlas,
-            ttf_pass,
+            ttf_gump_pass,
             outline_mask,
             outline,
             select_mask,
@@ -5254,52 +5314,6 @@ impl App {
             true => sky,
             false => sky.map(light::Ambient::flattened),
         };
-        let mut lighting = match sky {
-            Some(ambient) => light::collect(
-                &self.map,
-                &self.items,
-                &camera,
-                &self.tiledata,
-                &cutaway,
-                ambient,
-                &tuning,
-                self.flame_clock.as_secs_f32(),
-                // The pictures, which is where an occluder's *facing* comes from:
-                // a wall stops a ray only where the ray crosses the side the wall
-                // stands on, and only the art says which side that is. The same
-                // atlas the statics pass is about to draw from, so the grid and
-                // the picture cannot be about two different sets of sprites.
-                Some(&window.atlases.statics),
-                // And the blocks of that grid built for earlier frames. A camera
-                // that has moved a tile wants the same five hundred and fifty
-                // blocks it wanted last frame bar a handful — see
-                // `occlusion::bake`, and `StaticAtlas::revision` for what makes
-                // this let go when the atlas learns something new about a
-                // graphic.
-                Some(&mut self.occlusion_bake),
-            ),
-            None => Lighting::NONE,
-        };
-
-        let quads = ground::collect(
-            &self.map,
-            &camera,
-            &window.atlases.land,
-            &window.atlases.texmaps,
-            &cutaway,
-        );
-        let mut world_statics = statics::collect(
-            &self.map,
-            &camera,
-            &self.tiledata,
-            &self.tile_animations,
-            &window.atlases.statics,
-            &cutaway,
-            &lighting.occlusion,
-        );
-        // Through the same pass as the map's statics, because they are the same
-        // atlas: one draw call binds one texture, and what covers what is the
-        // depth these carry rather than the order they are appended in.
         // One pick (`lit_item`, at the top of the frame), two effects, and the
         // style decides which of them is asked for. `None` is how each is
         // switched off, so neither pass has a mode to branch on: the hue pass
@@ -5307,6 +5321,73 @@ impl App {
         // handed an empty list.
         let hued = self.highlight_style.hues().then_some(lit_item).flatten();
         let ringed = self.highlight_style.rings().then_some(lit_item).flatten();
+
+        // **One assembly, and the client is a caller of it like any other** —
+        // `docs/parity.md`, decision D1. This sequence used to be written out by
+        // hand here and in six other places, every one of them free to pass a
+        // different cutaway, a different grid or a different clock; each of them
+        // did, and the difference was only ever found by reading. Everything a
+        // caller may honestly differ on is a field of `frame::Inputs` now, so
+        // what this frame is can be compared against what a tool's frame is
+        // rather than pieced together from two call sites.
+        let frame::Frame {
+            lighting,
+            ground: quads,
+            statics:
+                statics::StaticGeometry {
+                    quads: static_quads,
+                    mesh_vertices,
+                    mesh_rows,
+                    boxes: static_boxes,
+                },
+        } = frame::assemble(frame::Inputs {
+            map: &self.map,
+            items: &self.items,
+            camera: &camera,
+            tiledata: &self.tiledata,
+            animations: &self.tile_animations,
+            cutaway: &cutaway,
+            land: &window.atlases.land,
+            texmaps: &window.atlases.texmaps,
+            // The pictures, which is where an occluder's *facing* comes from: a
+            // wall stops a ray only where the ray crosses the side the wall
+            // stands on, and only the art says which side that is. One atlas for
+            // the grid and for both sprite passes, so they cannot be about two
+            // different sets of sprites.
+            statics: &window.atlases.statics,
+            sky,
+            // The sun is a property of the sky and not of the tiles, so it is an
+            // input to the frame rather than something walked with them — and
+            // never at night, where a second source lighting every roof would
+            // undo the whole point of the dark. Where the Light tab put it,
+            // which is `light::midday` until somebody moves a slider — see
+            // `light::SunTuning`.
+            sun: (self.sunlit && !self.night).then(|| tuning.sun.sun()),
+            // And the flame in the player's own hand, which no walk of the map
+            // could have found — see `light::carried`.
+            carried: self.lantern.then_some((self.player.at, self.player.facing)),
+            tuning: &tuning,
+            flame_time: self.flame_clock.as_secs_f32(),
+            // The blocks of the occlusion grid built for earlier frames. A
+            // camera that has moved a tile wants the same five hundred and fifty
+            // blocks it wanted last frame bar a handful — see `occlusion::bake`,
+            // and `StaticAtlas::revision` for what makes this let go when the
+            // atlas learns something new about a graphic.
+            bake: Some(&mut self.occlusion_bake),
+            highlight: hued,
+            // The live client meets every sprite against its own boxes whenever
+            // it has a grid at all. F10 is not this field: turning the lights off
+            // takes the *sky* away, and a frame with no sky has no grid for
+            // anything to be met against.
+            impostor: Impostor::Met,
+            // The view is the looker's, not the world's: a diagnostic draws from
+            // the values this frame was lit with, and in daylight those are the
+            // ambient and the place attachment — which is exactly what a person
+            // checking the place channel wants to see, without having to make it
+            // night first.
+            view: self.light_view,
+        });
+
         // What a click is holding, placed exactly as the picture placed it —
         // `statics::selected` is `statics::collect`'s own arithmetic — so the
         // mask lands on the wall's pixels rather than beside them. Empty on
@@ -5330,28 +5411,6 @@ impl App {
             &cutaway,
             ringed,
         );
-        // Through the same passes as the map's own furniture, because they are
-        // the same kind of thing: one picture list, one mesh, one box list. A
-        // climbable item gets the honest mesh a climbable map static does
-        // (`items::collect`'s own doc) and a dropped item is met against its own
-        // boxes exactly as a wall is — and both of those are addressed by index,
-        // which is what `StaticGeometry::absorb` exists to keep right.
-        world_statics.absorb(items::collect(
-            &self.items,
-            &camera,
-            &self.tiledata,
-            &self.tile_animations,
-            &window.atlases.statics,
-            &cutaway,
-            hued,
-            &lighting.occlusion,
-        ));
-        let statics::StaticGeometry {
-            quads: static_quads,
-            mesh_vertices,
-            mesh_rows,
-            boxes: static_boxes,
-        } = world_statics;
         // A corner static's two faces get their own id past this point — see
         // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
         let static_instances = split_corners(static_quads);
@@ -5377,54 +5436,89 @@ impl App {
             &self.equip_conv,
             mobile_hued,
         );
-        let labels: Vec<Label<'_>> = speech
-            .iter()
-            .map(|(anchor, line, font, hue)| Label {
-                anchor: *anchor,
-                text: line.as_str(),
-                font: *font,
-                hue: *hue,
-                // Nearer than anything the world draws, rather than an
-                // `Order` of its own: speech reads as an overlay above
-                // whoever said it in every reference client, and there is no
-                // real case here of a wall in front of the speaker hiding it
-                // that a viewer would want honoured. Worth revisiting with a
-                // `depth::text_priority_z` alongside the mobile's own if that
-                // ever stops being true.
-                depth: 0.0,
-            })
-            .collect();
         // `fonts.mul` or the operator-supplied TrueType face, never a mix
-        // within one frame — see `run`'s doc for why `ttf_font` is an all-or-nothing
-        // switch. Unlike `font_atlas`, `ttf_atlas` is grown a line at a time:
-        // there is no bounded "whole file" to pack up front for a face that
-        // answers to all of Unicode, so this asks it to rasterize whatever of
-        // this frame's speech it has not seen yet, the way `window.atlases`
-        // grows for graphics newly on screen.
-        let text_quads = if let Some(font) = &self.ttf_font {
-            let atlas = window
-                .ttf_atlas
-                .as_mut()
-                .expect("create_window builds ttf_atlas whenever ttf_font is set");
-            if let Err(error) = atlas.add(font, labels.iter().flat_map(|label| label.text.chars())) {
-                // `eprintln!` and a frame that draws anyway, the same corner
-                // `AtlasError::Full` already cuts for the map's own atlases —
-                // see docs/client.md. Unreachable in practice: a shard's whole
-                // spoken character set is a few hundred glyphs at most, nowhere
-                // near one 2048 texture.
-                eprintln!("packing ttf glyphs: {error}");
+        // within one frame — see `run`'s doc for why `ttf_font` is an
+        // all-or-nothing switch. `fonts.mul` still draws into the world
+        // image, at the world's own camera-scaled zoom — a bitmap font's
+        // blocky nearest-sampled magnification is the look every other
+        // sprite already has. A TrueType face does not go through the world
+        // passes at all any more: `screen_speech` is collected in real
+        // screen pixels instead, held until the HUD block further down folds
+        // it into `hud_quads` for `Screen::ttf_gump_pass`'s one call — see
+        // `text::ScreenLabel`'s doc for why the pass and `hud_quads`'s own
+        // comment for why it has to be one call.
+        let (text_quads, screen_speech): (Vec<SpriteQuad>, Vec<text::ScreenLabel<'_>>) = match &self.ttf_font
+        {
+            Some(font) => {
+                let atlas = window
+                    .ttf_atlas
+                    .as_mut()
+                    .expect("create_window builds ttf_atlas whenever ttf_font is set");
+                // Unlike `font_atlas`, `ttf_atlas` is grown a line at a time:
+                // there is no bounded "whole file" to pack up front for a
+                // face that answers to all of Unicode, so this asks it to
+                // rasterize whatever of this frame's speech it has not seen
+                // yet, the way `window.atlases` grows for graphics newly on
+                // screen.
+                if let Err(error) = atlas.add(font, speech.iter().flat_map(|(.., line, _, _)| line.chars())) {
+                    // `eprintln!` and a frame that draws anyway, the same
+                    // corner `AtlasError::Full` already cuts for the map's
+                    // own atlases — see docs/client.md. Unreachable in
+                    // practice: a shard's whole spoken character set is a
+                    // few hundred glyphs at most, nowhere near one 2048
+                    // texture.
+                    eprintln!("packing ttf glyphs: {error}");
+                }
+                let screen_speech = speech
+                    .iter()
+                    .map(|(anchor, line, _font, hue)| {
+                        // `to_viewport` and not the projection directly:
+                        // it is the one place that already undoes both a
+                        // magnifying zoom's vertex-shader scale *and* a
+                        // minifying one's blit-shrink with the same number
+                        // — see its own doc. `viewport`'s own corner is
+                        // added because `to_viewport` answers in pixels of
+                        // the rect the world goes into, not the surface.
+                        let real = camera.to_viewport(*anchor);
+                        text::ScreenLabel {
+                            anchor: GumpPixel::new(
+                                viewport.x as i32 + real.x.round() as i32,
+                                viewport.y as i32 + real.y.round() as i32,
+                            ),
+                            text: line.as_str(),
+                            hue: *hue,
+                        }
+                    })
+                    .collect();
+                (Vec::new(), screen_speech)
             }
-            if let Some(rows) = atlas.take_dirty() {
-                window
-                    .ttf_pass
-                    .as_ref()
-                    .expect("create_window builds ttf_pass whenever ttf_atlas is")
-                    .upload_rows(&window.queue, atlas.pixels(), rows);
+            None => {
+                let labels: Vec<Label<'_>> = speech
+                    .iter()
+                    .map(|(anchor, line, font, hue)| Label {
+                        anchor: *anchor,
+                        text: line.as_str(),
+                        font: *font,
+                        hue: *hue,
+                        // Nearer than anything the world draws, rather than
+                        // an `Order` of its own: speech reads as an overlay
+                        // above whoever said it in every reference client,
+                        // and there is no real case here of a wall in front
+                        // of the speaker hiding it that a viewer would want
+                        // honoured. Worth revisiting with a
+                        // `depth::text_priority_z` alongside the mobile's
+                        // own if that ever stops being true.
+                        depth: 0.0,
+                    })
+                    .collect();
+                (text::collect(&labels, &self.font_atlas), Vec::new())
             }
-            text::collect_ttf(&labels, atlas)
-        } else {
-            text::collect(&labels, &self.font_atlas)
         };
+        // Uploads whatever the `add` above (and the HUD's own, further down
+        // this frame) packed fresh — see `Screen::upload_ttf_dirty`'s doc for
+        // why this is the one place both call through rather than each taking
+        // `TtfAtlas::take_dirty` for itself.
+        window.upload_ttf_dirty();
         let depth_view = window.depth.create_view(&wgpu::TextureViewDescriptor::default());
         let gbuffer_views = window.gbuffer.views();
         let target = Target {
@@ -5528,14 +5622,11 @@ impl App {
                 &[&select_quads],
             );
         }
-        // `ttf_pass` when the run is drawing through it — bound to a
-        // different texture than `text_pass`, so a mix of the two within one
-        // frame would sample one atlas with quads packed for the other.
-        let text_renderer = match &mut window.ttf_pass {
-            Some(pass) => pass,
-            None => &mut window.text_pass,
-        };
-        text_renderer.render(
+        // Always `text_pass`, `fonts.mul`'s own: `text_quads` is empty
+        // whenever `App::ttf_font` is set, since a TrueType face's speech
+        // draws after the blit instead — see `screen_speech`'s own comment
+        // above and the render call after it, below.
+        window.text_pass.render(
             &window.device,
             &window.queue,
             &mut encoder,
@@ -5550,38 +5641,13 @@ impl App {
         // minified it is where the shrinking happens, which is why the zoom is
         // still what picks the sampler.
         //
-        // The lights themselves were collected at the top of the frame, before
-        // the pictures — see the comment there for why the order is that way
-        // round now.
-        // The sun is a property of the sky and not of the tiles, so it is set
-        // here rather than inside the walk — and never at night, where a second
-        // source lighting every roof would undo the whole point of the dark.
-        if self.sunlit && !self.night {
-            // Where the Light tab put it, which is `light::midday` until somebody
-            // moves a slider — see `light::SunTuning`.
-            lighting.sun = Some(tuning.sun.sun());
-        }
-        // And the flame in the player's own hand, which no walk of the map could
-        // have found — see `light::carried`. Only where the frame has a sky at
-        // all: with no ambient the pass is the copy the blit has always been, and
-        // a beam over an already-white multiplier would cost a loop to change
-        // nothing. It goes in after the sort, and `hold` is what says it is never
-        // the flame dropped when a tavern's candles fill the array.
-        if self.lantern && sky.is_some() {
-            // Through the tuning as every collected flame is: the lantern is a
-            // flame, and a brightness knob that left the one light the player
-            // actually carries alone would read as having no effect at all.
-            lighting.hold(tuning.applied(light::carried(
-                self.player.at,
-                self.player.facing,
-                self.flame_clock.as_secs_f32(),
-            )));
-        }
-        // The view is the looker's, not the world's: a diagnostic draws from the
-        // values this frame was lit with, and in daylight those are the ambient
-        // and the place attachment — which is exactly what a person checking the
-        // place channel wants to see, without having to make it night first.
-        lighting.view = self.light_view;
+        // The lighting — the flames, the sun, the lantern in the player's hand
+        // and which of the pass's own values is drawn — was assembled at the top
+        // of the frame, out of `frame::Inputs`. Nothing between there and here
+        // may touch it: a frame this client draws and a frame a tool dumps are
+        // the same frame only for as long as neither of them has an adjustment
+        // of its own afterwards. `docs/parity.md`.
+        //
         // **Solids alone**, `App::solids_only`: the surface is cleared and the
         // world image is not drawn onto it at all, so the boxes below stand
         // over nothing that could be mistaken for their own shape. `lighting`
@@ -5817,7 +5883,10 @@ impl App {
                                         view.player.skills.get(&id.0).map(|line| skills::Standing {
                                             value: line.value,
                                             cap: line.cap,
-                                            lock: line.lock,
+                                            // The player's own click, held over
+                                            // the shard's line — see
+                                            // `Tree::lock_of`'s doc.
+                                            lock: tree.lock_of(id, line.lock),
                                         })
                                     },
                                     |text, font| text::gump_width(text, font, &self.font_atlas),
@@ -6113,30 +6182,121 @@ impl App {
             // The caret, a lone glyph rather than a new quad primitive: the
             // gump pass draws through an atlas of packed sprites and has
             // nothing that paints a solid rectangle, and `fonts.mul` already
-            // has a `|` to stand in for one. Blinks off wall-clock time rather
-            // than a stored `Instant`, so nothing on `Chat` has to track when
-            // focus began.
-            let prefix_width = text::gump_width("say: ", font, &self.font_atlas);
+            // has a `|` to stand in for one — as does every TrueType face,
+            // `.notdef` or otherwise (`openshard_uofiles::ttf_font::TtfFont::glyph`'s
+            // "never fails" doc). Blinks off wall-clock time rather than a
+            // stored `Instant`, so nothing on `Chat` has to track when focus
+            // began.
             let caret_text = "|";
             let blink_on = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| (elapsed.as_millis() / 500) % 2 == 0)
                 .unwrap_or(true);
-            if self.chat.focused && blink_on {
-                let caret_x = prefix_width
-                    + text::gump_width(&self.chat.typed[..self.chat.cursor], font, &self.font_atlas);
-                labels.push(GumpLabel {
-                    at: GumpPixel::new(input_at.x + caret_x, input_at.y),
-                    text: caret_text,
-                    font,
-                    hue: Hue::NONE,
-                    clip: None,
-                });
+            // `fonts.mul` has no Cyrillic past `0xFF` — see `run`'s
+            // `--ttf-font` doc — and this is the box a player actually reads
+            // what they typed back from, so unlike the dialog captions
+            // `text_quads` carries below, this switches to `App::ttf_font`
+            // and `Screen::ttf_gump_pass` whenever one is set rather than
+            // drawing a line nobody can read the second half of.
+            if let Some(font) = &self.ttf_font {
+                let atlas = window
+                    .ttf_atlas
+                    .as_mut()
+                    .expect("create_window builds ttf_atlas whenever ttf_font is set");
+                let wanted = labels
+                    .iter()
+                    .flat_map(|label| label.text.chars())
+                    .chain(std::iter::once('|'));
+                if let Err(error) = atlas.add(font, wanted) {
+                    // Same corner as the speech line's own `atlas.add` above.
+                    eprintln!("packing ttf glyphs: {error}");
+                }
+                // `labels`' own positions are gump pixels, `rows`/`input_at`'s
+                // space — real pixels only once here, not per glyph inside
+                // `collect_gump_ttf`: see that function's doc for why the
+                // earlier per-glyph version read soft and its baseline
+                // sawtoothed.
+                let to_real = |p: GumpPixel| {
+                    GumpPixel::new(
+                        (p.x as f32 * scale).round() as i32,
+                        (p.y as f32 * scale).round() as i32,
+                    )
+                };
+                let mut real_labels: Vec<GumpLabel<'_>> = labels
+                    .iter()
+                    .map(|label| GumpLabel {
+                        at: to_real(label.at),
+                        ..*label
+                    })
+                    .collect();
+                let prefix_width = text::gump_width_ttf("say: ", atlas);
+                if self.chat.focused && blink_on {
+                    let real_input_at = to_real(input_at);
+                    let caret_x =
+                        prefix_width + text::gump_width_ttf(&self.chat.typed[..self.chat.cursor], atlas);
+                    real_labels.push(GumpLabel {
+                        at: GumpPixel::new(real_input_at.x + caret_x, real_input_at.y),
+                        text: caret_text,
+                        font: Font::DEFAULT,
+                        hue: Hue::NONE,
+                        clip: None,
+                    });
+                }
+                let mut hud_quads = text::collect_gump_ttf(&real_labels, atlas);
+                // Overhead speech's own quads, folded into this same list
+                // rather than a render call of their own — `GumpRenderer::render`'s
+                // doc is explicit that a second call the same frame does not
+                // add a second draw, it *replaces* the first: the instances
+                // live in one buffer written through `queue.write_buffer`,
+                // which lands before either call's encoded draw actually
+                // runs, so a first, separate `screen_speech` call earlier in
+                // the frame was silently overwritten by this one and never
+                // drew anything. One call, everything it should draw.
+                hud_quads.extend(text::collect_screen_ttf(&screen_speech, atlas));
+                // Picks up this call's own `add` above and, the first time
+                // through this frame, the speech line's — see
+                // `Screen::upload_ttf_dirty`'s doc.
+                window.upload_ttf_dirty();
+                window
+                    .ttf_gump_pass
+                    .as_mut()
+                    .expect("create_window builds ttf_gump_pass whenever ttf_atlas is")
+                    .render(
+                        &window.device,
+                        &window.queue,
+                        &mut encoder,
+                        gump_art::Frame {
+                            target: &view,
+                            width: window.config.width,
+                            height: window.config.height,
+                            // Not `scale`: `hud_quads` are already in real
+                            // pixels, so the shader's own multiply — the one
+                            // `text_quads` below still needs, being in gump
+                            // pixels — would double it.
+                            scale: 1.0,
+                        },
+                        &hud_quads,
+                    );
+            } else {
+                let prefix_width = text::gump_width("say: ", font, &self.font_atlas);
+                if self.chat.focused && blink_on {
+                    let caret_x = prefix_width
+                        + text::gump_width(&self.chat.typed[..self.chat.cursor], font, &self.font_atlas);
+                    labels.push(GumpLabel {
+                        at: GumpPixel::new(input_at.x + caret_x, input_at.y),
+                        text: caret_text,
+                        font,
+                        hue: Hue::NONE,
+                        clip: None,
+                    });
+                }
+                text_quads.extend(text::collect_gump(&labels, &self.font_atlas));
             }
-            text_quads.extend(text::collect_gump(&labels, &self.font_atlas));
             // The one call, with the windows' lines already in front of the
             // chat's: painter's order inside a single pass, and the only order
             // there is — see `text_quads` for what a second call would cost.
+            // Draws only the windows' captions when `App::ttf_font` is set:
+            // the chat's own quads went through `ttf_gump_pass` above instead.
             window.gump_text_pass.render(
                 &window.device,
                 &window.queue,

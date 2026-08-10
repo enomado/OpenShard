@@ -17,10 +17,12 @@
 use std::time::Duration;
 
 use openshard_client_net::connection::Event;
-use openshard_client_net::doll;
 use openshard_client_net::transport::enter_world;
 use openshard_client_net::view::WorldView;
+use openshard_client_net::{doll, skill};
 use openshard_protocol::server_packet::ServerPacket;
+use openshard_protocol::skill::SkillLock;
+use openshard_protocol::wire::{ClilocId, RawSkillId};
 
 use openshard_e2e_shard::{plan, shard, version};
 
@@ -134,5 +136,86 @@ async fn the_skills_button_asks_for_the_list_and_the_client_folds_the_answer() {
     until(&mut socket, &mut view, "the skills button", |view, packet| {
         matches!(packet, ServerPacket::SkillsFull(_)) && view.player.skills.len() >= FEWEST
     })
+    .await;
+}
+
+/// The lock arrow: `set_skill_lock` sends nothing back — see its own doc in
+/// `crates/server/world/src/tick/skills_wire.rs` — so the only way to observe
+/// it from a bare socket is to ask for the list again and read the change
+/// back off it, the same request the second test above already uses.
+#[tokio::test]
+async fn the_lock_arrow_is_stored_and_reflected_in_the_next_full_list() {
+    let (address, _shard) = shard();
+    let entered = tokio::time::timeout(Duration::from_secs(20), enter_world(address, plan(), version()))
+        .await
+        .expect("the login conversation finished inside the timeout")
+        .expect("the client reached the world");
+    let (mut socket, mut view) = entered;
+
+    until(&mut socket, &mut view, "the skill list", |view, _| {
+        view.player.skills.len() >= FEWEST
+    })
+    .await;
+    assert_ne!(
+        view.player.skills[&MINING].lock,
+        SkillLock::Locked,
+        "the fixture must not already be locked, or the assertion below proves nothing"
+    );
+
+    socket
+        .send(&skill::set_lock(RawSkillId(MINING), SkillLock::Locked))
+        .await
+        .expect("the shard is listening");
+    view.player.skills.clear();
+    socket
+        .send(&doll::skills(view.player.serial))
+        .await
+        .expect("the shard is listening");
+    until(
+        &mut socket,
+        &mut view,
+        "the re-fetched skill list",
+        |view, packet| matches!(packet, ServerPacket::SkillsFull(_)) && view.player.skills.len() >= FEWEST,
+    )
+    .await;
+
+    assert_eq!(
+        view.player.skills[&MINING].lock,
+        SkillLock::Locked,
+        "the lock click has to outlive the request that reads it back"
+    );
+}
+
+/// Tactics (id 27) is passive in `openshard_state::skill` — `usable == false`
+/// — so `use_skill_button` refuses it out loud with cliloc 500014 ("that
+/// skill cannot be used directly") rather than starting anything. That refusal
+/// is the whole path this end can observe without an individual skill's own
+/// effect being built: decode → dispatch → `use_skill_button`'s gate.
+#[tokio::test]
+async fn a_passive_skill_refuses_the_use_button() {
+    const TACTICS: u8 = 27;
+
+    let (address, _shard) = shard();
+    let entered = tokio::time::timeout(Duration::from_secs(20), enter_world(address, plan(), version()))
+        .await
+        .expect("the login conversation finished inside the timeout")
+        .expect("the client reached the world");
+    let (mut socket, mut view) = entered;
+
+    socket
+        .send(&skill::use_skill(RawSkillId(TACTICS)))
+        .await
+        .expect("the shard is listening");
+    until(
+        &mut socket,
+        &mut view,
+        "the cannot-use-directly message",
+        |_, packet| {
+            matches!(
+                packet,
+                ServerPacket::LocalizedMessage(message) if message.cliloc == ClilocId(500_014)
+            )
+        },
+    )
     .await;
 }

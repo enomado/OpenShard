@@ -40,7 +40,7 @@ use openshard_protocol::skill::SkillLock;
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::skillgrp::{GroupId, SkillGroups};
-use openshard_uofiles::skills::{SkillId, Skills};
+use openshard_uofiles::skills::{Skill, SkillId, Skills};
 
 use crate::gump::{GumpArt, GumpPixel, Picture, Scissor};
 use crate::text::GumpLabel;
@@ -57,8 +57,7 @@ pub struct Standing {
     pub value: u16,
     /// This character's ceiling for it, in tenths.
     pub cap: u16,
-    /// Which way the shard is training it. Drawn, not yet clickable — see the
-    /// module docs.
+    /// Which way the shard is training it.
     pub lock: SkillLock,
 }
 
@@ -86,6 +85,19 @@ pub struct Tree {
     shut: BTreeSet<GroupId>,
     /// How far down the content the viewport's top edge sits, in gump pixels.
     offset: i32,
+    /// Locks the player has clicked since the window last opened, held over
+    /// whatever the shard's own line says.
+    ///
+    /// The one deliberate exception to "wait for the shard's answer", and not
+    /// this client's invention: ServUO's own skill window redraws the arrow
+    /// the instant it is clicked and never listens for a reply, which is why
+    /// `World::set_skill_lock` sends nothing back (see that function's doc in
+    /// `crates/server/world/src/tick/skills_wire.rs`). A window that waited
+    /// here would show the old face until the skill happened to change some
+    /// other way. Lives exactly where `shut`/`offset` do — state the window
+    /// has and no packet carries — and is thrown away with the rest of the
+    /// tree when the window closes.
+    locked: BTreeMap<SkillId, SkillLock>,
 }
 
 impl Tree {
@@ -122,14 +134,27 @@ impl Tree {
     pub fn scroll_by(&mut self, delta: i32, content: i32) {
         self.scroll_to(self.offset + delta, content);
     }
+
+    /// A skill's lock, as the window should draw it: the player's own click if
+    /// there has been one since the window opened, or `shard` — the shard's
+    /// own line — otherwise.
+    #[must_use]
+    pub fn lock_of(&self, id: SkillId, shard: SkillLock) -> SkillLock {
+        self.locked.get(&id).copied().unwrap_or(shard)
+    }
+
+    /// Record a click on a skill's lock arrow.
+    pub fn set_lock(&mut self, id: SkillId, lock: SkillLock) {
+        self.locked.insert(id, lock);
+    }
 }
 
 /// What one hit on the window means.
 ///
 /// The same shape `paperdoll::DollButton` has and for the same reason:
 /// [`crate::gump::pick`] answers an index into the picture list, and this is
-/// what turns one into a meaning. Everything a *row* could mean — use this
-/// skill, lock it, drag it out — is absent on purpose; see the module docs.
+/// what turns one into a meaning. Dragging a skill out of the window to leave
+/// a button on the desktop is absent on purpose; see the module docs.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Hit {
     /// The arrow beside a heading: open it, or shut it.
@@ -142,6 +167,11 @@ pub enum Hit {
     Thumb,
     /// The bar behind the thumb, which jumps it here.
     Track,
+    /// A skill's lock arrow: cycle Up → Down → Locked → Up.
+    Lock(SkillId),
+    /// A skill's own use button — drawn only for a skill the files mark
+    /// [`has_action`](openshard_uofiles::skills::Skill::has_action).
+    Use(SkillId),
 }
 
 /// A line of text the window writes, already placed.
@@ -250,14 +280,21 @@ const HEADING_RULE: Graphic = Graphic(0x0835);
 
 /// The three faces of a skill's lock: up, down, and held.
 ///
-/// `GetStatusButtonGraphic`. Drawn only — the arrow answers no click yet, and
-/// the picture is here because a lock the player set from another client is a
-/// fact about the skill that the window would otherwise not show.
+/// `GetStatusButtonGraphic`.
 const LOCK_UP: Graphic = Graphic(0x0984);
 /// Trained down.
 const LOCK_DOWN: Graphic = Graphic(0x0986);
 /// Held where it is.
 const LOCK_HELD: Graphic = Graphic(0x082C);
+
+/// A skill's own use button, drawn only for one the files mark
+/// [`has_action`](openshard_uofiles::skills::Skill::has_action).
+///
+/// `new Button(0, 0x0837, 0x0838, 0x0838)` — normal only: this window draws
+/// no pressed art for any of its furniture yet, the arrows and the thumb
+/// included, so the reference's `0x0838` pressed face is not ported here
+/// either.
+const USE_BUTTON: Graphic = Graphic(0x0837);
 
 /// How wide the window is: the top piece's own width.
 pub const WIDTH: i32 = 345;
@@ -330,6 +367,9 @@ const HEADING_HUE: Hue = Hue(0x0386);
 
 /// Where a skill's name starts inside its row — `name.X = 22`.
 const NAME_X: i32 = 22;
+
+/// Where the use button sits, left of the name — `buttonUse.X = 8`.
+const USE_X: i32 = 8;
 
 /// Where its value's right edge falls — `_value.X = 250 - _value.Width`, taken
 /// as a fraction of the viewport since this window is not the reference's width.
@@ -503,7 +543,7 @@ pub fn window(
                 let Some(skill) = names.get(id) else {
                     continue;
                 };
-                skill_row(&mut sheet, at, y, &skill.name, standing(id), &width_of);
+                skill_row(&mut sheet, at, y, id, skill, standing(id), &width_of);
             }
         }
         y += height_of(row);
@@ -609,13 +649,26 @@ fn skill_row(
     sheet: &mut Sheet,
     at: GumpPixel,
     y: i32,
-    name: &str,
+    id: SkillId,
+    skill: &Skill,
     standing: Option<Standing>,
     width_of: &impl Fn(&str, Font) -> i32,
 ) {
+    // The use button, if the files offer one for this skill at all — a fact
+    // about the install, not about whether the shard has sent a line yet.
+    if skill.has_action {
+        sheet.pictures.push(
+            Picture::plain(
+                GumpArt::Gump(USE_BUTTON),
+                at.offset(GumpPixel::new(VIEWPORT_AT.x + USE_X, y + 2)),
+            )
+            .inside(sheet.viewport),
+        );
+        sheet.hits.insert(sheet.pictures.len() - 1, Hit::Use(id));
+    }
     sheet.lines.push(Line {
         at: at.offset(GumpPixel::new(VIEWPORT_AT.x + NAME_X, y)),
-        text: name.to_owned(),
+        text: skill.name.clone(),
         font: ROW_FONT,
         hue: ROW_HUE,
         scissor: Some(sheet.viewport),
@@ -639,6 +692,7 @@ fn skill_row(
         )
         .inside(sheet.viewport),
     );
+    sheet.hits.insert(sheet.pictures.len() - 1, Hit::Lock(id));
 }
 
 /// The bar: two arrows, a track of three pieces, and the thumb on it.
@@ -1023,5 +1077,82 @@ mod tests {
             "three shut headings fit the window"
         );
         assert_eq!(sheet.offset_at(GumpPixel::new(0, BAR_AT.y + 100), 60), 0);
+    }
+
+    /// A skill with a line carries a clickable lock; one the files mark
+    /// `has_action` carries a clickable use button too — `files()`'s Alchemy
+    /// (`nth == 0`, `has_action`) and Anatomy (`nth == 1`, not).
+    #[test]
+    fn a_row_registers_the_hits_its_skill_actually_has() {
+        let (names, groups) = files();
+        let tree = Tree::default();
+        let sheet = window(
+            &names,
+            &groups,
+            &tree,
+            |_| Some(standing(500)),
+            width_of,
+            GumpPixel::new(0, 0),
+        );
+        assert!(
+            sheet.hits.values().any(|hit| *hit == Hit::Use(SkillId(0))),
+            "Alchemy is has_action in the fixture"
+        );
+        assert!(
+            sheet.hits.values().any(|hit| *hit == Hit::Lock(SkillId(0))),
+            "every skill with a line has a clickable lock"
+        );
+        assert!(
+            !sheet.hits.values().any(|hit| *hit == Hit::Use(SkillId(1))),
+            "Anatomy is not has_action in the fixture"
+        );
+        assert!(
+            sheet.hits.values().any(|hit| *hit == Hit::Lock(SkillId(1))),
+            "Anatomy still has a line, so still a lock"
+        );
+    }
+
+    /// A skill with no line has no lock to click — `skill_row` returns before
+    /// pushing one — but a `has_action` skill's use button does not depend on
+    /// the shard having said anything.
+    #[test]
+    fn a_skill_with_no_line_has_no_lock_but_keeps_its_use_button() {
+        let (names, groups) = files();
+        let tree = Tree::default();
+        let sheet = window(
+            &names,
+            &groups,
+            &tree,
+            |id| (id != SkillId(0)).then(|| standing(500)),
+            width_of,
+            GumpPixel::new(0, 0),
+        );
+        assert!(
+            sheet.hits.values().any(|hit| *hit == Hit::Use(SkillId(0))),
+            "Alchemy's use button does not wait on a line"
+        );
+        assert!(
+            !sheet.hits.values().any(|hit| *hit == Hit::Lock(SkillId(0))),
+            "no line, no lock face to click"
+        );
+    }
+
+    /// The one deliberate exception to "wait for the shard": a click on the
+    /// lock arrow is drawn back before any packet could possibly answer it.
+    #[test]
+    fn a_tree_draws_the_players_own_click_over_the_shards_line() {
+        let mut tree = Tree::default();
+        assert_eq!(
+            tree.lock_of(SkillId(0), SkillLock::Up),
+            SkillLock::Up,
+            "nothing clicked yet: the shard's own line stands"
+        );
+        tree.set_lock(SkillId(0), SkillLock::Locked);
+        assert_eq!(tree.lock_of(SkillId(0), SkillLock::Up), SkillLock::Locked);
+        assert_eq!(
+            tree.lock_of(SkillId(1), SkillLock::Down),
+            SkillLock::Down,
+            "a click on one skill does not touch another's"
+        );
     }
 }

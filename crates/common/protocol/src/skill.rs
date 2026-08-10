@@ -12,7 +12,7 @@
 use crate::codec::{PacketReader, PacketWriter};
 use crate::error::{DecodeError, expect_id};
 use crate::feature::Feature;
-use crate::packet::{DecodePacket, EncodePacket, PacketLength};
+use crate::packet::{DecodePacket, EncodePacket, PacketLength, frame_body};
 use crate::version::ClientVersion;
 use crate::wire::RawSkillId;
 
@@ -324,6 +324,35 @@ impl DecodePacket for SkillLockRequest {
     }
 }
 
+impl SkillLockRequest {
+    /// Encode a whole `0x3A` lock request. What `crates/client/net` sends when
+    /// the player clicks a skill's lock arrow; this server never sends one,
+    /// only ever decodes it — the same split as
+    /// [`DoubleClick::encode`](crate::containers::DoubleClick::encode).
+    ///
+    /// **Unanswered by design.** ServUO's own client redraws the arrow the
+    /// instant it is clicked and never waits for a reply, which is why
+    /// `World::set_skill_lock` sends nothing back — see that function's own
+    /// doc. A caller that held this off until an answer arrived would show the
+    /// old face forever.
+    #[must_use]
+    pub fn encode(self) -> Vec<u8> {
+        // `Variable`, not `Fixed`: `packet::client_packet_length` files this
+        // client-originated `0x3A` as variable-length, so the wire carries a
+        // length field even though every lock request is the same six bytes —
+        // `decode_packet`'s own dispatch skips exactly two bytes for it before
+        // calling `decode_body`, which does not read one itself.
+        frame_body(
+            <Self as DecodePacket>::ID,
+            PacketLength::Variable,
+            |out: &mut PacketWriter| {
+                out.u16(u16::from(self.skill.0));
+                out.u8(self.lock.to_bits());
+            },
+        )
+    }
+}
+
 /// `0x12` — a client text command. The engine cares about one type, `0x24`
 /// ("use skill"), whose payload is the skill index as an ASCII string. ServUO's
 /// `TextCommand` case `0x24` → `Skills.UseSkill`.
@@ -360,6 +389,23 @@ impl UseSkillRequest {
             })),
             Err(_) => Ok(None),
         }
+    }
+
+    /// Encode a whole `0x12` "use skill" text command. What `crates/client/net`
+    /// sends when the player presses a skill's own use button; this server
+    /// never sends one, only ever decodes it — the same split as
+    /// [`SkillLockRequest::encode`].
+    ///
+    /// The index as an ASCII decimal string, null-terminated, and nothing
+    /// after it — `decode`'s own `split(' ').next()` tolerates a trailing
+    /// field the reference sometimes sends, but nothing here needs to write
+    /// one.
+    #[must_use]
+    pub fn encode(self) -> Vec<u8> {
+        frame_body(Self::ID, PacketLength::Variable, |out: &mut PacketWriter| {
+            out.u8(Self::TYPE_USE_SKILL);
+            out.null_terminated_string(&self.skill.0.to_string());
+        })
     }
 }
 
@@ -644,5 +690,35 @@ mod tests {
         let len = packet.len() as u16;
         packet[1..3].copy_from_slice(&len.to_be_bytes());
         assert_eq!(UseSkillRequest::decode(&packet).unwrap(), None);
+    }
+
+    /// Both encoders, routed through the same dispatcher a real connection
+    /// uses — `doll.rs`'s
+    /// `every_button_reaches_the_server_as_the_packet_it_means` reason: a
+    /// missing `ClientPacket` arm would leave `encode` looking correct while
+    /// the server never heard it.
+    #[test]
+    fn a_lock_click_reaches_the_server_as_the_request_it_means() {
+        let sent = SkillLockRequest {
+            skill: RawSkillId(45),
+            lock: SkillLock::Locked,
+        };
+        let heard = crate::client_packet::ClientPacket::decode(&sent.encode(), aos()).expect("it decodes");
+        assert!(matches!(
+            heard,
+            crate::client_packet::ClientPacket::SkillLock(request) if request == sent
+        ));
+    }
+
+    #[test]
+    fn a_use_skill_press_reaches_the_server_as_the_request_it_means() {
+        let sent = UseSkillRequest {
+            skill: RawSkillId(45),
+        };
+        let heard = crate::client_packet::ClientPacket::decode(&sent.encode(), aos()).expect("it decodes");
+        assert!(matches!(
+            heard,
+            crate::client_packet::ClientPacket::UseSkill(request) if request == sent
+        ));
     }
 }

@@ -2727,6 +2727,31 @@ riding along with this one.
 - `crates/client/artscan` had no candidates — its public API is already fully
   typed. Re-checked in this pass: still true.
 
+### Backlog: a gump dialog's own captions still can't draw Cyrillic
+
+`--ttf-font`/`OPENSHARD_TTF_FONT` (`fonts.mul` has no glyph past `0xFF`, so no
+Cyrillic) now covers the speech line and the journal — `Screen::ttf_gump_pass`
+in `crates/client/app/src/lib.rs`, drawing through
+`openshard_client_render::text::collect_gump_ttf` — and overhead speech
+already went through `Screen::ttf_pass`/`text::collect_ttf` before that. A
+server-opened gump's own `{ text }`/`{ croppedtext }` captions did not move:
+they still draw through `Screen::gump_text_pass`/`text::collect_gump` and
+`App::font_atlas` unconditionally, so a shard whose gump layouts carry
+Cyrillic (an NPC's name over its head is one thing; a vendor's whole buy
+window is another) would still lose that text to the same silent
+byte-outside-the-table skip `text::collect`'s doc already names. Lower
+priority than the chat box was — a layout is usually authored by whoever
+scripts the shard, in whatever script the client already draws, where a typed
+chat line is the one text box a *player* fills in and expects to read back —
+but the same switch (`atlas.add` the layout's own strings, draw through
+`ttf_gump_pass` instead of `gump_text_pass` when `ttf_font` is set) is what
+closes it.
+
+`collect_gump_ttf`'s baseline is also an approximation, not a measured face
+metric — see `BASELINE_SHARE`'s doc in `text.rs` for why (this crate never
+reads an `hhea` table) — worth revisiting if a real TrueType face ever reads
+visibly off its line.
+
 ## Later
 
 LLM NPCs, quest generation, GM assistant, Discord integration. All optional, all

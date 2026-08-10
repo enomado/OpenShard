@@ -142,6 +142,80 @@ pub fn collect_ttf(labels: &[Label<'_>], atlas: &TtfAtlas) -> Vec<SpriteQuad> {
     quads
 }
 
+/// One line of overhead speech already resolved to real screen pixels rather
+/// than [`Label::anchor`]'s virtual, camera-scaled ones.
+///
+/// Why a speech bubble needs this and a static or a mobile does not: every
+/// world pass's vertex shader carries a quad's *size* through the same
+/// `Projection::scale` it carries its *position* through — camera zoom
+/// included, `statics.wesl`'s `vs_main` — which is exactly right for a
+/// nearest-sampled pixel-art sprite (a whole zoom step puts every texel on
+/// exactly that many real pixels, `Zoom`'s own doc) and exactly wrong for an
+/// antialiased TrueType glyph: a nine-pixel `a`, already shaded by
+/// `openshard_uofiles::ttf_font::EDGE_SHARPEN`, stretched blocky by a `4x`
+/// zoom with no filtering to soften the blocks back down. Drawing after the
+/// blit instead — through [`crate::gump::GumpRenderer`], the same as
+/// [`GumpLabel`] — means the atlas's own resolution reaches the screen
+/// untouched, at whatever zoom the camera is on.
+///
+/// Centred and baseline-anchored, [`Label`]'s own convention and not
+/// [`GumpLabel`]'s: a speech bubble hangs from a point over a head, not from
+/// a box's corner.
+#[derive(Debug)]
+pub struct ScreenLabel<'a> {
+    /// The point the text hangs *from*, in real screen pixels — [`Label::anchor`]'s
+    /// convention, carried over: its baseline, not its top, with every glyph
+    /// growing upward from here. The caller's own conversion from a
+    /// [`crate::camera::ViewPixel`] — `crate::camera::Camera::to_viewport`,
+    /// plus wherever the world's own rect sits on the surface — is what
+    /// makes this real rather than virtual; nothing here has a camera to do
+    /// that with.
+    pub anchor: GumpPixel,
+    /// The line itself.
+    pub text: &'a str,
+    /// The wire hue to tint it with, or [`Hue::NONE`].
+    pub hue: Hue,
+}
+
+/// [`collect_ttf`]'s screen-space twin — see [`ScreenLabel`]'s doc for why one
+/// exists. Identical math, a [`GumpPixel`] anchor instead of a
+/// [`crate::camera::ViewPixel`] one, no [`crate::atlas::FontAtlas`] sibling:
+/// `fonts.mul` zooms with the world on purpose (its blocky nearest-sampled
+/// magnification is the look every other sprite already has), so only a
+/// TrueType face ever needs this.
+pub fn collect_screen_ttf(labels: &[ScreenLabel<'_>], atlas: &TtfAtlas) -> Vec<SpriteQuad> {
+    let mut quads = Vec::new();
+    for label in labels {
+        let glyphs: Vec<_> = label.text.chars().filter_map(|ch| atlas.glyph(ch)).collect();
+        let total_width: i32 = glyphs.iter().map(|glyph| i32::from(glyph.advance)).sum();
+        let mut x = label.anchor.x - total_width / 2;
+        for glyph in glyphs {
+            if glyph.sprite.width > 0 && glyph.sprite.height > 0 {
+                quads.push(SpriteQuad {
+                    rect: Rect {
+                        x: x as f32,
+                        y: (label.anchor.y - glyph.baseline_from_top) as f32,
+                        width: f32::from(glyph.sprite.width),
+                        height: f32::from(glyph.sprite.height),
+                    },
+                    region: glyph.sprite.region,
+                    // No depth test in this pass, the same reason `collect_gump`
+                    // has none: it runs after the blit, over the finished
+                    // picture.
+                    depth: 0.0,
+                    hue: u32::from(label.hue.0),
+                    place: crate::place::Place::NOWHERE,
+                    twin: 0,
+                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                    volumes: crate::impostor::Range::default(),
+                });
+            }
+            x += i32::from(glyph.advance);
+        }
+    }
+    quads
+}
+
 /// One line of screen-space text — a chat line, a journal row — already
 /// resolved to where it hangs in the interface's own pixels rather than the
 /// world's.
@@ -257,6 +331,93 @@ pub fn collect_gump(labels: &[GumpLabel<'_>], atlas: &FontAtlas) -> Vec<SpriteQu
         }
     }
     quads
+}
+
+/// Roughly how far below the top of a line a TrueType face's baseline sits,
+/// as a share of the atlas's own rasterization height.
+///
+/// [`collect_gump`] has [`glyph_drop`]'s table for this because a
+/// `fonts.mul` glyph carries no baseline of its own — see that function's
+/// doc. A TrueType glyph does, per character (`TtfGlyph::baseline_from_top`),
+/// but the *line's* baseline — where every glyph's own offset is measured
+/// from — is a face metric this crate never reads (`openshard_uofiles::ttf_font`'s
+/// "One face, not ten" doc explains why there is only a pixel height to ask
+/// for, not a parsed `hhea` table), so this is a working approximation
+/// rather than a measured one. Purely cosmetic: a line a few pixels off its
+/// nominal box still reads fine, which is what lets this stand in for a
+/// metric nobody has built a reader for yet.
+const BASELINE_SHARE: f32 = 0.8;
+
+/// [`collect_gump`]'s TrueType twin, on the same terms [`collect_ttf`] is
+/// [`collect`]'s: `char`s and a per-glyph advance instead of `fonts.mul`
+/// bytes, and a real per-glyph baseline instead of [`glyph_drop`]'s table.
+///
+/// In real screen pixels, like [`collect_ttf`]'s `anchor` — **not** gump
+/// pixels, unlike every other `GumpLabel` consumer. A `TtfAtlas` rasterizes
+/// at real (density-scaled) pixels — see its doc — and this draws every glyph
+/// at exactly that resolution, one texel of atlas to one texel of screen: no
+/// division by [`crate::gump::GumpRenderer`]'s own scale, and so nothing to
+/// round away. An earlier version divided each glyph's width, height, baseline
+/// and advance by that scale separately and let the renderer's shader multiply
+/// them back — mathematically a no-op, but four independent roundings per
+/// glyph, each landing wherever its own fraction happened to fall, which is
+/// what made a line's baseline visibly saw-tooth and its edges soft: the
+/// classic shrink-then-regrow blur, self-inflicted one glyph at a time. The
+/// caller is responsible for placing `label.at` in real pixels to match —
+/// scaling the gump-pixel position *once*, not each glyph's own measurements
+/// — see `App::draw`'s HUD block for the conversion.
+///
+/// A `char` the atlas never packed is skipped and does not advance the line,
+/// [`collect_gump`]'s contract carried over unchanged.
+pub fn collect_gump_ttf(labels: &[GumpLabel<'_>], atlas: &TtfAtlas) -> Vec<SpriteQuad> {
+    let baseline_from_top = (atlas.pixel_height() * BASELINE_SHARE).round() as i32;
+    let mut quads = Vec::new();
+    for label in labels {
+        let mut x = label.at.x;
+        let baseline = label.at.y + baseline_from_top;
+        for ch in label.text.chars() {
+            let Some(glyph) = atlas.glyph(ch) else {
+                continue;
+            };
+            let y = baseline - glyph.baseline_from_top;
+            if let Some((box_width, box_height)) = label.clip {
+                if x - label.at.x + i32::from(glyph.sprite.width) > box_width
+                    || y - label.at.y + i32::from(glyph.sprite.height) > box_height
+                {
+                    break;
+                }
+            }
+            if glyph.sprite.width > 0 && glyph.sprite.height > 0 {
+                quads.push(SpriteQuad {
+                    rect: Rect {
+                        x: x as f32,
+                        y: y as f32,
+                        width: f32::from(glyph.sprite.width),
+                        height: f32::from(glyph.sprite.height),
+                    },
+                    region: glyph.sprite.region,
+                    depth: 0.0,
+                    hue: u32::from(label.hue.0),
+                    place: crate::place::Place::NOWHERE,
+                    twin: 0,
+                    owner: u32::from(crate::occlusion::OwnerId::NONE.raw()),
+                    volumes: crate::impostor::Range::default(),
+                });
+            }
+            x += i32::from(glyph.advance);
+        }
+    }
+    quads
+}
+
+/// [`gump_width`]'s TrueType twin, the same per-glyph advance
+/// [`collect_gump_ttf`] walks by, in the same real screen pixels — what
+/// places the chat line's caret at a byte offset into a TrueType-drawn line.
+pub fn gump_width_ttf(text: &str, atlas: &TtfAtlas) -> i32 {
+    text.chars()
+        .filter_map(|ch| atlas.glyph(ch))
+        .map(|glyph| i32::from(glyph.advance))
+        .sum()
 }
 
 /// The pixel width of `text` set in `font`, the same per-byte advance
@@ -494,6 +655,78 @@ mod tests {
             let with_gap = collect_ttf(&[label(ViewPixel { x: 100, y: 50 }, "H!i")], &atlas);
             let without = collect_ttf(&[label(ViewPixel { x: 100, y: 50 }, "Hi")], &atlas);
             assert_eq!(with_gap, without, "the missing '!' left no trace");
+        }
+
+        fn gump_label(at: GumpPixel, text: &str) -> GumpLabel<'_> {
+            GumpLabel {
+                at,
+                text,
+                font: Font(0),
+                hue: Hue::NONE,
+                clip: None,
+            }
+        }
+
+        /// [`collect_gump_ttf`]'s own version of
+        /// `glyphs_are_placed_left_to_right_by_their_advance`.
+        #[test]
+        fn glyphs_are_placed_left_to_right_by_their_advance_in_gump_space() {
+            let atlas = atlas();
+            let quads = collect_gump_ttf(&[gump_label(GumpPixel::new(10, 20), "Hi")], &atlas);
+            assert_eq!(quads.len(), 2);
+            assert_eq!(
+                quads[1].rect.x,
+                quads[0].rect.x + 7.0,
+                "'i' starts 7 past 'H', its advance"
+            );
+        }
+
+        /// Unlike [`collect_ttf`], which grows a line upward from a baseline
+        /// the caller already picked, [`collect_gump_ttf`] is anchored by its
+        /// **top** — [`collect_gump`]'s own convention — so two labels at the
+        /// same `x` but different `at.y` place their glyphs the same number
+        /// of pixels apart as their `at.y` values are, not by their baseline.
+        #[test]
+        fn the_line_is_anchored_by_its_top_not_a_baseline() {
+            let atlas = atlas();
+            let top = collect_gump_ttf(&[gump_label(GumpPixel::new(10, 0), "H")], &atlas);
+            let lower = collect_gump_ttf(&[gump_label(GumpPixel::new(10, 5), "H")], &atlas);
+            assert_eq!(
+                lower[0].rect.y,
+                top[0].rect.y + 5.0,
+                "the box moved, and the glyph with it"
+            );
+        }
+
+        /// Every glyph measurement is the atlas's own — no division, no
+        /// rounding — which is the whole fix `collect_gump_ttf`'s doc walks
+        /// through: a rect's width and a neighbour's advance are exactly the
+        /// packed sprite's own numbers, unperturbed.
+        #[test]
+        fn glyph_measurements_are_the_atlas_own_unrounded() {
+            let atlas = atlas();
+            let quads = collect_gump_ttf(&[gump_label(GumpPixel::new(0, 0), "Hi")], &atlas);
+            assert_eq!(quads[0].rect.width, 6.0, "H's own packed width");
+            assert_eq!(quads[1].rect.x, 7.0, "H's own advance, exactly");
+        }
+
+        /// A `char` the atlas never packed is skipped and leaves no gap — the
+        /// screen-space twin of `an_unpacked_character_is_skipped_and_does_not_widen_the_line`.
+        #[test]
+        fn an_unpacked_character_is_skipped_in_gump_space_too() {
+            let atlas = atlas();
+            let with_gap = collect_gump_ttf(&[gump_label(GumpPixel::new(10, 20), "H!i")], &atlas);
+            let without = collect_gump_ttf(&[gump_label(GumpPixel::new(10, 20), "Hi")], &atlas);
+            assert_eq!(with_gap, without, "the missing '!' left no trace");
+        }
+
+        /// [`gump_width_ttf`] sums the same advances [`collect_gump_ttf`]
+        /// places glyphs by — what a caret computed from it lands on the
+        /// right byte offset.
+        #[test]
+        fn gump_width_ttf_sums_advances() {
+            let atlas = atlas();
+            assert_eq!(gump_width_ttf("Hi", &atlas), 10, "7 + 3");
         }
     }
 

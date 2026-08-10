@@ -212,7 +212,7 @@ impl ServerPacket {
             Self::SkillsFull(_) => SkillsFull::ID,
             Self::SkillUpdate(_) => SkillUpdate::ID,
             Self::SpokenMessage(_) => <SpokenMessage as EncodePacket>::ID,
-            Self::LocalizedMessage(_) => LocalizedMessage::ID,
+            Self::LocalizedMessage(_) => <LocalizedMessage as EncodePacket>::ID,
             Self::UnicodeMessage(_) => <UnicodeMessage as EncodePacket>::ID,
             Self::ContextMenu(_) => ContextMenu::ID,
             Self::SpellbookContent(_) => SpellbookContent::ID,
@@ -438,6 +438,15 @@ impl ServerPacket {
             <SpokenMessage as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::SpokenMessage)
                 .map_err(ServerDecodeError::SpokenMessage)?,
+            // Shares `0xC1` with nothing — the id is `LocalizedMessage`'s alone
+            // — but had no arm here even though `EncodePacket` for it has stood
+            // since `use_skill_button`'s "cannot be used directly" line: a
+            // client asking for this cliloc read it as `Unknown` and dropped it
+            // silently, which no e2e test had ever sent one over a real socket
+            // to catch.
+            <LocalizedMessage as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::LocalizedMessage)
+                .map_err(ServerDecodeError::LocalizedMessage)?,
             <UnicodeMessage as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::UnicodeMessage)
                 .map_err(ServerDecodeError::UnicodeMessage)?,
@@ -541,6 +550,8 @@ pub enum ServerDecodeError {
     /// `0x3A` did not decode — either of the two, since the id is shared and
     /// which one it was is a fact from inside the body that failed to be read.
     Skills(DecodeError),
+    /// `0xC1` did not decode.
+    LocalizedMessage(DecodeError),
 }
 
 impl fmt::Display for ServerDecodeError {
@@ -570,6 +581,7 @@ impl fmt::Display for ServerDecodeError {
             Self::WarMode(error) => ("0x72 war mode", error),
             Self::LogoutAck(error) => ("0xD1 logout ack", error),
             Self::Skills(error) => ("0x3A skills", error),
+            Self::LocalizedMessage(error) => ("0xC1 localized message", error),
         };
         write!(f, "{name}: {error}")
     }

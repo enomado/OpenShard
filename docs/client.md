@@ -3793,15 +3793,36 @@ that the ring reaches it. What was found on the way and left undone:
   in front of a player. The server's half: either the stat door emits for every
   skill that leans on the stat it changed, or the window is re-sent. Neither is
   a client fix, and the client cannot tell.
-- **The lock arrows are drawn and answer nothing, and no skill can be used from
-  the window.** Both packets exist and the shard decodes both — `0x3A` from the
-  client is `SkillLockRequest`, and "use skill N" is a `0x12` text command whose
-  `openshard_skills::use_skill_button` already refuses an id past the table. The
-  window draws the lock's *face* because a lock somebody set from another client
-  is a fact about the skill that would otherwise be invisible. `Standing::cap`
-  is read off the wire and drawn nowhere, which is `Paperdoll::can_lift`'s trap
-  again: the reference has a checkbox that swaps the value column for the base
-  or the cap, and until something like it exists the field has no reader.
+- ~~**The lock arrows are drawn and answer nothing, and no skill can be used
+  from the window.**~~ Fixed. Both packets already existed and the shard
+  already decoded both — what was missing was entirely client-side:
+  `SkillLockRequest::encode`/`UseSkillRequest::encode`, a `client/net::skill`
+  to hold them, and two more `skills::Hit` variants on the same single-click
+  furniture pipeline the heading arrow and the scrollbar already use. The lock
+  arrow is the one deliberate exception to "wait for the shard's answer" — see
+  `skills::Tree::lock_of`'s doc — because ServUO's own client redraws it on the
+  click and `World::set_skill_lock` sends nothing back by design. The use
+  button is drawn only for a skill the files mark `has_action`, `SkillItemControl`'s
+  own gate, ported as-is. `crates/e2e/shard/tests/skill_window.rs` gates both:
+  a lock click reflected in the next full list, and a passive skill's use
+  press answered with cliloc 500014.
+- **Found while gating the use button: `0xC1` had no client-side decoder at
+  all.** `LocalizedMessage` — the packet `use_skill_button`'s "cannot be used
+  directly" line travels on, and every other gate through
+  `WorldState::localized_message` — had `EncodePacket` and no `DecodePacket`,
+  and `ServerPacket::decode` had no arm for it: a real client asking for one
+  read it as `Unknown` and dropped it silently, forever, since nothing had
+  ever sent one over a real socket in a test to catch the gap. Fixed in
+  `crates/common/protocol/src/speech.rs`, the same shape `SpokenMessage`'s
+  decoder already has — sentinel-folded `serial`/`graphic`, little-endian
+  `arguments`. **Still open:** nothing in `WorldView::apply` does anything
+  with a decoded one yet, so it is readable now and still invisible to a
+  player — the e2e test above only proves the packet arrives, not that this
+  client's chat line or journal draws it.
+- **`Standing::cap` is read off the wire and drawn nowhere**, which is
+  `Paperdoll::can_lift`'s trap again: the reference has a checkbox that swaps
+  the value column for the base or the cap, and until something like it exists
+  the field has no reader.
 - **A `0x3A` of type `0x01` or `0x03` means "open the window" as well**, and
   this client does not take it: its window opens when the player presses the
   button. Nothing sends one today — this engine's own shard sends `0x00`/`0x02`
