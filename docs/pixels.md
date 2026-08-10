@@ -164,6 +164,83 @@ here rather than as a sweep is that P2 will have just named which confusions are
 *Done when:* each grid P2 shows can collide has a type that stops the collision
 at compile time, or a written reason it does not.
 
+**In progress.** One of the three is done, and doing it corrected what this
+phase thought the third one was.
+
+#### The correction: there is no "impostor tile space"
+
+P1's table has a row reading *"Impostor tile space — `z` in 11ths of a tile — a
+second `z` unit, related to the first by a constant nobody carries in a type"*.
+**That row names the wrong space.** `impostor::VIEW` is `(1, 1, Z_PER_TILE)`,
+which means one unit of the impostor's `z` is one unit of `Point.z` — the *same*
+quantum the wire states a height in, four virtual pixels, not an eleventh of
+anything. `Volume::lo`/`hi`, `ray_from`'s output and `Spot::z` are all in it.
+The impostor has no `z` unit of its own; what it has that `Point` does not is
+`x` and `y` in **tiles**, and that combination already had a name and a type —
+[`WorldSpot`](../crates/client/render/src/camera.rs#L167).
+
+The second space is one file over and P1 walked past it: **`light.rs`'s tile
+space**, where `z` *is* divided by `Z_PER_TILE` so that all three axes share a
+unit and a length means something. Every metric the lighting model states lives
+there — a distance, a cosine, a beam's axis, a surface's normal — because a
+falloff measured with `z` in its own units reaches eleven times as far up as it
+does sideways. It was named only in prose, in five separate doc comments, and
+carried as `[f32; 3]`.
+
+So the two spaces that actually collide are **world units** (positions) and
+**tile space** (metrics), they are one multiplication apart, and both were the
+same bare `[f32; 3]`. They met inside single expressions: `flame_points` added a
+tile-space offset to a world-units centre, `walk_sun` turned a tile-space
+direction into a world-units step, `arrival` fed a hand-written difference to
+both `lit_from` and `Beam::lights`. Nothing but the reader told them apart.
+
+#### Done — [`light::TileVec`](../crates/client/render/src/light.rs#L272)
+
+A newtype for tile space, with [`TileVec::between`] (two world-units points → a
+tile-space offset) and [`TileVec::in_world_units`] as its **only two crossings**.
+`Z_PER_TILE` now appears in a metric expression exactly twice, in those two
+methods, rather than at the eight sites that each had to remember it:
+`sample_with`'s cull offset, `walk_sun`'s and `walk_sun_exact`'s step (which
+were two copies of one conversion), `flame_points`'s disc and its point, and
+`arrival`'s `toward`, plus `impostor::meets`'s `outside`. `Beam::toward`,
+`Sun::toward` and `Surface::normal` are typed at the field, so a world-units
+vector can no longer be handed to `lit_from` or `Beam::lights` at all.
+
+Two things it deliberately does not do. It has **no normaliser**: the three
+places that normalise here guard a different epsilon each (`lit_from` at zero,
+`Beam::lights` and `flame_points` at `1e-6`), and folding them into one method
+would change three answers to make one type tidier. And `lit_from`'s cosine
+stays *written out*, `n.x*t.x/L + n.y*t.y/L + n.z*t.z/L`, rather than going
+through `TileVec::dot`: `(n·t)/L`, `n·(t/L)` and that are three roundings of one
+number, the shader writes this one, and a cosine landing either side of zero is
+a lit pixel or a black one. `scaled` and `divided` are separate methods for the
+same reason. The newtype is unwrapped, via `axes()`, at exactly one place — the
+uniform `blit.rs` writes.
+
+#### Still open
+
+- **The real pixel.** [`camera.rs`'s own module doc](../crates/client/render/src/camera.rs#L51)
+  claims it needs no type: *"the one place a real pixel enters is the cursor, and
+  it leaves in the same call — `Camera::pick` takes one and hands back a
+  `WorldPixel`. That is why the third space has no type: nothing carries it."*
+  **P1 found that claim to be stale.** `ViewportRect`, `Projection::scale`,
+  `Projection::centre`, `Camera::width`/`height`, `image_size` and
+  `dump::read_rect` all carry one. The expressible collision is sharper than the
+  count: `Camera` returns a bare `Vec2` from four methods, two of them in view
+  (virtual) pixels — `to_view_exact`, `projection().origin` — and two in real
+  ones — `to_viewport`, `to_viewport_exact` — and `to_viewport_exact` *takes* a
+  view-space `Vec2` and *returns* a real-space one, so feeding it its own output
+  compiles. That is the next thing to type, and the module doc's paragraph is
+  what has to be rewritten with it.
+- **The art texel.** Left untyped on purpose for now. It is real (`Region`'s UV
+  arithmetic, `Projection::scale`, every atlas rectangle), and P2's row about it
+  found a genuine hazard — the land and statics atlases divide exactly while
+  `TexmapAtlas` insets by half a texel — but the confusion is *between two
+  conventions of one grid*, not between two grids, so a newtype over the texel
+  does not stop it; what would is a type carrying the convention. That belongs
+  with [`docs/silhouettes.md`](silhouettes.md), which is entirely about this
+  grid, rather than being invented here first.
+
 ### P4 — the gates
 
 An invariant of the form "no primary sample lands on a whole virtual pixel at

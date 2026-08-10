@@ -240,8 +240,7 @@ impl Sun {
     /// How steeply it climbs per tile along the ground: the slope
     /// [`Sun::towards`] was given back, whatever the direction was normalised to.
     pub fn rise_per_tile(self) -> f32 {
-        let horizontal =
-            (self.toward.x * self.toward.x + self.toward.y * self.toward.y).sqrt();
+        let horizontal = (self.toward.x * self.toward.x + self.toward.y * self.toward.y).sqrt();
         match horizontal < 1e-6 {
             true => f32::INFINITY,
             false => self.toward.z / horizontal,
@@ -2119,9 +2118,7 @@ fn lit_from(normal: TileVec, toward: TileVec) -> f32 {
     // number, and a cosine landing a bit either side of zero is a lit pixel or a
     // black one. This is the grouping the shader writes and the one the parity
     // test compares against, so it stays written out.
-    let cosine = normal.x * toward.x / length
-        + normal.y * toward.y / length
-        + normal.z * toward.z / length;
+    let cosine = normal.x * toward.x / length + normal.y * toward.y / length + normal.z * toward.z / length;
     cosine.clamp(0.0, 1.0)
 }
 
@@ -2397,10 +2394,7 @@ fn sample_with(
         .at(lighting.occlusion.sky_at(spot.tile.0, spot.tile.1));
     let mut reaches = Vec::with_capacity(lighting.lights.len());
     for (index, light) in lighting.lights.iter().enumerate() {
-        let offset = TileVec::between(
-            [spot.at.x, spot.at.y, spot.z],
-            [light.at.x, light.at.y, light.z],
-        );
+        let offset = TileVec::between([spot.at.x, spot.at.y, spot.z], [light.at.x, light.at.y, light.z]);
         let distance = offset.length();
         // **The one thing still asked about the flame's centre, and it is
         // therefore conservative.** This is a broad phase: it decides which
@@ -2649,11 +2643,7 @@ pub fn flame_points(spot: Spot, flame: [f32; 3], radius: f32, rays: ShadowRays) 
             .plus(up.scaled(sin))
             .scaled(radius)
             .in_world_units();
-        [
-            flame[0] + offset[0],
-            flame[1] + offset[1],
-            flame[2] + offset[2],
-        ]
+        [flame[0] + offset[0], flame[1] + offset[1], flame[2] + offset[2]]
     });
     FlamePoints { points, rays }
 }
@@ -3815,6 +3805,38 @@ mod tests {
         let sun = midday();
         all(sun.color, [1.0, 0.97, 0.88]);
         same(sun.intensity, 0.55);
+    }
+
+    /// [`TileVec`]'s two crossings are one conversion, and it is the one the
+    /// whole space is defined by.
+    ///
+    /// `docs/pixels.md` P3's gate. The type exists to make world units and tile
+    /// space inexpressible in each other's place, and what makes that safe rather
+    /// than merely tidy is that the pair round-trips: a mutation that dropped
+    /// `Z_PER_TILE` from either method, or applied it the wrong way round, would
+    /// leave one of these two assertions standing and not the other.
+    #[test]
+    fn tile_space_and_world_units_are_one_conversion_apart() {
+        // Eleven `z` units are one tile, which is the whole of the space: a
+        // vector eleven up and one along is at 45° here and nowhere else.
+        let up = TileVec::between([0.0, 0.0, 0.0], [0.0, 0.0, Z_PER_TILE]);
+        assert_eq!(up.z, 1.0, "eleven `z` units are not one tile: {up:?}");
+        let diagonal = TileVec::between([0.0, 0.0, 0.0], [1.0, 0.0, Z_PER_TILE]);
+        assert_eq!(
+            diagonal.length(),
+            2.0_f32.sqrt(),
+            "a tile along and a tile up is not a 45° vector: {diagonal:?}",
+        );
+        // And back out again, unchanged. The `z` term is the one that moves, so
+        // a point with a `z` of nothing would pass either way round.
+        let far = [1500.0, 1600.0, 37.0];
+        let back = TileVec::between([0.0, 0.0, 0.0], far).in_world_units();
+        for axis in 0..3 {
+            assert!(
+                (back[axis] - far[axis]).abs() < 1e-3,
+                "axis {axis} did not survive the round trip: {back:?} against {far:?}",
+            );
+        }
     }
 
     /// [`lit_from`]'s own gradient: fully towards the light, fully away, and
