@@ -2278,6 +2278,40 @@ Things noticed while writing this, not blocking any phase:
   fourth channel through a throwaway shader edit. A `View::Solid` beside
   `View::Normal` — the id hashed to a colour — plus a per-pixel *who stopped the
   ray* probe would have made each of them minutes' work.
+  <br>
+  ✅ **`View::Solid` landed, and it answered on its first frame.** The whole
+  `+x`/`+y` region above the seam is a point of **no primitive at all**, while
+  the `+z` surface below it names one. The chain from there is short and every
+  link is in the tree already:
+  <br>
+  `occlusion::opacity` reads a graphic's own flags — `NO_SHOOT` is opaque,
+  `WINDOW` is a pane, **everything else is `CLEAR`** — and `Builder::add`
+  returns without pushing anything at all for a `CLEAR` one. So this roof piece
+  stands nothing in the grid: it is not geometry, it stops no light, and
+  `Occlusion::id_of` has no name to give it. `statics::push_volumes` still hands
+  the impostor a `boxes_of` box for it — that is 6c's deliberate fallback, since
+  the grid refuses about half of Britain's drawn pictures and the alternative is
+  a billboard — so the fragment gets a measured position and a measured *face*
+  while being a point of nothing. And `boxes_of` reads a picture with no `FLOOR`
+  flag through `edges_of`, as a **wall**: side faces, at the tile boundary, at
+  the very height the roof lies at.
+  <br>
+  So the glow is three facts meeting. The pixels are the picture's overhang past
+  that box — a *miss*, taking the nearest face, which along a silhouette is a
+  side one. A side face has a real cosine towards a flame the roof's own lid has
+  none of. And being a point of nothing they are exempt from nothing, so which
+  of them the neighbouring lid shadows is decided by where the clamp put them on
+  its edge — five pixels clear it and blaze.
+  <br>
+  **The question to answer before writing anything is which of the three to
+  move**, and it is a design question rather than a bug: whether a graphic that
+  stops no light should still stand a *shape* for the shading path to meet (it
+  has one — `boxes_of` gives it one — it just has no name); whether `boxes_of`
+  should read a roof as a lid rather than as a wall, which is a tiledata
+  question; and what a **miss** is entitled to answer at all, which is the
+  fringe's own open item above. The zero vector is not the answer to the last
+  one: `blit.wesl` shades it as *lit from every side*, so a fringe given no
+  facing comes out brighter still.
 - 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
   showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the
