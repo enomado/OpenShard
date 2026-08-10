@@ -155,7 +155,24 @@ fn meets(start: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> Meeting {
         normal = vec3<f32>(1.0, 0.0, 0.0);
     }
 
-    let at = start + exit * VIEW;
+    // The exit axis's own coordinate is **stated** and not computed: `exit` is
+    // the `t` at which this ray reaches the plane `hi[axis]`, so the point is on
+    // that plane by definition, and `start + exit * VIEW` is a division and a
+    // multiplication that only round back to it. `VIEW.z` is `Z_PER_TILE` —
+    // eleven, and no power of two — so the `z` round trip has nothing exact
+    // about it, and a driver contracting the two into an `fma` need not agree
+    // with one that does not. What the whole pass downstream leans on is that a
+    // fragment is a point *of* the box it names; taking the plane from the
+    // number that chose it makes that hold bit for bit rather than to within a
+    // rounding. `impostor::meets` is the twin, and
+    // `frame.rs`'s `a_sprite_fragment_is_a_point_of_the_primitive_it_names`
+    // asserts it as an equality on the strength of this.
+    let travelled = start + exit * VIEW;
+    let at = select(
+        select(vec3<f32>(travelled.x, travelled.y, hi.z), vec3<f32>(travelled.x, hi.y, travelled.z), normal.y > 0.0),
+        vec3<f32>(hi.x, travelled.y, travelled.z),
+        normal.x > 0.0,
+    );
     let clamped = clamp(at, lo, hi);
     // In tiles, which means the `z` term is divided into them: a third of a tile
     // out sideways and a third of a tile out in height are the same miss, and

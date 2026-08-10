@@ -307,11 +307,22 @@ pub fn meets(from: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Meeting {
         }
     }
 
-    let at = [
+    // The exit axis's own coordinate is **stated** and not computed. `exit` is
+    // the `t` at which this ray reaches the plane `hi[axis]`, so the meeting is
+    // on that plane by definition; `from + exit * VIEW` is a division and a
+    // multiplication that only round back to it, and `VIEW[2]` is `Z_PER_TILE`
+    // — eleven, and no power of two — so the `z` round trip has nothing exact
+    // about it and a GPU contracting the pair into an `fma` need not land where
+    // a CPU does. Everything downstream leans on a fragment being a point *of*
+    // the box it names, so the plane is taken from the number that chose it.
+    // `tests/frame.rs`'s `a_sprite_fragment_is_a_point_of_the_primitive_it_
+    // names` holds it as an equality, and `impostor.wesl`'s `meets` is the twin.
+    let mut at = [
         from[0] + exit * VIEW[0],
         from[1] + exit * VIEW[1],
         from[2] + exit * VIEW[2],
     ];
+    at[axis] = hi[axis];
     let clamped = [
         at[0].clamp(lo[0], hi[0]),
         at[1].clamp(lo[1], hi[1]),

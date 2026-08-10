@@ -3020,9 +3020,21 @@ fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
                 .iter()
                 .position(|n| *n == 1.0)
                 .expect("only a camera-facing axis-aligned face is ever met");
-            assert!(
-                (at[axis] - hi[axis]).abs() < EPS,
-                "({x}, {y}) 's normal names axis {axis} but the fragment is not on that \
+            // **An equality and not a tolerance**, which is the half of phase 6i's
+            // second item that survived reading it: `traced.rs`'s
+            // `a_face_fragments_own_plane_is_the_primitives_own_number` makes this
+            // claim bit for bit over *mesh* fragments, and the item asked for the
+            // same sweep over sprite ones. It could not be had by inverting that
+            // test's filter — the scene it runs on draws no sprite at all — and it
+            // could not be had by measurement either: `impostor::meets` reached the
+            // plane through a divide and a multiply by `Z_PER_TILE`, eleven, so the
+            // `z` round trip was exact for the numbers this fixture happens to use
+            // (measured: 0 of 78,400 off) and for no stated reason. It is stated
+            // now — `meets` takes the exit axis's coordinate from the bound that
+            // chose it — so this is an equality on both sides of the wire.
+            assert_eq!(
+                at[axis], hi[axis],
+                "({x}, {y})'s normal names axis {axis} but the fragment is not on that \
                  primitive's high face there: {at:?} against {hi:?}",
             );
 

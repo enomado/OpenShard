@@ -1476,7 +1476,8 @@ none of them is "somebody forgot a test".
    climbable and compares against the tracer. `tests/frame.rs` already has two
    `statics::collect` call sites to build on, and `tests/cost.rs` a third.
 
-2. **The one gate that states the invariant filters it out.**
+2. **The one gate that states the invariant filters it out.** ✅ *Landed
+   2026-08-10, and not where this item said the filter was.*
    `traced.rs`'s `a_face_fragments_own_plane_is_the_primitives_own_number` —
    the test whose whole subject is "a fragment's plane is its primitive's own
    number, bit for bit" — opens with `if texel.stance != Stance::MeshFace {
@@ -1484,6 +1485,31 @@ none of them is "somebody forgot a test".
    fragment whose plane is not its primitive's own number. *Done when:* the same
    sweep runs over sprite fragments, which is the same loop with the filter
    inverted and `mine` read off the position plane's fourth channel.
+
+   **Inverting that filter yields nothing, and the reason retires the item as
+   written**: `traced.rs`'s scene draws *no sprite at all*. It builds a
+   `MeshFaceVertex` list by hand and runs the ground pass beside it — the same
+   fact as item 1, that every stair instrument in this tree drives the mesh
+   pass. The filter is not what excludes a sprite fragment there; the fixture is.
+   So the sweep over sprite fragments is item 3's, in `tests/frame.rs`, and what
+   was genuinely still missing was the *strength* of the claim: that sweep held
+   the plane to `1e-3` where the mesh one holds it bit for bit.
+
+   It is an equality now, on both paths, and by construction rather than by
+   measurement. `impostor::meets` reached the met plane through
+   `from + ((hi − from) / VIEW) * VIEW` — a divide and a multiply, and `VIEW.z`
+   is `Z_PER_TILE`, eleven and no power of two, so the `z` round trip had
+   nothing exact about it and a driver contracting the pair into an `fma` need
+   not have agreed with one that did not. Measured before the change: 0 of
+   78,400 fragments off, which is a fact about this fixture's numbers and not a
+   reason. `meets` now takes the exit axis's coordinate from the bound that
+   chose it — the plane the `t` was solved for — in both twins, and the sweep
+   asserts `at[axis] == hi[axis]`.
+
+   What does *not* depend on this is D2's exemption, and that is worth knowing
+   before the next person tightens something for its sake: since 6f
+   `on_the_lit_surface` reads the plane off `solid_at(mine)`, so both sides of
+   its equality come out of one buffer and neither is the fragment's position.
 
 3. **Nothing compares a fragment's four facts against each other.** ✅ *Landed
    2026-08-10, `a_sprite_fragment_is_a_point_of_the_primitive_it_names`,
