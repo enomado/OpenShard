@@ -285,6 +285,17 @@ struct Shading {
 ///   art beside it is overwhelmingly the box's own **lid**.
 /// - `bodies` — both hit. The control, and the one denominator that says whether
 ///   any of the above is a large number.
+///
+/// **What this denominator cannot say, and it is worth knowing before quoting
+/// `0.22%`.** The pairs are counted over an *area* while a serration lives on a
+/// *line*: a comb that alternates every pixel along a silhouette disagrees on
+/// nearly every pair it touches, and those pairs are a thin fraction of the
+/// overhang's whole area. So the rate understates how much of the *boundary* is
+/// serrated by however slender that boundary is. What it does support is the
+/// comparison, because `bodies` is counted the same way over the same sprites —
+/// "two misses disagree six times less often than two hits" is a statement about
+/// one convention applied twice. A boundary-length denominator would need the
+/// silhouette walked as a curve, which is a different tool.
 #[derive(Default)]
 struct Comb {
     /// Neighbouring drawn pixels that both missed.
