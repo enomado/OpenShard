@@ -795,6 +795,25 @@ a test red, and the test names which grid met which.
 
 ## Backlog
 
+- 🚩 **A body of no height is still the plane a lid stopped being.** P4.1 gave
+  `Edges::NONE` a span; `Edges::ANY` with a `tiledata` height of zero comes out
+  of `Solid::box_of` with `min.z == max.z` exactly as a floor used to, and every
+  argument in `LID_THICKNESS`'s own doc applies to it word for word. What is
+  *not* the same is where its invented depth would go: a lid's is under a
+  surface a walker stands on, and a zero-height body has no such surface to hang
+  it from — which end it grows at is a question about the art rather than about
+  the geometry, and `occlusion::Solid`'s type doc names this pair as the reason
+  the kind is carried rather than derived. Nobody has counted them: the census
+  reports the *claim*, not the span, so the share of the world this is about is
+  unmeasured.
+- 🚩 **P4's own census numbers are older than the tool that produced them.** The
+  head of P4 reads 11,184 statics, 39.6% a lid, 15.1% a `CLEAR` piece with real
+  height; P4.1's re-run at the same place and radius reads 1,381 statics and
+  35.0%/21.7%. Some of that is `8ba38f1` ("four shares move") and some of it may
+  be a different radius nobody wrote down — the run above states its arguments,
+  the older numbers state none. Steps 2–4 each re-run this census as their
+  done-when, so whichever of them goes first wants the head of P4 restated from
+  a run whose arguments are in the document beside it.
 - 🚩 **`impostor::meets` still answers `+Y` for a ray through a box's vertical
   corner, and nothing above reaches it any more.** The centring below makes a
   primary sample unable to land on that edge, which takes the artefact off the
