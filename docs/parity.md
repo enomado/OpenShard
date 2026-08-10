@@ -684,6 +684,14 @@ The order follows the counts and the blast radius:
    seam, 2.38% of one frame). The seam-probe entry had mis-cited this as one
    of the cornice entry's own three ways out; both docs are corrected now. No
    code changed this session — this is a documentation-only pass.
+   <br>
+   **And of those two, one is now measured and refused (2026-08-10).** "Give a
+   miss the sprite's own volume's face" is `impostor::presented_face`: it ends
+   the comb inside an overhang and draws a hard line where the overhang joins
+   the art (0.30% → 32.59% of those pairs, 97.68% for panels), because **91.79%
+   of the art bordering an overhang is the box's own lid** — an overhang hangs
+   above its box. The clamp stays. `docs/lighting_rebuild.md`'s serrated-edge
+   entry carries the table and `examples/discard_census.rs` can re-take it.
 3. **The whole-tile stand-in** — 31.6%, the expensive one, because reducing it
    means measuring more art rather than writing a rule.
 4. **`PANEL_THICKNESS`** — one slab straddling the tile boundary instead of two

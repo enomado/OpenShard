@@ -41,7 +41,7 @@ boxes and art rather than about light.
 | Shadows: self-hit by primitive id, bias `0` | ✅ shipping | — | phase 4 |
 | Area light: a sphere, 8 stratified rays, world-space dither | ✅ shipping | — | phase 5 |
 | Every term a function of the sample point (no flame centre in the loop) | ✅ shipping | — | phase 5b |
-| Impostor: one silhouette, the box met per fragment | 🟡 shipping with two holes | a corner's two panels are still told apart by the **screen half** (the box carries no instance row); the **fringe** — a clamped position where art overhangs its box | phase 6, 6f–6i |
+| Impostor: one silhouette, the box met per fragment | 🟡 shipping with one hole | a corner's two panels are still told apart by the **screen half** (the box carries no instance row). The **fringe** is decided: the clamp stays, and what it costs is a position rather than a facing | phase 6, 6f–6i |
 | Occluders: absolute coordinates, merged runs, a BVH, no tile in the answer | ✅ landed | — | [`occluders.md`](occluders.md) (a record) |
 | Footprints: a sub-tile box measured off the art | ✅ landed, partial by design | the **height** is never measured — a roof's picture stands 76 px over a box 3 `z` tall; the remaining `Crooked` class is furniture standing on more than one thing | [`footprints.md`](footprints.md) |
 | Frame assembly: one `frame::assemble`, one `Inputs`, gated plane by plane | ✅ landed | P4 items 2–4 (a `CLEAR` piece's name, the whole-tile stand-in, `PANEL_THICKNESS`) | [`parity.md`](parity.md) |
@@ -166,14 +166,21 @@ plate, which height alone does not turn into an AABB. The other **563
 a separate primitive question, not a height question, and stay out of A-2's
 scope.
 
-**2. The fringe, and it is one decision with two candidates.** A pixel whose ray
-misses its box is clamped to the nearest point on it. That is better than the
-two alternatives already tried and measured (drawing nothing: 11.09% of every
-panel's art and 32.4% of a whole-tile one; no facing: lit from every side,
-measured as a worse artefact and reverted). What is unbounded is *how far* — the
-worst clamp is 133 fragments, four tiles, and the shadow ray starts there. The
-open candidates are "keep the clamp" and "give a miss the face the sprite's own
-volume presents".
+**2. ~~The fringe~~ — decided 2026-08-10: the clamp stays, and the serration
+was never the larger number.** A pixel whose ray misses its box is clamped to
+the nearest point on it. That was already better than the two alternatives tried
+and measured (drawing nothing: 11.09% of every panel's art and 32.4% of a
+whole-tile one; no facing: lit from every side, reverted). The last open
+candidate — *give a miss the face the sprite's own volume presents* — was
+written, run and refused: it does end the comb inside an overhang (0.22% → 0.02%
+of neighbouring pairs) and it pays 0.30% → **32.59%** at the *join* to the art,
+**97.68%** for panels, a hard line along the top of every wall. The reason is
+one number nobody had: **91.79% of the art bordering an overhang is on the box's
+own lid**, because an overhang hangs *above* its box. And the control from the
+same walk says two neighbouring pixels that both **hit** disagree at 1.35% —
+six times the rate two misses do. What remains is a *position* lie, bounded by
+the overhang and so by item 1 above; the code is `impostor::presented_face`,
+kept only so `examples/discard_census.rs` can re-take the number.
 
 **3. Phase 7's second half.** A mobile's normal is one vector for the whole
 sprite, so a torch on a figure's left reads no brighter than one on its right.
@@ -200,7 +207,7 @@ measured rather than guessed at. None is a defect in the model.
 | | What it looks like | What it is |
 |---|---|---|
 | 🚩 | **A flame's own sprite is black.** Every free-standing emitter taller than `FLAME_LIFT` | The flame burns at the tile's centre, *inside* the lamp post's own box; the impostor answers the sprite with the box's camera-facing face, whose normal points away from the flame, so `N·L ≤ 0` on every visible pixel |
-| 🚩 | **A sprite's top edge is serrated** | The nearest face of a *miss* flips between two answers along a silhouette, so a smooth overhang reads as a comb |
+| 🟢 | **A sprite's top edge is serrated** | Measured and closed 2026-08-10. The flip is real and it is **0.22% of neighbouring pairs inside an overhang**, against 1.35% for two pixels that both hit — the overhang is smoother than the picture it hangs off. The rule written to end it draws a worse edge at the join; see the rebuild's own entry |
 | 🚩 | **A whole-tile body reads dark and striped** | A body — the box for a graphic whose art would not name a side — writes a camera-facing normal it has no right to. This and the black emitter are **one question**: what should a body write for a normal |
 | 🟡 | **Specks and dashes on an indoor floor** | Furniture drawn wider than its own per-tile box; the pixel over the boundary belongs to a static whose box is a tile away, and its ray leaves through a side face. 32 of 66 are pieces the grid holds nothing for, so no identity can excuse them |
 | 🟡 | **A corner's two panels disagree near the tile corner** | The id follows `split_corners`' twin row and a `Volume` carries a `SolidId`, not a row number, so the *identity* is still picked by which half of the sprite a pixel was drawn on while the *normal* is picked by the box |

@@ -168,6 +168,10 @@ fn overhang(image: &Image, at: (i32, i32), z: i8, volumes: &[Volume]) -> (u32, u
     let centre_row = f32::from(height) - HALF_TILE;
     let (mut drawn, mut missed) = (0u32, 0u32);
     let mut steps = Steps::default();
+    // **The comb, and it needs the neighbours** — see [`Comb`]. One slot a pixel
+    // of the sprite's own rectangle, filled for every drawn pixel a box
+    // answered, and read once the walk below has filled the rows above and left.
+    let mut faces: Vec<Option<Shading>> = vec![None; usize::from(width) * usize::from(height)];
     for row in 0..height {
         for column in 0..width {
             let opaque = image
@@ -196,28 +200,180 @@ fn overhang(image: &Image, at: (i32, i32), z: i8, volumes: &[Volume]) -> (u32, u
             ) else {
                 continue;
             };
+            let volume = &volumes[which];
+            let met = nearest
+                .normal
+                .array()
+                .iter()
+                .position(|n| *n != 0.0)
+                .expect("a meeting names one axis");
+            faces[usize::from(row) * usize::from(width) + usize::from(column)] = Some(Shading {
+                met,
+                // **The candidate, computed here rather than shaded with.** A
+                // hit is on a face it genuinely met and no rule about misses
+                // reaches it, so the two agree there by definition; a miss is
+                // where the two rules are two rules.
+                presented: match nearest.hit() {
+                    true => met,
+                    false => impostor::presented_face(volume.lo, volume.hi),
+                },
+                missed: !nearest.hit(),
+            });
             if !nearest.hit() {
                 missed += 1;
-                // **And what the nearest box would have answered**, which is the
-                // question "let the nearest box win outright" turns on. A miss is
-                // clamped onto the box, and the face that clamp names is the one
-                // whose exit came first — so a pixel that fell off a *lid*
-                // sideways is handed a side face, a wall's cosine in the middle
-                // of a floor. That is the lattice `discard` was introduced for
-                // and it is the whole cost of the rule; the count here is how big
-                // it actually is.
-                let face = nearest
-                    .normal
-                    .array()
-                    .iter()
-                    .position(|n| *n != 0.0)
-                    .expect("a meeting names one axis");
-                let volume = &volumes[which];
-                steps.count(nearest.outside, face, volume.hi.z - volume.lo.z);
+                // **And what face this miss is shaded as.** A miss is clamped
+                // onto the box, and the face that clamp names is the one whose
+                // exit came first — so a pixel that fell off a *lid* sideways
+                // would be handed a side face, a wall's cosine in the middle of
+                // a floor. That is the lattice `discard` was introduced for, and
+                // the count here is how big it actually is.
+                let shading = faces[usize::from(row) * usize::from(width) + usize::from(column)]
+                    .expect("this pixel was just recorded");
+                steps.count(nearest.outside, shading, volume.hi.z - volume.lo.z);
             }
         }
     }
+    steps.comb.walk(&faces, width, height);
     (drawn, missed, steps)
+}
+
+/// What one drawn pixel is shaded as, under both rules at once.
+///
+/// The pair the comb is counted over. A hit has one face and both fields hold
+/// it; a miss is where the two rules are two rules.
+#[derive(Clone, Copy)]
+struct Shading {
+    /// The face [`impostor::meets`] names — the shipped answer.
+    met: usize,
+    /// And the face [`impostor::presented_face`] would give it, which is the
+    /// candidate this tool exists to price.
+    presented: usize,
+    /// Whether this pixel's ray missed every box of its own static. A pixel that
+    /// hit is shaded by the surface it is genuinely on under either rule, and it
+    /// is in this walk because the *seam* below is a question about the join
+    /// between the two populations.
+    missed: bool,
+}
+
+/// **How serrated the overhang is** — the number the fringe decision turns on.
+///
+/// A miss is shaded by whichever plane its clamp reached first. That is a fact
+/// about the ray and not about the box, so two neighbouring pixels of one smooth
+/// overhang can be handed two different faces — a lit pixel beside an unlit one,
+/// repeating: the comb a person reported on a sprite's top edge, and
+/// `docs/lighting_state.md`'s second open defect.
+///
+/// **This is what refused `impostor::presented_face`**, the rule written to end
+/// that flip. Read the two columns together: the candidate does end it, and it
+/// pays for it at the *join*, where the shipped rule agrees with the art it
+/// borders because it is the same clamp one fragment along.
+///
+/// So this counts **disagreeing neighbours** rather than shares of a population,
+/// because a share cannot see the difference: an overhang shaded `+z` for its
+/// left half and `+x` for its right half has the same face counts as one that
+/// alternates every pixel, and only one of the two is a comb.
+///
+/// Two populations, and they answer different halves of the question:
+///
+/// - `comb` — both neighbours missed. The candidate drives this to **zero
+///   within one box** by construction, and what it cannot drive to zero is a
+///   static standing as *several* volumes whose overhangs meet, which is a real
+///   edge between two primitives rather than a serration.
+/// - `seam` — one missed and one hit: the join between a sprite's body and its
+///   overhang. `seam_hits` says what is on the other side of that join, and it
+///   is the number that decided this: an overhang hangs *above* its box, so the
+///   art beside it is overwhelmingly the box's own **lid**.
+/// - `bodies` — both hit. The control, and the one denominator that says whether
+///   any of the above is a large number.
+#[derive(Default)]
+struct Comb {
+    /// Neighbouring drawn pixels that both missed.
+    misses: u64,
+    /// …of which the two rules' answers differ, under the exit rule.
+    comb_exit: u64,
+    /// …and under the presented-face rule.
+    comb_now: u64,
+    /// Neighbouring drawn pixels of which exactly one missed.
+    edges: u64,
+    /// …disagreeing, under the exit rule.
+    seam_exit: u64,
+    /// …and under the presented-face rule.
+    seam_now: u64,
+    /// **The control**: neighbouring drawn pixels that both *hit*.
+    bodies: u64,
+    /// …of which the two disagree, which neither rule can touch — both pixels
+    /// are on a surface they genuinely met. This is what a face disagreement
+    /// between two neighbours costs when it is *honest*: the rate at which one
+    /// box's own visible edges cross a sprite. A seam rate near this one is a
+    /// picture with edges in it; a seam rate far above it is a rule drawing an
+    /// edge the geometry does not have.
+    bodies_split: u64,
+    /// **Which face the *hit* side of a join is on**, counted per axis.
+    ///
+    /// The seam rate says the two sides disagree; this says what they are
+    /// disagreeing with, and it is the only column that can tell "the overhang
+    /// is shaded wrong" from "the overhang borders a face nobody expected". A
+    /// sprite's overhang is mostly *above* its box, so the art next to it is
+    /// where the view ray grazes over the box's **top** — which is a lid face
+    /// even on a wall panel whose every other pixel is a side one.
+    seam_hits: [u64; 3],
+}
+
+impl Comb {
+    /// Every horizontal and vertical neighbouring pair of one sprite.
+    ///
+    /// Right and down only, which is each unordered pair exactly once. A pixel
+    /// the art did not draw, or one no box answered, is in no pair at all: the
+    /// question is about two shaded pixels next to each other.
+    fn walk(&mut self, faces: &[Option<Shading>], width: u16, height: u16) {
+        let at = |column: u16, row: u16| faces[usize::from(row) * usize::from(width) + usize::from(column)];
+        for row in 0..height {
+            for column in 0..width {
+                let Some(here) = at(column, row) else {
+                    continue;
+                };
+                let right = (column + 1 < width).then(|| at(column + 1, row)).flatten();
+                let down = (row + 1 < height).then(|| at(column, row + 1)).flatten();
+                for there in [right, down].into_iter().flatten() {
+                    match (here.missed, there.missed) {
+                        (true, true) => {
+                            self.misses += 1;
+                            self.comb_exit += u64::from(here.met != there.met);
+                            self.comb_now += u64::from(here.presented != there.presented);
+                        }
+                        (true, false) | (false, true) => {
+                            self.edges += 1;
+                            self.seam_exit += u64::from(here.met != there.met);
+                            self.seam_now += u64::from(here.presented != there.presented);
+                            let hit = match here.missed {
+                                true => there,
+                                false => here,
+                            };
+                            self.seam_hits[hit.met] += 1;
+                        }
+                        (false, false) => {
+                            self.bodies += 1;
+                            self.bodies_split += u64::from(here.met != there.met);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn add(&mut self, other: &Comb) {
+        self.misses += other.misses;
+        self.comb_exit += other.comb_exit;
+        self.comb_now += other.comb_now;
+        self.edges += other.edges;
+        self.seam_exit += other.seam_exit;
+        self.seam_now += other.seam_now;
+        self.bodies += other.bodies;
+        self.bodies_split += other.bodies_split;
+        for axis in 0..3 {
+            self.seam_hits[axis] += other.seam_hits[axis];
+        }
+    }
 }
 
 /// How far the misses miss by, in **fragments** rather than in tiles.
@@ -249,17 +405,19 @@ struct Steps {
     beyond: u64,
     /// The largest miss seen, in steps.
     worst: f32,
-    /// **What face the nearest box would name if a miss were let to keep it** —
-    /// `x`, `y`, `z`, counted separately.
+    /// **What face a miss is shaded as** — `x`, `y`, `z`, counted separately.
     ///
-    /// The question `docs/silhouettes.md` asks after the seam: a fragment that
-    /// missed every box is unmeasured today, and the alternative is to let the
-    /// box it came nearest win outright. What that costs is entirely in this
-    /// row, because the *position* a clamp gives is off by at most the overhang
-    /// while the *face* it gives is a different surface — the clamp names
-    /// whichever exit came first, so a pixel falling sideways off a lid is
-    /// handed a wall's cosine.
+    /// A clamp names whichever exit came first, so a pixel falling sideways off
+    /// a lid would be handed a wall's cosine. That is what this row prices: the
+    /// *position* a clamp gives is off by at most the overhang, while the *face*
+    /// it gives is a different surface.
     faces: [u64; 3],
+    /// **The same three under the rule that was refused** —
+    /// `impostor::presented_face`, one face for a whole box's overhang. Kept
+    /// beside the shipped column because the pair is the whole measurement: a
+    /// rule that moves no pixel and one that moves every pixel look the same in
+    /// one column.
+    presented_faces: [u64; 3],
     /// The same three, counted only where the nearest box is a **lid** — a span
     /// under one `z` unit, which is what `Solid::box_of` leaves a floor, a roof
     /// or a plank.
@@ -269,6 +427,9 @@ struct Steps {
     /// handed that panel's side has been handed something defensible; a floor
     /// pixel handed a side has not, and only this column can tell them apart.
     lid_faces: [u64; 3],
+    /// And how much of the overhang is **serrated** — [`Comb`], which is the
+    /// only column here that can see the defect a person reported.
+    comb: Comb,
 }
 
 /// One step of the fragment grid, in tiles: what a change of one virtual pixel
@@ -279,7 +440,8 @@ impl Steps {
     /// `face` is the axis the nearest box's own clamp named, and `span` that
     /// box's `z` extent — the two numbers the "let the nearest box win" rule
     /// would act on.
-    fn count(&mut self, outside: f32, face: usize, span: f32) {
+    fn count(&mut self, outside: f32, shading: Shading, span: f32) {
+        let face = shading.met;
         let steps = outside / STEP;
         self.worst = self.worst.max(steps);
         *match steps {
@@ -290,6 +452,7 @@ impl Steps {
             _ => &mut self.beyond,
         } += 1;
         self.faces[face] += 1;
+        self.presented_faces[shading.presented] += 1;
         // A lid is what `Solid::box_of` leaves flat-ish: `LID_THICKNESS` for the
         // degenerate case, and anything under a whole `z` unit is a plank rather
         // than a body. Read off the box itself and not off the claim, because the
@@ -308,8 +471,10 @@ impl Steps {
         self.worst = self.worst.max(other.worst);
         for axis in 0..3 {
             self.faces[axis] += other.faces[axis];
+            self.presented_faces[axis] += other.presented_faces[axis];
             self.lid_faces[axis] += other.lid_faces[axis];
         }
+        self.comb.add(&other.comb);
     }
 
     fn total(&self) -> u64 {
@@ -696,17 +861,21 @@ fn report(
     println!("    {:>22}   {:>9.2}\n", "the worst", steps.worst);
 
     // **And what letting the nearest box win would cost**, which is the rule
-    // `docs/silhouettes.md` weighs against the unmeasured state: every one of
-    // these pixels would take a real face instead of no facing, and the ones
-    // that take a *side* face off a **lid** are the lattice of wall-shaded dots
-    // that made `discard` look like the answer the first time round.
-    println!("  the face the nearest box would give each miss, if it won outright:");
-    for (name, count) in [
-        ("an east face (x)", steps.faces[0]),
-        ("a south face (y)", steps.faces[1]),
-        ("a lid (z)", steps.faces[2]),
+    // `docs/silhouettes.md` weighs: the ones that take a *side* face off a
+    // **lid** are the lattice of wall-shaded dots that made `discard` look like
+    // the answer the first time round, and the second column is what
+    // `impostor::presented_face` would have shaded the same pixels as.
+    println!("  the face each miss is shaded as — the clamp's own, and the refused candidate's:");
+    for (name, now, would) in [
+        ("an east face (x)", steps.faces[0], steps.presented_faces[0]),
+        ("a south face (y)", steps.faces[1], steps.presented_faces[1]),
+        ("a lid (z)", steps.faces[2], steps.presented_faces[2]),
     ] {
-        println!("    {name:>22}   {count:>9}  {:>5.2}%", pct(count, all));
+        println!(
+            "    {name:>22}   {now:>9}  {:>5.2}%   ->   {would:>9}  {:>5.2}%",
+            pct(now, all),
+            pct(would, all),
+        );
     }
     let lid_sides = steps.lid_faces[0] + steps.lid_faces[1];
     let lid_all = lid_sides + steps.lid_faces[2];
@@ -715,6 +884,39 @@ fn report(
         "a SIDE face off a lid",
         pct(lid_sides, lid_all),
     );
+
+    // **And how much of that overhang is a comb**, which is the defect itself
+    // rather than a share of a population — see [`Comb`].
+    let comb = &steps.comb;
+    println!("  neighbouring pixels of one overhang shaded differently — the serration:");
+    for (name, pairs, was, now) in [
+        ("inside the overhang", comb.misses, comb.comb_exit, comb.comb_now),
+        (
+            "where it joins the art",
+            comb.edges,
+            comb.seam_exit,
+            comb.seam_now,
+        ),
+        (
+            "the control: two hits",
+            comb.bodies,
+            comb.bodies_split,
+            comb.bodies_split,
+        ),
+    ] {
+        println!(
+            "    {name:>22}   {was:>9}  {:>5.2}%   ->   {now:>9}  {:>5.2}%   of {pairs} pairs",
+            pct(was, pairs),
+            pct(now, pairs),
+        );
+    }
+    println!(
+        "    the art at a join is  x {:>5.2}%  y {:>5.2}%  z {:>5.2}%",
+        pct(comb.seam_hits[0], comb.edges),
+        pct(comb.seam_hits[1], comb.edges),
+        pct(comb.seam_hits[2], comb.edges),
+    );
+    println!();
 
     // **And the same three with the roof cut**, which is the only condition the
     // one recorded measurement of this discard was ever taken under and is what
@@ -758,6 +960,23 @@ fn report(
         row.3 += tally.missed_now;
         row.4.add(&tally.steps);
     }
+    // **And which class the serration and the join belong to**, since the two
+    // populations moved in opposite directions and a total cannot say for whom.
+    println!("  the serration by the kind of box, the clamp -> the refused candidate:\n");
+    println!("      comb inside      seam at the join    two hits   claim");
+    for (claim, (.., steps)) in &by_claim {
+        let comb = &steps.comb;
+        println!(
+            "    {:>5.2}% -> {:>5.2}%    {:>6.2}% -> {:>6.2}%     {:>5.2}%   {claim}",
+            pct(comb.comb_exit, comb.misses),
+            pct(comb.comb_now, comb.misses),
+            pct(comb.seam_exit, comb.edges),
+            pct(comb.seam_now, comb.edges),
+            pct(comb.bodies_split, comb.bodies),
+        );
+    }
+    println!();
+
     println!("  the same pixels by the kind of box that answered them:\n");
     println!("    placements     drawn      before       now   under a fragment   claim");
     for (claim, (count, drew, before, now, steps)) in &by_claim {

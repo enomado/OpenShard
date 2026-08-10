@@ -2687,8 +2687,48 @@ Things noticed while writing this, not blocking any phase:
   a different picture with a different box); the server's **ground items**; and
   the camera, which follows a walking player at smoothed sub-tile positions
   rather than sitting on a tile anchor.
-- 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
-  showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
+- ~~🚩 **A sprite's own top edge is serrated**~~ **Measured 2026-08-10, and the
+  clamp keeps the fringe.** The candidate this entry and the cornice entry both
+  ended on — *give a miss the face the sprite's own volume presents* — was
+  written on both sides, run, and refused on the numbers. It is
+  `impostor::presented_face`, kept in the tree because
+  `examples/discard_census.rs` calls it to price it, and nothing in the pipeline
+  does. The instrument is that census's new **`Comb` pass**: it counts
+  *disagreeing neighbouring pixels* rather than shares of a population, which is
+  the only shape of number that can tell a serration from a two-toned overhang
+  — the same face counts describe both.
+  <br>
+  Britain's `121×121` around `(1501, 1659)`, per neighbouring pair of drawn
+  pixels, the clamp against the candidate:
+  <br>
+
+  | population | clamp | candidate |
+  |---|---:|---:|
+  | comb *inside* an overhang, 2,882,656 pairs | 0.22% | **0.02%** |
+  | the join to the art it hangs off, 243,275 pairs | **0.30%** | 32.59% |
+  | — panels alone | 0.85% | **97.68%** |
+  | the control: two *hits*, 23,156,254 pairs | 1.35% | 1.35% |
+
+  <br>
+  **The number the candidate's argument never had: 91.79% of the art bordering
+  an overhang is on the box's own lid.** An overhang hangs *above* its box, so
+  the pixel beside it is where the view ray grazes over the top face — a `z`
+  face even on a wall panel whose every other pixel is a side one. The clamp
+  agrees with that neighbour by construction, being the same clamp one fragment
+  along; a rule reading the *volume* contradicts it by construction, because a
+  panel presents its side. That is a hard line drawn along the top of every wall
+  in the world, traded for a comb that the control says was never the larger
+  number: **two neighbouring pixels that both hit disagree six times as often as
+  two misses do.** The overhang is smoother than the picture it hangs off.
+  <br>
+  What is left of this entry is a sentence rather than a plan: the clamp lies
+  about *position* — up to 133 fragments, four tiles — and that lie is bounded
+  by the overhang, which is bounded by how badly a box fits its art. So the
+  fringe is downstream of the height nobody measures and of nothing else, and
+  the population it is measured over is roofs (`0x05A2` loses 35.2% of its art
+  to a box three `z` tall). It closes here and reopens only if that changes.
+  The report that opened it, kept because it is what a person saw: seen at
+  Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the
   normal alternates pixel by pixel between the wall's own camera-facing face and
   the neighbour above it, and the light alternates with it. The rule it comes
@@ -2706,7 +2746,9 @@ Things noticed while writing this, not blocking any phase:
   the *instance's* own single facing for a miss, which is the pre-6c answer for
   the whole sprite applied to its overhang alone. **Measure the flipping pixels
   first** — how many, how far out (`Meeting::outside`), and whether they are the
-  same set as the ones a person can see.
+  same set as the ones a person can see. That instruction is what was carried
+  out above; the third candidate it lists, "the instance's own single facing",
+  *is* the one the census priced.
 - **A billboard's brightness is a per-row estimate no longer, and what is left is
   ordinary sampling noise.** Phase 7's position half took away the correlation
   that turned eight rays into bands; it did not take away the eight rays. A

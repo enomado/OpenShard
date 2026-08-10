@@ -247,6 +247,11 @@ fn meets(start: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> Meeting {
 
     var met: Meeting;
     met.at = clamped;
+    // **A miss keeps this face too**, though a ray that passed beside the box
+    // left it by none: what the exit names there is whichever plane the clamp
+    // reached first. Giving it the face the *volume* presents instead was
+    // written, measured and refused — `impostor::presented_face` carries the
+    // numbers, and there is deliberately no such function on this side.
     met.normal = normal;
     // A distance rather than the slab test's own `enter <= exit` predicate, and
     // the two cannot disagree because this one *is* the clamp above: a ray that

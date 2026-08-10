@@ -121,6 +121,77 @@ pub fn shows_a_side(lo_z: f32, hi_z: f32) -> bool {
     (hi_z - lo_z) * Z_STEP > 1.0
 }
 
+/// Which face this box shows the camera at its largest, as an axis — the face a
+/// miss would take under the rule this renderer **measured and refused**.
+///
+/// Nothing in the pipeline calls this. It is here because
+/// `examples/discard_census.rs` calls it, and it does so to print what the rule
+/// would have cost beside what the shipped one costs, out of one walk. The
+/// alternative to keeping it is a document claiming a number no tool can take
+/// again.
+///
+/// # What it was for, and what killed it
+///
+/// [`meets`] names the face whose exit comes first, which is the right answer
+/// for a ray that goes *through* a box and an arbitrary one for a ray that
+/// passes beside it: along a silhouette the first exit can flip between two
+/// faces from one fragment to the next, and a smooth overhang shaded as a comb
+/// is the serrated top edge `docs/lighting_state.md` lists. A face picked from
+/// the box alone is the same face at every pixel of that box's overhang, so the
+/// flip would have nowhere to happen — which is true, and is not the whole of
+/// what the change does.
+///
+/// **Measured over Britain's `121×121`, per neighbouring pair of drawn pixels:**
+/// the comb inside an overhang falls from `0.22%` of pairs to `0.02%`, and the
+/// join between an overhang and the art it hangs off goes from `0.30%`
+/// disagreeing to **`32.59%`** — `97.68%` for panels, a hard line drawn along
+/// the top of every wall in the world. The reason is one number the argument for
+/// this rule never had: **`91.79%` of the art bordering an overhang is on the
+/// box's own lid.** An overhang hangs *above* its box, so the pixel beside it is
+/// where the view ray grazes over the top face — a `z` face even on a wall
+/// panel whose every other pixel is a side one. The exit rule agrees with that
+/// neighbour by construction, because it is the same clamp one fragment along;
+/// this one contradicts it by construction, because a panel presents its side.
+///
+/// And the control the same walk takes says the comb was never the larger
+/// number: two neighbouring pixels that both *hit* disagree at `1.35%`, six
+/// times the rate two misses do. The overhang is smoother than the picture it
+/// hangs off.
+///
+/// # The score, which is the part worth keeping
+///
+/// **It is the face's own projected area and not a preference.** The
+/// projection has one null direction, [`VIEW`], so a face's area on screen is
+/// its area in the world times the cosine between its normal and that direction
+/// — and for an axis-aligned face those are `extent[b] · extent[c]` and
+/// `VIEW[a]`, up to the one length all three share. So a panel presents its own
+/// side (a `PANEL_THICKNESS`-thin box is `20 · 1 · 1` against `2.2 · 0.2 · 1`),
+/// a whole tile three `z` units tall presents its lid (`11` against `3`), and
+/// nothing here is chosen by taste.
+///
+/// A lid is refused a side by [`shows_a_side`] for the same reason [`meets`]
+/// refuses it one — a face under a pixel tall is not a face — though the areas
+/// alone would already say so.
+///
+/// Ties go to `z`, then `y`, then `x`, which is [`meets`]'s own order.
+pub fn presented_face(lo: WorldVec, hi: WorldVec) -> usize {
+    let (lo, hi) = (lo.array(), hi.array());
+    let extent = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    let view = VIEW.array();
+    let mut face = 2;
+    let mut most = view[2] * extent[0] * extent[1];
+    if shows_a_side(lo[2], hi[2]) {
+        for a in [1, 0] {
+            let area = view[a] * extent[(a + 1) % 3] * extent[(a + 2) % 3];
+            if area > most {
+                most = area;
+                face = a;
+            }
+        }
+    }
+    face
+}
+
 /// One point of the view ray through a sprite fragment: the point at the
 /// static's own base height.
 ///
@@ -302,6 +373,10 @@ pub struct Meeting {
     pub at: WorldVec,
     /// Which way the surface it met looks: the box's own camera-facing face on
     /// one axis, so always one of `+x`, `+y`, `+z`.
+    ///
+    /// The face the ray left by — and for a **miss**, which left by none, the
+    /// face its clamp reached first. [`presented_face`] carries the rule that
+    /// was measured against that and refused.
     pub normal: WorldVec,
     /// How far, in **tiles**, the ray passed outside the box before the clamp
     /// pulled it back — at most [`FRAGMENT`] for a ray this grid can tell from
@@ -350,6 +425,11 @@ impl Meeting {
 /// The face is the one whose *exit* comes first: travelling from the camera
 /// inwards a box is entered through whichever of its three visible faces the ray
 /// reaches first, and `min` over the three exit parameters is that face.
+///
+/// **A miss keeps that face**, though a ray that never entered the box left it
+/// by none: what it names there is whichever plane the clamp reached first.
+/// [`presented_face`] is the rule that was written to replace it and refused on
+/// a measurement — read it before proposing the replacement again.
 ///
 /// **Ties go to `z`, then `y`, then `x`, and that order is a decision.** Two
 /// exits are equal exactly on an edge or a corner of the box. Preferring `z` is
@@ -439,6 +519,9 @@ pub fn meets(from: WorldVec, lo: WorldVec, hi: WorldVec) -> Meeting {
     // `between` is the only place the division is written.
     let outside = TileVec::between(WorldVec::from_array(clamped), WorldVec::from_array(at)).length();
 
+    // **A miss keeps this face too**, and that is a measurement rather than an
+    // omission — see [`presented_face`], which is the rule that was weighed
+    // against it and refused.
     let mut normal = [0.0; 3];
     normal[axis] = 1.0;
     Meeting {
@@ -498,6 +581,42 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The refused rule still answers what it was refused for**, which is what
+    /// keeps `examples/discard_census`'s second column a measurement of the
+    /// candidate rather than of whatever [`presented_face`] drifted into.
+    ///
+    /// Each of the three is the case the argument turns on: a panel presents its
+    /// own long side, a whole tile of roof presents its lid even against three
+    /// `z` units of side, and a lid presents its lid because it has no side to
+    /// present. A person re-proposing the rule needs these to still hold before
+    /// the numbers in that function's doc mean anything.
+    #[test]
+    fn a_box_presents_its_largest_face_to_the_camera() {
+        let panel = (
+            WorldVec::new(100.8, 101.0, 0.0),
+            WorldVec::new(101.0, 102.0, 20.0),
+        );
+        assert_eq!(presented_face(panel.0, panel.1), 0, "a wall thin in x");
+        let across = (
+            WorldVec::new(100.0, 101.8, 0.0),
+            WorldVec::new(101.0, 102.0, 20.0),
+        );
+        assert_eq!(presented_face(across.0, across.1), 1, "a wall thin in y");
+        let roof = (WorldVec::new(100.0, 101.0, 0.0), WorldVec::new(101.0, 102.0, 3.0));
+        assert_eq!(presented_face(roof.0, roof.1), 2, "a whole tile three z tall");
+        // `11 · 1 · 1` against `1 · 1 · 11`: the tie the doc's own order settles.
+        let cube = (
+            WorldVec::new(100.0, 101.0, 0.0),
+            WorldVec::new(101.0, 102.0, 11.0),
+        );
+        assert_eq!(presented_face(cube.0, cube.1), 2, "a tile-cube ties to z");
+        let lid = (
+            WorldVec::new(100.0, 101.0, 0.0),
+            WorldVec::new(101.0, 102.0, 1.0 / 64.0),
+        );
+        assert_eq!(presented_face(lid.0, lid.1), 2, "a lid has no side to present");
+    }
 
     /// The unit cube on tile `(100, 101)`, ten `z` tall.
     fn cube() -> (WorldVec, WorldVec) {

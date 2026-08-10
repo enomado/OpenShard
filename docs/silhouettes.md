@@ -355,6 +355,20 @@ their own**, because a box that fits the art clips more of the outline.
   from it, so a large overhang is now a *wrong* answer where it used to be an
   absent one. `docs/footprints.md` shrinks the population; what nobody has
   measured is whether the remaining lie shows on a lit roof.
+  <br>
+  **The other half of the clamp — the *facing* it names — is closed as of
+  2026-08-10, and this entry is what is left of it.** `impostor::presented_face`
+  gave a miss one face per volume instead of the first exit's, which ends the
+  serration inside an overhang (0.22% → 0.02% of neighbouring pairs) and draws a
+  hard line where the overhang meets the art (0.30% → 32.59%; 97.68% for
+  panels), because **91.79% of the art bordering an overhang is the box's own
+  lid**. Refused. So the clamp's facing is as good as the geometry allows and
+  only its *position* is still a lie — which makes this entry downstream of the
+  height, not of any rule about faces. The counts come out of
+  `examples/discard_census.rs`'s `Comb` pass, which counts disagreeing
+  neighbours rather than shares: an overhang shaded `+z` on its left and `+x` on
+  its right has the same face counts as one that alternates every pixel, and
+  only one of the two is a comb.
 - 🚩 **The 1-to-2-fragment population, 135k pixels of Britain's window.** The
   tolerance cuts at one fragment because that is where a neighbouring sample
   exists to tell the difference. The bucket just past it is 8% of what is left
