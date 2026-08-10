@@ -15,7 +15,7 @@
 //! every knob down and what is left is one tile.
 //!
 //! Real coordinates translate onto a fixed synthetic anchor
-//! ([`SYN_ANCHOR`]) the same way `crate::scene::CENTRE` does it for the
+//! ([`SYN_ANCHOR_NEAR_THE_ORIGIN`]) the same way `crate::scene::CENTRE` does it for the
 //! built-in scenes — far from the synthetic map's own edge, so a camera never
 //! runs off it.
 //!
@@ -38,6 +38,13 @@
 //! - `OPENSHARD_SCENE_EXTRA=x,y,z,graphic[,hue];...` — items to add by hand,
 //!   semicolon-separated. What a DB-pulled decoration (or anything else not on
 //!   the map) comes in as.
+//! - `OPENSHARD_SCENE_ANCHOR_REAL=1` — build the scene at the place's *own*
+//!   coordinates instead of translating it next to the synthetic map's origin.
+//!   Everything the impostor is met against is absolute and reaches the shader
+//!   in `f32`, so the translation makes every tie at a shared plane some sixteen
+//!   times more precisely decided here than in the client — see [`syn_anchor`].
+//!   Default `0`, because the near-origin map is a few megabytes and a real one
+//!   is a couple of hundred blocks a side.
 //! - `OPENSHARD_SCENE_IMPOSTOR=0` — meet no sprite against the grid, the way the
 //!   live client draws with its lights *off*: `App::draw` builds no grid at all
 //!   there, so every fragment takes `statics.wesl`'s billboard fallback. The
@@ -158,7 +165,31 @@ use openshard_uofiles::tiledata::TileData;
 
 /// Where every scene's real anchor lands in the synthetic map — far from its
 /// edge, the same convention `crate::scene::CENTRE` uses.
-const SYN_ANCHOR: (u16, u16) = (100, 100);
+const SYN_ANCHOR_NEAR_THE_ORIGIN: (u16, u16) = (100, 100);
+
+/// Where the scene actually goes, which is [`SYN_ANCHOR_NEAR_THE_ORIGIN`] unless
+/// `OPENSHARD_SCENE_ANCHOR=real` says to leave it where the map has it.
+///
+/// **The translation is not free, and this is the knob that says so.** Every
+/// coordinate the impostor is met against — [`crate::occlusion::Solid`]'s own
+/// `space`, the fragment's position, the ray — is *absolute* and lands in `f32`
+/// on the way to the shader. An ulp at `100` is about `7.6e-6` and an ulp at
+/// `1660` is about `1.2e-4`: sixteen times coarser. Any answer that turns on a
+/// tie at a shared plane — and a seam between two abutting statics is exactly
+/// that — is therefore decided at a different precision here than in the client,
+/// which is a difference no amount of pointing this tool at the right
+/// coordinates can remove. `real` removes it instead.
+///
+/// The cost is the synthetic map, which must then be big enough to hold the real
+/// place: 8×8 tiles a block, so Britain wants a couple of hundred blocks a side
+/// against the default sixteen. It is land cells and no statics, so it is
+/// megabytes rather than anything to think about.
+fn syn_anchor(real: (u16, u16)) -> (u16, u16) {
+    match env_flag("OPENSHARD_SCENE_ANCHOR_REAL", false) {
+        true => real,
+        false => SYN_ANCHOR_NEAR_THE_ORIGIN,
+    }
+}
 
 /// A required environment variable, or a clear panic naming which one.
 fn env(name: &str) -> String {
@@ -283,8 +314,8 @@ fn parse_surface(spec: &str) -> light::Surface {
 /// map.
 fn shift_f(anchor: (u16, u16), x: f32, y: f32) -> (f32, f32) {
     (
-        x - f32::from(anchor.0) + SYN_ANCHOR.0 as f32,
-        y - f32::from(anchor.1) + SYN_ANCHOR.1 as f32,
+        x - f32::from(anchor.0) + f32::from(syn_anchor(anchor).0),
+        y - f32::from(anchor.1) + f32::from(syn_anchor(anchor).1),
     )
 }
 
@@ -421,15 +452,15 @@ fn face_light(
 
 fn shift(anchor: (u16, u16), real: (u16, u16)) -> (u16, u16) {
     (
-        (real.0 as i32 - anchor.0 as i32 + SYN_ANCHOR.0 as i32) as u16,
-        (real.1 as i32 - anchor.1 as i32 + SYN_ANCHOR.1 as i32) as u16,
+        (real.0 as i32 - anchor.0 as i32 + syn_anchor(anchor).0 as i32) as u16,
+        (real.1 as i32 - anchor.1 as i32 + syn_anchor(anchor).1 as i32) as u16,
     )
 }
 
 fn unshift(anchor: (u16, u16), syn: (u16, u16)) -> (u16, u16) {
     (
-        (syn.0 as i32 - SYN_ANCHOR.0 as i32 + anchor.0 as i32) as u16,
-        (syn.1 as i32 - SYN_ANCHOR.1 as i32 + anchor.1 as i32) as u16,
+        (syn.0 as i32 - syn_anchor(anchor).0 as i32 + anchor.0 as i32) as u16,
+        (syn.1 as i32 - syn_anchor(anchor).1 as i32 + anchor.1 as i32) as u16,
     )
 }
 
@@ -549,7 +580,13 @@ fn main() {
     // accident; keeping this a live read rather than a stored blob is what
     // lets `_RADIUS` and `_AT` move the scene to any corner of Britain with no
     // second file to keep in step.
-    let synthetic = Map::from_blocks(16, 16, |sx, sy| {
+    // Sixteen blocks a side is plenty around `SYN_ANCHOR_NEAR_THE_ORIGIN`, and
+    // nowhere near enough to hold a real Britain coordinate — so the map is
+    // sized from wherever the anchor actually landed, plus a frame's worth of
+    // tiles so a camera never runs off it. See [`syn_anchor`].
+    let syn = syn_anchor(anchor);
+    let blocks = |along: u16| u32::from(along / 8 + 9).max(16);
+    let synthetic = Map::from_blocks(blocks(syn.0), blocks(syn.1), |sx, sy| {
         if !want_ground {
             return LandCell { tile: 0, z: at.z };
         }

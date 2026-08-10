@@ -2436,6 +2436,33 @@ Things noticed while writing this, not blocking any phase:
   now walks the rectangle across the town a tile a frame and the baked grid is
   the walked one at every step.
   <br>
+  **The rectangle is exhausted, measured.** Growing what the tool is given of
+  the map settles the partition: radius `16` against `24` moves 36 of 205,148
+  adjacent pairs, and radius `24` against `40` moves **none of 207,415**. The
+  stripe census is identical at all three. So handing the tool the whole map
+  changes nothing at this place, and "the client has more in frame" is not the
+  difference.
+  <br>
+  **The anchor is a real one-pixel difference, and it is now expressible.**
+  `OPENSHARD_SCENE_ANCHOR_REAL=1` builds the scene where the map has it instead
+  of translating it next to the synthetic origin. Same data, same camera — the
+  anchor delta is a whole number of tiles, so the projection moves an exact whole
+  number of screen pixels and the framing is bit-identical — and **760 pixels
+  come out different, 746 of them one-pixel runs**: 514 that were a wall's own
+  face at `(100,100)` are a lid's `+z` at `(1507,1660)`. That is the arithmetic
+  and nothing else, and it is exactly the width the reported defect has. What it
+  does *not* do at this place is put a new stripe in the middle of a uniform
+  face: the wedged-run census barely moves (25 → 24), so what the anchor buys
+  here is edges landing one pixel over, not the reported band.
+  <br>
+  **And nothing loses its facing.** Four places — `1505,1653`, `1507,1660`,
+  `1490,1636`, `1497,1626` — crossed with both the anchor and the grid: **zero**
+  pixels of 691,200 come out with no facing in any of the sixteen frames. So the
+  "faces disappear when the light goes on" a person sees is not a fragment left
+  without an answer, at least nowhere this tool has been pointed. The grid moves
+  the count by nothing at three of the four and by thirteen wedged runs at
+  `1497,1626`, which is the one place worth going back to with a picture.
+  <br>
   **What is left of the difference, ranked, and none of it measured yet:** the
   frame's rectangle and the live `Cutaway` (both feed the partition above); the
   **anchor** — the tool translates the place onto `SYN_ANCHOR (100,100)` while
