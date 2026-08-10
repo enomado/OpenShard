@@ -215,17 +215,82 @@ measured too, and now narrowed, exactly like any other picture. Not a defect:
 placements minus 6 measured leaves 2819, plus 496 of the boxy 709 still
 refused, is 3315.
 
-**S4 — what it does to the picture, measured before it is believed.** Two
-numbers, both of which can go the wrong way:
-- **the impostor's discard.** A tighter box is a box the sprite overhangs more,
-  and `statics.wesl` discards a fragment whose ray meets none. Phase 6 measured
-  the whole-tile version at 4,460 of 187,086 static pixels (2.38%); this must be
-  re-measured, and a footprint that eats a tabletop's overhang is a finding, not
-  a cost to accept quietly.
-- **the shadow.** A narrower occluder casts a narrower shadow. Every occluder in
-  this class is `CLEAR` today (`opacity == CLEAR`, `Builder::add` returns) —
-  furniture stops no light — so the expected move is **zero**, and a run that
-  moves it names something that is not furniture.
+**S4 — what it does to the picture, measured before it is believed.** ✅
+2026-08-10, and **both numbers went the wrong way** — one by the amount the plan
+predicted by name, the other where the plan predicted nothing at all.
+
+*The instrument:* `client/render/examples/discard_census.rs`. It walks every
+opaque pixel of every static in a window, builds that pixel's own view ray with
+`impostor::ray_from` and meets it against the boxes `boxes_of` gives — the
+shader's own two functions, on the CPU, in `measure_footprint`'s own convention
+— and does it **twice per placement**: once with the shape as it stands and once
+with `Shape::footprint` forced to `None`, which is exactly the box that shipped
+before S3. So the comparison is two boxes against one picture in one run, rather
+than two builds measured a session apart.
+
+*Its own controls, printed before anything it measured:* `blocks_silhouette`'s
+drawing of a whole-tile block, walked against that block's own box, misses **44
+pixels at either of two heights** — a constant, one row of the tile's own width,
+which is that reference painting from `head.round()` and not a disagreement
+about the projection. The same box moved a hundred tiles misses **everything**.
+A floor that did not grow with the box is what makes the shares below readable.
+
+**The discard.** Britain's `121×121` around `(1501, 1659)`, 11,184 statics,
+13.7M drawn pixels:
+
+| | before S3 | today | |
+|---|---|---|---|
+| every static | 18.20% | 18.30% | +14,580 px |
+| with the roof cut | 9.17% | 9.31% | +14,214 px |
+| **the 219 placements a footprint narrowed** | **7.72%** | **15.88%** | 13,796 → 28,376 px |
+
+**The class's own discard doubled**, and the pictures that pay it are the ones
+this step named in advance — its words before the run were "a footprint that
+eats a tabletop's overhang is a finding, not a cost to accept quietly".
+`0x0B3D`/`0x0B3E` "counter" lose **248 pixels a placement, 21.6% of their art**,
+`0x0865` "wooden fence" 30.2%, `0x0B80` "table" 14.8%. A counter's top is drawn
+wider than its base and the base is what was measured, so the tabletop now hangs
+over its own volume and the shader takes it off the screen.
+
+**D4's gate is confirmed rather than asserted**, and by arithmetic rather than
+by reading: the class's own delta (+14,580 px) *is* the whole window's delta, and
+every other row of the census's per-claim table — prism, lid, panels,
+whole-tile, unfitted climbable — reads the same share before and after, to the
+pixel. Nothing outside the branch `edges_of(None)` reaches moved at all.
+
+**The 2.38% on record is not this number and was never going to be.** It counts
+pixels that *change in a drawn frame* — visible ones, camera-bound, and a
+discarded pixel with another static behind it changes nothing; this counts every
+sprite pixel in a window whether it is drawn over, off screen or under a roof.
+The census is the upper bound of the same phenomenon and the right instrument for
+*the delta*, which is what S4 had to decide on. Re-measuring the frame number
+needs a plane diff that does not exist yet — backlog, below.
+
+**The shadow, and the expectation was wrong.** "Every occluder in this class is
+`CLEAR`, so the expected move is zero" is refuted by counting instead of
+believing: **42 of the 219 placements are pieces the grid holds a primitive
+for**, so each of them casts a shadow this plan has already narrowed. They are
+`0x0009`/`0x00A9`/`0x012A` "wooden post" (16), `0x00CC` "stone post" (6),
+`0x0036` "brick wall" (7), `0x0066` "ornate elven bookshelf" (7), and
+`0x059A` "slate roof" + `0x05C7` "wooden shingles" (6).
+
+Two of those groups read very differently and the split is the finding:
+
+- **a post is a post.** `0x012A` measures `x (6,8) y (6,8)` — a quarter of a
+  tile in the corner, which is what a post *is*, and its shadow was a whole tile
+  before. That is a correction the plan did not claim, not a regression.
+- **a roof piece is not a footprint at all.** `0x059A` measures `x (0,3) y
+  (0,3)`, so four placements of a slate roof now occlude nine sixty-fourths of
+  the tile they filled. S3's own note already recorded that a handful of roof
+  pieces reach `boxes_of`'s footprint branch — `ROOF` is not asked there, only
+  `BACKGROUND` is — and this is what that costs once the box is *believed*. See
+  the backlog.
+
+**And a number that is not this plan's but was found by its instrument.** The
+whole-tile class discards **45.75%** of its own art today, and the roofs inside
+it 44–53% (`0x05A2` "slate roof", 48×76 pixels of picture over a box three `z`
+units tall). That is `docs/lighting_rebuild.md`'s D1 — the height nobody
+measures — showing up in pixels, and it dwarfs everything this plan moves.
 
 **S5 — the frame gate.** The bookcase pair, `View::Normal`, asserting the lid
 shrinks to the measured slab, with the whole-tile footprint as the injection that
@@ -247,11 +312,51 @@ must go red. Depends on the parity item below.
 
 ## Backlog
 
-- 🚩 **S5 needs the parity item first.** The reported picture is two *server*
-  decorations, and `examples/isolated_scene.rs` reads no database — see
-  `docs/parity.md`'s own first backlog entry. Until it does, the frame gate's
-  fixture is two hand-transcribed `OPENSHARD_SCENE_EXTRA` rows, which is a
-  hand-written input standing in for the client's.
+- 🚩 **A roof piece is given a footprint and nothing stops it.** `0x059A` "slate
+  roof" measures `x (0,3) y (0,3)` and `0x05C7` "wooden shingles" `x (0,2) y
+  (0,3)`, so six placements at Britain now stand — and **occlude** — as roughly
+  an eighth of the tile they used to fill. `boxes_of` asks `is_background` and not
+  `is_roof` (its own comment says why, and says the alternative was tried and
+  changed no pixel), and `Shape::of` offers a footprint to any picture
+  `facing_of` refused. A sloped slab's base edge is two 45° runs like anything
+  else's, so the measurement cannot tell itself apart from a box's — the gate
+  has to be the client's own `ROOF` bit, at one of the two ends, and which end
+  is the decision. `docs/lighting_rebuild.md`'s phase 6i is the same class's
+  other open question. **The sharpest of the three findings below**: the other
+  two cost pixels, this one moves shadows on pieces the plan says are not boxes.
+- 🚩 **A tabletop is drawn wider than the base that was measured, and the shader
+  takes the difference off the screen.** `0x0B3D`/`0x0B3E` "counter" lose 21.6%
+  of their art, `0x0865` "wooden fence" 30.2%, `0x0B80` "table" 14.8% — S4's
+  numbers. Three honest answers and this plan picks none of them yet: grow the
+  measured box outward to the art's own silhouette (which is a second
+  measurement and D5's rejected IoU fit by another name), keep the box and
+  accept the loss (which is what shipped, undecided), or stop discarding for
+  this class alone (which reopens `docs/lighting_rebuild.md`'s "One silhouette"
+  for one branch). Whichever it is, the number to beat is in `discard_census.rs`
+  and the fixture is a counter.
+- 🚩 **A post's shadow narrowed and that is probably right.** Sixteen "wooden
+  post" placements, six "stone post", a brick wall and an elven bookshelf are
+  occluders whose box this plan has already narrowed — 42 in all, against S4's
+  own expectation of zero. A post genuinely occupies a corner of its tile, so
+  the new shadow is likelier to be the true one than the whole-tile shadow it
+  replaced; what is missing is anyone having *looked* at one. A frame at a
+  colonnade, before and after, is the cheapest way to find out, and it is the
+  same kind of gate S5 is.
+- 🚩 **The frame's own discard has not been re-measured, and the census cannot
+  do it.** The 2.38% on record counts pixels that change in a drawn frame;
+  `discard_census.rs` counts every sprite pixel in a window, drawn over or not,
+  so the two are not comparable and the census is the upper bound. The frame
+  number wants two dumps either side of `OPENSHARD_SCENE_IMPOSTOR` and a count
+  of the pixels whose `Place` differs — `dump::plane_bytes` (`docs/parity.md`'s
+  P3) is that comparison already written for a different question, and reaching
+  it from a tool is what is missing.
+- ✅ **S5's parity item is closed** — `docs/parity.md`'s "The shard's own
+  furniture", 2026-08-10. The reported picture is two *server* decorations and
+  `examples/isolated_scene.rs` read no database, so the frame gate's fixture
+  would have been two hand-transcribed `OPENSHARD_SCENE_EXTRA` rows standing in
+  for the client's input. It reads `openshard.db` now, on by default, and the
+  two bookcases at `(1505, 1656)`/`(1506, 1656)` come back out of it by name.
+  S5 is unblocked.
 - 🚩 **`Crooked` is 356 placements and they have names.** `0x0B3F` and `0x0B40`
   "counter", `0x0AA0`/`0x0AFE`/`0x0B01` "display case", `0x0B5F`/`0x0B60`
   "bench", `0x1365`/`0x1366` "rock", `0x00CF`/`0x00D1` "stone arch". Two of them
