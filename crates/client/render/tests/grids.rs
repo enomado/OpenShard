@@ -101,6 +101,17 @@ fn the_shaders_restate_the_cameras_constants_and_not_their_own() {
         shader_const(IMPOSTOR, "impostor.wesl", "FRAGMENT"),
         impostor::FRAGMENT,
     );
+    // And the same step expressed along the ray's own parameter, which decides
+    // the face at a box's top edge rather than whether a pixel is a point of the
+    // box at all. Pinned for the same reason and against the same hazard: two
+    // files, no compiler between them, and a disagreement draws a different
+    // frame rather than failing.
+    assert!(
+        (shader_const(IMPOSTOR, "impostor.wesl", "RIM") - impostor::FRAGMENT / 3.0_f32.sqrt()).abs() < 1e-7,
+        "impostor.wesl's rim is {} and FRAGMENT / sqrt(3) is {}",
+        shader_const(IMPOSTOR, "impostor.wesl", "RIM"),
+        impostor::FRAGMENT / 3.0_f32.sqrt(),
+    );
     assert_eq!(
         shader_const(STATICS, "statics.wesl", "HALF_TILE_HEIGHT"),
         (TILE_HEIGHT / 2) as f32,

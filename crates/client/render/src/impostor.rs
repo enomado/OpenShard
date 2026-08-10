@@ -121,6 +121,17 @@ pub fn shows_a_side(lo_z: f32, hi_z: f32) -> bool {
     (hi_z - lo_z) * Z_STEP > 1.0
 }
 
+/// [`FRAGMENT`] as a step of `t` along [`VIEW`] — how much of the ray's own
+/// parameter separates two meetings one sample apart.
+///
+/// One unit of `t` moves the point by `VIEW`, which is `(1, 1, Z_PER_TILE)` in
+/// world units and therefore `(1, 1, 1)` in the tile space
+/// [`crate::light::TileVec`] measures — so `t` and tiles differ by `√3`, and
+/// this is the one place that conversion is written.
+///
+/// `√3` written out because `f32::consts::SQRT_3` is not stable on the MSRV.
+const RIM: f32 = FRAGMENT / 1.732_050_8;
+
 /// What a fragment whose ray met no box is answered with — the **fringe**, and
 /// all three answers this renderer has ever given it.
 ///
@@ -552,7 +563,8 @@ pub fn meets(from: WorldVec, lo: WorldVec, hi: WorldVec) -> Meeting {
     // panel `PANEL_THICKNESS` and everything else a whole tile, so `x` and `y`
     // are never degenerate and this face never has zero area.
     let mut axis = 2;
-    let mut exit = (hi[2] - from[2]) / view[2];
+    let lid = (hi[2] - from[2]) / view[2];
+    let mut exit = lid;
     // And the two side faces, which a lid does not have: both of their areas
     // carry the `z` extent as a factor, so one test retires both. The test is
     // [`shows_a_side`] — thinner than the grid that reads it, and there is no
@@ -567,6 +579,32 @@ pub fn meets(from: WorldVec, lo: WorldVec, hi: WorldVec) -> Meeting {
                 exit = far;
                 axis = a;
             }
+        }
+        // **And a side wins only by more than the picture can show** — the
+        // [`FRAGMENT`] argument a third time, and the last place on this box the
+        // grid was not being asked about. `shows_a_side` retires a face too thin
+        // to hold a sample anywhere; this retires one that holds this sample by
+        // less than the distance to the next.
+        //
+        // The band it takes is the box's own top edge, one fragment wide, where
+        // the lid ends and the side begins — and along a projected diagonal one
+        // fragment reads as the stepped dashed line a person reports as a seam.
+        // What made it a *defect* rather than a rounding is what stands beyond
+        // that edge: on a run of abutting bodies the art carries straight on
+        // over the join, so the pixel handed a side face is drawn as tabletop
+        // and lit as a wall — `blit.wesl` gives a vertical face a full cosine
+        // where the lid took a grazing one, which was measured at fifteen times
+        // the flame term across a single row.
+        //
+        // **It is a rule about this box and not about its neighbours**, which is
+        // the property that matters: two counters standing flush are two boxes
+        // whose join is a surface the world does not have, and nothing per-box
+        // can see the other one. Deciding the edge by the grid instead settles
+        // it for an isolated table and for a run of twenty alike, with no
+        // dependence on whether anything merged.
+        if lid - exit <= RIM {
+            axis = 2;
+            exit = lid;
         }
     }
 
@@ -1039,6 +1077,76 @@ mod tests {
             meets(from, lo, hi).normal,
             WorldVec::new(0.0, 0.0, 1.0),
             "a face with no area is not a face: a lid's only face is its plane",
+        );
+    }
+
+    /// **The seam a person reports on a run of counters, and the control beside
+    /// it.**
+    ///
+    /// A body's own top edge is one line on the screen: on one side of it the
+    /// ray leaves by the lid, on the other by a side face, and the fragments
+    /// *on* it beat the lid by less than the distance to the next sample. Those
+    /// are [`RIM`]'s, and they are the whole of the dashed line — on a run of
+    /// abutting bodies the art carries straight over the join, so a pixel drawn
+    /// as tabletop was being lit as a wall.
+    ///
+    /// The two halves are asserted together on purpose. A rule that took the
+    /// *visible* side of a table with it would be a worse defect than the one it
+    /// repairs and would still pass a test that only looked at the edge, so the
+    /// control walks the same column down the face and holds that every fragment
+    /// past the first keeps its side.
+    #[test]
+    fn a_bodys_own_top_edge_reads_as_its_lid_and_the_side_below_it_does_not() {
+        // One tile, five `z` units — what `examples/seam_probe.rs` prints for
+        // the furniture the report came from.
+        let (tile, base) = ((100, 101), 30.0);
+        let lo = WorldVec::new(100.0, 101.0, base);
+        let hi = WorldVec::new(101.0, 102.0, base + 5.0);
+        // Down the middle column of the sprite, one virtual pixel a step, from
+        // the lid into the face below it. `across = 0` is the column the tile's
+        // own corner projects to, where the `x` edge is met.
+        let faces: Vec<WorldVec> = (0..24)
+            .map(|down| meets(ray_from(tile, base, 0.5, down as f32 + 0.5), lo, hi).normal)
+            .collect();
+        let lid = WorldVec::new(0.0, 0.0, 1.0);
+        let first_side = faces
+            .iter()
+            .position(|face| *face != lid)
+            .expect("this column leaves the lid and reaches a side face");
+        assert!(
+            faces[..first_side].iter().all(|face| *face == lid),
+            "the lid is answered as the lid all the way to the edge: {faces:?}",
+        );
+        // **The control**: everything past the edge is the side, uninterrupted.
+        // Without it this test would pass on a rule that answered `lid`
+        // everywhere and deleted the table's own front.
+        assert!(
+            faces[first_side..].iter().all(|face| *face != lid),
+            "past the edge the face is the side's, and stays it: {faces:?}",
+        );
+        assert!(
+            first_side > 0 && first_side < faces.len() - 4,
+            "the edge is inside this column rather than at either end: {first_side}",
+        );
+        // **And the edge is where the rim puts it, from both sides** — which is
+        // the assertion that fails if the rule is removed *or* widened, and the
+        // reason it is stated as a pair. The last lid row beats its own side
+        // exit by less than a fragment, which is what had been making it a side;
+        // the first side row beats it by more, which is what keeps this a
+        // one-sample band instead of a rule that eats a table's front.
+        let gap = |down: f32| {
+            let from = ray_from(tile, base, 0.5, down);
+            ((hi.z - from.z) / VIEW.z - (hi.x - from.x) / VIEW.x).abs()
+        };
+        assert!(
+            gap(first_side as f32 - 0.5) <= RIM,
+            "the last lid row is inside the rim: {}",
+            gap(first_side as f32 - 0.5),
+        );
+        assert!(
+            gap(first_side as f32 + 0.5) > RIM,
+            "and the first side row is outside it: {}",
+            gap(first_side as f32 + 0.5),
         );
     }
 

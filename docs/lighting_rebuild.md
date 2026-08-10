@@ -2719,45 +2719,60 @@ Things noticed while writing this, not blocking any phase:
   seams do not*. So the fringe is not this, on a lid, the way it was not this for
   59 of the 66 specks on a floor.
   <br>
-  ❌ **And the next candidate is refuted before it was built: it is not a tie at
-  the top edge either.** `meets` picks the face whose exit comes first, and the
-  natural repair — the [`FRAGMENT`] argument one dimension over, *prefer the lid
-  when the two exits are within one fragment of each other* — was priced against
-  the real function over the real fragment grid before writing it. A body of the
-  shape `seam_probe` prints for this furniture (one tile, five `z` units) across
-  its own sprite's samples: **1,010 fragments answered with a side face, the gap
-  to the lid's own exit running 0.000 to 0.827 tiles against a `FRAGMENT` of
-  0.032, and 46 of the 1,010 under it.** A one-sample rim, in the right place —
-  and the picture the probe draws is a *clean diagonal* between the lid and the
-  side, which is the box's own top edge answered correctly. Turning that rim into
-  lid would move 4.5% of a body's side-face fragments and would not be the dashed
-  line: the dashes lie **on the lid**, past the edge, where the art is the *next
-  piece's* top.
+  ✅ **And it is the box's own top edge, decided by a rounding the grid cannot
+  show. `impostor::RIM`, landed 2026-08-11.** `meets` picks the face whose exit
+  comes first; along the line where a body's lid ends and its side begins, the
+  side's exit comes first by *less than the distance to the next sample*. Those
+  fragments are one row wide, and one row along a projected diagonal is a stepped
+  dashed line — which is what the reporter drew a finger along. The rule is the
+  [`FRAGMENT`] argument a third time, after the hit tolerance and after
+  `shows_a_side`: **a side wins only by more than the picture can show.**
   <br>
-  🚩 **What the planes actually say, and it is the one thing all of them agree
-  on: `SOLID_NOBODY`.** 270 of 270 in the second dump, 300 of 464 in the first
-  (that detector was the loose one — it takes genuine visible sides too). The
-  pieces making these runs are `CLEAR`, `opacity 0`, so `Builder::add` pushes
-  nothing and `id_of` has no name for them — which means `push_volumes` keeps the
-  **per-tile** box rather than `occlusion.solid(id).space`. And that substitution
-  is the whole difference: `merge::merged` folds abutting primitives into one
-  `Solid` whose space is the *union*, so a named run of counters is a single box
-  with no interior faces, while an unnamed run is N boxes each with four naked
-  sides. A fragment at the join meets an interior face **that a named run would
-  not have**. The seam is therefore not a defect in `meets`, in the fringe or in
-  the fit of any one box: it is the absence of a name, and the interior surface
-  that absence leaves standing.
+  It was nearly refused on a misread of its own probe, and the misread is worth
+  keeping because it is a shape of mistake rather than a slip. Over a body of the
+  shape `seam_probe` prints for this furniture (one tile, five `z` units), across
+  its own sprite's samples: 1,010 fragments answered with a side face, the gap to
+  the lid's own exit running 0.000 to 0.827 tiles against a `FRAGMENT` of 0.032,
+  and 46 of them under it. Read as a *share* — 4.5%, a fringe, not the subject —
+  that is a refusal. **Drawn instead of divided**, the same 46 are a band exactly
+  one fragment wide running the whole length of both top edges, and there is
+  nothing else on the box that is a line. A ratio and a picture of one population,
+  and only the picture answers "is this the thing a person is pointing at".
   <br>
-  Which makes `docs/parity.md`'s P4 step 2 the entry that owns this — *a `CLEAR`
-  piece with a box*, 15.1% of the world — and it is worth saying that the reason
-  written there for refusing it does **not** apply here. That paragraph refuses
-  "stand in the grid" as a fix for the *cornice glow*, correctly: a neighbouring
-  lid's shadow test is not fixed by a piece's own identity. This is the other
-  half of the same line, and identity is exactly what it wants — not to exempt a
-  piece from shadowing itself, but so the merge has something to fold. **The cost
-  is unpriced and it is not free**: naming a piece the light passes through means
-  building primitives at `opacity 0`, growing the grid by the same 15.1%, for
-  surfaces no ray is meant to stop at.
+  **Priced on the real frame, `examples/discard_census.rs` over Britain's 121×121,
+  the same run with the rule and without it:**
+  <br>
+
+  | | without | with |
+  |---|---:|---:|
+  | fragments given an east face | 57,687 | **55,971** |
+  | fragments given a south face | 49,504 | **48,304** |
+  | fragments given the lid | 1,514,304 | **1,517,220** |
+  | the comb's control — two neighbouring **hits** disagreeing | 313,755 · 1.35% | **311,433 · 1.34%** |
+  | comb inside an overhang | 6,393 · 0.22% | 6,343 · 0.22% |
+  | comb where the overhang joins the art | 732 · 0.30% | 730 · 0.30% |
+
+  <br>
+  **2,916 fragments of 1.6 million move, 0.18%, and 2,322 disagreeing
+  neighbouring pairs go with them.** The last row is the one that makes it a
+  repair rather than a preference: the population this rule does not touch is
+  unchanged to the pixel, and the one it does touch is where two neighbours
+  stopped contradicting each other. Nothing anywhere got worse.
+  <br>
+  **And it is a rule about one box**, which is the property that was asked for
+  and the reason a second candidate is not being built. That candidate: these
+  pieces are `CLEAR`, `opacity 0`, so `Builder::add` pushes nothing, `id_of` has
+  no name, and `push_volumes` keeps the **per-tile** box rather than
+  `occlusion.solid(id).space` — `SOLID_NOBODY` in 270 of 270 of the seam's own
+  pixels. Since `merge::merged` folds a named run into one `Solid` whose space is
+  the union, naming these pieces would dissolve the join outright: a run of
+  counters would be one box with no interior face to meet. It would work, and it
+  is the wrong lever. A body's top edge is a line on an isolated table too, with
+  no neighbour to merge with, and a rule that only comes out right when something
+  folded is a rule that owes its correctness to an optimisation. The naming
+  question stays open on `docs/parity.md`'s P4 step 2 for its own reasons —
+  identity, shadows, and a grid 15.1% larger — and no longer has this defect
+  riding on it.
 - ~~🚩 **A sprite's own top edge is serrated**~~ **Measured 2026-08-10, and the
   clamp keeps the fringe.** The candidate this entry and the cornice entry both
   ended on — *give a miss the face the sprite's own volume presents* — was

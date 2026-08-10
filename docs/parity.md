@@ -696,20 +696,21 @@ The order follows the counts and the blast radius:
    of the cornice entry's own three ways out; both docs are corrected now. No
    code changed this session — this is a documentation-only pass.
    <br>
-   🚩 **And the other half of this line now has a defect of its own that a name
-   *would* fix** (2026-08-10). The dashed seam along a run of abutting counters —
-   `docs/lighting_rebuild.md`'s seam-probe entry, read off two client dumps — is
-   a fragment meeting an **interior** face: `push_volumes` substitutes
-   `occlusion.solid(id).space` for the per-tile box only where `id_of` names the
-   piece, and `merge::merged` folds a named run into one `Solid` whose space is
-   the union. A `CLEAR` piece is never named, so a run of them stays N boxes with
-   four naked sides each and the join is a surface the world does not have.
-   `SOLID_NOBODY` in **270 of 270** of those pixels. This does not disturb the
-   paragraph above — that one refuses grid membership as a cure for the *cornice*,
-   which is a neighbouring lid's shadow test and is not helped by a piece's own
-   identity. Here identity is not an exemption from shadowing: it is what the
-   merge folds. Unpriced: naming these means primitives at `opacity 0` and a grid
-   15.1% larger, for surfaces no ray should stop at.
+   **A defect that a name would have fixed, fixed without one** (2026-08-11), and
+   it is written here because this line very nearly acquired a second reason to
+   land. The dashed seam along a run of abutting counters is a fragment meeting
+   an **interior** face, and `SOLID_NOBODY` in 270 of 270 of those pixels: a
+   `CLEAR` piece is never named, so `push_volumes` keeps its per-tile box instead
+   of `occlusion.solid(id).space`, and `merge::merged` — which folds a named run
+   into one `Solid` whose space is the union — never gets to dissolve the join.
+   Naming these pieces would have removed the seam by removing the surface.
+   <br>
+   It was the wrong lever, and `impostor::RIM` is the repair that landed instead:
+   the same edge exists on an isolated table, with no neighbour to merge with, so
+   a rule that only comes out right when something folded owes its correctness to
+   an optimisation. **What that leaves for this line is its own case, undisturbed
+   and no longer carrying somebody else's defect** — identity, the shadow rules
+   that turn on it, and a grid 15.1% larger for surfaces no ray should stop at.
    <br>
    **And of those two, one is now measured and refused (2026-08-10).** "Give a
    miss the sprite's own volume's face" is `impostor::presented_face`: it ends

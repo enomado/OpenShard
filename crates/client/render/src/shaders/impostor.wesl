@@ -51,6 +51,12 @@ const VIEW: vec3<f32> = vec3<f32>(1.0, 1.0, Z_PER_TILE);
 // for.
 const FRAGMENT: f32 = 0.032141216;
 
+// `FRAGMENT` as a step of the ray's own parameter — `impostor::RIM`, and the
+// same literal-rather-than-division rule as above so `grids.rs` can pin it. One
+// unit of `t` moves the point by `VIEW`, which is `(1, 1, Z_PER_TILE)` in world
+// units and so `(1, 1, 1)` in tile space: `t` and tiles differ by `sqrt(3)`.
+const RIM: f32 = 0.01855674;
+
 // How many virtual pixels tall one `z` unit draws — `camera::Z_STEP`, written as
 // the division of the two constants above so it cannot drift from either.
 const Z_STEP: f32 = TILE_WIDTH / Z_PER_TILE;
@@ -258,6 +264,21 @@ fn meets(start: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> Meeting {
         if far.x < exit {
             exit = far.x;
             normal = vec3<f32>(1.0, 0.0, 0.0);
+        }
+        // **And a side wins only by more than the picture can show.** The same
+        // argument as `FRAGMENT` and as `shows_a_side`, on the last thing about
+        // this box the grid was not being asked about: a face that beats the lid
+        // by less than the distance to the next sample has not beaten it. The
+        // band is the box's own top edge, one fragment wide, which along a
+        // projected diagonal is the stepped dashed seam a person reports on a
+        // run of abutting counters — where the art carries on over the join and
+        // a side face's full cosine lands in the middle of a tabletop.
+        // `impostor::meets` and `impostor::RIM` carry the whole account. The
+        // test is written so that a ray already leaving by the lid re-takes it,
+        // which is what it was doing.
+        if far.z - exit <= RIM {
+            exit = far.z;
+            normal = vec3<f32>(0.0, 0.0, 1.0);
         }
     }
 
