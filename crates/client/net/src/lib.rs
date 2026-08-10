@@ -24,6 +24,7 @@
 //!
 //! [`openshard_gateway::Connection`]: https://docs.rs/openshard-gateway
 
+pub mod combat;
 pub mod connection;
 pub mod doll;
 pub mod interact;

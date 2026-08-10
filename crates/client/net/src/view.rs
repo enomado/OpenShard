@@ -172,6 +172,25 @@ pub struct Mobile {
     pub equipment: Vec<Equipment>,
 }
 
+impl Mobile {
+    /// Whether this body stands in war mode.
+    ///
+    /// Read off [`flags`](Self::flags) rather than kept beside it: the byte is
+    /// already here, and a `bool` folded out of it at every `0x77` would be the
+    /// same fact in two shapes — with the packet that forgot to update one of
+    /// them drawing a body in the wrong stance. Bit `0x40`, which is *not* the
+    /// paperdoll's `0x01`; see
+    /// [`StatusFlags::WARMODE`](openshard_protocol::mobile::StatusFlags::WARMODE).
+    ///
+    /// [`Player::war`] is the same question about our own body and cannot be
+    /// this: no `0x77` or `0x78` ever describes it, so the answer there comes
+    /// from the `0x72` and the `0x88` instead.
+    #[must_use]
+    pub fn war(&self) -> bool {
+        self.flags.has(StatusFlags::WARMODE)
+    }
+}
+
 /// A line said to this client — `0x1C` or `0xAE`, folded into one shape.
 ///
 /// The two packets are one event told two ways: `0x1C` carries it in Latin-1,

@@ -33,9 +33,9 @@ use openshard_protocol::world::{
 use openshard_protocol::{access::AccessLevel, feature::Feature, version::ClientVersion};
 
 use crate::components::{
-    Access, Amount, Body, Client, Contained, CraftedBy, Drawn, Equipped, Ghost, Heading, HearsGhosts, Hidden,
-    Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff, Stealthing, TradeWindow,
-    body_opens_doors,
+    Access, Amount, Body, Client, Combat, Contained, CraftedBy, Drawn, Equipped, Ghost, Heading, HearsGhosts,
+    Hidden, Hitpoints, InRegion, Meditating, Movement, Name, Position, Quality, Staff, Stealthing,
+    TradeWindow, body_opens_doors,
 };
 use crate::connection::Connection;
 use crate::dialogue::Dialogue;
@@ -1890,6 +1890,24 @@ impl WorldState {
             .unwrap_or(Notoriety::Innocent)
     }
 
+    /// The flag byte a `0x77`/`0x78` carries about a mobile.
+    ///
+    /// One bit of the eight is set by this engine, and it is the stance: a
+    /// client draws a body at war standing in a different animation group, so
+    /// this is the difference between a shopkeeper and a shopkeeper with a
+    /// sword out. The other seven bits are named in
+    /// [`StatusFlags`](openshard_protocol::mobile::StatusFlags)' own table and
+    /// nothing here sets them.
+    ///
+    /// Read off [`Combat`] rather than remembered beside it, and asked at the
+    /// moment the packet is built: `war_mode` writes `Combat::warmode` and
+    /// every screen is rebuilt from these two functions, so there is one
+    /// answer to "is this body at war" and no copy of it to fall behind.
+    #[must_use]
+    fn stance_of(&self, entity: EntityId) -> StatusFlags {
+        StatusFlags::of_stance(self.registry.get::<Combat>(entity).is_some_and(|c| c.warmode))
+    }
+
     /// Build a `0x78` for an entity, if it is a drawable mobile.
     #[must_use]
     pub fn mobile_incoming(&mut self, entity: EntityId) -> Option<MobileIncoming> {
@@ -1897,13 +1915,14 @@ impl WorldState {
         let Position(position) = *self.registry.get::<Position>(entity)?;
         let Heading(facing) = *self.registry.get::<Heading>(entity)?;
         let body = *self.registry.get::<Body>(entity)?;
+        let flags = self.stance_of(entity);
         Some(MobileIncoming {
             serial,
             body: body.id,
             position,
             facing,
             hue: body.hue,
-            flags: StatusFlags::NONE,
+            flags,
             notoriety: self.notoriety_of(entity),
             equipment: self.equipment_of(serial),
         })
@@ -1979,7 +1998,10 @@ impl WorldState {
             position,
             facing,
             hue: body.hue,
-            flags: StatusFlags::NONE,
+            // The same question the `0x78` asks — a body that changed stance
+            // between two steps says so on the next one, which is how a
+            // watcher learns about a stance nobody was there to see start.
+            flags: self.stance_of(entity),
             notoriety: self.notoriety_of(entity),
         })
     }

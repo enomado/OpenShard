@@ -75,6 +75,38 @@ pub struct AttackRequest {
     pub target: Option<Serial>,
 }
 
+impl AttackRequest {
+    /// Encode a whole `0x05`. What `crates/client/net` sends when a body is
+    /// clicked in war mode — and, with `None`, when the aim is given up.
+    ///
+    /// The shape [`WarMode::encode`] has, for its reason: no [`ClientVersion`],
+    /// because the layout has never had one in it and the client has no version
+    /// in hand at the moment of a click.
+    ///
+    /// A `None` target goes out as `raw_or_none`'s zero — the sentinel every
+    /// empty object field in this protocol shares — and the decoder above reads
+    /// it straight back as `None`, because `Serial::new(0)` is `None`. That is
+    /// the "stop attacking" the field's own docs describe, and the round trip
+    /// is asserted rather than assumed.
+    #[must_use]
+    pub fn encode(self) -> Vec<u8> {
+        crate::packet::frame_body(
+            <Self as EncodePacket>::ID,
+            <Self as EncodePacket>::LENGTH,
+            |out: &mut PacketWriter| out.u32(raw_or_none(self.target)),
+        )
+    }
+}
+
+impl EncodePacket for AttackRequest {
+    const ID: u8 = 0x05;
+    const LENGTH: PacketLength = PacketLength::Fixed(5);
+
+    fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
+        out.u32(raw_or_none(self.target));
+    }
+}
+
 impl DecodePacket for AttackRequest {
     const ID: u8 = 0x05;
 
@@ -250,6 +282,33 @@ mod tests {
         // clears the aim, and it must not cost the connection.
         let request: AttackRequest = decode_packet(&[0x05, 0x00, 0x00, 0x00, 0x00], version()).unwrap();
         assert_eq!(request.target, None);
+    }
+
+    /// The client's own door, and the round trip through the server's decoder.
+    /// Both directions of one packet in one test, because the two halves are
+    /// what a click on a body has to survive.
+    #[test]
+    fn an_attack_request_this_client_writes_is_one_this_server_reads() {
+        let target = Serial::new(0x2A);
+        let bytes = AttackRequest { target }.encode();
+        assert_eq!(bytes, vec![0x05, 0x00, 0x00, 0x00, 0x2A]);
+        assert_eq!(
+            bytes,
+            encode_packet(&AttackRequest { target }, version()),
+            "the client's door and the trait write the same five bytes"
+        );
+        let back: AttackRequest = decode_packet(&bytes, version()).unwrap();
+        assert_eq!(back.target, target);
+    }
+
+    /// "Stop attacking": no serial out, no serial back, and not an error at
+    /// either end.
+    #[test]
+    fn giving_up_the_aim_round_trips_as_nothing() {
+        let bytes = AttackRequest { target: None }.encode();
+        assert_eq!(bytes, vec![0x05, 0x00, 0x00, 0x00, 0x00]);
+        let back: AttackRequest = decode_packet(&bytes, version()).unwrap();
+        assert_eq!(back.target, None);
     }
 
     #[test]

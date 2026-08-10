@@ -195,6 +195,53 @@ impl BodyKind {
         }
     }
 
+    /// Which group means "standing, at war", or `None` for a kind that stands
+    /// the same either way.
+    ///
+    /// A human's is 7, `PeopleAnimationGroup.StandOnehandedAttack` — a body on
+    /// guard, weight forward, which is the whole visible difference between a
+    /// shopkeeper and a shopkeeper who means it. `None` for a monster and an
+    /// animal because the classic path has no such group for either: the
+    /// reference's own `GetGroupForAnimation` reaches its war branch only under
+    /// `AnimationGroupsType.Human`/`Equipment`, and a wolf at war stands
+    /// exactly as a wolf at peace does.
+    ///
+    /// `None` is "use [`standing`](Self::standing)", which is what makes a
+    /// caller one `unwrap_or` rather than a second `match` over the kind.
+    ///
+    /// # What is deliberately not here
+    ///
+    /// `8` (`StandTwohandedAttack`) is the same stance with a two-handed weapon,
+    /// and choosing between 7 and 8 needs to know what is in the hands. Nothing
+    /// in this crate does: an `AnimID` reaches the renderer and the item's wire
+    /// graphic — which is what the reference branches on — is thrown away on the
+    /// way (`crowd::worn` in the client). One missing field, and it is the same
+    /// one `MobileView.IsCovered` wants; see `docs/combat.md` D2.
+    pub const fn standing_at_war(self) -> Option<u8> {
+        match self {
+            Self::Monster | Self::Animal => None,
+            Self::Human => Some(7),
+        }
+    }
+
+    /// Which group means "walking, at war", or `None` for a kind that walks the
+    /// same either way.
+    ///
+    /// A human's is 15, `PeopleAnimationGroup.WalkWarmode`: a guarded walk, not
+    /// the `WalkUnarmed` of 0. `None` for the other two, for
+    /// [`standing_at_war`](Self::standing_at_war)'s reason.
+    ///
+    /// **Running is not affected and has no war twin.** The reference falls
+    /// straight through to the ordinary run for `isRun || !InWarMode ||
+    /// IsDead` — a body sprinting is a body not fighting, whatever its stance
+    /// says — so [`running`](Self::running) needs no companion here.
+    pub const fn walking_at_war(self) -> Option<u8> {
+        match self {
+            Self::Monster | Self::Animal => None,
+            Self::Human => Some(15),
+        }
+    }
+
     /// The first index block belonging to `body`.
     ///
     /// The three cases of `AnimationsLoader.CalculateOffset`, in blocks rather
@@ -647,6 +694,42 @@ mod tests {
         assert_eq!(BodyKind::Monster.running(), None, "High has no run");
         assert_eq!(BodyKind::Animal.running(), Some(1));
         assert_eq!(BodyKind::Human.running(), Some(2), "RunUnarmed");
+    }
+
+    /// War changes a human's stance and nobody else's, and the two groups it
+    /// changes to are inside the human table.
+    ///
+    /// The same silent failure the test above guards: 7 and 15 exist in all
+    /// three numberings, so a war stance handed to a horse would play
+    /// `LowAnimationGroup.GetHit` at it for as long as it stood there.
+    #[test]
+    fn only_a_human_has_a_war_stance() {
+        assert_eq!(
+            BodyKind::Human.standing_at_war(),
+            Some(7),
+            "PeopleAnimationGroup.StandOnehandedAttack"
+        );
+        assert_eq!(
+            BodyKind::Human.walking_at_war(),
+            Some(15),
+            "PeopleAnimationGroup.WalkWarmode"
+        );
+        for kind in [BodyKind::Monster, BodyKind::Animal] {
+            assert_eq!(kind.standing_at_war(), None);
+            assert_eq!(kind.walking_at_war(), None);
+        }
+        // Whatever war names, it names inside the kind's own table — and it
+        // names something *different* from the peacetime group, or the whole
+        // pair would be a stance nobody can see.
+        for kind in [BodyKind::Monster, BodyKind::Animal, BodyKind::Human] {
+            assert!(kind.standing_at_war().is_none_or(|group| group < kind.groups()));
+            assert!(kind.walking_at_war().is_none_or(|group| group < kind.groups()));
+            assert!(
+                kind.standing_at_war()
+                    .is_none_or(|group| group != kind.standing())
+            );
+            assert!(kind.walking_at_war().is_none_or(|group| group != kind.walking()));
+        }
     }
 
     /// A ghost is read under the living body of the same sex, and the living

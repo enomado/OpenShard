@@ -19,16 +19,66 @@ use crate::world::Point;
 
 /// Status flags on a mobile: poisoned, invisible, in war mode.
 ///
-/// The bits are not modelled yet — nothing sets them, and an enum with one
-/// variant would be a guess about what the rest mean. A newtype over the byte
-/// says exactly that much and no more, while still keeping the field out of the
-/// pool of interchangeable `u8`s a packet struct is otherwise made of.
+/// A byte with named constants rather than an enum — the same shape, and for the
+/// same reason, as [`PaperdollFlags`]: the bits are independent, and a mobile
+/// that is poisoned *and* at war sets two of them.
+///
+/// # The whole table, and the one bit this engine sets
+///
+/// The eight are the client's, read off ClassicUO's `EntityFlags`:
+///
+/// | bit | meaning |
+/// |---|---|
+/// | `0x01` | frozen — the client refuses to walk it |
+/// | `0x02` | female |
+/// | `0x04` | poisoned (a green health bar), and *flying* on a gargoyle body: one bit, two readings, decided by the body |
+/// | `0x08` | a yellow health bar — invulnerable |
+/// | `0x10` | walk through other mobiles |
+/// | `0x20` | movable, on a body that would not otherwise be |
+/// | `0x40` | in war mode |
+/// | `0x80` | hidden |
+///
+/// **Only [`WARMODE`](Self::WARMODE) is set by this engine**, and only because a
+/// body's stance is the one of the eight that has a picture at this end: a
+/// client draws a human at war standing in a different animation group
+/// (`docs/combat.md`, D1 and D2). The other seven are written down so that the
+/// day one of them is wanted, its bit is a fact already looked up rather than a
+/// guess — but a constant nobody sets is a constant nobody has tested, so they
+/// stay in this table and out of the type until somebody has a use.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct StatusFlags(pub u8);
 
 impl StatusFlags {
     /// Nothing set: not poisoned, not hidden, not in war mode.
     pub const NONE: Self = Self(0);
+    /// The mobile stands in war mode.
+    ///
+    /// **Not [`PaperdollFlags::WARMODE`]**, which is `0x01` of a *different*
+    /// byte in a different packet. The same fact travels in both, and the two
+    /// bits are not the same bit — which is exactly why each is a named constant
+    /// on the flags type that carries it.
+    pub const WARMODE: Self = Self(0x40);
+
+    /// Both sets of bits. A named method rather than `BitOr`, for
+    /// [`PaperdollFlags::with`]'s reason.
+    #[must_use]
+    pub const fn with(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether every bit of `other` is set here.
+    #[must_use]
+    pub const fn has(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// The flags for a mobile that is or is not at war — the whole of what this
+    /// engine has to say about the byte, written once so that three senders
+    /// cannot disagree about which bit it is.
+    #[must_use]
+    pub const fn of_stance(war: bool) -> Self {
+        if war { Self::WARMODE } else { Self::NONE }
+    }
 }
 
 /// How the client colours a mobile's health bar.
@@ -1356,6 +1406,61 @@ mod tests {
         assert_eq!(both.0, 0x03);
         assert_eq!(PaperdollFlags::NONE.with(PaperdollFlags::WARMODE).0, 0x01);
         assert_eq!(both.with(PaperdollFlags::WARMODE), both, "setting twice is once");
+    }
+
+    /// The war bit of a `0x77`/`0x78` is `0x40`, and it is *not* the paperdoll's
+    /// `0x01`. One fact, two packets, two different bits — the mistake this test
+    /// exists to catch is a reader that assumes the byte is the same byte.
+    #[test]
+    fn the_status_flags_war_bit_is_not_the_paperdolls() {
+        assert_eq!(StatusFlags::WARMODE.0, 0x40);
+        assert_eq!(PaperdollFlags::WARMODE.0, 0x01);
+        assert_eq!(StatusFlags::of_stance(true), StatusFlags::WARMODE);
+        assert_eq!(StatusFlags::of_stance(false), StatusFlags::NONE);
+        assert!(StatusFlags::of_stance(true).has(StatusFlags::WARMODE));
+        assert!(!StatusFlags::of_stance(false).has(StatusFlags::WARMODE));
+    }
+
+    /// A mobile's flag byte survives the packet that carries it — both of them,
+    /// because a stance the `0x78` states and the `0x77` drops would be a body
+    /// that leaves its war stance every time it takes a step.
+    #[test]
+    fn a_stance_rides_both_the_move_and_the_incoming_packet() {
+        let flags = StatusFlags::of_stance(true);
+        let step = MobileMove {
+            serial: Serial::new(1).unwrap(),
+            body: Graphic(0x0190),
+            position: Point { x: 5, y: 6, z: 7 },
+            facing: Facing::walking(Direction::South),
+            hue: Hue::NONE,
+            flags,
+            notoriety: Notoriety::Innocent,
+        };
+        let back: MobileMove =
+            crate::packet::decode_packet(&encode_packet(&step, version()), version()).unwrap();
+        assert_eq!(back.flags, flags);
+
+        let incoming = MobileIncoming {
+            serial: Serial::new(1).unwrap(),
+            body: Graphic(0x0190),
+            position: Point { x: 5, y: 6, z: 7 },
+            facing: Facing::walking(Direction::South),
+            hue: Hue::NONE,
+            flags,
+            notoriety: Notoriety::Innocent,
+            equipment: Vec::new(),
+        };
+        // Through the *client's* door rather than `decode_packet`: `0x78` is
+        // variable in this direction and unknown in the client table, so the
+        // generic helper would not skip its length word. Same reason
+        // `server_packet::decode_server` exists.
+        let bytes = encode_packet(&incoming, version());
+        let Ok(Some(crate::server_packet::ServerPacket::MobileIncoming(back))) =
+            crate::server_packet::ServerPacket::decode(&bytes, version())
+        else {
+            panic!("a 0x78 this engine wrote is one a client reads");
+        };
+        assert_eq!(back.flags, flags);
     }
 
     #[test]
