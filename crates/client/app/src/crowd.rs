@@ -259,6 +259,15 @@ struct Tracked {
     /// know what "standing" means, and a horse and a player stop into different
     /// group numbers — see [`BodyKind::standing`].
     body: u16,
+    /// Whether it stands in war mode.
+    ///
+    /// Kept for exactly [`Tracked::body`]'s reason, and it is the same sentence:
+    /// a walk that ends has to know what "standing" means, and a body at war
+    /// stands in a different group from the same body at peace. Every packet
+    /// that describes a mobile carries this — it is a bit of the `0x77`/`0x78`
+    /// flag byte — so it is restated on each [`Crowd::see`] rather than
+    /// remembered from whenever the stance last changed.
+    war: bool,
     /// Which animation group is playing.
     group: u8,
     /// The step it is in the middle of.
@@ -405,7 +414,8 @@ impl Crowd {
                 .is_some_and(|step| now >= step.started + animation_hold(step.takes))
             {
                 tracked.step = None;
-                tracked.change_to(BodyKind::of(tracked.body).standing());
+                let standing = tracked.standing_group();
+                tracked.change_to(standing);
             }
         }
     }
@@ -415,7 +425,7 @@ impl Crowd {
     /// Returns the mobile to draw. The frame is left at zero — the atlas is what
     /// knows how many frames there are, and it is not built yet when this is
     /// called; [`Crowd::frame_for`] fills it in once it is.
-    pub fn see(&mut self, who: Who, at: Point, body: Graphic, facing: Facing, hue: Hue) -> Mobile {
+    pub fn see(&mut self, who: Who, at: Point, body: Graphic, facing: Facing, hue: Hue, war: bool) -> Mobile {
         let kind = BodyKind::of(body.0);
         let now = self.now;
         let commanded = self.commanded == who;
@@ -423,10 +433,16 @@ impl Crowd {
             at,
             facing: facing.direction,
             body: body.0,
+            war,
             // A body first heard of is standing: it may well be mid-stride, but
             // the only thing that could say so is a previous packet and there
-            // is none.
-            group: kind.standing(),
+            // is none. In the stance the packet stated, which for a body that
+            // walks into view already fighting is the war stance from its first
+            // frame.
+            group: match war {
+                true => kind.standing_at_war().unwrap_or(kind.standing()),
+                false => kind.standing(),
+            },
             step: None,
             stepped_at: None,
             // A body seen for the first time is drawn where it is. There is
@@ -485,12 +501,11 @@ impl Crowd {
                 tracked.drawn = Gaze::on(at);
             }
             tracked.stepped_at = Some(now);
-            let moving = match (facing.running, kind.running()) {
-                (true, Some(running)) => running,
-                // A running monster walks: `HighAnimationGroup` has no run, and
-                // this is the client's answer too.
-                _ => kind.walking(),
-            };
+            // The stance is folded in before the group is picked, so a step that
+            // arrives in the same packet as a stance change walks in the new
+            // one — see [`Tracked::moving_group`].
+            tracked.war = war;
+            let moving = tracked.moving_group(facing.running);
             tracked.change_to(moving);
         } else if tracked.facing != facing.direction {
             // A turn is a whole step in UO: it covers no ground, and it costs
@@ -508,6 +523,22 @@ impl Crowd {
         }
         tracked.facing = facing.direction;
         tracked.body = body.0;
+        // The stance, for the body that is *not* stepping: drawing a sword is a
+        // packet with the same position in it as the one before, so a stance
+        // that only reached the group through the walk above would not be seen
+        // until the player took a step. `change_to` restarts the clock exactly
+        // when the group really changed, so a body already standing where it
+        // belongs is not re-started once a packet.
+        //
+        // Deliberately gated on "not mid-step": a body that changes stance while
+        // crossing a tile keeps the walk it is playing and picks the new one up
+        // on the next step, rather than snapping to a stand with its feet still
+        // moving.
+        tracked.war = war;
+        if tracked.step.is_none() {
+            let standing = tracked.standing_group();
+            tracked.change_to(standing);
+        }
 
         // The same answer [`Crowd::stepping_from`] gives, and it has to be given
         // here too: this mobile is drawn before the next frame re-reads it, and
@@ -542,13 +573,25 @@ impl Crowd {
     /// The animation is deliberately left alone: a walker whose third step is
     /// refused is still walking, and restarting the group here would drop it to
     /// standing for the one frame between the refusal and the next step.
-    pub fn snap(&mut self, who: Who, at: Point, body: Graphic, facing: Facing, hue: Hue) -> Mobile {
+    pub fn snap(
+        &mut self,
+        who: Who,
+        at: Point,
+        body: Graphic,
+        facing: Facing,
+        hue: Hue,
+        war: bool,
+    ) -> Mobile {
         let kind = BodyKind::of(body.0);
         let tracked = self.tracked.entry(who).or_insert(Tracked {
             at,
             facing: facing.direction,
             body: body.0,
-            group: kind.standing(),
+            war,
+            group: match war {
+                true => kind.standing_at_war().unwrap_or(kind.standing()),
+                false => kind.standing(),
+            },
             step: None,
             stepped_at: None,
             // A body seen for the first time is drawn where it is. There is
@@ -561,6 +604,12 @@ impl Crowd {
         tracked.at = at;
         tracked.facing = facing.direction;
         tracked.body = body.0;
+        // The stance is restated here as it is in `see`, and the animation is
+        // still deliberately left alone: whatever group is playing keeps
+        // playing, and the walk-to-standing check below picks the new stance up
+        // when it expires. A correction is not a moment to change what a body
+        // is doing — it is a moment to change where it is.
+        tracked.war = war;
         // Not cleared to `None`: `Crowd::advance`'s walk-to-standing check is
         // gated on there being a step to time against, so clearing it left a
         // body whose next step never came (a wall it gave up on, a paralyze)
@@ -731,6 +780,41 @@ impl Tracked {
         if self.group != group {
             self.group = group;
             self.clock = AnimationClock::default();
+        }
+    }
+
+    /// The group this body stands still in.
+    ///
+    /// The war stance where its kind has one, and the ordinary stand where it
+    /// does not — which is every monster and every animal, because the classic
+    /// numbering has no war stand for either (see
+    /// [`BodyKind::standing_at_war`]). One function rather than a `match` at
+    /// each of the three places a body is put back on its feet: they must not
+    /// answer differently, and one of them used to be reached only by a walk
+    /// timing out.
+    fn standing_group(&self) -> u8 {
+        let kind = BodyKind::of(self.body);
+        match self.war {
+            true => kind.standing_at_war().unwrap_or(kind.standing()),
+            false => kind.standing(),
+        }
+    }
+
+    /// The group this body moves in, at the pace the step said.
+    ///
+    /// War changes a *walk* and never a run: the reference falls straight
+    /// through to the ordinary run whenever the step is a run, because a body
+    /// sprinting is a body not fighting. And a running monster walks — the high
+    /// numbering has no run at all, which is `BodyKind::running`'s `None`.
+    fn moving_group(&self, running: bool) -> u8 {
+        let kind = BodyKind::of(self.body);
+        match (running, kind.running()) {
+            (true, Some(running)) => running,
+            (true, None) => kind.walking(),
+            (false, _) => match self.war {
+                true => kind.walking_at_war().unwrap_or(kind.walking()),
+                false => kind.walking(),
+            },
         }
     }
 
@@ -924,6 +1008,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::South),
             Hue::NONE,
+            false,
         );
         assert_eq!(human.group, 4, "PeopleAnimationGroup.Stand");
         let horse = crowd.see(
@@ -932,6 +1017,7 @@ mod tests {
             Graphic(HORSE),
             Facing::walking(Direction::South),
             Hue::NONE,
+            false,
         );
         assert_eq!(horse.group, 2, "LowAnimationGroup.Stand");
         let dragon = crowd.see(
@@ -940,8 +1026,99 @@ mod tests {
             Graphic(DRAGON),
             Facing::walking(Direction::South),
             Hue::NONE,
+            false,
         );
         assert_eq!(dragon.group, 1, "HighAnimationGroup.Stand");
+    }
+
+    /// War is a *group*, and it reaches the body through every door: the packet
+    /// that first shows it, the packet that changes its mind while it stands
+    /// still, the step it takes, and the walk timing out afterwards.
+    ///
+    /// Four assertions because those are four different code paths into
+    /// `change_to`, and the one that was easiest to forget is the third: a
+    /// stance drawn only when a body moves is a sword nobody sees until they
+    /// take a step.
+    #[test]
+    fn a_human_at_war_stands_and_walks_in_the_war_groups() {
+        let mut crowd = Crowd::default();
+        let see = |crowd: &mut Crowd, x: u16, war: bool| {
+            crowd.see(
+                serial(1),
+                Point::new(x, 10, 0),
+                Graphic(PLAYER),
+                Facing::walking(Direction::South),
+                Hue::NONE,
+                war,
+            )
+        };
+        assert_eq!(
+            see(&mut crowd, 10, true).group,
+            7,
+            "a body first seen at war stands at war from its first frame"
+        );
+        assert_eq!(
+            see(&mut crowd, 10, false).group,
+            4,
+            "and sheathing it, standing still, is seen without a step"
+        );
+        assert_eq!(see(&mut crowd, 10, true).group, 7, "as is drawing it again");
+        assert_eq!(
+            see(&mut crowd, 11, true).group,
+            15,
+            "PeopleAnimationGroup.WalkWarmode"
+        );
+        crowd.advance(openshard_movement::WALK_HOLD * 2);
+        assert_eq!(
+            crowd.group_for(serial(1)),
+            Some(7),
+            "the walk times out into the stance it was walking in"
+        );
+    }
+
+    /// A run is a run whatever the stance, and a horse has no war stance at all.
+    /// Both are the reference's own rules and both are easy to get wrong in the
+    /// same place — `Tracked::moving_group` is where they meet.
+    #[test]
+    fn running_and_animals_are_untouched_by_war() {
+        let mut crowd = Crowd::default();
+        let running = crowd.see(
+            serial(1),
+            Point::new(10, 10, 0),
+            Graphic(PLAYER),
+            Facing::running(Direction::South),
+            Hue::NONE,
+            true,
+        );
+        assert_eq!(running.group, 7, "standing still, even in a running facing");
+        let running = crowd.see(
+            serial(1),
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            Facing::running(Direction::South),
+            Hue::NONE,
+            true,
+        );
+        assert_eq!(running.group, 2, "RunUnarmed: a sprint is not a war walk");
+
+        let horse = crowd.see(
+            serial(2),
+            Point::new(10, 10, 0),
+            Graphic(HORSE),
+            Facing::walking(Direction::South),
+            Hue::NONE,
+            true,
+        );
+        assert_eq!(horse.group, 2, "LowAnimationGroup.Stand, war or not");
+        let horse = crowd.see(
+            serial(2),
+            Point::new(11, 10, 0),
+            Graphic(HORSE),
+            Facing::walking(Direction::South),
+            Hue::NONE,
+            true,
+        );
+        assert_eq!(horse.group, 0, "and it walks in the walk it has");
     }
 
     /// A step starts a walk, and the walk ends by itself: nothing on the wire
@@ -956,6 +1133,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::South),
                 Hue::NONE,
+                false,
             )
         };
         assert_eq!(step(&mut crowd, 10).group, 4, "standing to begin with");
@@ -983,8 +1161,22 @@ mod tests {
     fn the_commanded_body_stops_walking_when_nothing_asks_it_to_walk_again() {
         let mut crowd = Crowd::default();
         let facing = Facing::walking(Direction::East);
-        crowd.see(None, Point::new(10, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
-        let stepped = crowd.see(None, Point::new(11, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        crowd.see(
+            None,
+            Point::new(10, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+            false,
+        );
+        let stepped = crowd.see(
+            None,
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+            false,
+        );
         assert_eq!(stepped.group, 0, "a step is a walk");
 
         // Nothing walks it further. Advanced in `FRAME_DELAY`-sized ticks —
@@ -1012,8 +1204,22 @@ mod tests {
     fn a_returned_mobiles_group_goes_stale_but_group_for_does_not() {
         let mut crowd = Crowd::default();
         let facing = Facing::walking(Direction::East);
-        crowd.see(None, Point::new(10, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
-        let stepped = crowd.see(None, Point::new(11, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        crowd.see(
+            None,
+            Point::new(10, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+            false,
+        );
+        let stepped = crowd.see(
+            None,
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+            false,
+        );
         assert_eq!(stepped.group, 0, "walking, in the snapshot returned");
 
         crowd.advance(WALK_HOLD * 2);
@@ -1039,6 +1245,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::South),
                 Hue::NONE,
+                false,
             );
             // Each step arrives before the previous one has finished, which is
             // what a real walk looks like.
@@ -1050,6 +1257,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::South),
             Hue::NONE,
+            false,
         );
         assert_eq!(drawn.group, 0);
     }
@@ -1069,6 +1277,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::South),
             Hue::NONE,
+            false,
         );
         let turned = crowd.see(
             serial(1),
@@ -1076,6 +1285,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::North),
             Hue::NONE,
+            false,
         );
         assert_eq!(turned.group, 4, "still standing");
         assert_eq!(turned.facing, Direction::North, "and facing the new way");
@@ -1092,6 +1302,7 @@ mod tests {
                 Graphic(body),
                 Facing::running(Direction::South),
                 Hue::NONE,
+                false,
             )
         };
         run(&mut crowd, 1, PLAYER, 10);
@@ -1113,6 +1324,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::South),
                 Hue::NONE,
+                false,
             );
         };
         stand(&mut crowd, 1);
@@ -1136,6 +1348,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::South),
             Hue::NONE,
+            false,
         );
         crowd.advance(Duration::from_millis(80 * 5));
         assert_eq!(crowd.frame_for(serial(1), 6), 5);
@@ -1145,6 +1358,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::South),
             Hue::NONE,
+            false,
         );
         assert_eq!(crowd.frame_for(serial(1), 6), 0, "the walk starts at its start");
     }
@@ -1161,6 +1375,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::SouthEast),
                 Hue::NONE,
+                false,
             )
         };
         let standing = step(&mut crowd, 10);
@@ -1217,6 +1432,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::SouthEast),
                 Hue::NONE,
+                false,
             )
         };
         assert_eq!(step(&mut crowd, 10).from, None, "standing still is on one tile");
@@ -1244,6 +1460,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::SouthEast),
             Hue::NONE,
+            false,
         );
         assert_eq!(snapped.from, None);
         assert_eq!(crowd.stepping_from(serial(1)), None);
@@ -1281,6 +1498,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             )
         };
         step(&mut crowd, 10);
@@ -1316,6 +1534,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             )
         };
         step(&mut crowd, 10);
@@ -1371,6 +1590,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             );
         };
         step(&mut crowd, 10);
@@ -1405,6 +1625,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             );
         };
         step(&mut crowd, 10);
@@ -1436,6 +1657,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             );
         };
         step(&mut crowd, 10);
@@ -1481,6 +1703,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             );
         };
         let late = WALK_HOLD / 10;
@@ -1524,6 +1747,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             )
         };
         step(&mut crowd, 10);
@@ -1583,6 +1807,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             );
         };
         step(&mut crowd, 10);
@@ -1631,6 +1856,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::East),
                 Hue::NONE,
+                false,
             );
         };
         // A walk is 78 pixels a second, so an `Ease` of 0.08 settles the lag
@@ -1701,6 +1927,7 @@ mod tests {
                     Graphic(PLAYER),
                     Facing::walking(Direction::East),
                     Hue::NONE,
+                    false,
                 );
             }
             for _ in 0..7 {
@@ -1757,6 +1984,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::running(Direction::SouthEast),
                 Hue::NONE,
+                false,
             )
         };
         run(&mut crowd, 10);
@@ -1782,7 +2010,7 @@ mod tests {
         let mut crowd = Crowd::default();
         let at = Point::new(10, 10, 0);
         let facing = Facing::walking(Direction::East);
-        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE, false);
         // The client predicts a step east and the server refuses it.
         let stepped = crowd.see(
             serial(1),
@@ -1790,6 +2018,7 @@ mod tests {
             Graphic(PLAYER),
             facing,
             Hue::NONE,
+            false,
         );
         assert_eq!(
             stepped.drawn,
@@ -1798,7 +2027,7 @@ mod tests {
         );
         crowd.advance(WALK_HOLD / 4);
 
-        let back = crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        let back = crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE, false);
         assert_eq!(back.at, at);
         assert_eq!(
             back.drawn,
@@ -1817,6 +2046,7 @@ mod tests {
             Graphic(PLAYER),
             facing,
             Hue::NONE,
+            false,
         );
         crowd.advance(WALK_HOLD / 2);
         assert_eq!(
@@ -1842,18 +2072,19 @@ mod tests {
         let mut crowd = Crowd::default();
         let at = Point::new(10, 10, 0);
         let facing = Facing::walking(Direction::East);
-        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE, false);
         crowd.see(
             serial(1),
             Point::new(11, 10, 0),
             Graphic(PLAYER),
             facing,
             Hue::NONE,
+            false,
         );
         // A quarter step in, the server refuses it — same timing as
         // `a_refused_step_is_snapped_back_rather_than_glided`.
         crowd.advance(WALK_HOLD / 4);
-        crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE, false);
 
         let frame_just_after_the_snap = crowd.frame_for(serial(1), 6);
         for _ in 0..20 {
@@ -1880,17 +2111,18 @@ mod tests {
         let mut crowd = Crowd::default();
         let at = Point::new(10, 10, 0);
         let facing = Facing::walking(Direction::East);
-        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        crowd.see(serial(1), at, Graphic(PLAYER), facing, Hue::NONE, false);
         let stepped = crowd.see(
             serial(1),
             Point::new(11, 10, 0),
             Graphic(PLAYER),
             facing,
             Hue::NONE,
+            false,
         );
         assert_eq!(stepped.group, 0, "walking");
 
-        let back = crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE);
+        let back = crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE, false);
         assert_eq!(back.group, 0, "still walking right after the refusal");
 
         // Nothing steps again. The walk it was mid-stride of still has to give
@@ -1919,6 +2151,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::SouthEast),
                 Hue::NONE,
+                false,
             )
         };
         go(&mut crowd, 10, 10);
@@ -1948,6 +2181,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::NorthEast),
                 Hue::NONE,
+                false,
             );
         };
         go(&mut crowd, 10);
@@ -1971,6 +2205,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::South),
             Hue::NONE,
+            false,
         );
         let turned = crowd.see(
             serial(1),
@@ -1978,6 +2213,7 @@ mod tests {
             Graphic(PLAYER),
             Facing::walking(Direction::North),
             Hue::NONE,
+            false,
         );
         assert_eq!(turned.drawn, Gaze::on(at), "a turn moves nobody");
     }
@@ -1994,6 +2230,7 @@ mod tests {
                 Graphic(PLAYER),
                 Facing::walking(Direction::South),
                 Hue::NONE,
+                false,
             );
         }
         crowd.advance(Duration::from_millis(80));

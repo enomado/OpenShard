@@ -60,9 +60,34 @@ tracing.workspace = true
 serde.workspace = true
 toml.workspace = true
 winit = "0.30"
+# Where a frame's time actually went. Two halves, because a frame has two and
+# the client can only time one of them for itself:
+#
+# - `wgpu-profiler` writes timestamp queries around each pass, which is the only
+#   way this client can see the GPU at all: `queue.submit` does not block, so
+#   everything `frames::Frame::scene` measures is the CPU *encoding* the frame
+#   and none of the GPU drawing it. Pinned to `wgpu 30.0.0` by its own manifest,
+#   which is the version this crate is on.
+# - `puffin` is the CPU side: nested scopes with names, streamed out of the
+#   process by `puffin_http` and read in the standalone `puffin_viewer`
+#   (`cargo install puffin_viewer`, then connect to 127.0.0.1:8585).
+#
+# Out of process, and deliberately: `puffin_egui` would draw the flamegraph in
+# this window, but its latest release is on `egui 0.28` against the `0.35` above
+# — a second egui in the tree, with its own context and its own fonts. The GPU
+# numbers come back into the HUD's own `frames` panel instead, where they belong
+# beside `ui`/`world`/`waited`; the flamegraph is the viewer's job.
+#
+# `wgpu-profiler/puffin` is what joins the two: the GPU's spans are reported
+# into the same puffin frame as the CPU's, under a thread called `GPU`, so one
+# timeline holds both.
+puffin = "0.20"
+wgpu-profiler = { version = "0.28", default-features = false, features = ["puffin"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12", "gles"] }
+# The TCP server the viewer connects to. Native only: it is a socket.
+puffin_http = "0.17"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "30", default-features = false, features = ["wgsl", "webgl"] }

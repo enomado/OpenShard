@@ -55,6 +55,9 @@ pub enum Tab {
     Tile,
     /// Every number the lighting is turned by — [`Light`].
     Light,
+    /// How big the HUD chat box's glyphs draw and what colour the player's own
+    /// line takes — [`Chat`].
+    Chat,
 }
 
 impl Tab {
@@ -62,13 +65,14 @@ impl Tab {
     ///
     /// One list, so the bar and anything that iterates the pages cannot come to
     /// disagree about which tabs exist.
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Camera,
         Tab::Rig,
         Tab::Frames,
         Tab::World,
         Tab::Tile,
         Tab::Light,
+        Tab::Chat,
     ];
 
     /// What the bar calls it.
@@ -80,6 +84,7 @@ impl Tab {
             Tab::World => "World",
             Tab::Tile => "Tile",
             Tab::Light => "Light",
+            Tab::Chat => "Chat",
         }
     }
 }
@@ -120,6 +125,10 @@ pub struct Light {
     pub sun_rise: f32,
     /// and how much it adds where it reaches.
     pub sun_intensity: f32,
+    /// A tint every flame in the world is multiplied through — see
+    /// [`light::Tuning::flame_color`]. `[1.0, 1.0, 1.0]` leaves torches and
+    /// campfires their own colour.
+    pub flame_color: [f32; 3],
 }
 
 impl Light {
@@ -156,6 +165,7 @@ impl Light {
                 color: light::SunTuning::MIDDAY.color,
                 intensity: self.sun_intensity,
             },
+            flame_color: self.flame_color,
         }
         .clamped()
     }
@@ -172,6 +182,7 @@ impl Light {
             sun_azimuth: tuning.sun.azimuth_degrees,
             sun_rise: tuning.sun.rise_per_tile,
             sun_intensity: tuning.sun.intensity,
+            flame_color: tuning.flame_color,
         }
     }
 }
@@ -235,6 +246,93 @@ impl<'de> Deserialize<'de> for Zoom {
     }
 }
 
+/// How much bigger than `fonts.mul`'s own pixels the HUD chat box's glyphs
+/// draw.
+///
+/// Not [`Zoom`]: that scales the whole HUD, dev window included, and turning
+/// it up to read the chat more easily also grows every slider in this window.
+/// A bitmap face has no continuous size of its own to ask for either — every
+/// glyph is baked at whatever pixels the art shipped
+/// (`openshard_uofiles::font`'s own doc) — so this is an integer upscale
+/// applied to the finished glyph quads, nearest-sampled the same way a camera
+/// zoom step already grows a world sprite. See `App::draw`'s chat block for
+/// where it is applied and why it stops at the classic face rather than also
+/// reaching the TrueType path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChatScale(u32);
+
+impl ChatScale {
+    /// Unscaled — `fonts.mul`'s own pixels — and four times as big, past which
+    /// a six-line journal no longer fits above the input line on a small
+    /// window.
+    pub const MIN: u32 = 1;
+    pub const MAX: u32 = 4;
+
+    /// Clamp into the range. Takes anything, including what a hand-edited file
+    /// offers, the same reason [`Zoom::new`] does.
+    pub fn new(factor: u32) -> Self {
+        Self(factor.clamp(Self::MIN, Self::MAX))
+    }
+
+    /// The factor, as the quad math in `App::draw` wants it.
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for ChatScale {
+    /// Twice `fonts.mul`'s own pixels — legible without a chat box that eats
+    /// half the screen, and the reason a fresh `client_ui.toml` already reads
+    /// bigger than the classic client's own chat did.
+    fn default() -> Self {
+        Self(2)
+    }
+}
+
+// The same reason [`Zoom`]'s pair exists: written and read as a bare number,
+// and built through [`ChatScale::new`] on the way in so a hand-edited `0` or
+// `4000` cannot reach the renderer.
+impl Serialize for ChatScale {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ChatScale {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(ChatScale::new(u32::deserialize(deserializer)?))
+    }
+}
+
+/// The HUD chat box's own look.
+///
+/// Two knobs, both about the player's own line rather than the shard's:
+/// [`Chat::hue`] tints the compose line and its caret, never a journal row
+/// someone else's message already carries a hue of its own on the wire — see
+/// `App::draw`'s chat block for where that split is made.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Chat {
+    /// How big the classic face's glyphs draw — see [`ChatScale`].
+    pub scale: ChatScale,
+    /// What the player's own compose line and caret are tinted, as a wire hue
+    /// (`openshard_protocol::wire::Hue`'s own representation, not the type
+    /// itself: this crate's `Deserialize` is what a hand-edited file can hand
+    /// back nonsense through, and a raw `u16` has no invariant to violate).
+    /// `0` is [`openshard_protocol::wire::Hue::NONE`] — the font's own ink,
+    /// untinted.
+    pub hue: u16,
+}
+
+impl Default for Chat {
+    fn default() -> Self {
+        Self {
+            scale: ChatScale::default(),
+            hue: 0,
+        }
+    }
+}
+
 /// Where the dev window sits inside the HUD, in egui's logical points.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
@@ -292,6 +390,8 @@ pub struct Desk {
     /// a frame looks the way it does — a screenshot of a client with the sky
     /// turned to nothing is otherwise indistinguishable from a bug report.
     pub light: Light,
+    /// What the HUD chat box has been turned to — [`Chat`].
+    pub chat: Chat,
 }
 
 impl Default for Desk {
@@ -305,6 +405,7 @@ impl Default for Desk {
             zoom: Zoom::default(),
             light: Light::new(),
             window: None,
+            chat: Chat::default(),
         }
     }
 }
@@ -423,6 +524,11 @@ mod tests {
                 sun_azimuth: 90.0,
                 sun_rise: 0.5,
                 sun_intensity: 0.4,
+                flame_color: [1.0, 0.5, 0.2],
+            },
+            chat: Chat {
+                scale: ChatScale::new(3),
+                hue: 33,
             },
         };
         desk.save(&path).unwrap();
@@ -433,6 +539,7 @@ mod tests {
         assert_eq!(back.zoom, desk.zoom);
         assert_eq!(back.window, desk.window);
         assert_eq!(back.light, desk.light);
+        assert_eq!(back.chat, desk.chat);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -473,6 +580,17 @@ mod tests {
         assert_eq!(desk.zoom.raw(), Zoom::MIN);
         let desk: Desk = toml::from_str("zoom = nan").unwrap();
         assert_eq!(desk.zoom.raw(), 1.0);
+    }
+
+    /// [`ChatScale`]'s own version of the zoom clamp above: a hand-edited `0`
+    /// or a scale past what a six-line journal fits above the input line
+    /// cannot reach `App::draw`.
+    #[test]
+    fn a_hand_edited_chat_scale_is_clamped_on_the_way_in() {
+        let desk: Desk = toml::from_str("[chat]\nscale = 400").unwrap();
+        assert_eq!(desk.chat.scale.raw(), ChatScale::MAX);
+        let desk: Desk = toml::from_str("[chat]\nscale = 0").unwrap();
+        assert_eq!(desk.chat.scale.raw(), ChatScale::MIN);
     }
 
     /// A file written by a build that predates a field must not lose the rest of

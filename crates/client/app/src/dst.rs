@@ -440,7 +440,7 @@ impl Sim {
         let mut crowd = Crowd::default();
         crowd.set_ease(ease);
         crowd.commanding(me());
-        let player = crowd.see(me(), START, BODY, facing, Hue::NONE);
+        let player = crowd.see(me(), START, BODY, facing, Hue::NONE, false);
         Self {
             now: Duration::ZERO,
             base: Instant::now(),
@@ -605,10 +605,10 @@ impl Sim {
             self.player = match corrected {
                 true => self
                     .crowd
-                    .snap(me(), predicted.position, BODY, predicted.facing, Hue::NONE),
+                    .snap(me(), predicted.position, BODY, predicted.facing, Hue::NONE, false),
                 false => self
                     .crowd
-                    .see(me(), predicted.position, BODY, predicted.facing, Hue::NONE),
+                    .see(me(), predicted.position, BODY, predicted.facing, Hue::NONE, false),
             };
             // `App::user_event`: a step arriving while nobody was moving finds
             // the animation clock armed at the standing rate, and the first

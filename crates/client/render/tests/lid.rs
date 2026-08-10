@@ -38,6 +38,7 @@ use openshard_client_render::camera::Camera;
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::frame::{self, Impostor};
+use openshard_client_render::geometry::Vec2;
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::light::{self, Tuning};
@@ -198,7 +199,7 @@ fn draw(
         statics: &static_atlas,
         sky: Some(light::NIGHT.flattened()),
         sun: None,
-        carried: Some((at, Direction::South)),
+        carried: Some((at, Vec2::default(), Direction::South)),
         tuning: &tuning,
         flame_time: 0.0,
         bake: None,

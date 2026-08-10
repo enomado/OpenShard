@@ -40,6 +40,7 @@ use crate::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
 use crate::camera::Camera;
 use crate::cutaway::Cutaway;
 use crate::debug::View;
+use crate::geometry::Vec2;
 use crate::ground::GroundQuad;
 use crate::items::GroundItem;
 use crate::light::{self, Ambient, Lighting, Sun, Tuning};
@@ -179,7 +180,11 @@ pub struct Inputs<'a> {
     /// Held rather than collected, and through [`Tuning::applied`] as every
     /// collected flame is, so a brightness knob that left the one light the
     /// player actually carries alone does not read as having no effect.
-    pub carried: Option<(Point, Direction)>,
+    ///
+    /// The middle field is [`light::carried`]'s `offset`: how far past `at`'s
+    /// tile the body is actually drawn this instant, so the pool glides with
+    /// the sprite instead of jumping once a step.
+    pub carried: Option<(Point, Vec2, Direction)>,
     /// What a person has turned. Read here rather than applied to the result —
     /// the reach is what the walk's rectangle is grown by, so a frame collected
     /// without it has already lost the flames outside the old margin.
@@ -417,8 +422,8 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     // and a beam over an already-white multiplier would cost a loop to change
     // nothing. After the sort, and `hold` is what says this flame is never the
     // one dropped when a tavern's candles fill the array.
-    if let Some((at, facing)) = carried.filter(|_| sky.is_some()) {
-        lighting.hold(tuning.applied(light::carried(at, facing, flame_time)));
+    if let Some((at, offset, facing)) = carried.filter(|_| sky.is_some()) {
+        lighting.hold(tuning.applied(light::carried(at, offset, facing, flame_time)));
     }
     lighting.view = view;
 

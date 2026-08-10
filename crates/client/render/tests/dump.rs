@@ -32,6 +32,7 @@ use openshard_client_render::camera::{Camera, RealPixel, Zoom};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::frame::{self, Impostor};
+use openshard_client_render::geometry::Vec2;
 use openshard_client_render::light::{self, Tuning};
 use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, SpriteRenderer, Target};
 use openshard_client_render::statics::StaticGeometry;
@@ -174,7 +175,7 @@ fn draw_britain(
         // frame's blit is a copy.
         sky: Some(light::NIGHT.flattened()),
         sun: None,
-        carried: Some((at, Direction::South)),
+        carried: Some((at, Vec2::default(), Direction::South)),
         tuning: &tuning,
         flame_time: 0.0,
         bake: None,

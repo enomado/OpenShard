@@ -44,6 +44,7 @@ use openshard_client_render::camera::Camera;
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::frame::{self, Impostor};
+use openshard_client_render::geometry::Vec2;
 use openshard_client_render::hue::HueRamp;
 use openshard_client_render::items::{self, GroundItem};
 use openshard_client_render::light::{self, Lighting, Tuning};
@@ -255,7 +256,7 @@ fn assemble_and_draw(
         sun: None,
         // A flame at the place itself: the backlog item this gate closes says a
         // comparison with nothing lighting it is blind to the light entirely.
-        carried: Some((at, Direction::South)),
+        carried: Some((at, Vec2::default(), Direction::South)),
         tuning,
         flame_time: 0.0,
         bake: None,

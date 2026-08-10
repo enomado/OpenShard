@@ -14,10 +14,11 @@
 //! an interval that jumped while the build time stayed flat is the second. With
 //! only one of them on screen, every drop looks like the same drop.
 //!
-//! # Why the cost is three numbers and not one
+//! # Why the cost is four numbers and not one
 //!
-//! A frame is drawn by two independent things and then waits on a third, and a
-//! single "build time" hides which one moved.
+//! A frame is drawn by two independent things, waits on a third, and is drawn
+//! *again* by a fourth this thread cannot time at all. A single "build time"
+//! hides which one moved.
 //!
 //! - [`Frame::ui`] is `egui`: a layout of every open panel and the mesh that
 //!   comes out of it. It is charged for the panels, so it grows when a window is
@@ -25,11 +26,22 @@
 //!   world it is describing is a real outcome worth being able to see.
 //! - [`Frame::scene`] is the world: growing the atlases, walking the map for
 //!   quads, and the four passes. It grows with what is on screen.
-//! - [`Frame::wait`] is the vsync stall — the time inside `get_current_texture`
-//!   with the display holding the last frame. It is not a cost, it is the pacer
-//!   working, and it is separated for exactly that reason: under
-//!   `PresentMode::Fifo` it makes up most of an idle frame, and counted as build
-//!   time it would report a client that does nothing as a client at 100% load.
+//! - [`Frame::wait`] is the stall inside `get_current_texture`. Under
+//!   `PresentMode::Fifo` it makes up most of an *idle* frame, and counted as
+//!   build time it would report a client that does nothing as a client at 100%
+//!   load. Read the caveat on the field before calling it slack: it is the one
+//!   number here that means two different things.
+//! - [`Frame::gpu`] is what the device spent on the commands the other three
+//!   produced. It is not measured by a clock on this thread and could not be:
+//!   `queue.submit` returns without waiting, so `scene` above stops when the
+//!   *encoding* does. See [`crate::profile`], which reads it back off the device
+//!   a frame or two late, and `None` when the adapter cannot time itself.
+//!
+//! The pair that matters when a rate is low and nothing looks busy is `wait` and
+//! `gpu`. A large `wait` with a small `gpu` is a client asleep on vsync with room
+//! to spare. A large `wait` with a `gpu` near the interval is a client blocked on
+//! its own last frame — the same reading, the opposite diagnosis, and before
+//! `gpu` existed the panel could not tell them apart.
 //!
 //! There is one *rate*, though, and there is meant to be: the UI and the world
 //! go through one encoder into one surface texture, so both are on screen the
@@ -62,7 +74,7 @@ pub enum Pacing {
 }
 
 /// One frame: when it landed, how long since the last one, and where its time
-/// went. See the module docs for why the cost is three numbers.
+/// went. See the module docs for why the cost is four numbers.
 #[derive(Clone, Copy, Debug)]
 pub struct Frame {
     /// When it landed, on this ring's own clock.
@@ -75,9 +87,30 @@ pub struct Frame {
     pub ui: Duration,
     /// What the world cost: atlases, quads, and the passes that draw them.
     pub scene: Duration,
-    /// What the display cost — time blocked acquiring the surface texture, which
-    /// is the vsync wait and not work this client did.
+    /// Time blocked acquiring the surface texture.
+    ///
+    /// **Two things wear this number.** Under `PresentMode::Fifo` the acquire
+    /// blocks until the display has taken the frame before it — the pacer
+    /// working, and not work this client did. It also blocks when the swapchain
+    /// has no image free because the *GPU* is still drawing into the last one,
+    /// which is not slack at all: it is the device being the bottleneck,
+    /// arriving one frame late and wearing the pacer's clothes.
+    ///
+    /// Nothing about the number distinguishes them. [`Frame::gpu`] is what does.
     pub wait: Duration,
+    /// What the device spent on this client's commands, if it can say.
+    ///
+    /// Not a clock on this thread: `queue.submit` hands the driver a command
+    /// buffer and returns, so [`Frame::scene`] stops when the encoding does and
+    /// every pass is still ahead. This is read back out of timestamp queries a
+    /// frame or two later — see [`crate::profile`] for why the lag is the right
+    /// trade — and it is the number that says whether a large [`Frame::wait`] is
+    /// slack or a stall.
+    ///
+    /// `None` when the adapter has no timestamp queries. Absent and not zero: a
+    /// GPU whose cost is unknown is not a GPU that cost nothing, and the whole
+    /// point of the field is to be believed.
+    pub gpu: Option<Duration>,
     /// Whether this frame paid for a full atlas repack — the synchronous
     /// eviction `AtlasError::Full` triggers, rebuilding every pass from
     /// scratch. Its cost lands inside [`Frame::scene`] like any other world
@@ -140,6 +173,7 @@ impl Frames {
         ui: Duration,
         scene: Duration,
         wait: Duration,
+        gpu: Option<Duration>,
         repacked: bool,
     ) {
         if interval.is_zero() {
@@ -152,6 +186,7 @@ impl Frames {
             ui,
             scene,
             wait,
+            gpu,
             repacked,
         });
         let cutoff = self.at.saturating_sub(self.span);
@@ -208,7 +243,7 @@ mod tests {
         let mut frames = Frames::new(Duration::from_millis(500));
         for _ in 0..100 {
             let (interval, ui, scene, wait) = frame(16, 1, 1);
-            frames.record(interval, ui, scene, wait, false);
+            frames.record(interval, ui, scene, wait, None, false);
         }
         let held = frames.frames();
         assert_eq!(held.last().unwrap().at, Duration::from_millis(1_600));
@@ -224,9 +259,9 @@ mod tests {
     fn the_rate_is_the_interval_and_not_the_cost() {
         let mut frames = Frames::new(Duration::from_secs(4));
         let (interval, ui, scene, wait) = frame(16, 0, 1);
-        frames.record(interval, ui, scene, wait, false);
+        frames.record(interval, ui, scene, wait, None, false);
         let (interval, ui, scene, wait) = frame(80, 0, 1);
-        frames.record(interval, ui, scene, wait, false);
+        frames.record(interval, ui, scene, wait, None, false);
         let held = frames.frames();
         assert!((held[0].fps() - 62.5).abs() < 0.01, "{}", held[0].fps());
         assert!((held[1].fps() - 12.5).abs() < 0.01, "{}", held[1].fps());
@@ -240,7 +275,7 @@ mod tests {
     fn a_frame_at_no_interval_at_all_is_not_recorded() {
         let mut frames = Frames::new(Duration::from_secs(4));
         let (interval, ui, scene, wait) = frame(0, 1, 1);
-        frames.record(interval, ui, scene, wait, false);
+        frames.record(interval, ui, scene, wait, None, false);
         assert!(frames.frames().is_empty());
         assert_eq!(frames.worst_fps(), None);
     }
@@ -257,6 +292,7 @@ mod tests {
             Duration::from_millis(9),
             Duration::from_millis(1),
             Duration::from_millis(6),
+            None,
             false,
         );
         // The same total, the other way round.
@@ -265,6 +301,7 @@ mod tests {
             Duration::from_millis(1),
             Duration::from_millis(9),
             Duration::from_millis(6),
+            None,
             false,
         );
         let held = frames.frames();
@@ -277,6 +314,65 @@ mod tests {
         assert_eq!(held[0].build(), Duration::from_millis(10));
     }
 
+    /// **The defect this field was added for.** Two frames with the same rate,
+    /// the same build time and the same wait: one is a client asleep on vsync
+    /// with room to spare, the other is a client blocked on its own last frame.
+    /// Before [`Frame::gpu`] the panel held exactly the same numbers for both.
+    #[test]
+    fn a_client_with_room_and_a_client_blocked_on_its_gpu_differ_only_in_the_gpu() {
+        let mut frames = Frames::new(Duration::from_secs(4));
+        let idle = (
+            Duration::from_millis(16),
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            Duration::from_millis(14),
+        );
+        // Idle: fourteen milliseconds of the sixteen were the display holding
+        // the last frame, and the device did almost nothing.
+        frames.record(
+            idle.0,
+            idle.1,
+            idle.2,
+            idle.3,
+            Some(Duration::from_millis(2)),
+            false,
+        );
+        // Saturated: every number above is identical, and the fourteen
+        // milliseconds were the device still drawing.
+        frames.record(
+            idle.0,
+            idle.1,
+            idle.2,
+            idle.3,
+            Some(Duration::from_millis(15)),
+            false,
+        );
+        let held = frames.frames();
+        assert_eq!(held[0].interval, held[1].interval, "the same rate");
+        assert_eq!(held[0].build(), held[1].build(), "the same build time");
+        assert_eq!(held[0].wait, held[1].wait, "and the same wait");
+        assert!(
+            held[0].gpu.unwrap() < held[0].interval / 2,
+            "the first has room: {:?}",
+            held[0].gpu,
+        );
+        assert!(
+            held[1].gpu.unwrap() > held[1].interval - held[1].build(),
+            "the second is the bottleneck: {:?}",
+            held[1].gpu,
+        );
+    }
+
+    /// An adapter that cannot time itself says so, and the ring carries the
+    /// absence through rather than substituting a zero somewhere along the way.
+    #[test]
+    fn a_device_that_cannot_time_itself_records_no_gpu_rather_than_none_of_it() {
+        let mut frames = Frames::new(Duration::from_secs(4));
+        let (interval, ui, scene, wait) = frame(16, 1, 1);
+        frames.record(interval, ui, scene, wait, None, false);
+        assert_eq!(frames.frames()[0].gpu, None);
+    }
+
     /// A repack is a fact about *one* frame, not about the ring: a screen that
     /// is merely heavy never sets it, so the panel can tell "the world is
     /// full" apart from "the atlas just evicted" even though both are large
@@ -285,9 +381,9 @@ mod tests {
     fn a_repack_marks_only_the_frame_that_paid_for_it() {
         let mut frames = Frames::new(Duration::from_secs(4));
         let (interval, ui, scene, wait) = frame(16, 0, 1);
-        frames.record(interval, ui, scene, wait, false);
+        frames.record(interval, ui, scene, wait, None, false);
         let (interval, ui, scene, wait) = frame(16, 0, 40);
-        frames.record(interval, ui, scene, wait, true);
+        frames.record(interval, ui, scene, wait, None, true);
         let held = frames.frames();
         assert!(!held[0].repacked, "an ordinary frame");
         assert!(held[1].repacked, "the frame that evicted the atlas");

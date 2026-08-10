@@ -64,6 +64,7 @@ mod frames;
 mod gump;
 mod keys;
 mod link;
+mod profile;
 mod replay;
 mod shell;
 mod steer;
@@ -356,6 +357,39 @@ const CHAT_MARGIN: i32 = 4;
 /// [`openshard_uofiles::ttf_font`] for why there is only one size to choose at
 /// all.
 const TTF_BASE_PIXEL_HEIGHT: f32 = 16.0;
+
+/// [`text::collect_gump`]'s own quads, grown around each label's own top-left
+/// corner by the Chat tab's [`desk::ChatScale`].
+///
+/// One label at a time and not the whole slice through `collect_gump` once,
+/// because every glyph's own quad has to grow around *its* label's corner and
+/// not a shared one — the same reason a batched call cannot tell two labels'
+/// quads apart once they come back in one `Vec`.
+///
+/// `fonts.mul` bakes every glyph at whatever pixels the art shipped
+/// (`openshard_uofiles::font`'s own doc), so there is no continuous size to
+/// ask the atlas for the way [`TtfAtlas::pixel_height`] has. Growing the
+/// finished quad instead is nearest-sampled the same way a camera zoom step
+/// already grows a world sprite — [`text`]'s own module doc — which is what
+/// keeps a bigger chat box in the classic client's own blocky style rather
+/// than blurring it. Not applied to the TrueType path for the opposite
+/// reason: [`text::collect_screen_ttf`]'s own doc is why an antialiased glyph
+/// stretched by an integer factor with no filtering reads as exactly the
+/// blockiness that function exists to avoid.
+fn scaled_gump_quads(labels: &[GumpLabel<'_>], atlas: &FontAtlas, scale: u32) -> Vec<SpriteQuad> {
+    let scale = scale as f32;
+    let mut quads = Vec::new();
+    for label in labels {
+        for mut quad in text::collect_gump(std::slice::from_ref(label), atlas) {
+            quad.rect.x = label.at.x as f32 + (quad.rect.x - label.at.x as f32) * scale;
+            quad.rect.y = label.at.y as f32 + (quad.rect.y - label.at.y as f32) * scale;
+            quad.rect.width *= scale;
+            quad.rect.height *= scale;
+            quads.push(quad);
+        }
+    }
+    quads
+}
 
 /// Open a window on `dir`'s files, and log in to `shard` if one is given.
 ///
@@ -777,6 +811,10 @@ pub fn run<D: Dial + Send + 'static>(
         scope: Scope::new(SCOPE_SPAN),
         frames: frames::Frames::new(FRAMES_SPAN),
         repacks: 0,
+        // Nothing unless the environment asked, and nothing this reads again:
+        // the handle is the subscription. See `profile::serve`.
+        #[cfg(not(target_arch = "wasm32"))]
+        _puffin: profile::serve(),
         focused: true,
         occluded: false,
         scripts: bench::scripts(),
@@ -1085,6 +1123,17 @@ struct Screen {
     /// `App::ttf_font` is set — see `ttf_gump_pass`, its TrueType twin — per
     /// `docs/client.md`'s "a third `GumpRenderer` bound to `App::font_atlas`".
     gump_text_pass: GumpRenderer,
+    /// What the GPU spent on the last frame it finished, pass by pass — the one
+    /// half of a frame's cost that no clock on this thread can see, since
+    /// `queue.submit` returns without waiting. `None` when the adapter cannot
+    /// write timestamp queries, which is a fact the panel prints rather than a
+    /// reason to draw zeroes. See [`crate::profile`].
+    ///
+    /// Here and not on [`App`] for a borrow reason: `profile::Gpu::scope` takes
+    /// `&self`, so a scope can be open on this frame's encoder while the pass it
+    /// is timing takes `&mut` of a sibling field. On `App` it would be behind
+    /// the `self.window.as_mut()` that has already borrowed the whole of it.
+    gpu: Option<profile::Gpu>,
 }
 
 impl Screen {
@@ -1878,6 +1927,14 @@ struct App {
     /// as an ordinary heavy frame. See [`Frame::repacked`](frames::Frame) for
     /// which frame paid it.
     repacks: u64,
+    /// The flamegraph socket, held open for as long as the client runs.
+    ///
+    /// Never read after it is built — dropping it is what closes the port, so
+    /// holding it *is* the subscription. `None` unless `OPENSHARD_PUFFIN` asked
+    /// for one; see [`profile::serve`], and [`profile`]'s docs for why the
+    /// flamegraph is a separate viewer rather than a tab in this window.
+    #[cfg(not(target_arch = "wasm32"))]
+    _puffin: Option<puffin_http::Server>,
     /// Whether the window has the keyboard.
     ///
     /// Half of [`App::watched`], and true at construction: a window is mapped
@@ -2445,6 +2502,18 @@ impl ApplicationHandler<link::Update> for App {
                             y: tile.at.y,
                         }),
                     };
+                    // **In war mode, a single click on a body is an attack.**
+                    // The reference client's own gesture, and the reason the
+                    // stance exists at all: at peace the same click selects and
+                    // nothing more. Beside the selection rather than instead of
+                    // it — the Tile panel still shows what was clicked, and a
+                    // click that both selects and aims is one click with two
+                    // readers, not two gestures fighting over one button.
+                    //
+                    // An aim and nothing else goes out; the shard's `swings`
+                    // strikes on its own timer and answers with a `0xAA`. See
+                    // `openshard_client_net::combat`.
+                    self.attack_under_cursor();
                     // And the second click of a pair is a *use*: a door opens, a
                     // container opens, food is eaten. Which of those it is, is
                     // the shard's answer and not this end's — see
@@ -2716,6 +2785,10 @@ impl App {
             Graphic(self.player.body),
             facing,
             self.player.hue,
+            // At peace, and not a placeholder for an unknown: this is the
+            // offline viewer's body, and there is no shard to have put it in a
+            // stance. See `App::walk`'s own docs.
+            false,
         );
         self.player.equipment = equipment;
         // Offline there is no shard to refuse a step, so nothing here is
@@ -2908,6 +2981,50 @@ impl App {
         match self.link.as_ref() {
             Some(link) => link.use_object(serial),
             None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),
+        }
+    }
+
+    /// Aim at whatever body the cursor is on, if this character is at war.
+    ///
+    /// The single click's half of a fight, beside [`App::use_under_cursor`]'s
+    /// double click. Three gates, and each is a different kind of "no":
+    ///
+    /// - **At peace, nothing is sent.** Not a refusal — a click at peace is a
+    ///   selection, which the caller has already made.
+    /// - **A ghost sends nothing.** `Player::war` is the shard's answer and a
+    ///   dead character's is false, so this is currently that fact read twice
+    ///   rather than a second rule. It stops being that when `0x2C` lands and
+    ///   the client knows it is dead on its own (`docs/combat.md`, P4).
+    /// - **A body with no serial is the offline viewer's placeholder** and
+    ///   there is nothing to name.
+    ///
+    /// Reads [`App::on_mobile`] — what the *last frame* found under the cursor,
+    /// the same answer the highlight is drawn from — rather than picking again
+    /// here. That is `use_under_cursor`'s own rule turned into the one it should
+    /// always have been: what the player clicked is what they were shown they
+    /// were pointing at.
+    fn attack_under_cursor(&self) {
+        let Some(view) = self.view.as_ref() else {
+            return;
+        };
+        if !view.player.war {
+            return;
+        }
+        // `on_mobile` is a `Who` — `None` inside the `Some` is a body no shard
+        // has named, which the offline viewer draws and nothing can be asked
+        // about.
+        let Some(Some(mobile)) = self.on_mobile else {
+            return;
+        };
+        // Attacking yourself is a packet the shard refuses (`combat::attack`
+        // checks it) and a click a player never means. Stopped here so the
+        // refusal is not a round trip.
+        if mobile == view.player.serial {
+            return;
+        }
+        match self.link.as_ref() {
+            Some(link) => link.attack(mobile),
+            None => tracing::info!(serial = mobile.raw(), "nothing attacked: no shard is connected"),
         }
     }
 
@@ -3760,9 +3877,15 @@ impl App {
             // motion on top of the one being looked at.
             let (body, hue) = (Graphic(self.player.body), self.player.hue);
             let equipment = std::mem::take(&mut self.player.equipment);
-            self.player = self
-                .crowd
-                .snap(self.me(), start, body, Facing::walking(self.player.facing), hue);
+            let war = self.view.as_ref().is_some_and(|view| view.player.war);
+            self.player = self.crowd.snap(
+                self.me(),
+                start,
+                body,
+                Facing::walking(self.player.facing),
+                hue,
+                war,
+            );
             self.player.equipment = equipment;
             self.cutaway_at = self.player.at;
             self.control.relock(mobiles::gaze(&self.player));
@@ -3786,9 +3909,14 @@ impl App {
         for step in moves {
             let (body, hue) = (Graphic(self.player.body), self.player.hue);
             let equipment = std::mem::take(&mut self.player.equipment);
+            // The stance the session is actually in: a replay walks this body
+            // through a recorded route, and what it is wearing or holding is
+            // not part of the recording — so a scenario replayed while at war
+            // is drawn at war, exactly as the same walk would be live.
+            let war = self.view.as_ref().is_some_and(|view| view.player.war);
             self.player = match step.glided {
-                true => self.crowd.see(self.me(), step.to, body, step.facing, hue),
-                false => self.crowd.snap(self.me(), step.to, body, step.facing, hue),
+                true => self.crowd.see(self.me(), step.to, body, step.facing, hue, war),
+                false => self.crowd.snap(self.me(), step.to, body, step.facing, hue, war),
             };
             self.player.equipment = equipment;
             self.cutaway_at = self.player.at;
@@ -3932,6 +4060,7 @@ impl App {
                 view.player.body,
                 body.predicted.facing,
                 view.player.hue,
+                view.player.war,
             ),
             false => self.crowd.see(
                 me,
@@ -3939,6 +4068,10 @@ impl App {
                 view.player.body,
                 body.predicted.facing,
                 view.player.hue,
+                // Our own stance is the `0x72`'s and the `0x88`'s, not a bit of
+                // a `0x77` — no `0x77` ever describes this body. See
+                // `view::Player::war` beside `view::Mobile::war`.
+                view.player.war,
             ),
         };
         self.player.equipment = crowd::worn(&view.player.equipment, &self.tiledata);
@@ -3992,9 +4125,17 @@ impl App {
             .into_iter()
             .map(|(serial, mobile)| {
                 let who = Some(*serial);
-                let mut drawn = self
-                    .crowd
-                    .see(who, mobile.position, mobile.body, mobile.facing, mobile.hue);
+                // Their stance is a bit of the flag byte the same packet
+                // carried — `view::Mobile::war` — so a shopkeeper who draws a
+                // sword changes how they stand on the next `0x77` about them.
+                let mut drawn = self.crowd.see(
+                    who,
+                    mobile.position,
+                    mobile.body,
+                    mobile.facing,
+                    mobile.hue,
+                    mobile.war(),
+                );
                 drawn.equipment = crowd::worn(&mobile.equipment, &self.tiledata);
                 (who, drawn)
             })
@@ -4347,6 +4488,13 @@ impl App {
             .map_or(light::Tuning::DEFAULT, shell::Shell::tuning)
     }
 
+    /// What the Chat tab has been turned to — [`App::tuning`]'s own reason for
+    /// being read live from the shell rather than from `self.desk`, which is
+    /// only ever the value at load or at exit.
+    fn chat_style(&self) -> desk::Chat {
+        self.shell.as_ref().map_or_else(desk::Chat::default, shell::Shell::chat)
+    }
+
     /// What `common/movement` makes of the ground on screen — the HUD's terrain
     /// overlay, gathered only while it is switched on.
     ///
@@ -4633,6 +4781,16 @@ impl App {
             frames: self.frames.frames().to_vec(),
             frames_span: self.frames.span(),
             worst_fps: self.frames.worst_fps(),
+            // Which pass ate the device's frame. Cloned into the snapshot like
+            // everything else here — a dozen short strings a frame — for the
+            // reason `Hud::readings` is: a panel that could reach back into the
+            // screen would be reading a frame the screen has moved past.
+            gpu_passes: self
+                .window
+                .as_ref()
+                .and_then(|window| window.gpu.as_ref())
+                .map(|gpu| gpu.passes().to_vec())
+                .unwrap_or_default(),
             repacks: self.repacks,
             // What is currently *asking* for frames, which is the other half of
             // any answer about the frame rate: a picture drawn every 80ms is not
@@ -4897,7 +5055,19 @@ impl App {
         // `NoDevice` with wgpu's own message, which names the limit — see
         // `openshard_client_render::gbuffer::required_limits` for why it is
         // asked for and what brings it back down.
+        //
+        // And the timestamp queries, when the adapter has them — the frames
+        // panel's GPU column, `profile::Gpu`. Asked for **both or neither**: a
+        // feature required that the adapter has not got fails the whole
+        // `request_device`, which would cost this client its window over a
+        // diagnostic, and half the pair measures nothing anyway (see
+        // `profile::Gpu::REQUIRED` for why it takes two).
+        let timers = match adapter.features().contains(profile::Gpu::REQUIRED) {
+            true => profile::Gpu::REQUIRED,
+            false => wgpu::Features::empty(),
+        };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: timers,
             required_limits: openshard_client_render::gbuffer::required_limits(),
             ..Default::default()
         }))
@@ -5075,6 +5245,11 @@ impl App {
         // not.
         self.shell = Some(shell::Shell::new(&device, format, &window, self.desk.clone()));
 
+        // Before `device` is moved into the screen below, and the only reason
+        // this line is here rather than beside the passes: it reads the device's
+        // features, not any of them.
+        let gpu = profile::Gpu::new(&device);
+
         Ok(Screen {
             window,
             surface,
@@ -5100,6 +5275,7 @@ impl App {
             solids,
             gump_pass,
             gump_text_pass,
+            gpu,
         })
     }
 
@@ -5177,6 +5353,12 @@ impl App {
 
     fn draw(&mut self) {
         let started = Instant::now();
+        // The frame boundary the flamegraph is cut on, put at the same place
+        // `started` is sampled so that a frame in `puffin_viewer` and a frame in
+        // the `frames` panel are the same span of time. Free when nobody is
+        // recording — see [`profile`].
+        profile::frame();
+        puffin::profile_scope!("draw");
         // What the shard has opened, and what it has taken away: the view is
         // filled by `client/net`, which knows nothing about screens, so a
         // window appearing is this end noticing.
@@ -5439,6 +5621,10 @@ impl App {
         // atlases have to be grown for the same bound `light::collect` reads
         // them over.
         let tuning = self.tuning();
+        // The Chat tab's own numbers, the same reason and the same place:
+        // gathered before the window is borrowed below, since `App::chat_style`
+        // also reads the whole of `self`.
+        let chat_style = self.chat_style();
         // What the camera has walked onto since the atlases were last grown.
         // Gathered before the window is borrowed, and not inside the borrow: it
         // reads the whole of `self`, and the window is part of it.
@@ -5729,8 +5915,14 @@ impl App {
             // `light::SunTuning`.
             sun: (self.sunlit && !self.night).then(|| tuning.sun.sun()),
             // And the flame in the player's own hand, which no walk of the map
-            // could have found — see `light::carried`.
-            carried: self.lantern.then_some((self.player.at, self.player.facing)),
+            // could have found — see `light::carried`. The offset is where the
+            // sprite is *actually* drawn this instant, past `at`'s tile, so the
+            // pool glides with the walk instead of jumping once a step.
+            carried: self.lantern.then_some((
+                self.player.at,
+                mobiles::walked_offset(&self.player),
+                self.player.facing,
+            )),
             tuning: &tuning,
             flame_time: self.flame_clock.as_secs_f32(),
             // The blocks of the occlusion grid built for earlier frames. A
@@ -5921,13 +6113,22 @@ impl App {
         // Ground first, because it clears; statics after, into what it left.
         // Which covers which is decided by the depth they share, not by this
         // order — the order only decides who clears.
+        //
+        // Every pass from here to the submit is bracketed by `profile::begin`
+        // and `profile::end`: the GPU's own timestamps, which are the one half
+        // of a frame's cost no clock on this thread can see. See [`profile`] for
+        // why that is so and why the bracket is a pair of calls rather than a
+        // scope guard. Nothing when the adapter has no timestamp queries.
+        let timed = profile::begin(window.gpu.as_ref(), "ground", &mut encoder);
         window
             .renderer
             .render(&window.device, &window.queue, &mut encoder, target, &quads);
+        profile::end(window.gpu.as_ref(), &mut encoder, timed);
         // Handed over every frame rather than on the key, because the key does
         // not have the window: `self.fringe` is the switch and the pass is where
         // it is read, and a state pushed once at start-up would leave F2 silent.
         window.statics.set_fringe(self.fringe);
+        let timed = profile::begin(window.gpu.as_ref(), "statics", &mut encoder);
         window.statics.render(
             &window.device,
             &window.queue,
@@ -5937,10 +6138,12 @@ impl App {
             &static_boxes,
             Some(static_instances.drawn),
         );
+        profile::end(window.gpu.as_ref(), &mut encoder, timed);
         // Right after statics, into the same static's own pixels its
         // billboard sprite just drew — `docs/gbuffer.md` step 4c. Depth and
         // place only, never colour: this only gives a climbable static's
         // pixels a more honest per-face normal than one blended stance could.
+        let timed = profile::begin(window.gpu.as_ref(), "mesh faces", &mut encoder);
         window.mesh_pass.render(
             &window.device,
             &window.queue,
@@ -5949,6 +6152,8 @@ impl App {
             &mesh_vertices,
             &mesh_rows,
         );
+        profile::end(window.gpu.as_ref(), &mut encoder, timed);
+        let timed = profile::begin(window.gpu.as_ref(), "mobiles", &mut encoder);
         window.mobile_pass.render(
             &window.device,
             &window.queue,
@@ -5960,6 +6165,7 @@ impl App {
             &[],
             None,
         );
+        profile::end(window.gpu.as_ref(), &mut encoder, timed);
         // The silhouettes, here and not later: the mask is depth-tested against
         // what the three world passes have drawn, so a barrel behind a wall is
         // kept out of it — and the text pass below writes depth at the near
@@ -5970,6 +6176,7 @@ impl App {
         // One item is one ring; the pass numbers groups, so each quad is a group
         // of its own — see `SpriteRenderer::render_mask`.
         let item_rings: Vec<&[SpriteQuad]> = outline_quads.iter().map(std::slice::from_ref).collect();
+        let timed = profile::begin(window.gpu.as_ref(), "outline mask: items", &mut encoder);
         window.statics.render_mask(
             &window.device,
             &window.queue,
@@ -5978,12 +6185,14 @@ impl App {
             &mask_view,
             &item_rings,
         );
+        profile::end(window.gpu.as_ref(), &mut encoder, timed);
         // And a creature through its own atlas, in *one* group: a body and
         // everything it wears is one thing being pointed at, and one ring goes
         // round the lot. This pass clears the mask too, which is why it is
         // skipped when nothing is ringed — the items' pass above has already
         // written the frame's answer, and a second clear would erase it.
         if !mobile_outline.is_empty() {
+            let timed = profile::begin(window.gpu.as_ref(), "outline mask: mobiles", &mut encoder);
             window.mobile_pass.render_mask(
                 &window.device,
                 &window.queue,
@@ -5992,6 +6201,7 @@ impl App {
                 &mask_view,
                 &[&mobile_outline],
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
         // And the held selection into its own mask, through the same pass and
         // the same depth buffer: what is washed is what is *visible* of the
@@ -6003,6 +6213,7 @@ impl App {
             .select_mask
             .create_view(&wgpu::TextureViewDescriptor::default());
         if !select_quads.is_empty() {
+            let timed = profile::begin(window.gpu.as_ref(), "select mask", &mut encoder);
             window.statics.render_mask(
                 &window.device,
                 &window.queue,
@@ -6011,11 +6222,13 @@ impl App {
                 &select_view,
                 &[&select_quads],
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
         // Always `text_pass`, `fonts.mul`'s own: `text_quads` is empty
         // whenever `App::ttf_font` is set, since a TrueType face's speech
         // draws after the blit instead — see `screen_speech`'s own comment
         // above and the render call after it, below.
+        let timed = profile::begin(window.gpu.as_ref(), "overhead text", &mut encoder);
         window.text_pass.render(
             &window.device,
             &window.queue,
@@ -6025,6 +6238,7 @@ impl App {
             &[],
             None,
         );
+        profile::end(window.gpu.as_ref(), &mut encoder, timed);
         // And the world image onto the surface, into the rect the panels left
         // free. Magnified this is a copy — the image is already the viewport's
         // size and the magnification happened in the vertex transform — and
@@ -6044,6 +6258,7 @@ impl App {
         // is unaffected either way — it is what the solids pass reads its grid
         // from, and it was already built above whichever branch runs here.
         if self.solids_only && self.show_solids {
+            let timed = profile::begin(window.gpu.as_ref(), "solids-only clear", &mut encoder);
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("solids-only clear"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -6060,7 +6275,13 @@ impl App {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         } else {
+            // **The pass to watch.** Deferred shading over the whole viewport:
+            // every light in range walked per fragment, the sun, the occlusion
+            // grid. `tests/cost.rs` measures it offline; this is the same pass
+            // on the frame as played.
+            let timed = profile::begin(window.gpu.as_ref(), "blit: lighting", &mut encoder);
             window.blit.render(
                 &window.device,
                 &window.queue,
@@ -6078,6 +6299,7 @@ impl App {
                 },
                 &lighting,
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
         // The occlusion grid as solids, when somebody asked for it — step 23.0.
         // First of what is drawn over the lit picture, so the highlights stay on
@@ -6090,6 +6312,7 @@ impl App {
         if self.show_solids {
             let standing = openshard_client_render::solid::standing(&lighting.occlusion, solid_cut);
             self.solids_held = standing.len();
+            let timed = profile::begin(window.gpu.as_ref(), "solids", &mut encoder);
             self.solids_drawn = window.solids.render(
                 &window.device,
                 &window.queue,
@@ -6106,6 +6329,7 @@ impl App {
                     ..solids::Style::default()
                 },
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
         // The held selection's wash, first of the two things drawn over the lit
         // picture: the wall the click named and the ground it stands on. Under
@@ -6121,6 +6345,7 @@ impl App {
             .and_then(SelectedIdentity::as_static)
             .filter(|_| !select_quads.is_empty())
         {
+            let timed = profile::begin(window.gpu.as_ref(), "selection wash", &mut encoder);
             window.select.render(
                 &window.device,
                 &window.queue,
@@ -6142,6 +6367,7 @@ impl App {
                 // the cell behind it.
                 Selection::DEFAULT.on((picked.at.x, picked.at.y)),
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
         // And the ring on top of that, over the same rectangle — after the blit
         // so it is drawn in screen pixels and unlit: a highlight that dimmed at
@@ -6152,6 +6378,7 @@ impl App {
         // highlight is simply absent — which is what an item-only test of this
         // condition looked like from the outside.
         if !outline_quads.is_empty() || !mobile_outline.is_empty() {
+            let timed = profile::begin(window.gpu.as_ref(), "outline ring", &mut encoder);
             window.outline.render(
                 &window.device,
                 &window.queue,
@@ -6168,6 +6395,7 @@ impl App {
                 // `Ring::for_zoom`.
                 Ring::SOFT.for_zoom(camera.zoom()),
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
         // The shard's dialogs, in the client's own art, over the finished
         // picture and under egui's.
@@ -6392,6 +6620,7 @@ impl App {
                 pass.upload_rows(&window.queue, self.gump_atlas.pixels(), rows);
             }
             let quads = gump_art::collect(&pictures, &self.gump_atlas);
+            let timed = profile::begin(window.gpu.as_ref(), "gump art", &mut encoder);
             pass.render(
                 &window.device,
                 &window.queue,
@@ -6416,6 +6645,7 @@ impl App {
                 },
                 &quads,
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
         // Every line of gump-space text this frame, from both the blocks below.
         //
@@ -6530,7 +6760,16 @@ impl App {
                 (window.config.height as f32 / scale) as i32,
             );
             let font = Font::DEFAULT;
-            let input_at = GumpPixel::new(CHAT_MARGIN, canvas.y - CHAT_MARGIN - CHAT_LINE_HEIGHT);
+            // The TrueType path draws at [`TTF_BASE_PIXEL_HEIGHT`] regardless
+            // of [`desk::ChatScale`] — see [`scaled_gump_quads`]'s doc for
+            // why an integer upscale is right for `fonts.mul` and wrong for an
+            // antialiased face — so the line spacing only grows when the
+            // glyphs it is spacing actually will.
+            let line_height = match self.ttf_font {
+                Some(_) => CHAT_LINE_HEIGHT,
+                None => CHAT_LINE_HEIGHT * chat_style.scale.raw() as i32,
+            };
+            let input_at = GumpPixel::new(CHAT_MARGIN, canvas.y - CHAT_MARGIN - line_height);
 
             // Owned before it is borrowed into `GumpLabel`s: the journal's own
             // strings are formatted here (name and text joined the way
@@ -6540,7 +6779,7 @@ impl App {
             let mut rows: Vec<(GumpPixel, Hue, Font, String)> = Vec::new();
             if let Some(view) = self.view.as_ref() {
                 for (row, line) in view.journal.iter().rev().take(CHAT_LINES).enumerate() {
-                    let at = GumpPixel::new(CHAT_MARGIN, input_at.y - CHAT_LINE_HEIGHT * (row as i32 + 1));
+                    let at = GumpPixel::new(CHAT_MARGIN, input_at.y - line_height * (row as i32 + 1));
                     let text = match line.name.is_empty() {
                         true => line.text.clone(),
                         false => format!("{}: {}", line.name, line.text),
@@ -6570,7 +6809,7 @@ impl App {
                 at: input_at,
                 text: &prompt,
                 font,
-                hue: Hue::NONE,
+                hue: Hue(chat_style.hue),
                 clip: None,
             });
             // The caret, a lone glyph rather than a new quad primitive: the
@@ -6632,7 +6871,7 @@ impl App {
                         at: GumpPixel::new(real_input_at.x + caret_x, real_input_at.y),
                         text: caret_text,
                         font: Font::DEFAULT,
-                        hue: Hue::NONE,
+                        hue: Hue(chat_style.hue),
                         clip: None,
                     });
                 }
@@ -6651,6 +6890,7 @@ impl App {
                 // through this frame, the speech line's — see
                 // `Screen::upload_ttf_dirty`'s doc.
                 window.upload_ttf_dirty();
+                let timed = profile::begin(window.gpu.as_ref(), "ttf gump text", &mut encoder);
                 window
                     .ttf_gump_pass
                     .as_mut()
@@ -6671,6 +6911,7 @@ impl App {
                         },
                         &hud_quads,
                     );
+                profile::end(window.gpu.as_ref(), &mut encoder, timed);
             } else {
                 let prefix_width = text::gump_width("say: ", font, &self.font_atlas);
                 if self.chat.focused && blink_on {
@@ -6680,17 +6921,18 @@ impl App {
                         at: GumpPixel::new(input_at.x + caret_x, input_at.y),
                         text: caret_text,
                         font,
-                        hue: Hue::NONE,
+                        hue: Hue(chat_style.hue),
                         clip: None,
                     });
                 }
-                text_quads.extend(text::collect_gump(&labels, &self.font_atlas));
+                text_quads.extend(scaled_gump_quads(&labels, &self.font_atlas, chat_style.scale.raw()));
             }
             // The one call, with the windows' lines already in front of the
             // chat's: painter's order inside a single pass, and the only order
             // there is — see `text_quads` for what a second call would cost.
             // Draws only the windows' captions when `App::ttf_font` is set:
             // the chat's own quads went through `ttf_gump_pass` above instead.
+            let timed = profile::begin(window.gpu.as_ref(), "gump text", &mut encoder);
             window.gump_text_pass.render(
                 &window.device,
                 &window.queue,
@@ -6703,11 +6945,13 @@ impl App {
                 },
                 &text_quads,
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
         // The UI over it, with no depth attachment: the world's depth buffer
         // ordered the world, and this is drawn on the result.
         if let (Some(shell), Some((_, output, _))) = (self.shell.as_mut(), ui) {
             let painting = Instant::now();
+            let timed = profile::begin(window.gpu.as_ref(), "egui", &mut encoder);
             shell.paint(
                 &window.device,
                 &window.queue,
@@ -6716,9 +6960,22 @@ impl App {
                 output,
                 [window.config.width, window.config.height],
             );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
             ui_cost += painting.elapsed();
         }
+        // Every query closed above, copied out of its set and into the buffer
+        // the next frame will map — recorded into this encoder, so it has to
+        // happen before the submit and after the last `profile::end`.
+        if let Some(gpu) = window.gpu.as_mut() {
+            gpu.resolve(&mut encoder);
+        }
         window.queue.submit([encoder.finish()]);
+        // And the frame closed, which is what makes those buffers eligible to be
+        // mapped. What comes back is an older frame's timings — see [`profile`]
+        // for why that is the right trade and not a defect.
+        if let Some(gpu) = window.gpu.as_mut() {
+            gpu.end_frame(&window.device, &window.queue);
+        }
         // **This frame, written out** — F12, and `docs/parity.md`'s first
         // backlog item. After the submit above and not beside the blit, because
         // what is read back has to be pixels the device has actually been given
@@ -6832,11 +7089,22 @@ impl App {
         // fourth clock, so the three always add up to the frame exactly: a
         // fourth `Instant` would leave a remainder nobody could account for.
         let scene = took.saturating_sub(ui_cost).saturating_sub(wait);
+        // The device's own number, which is *not* about this frame: it is
+        // whichever frame the timestamps have come back for, two or three ago.
+        // Recorded against this one anyway, because what it answers — "is the
+        // wait above slack or a stall" — is a question about a standing cost and
+        // not about one frame's spike. See [`profile`].
+        let gpu = self
+            .window
+            .as_ref()
+            .and_then(|window| window.gpu.as_ref())
+            .map(profile::Gpu::total);
         self.frames.record(
             started.saturating_duration_since(self.last_frame),
             ui_cost,
             scene,
             wait,
+            gpu,
             repacked,
         );
         self.last_frame = started;
@@ -7122,10 +7390,24 @@ mod tests {
         const PLAYER: u16 = 400;
         let mut crowd = Crowd::default();
         let facing = Facing::walking(Direction::East);
-        crowd.see(None, Point::new(10, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        crowd.see(
+            None,
+            Point::new(10, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+            false,
+        );
         // The snapshot the app would store in `self.player`: walking, because a
         // step had just landed when the packet was folded.
-        let stepped = crowd.see(None, Point::new(11, 10, 0), Graphic(PLAYER), facing, Hue::NONE);
+        let stepped = crowd.see(
+            None,
+            Point::new(11, 10, 0),
+            Graphic(PLAYER),
+            facing,
+            Hue::NONE,
+            false,
+        );
         let walking = stepped.group;
 
         // Long enough that the walk gives up on its own timer. No packet.

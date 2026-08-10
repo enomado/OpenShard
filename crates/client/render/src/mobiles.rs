@@ -46,7 +46,7 @@ use crate::camera::{Camera, RealPixel, ViewPixel, ViewPoint, WorldPoint};
 use crate::cutaway::Cutaway;
 use crate::depth;
 use crate::follow::Gaze;
-use crate::geometry::Rect;
+use crate::geometry::{Rect, Vec2};
 use crate::sprite::SpriteQuad;
 
 /// One creature to draw, as the client knows it.
@@ -204,15 +204,27 @@ const BILLBOARD_OFFSET_SCALE: f32 = 4096.0;
 /// [`crate::place::Stance::Upright`]), so [`crate::sprite::SpriteQuad::twin`]
 /// carries nothing else for one — this is what rides in it instead.
 fn billboard_offset(mobile: &Mobile) -> u32 {
-    let (tile_x, tile_y) = crate::camera::unproject_ground(mobile.drawn.x, mobile.drawn.y);
-    let dx = (tile_x - f64::from(mobile.at.x)) as f32;
-    let dy = (tile_y - f64::from(mobile.at.y)) as f32;
+    let offset = walked_offset(mobile);
     let pack = |v: f32| -> u32 {
         let fixed = (v * BILLBOARD_OFFSET_SCALE).round();
         let clamped = fixed.clamp(f32::from(i16::MIN), f32::from(i16::MAX));
         (clamped as i16) as u16 as u32
     };
-    pack(dx) | (pack(dy) << 16)
+    pack(offset.x) | (pack(offset.y) << 16)
+}
+
+/// How far a mobile's drawn position has walked past the tile [`Mobile::at`]
+/// names, in tile units — the same fractional lead [`billboard_offset`] packs
+/// for the sprite's own lit position, unpacked, for a caller that has no
+/// fixed-point word to put it in. [`crate::light::carried`]'s `offset` is
+/// this: a flame anchored to `at` alone would sit still for the whole of a
+/// step and then jump, four hundred milliseconds late.
+pub fn walked_offset(mobile: &Mobile) -> Vec2 {
+    let (tile_x, tile_y) = crate::camera::unproject_ground(mobile.drawn.x, mobile.drawn.y);
+    Vec2::new(
+        (tile_x - f64::from(mobile.at.x)) as f32,
+        (tile_y - f64::from(mobile.at.y)) as f32,
+    )
 }
 
 /// The body, group and stored direction a set of mobiles needs packed.

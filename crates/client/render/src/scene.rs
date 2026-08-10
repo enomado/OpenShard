@@ -239,7 +239,9 @@ impl Scene {
         );
         lighting.sun = self.sun;
         if let Some((at, facing)) = self.carried {
-            lighting.hold(light::carried(at, facing, time));
+            // No mid-step to be at: a scene is a still room and nothing in it
+            // walks. See [`light::carried`]'s `offset`.
+            lighting.hold(light::carried(at, crate::geometry::Vec2::default(), facing, time));
         }
         lighting
     }

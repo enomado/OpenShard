@@ -274,6 +274,9 @@ fn env_tuning() -> light::Tuning {
         sky: number("OPENSHARD_LIGHT_SKY", 1.0),
         ground: number("OPENSHARD_LIGHT_GROUND", 1.0),
         sun: light::Tuning::DEFAULT.sun,
+        headlight_color: light::Tuning::DEFAULT.headlight_color,
+        lantern_color: light::Tuning::DEFAULT.lantern_color,
+        ambient_color: light::Tuning::DEFAULT.ambient_color,
     }
     .clamped()
 }

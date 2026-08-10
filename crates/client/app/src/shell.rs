@@ -95,6 +95,15 @@ pub struct Hud {
     /// The worst frame rate in that window, and `None` before there is a frame
     /// to have a rate.
     pub worst_fps: Option<f64>,
+    /// What the device spent on the last frame it finished, pass by pass — the
+    /// answer to "which pass" once [`crate::frames::Frame::gpu`] has said the
+    /// device is where the frame went.
+    ///
+    /// Empty both when the adapter cannot write timestamp queries and before the
+    /// first frame's queries have come back; the panel tells those two apart by
+    /// asking the ring, which carries `None` for the first and a number for the
+    /// second. See [`crate::profile`].
+    pub gpu_passes: Vec<crate::profile::Pass>,
     /// How many full atlas repacks this session has paid for. See
     /// [`crate::frames::Frame::repacked`] for which frame in the window below
     /// was one of them.
@@ -668,6 +677,13 @@ impl Shell {
         self.desk.light.tuning()
     }
 
+    /// What the HUD chat box is turned to right now — the Chat tab's own
+    /// numbers, [`Shell::tuning`]'s own reason for being read from here rather
+    /// than the app's copy.
+    pub fn chat(&self) -> crate::desk::Chat {
+        self.desk.chat
+    }
+
     /// Show or hide the dev window — the strip's `dev` toggle, reached from a key.
     ///
     /// It has to come through here, and not through the app's own [`Desk`]: the
@@ -925,6 +941,7 @@ fn layout(root: &mut egui::Ui, hud: &Hud, desk: &mut Desk) -> Request {
                 Tab::World => world_panel(ui, hud, &mut request),
                 Tab::Tile => tile_tab(ui, hud, &mut request),
                 Tab::Light => light_panel(ui, &mut desk.light),
+                Tab::Chat => chat_panel(ui, &mut desk.chat),
             });
     });
     desk.open = open;
@@ -1004,6 +1021,19 @@ fn light_panel(ui: &mut egui::Ui, light: &mut crate::desk::Light) {
             .small()
             .weak(),
     );
+    ui.horizontal(|ui| {
+        ui.label("colour");
+        ui.color_edit_button_rgb(&mut light.flame_color);
+    });
+    ui.label(
+        egui::RichText::new(
+            "A tint over every flame in the world — white leaves a torch and a \
+             campfire their own colour. Global until light.mul is read, so one \
+             lantern cannot yet be told from another.",
+        )
+        .small()
+        .weak(),
+    );
 
     ui.separator();
     ui.label("Ambient");
@@ -1051,6 +1081,50 @@ fn light_panel(ui: &mut egui::Ui, light: &mut crate::desk::Light) {
     // untouched" has to be one click and not nine numbers typed in.
     if ui.button("back to the defaults").clicked() {
         *light = crate::desk::Light::new();
+    }
+}
+
+/// How big the HUD chat box's glyphs draw, and what colour the player's own
+/// line takes.
+fn chat_panel(ui: &mut egui::Ui, chat: &mut crate::desk::Chat) {
+    use crate::desk::ChatScale;
+
+    ui.label("Size");
+    let mut scale = chat.scale.raw();
+    if ui
+        .add(egui::Slider::new(&mut scale, ChatScale::MIN..=ChatScale::MAX).text("scale"))
+        .changed()
+    {
+        chat.scale = ChatScale::new(scale);
+    }
+    ui.label(
+        egui::RichText::new(
+            "An integer upscale on `fonts.mul`'s own pixels — a bitmap face has \
+             no continuous size to ask for instead. Only the journal and the \
+             compose line below it; a shard's own dialogs draw at the size it \
+             sent them.",
+        )
+        .small()
+        .weak(),
+    );
+
+    ui.separator();
+    ui.label("Colour");
+    ui.add(egui::DragValue::new(&mut chat.hue).range(0..=u16::MAX).prefix("hue "));
+    ui.label(
+        egui::RichText::new(
+            "Tints the player's own compose line and its caret. 0 is the \
+             font's own ink, untinted — what everybody else's line already \
+             draws in, since a journal row carries whatever hue the speaker \
+             sent.",
+        )
+        .small()
+        .weak(),
+    );
+
+    ui.separator();
+    if ui.button("back to the defaults").clicked() {
+        *chat = crate::desk::Chat::default();
     }
 }
 
@@ -1783,12 +1857,76 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
         ui.end_row();
         ui.label("build");
         ui.label(last.map_or("—".to_string(), |frame| format!("{:.1} ms", ms(frame.build()))));
-        // The vsync sleep, named as such: it is the slack in the frame and not
-        // work, and a client whose wait is most of the interval has room.
+        // The acquire stall. **Not** simply the slack: it is also what a GPU
+        // still drawing the last frame looks like from this thread, which is why
+        // it is now printed beside `gpu` rather than on its own. See
+        // [`crate::frames::Frame::wait`].
         ui.label("waited");
         ui.label(last.map_or("—".to_string(), |frame| format!("{:.1} ms", ms(frame.wait))));
         ui.end_row();
+        // The device's own number, and the row that decides what `waited` above
+        // meant. A dash here is an adapter with no timestamp queries — see the
+        // line under the grid — and not a device that cost nothing.
+        ui.label("gpu");
+        ui.label(match last.and_then(|frame| frame.gpu) {
+            Some(gpu) => format!("{:.1} ms", ms(gpu)),
+            None => "—".to_string(),
+        });
+        ui.label("of interval");
+        ui.label(match last.and_then(|frame| Some((frame.gpu?, frame.interval))) {
+            Some((gpu, interval)) if !interval.is_zero() => {
+                format!("{:.0}%", 100.0 * gpu.as_secs_f64() / interval.as_secs_f64())
+            }
+            _ => "—".to_string(),
+        });
+        ui.end_row();
     });
+    // The sentence the whole GPU column exists to make sayable. A client asleep
+    // on vsync and a client blocked on its own last frame hold identical `fps`,
+    // `build` and `waited`, and differ only here — so the panel says which of
+    // them this is rather than leaving the reader to do the arithmetic.
+    match last.and_then(|frame| Some((frame.gpu?, frame.build(), frame.interval))) {
+        Some((gpu, build, interval)) if gpu > interval.saturating_sub(build) => {
+            ui.label(
+                egui::RichText::new(
+                    "the device is the bottleneck: the wait above is this client blocked on its own last frame, not slack",
+                )
+                .color(egui::Color32::YELLOW),
+            );
+        }
+        Some(_) => {}
+        // Absent, and said in words: a zero here would read as "the GPU cost
+        // nothing", which is the one answer that is certainly wrong.
+        None => {
+            ui.label(
+                egui::RichText::new(
+                    "this adapter cannot write timestamp queries: the GPU's half of the frame is unmeasured",
+                )
+                .weak()
+                .small(),
+            );
+        }
+    }
+    // Which pass, once the row above has said it is the device. Ordered as the
+    // frame recorded them, so this reads down a frame in the order it was drawn
+    // — and it is the last resolved frame rather than the one just built, a
+    // couple behind whatever `gpu` above belongs to.
+    if !hud.gpu_passes.is_empty() {
+        egui::CollapsingHeader::new("what the gpu drew")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("gpu passes").num_columns(2).show(ui, |ui| {
+                    for pass in &hud.gpu_passes {
+                        // Nested scopes are indented rather than added up: the
+                        // total above counts the outermost only, and a reader
+                        // has to be able to see which rows are inside which.
+                        ui.label(format!("{}{}", "  ".repeat(pass.depth), pass.label));
+                        ui.label(format!("{:.2} ms", ms(pass.cost)));
+                        ui.end_row();
+                    }
+                });
+            });
+    }
     // The counter `docs/camera.md` asks for: without it, a full atlas repack
     // is indistinguishable from an ordinary heavy frame, both being a large
     // number in `world` above. `repacked` marks which frame in the window
@@ -1850,6 +1988,17 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
                 name: "world",
                 points: series(|frame| frame.scene.as_secs_f64() * 1_000.0),
                 colour: egui::Color32::from_rgb(220, 200, 90),
+            },
+            // On the same scale as the two above, which is the whole reason it
+            // is in this chart and not one of its own: the question a low frame
+            // rate asks is which of the three is the biggest, and the answer is
+            // only readable when they share an axis. Flat at zero on an adapter
+            // that cannot time itself — the grid above says so in words, and a
+            // curve cannot.
+            Curve {
+                name: "gpu",
+                points: series(|frame| frame.gpu.map_or(0.0, |gpu| gpu.as_secs_f64() * 1_000.0)),
+                colour: egui::Color32::from_rgb(230, 130, 200),
             },
         ],
         span,

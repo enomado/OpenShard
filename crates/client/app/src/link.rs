@@ -112,6 +112,12 @@ pub enum Command {
     /// one that settled and the picture follows *that*. See
     /// [`openshard_client_net::doll::war_mode`].
     WarMode(bool),
+    /// Attack a mobile — a click on a body while standing in war mode.
+    ///
+    /// An *aim* and nothing more: no swing is ever sent, the shard's own
+    /// `swings` strikes on its timer, and the answer is a `0xAA` naming the
+    /// target that settled. See [`openshard_client_net::combat`].
+    Attack(Serial),
     /// "Log Out" was pressed. The connection stays up until the shard answers.
     LogOut,
     /// Ask for a mobile's status bar (`0x34`).
@@ -195,6 +201,11 @@ impl Link {
     /// Ask for a stance. See [`Command::WarMode`].
     pub fn war_mode(&self, war: bool) {
         let _ = self.commands.send(Command::WarMode(war));
+    }
+
+    /// Aim at a mobile. See [`Command::Attack`].
+    pub fn attack(&self, mobile: Serial) {
+        let _ = self.commands.send(Command::Attack(mobile));
     }
 
     /// Announce that the player is leaving.
@@ -437,6 +448,10 @@ async fn play<D: Dial>(
                     // that acted on its own would show a state the server
                     // refused.
                     Command::WarMode(war) => openshard_client_net::doll::war_mode(war),
+                    // The same rule from the world rather than the frame: an
+                    // aim is asked for and the shard answers with a `0xAA`
+                    // saying who is actually being fought.
+                    Command::Attack(mobile) => openshard_client_net::combat::attack(mobile),
                     Command::LogOut => openshard_client_net::doll::log_out(),
                     Command::Status(mobile) => openshard_client_net::doll::status(mobile),
                     Command::Skills(mobile) => openshard_client_net::doll::skills(mobile),

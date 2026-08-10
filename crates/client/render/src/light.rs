@@ -1356,8 +1356,37 @@ pub struct Tuning {
     /// room pure black.
     pub ground: f32,
     /// Where the sun stands and how hard it burns — [`SunTuning`]. Read only by a
-    /// frame that has a sun at all; night never asks.
+    /// frame that has a sun at all; night never asks. Its own colour —
+    /// [`SunTuning::color`] — is a literal and not a factor, for the reason
+    /// stated there.
     pub sun: SunTuning,
+    /// A tint the player's own light — [`carried`] — is multiplied through,
+    /// channel by channel, by [`Tuning::applied_headlight`]. `[1.0, 1.0, 1.0]`
+    /// leaves it whatever colour [`carried`] built it as.
+    ///
+    /// Kept apart from [`Tuning::lantern_color`] because they answer different
+    /// questions: a person turning the street's lanterns blue is not asking to
+    /// repaint the torch in their own hand, and [`collect`] never sees this one
+    /// at all — see [`Tuning::applied_headlight`]'s own note.
+    pub headlight_color: [f32; 3],
+    /// A tint every flame [`collect`] finds burning on the map is multiplied
+    /// through, channel by channel — every [`TORCH`] and [`CAMPFIRE`], and
+    /// never the light in the player's hand. `[1.0, 1.0, 1.0]` is the untouched
+    /// frame: [`TORCH`] stays the warm orange it is authored as and
+    /// [`CAMPFIRE`] stays its own colour.
+    ///
+    /// The stand-in this pulls toward is one colour for every lantern in the
+    /// world, because `light.mul`'s own per-graphic colour is not on the wire
+    /// yet — see this module's header. It is deliberately a factor and not a
+    /// literal, unlike [`SunTuning::color`]: a literal here could not leave
+    /// [`TORCH`] and [`CAMPFIRE`] their own colours by default, since they do
+    /// not share one.
+    pub lantern_color: [f32; 3],
+    /// A tint [`Ambient::sky`] and [`Ambient::ground`] are each multiplied
+    /// through, on top of [`Tuning::sky`] and [`Tuning::ground`]'s own
+    /// brightness — see [`Tuning::ambient`]. `[1.0, 1.0, 1.0]` leaves [`NIGHT`]
+    /// its blue and [`SKYLIGHT`] the colour it was authored as.
+    pub ambient_color: [f32; 3],
 }
 
 impl Tuning {
@@ -1371,6 +1400,9 @@ impl Tuning {
         sky: 1.0,
         ground: 1.0,
         sun: SunTuning::MIDDAY,
+        headlight_color: [1.0, 1.0, 1.0],
+        lantern_color: [1.0, 1.0, 1.0],
+        ambient_color: [1.0, 1.0, 1.0],
     };
 
     /// The largest any factor may be set to, and the largest a flame may be.
@@ -1421,27 +1453,50 @@ impl Tuning {
                 }),
                 intensity: factor(self.sun.intensity, SunTuning::MIDDAY.intensity),
             },
+            headlight_color: std::array::from_fn(|channel| factor(self.headlight_color[channel], 1.0)),
+            lantern_color: std::array::from_fn(|channel| factor(self.lantern_color[channel], 1.0)),
+            ambient_color: std::array::from_fn(|channel| factor(self.ambient_color[channel], 1.0)),
         }
     }
 
-    /// One flame with this frame's brightness and reach in it.
-    ///
-    /// Every [`Light`] a frame carries goes through here — the map's own fires
-    /// inside [`collect`], and the one in the player's hand where the caller
-    /// holds it, since [`Lighting::hold`] takes a light that was never collected.
-    pub fn applied(self, light: Light) -> Light {
+    /// This frame's brightness and reach, with `tint` multiplied into the
+    /// flame's own colour channel by channel — the common half of
+    /// [`Tuning::applied`] and [`Tuning::applied_headlight`].
+    fn tuned(self, light: Light, tint: [f32; 3]) -> Light {
         Light {
             radius: light.radius * self.reach,
             intensity: light.intensity * self.brightness,
+            color: std::array::from_fn(|channel| light.color[channel] * tint[channel]),
             ..light
         }
     }
 
-    /// The ambient with this frame's sky and floor in it.
+    /// One flame with this frame's brightness, reach and [`Tuning::lantern_color`]
+    /// in it.
+    ///
+    /// Every [`Light`] [`collect`] finds burning on the map goes through here
+    /// — not the one in the player's hand, which [`Lighting::hold`] takes
+    /// straight from [`Tuning::applied_headlight`] instead, since it was never
+    /// collected.
+    pub fn applied(self, light: Light) -> Light {
+        self.tuned(light, self.lantern_color)
+    }
+
+    /// The same brightness and reach, tinted by [`Tuning::headlight_color`]
+    /// rather than [`Tuning::lantern_color`] — the player's own light, which
+    /// [`collect`] never sees and a person turning the street's lanterns has
+    /// not asked to repaint.
+    pub fn applied_headlight(self, light: Light) -> Light {
+        self.tuned(light, self.headlight_color)
+    }
+
+    /// The ambient with this frame's sky and floor brightness and colour in it.
     pub fn ambient(self, ambient: Ambient) -> Ambient {
         Ambient {
-            sky: ambient.sky.map(|channel| channel * self.sky),
-            ground: ambient.ground.map(|channel| channel * self.ground),
+            sky: std::array::from_fn(|channel| ambient.sky[channel] * self.sky * self.ambient_color[channel]),
+            ground: std::array::from_fn(|channel| {
+                ambient.ground[channel] * self.ground * self.ambient_color[channel]
+            }),
         }
     }
 }
@@ -3291,11 +3346,22 @@ pub const HELD_BEAM_DEGREES: f32 = 60.0;
 /// every wall in front of it outside the cone — with a level axis the pool on the
 /// ground is only a little shorter and a wall three tiles off is lit to nearly
 /// its full height, which is the picture that says a beam has hit something.
-pub fn carried(at: Point, facing: Direction, time: f32) -> Light {
+///
+/// `offset` is how far past `at`'s tile the body has already walked, in tile
+/// units — the same lead [`crate::mobiles::billboard_offset`] carries for the
+/// sprite's own lit position, and for the same reason. `at` only changes at
+/// the far end of a step, four hundred milliseconds after it starts; a light
+/// that read `at` alone would sit still for the whole crossing and then jump,
+/// which is the flame following the tile the body left rather than the hand
+/// carrying it. Zero for anything that does not walk — every other caller of
+/// [`place`] plants a light exactly on its tile.
+pub fn carried(at: Point, offset: Vec2, facing: Direction, time: f32) -> Light {
     let (dx, dy) = facing.step();
+    let flame = place(at, TORCH, time);
     Light {
+        at: Vec2::new(flame.at.x + offset.x, flame.at.y + offset.y),
         beam: Some(Beam::towards(dx as f32, dy as f32, 0.0, HELD_BEAM_DEGREES)),
-        ..place(at, TORCH, time)
+        ..flame
     }
 }
 
@@ -3373,6 +3439,7 @@ mod tests {
             beam: None,
         };
         assert_eq!(Tuning::DEFAULT.applied(torch), torch);
+        assert_eq!(Tuning::DEFAULT.applied_headlight(torch), torch);
         assert_eq!(Tuning::DEFAULT.ambient(NIGHT), NIGHT);
         assert_eq!(Tuning::DEFAULT.flame_radius, FLAME_RADIUS);
         assert_eq!(Tuning::DEFAULT.shadow_rays.count(), SHADOW_RAYS);
@@ -3407,6 +3474,36 @@ mod tests {
         });
         assert_eq!(ambient.sky, [0.0; 3], "no sky at all");
         assert_eq!(ambient.ground, [0.3, 0.3, 0.3], "three times the floor");
+    }
+
+    /// The lanterns, the headlight and the ambient are three separate dials:
+    /// turning one leaves the other two exactly where [`Tuning::DEFAULT`] put
+    /// them, because a person painting the street's lanterns has not asked to
+    /// repaint their own torch or the sky.
+    #[test]
+    fn the_headlight_lantern_and_ambient_tints_are_independent() {
+        let torch = Light {
+            at: Vec2::new(100.5, 100.5),
+            z: FLAME_LIFT,
+            radius: TORCH.radius,
+            color: [1.0, 1.0, 1.0],
+            intensity: TORCH.intensity,
+            beam: None,
+        };
+        let tuning = Tuning {
+            headlight_color: [0.0, 1.0, 0.0],
+            lantern_color: [1.0, 0.0, 0.0],
+            ambient_color: [0.0, 0.0, 1.0],
+            ..Tuning::DEFAULT
+        };
+        assert_eq!(tuning.applied_headlight(torch).color, [0.0, 1.0, 0.0]);
+        assert_eq!(tuning.applied(torch).color, [1.0, 0.0, 0.0]);
+        let ambient = tuning.ambient(Ambient {
+            sky: [1.0, 1.0, 1.0],
+            ground: [1.0, 1.0, 1.0],
+        });
+        assert_eq!(ambient.sky, [0.0, 0.0, 1.0]);
+        assert_eq!(ambient.ground, [0.0, 0.0, 1.0]);
     }
 
     /// **The reach is what the grid's rectangle is grown by**, and that is the
@@ -3518,6 +3615,9 @@ mod tests {
                 color: [f32::NAN; 3],
                 intensity: 99.0,
             },
+            headlight_color: [-1.0, f32::NAN, 99.0],
+            lantern_color: [-1.0, f32::NAN, 99.0],
+            ambient_color: [-1.0, f32::NAN, 99.0],
         }
         .clamped();
         assert_eq!(clamped.flame_radius, FLAME_RADIUS);
@@ -3529,6 +3629,9 @@ mod tests {
         assert_eq!(clamped.sun.rise_per_tile, 0.0);
         assert_eq!(clamped.sun.color, SunTuning::MIDDAY.color);
         assert_eq!(clamped.sun.intensity, Tuning::MOST);
+        assert_eq!(clamped.headlight_color, [0.0, 1.0, Tuning::MOST]);
+        assert_eq!(clamped.lantern_color, [0.0, 1.0, Tuning::MOST]);
+        assert_eq!(clamped.ambient_color, [0.0, 1.0, Tuning::MOST]);
     }
 
     /// A map with ground and nothing standing on it: the statics in these tests

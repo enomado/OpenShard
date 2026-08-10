@@ -2768,6 +2768,22 @@ metric — see `BASELINE_SHARE`'s doc in `text.rs` for why (this crate never
 reads an `hhea` table) — worth revisiting if a real TrueType face ever reads
 visibly off its line.
 
+### Backlog: the Chat tab's size knob only reaches the classic face
+
+The HUD chat box (journal + compose line) now has a Chat tab in the dev
+window (`desk::Chat`, `desk::ChatScale`, `shell::chat_panel`): an integer
+upscale on `fonts.mul`'s own glyph quads (default 2×, `App::draw`'s
+`scaled_gump_quads`, nearest-sampled the same way a camera zoom step grows a
+world sprite), and a hue that tints the player's own compose line and caret
+without touching a journal row's own server-sent hue. It only reaches the
+classic path — `--ttf-font` still draws the chat box at the fixed
+`TTF_BASE_PIXEL_HEIGHT`, deliberately, because integer-upscaling an
+antialiased TTF glyph is exactly the blockiness `collect_screen_ttf` exists to
+avoid (see `scaled_gump_quads`'s doc). A real size knob for the TTF path would
+have to grow the atlas's own rasterization height instead of the finished
+quad — a second, differently-shaped feature, not built here because nobody
+has asked for a bigger *TrueType* chat yet, only a bigger classic one.
+
 ### The route a Ctrl-drag draws, and what is left around it
 
 Built: `steer::plan` reads the ground twice (`steer::Ground` — the map with the
@@ -2826,6 +2842,51 @@ whether or not the terrain overlay is switched on (`App::route_shown`,
   order ends. If that ever shows up in a frame time, the fix is to cache the plan
   against (body tile, goal, view generation) — not to give the picture a cheaper
   rule of its own, which is how the two would start disagreeing.
+
+### Backlog from the frame-cost instrumentation
+
+The `frames` panel measured a frame with a clock on the event-loop thread, which
+can only see half of one. `queue.submit` returns without waiting, so
+`Frame::scene` stopped when the *encoding* did and every pass was still ahead;
+the device's work reappeared a frame later inside `get_current_texture`, where
+`Frame::wait` recorded it under a comment calling it "the pacer working". Under
+`PresentMode::Fifo` a saturated GPU and a client asleep on vsync were therefore
+the same reading, and the panel could not tell them apart.
+`crates/client/app/src/profile.rs` closes that: a timestamp query around each
+pass in `App::draw`, a `gpu` row and curve beside `ui`/`world`/`waited`, and a
+`puffin` sink on `OPENSHARD_PUFFIN` for the CPU flamegraph. What is left:
+
+- **`Frame::wait` is still one number for two facts.** The `gpu` row now says
+  which fact it is, but it says so *beside* the field rather than in it — a
+  reader has to do the comparison, and the panel does it for them in a sentence.
+  Splitting the acquire stall into "the display held the last frame" and "the
+  swapchain had no image because we did" would need something `wgpu` does not
+  expose today, which is why it is a sentence and not a field.
+- **The GPU number is two or three frames old and is recorded against the
+  current one.** Right for a standing cost and wrong for a spike: a repack's own
+  frame and the `gpu` reading beside it are not the same frame. The ring would
+  have to carry a frame index for the two to be joined up, and nothing yet needs
+  it.
+- **The scopes are closed by hand.** `profile::begin`/`profile::end` rather than
+  the RAII scope `wgpu-profiler` offers, because the guard borrows the encoder
+  and every pass in `App::draw` would gain a block. A forgotten `end` is caught
+  by `end_frame` and logged, so it is loud — but a scope guard would make it
+  impossible, and `App::draw` is overdue a split into per-pass functions that
+  would make the block free.
+- **Nothing times the CPU below `draw`.** The `puffin` scopes are one span for
+  the whole draw. The interesting divisions — `frame::assemble`, the atlas
+  growth, `light::collect`, `occlusion::bake` — each want a `profile_scope!`,
+  and that is the change that makes the flamegraph worth opening at all.
+- **`PresentMode::Fifo` is not switchable at runtime.** Unmasking the true frame
+  ceiling means editing `App::create_window` and rebuilding. A flag would make
+  "is this vsync or is this cost" a ten-second question; it is currently a
+  recompile.
+- **The lighting pass is measured twice, by two harnesses that cannot be
+  compared.** `crates/client/render/tests/cost.rs` batches it offline with
+  `poll(Wait)` and divides down; this measures it in the frame as played. Both
+  are right and neither validates the other — the offline one runs the pass
+  `REPEATS` times back to back, which is a different cache state from one pass
+  among a dozen others.
 
 ## Later
 
