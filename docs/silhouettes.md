@@ -138,7 +138,7 @@ the unmeasured remainder of every sprite.
 
 **The finding, and it is not the one the plan expected.** While Z1 was being
 built, a parallel change took the box-miss discard out of `statics.wesl` (its own
-census: the discard threw away 11.09% of every panel's art and 32.69% of every
+census: the discard threw away 11.09% of every panel's art and 32.44% of every
 whole-tile one — a display case lost its whole top). So the two edges are no
 longer two candidate bounds on one outline:
 

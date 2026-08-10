@@ -347,6 +347,12 @@ is never *wrong*, only wide.
 `DETECTOR` 3→4: a table written before this carries rows that stand a table on a
 box its own top hangs outside of.
 
+**And S4's own cost mostly goes with them.** The class's discard, which S4 read
+as 7.72% → 15.88%, is **3.43% → 5.84%**, and what the measured footprint adds to
+the whole window falls from 14,580 pixels to **2,867** — the tabletops S4 named
+are not in the class any more. What is left is the ordinary edge of a picture
+that is genuinely a box.
+
 *Witnessed by mutation, and the first version was not.* It asserted `off_band`'s
 own number, so unwiring the refusal from `measure_footprint` left it green — a
 selector, not a gate. The fixture is now `0x0B80`'s own numbers painted out (66
