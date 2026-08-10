@@ -2331,7 +2331,30 @@ Things noticed while writing this, not blocking any phase:
   land clear of it and blaze. Being a point of nothing they cannot be excused by
   identity either.
   <br>
-  Three ways out, and the zero vector is not one of them: `blit.wesl` shades a
+  🚩 **And the person who reported it named the shape of the answer: give a
+  floor real bounds.** A lid is the one primitive in this grid that is a
+  *plane* — `min.z == max.z` — and every defect on this list that involves a
+  floor is a consequence of that degeneracy rather than of any one rule: the
+  corner leak (an interval of no length), the strictness `crosses` needs (a
+  candle on the floor it lights), the fragment sitting exactly *in* the plane
+  and so on neither side of it, and `meets` having to be told that a lid's side
+  faces are lines. A floor a `z` unit thick is a body like every other, and each
+  of those dissolves rather than being ruled about: a ray from its top going up
+  never enters it, a ray from its top going down does, and its faces have area.
+  <br>
+  What it touches, and what has to be measured before it lands: `Solid::box_of`
+  gives a lid `bottom..top` today and would give it `bottom - 1 .. top`, so
+  every floor in the world moves; the walk's whole `Edges::NONE` arm — and
+  `crosses` with it — becomes a body's `opacity` outright; `occlusion::merge`
+  starts folding floors as bodies; and `impostor::meets`'s "a lid has no side
+  face" guard becomes dead. The gates that decide it are `tests/lighting.rs`'s
+  floor scenes, `scene::storey_over_a_torch`, and the traced suite — a storey's
+  floor is the fixture that catches both directions, and the *thickness* is the
+  one number to justify rather than pick: a `z` unit is what `Z_STEP` calls one
+  step of height, and a floor thinner than the quantum its own height is stated
+  in is a floor the wire cannot describe.
+  <br>
+  Three ways out of the fringe, and the zero vector is not one of them: `blit.wesl` shades a
   fragment with no facing as *lit from every side*, so a fringe given none comes
   out brighter still. What is left is to give a **miss** the face the sprite's
   own volume presents rather than the nearest one (uniform along a silhouette,
