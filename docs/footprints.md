@@ -449,14 +449,46 @@ above already carries.
   height are a plane's rather than the box's, and growing the box outward to the
   art is D5's rejected IoU fit by another name. Left standing, with the cost now
   stated in the right units.
-- 🚩 **A post's shadow narrowed and that is probably right.** Sixteen "wooden
-  post" placements, six "stone post", a brick wall and an elven bookshelf are
-  occluders whose box this plan has already narrowed — 42 in all, against S4's
-  own expectation of zero. A post genuinely occupies a corner of its tile, so
-  the new shadow is likelier to be the true one than the whole-tile shadow it
-  replaced; what is missing is anyone having *looked* at one. A frame at a
-  colonnade, before and after, is the cheapest way to find out, and it is the
-  same kind of gate S5 is.
+- ✅ **A post's shadow narrowed and it is right** — looked at 2026-08-10, and
+  the pictures settle it. `0x0009` "wooden post" at Britain's `(1465, 1683, 0)`
+  is the subject `examples/tile_probe` picks out for standing alone on
+  cobblestones, so a frame of it is one post, one flame and one shadow. With the
+  box its own base edge measures — `x (6,8) y (6,8)`, the far quarter — the
+  shadow is a thin ray about as wide as the drawn post; with the whole tile it is
+  a wedge some four times wider, thrown by a volume **nothing in the frame
+  draws**, and it swallows the tile the post itself stands on. The narrowed
+  shadow is not merely likelier, it is the only one of the two that corresponds
+  to a picture. `OPENSHARD_SCENE_SOLIDS=white` over the same camera is the other
+  half of the answer: the measured box projects to almost exactly the post's own
+  sprite, so the shadow starts where the post does rather than half a tile off it.
+
+  **And the other thirty-five are the same kind of picture**, checked rather than
+  assumed — `examples/shape` on all four graphics S4 named: a "brick wall"
+  `0x0036` is drawn **8 columns of 44**, a pillar and not a wall (its own frame,
+  rendered the same way, is a brick column with a column's shadow), a "wooden
+  post" 11, a "stone post" 20, an "ornate elven bookshelf" 18. Every one of them
+  is a narrow picture that used to cast a whole tile's shadow.
+
+  *The instrument this needed, and it did not exist:* the "before" half of a
+  before-and-after is not a scene anything could state, because a footprint is a
+  property of the **art**. `StaticAtlas::forget_footprints` is the seam —
+  the pair to `state_prism`/`state_hole`, pointing the other way — and
+  `OPENSHARD_SCENE_NO_FOOTPRINTS=1` puts it on `examples/isolated_scene.rs`. One
+  run of one tool now draws a place both ways.
+
+  *The gate:* `tests/post.rs`, and it is the frame gate S5 is, on the shadow
+  instead of the lid. Two frames of one synthetic place differing in exactly that
+  call, `View::Shadow` read back both times, and the post shadows **2,676 pixels
+  with its measured box against 9,576 with the whole tile** — the 3.6× a quarter
+  of a tile should throw. Witnessed by mutation: `boxes_of`'s footprint branch
+  made to return `Solid::box_of` again turns it red.
+
+  🚩 *Found while wiring it, and paid for by one wrong run:* `View::Shadow` has
+  **three** answers and only two of them are dark. Blue is "no flame reaches
+  here at all", which is most of a 512-pixel frame around one torch at night and
+  is not a shadow; counting it made the two frames above differ by 4% where their
+  shadows differ by four times. `blit.wesl`'s own comment says so and the first
+  version of the count did not read it.
 - ✅ **The no-discard change is written, and it lands with the work beside it.**
   `statics.wesl`'s `if !hit(best) { discard; }` is `if hit(best) { … }` in the
   working tree, proven by a picture — `0x0B06` alone at `(1496, 1663)`,

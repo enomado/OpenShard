@@ -70,6 +70,13 @@
 //!   times more precisely decided here than in the client — see [`syn_anchor`].
 //!   Default `0`, because the near-origin map is a few megabytes and a real one
 //!   is a couple of hundred blocks a side.
+//! - `OPENSHARD_SCENE_NO_FOOTPRINTS=1` — throw away every footprint the art
+//!   measured ([`StaticAtlas::forget_footprints`]), so every picture in this
+//!   scene stands on the whole tile again: the boxes that shipped before
+//!   `docs/footprints.md`'s S3. The "before" half of a before-and-after pair,
+//!   and the only way to get one out of a *drawn* frame — the measurement is a
+//!   property of the art, so nothing else in the scene can state it away.
+//!   Default `0`.
 //! - `OPENSHARD_SCENE_IMPOSTOR=0` — meet no sprite against the grid, the way the
 //!   live client draws with its lights *off*: `App::draw` builds no grid at all
 //!   there, so every fragment takes `statics.wesl`'s billboard fallback. The
@@ -100,10 +107,13 @@
 //! - `OPENSHARD_FRAME_VIEW=n` — index into `debug::View::ALL`, which is an
 //!   order and not the enum's own numbering: `0` `Lit`, `1` `Place`, `2` `Kind`,
 //!   `3` `Height`, `4` `Normal`, `5` `NormalGeometry`, `6` `NormalSprites`,
-//!   `7` `Solid`, `8` `Occluders`, `9` `Light`, `10` `Flames`, `11` `Shadow`,
-//!   `12` `Reach`, `13` `Sun`, `14` `Sky`. Default `Lit`. Ignored under
-//!   `_SOLIDS`. The list is spelled out because it has shifted three times
-//!   under readers who had memorised a number.
+//!   `7` `SilhouetteArt`, `8` `SilhouetteBox`, `9` `Solid`, `10` `Occluders`,
+//!   `11` `Light`, `12` `Flames`, `13` `Shadow`, `14` `Reach`, `15` `Sun`,
+//!   `16` `Sky`. Default `Lit`. Ignored under `_SOLIDS`. The list is spelled
+//!   out because it has shifted three times under readers who had memorised a
+//!   number — and it had shifted a fourth by the time somebody asked this tool
+//!   for `11` `Shadow` and was handed `Light`, which is why the two
+//!   `Silhouette` views are in it now.
 //!
 //! # The occlusion grid alone, nothing drawn to cast a shadow of its own
 //!
@@ -798,7 +808,13 @@ fn main() {
     };
     let animations = StaticAnimations::default();
     let needed = items::needed_graphics(&items, &animations);
-    let static_atlas = StaticAtlas::build(&art, needed).expect("the scene's own items fit");
+    let mut static_atlas = StaticAtlas::build(&art, needed).expect("the scene's own items fit");
+    // The counterfactual `docs/footprints.md`'s post item asks for: the same
+    // place, drawn with the boxes that shipped before a base edge was ever
+    // measured. One knob rather than two builds of the tool a session apart.
+    if env_flag("OPENSHARD_SCENE_NO_FOOTPRINTS", false) {
+        static_atlas.forget_footprints();
+    }
 
     // Which plane to draw. Read here rather than beside the blit below, because
     // it is one of `frame::Inputs`'s own fields now: what this tool draws is a

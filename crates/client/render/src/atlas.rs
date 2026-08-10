@@ -1109,6 +1109,28 @@ impl StaticAtlas {
         self.revision += 1;
     }
 
+    /// Take back every footprint this atlas measured, standing each of those
+    /// pictures back on the whole tile.
+    ///
+    /// The opposite direction to [`state_prism`](Self::state_prism) and
+    /// [`state_hole`](Self::state_hole), and it exists for the same kind of
+    /// caller: a scene that wants to reason about a shape rather than about
+    /// whatever the art happens to say. Here the shape wanted is the one that
+    /// shipped *before* `docs/footprints.md`'s S3 — the whole tile
+    /// [`occlusion::shape_of`](crate::occlusion::shape_of) falls back to — so
+    /// that one run of a tool can draw a place both ways and a person can put
+    /// the two pictures beside each other. `tests/lid.rs` states the same
+    /// counterfactual by hand, one call to `boxes_of` at a time; this is it for
+    /// a whole frame, which is what a *shadow* needs.
+    ///
+    /// Nothing narrower is offered on purpose: a per-graphic version would be a
+    /// second policy about which pictures deserve a footprint, and the one that
+    /// decides that is [`crate::facing::footprint_of`].
+    pub fn forget_footprints(&mut self) {
+        self.footprints.clear();
+        self.revision += 1;
+    }
+
     /// How many times what this atlas says about a graphic's *shape* has changed.
     ///
     /// Monotonic, and it counts four answers and no others:
