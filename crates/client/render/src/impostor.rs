@@ -410,6 +410,22 @@ pub struct Volume {
     /// origin-touch rule already excuses. Carrying a second id a box would be a
     /// second answer to a question one rule has already closed.
     pub solid: u32,
+    /// Which sides of its tile the **art** named for this box — the same four
+    /// bits `blit.wesl` mirrors, [`crate::occlusion::boxes_of`]'s own answer.
+    ///
+    /// **The one thing about a box that says whether its faces are surfaces.**
+    /// A panel's named side and a lid's `z` face are planes somebody drew: the
+    /// silhouette detector measured them off the picture. A **body** —
+    /// [`Edges::ANY`](crate::occlusion::Edges::ANY), "a thing that stands up
+    /// whose facing the art would not name" — has none. Its box is the *tile's*
+    /// own walls, a stand-in rather than a measurement, so the face
+    /// [`meets`] names there is one nobody drew and a fragment of it claims a
+    /// facing it has no right to. `statics.wesl` writes **no facing** for one,
+    /// which is the zero vector `blit.wesl` lights from every side.
+    ///
+    /// It rides free: `lo` is a `vec3<f32>` and the word after it is alignment
+    /// padding this side had to write anyway. See [`Volume::write`].
+    pub edges: crate::occlusion::Edges,
 }
 
 impl Volume {
@@ -420,22 +436,30 @@ impl Volume {
     /// cannot disagree about which end of a `Solid` is which — see
     /// [`crate::occlusion::Occlusion::box_of`], which is the one place a kind
     /// becomes geometry.
-    pub fn of(space: &crate::solid::Solid, solid: u32) -> Self {
+    ///
+    /// `edges` is the mask [`crate::occlusion::boxes_of`] handed this box beside
+    /// its shape, and it is an argument rather than something read back off
+    /// `space` because a `Solid` is corners alone — the mask is what the *art*
+    /// said, and the box is where that has already been spent. See
+    /// [`Volume::edges`].
+    pub fn of(space: &crate::solid::Solid, edges: crate::occlusion::Edges, solid: u32) -> Self {
         Self {
             lo: WorldVec::new(space.min.x as f32, space.min.y as f32, space.min.z as f32),
             hi: WorldVec::new(space.max.x as f32, space.max.y as f32, space.max.z as f32),
             solid,
+            edges,
         }
     }
 
     /// What one box costs on the wire, and the stride `statics.wesl`'s own
     /// `Volume` has.
     ///
-    /// Thirty-two rather than the twenty-eight the fields add up to: a
+    /// Thirty-two rather than the twenty-four the corners add up to: a
     /// `vec3<f32>` aligns to sixteen, so the shader's struct has a word of
-    /// padding after `lo` whatever this side writes — and `solid` rides in the
-    /// word after `hi` that the same rule would leave empty. It is free, which
-    /// is why it is carried before anything reads it.
+    /// padding after each vector whatever this side writes — and both of them
+    /// carry something now. `solid` rides after `hi`, [`Volume::edges`] after
+    /// `lo`. Neither costs a byte, which is why the first was carried before
+    /// anything read it.
     pub const STRIDE: u64 = 32;
 
     /// This box as the shader's `Volume`, appended to `out`.
@@ -447,7 +471,7 @@ impl Volume {
         for value in self.lo.array() {
             out.extend_from_slice(&value.to_le_bytes());
         }
-        out.extend_from_slice(&0f32.to_le_bytes());
+        out.extend_from_slice(&u32::from(self.edges.raw()).to_le_bytes());
         for value in self.hi.array() {
             out.extend_from_slice(&value.to_le_bytes());
         }
@@ -806,12 +830,17 @@ mod tests {
             lo: WorldVec::new(100.0, 101.0, 3.0),
             hi: WorldVec::new(101.0, 102.0, 7.0),
             solid: 9,
+            edges: crate::occlusion::Edges::EAST,
         }
         .write(&mut out);
         assert_eq!(out.len() as u64, Volume::STRIDE);
         assert_eq!(&out[0..4], &100f32.to_le_bytes(), "lo.x");
         assert_eq!(&out[8..12], &3f32.to_le_bytes(), "lo.z");
-        assert_eq!(&out[12..16], &0f32.to_le_bytes(), "the vector's own padding");
+        assert_eq!(
+            &out[12..16],
+            &u32::from(crate::occlusion::Edges::EAST.raw()).to_le_bytes(),
+            "the sides the art named, in what the vector's alignment left"
+        );
         assert_eq!(&out[16..20], &101f32.to_le_bytes(), "hi.x");
         assert_eq!(&out[24..28], &7f32.to_le_bytes(), "hi.z");
         assert_eq!(&out[28..32], &9u32.to_le_bytes(), "and which solid it is");

@@ -73,20 +73,33 @@ struct Viewport {
 // other, which is what makes the silhouettes agree by construction rather than
 // by a border.
 //
-// `pad` is the vector's own alignment rather than a spare field. `solid` is the
-// frame's own name for this box, and this pass **writes it into the G-buffer**
-// — the fragment stage carries the name of whichever box its view ray landed
-// on, which is what `blit.wgsl` compares a shadow candidate against. It rode
-// here unread for a phase, in a word the vector's alignment paid for anyway; see
-// `solid_format.wesl` for what asking a cell scan instead cost. And see
+// Both spare words are the vectors' own alignment rather than fields anybody
+// paid for. `solid` is the frame's own name for this box, and this pass
+// **writes it into the G-buffer** — the fragment stage carries the name of
+// whichever box its view ray landed on, which is what `blit.wgsl` compares a
+// shadow candidate against. It rode here unread for a phase, in a word the
+// vector's alignment paid for anyway; see `solid_format.wesl` for what asking a
+// cell scan instead cost. `edges` rides in the other one and says whether this
+// box's faces are surfaces the art drew at all. And see
 // `crate::impostor::Volume::write`, which is the one place this layout is
 // spelled on the other side.
 struct Volume {
     lo: vec3<f32>,
-    pad: f32,
+    edges: u32,
     hi: vec3<f32>,
     solid: u32,
 };
+
+// All four sides named at once — `crate::occlusion::Edges::ANY`, the same four
+// bits `blit.wesl` masks with its own `EDGE_MASK`.
+//
+// **What it means is that the art named none of them.** `edges_of(None)` is
+// where it comes from: a thing that stands up whose facing the silhouette
+// detector would not say, plus a climbable's treads, which are solid by
+// construction. A literal here and pinned from this source by `grids.rs` —
+// `docs/pixels.md` rule 6 — because there is no compiler on either side of this
+// wire.
+const EDGES_ANY: u32 = 15u;
 
 @group(0) @binding(5) var<storage, read> volumes: array<Volume>;
 
@@ -639,9 +652,9 @@ fn fs_main(in: VertexOut) -> FragmentOut {
             discard;
         }
         at = best.at;
-        normal = best.normal;
+        var face = best.normal;
         if !hit(best) && viewport.fringe == FRINGE_VOLUME {
-            normal = presented_face(volumes[best_at].lo, volumes[best_at].hi);
+            face = presented_face(volumes[best_at].lo, volumes[best_at].hi);
         }
         mine = volumes[best_at].solid;
         // **And the stance the met face is**, which overrides the art's
@@ -651,7 +664,44 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         // What is left of the branch is the `id` — a corner's two halves
         // address two instance rows, and a box carries no row number to
         // choose between them, which is this phase's own remaining join.
-        stance = stance_of(normal);
+        stance = stance_of(face);
+        // **A box whose art named no side has no facing to give a fragment.**
+        //
+        // `meets` always answers with a face, because a ray leaving a box leaves
+        // through one — and for a **panel** or a **lid** that face is a plane
+        // somebody drew, measured off the picture by the silhouette detector.
+        // For a **body** it is not: the box is the tile's own walls, handed to a
+        // graphic the art would not name a side for, and every fragment of a
+        // thin pole standing in the middle of it was being told it looks the way
+        // the tile's south or east wall does.
+        //
+        // Two things a person reported are that one sentence. A lamp post came
+        // out **black in its own light**: `light::place` burns at the tile's
+        // centre, which is *inside* the body, so the camera-facing plane the
+        // impostor answered its own sprite with has `N · L <= 0` on every
+        // visible pixel. And a whole-tile static read **darker and striped**
+        // where it used to be even, which is the same claim seen from outside.
+        // `docs/lighting_rebuild.md` phase 6c's own backlog filed the two as one
+        // finding, and this is the candidate it named: keep the measured normal
+        // where the art really does say which way a surface looks, and write
+        // none where it does not.
+        //
+        // **Not an exemption, and not about light sources.** It is a
+        // measurement that was never taken, said so — `normal_format.wesl`'s
+        // middle state, which `blit.wesl` lights from every side. The same rule
+        // is already written one module over: `light::mounted_at` refuses to
+        // move a flame off an `Edges::ANY` cell because "there is no direction
+        // in it to move along and a guess would be a wrong one".
+        //
+        // The **stance** is taken from the met face regardless, and that is not
+        // an oversight: it names *which face of which box* the ray left by, for
+        // `blit.wesl`'s `on_the_lit_surface` and `own_solid`, and that is a fact
+        // about the geometry whether or not the art drew a plane there. The
+        // facing is the only thing this refuses to claim.
+        normal = face;
+        if volumes[best_at].edges == EDGES_ANY {
+            normal = vec3<f32>(0.0);
+        }
         // The box half of the silhouette pair stays behind the `hit`, and that
         // is the one thing here the clamp does not change: the bit marks the rim
         // of the region a box genuinely covers, so a fragment reaching it from
@@ -663,8 +713,9 @@ fn fs_main(in: VertexOut) -> FragmentOut {
 
     // The stance rides into the id word above the kind, and **it is not a
     // facing any more.** The normal is measured now — it is the face of the box
-    // the view ray met — and what is left of the stance is the thing no geometry
-    // states: *which side of its own tile* a panel stands on. `blit.wgsl` reads
+    // the view ray met, where the art named that face at all — and what is left
+    // of the stance is the thing no geometry states: *which side of its own
+    // tile* a panel stands on. `blit.wgsl` reads
     // it for exactly that, twice — `own_side` for the shadow walk's own-run test,
     // and `own_solid`, which narrows a corner instance's owner to one of its two
     // panels — plus the sentinel that routes a mesh face's id to its own buffer.
@@ -682,9 +733,9 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     // that a *name* rides beside a position.
     out.position = vec4<f32>(at, pack_solid(mine));
     // `pack_normal` carries the two bits that separate the three answers: a zero
-    // vector is a real one here — a picture with no measured volume has no side
-    // — so "nothing drew this pixel" needs a bit of its own to be
-    // distinguishable from it.
+    // vector is a real one here — a picture with no measured volume has no side,
+    // and neither has a body, whose box the art named no side of — so "nothing
+    // drew this pixel" needs a bit of its own to be distinguishable from it.
     out.normal = pack_normal(normal);
     return out;
 }

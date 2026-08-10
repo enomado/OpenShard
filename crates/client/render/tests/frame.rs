@@ -1898,6 +1898,7 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
             i32::from(at.z),
             occlusion::Edges::NONE,
         ),
+        occlusion::Edges::NONE,
         occlusion::SolidId::word(None),
     )];
     let places = render_places(
@@ -2195,6 +2196,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
                 i32::from(HEIGHT) / openshard_client_render::camera::Z_STEP,
                 openshard_client_render::occlusion::Edges::SOUTH,
             ),
+            openshard_client_render::occlusion::Edges::SOUTH,
             occlusion::SolidId::word(None),
         )
     };
@@ -2341,6 +2343,7 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
                 i32::from(HEIGHT) / openshard_client_render::camera::Z_STEP,
                 openshard_client_render::occlusion::edges_of(Some(Facing::One(face))),
             ),
+            openshard_client_render::occlusion::edges_of(Some(Facing::One(face))),
             occlusion::SolidId::word(None),
         )
     });
@@ -2724,16 +2727,27 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
     // exactly the defect that shipped when phase 6d took the mesh pass off real
     // statics and left `blit.wesl` narrowing an owner by a stance. Arbitrary and
     // non-consecutive on purpose: nothing here may pass by counting.
+    //
+    // **And the masks are the ones the grid would hand these shapes**, because
+    // the mask is what decides whether a fragment takes the met face as a facing
+    // at all — `impostor::Volume::edges`. A tread is `Edges::ANY`, which
+    // `boxes_of` says outright ("one box a tread, in climb order, and it is a
+    // **body**"); the lid below names no side. So this sweep carries both sides
+    // of that rule over every texel of the quad, and the *face* itself is still
+    // compared everywhere through the stance, which is the met face whatever the
+    // art named.
     let boxes = [
         Volume {
             lo: WorldVec::new(300.0, 400.5, 0.0),
             hi: WorldVec::new(301.0, 401.0, 3.0),
             solid: 7,
+            edges: occlusion::Edges::ANY,
         },
         Volume {
             lo: WorldVec::new(300.0, 400.0, 0.0),
             hi: WorldVec::new(301.0, 400.5, 6.0),
             solid: 11,
+            edges: occlusion::Edges::ANY,
         },
         // And a lid, flat: `lo.z == hi.z`, which is what the grid stands for a
         // floor and the one shape whose `z` slab is a point — so the sweep runs
@@ -2746,6 +2760,7 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
             lo: WorldVec::new(300.0, 400.0, 9.0),
             hi: WorldVec::new(301.0, 401.0, 9.0),
             solid: 13,
+            edges: occlusion::Edges::NONE,
         },
     ];
     let quads = [SpriteQuad {
@@ -2845,10 +2860,31 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
                 "({x}, {y}) was not drawn",
             );
 
+            // **The face the ray met, compared on every fragment** — through
+            // the stance, which is what the pass writes it to. It is the met
+            // face whether or not the art named that side, so this is the
+            // CPU-against-GPU claim about `meets`'s own arithmetic and it is
+            // asked of every texel of the quad.
+            assert_eq!(
+                gbuffer::ids_stance(places.at(x, y)),
+                openshard_client_render::place::Stance::of_normal(met.normal.array())
+                    .expect("a met face is axis-aligned") as u32,
+                "({x}, {y}) met a different face on the GPU: {met:?}",
+            );
+            // **And the facing it claims from that face, which is the rule.** A
+            // box the art named a side of writes the face; a **body** writes
+            // none, because the box it met is the tile's own walls rather than a
+            // plane anybody drew. `impostor::Volume::edges` carries the
+            // argument, and injecting the fault — writing the face for a body
+            // too — turns this red on every fragment of the two treads.
+            let facing = match boxes[which].edges == occlusion::Edges::ANY {
+                true => [0.0; 3],
+                false => met.normal.array(),
+            };
             assert_eq!(
                 places.normal_at(x, y),
-                gbuffer::pack_normal(met.normal.array()),
-                "({x}, {y}) met a different face on the GPU: {met:?}",
+                gbuffer::pack_normal(facing),
+                "({x}, {y}) claims a facing its box does not give it: {met:?}",
             );
             let point = places.position_at(x, y);
             let met_at = met.at.array();
@@ -2970,16 +3006,23 @@ fn the_fringe_switch_draws_three_different_frames() {
     // A panel thin in `y` and a body over it: two boxes whose *presented* faces
     // differ from each other and from the lid a clamp mostly names, so `Volume`
     // has something to change. See `impostor::presented_face`.
+    //
+    // The panel names the side it stands on and the body names all four, which
+    // is `edges_of`'s way of saying none — so only the panel's own fragments can
+    // show a *facing* changing at all, and that is what the `volume` row below
+    // counts. See `impostor::Volume::edges`.
     let boxes = [
         Volume {
             lo: WorldVec::new(300.0, 400.8, 0.0),
             hi: WorldVec::new(301.0, 401.0, 12.0),
             solid: 7,
+            edges: occlusion::Edges::SOUTH,
         },
         Volume {
             lo: WorldVec::new(300.0, 400.0, 0.0),
             hi: WorldVec::new(301.0, 401.0, 3.0),
             solid: 11,
+            edges: occlusion::Edges::ANY,
         },
     ];
     let quads = [SpriteQuad {
@@ -3190,14 +3233,21 @@ fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
     ) -> Range {
         let offset = boxes.len() as u32;
         let owner = occlusion::Owner::new(0, graphic);
-        occlusion::boxes_of(i32::from(x), i32::from(y), 0, tile, shape, |part, _, space| {
-            let named = grid.id_of(i32::from(x), i32::from(y), owner, part);
-            let space = match named {
-                Some(id) => grid.solid(id).space,
-                None => space,
-            };
-            boxes.push(Volume::of(&space, SolidId::word(named)));
-        });
+        occlusion::boxes_of(
+            i32::from(x),
+            i32::from(y),
+            0,
+            tile,
+            shape,
+            |part, edges, space| {
+                let named = grid.id_of(i32::from(x), i32::from(y), owner, part);
+                let space = match named {
+                    Some(id) => grid.solid(id).space,
+                    None => space,
+                };
+                boxes.push(Volume::of(&space, edges, SolidId::word(named)));
+            },
+        );
         Range {
             offset,
             count: boxes.len() as u32 - offset,
@@ -3283,9 +3333,27 @@ fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
             Stance::FaceSouth
         }
     };
+    // And the way back: which axis a stance's face lies on. **The stance and not
+    // the normal is what this sweep reads the face out of**, because the pass
+    // writes the met face there for every fragment while a *facing* is only
+    // written where the art named the side — see `impostor::Volume::edges`. A
+    // body's fragments carry no facing at all, and reading the axis out of a
+    // zero vector would have made this sweep a test about which shapes the
+    // fixture happens to contain.
+    let axis_of = |stance: u32| -> usize {
+        match stance {
+            s if s == Stance::Flat as u32 => 2,
+            s if s == Stance::FaceEast as u32 => 0,
+            s if s == Stance::FaceSouth as u32 => 1,
+            other => panic!("a met face is one of three stances, not {other}"),
+        }
+    };
 
     const EPS: f32 = 1e-3;
     let mut compared = 0u32;
+    // How many of them were a body's — no facing written, the face known from
+    // the stance alone.
+    let mut bodies = 0u32;
     for y in 0..SIZE {
         for x in 0..SIZE {
             let word = places.at(x, y);
@@ -3321,14 +3389,11 @@ fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
                  {lo:?}..{hi:?}",
             );
 
-            // The normal names a camera-facing face of that same primitive —
+            // The face it met is a camera-facing face of that same primitive —
             // 6h's own line: a face buried inside a merged box is interior to
-            // it, not on its boundary in the normal's own axis.
-            let normal = gbuffer::unpack_normal(places.normal_at(x, y));
-            let axis = normal
-                .iter()
-                .position(|n| *n == 1.0)
-                .expect("only a camera-facing axis-aligned face is ever met");
+            // it, not on its boundary in the met face's own axis.
+            let stance = gbuffer::ids_stance(word);
+            let axis = axis_of(stance);
             // **An equality and not a tolerance**, which is the half of phase 6i's
             // second item that survived reading it: `traced.rs`'s
             // `a_face_fragments_own_plane_is_the_primitives_own_number` makes this
@@ -3347,13 +3412,20 @@ fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
                  primitive's high face there: {at:?} against {hi:?}",
             );
 
-            // And the stance is that face's own — 6g's own line.
-            let stance = gbuffer::ids_stance(word);
-            assert_eq!(
-                stance,
-                stance_of(normal) as u32,
-                "({x}, {y})'s stance does not agree with its own normal: {normal:?}",
-            );
+            // And the *facing*, where the box gave one, is that same face —
+            // 6g's own line. A **body**'s box names no side, so its fragments
+            // carry no facing at all and there is nothing here to agree with;
+            // both populations are counted below, so neither branch can empty
+            // out unnoticed.
+            let normal = gbuffer::unpack_normal(places.normal_at(x, y));
+            match normal == [0.0; 3] {
+                true => bodies += 1,
+                false => assert_eq!(
+                    stance,
+                    stance_of(normal) as u32,
+                    "({x}, {y})'s stance does not agree with its own normal: {normal:?}",
+                ),
+            }
             compared += 1;
         }
     }
@@ -3371,6 +3443,16 @@ fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
     assert!(
         compared > 5_000,
         "only {compared} fragments named a primitive: the sweep reached too little to say anything",
+    );
+    // **And both populations are in it.** The facing claim above is asked of one
+    // and skipped for the other, so a scene that had drifted to all bodies or to
+    // no bodies would pass it by never reaching it — which is the shape of a
+    // gate that has stopped gating. This scene stands a wall run, a floor and a
+    // flight of steps, so it holds both by construction.
+    assert!(
+        bodies > 0 && bodies < compared,
+        "{bodies} of {compared} fragments were a body's: the sweep no longer reaches both a box \
+         the art named a side of and one it did not",
     );
 }
 

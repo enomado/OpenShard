@@ -28,6 +28,7 @@
 use openshard_client_render::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
 use openshard_client_render::impostor::{self, Fringe};
 use openshard_client_render::light::Z_PER_TILE;
+use openshard_client_render::occlusion::Edges;
 
 const IMPOSTOR: &str = include_str!("../src/shaders/impostor.wesl");
 const STATICS: &str = include_str!("../src/shaders/statics.wesl");
@@ -57,6 +58,56 @@ fn shader_const(source: &str, file: &str, name: &str) -> f32 {
         .trim()
         .parse()
         .unwrap_or_else(|error| panic!("{file}'s `{name}` is not a number: {value:?} ({error})"))
+}
+
+/// The same, for a constant a shader declares as a `u32` — `15u` and not `15.0`.
+///
+/// A second spelling rather than a parameter on [`shader_const`] because the two
+/// suffixes are the whole difference and a caller that got the type wrong would
+/// otherwise be told the constant is missing, which is the one answer this
+/// helper family exists never to give.
+fn shader_u32(source: &str, file: &str, name: &str) -> u32 {
+    let prefix = format!("const {name}: u32 = ");
+    let line = source
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| {
+            panic!(
+                "{file} no longer declares `{name}` — if the shader's copy of this constant moved \
+                 or was renamed, move this pin with it; if it genuinely stopped having one, say so \
+                 here and take the case out"
+            )
+        });
+    let value = line[prefix.len()..]
+        .split(';')
+        .next()
+        .unwrap_or_else(|| panic!("{file}'s `{name}` has no `;`: {line}"))
+        .trim()
+        .trim_end_matches('u');
+    value
+        .parse()
+        .unwrap_or_else(|error| panic!("{file}'s `{name}` is not a number: {value:?} ({error})"))
+}
+
+/// **`statics.wesl`'s `EDGES_ANY` is [`Edges::ANY`]'s own four bits.**
+///
+/// The mask decides which fragments get a facing at all: a box the art named a
+/// side of writes the face its view ray met, and a **body** — all four bits,
+/// which is `edges_of`'s way of saying *none* — writes no facing, so
+/// `blit.wesl` lights it from every side. Getting the number out of step here
+/// does not fail to draw. It draws every body with a camera-facing normal again
+/// (a lamp black in its own light) or every panel without one (a wall lit
+/// through its own back), and both are pictures rather than errors.
+///
+/// Pinned from the shader's own source for the reason `docs/pixels.md` rule 6
+/// states: there is no compiler on either side of that wire.
+#[test]
+fn the_statics_pass_knows_which_mask_means_the_art_named_no_side() {
+    assert_eq!(
+        shader_u32(STATICS, "statics.wesl", "EDGES_ANY"),
+        u32::from(Edges::ANY.raw()),
+        "statics.wesl's EDGES_ANY against occlusion::Edges::ANY",
+    );
 }
 
 /// **The shaders' copies of the grid constants are the camera's numbers.**

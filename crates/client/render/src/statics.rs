@@ -359,7 +359,7 @@ pub(crate) fn push_volumes(
 ) -> crate::impostor::Range {
     let offset = out.len() as u32;
     let (x, y) = (i32::from(at.x), i32::from(at.y));
-    crate::occlusion::boxes_of(x, y, at.z, tile, shape, |part, _, space| {
+    crate::occlusion::boxes_of(x, y, at.z, tile, shape, |part, edges, space| {
         let named = occlusion.id_of(x, y, owner, part);
         // The grid's own primitive where there is one — merged, and therefore
         // continuous across every tile this piece runs over. See the doc above.
@@ -367,8 +367,15 @@ pub(crate) fn push_volumes(
             Some(id) => occlusion.solid(id).space,
             None => space,
         };
+        // **The mask comes from `boxes_of` and not from the merged solid.** A
+        // run's own `Edges` is the union `Cell` folds a tile's solids into, and
+        // what the shader asks of it is whether *this* piece's art named a side
+        // — see `crate::impostor::Volume::edges`. The two agree for every shape
+        // S3b merges, since a run is coplanar pieces of one owner, and the
+        // question is about the picture rather than about the run.
         out.push(crate::impostor::Volume::of(
             &space,
+            edges,
             crate::occlusion::SolidId::word(named),
         ));
     });

@@ -2234,8 +2234,12 @@ Things noticed while writing this, not blocking any phase:
   `items::collect` that produces a mesh row at all. It wants a scene before it can
   want a test. `mobiles.rs`, `text.rs` and `gump.rs` are unasserted on purpose:
   their `NONE` is honest by kind, and the claim above does not reach them.
-- 🚩 **The impostor's *normal* is the whole of what 6c did to a sprite's
-  shading, and it was measured by injection rather than argued.** A person
+- ~~🚩 **The impostor's *normal* is the whole of what 6c did to a sprite's
+  shading, and it was measured by injection rather than argued.**~~ **Done
+  2026-08-11**, by the candidate this entry itself named. The record, then the
+  answer and what it cost.
+
+  A person
   reported a static reading darker and striped where it used to be even, and
   three frames of one place (Britain `(1497, 1627)`, `View::Light`, a lamp post
   added by hand) say which half of 6c it is: the commit before 6c draws the post
@@ -2256,6 +2260,75 @@ Things noticed while writing this, not blocking any phase:
   face, keeping the measured normal for the panels and lids where the art really
   does say which way a surface looks. It is a different answer from the three at
   the black-emitter entry and should be judged beside them, not instead.
+
+  **That is what landed.** `impostor::Volume` carries the box's own `Edges` now
+  — free, in the alignment word after `lo` that this side had to write anyway,
+  beside the `solid` that already rode in the one after `hi` — and `statics.wesl`
+  writes `pack_normal(vec3(0.0))` where the mask is `EDGES_ANY`. The **stance**
+  is still taken from the met face, deliberately: it names which face of which
+  box the ray left by, which `blit.wesl`'s `on_the_lit_surface` and `own_solid`
+  read as geometry, and that is a fact whether or not the art drew a plane
+  there. The facing is the only thing this refuses to claim.
+
+  *Why it is not an exemption.* It is a measurement that was never taken, said
+  so — `normal_format.wesl`'s middle state, the one `blit.wesl` lights from
+  every side. The same sentence is already written one module over:
+  `light::mounted_at` refuses to move a flame off an `Edges::ANY` cell because
+  "there is no direction in it to move along and a guess would be a wrong one".
+  The impostor was making exactly that guess, one pass along.
+
+  *Measured, on the frame the defect was reported from* — `isolated_scene` at
+  Britain `(1497, 1626, 10)`, radius 6, a lamp post by hand, `640×480`,
+  `View::Lit`, against the same frame with `EDGES_ANY` set to a mask no box can
+  carry (which is the injection, and it is also the positive control below):
+  **31,375 of 307,200 pixels change, 10.21% of the frame**, worst channel step
+  `168` of `255`. On the one-item scene the entry above reproduces at, over the
+  8,064 pixels the lamp's own picture covers: the mean brightest channel goes
+  `4.3 → 17.5`, and the share at or under `8` of `255` — black, to a person
+  looking — goes **82.7% → 39.1%**. The pictures either side are the acceptance
+  instrument and they say it plainly: a black silhouette with a green wick
+  becomes a lit lamp, and the flight of steps beside it stops being striped.
+
+  *What holds it.* Three gates, each red under the injection above.
+  `grids.rs`'s `the_statics_pass_knows_which_mask_means_the_art_named_no_side`
+  pins `EDGES_ANY` from the shader's own source (`docs/pixels.md` rule 6).
+  `frame.rs`'s `a_sprite_pixel_meets_the_same_box_on_both_sides` now sweeps a
+  fixture whose masks are the ones the grid would hand those shapes — two treads
+  and a lid — and asks both halves of the rule of every texel of the quad, with
+  the *face* still compared everywhere through the stance so the CPU-against-GPU
+  claim about `meets`'s arithmetic is untouched. And
+  `a_sprite_fragment_is_a_point_of_the_primitive_it_names` reads its axis out of
+  the stance rather than the normal, and counts both populations, so a scene
+  that drifted to all bodies or to none could not pass it by never reaching it.
+
+  *What it does not fix, named so nothing claims it.* A body is lit from every
+  side, so a crate has no shading across its own faces — that is the pre-6c
+  picture for exactly the set 6c had no measurement for, and what would improve
+  on it is a *measured* facing, not a better guess. **A climbable's tread is
+  swept up with them and should not be**: `boxes_of` hands a tread `Edges::ANY`
+  to pick an occlusion test, and a tread's lid and its riser are planes the art
+  did draw — one field with two domains, filed and measured in its own entry
+  above ("A climbable's tread is marked a body"). And the emitter's own
+  remaining darkness is `FLAME_LIFT`: half a tile, whatever the sprite's height,
+  so a lamp post's pool is centred at its **foot** and its head — nineteen `z`
+  up — takes the far end of an inverse square. See the entry below.
+- 🟡 **A flame burns half a tile up whatever it is standing in, so a tall
+  emitter's own head is the dimmest part of it.** `FLAME_LIFT` is `Z_PER_TILE /
+  2`, and its doc argues the number honestly — a brazier's flame is about there,
+  and "the sprite's real height is not available here, and asking the atlas for
+  it would tie the lights to whether this frame's art happened to be packed".
+  What the fix above made visible is the cost on a *tall* one: a lamp post's
+  picture is seventy-six pixels of sprite, nineteen `z` units, and its lantern is
+  at the top of it while the flame burns at `5.5`. On the one-item scene the pool
+  is plainly centred on the post's **foot** — the base is the brightest thing in
+  the frame and the lantern head takes the far end of an inverse square. It is
+  not a defect in the model and it is not the black emitter: it is a light placed
+  from the map's `z` alone, on a sprite whose height nothing in `light::gather`
+  can see. The two candidates are the ones the entry above rejected *for that
+  defect* and which are still live for this one: read the flame's own height off
+  the art (which wants the atlas in the light collector, and is the same
+  measurement `MOUNTED_CLEARANCE`'s doc asks for), or off `calc_height`, which is
+  in reach today and is the item's own height rather than its flame's.
 - **"Vertical steps along the tiles" is reported and not reproduced.** Named by a
   person at Britain `(1459, 1693)` beside the ragged silhouette above, in the
   live client. `examples/isolated_scene` at that place, with a lamp post added by
@@ -3134,8 +3207,13 @@ Things noticed while writing this, not blocking any phase:
   said the tile was the variable. `docs/lighting_raymarch.md`'s tile-boundary
   hazard is the family; the specific defect is one rule that had drifted from
   its own contract.
-- 🚩 **An emitter is black in its own light, and every free-standing one taller
-  than `FLAME_LIFT` is.** Found by looking at a lit frame after phase 6c — the
+- ~~🚩 **An emitter is black in its own light, and every free-standing one taller
+  than `FLAME_LIFT` is.**~~ **Fixed 2026-08-11 — a body writes no facing**, which
+  is the candidate the *next* entry named rather than any of the three this one
+  listed, and it closes both. The record of the defect follows; the answer is at
+  the end of it.
+
+  Found by looking at a lit frame after phase 6c — the
   one instrument *How this is judged* names — and reproduced at one item and
   nothing else: `OPENSHARD_SCENE_RADIUS=0`, no ground, no statics, one lamp post
   by hand, `0 standing cells`, and the lamp lit by its own flame is a black
@@ -3164,6 +3242,18 @@ Things noticed while writing this, not blocking any phase:
   an exemption and therefore the shape this document exists to refuse. **Phase
   7's billboard question is this question one object over**, and the two should
   be answered by the same reading of a sprite.
+
+  **And none of the three was the answer, because none of them was about the
+  box.** A flame moved to where the art draws it is still inside a whole-tile
+  box; an emitter with no volume trades this defect for the billboard 6c
+  retired; the exemption is refused by construction. What is actually wrong sits
+  one line above all three: the box a lamp post stands as is `Edges::ANY` — the
+  tile's own walls, handed to a graphic whose facing the art would not name — so
+  the face `impostor::meets` answers with is a plane **nobody drew**, and every
+  fragment of a thin pole was being told it looks the way that tile's south or
+  east wall does. A body writes no facing now (the entry below), and the emitter
+  is lit by its own flame as a *consequence* rather than by a rule about
+  emitters.
 - **A wall a lamp stands against is barely lit, on a real place now.** Open
   question 1 had phase 3's synthetic frames under it; the lit frame above is the
   same shape at Britain: the plaster wall the lamp post is bolted beside takes
