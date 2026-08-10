@@ -384,6 +384,72 @@ openshard-client-render` is green apart from one failure in `tests/frame.rs`
 already present in the tree from work landing concurrently with this
 session's own (`843fec1`, unrelated to `dump.rs`/`frame.rs`'s assembly).
 
+### The window's own parity — found 2026-08-10, and it is why no tool ever drew the client's artefact
+
+**A vertical green line runs down every wall in the client's `View::Normal`, one
+per tile, and not one tool has ever drawn a single one of them.** The plan's
+opening entry says the artefact "reproduced in the tool the whole time"; that was
+about a different artefact, and this one is the opposite case — the tool cannot
+reproduce it at all, on any place, any route, any anchor. What decides it is the
+**parity of the viewport**, which no tool and no gate has ever varied.
+
+*The measurement, at Britain's `(1503, 1657)`, radius 20, `View::Normal`, the
+same scene each time — a run of `+Y` pixels one column wide standing inside a
+`+X` wall face:*
+
+```
+tool  1920x2080  4x       0        tool  480x520  1x    14
+tool  1919x2077  4x    3484        tool  481x521  1x   835
+client 1919x2077 4x    3285
+```
+
+One pixel of window width turns it on. The tool's own frames match the client's
+in every other way the run distribution can be read: the genuine `+Y` regions
+come out `29/44/264` real pixels wide at an even extent and `30/45/265` at an
+odd one, and the client's are `30/45/265` — the same geometry, drawn one pixel
+wider, plus a sliver everywhere a `+Y` face was zero pixels wide to begin with.
+
+**Every one of the 3,484 slivers stands at `x ≡ 3 (mod 4)`, on eleven columns
+88 real pixels apart** — half a tile, which is one wall static — and the
+client's 3,285 stand on *the same eleven columns*. That residue is the whole
+mechanism:
+
+- `statics.wesl` and `mesh_face.wesl` place a vertex at
+  `(screen - origin) * scale + viewport.size * 0.5`. At an **odd** extent
+  `size * 0.5` is a half real pixel, so the world is centred half a pixel off
+  the pixel grid; at an even one it is not.
+- A fragment samples at `i + 0.5`. Even: the world coordinate behind it is
+  `(i + 0.5 - 960)/4` — always `.125`, `.375`, `.625`, `.875` of a virtual
+  pixel, **never a whole one**. Odd: `(i + 0.5 - 959.5)/4 = (i - 959)/4`, a
+  whole virtual pixel exactly when `i ≡ 959 ≡ 3 (mod 4)`. At `1x` the same
+  arithmetic makes *every* column whole, which is the 835.
+- A box's own corner is at a whole virtual pixel by construction, so an odd
+  viewport is the only way a ray ever passes exactly through one — and there,
+  `impostor::meets`'s `far.x` and `far.y` are equal and its documented tie rule
+  ("ties go to `z`, then `y`, then `x`") answers `+Y`. The line down the wall is
+  each box's own **vertical corner edge**, drawn as a face. `place` says so: the
+  sliver names the same tile as the pixel to its *right*, not the one to its
+  left, so it is the near box's leading edge and not a crack between two.
+
+The shader already states the principle this breaks, three lines above the tie,
+for the lid: **"A face with no area is not a face."** A lid's `x` and `y` faces
+are lines and are retired by `hi.z > lo.z`. A box's corner is a line too, and
+nothing retires it — because it is not a *face* that is degenerate there but the
+place where two faces meet, which no extent test can see.
+
+*Why it is invisible in half the world, which is why it reads as a wall-only
+defect:* the tie always answers `+Y`. In a wall whose visible face is `+Y` the
+sliver is the wall's own colour and nobody can see it. Only a `+X` wall shows it
+— and the client's frame has **no** `+X` slivers inside a `+Y` wall at all,
+which is the asymmetry a symmetric geometry should not have.
+
+*What this says about the gate:* P3 compares two routes at `900x700`, `tests/dump.rs`
+draws at its own even size, `isolated_scene` defaults to one, and every screenshot
+anybody has taken of a tool has been even. The client's window is whatever the
+compositor hands it. **A gate that never varies a viewport's parity is green
+about a defect that a person can see from across the room**, and it would not
+say so.
+
 ### P4 — the geometry, in census order
 
 `examples/geometry_census.rs` counts what each box claims. Over 11,184 statics
@@ -415,6 +481,32 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
 
 ## Backlog
 
+- 🚩 **A box's vertical corner edge is drawn as a `+Y` face, and the fix is a
+  decision.** The section above has the whole diagnosis; what is not decided is
+  where it is repaired, and the three candidates are not equivalent:
+  1. **In the tie** — `impostor::meets`, both the shader's and the Rust twin's.
+     Flipping `x` and `y` in the ordering only moves the artefact into `+Y`
+     walls, where it is invisible today, so it is not a fix but a change of
+     which half of the world lies. What the edge honestly wants is the face the
+     *neighbouring* box continues, which no per-box meet can see.
+  2. **In the selection loop** — at the corner the near box and its neighbour
+     exit at the same `t`, so the loop's "largest `t` is in front" is a tie too,
+     and it is won by the box whose leading edge the sliver is. Had the other
+     one won, the pixel would be `+X` and continuous with its neighbours. This
+     is the candidate that makes the picture right *by construction*, and it is
+     also the one whose blast radius is every fragment in the frame.
+  3. **In the centring** — `viewport.size * 0.5` floored, so no sample ever
+     lands on a whole virtual pixel at any zoom. It would take the artefact off
+     the screen tomorrow and is a fudge: the tie stays wrong and waits for the
+     next thing that samples a boundary exactly. `docs/style.md`'s own rule
+     about repairing geometry rather than nudging a constant applies.
+- 🚩 **Nothing gates a viewport whose extent is odd.** P3 runs at `900x700`,
+  `tests/dump.rs` at its own even sizes, `isolated_scene` defaults to one. Every
+  tool picture ever compared has been drawn on a grid the client's own window is
+  under no obligation to share. The cheap half is one more case in P3 at
+  `901x701`; the honest half is stating, somewhere a person will read it, that a
+  frame's parity is an input like any other and belongs in `Inputs::summary`
+  beside the camera.
 - ✅ **The live client's own atlas may be narrower than the grid it is read
   for** — fixed 2026-08-10. Found while building P3's gate, and not something
   the gate itself needed to fix: `App::wanted_now`/`wanted_since` grew the
