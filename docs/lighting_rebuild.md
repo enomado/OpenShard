@@ -2493,6 +2493,22 @@ Things noticed while writing this, not blocking any phase:
   sprite is not a picture of. That is the next thing to instrument, and it wants
   the real `boxes_of` for `0x0B40`/`0x0B01` rather than a synthetic pair.
   <br>
+  **Cut the roof and the count goes from 7 to 66**, which is what makes this a
+  reproduction rather than a sighting. `OPENSHARD_SCENE_NO_ROOFS=1` is now the
+  tool's own cutaway — the third difference with the client, and the state a
+  player standing indoors is actually in. Under the roof the specks stop being
+  scattered and line up: **dashes of four, running along the diagonal a tile
+  boundary projects to**, and each pixel of a dash sits on one floor slab while
+  naming the **neighbouring** one (`here (69,55,46)`, `around (131,88,61)`, and
+  the pair steps to the next tile with the next dash). Thirty-two of the
+  sixty-six are a point of no primitive at all.
+  <br>
+  So the surface is a floor of abutting lids, the line is the seam between two of
+  them, and it is one pixel wide because the seam is a shared plane and the
+  fragment on it is answered by whichever slab wins the tie. That is the whole
+  report, and it is the same sentence as the reporter's first picture: a short
+  red stroke on the join between a green face and the blue above it.
+  <br>
   **What is left of the difference, ranked, and none of it measured yet:** the
   frame's rectangle and the live `Cutaway` (both feed the partition above); the
   **anchor** — the tool translates the place onto `SYN_ANCHOR (100,100)` while

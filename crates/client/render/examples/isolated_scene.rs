@@ -38,6 +38,11 @@
 //! - `OPENSHARD_SCENE_EXTRA=x,y,z,graphic[,hue];...` — items to add by hand,
 //!   semicolon-separated. What a DB-pulled decoration (or anything else not on
 //!   the map) comes in as.
+//! - `OPENSHARD_SCENE_NO_ROOFS=1`, `OPENSHARD_SCENE_MAX_Z=n` — the frame's own
+//!   [`Cutaway`], which the client has and this tool did not: no roof drawn
+//!   anywhere, and nothing at or above a height. What a player standing indoors
+//!   is looking at, and the honest way to ask whether a defect belongs to the
+//!   surface under a roof or to the roof itself.
 //! - `OPENSHARD_SCENE_ANCHOR_REAL=1` — build the scene at the place's *own*
 //!   coordinates instead of translating it next to the synthetic map's origin.
 //!   Everything the impostor is met against is absolute and reaches the shader
@@ -574,6 +579,22 @@ fn main() {
         env_opt("OPENSHARD_SCENE_TILES").map(|s| s.split(',').map(parse_tile_id).collect());
     let want_ground = env_flag("OPENSHARD_SCENE_GROUND", true);
 
+    // The frame's own cutaway, which the client has and this tool never did —
+    // one of the differences `docs/lighting_rebuild.md` lists between the two.
+    // A roof is what a player standing indoors has cut away over their head, and
+    // "does the artefact survive without it" is a question about which surface a
+    // fragment belongs to rather than about the roof's own pixels.
+    let cutaway = Cutaway {
+        max_z: env_opt("OPENSHARD_SCENE_MAX_Z")
+            .map(|v| {
+                v.parse()
+                    .unwrap_or_else(|_| panic!("OPENSHARD_SCENE_MAX_Z: {v:?}"))
+            })
+            .unwrap_or(Cutaway::OPEN.max_z),
+        no_draw_roofs: env_flag("OPENSHARD_SCENE_NO_ROOFS", false),
+        ..Cutaway::OPEN
+    };
+
     // Land, borrowed live from the real facet at every synthetic cell's real
     // coordinate — or nothing, `_GROUND=0`'s whole point. `Map::from_blocks`
     // never carries statics regardless, so a house never comes along by
@@ -678,7 +699,7 @@ fn main() {
         TexmapAtlas::build(&texmaps_src, &tiledata, wanted).expect("textures fit")
     };
     let ground_quads = match want_ground {
-        true => ground::collect(&synthetic, &camera, &land_atlas, &texmaps, &Cutaway::OPEN),
+        true => ground::collect(&synthetic, &camera, &land_atlas, &texmaps, &cutaway),
         false => Vec::new(),
     };
 
@@ -695,7 +716,9 @@ fn main() {
         &items,
         &camera,
         &tiledata,
-        &Cutaway::OPEN,
+        // The same cutaway the pictures get, which is the app's own rule: a wall
+        // the frame did not draw must not darken the street.
+        &cutaway,
         // Flat by default, as the client is: what a roof does to the light under
         // it is a second thing changing every tile of the picture. The client's
         // own F6 is `OPENSHARD_SCENE_SKY_FIELD=1` here, and it is a knob because
@@ -726,7 +749,7 @@ fn main() {
         &tiledata,
         &animations,
         &static_atlas,
-        &Cutaway::OPEN,
+        &cutaway,
         None,
         // The client's own F10, at the one place it reaches the *normal* plane.
         //
