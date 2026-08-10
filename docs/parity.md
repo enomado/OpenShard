@@ -379,6 +379,24 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
   and dishonest to be read as a census of the world; a probe of a tile is
   dishonest either way, because a person points it at a place and not at a file.
   Say which in each tool's own doc, whichever way it goes.
+- 🚩 **The shard reader windows by the tool's radius; the client windows by what
+  the server sent.** `_AT ± _RADIUS` is a rectangle chosen to keep a house from
+  standing beside the thing under test, and it now decides which *lights* are in
+  the frame too — the street lamp four tiles outside it lights the pavement in
+  the client and nothing here. The same shape as the map-statics radius has
+  always had, and newly consequential: geometry outside the radius is missing
+  scenery, a flame outside it is a different picture everywhere. A gate at a
+  place with a lamp needs a radius chosen from the *lighting's* reach, or the
+  reader wants a second, wider window for the tables that carry light.
+- 🚩 **A stacked ground item's graphic may not be the column's.** The reader
+  takes `items.graphic` as it stands, and an `items` row also carries `amount` —
+  which `crate::items`'s own doc says is deliberately not a `GroundItem` field,
+  because "a pile of 500 gold is one sprite, and which sprite is the caller's
+  question". Whether the *server* resolves that before the wire or the app does
+  it on the way in was not established this session. If it is the app, a pile the
+  tool draws is the wrong sprite and nothing says so. One reading of
+  `crates/server/items` settles it; the reader either inherits that rule or
+  states that it does not.
 - 🚩 **Map statics reach the tool's frame through `items::collect` and the
   client's through `statics::collect`.** `isolated_scene` builds a synthetic map
   that carries no statics at all (`Map::from_blocks`) and pushes the real map's
