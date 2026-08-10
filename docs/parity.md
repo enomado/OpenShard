@@ -246,6 +246,38 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
 
 ## Backlog
 
+- 🚩 **The tool reads no shard database, so half of what a player is looking at is
+  not in its frame.** Found on 2026-08-10, by answering the wrong question at
+  length: a person asked about a cabinet they could see at Britain's
+  `(1504, 1655)`, and `tile_probe`, `onsite.rs`, `geometry_census.rs` and
+  `isolated_scene.rs` agree there is no cabinet there — because all four read
+  `map`/`statics.mul` and the cabinet is a **`decorations` row**: `0x0A97`/`0x0A98`
+  "bookcase" at `(1505, 1656, 27)` and `(1506, 1656, 27)`. The session spent its
+  first half explaining the nearest map static instead (`0x0B3E` "counter"), which
+  is a different graphic with a different box.
+  <br>
+  The knob that closes it by hand exists — `OPENSHARD_SCENE_EXTRA` takes
+  `x,y,z,graphic` and the defect reproduced at once once the two rows were
+  transcribed into it — and that is exactly the problem: **a hand-transcribed
+  input is not a parity input.** `Inputs::ground_items` is already a field, so
+  what is missing is a reader that fills it: point the tool at `openshard.toml`'s
+  own `database`, pull `items` (`loc_kind = 0`, the facet, the rect the radius
+  covers) and `decorations` (a JSON blob, so `json_extract`) for the same window
+  the statics come from, and let a knob turn it off rather than off by default.
+  <br>
+  Until then "it does not reproduce in the tool" is a **false negative for
+  everything the server placed**, and nothing in the summary says so — the frame
+  looks like a frame, which is this document's own root sentence.
+- 🚩 **Map statics reach the tool's frame through `items::collect` and the
+  client's through `statics::collect`.** `isolated_scene` builds a synthetic map
+  that carries no statics at all (`Map::from_blocks`) and pushes the real map's
+  statics into `Inputs::ground_items` as `GroundItem`s. Both paths call
+  `statics::push_volumes` with the same `boxes_of`, so the *boxes* agree; what
+  does not obviously agree is everything around them — the owner key, the sort
+  (`items::collect` sorts by `depth::Order` and ties by the caller's order, which
+  for the server is serial and here is a nested `x`/`y` loop), and `highlight`.
+  D1 gave the two a shared assembly; it did not give them a shared *route
+  through* it, and no gate compares the two routes on one place.
 - 🚩 **F12 has never been pressed.** The dump above is gated everywhere except in
   the client: `dump::planes`, `read_rect` and the file naming have tests with
   positive controls, and the forty lines of `App::draw` that call them have been
