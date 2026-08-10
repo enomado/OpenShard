@@ -410,15 +410,25 @@ pub fn boxes_of(
         );
         return;
     }
-    // A floor or a rug is a **lid**: what it is is the `z` it lies at, and no
-    // vertical side of the tile describes it, so it names no edge. Everything
-    // that stands up names the edge the art gave it, or all four where the art
-    // would not say — see `edges_of`.
+    // A floor, a rug or a **roof** is a **lid**: what it is is the `z` it lies
+    // at, and no vertical side of the tile describes it, so it names no edge.
+    // Everything that stands up names the edge the art gave it, or all four
+    // where the art would not say — see `edges_of`.
     //
-    // The client's own `FLOOR` bit decides which, exactly as it does for
-    // `place::Stance`, and asking it here rather than trusting the face to be
+    // The client's own bits decide which, exactly as they do for
+    // `place::Stance`, and asking them here rather than trusting the face to be
     // `None` is deliberate: a floor whose silhouette happened to read as a wall
     // would otherwise be given one edge out of four.
+    //
+    // **`ROOF` is not asked here and that was tried**, on 2026-08-10, against a
+    // person's report of a roof's corners lighting up: this module's own header
+    // says "a mask of zero is a lid: something horizontal, a floor or a roof",
+    // and a roof read through `edges_of` is read by its *silhouette*. It changed
+    // no pixel of the reported frame, because the thing lighting up was not a
+    // roof — Britain's `1490, 1636` is `0x051C` "stone pavers", `FLOOR|NO_SHOOT`,
+    // already a lid — and a rule that moves every roof in the world is not
+    // landed on an argument. Whoever picks it up wants a frame with a `ROOF`
+    // graphic in it first. See `docs/lighting_rebuild.md` phase 6i.
     let edges = match tile.flags.is_background() {
         true => Edges::NONE,
         false => edges_of(shape.facing),

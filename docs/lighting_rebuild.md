@@ -2303,15 +2303,41 @@ Things noticed while writing this, not blocking any phase:
   of them the neighbouring lid shadows is decided by where the clamp put them on
   its edge — five pixels clear it and blaze.
   <br>
-  **The question to answer before writing anything is which of the three to
-  move**, and it is a design question rather than a bug: whether a graphic that
-  stops no light should still stand a *shape* for the shading path to meet (it
-  has one — `boxes_of` gives it one — it just has no name); whether `boxes_of`
-  should read a roof as a lid rather than as a wall, which is a tiledata
-  question; and what a **miss** is entitled to answer at all, which is the
-  fringe's own open item above. The zero vector is not the answer to the last
-  one: `blit.wesl` shades it as *lit from every side*, so a fringe given no
-  facing comes out brighter still.
+  **And the client's own files name the pieces**, which settles what is a defect
+  here and what is data. `tile_probe` on the tiles round the glow:
+  <br>
+  - `0x051C` "stone pavers", `z 40`, `FLOOR|NO_SHOOT|PLATFORM` — the surface the
+    person calls the roof. A lid, opaque, **in the grid**: that is the `+z`
+    region, naming its solid.
+  - `0x00C8`/`0x00C9` "stone wall", `z 20`, height 20, `WALL|NO_SHOOT|BLOCK` —
+    the wall under it, in the grid.
+  - `0x00DD`/`0x00DE` "stone wall", `z 40` and `z 43`, height 3, `WALL|BLOCK`
+    and **no `NO_SHOOT`** — the wall's top course, standing at exactly the
+    pavers' own height. `occlusion::opacity` reads that as `CLEAR` and
+    `Builder::add` returns without pushing anything, so it is the piece that is
+    a point of nothing.
+  <br>
+  So it is a **cornice, not a roof**, and it is `WALL`-flagged: reading it as a
+  wall is right, and the side faces are its own. Asking `is_roof()` in
+  `boxes_of` was tried against this frame and moved no pixel — the note stands
+  in that function, since the header does claim a roof is a lid and the next
+  person will think of it too.
+  <br>
+  What is left is the **fringe**, and this is the case that decides its open
+  item above. The lit pixels are the picture overhanging its own box: they take
+  the nearest face — which along a silhouette is whichever, and here is a side
+  one with a real cosine — and they are clamped onto the box's *edge*, which is
+  exactly where the neighbouring lid's shadow boundary runs, so a few of them
+  land clear of it and blaze. Being a point of nothing they cannot be excused by
+  identity either.
+  <br>
+  Three ways out, and the zero vector is not one of them: `blit.wesl` shades a
+  fragment with no facing as *lit from every side*, so a fringe given none comes
+  out brighter still. What is left is to give a **miss** the face the sprite's
+  own volume presents rather than the nearest one (uniform along a silhouette,
+  and for a panel it is the panel's own side), or to stop drawing geometry the
+  grid holds nothing for — which 6c already refused, and rightly: the fallback
+  is what keeps half of Britain's pictures off billboards.
 - 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
   showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the
