@@ -91,7 +91,8 @@ use openshard_uofiles::image::Image;
 ///
 /// **Bump it when a gate here changes** — `MIN_FILLED`, `SPILL`, `OVERHANG`,
 /// `STRAIGHT`, `SQUARE`, `OFF_EDGE`, `MIN_STANDING`, `HOLE_MIN_RUN`,
-/// `HOLE_MIN_RISE`, `HOLE_MARGIN`, `PLATEAU`, `MIN_FOOTPRINT_RUN`, or the shape
+/// `HOLE_MIN_RISE`, `HOLE_MARGIN`, `PLATEAU`, `MIN_FOOTPRINT_RUN`, `OFF_BAND`,
+/// or the shape
 /// of [`facing_of`], [`aperture_of`] or [`footprint_of`]. Nothing enforces
 /// that, and nothing can: it is a claim about a diff. What catches a bump that
 /// was forgotten is the sweep in `openshard-client-artscan`, which reads a real
@@ -106,7 +107,14 @@ use openshard_uofiles::image::Image;
 /// `MIN_FOOTPRINT_RUN` are new gates nothing above tracked, and a table written
 /// before `measure_footprint` existed would look exactly as fresh as one
 /// written after — the same trap the hole closed for `aperture_of`.
-pub const DETECTOR: u32 = 3;
+///
+/// **Four** for [`OFF_BAND`], which refuses a footprint that describes what a
+/// picture stands on rather than the picture — 55 placements of Britain's own
+/// 219, tables and counters and a handful of roof pieces. A table written by
+/// detector 3 carries those rows and a client reading it would stand a table on
+/// a box its own tabletop hangs outside of, which is the defect that gate was
+/// added for.
+pub const DETECTOR: u32 = 4;
 
 /// Which edge of its tile a wall stands on.
 ///
@@ -435,6 +443,64 @@ pub fn facing_of(image: &Image) -> Option<Facing> {
 /// and a point has every slope.
 const MIN_FOOTPRINT_RUN: usize = 2;
 
+/// How much of a picture may fall outside the screen columns its own measured
+/// box can reach, before the box is a box of something *under* the picture
+/// rather than of the picture.
+///
+/// **The residual D5 asks for, and it is height-free**, which is what makes it
+/// admissible: a world-axis-aligned box spans `across` from `(x₀ − y₁)·22` to
+/// `(x₁ − y₀)·22` and nothing outside that at any height, so a drawn pixel
+/// outside that band misses the box whatever `tiledata` says the top is. The
+/// question it asks of a measurement is exactly the one that was missing — *is
+/// this the box of the picture, or of the leg it stands on?*
+///
+/// **Measured rather than chosen** (`examples/discard_census.rs`, Britain's
+/// 121×121 — the sweep it prints). The class's shares are bimodal and the cap
+/// sits in the flat stretch between the two: a wooden post reads `0.0%`, an
+/// elven bookshelf `0.0%`, and the two bookcases `docs/footprints.md` was
+/// written for read **7.9%**; a table's middle piece (`0x0B80`) reads `15.4%`, a
+/// counter (`0x0B3D`) `29.3%`, and a slate roof (`0x059A`) `44.1%`. Every cap
+/// from 8% to 12% keeps the same 164 placements and leaves the same 1.1% of
+/// their art outside; below 8% the plan's own fixture goes, and at 30% the cost
+/// jumps to 9.4% because the counters come back in.
+///
+/// What a refusal costs is a picture handed back the whole tile, which is the
+/// answer that shipped before `docs/footprints.md`'s S3 and is never *wrong*,
+/// only wide.
+const OFF_BAND: f32 = 0.10;
+
+/// How much of `image` is drawn outside the columns `footprint`'s box reaches.
+///
+/// See [`OFF_BAND`]. The columns are the projection's own — `across = (u − v)·22`
+/// over the box's corners — and `across` is read off the sprite in
+/// [`measure_footprint`]'s convention, which is [`crate::impostor::ray_from`]'s.
+fn off_band(image: &Image, footprint: Footprint) -> f32 {
+    let (min_x, max_x, min_y, max_y) = footprint.spans();
+    let (low, high) = (
+        (min_x - max_y) * HALF_TILE_WIDTH,
+        (max_x - min_y) * HALF_TILE_WIDTH,
+    );
+    let middle = f32::from(image.width()) / 2.0;
+    let (mut drawn, mut outside) = (0u32, 0u32);
+    for row in 0..image.height() {
+        for column in 0..image.width() {
+            let opaque = image
+                .pixel(column, row)
+                .is_some_and(|pixel| !pixel.is_transparent());
+            if !opaque {
+                continue;
+            }
+            drawn += 1;
+            let across = f32::from(column) + 0.5 - middle;
+            outside += u32::from(across < low || across > high);
+        }
+    }
+    match drawn {
+        0 => 0.0,
+        _ => outside as f32 / drawn as f32,
+    }
+}
+
 /// How many columns of flat base a footprint's own near corner may span before
 /// the base is a flat one rather than a corner.
 ///
@@ -530,6 +596,11 @@ pub enum Refusal {
     Flat,
     /// The spans round to an empty box — a sliver under an eighth on one axis.
     Sliver,
+    /// The box the base edge states cannot reach the picture standing on it: a
+    /// table whose base is a leg, a counter drawn wider than its foot, a sloped
+    /// roof whose base is a V but whose slab is not a box at all. See
+    /// [`OFF_BAND`].
+    Overhung,
 }
 
 /// [`footprint_of`] with its refusal named. See [`Refusal`].
@@ -660,11 +731,27 @@ pub fn measure_footprint(image: &Image) -> Result<Footprint, Refusal> {
     // column gate above is what separates this from a picture of a building.
     let eighth_lo = |v: f32| (v * 8.0).floor().clamp(0.0, 8.0) as u8;
     let eighth_hi = |v: f32| (v * 8.0).ceil().clamp(0.0, 8.0) as u8;
-    Footprint::new(
+    let footprint = Footprint::new(
         (eighth_lo(near_x), eighth_hi(far_x)),
         (eighth_lo(near_y), eighth_hi(far_y)),
     )
-    .ok_or(Refusal::Sliver)
+    .ok_or(Refusal::Sliver)?;
+
+    // **And the box has to be the box of *this* picture.** Everything above
+    // reads one line — the base edge — and a base edge is only the object's own
+    // where the object stands on it. A table's is a leg, a counter's is a foot
+    // narrower than its top, and a sloped roof's is a V that belongs to no box.
+    // Each of those measures cleanly and describes something the picture is
+    // standing *on*, so the box comes out real, narrow, and wrong, and the
+    // pixels above it are a surface nothing has measured.
+    //
+    // The residual is height-free, which is what lets it be asked here at all —
+    // see [`OFF_BAND`], and `docs/footprints.md` D5, whose own words are "the
+    // fit is a residual, and a picture that does not fit keeps the tile".
+    match off_band(image, footprint) > OFF_BAND {
+        true => Err(Refusal::Overhung),
+        false => Ok(footprint),
+    }
 }
 
 /// A hole in a wall, measured off the wall's own picture, in the surface's own
@@ -2712,6 +2799,97 @@ mod tests {
     }
 
     /// And the answer the same picture gives to the *other* question, which is
+    /// A box the width of its tile standing on a narrow foot is **refused**,
+    /// and the foot alone is not.
+    ///
+    /// The table at Britain's `(1499, 1664)`, as a fixture: `0x0B80` measured a
+    /// clean five-eighths box off its own base and stood as that, while the two
+    /// pieces either side of it in the same table stood as whole tiles — so the
+    /// tabletop had a hole in the middle of it, at the one tile whose
+    /// measurement worked. What is wrong there is not the measurement, it is
+    /// that the base edge belonged to the foot; [`OFF_BAND`] is the residual
+    /// that says so, and it says it without knowing any height.
+    ///
+    /// Both halves, because the gate has to *keep* the narrow things this plan
+    /// exists for: the same foot on its own measures exactly what it is.
+    #[test]
+    fn a_box_that_cannot_reach_its_own_picture_is_refused_and_a_narrow_one_is_not() {
+        let foot = Block::new((3, 5), (3, 5), (0, 6)).expect("a foot");
+        let top = Block::new((0, 8), (0, 8), (6, 7)).expect("a tile-wide slab");
+
+        let alone = blocks_silhouette(&Blocks::new(&[foot]).expect("one block"));
+        let read = measure_footprint(&alone).expect("a foot on its own is a box");
+        let (min_x, max_x, min_y, max_y) = read.spans();
+        // The block's own span, with the one eighth of outward rounding
+        // `a_footprint_measures_the_block_that_drew_it` states as slack rather
+        // than hides. What matters here is that it is *narrow* and kept.
+        assert!(
+            (0.25..=0.375).contains(&min_x)
+                && (0.625..=0.75).contains(&max_x)
+                && (0.25..=0.375).contains(&min_y)
+                && (0.625..=0.75).contains(&max_y),
+            "a foot on its own is the box it draws, it read {read:?}",
+        );
+
+        // **And the picture that actually produces one**, which has to be
+        // painted rather than drawn by [`blocks_silhouette`]: the refusal only
+        // ever fires where D5a's clamp did, and a box gets clamped by being
+        // *wider than its tile*, which that reference draws exactly one of.
+        //
+        // These are `0x0B80`'s own numbers, the table's middle piece at
+        // Britain's `(1499, 1664)`: 66 columns wide, a base edge running one
+        // clean V from column 9 to column 53 — inside `OVERHANG` of the tile's
+        // own column at both ends, which is how it got measured at all — and a
+        // slab of thickness following it. The box that states is two thirds of a
+        // tile once clamped, and a third of the picture is drawn where no such
+        // box reaches.
+        let wide = {
+            let (width, height) = (66u16, 60u16);
+            let mut pixels = vec![Color16::TRANSPARENT; usize::from(width) * usize::from(height)];
+            for column in 9..=53u16 {
+                let base = match column <= 32 {
+                    true => 22 + (column - 9),
+                    false => 45 - (column - 32),
+                };
+                for row in base.saturating_sub(29)..=base {
+                    pixels[usize::from(row) * usize::from(width) + usize::from(column)] =
+                        Color16(0b0_11111_00000_00000);
+                }
+            }
+            Image::new(width, height, pixels)
+        };
+        assert_eq!(
+            measure_footprint(&wide),
+            Err(Refusal::Overhung),
+            "a slab drawn across two tiles states a box its own picture hangs outside of",
+        );
+
+        // And the residual itself, on a picture that fills its tile: a box of
+        // five eighths cannot reach past `±13.75` of the middle column, so the
+        // shoulders of a full-width picture are outside it and the whole tile
+        // is not. This is the arithmetic the gate is, stated on the module's own
+        // drawing rather than on a hand-painted one.
+        //
+        // **The end-to-end refusals are real and counted elsewhere**, because
+        // the picture that produces one is wider than a tile and
+        // [`blocks_silhouette`] draws exactly one: `examples/discard_census.rs`
+        // reads 55 of Britain's 219 measured placements refused here — the two
+        // counters, three tables, and the handful of roof pieces whose base
+        // reads as a clean V.
+        let filled = blocks_silhouette(&Blocks::new(&[top]).expect("one block"));
+        let narrow = Footprint::new((0, 5), (0, 5)).expect("five eighths");
+        assert!(
+            off_band(&filled, narrow) > OFF_BAND,
+            "a five-eighths box cannot reach the shoulders of a full-width picture, it left {} outside",
+            off_band(&filled, narrow),
+        );
+        assert_eq!(
+            off_band(&filled, Footprint::WHOLE),
+            0.0,
+            "and the whole tile reaches all of it",
+        );
+    }
+
     /// `docs/footprints.md`'s whole subject: the box the detector above calls a
     /// corner of a house measures as the tile it actually fills.
     #[test]

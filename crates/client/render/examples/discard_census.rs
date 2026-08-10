@@ -183,6 +183,33 @@ fn overhang(image: &Image, at: (i32, i32), z: i8, volumes: &[Volume]) -> (u32, u
     (drawn, missed)
 }
 
+/// How many drawn pixels lie outside the screen columns this footprint's box
+/// can reach.
+///
+/// A world-axis-aligned box spans `across` from `(x0 − y1) · 22` to
+/// `(x1 − y0) · 22` and nothing outside that, at any height — the projection's
+/// own `across = (u − v) · 22`, inverted. So this asks one height-free question
+/// of a measurement: *is the box the art drew the box of this picture, or of
+/// something under it?*
+fn outside_the_band(image: &Image, footprint: Footprint) -> u32 {
+    let (min_x, max_x, min_y, max_y) = footprint.spans();
+    let low = (min_x - max_y) * HALF_TILE;
+    let high = (max_x - min_y) * HALF_TILE;
+    let (width, height) = (image.width(), image.height());
+    let middle = f32::from(width) / 2.0;
+    let mut outside = 0;
+    for row in 0..height {
+        for column in 0..width {
+            let drawn = image
+                .pixel(column, row)
+                .is_some_and(|pixel| !pixel.is_transparent());
+            let across = f32::from(column) + 0.5 - middle;
+            outside += u32::from(drawn && (across < low || across > high));
+        }
+    }
+    outside
+}
+
 /// What this instrument reads off a picture whose box is **known exactly**,
 /// which is the floor every number below stands on.
 ///
@@ -261,6 +288,18 @@ struct Tally {
     /// tall under art seventy-six pixels high, so it overhangs enormously and
     /// for a reason that belongs to that document's phase 6i rather than here.
     roof: bool,
+    /// **Drawn pixels whose own screen column no box of this picture can ever
+    /// reach**, and the share of them.
+    ///
+    /// Height-free by construction, which is what makes it a candidate gate
+    /// under D5: a box's projected *column* band depends only on its horizontal
+    /// extent — `across = (u − v) · 22` — so a pixel outside that band misses
+    /// whatever the box's top is. A picture whose base edge describes the whole
+    /// object has almost nothing outside it; one whose base edge describes a
+    /// *leg* has its whole top outside, which is the table at Britain's
+    /// `(1499, 1664)` — `0x0B80` measures 5/8 by 5/8 while its two neighbours in
+    /// the same table stand as whole tiles.
+    outside_band: u64,
     /// Which kind of claim its box is — `geometry_census.rs`'s own vocabulary,
     /// because a share of discarded pixels that does not say *whose* pixels is
     /// a number nobody can act on.
@@ -393,6 +432,15 @@ fn main() {
                     }
                 };
 
+                // How much of the picture is outside the band its own box can
+                // reach, in columns alone. Only asked of the class a footprint
+                // narrowed: for every other claim the box is the whole tile and
+                // the band is the tile's own.
+                let outside = match shape.footprint {
+                    None => 0,
+                    Some(footprint) => outside_the_band(image, footprint),
+                };
+
                 placements += 1;
                 let tally = tallies.entry(graphic.0).or_default();
                 tally.placements += 1;
@@ -401,6 +449,7 @@ fn main() {
                 tally.missed_wide += u64::from(missed_wide);
                 tally.footprint = shape.footprint;
                 tally.claim = claim_of(tile, &shape);
+                tally.outside_band += u64::from(outside);
                 tally.art = (image.width(), image.height());
                 tally.roof = tile.flags.is_roof();
                 tally.platform_body = tile.flags.is_platform()
@@ -614,6 +663,59 @@ fn report(
         .filter(|(_, tally)| tally.missed_now > tally.missed_wide)
         .collect();
     worst.sort_by_key(|(_, tally)| std::cmp::Reverse(tally.missed_now - tally.missed_wide));
+    // **The candidate gate, measured on the class it would judge.** See
+    // `Tally::outside_band`: a picture whose base edge described the whole
+    // object has almost nothing outside the columns its box can reach; one
+    // whose base edge described a leg has its top outside.
+    println!("  the class a footprint reached, by how much of each picture its box cannot reach:\n");
+    println!("    graphic  placements   outside the box's own columns   name");
+    let mut band: Vec<(&u16, &Tally)> = tallies
+        .iter()
+        .filter(|(_, tally)| tally.claim == NARROWED)
+        .collect();
+    band.sort_by_key(|(_, tally)| std::cmp::Reverse(tally.outside_band * 1000 / tally.drawn.max(1)));
+    for (graphic, tally) in band.iter().take(10) {
+        println!(
+            "    0x{graphic:04X}  {:>10}  {:>27.1}%   {}",
+            tally.placements,
+            pct(tally.outside_band, tally.drawn),
+            tiledata.static_tile(**graphic).name,
+        );
+    }
+    let (band_out, band_drawn): (u64, u64) = band.iter().fold((0, 0), |(out, all), (_, tally)| {
+        (out + tally.outside_band, all + tally.drawn)
+    });
+    println!(
+        "    the class together: {:.1}% of its art is outside the columns its own box reaches\n",
+        pct(band_out, band_drawn),
+    );
+
+    // **And the sweep the threshold has to come out of**, in `PLATEAU`'s own
+    // manner: what each cap keeps and what it gives up. A cap that refuses a
+    // measurement hands that picture back the whole tile, which is the answer
+    // that shipped before S3 and is never *wrong*, only wide.
+    println!("  what a cap on that share would keep and give up:\n");
+    println!("       cap   placements kept   art still outside its box   measurements given up");
+    for cap in [5u64, 8, 10, 12, 15, 20, 25, 30] {
+        let (mut kept, mut given, mut out, mut all) = (0u32, 0u32, 0u64, 0u64);
+        for (_, tally) in &band {
+            let share = pct(tally.outside_band, tally.drawn);
+            match share <= cap as f64 {
+                true => {
+                    kept += tally.placements;
+                    out += tally.outside_band;
+                    all += tally.drawn;
+                }
+                false => given += tally.placements,
+            }
+        }
+        println!(
+            "    {cap:>4}%   {kept:>15}   {:>24.1}%   {given:>21}",
+            pct(out, all),
+        );
+    }
+    println!();
+
     println!("  the pictures that lost the most, by pixels over all their placements:");
     for (graphic, tally) in worst.iter().take(12) {
         let lost = tally.missed_now - tally.missed_wide;
