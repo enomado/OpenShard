@@ -221,6 +221,25 @@ that the switch reaches the picture at all, in the direction each state claims �
 verified by injecting a dead uniform slot, not by reading the wiring — and
 `grids.rs` pins the three numbers against the shader's own constants.
 
+**And for its first day it reached every tool and nothing in the client**, which
+is worth the paragraph because the report was exactly the sentence written above
+as a joke: *I pressed the key and saw nothing.* ✅ Fixed 2026-08-10.
+`SpriteRenderer::render_mask` — the silhouette pass, which shares this pass's
+uniform block on purpose so that a ring lands where the picture did — wrote that
+block with a literal `0.0` in the slot the fringe now lives in, left from when it
+was padding. **A `queue.write_buffer` does not run where it is called**: every
+write staged before a `submit` is applied at the start of that submission, so
+the *last* write to a range is what every draw in the frame reads, including one
+recorded into the encoder earlier. `App::draw` rings its silhouettes after
+drawing statics and submits once, so the client's statics pass read `clamp` on
+every frame whatever F2 said. No tool and no test ever called `render_mask`, so
+all three states were honestly measurable everywhere except in the client — the
+`docs/parity.md` thesis, arriving through a pass rather than through an input.
+The gate now draws the ring: `render_places_with_fringe` runs the silhouette
+pass with nothing to ring, which is what the client does on a frame that
+highlights nothing, and the old code turns it red with the message it deserves
+(`discard removes 0 and adds 0`).
+
 **3. Phase 7's second half.** A mobile's normal is one vector for the whole
 sprite, so a torch on a figure's left reads no brighter than one on its right.
 The inflated-silhouette candidate is unbuilt, and the choice between the two

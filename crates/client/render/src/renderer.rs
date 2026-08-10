@@ -1401,13 +1401,33 @@ impl SpriteRenderer {
         // The same uniform block the picture pass writes, written again rather
         // than assumed: this is called with the frame's own target and the two
         // calls are only adjacent by convention.
+        //
+        // **And it carries the fringe, which is not this pass's business and is
+        // not optional either.** `queue.write_buffer` does not run where it is
+        // called: every write staged before a `submit` is applied at the start
+        // of that submission, in order, so two writes to one range mean *the
+        // last one is what every draw in the frame reads* — the picture pass
+        // included, which ran an encoder command earlier and a queue write
+        // later. A literal here is therefore not padding left over from before
+        // the slot had a meaning; it is this pass silently answering the
+        // picture pass's question. It was: F2 changed `Fringe` in the client and
+        // nothing on screen moved, because `App::draw` rings its silhouettes
+        // after drawing statics and before the frame's single `submit`, and the
+        // tools that measured all three states never call this method at all.
+        //
+        // The buffer is shared on purpose — the type's own doc says a
+        // silhouette lands where the picture did *because* it reads the same
+        // block — so the rule that comes with the sharing is that every writer
+        // of it writes the same values. `silhouette.wgsl` does not read this
+        // field; that is why the mistake was invisible here and visible three
+        // passes away.
         let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
         let projection = target.projection;
         for value in [
             target.width as f32,
             target.height as f32,
             projection.scale,
-            0.0,
+            self.fringe as u32 as f32,
             projection.origin.x,
             projection.origin.y,
             0.0,

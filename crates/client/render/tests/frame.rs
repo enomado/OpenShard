@@ -3799,6 +3799,20 @@ fn render_places_with_fringe(
     // renderer's own order (`docs/gbuffer.md` step 4c), so depth and place
     // only ever tie or improve on what the billboard sprite just wrote.
     mesh_pass.render(device, queue, &mut encoder, target, mesh_vertices, mesh_rows);
+    // **And the silhouette pass, with nothing to ring** — which is what the
+    // client does on every frame that highlights nothing, and which is the whole
+    // reason this line exists. It draws into a mask of its own, writes no depth
+    // and touches no plane read back below, so it cannot change what any test
+    // here asserts *through the picture*. What it does touch is the uniform
+    // block it shares with the pass above, and a queue write is applied at the
+    // submission rather than where it sits in the encoder: a value this pass got
+    // wrong would reach the statics draw that was recorded before it. That is
+    // exactly what happened to `Fringe` — the switch worked in every tool and in
+    // this file, and did nothing in the client, because no tool and no test drew
+    // a ring. Skipping it here would be a frame nobody actually renders.
+    let mask = outline::mask_texture(device, size, size);
+    let mask_view = mask.create_view(&wgpu::TextureViewDescriptor::default());
+    sprite_pass.render_mask(device, queue, &mut encoder, target, &mask_view, &[]);
     let mut copy = |texture: &wgpu::Texture, buffer: &wgpu::Buffer, stride: u32| {
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {

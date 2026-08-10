@@ -564,6 +564,17 @@ and both mistakes are the kind that repeat.
 - **Record the candidate you refuted.** The selection loop looked like a second
   tie and is not one; without that written down the next session proposes it
   again and spends the same hour.
+- **A pass no tool draws is an input no tool varies** — the third one, added
+  2026-08-10 and the first to cost a *feature* rather than a measurement. The
+  client's frame has a pass in it that nothing else here draws
+  (`SpriteRenderer::render_mask`, the silhouettes), it shares the statics pass's
+  uniform block by design, and it wrote that block with a stale literal in the
+  slot `impostor::Fringe` had just moved into. Since `queue.write_buffer` is
+  applied at the *submission* and not where it sits in the encoder, the later
+  write decided the earlier draw: F2 changed nothing on screen while every tool
+  and every test measured all three states correctly. The list of what a tool
+  holds fixed is not only its arguments — **it is also every pass it does not
+  run**, and the frame the gates draw was a frame nobody actually renders.
 
 ### The place that was under the ground ✅ 2026-08-10 — why five planes gated nothing
 
