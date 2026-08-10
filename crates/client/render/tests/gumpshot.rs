@@ -46,7 +46,7 @@ use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::font::AsciiFonts;
 use openshard_uofiles::gumpart::Gumps;
 use openshard_uofiles::skillgrp::SkillGroups;
-use openshard_uofiles::skills::{SkillId, Skills as SkillNames};
+use openshard_uofiles::skills::Skills as SkillNames;
 use openshard_uofiles::tiledata::TileData;
 
 /// The colour behind the window: one no gump pixel can be, so that "transparent"
