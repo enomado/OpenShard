@@ -1161,14 +1161,12 @@ impl SpriteRenderer {
             mask_rings,
             mask_capacity,
             atlas_texture,
-            // **Read from the environment here, and that is a stopgap with a
-            // name.** The switch belongs to whatever owns the keyboard —
-            // `crate::debug::View` is cycled by a key in `client/app` and this is
-            // the same kind of knob — but a pass that only ever hears from its
-            // caller cannot be turned by a person playing. When the client grows
-            // the key, it calls [`SpriteRenderer::set_fringe`] and this line
-            // becomes its default.
-            fringe: crate::impostor::Fringe::from_env(),
+            // The shipped answer until a caller says otherwise, and the client
+            // says otherwise on every frame — F2 owns this switch, the same way
+            // F11 owns `crate::debug::View`. `Fringe::from_env` is read there,
+            // once, and not here: a pass that read the environment too would be
+            // a second place the same question is answered.
+            fringe: crate::impostor::Fringe::default(),
             volumes,
             volume_capacity: 1,
             layout,

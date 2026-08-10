@@ -616,6 +616,9 @@ pub fn run<D: Dial + Send + 'static>(
         // Daylight until asked otherwise: the lighting pass is then exactly the
         // copy the blit has always been.
         night: false,
+        // The fringe as the environment asks for it, which is `Fringe::Clamp`
+        // when it asks for nothing — F2 cycles from wherever that leaves it.
+        fringe: openshard_client_render::impostor::Fringe::from_env(),
         sunlit: false,
         // And the sky field off with it: while the point lights are the subject,
         // the ambient holds still. See `App::sky_field`.
@@ -1359,6 +1362,17 @@ struct App {
     /// nothing below it changes — the ambient is already a colour per frame
     /// rather than a constant read by the shader.
     night: bool,
+    /// What a fragment whose ray met no box is answered with — the **fringe**,
+    /// [`openshard_client_render::impostor::Fringe`]. Cycled with F2, and
+    /// handed to the statics pass every frame.
+    ///
+    /// Here rather than owned by that pass because this is where the keyboard
+    /// is, which is the whole reason it is a key: two of the three states are
+    /// answers this renderer measured and refused, and what a refusal on this
+    /// track answers to is a person looking at two pictures of one instant.
+    /// `docs/lighting_state.md`'s fringe entry carries the numbers, and
+    /// `OPENSHARD_FRINGE` is the same switch for a run that starts in one state.
+    fringe: openshard_client_render::impostor::Fringe,
     /// Whether a tile's ambient depends on how much of the sky its column can
     /// see: a room under a roof darker than the road outside it, before anything
     /// burns. Toggled with F6.
@@ -2179,6 +2193,19 @@ impl ApplicationHandler<link::Update> for App {
                     KeyCode::F11 => {
                         self.light_view = self.light_view.next();
                         tracing::info!(view = self.light_view.name(), "lighting view");
+                        true
+                    }
+                    // What a fragment whose ray met no box is answered with, one
+                    // after another — `impostor::Fringe`, and a key for exactly
+                    // the reason F10 and F11 are keys. Two of its three states
+                    // were refused on measurements
+                    // (`docs/lighting_state.md`'s fringe entry) and the
+                    // instrument that refusal is *supposed* to answer to is a
+                    // person looking at two pictures of one instant, which is
+                    // what a key gives and a setting read at start-up does not.
+                    KeyCode::F2 => {
+                        self.fringe = self.fringe.next();
+                        tracing::info!(fringe = self.fringe.name(), "fringe");
                         true
                     }
                     // This frame, written out: every plane the blit can draw of
@@ -5627,6 +5654,10 @@ impl App {
         window
             .renderer
             .render(&window.device, &window.queue, &mut encoder, target, &quads);
+        // Handed over every frame rather than on the key, because the key does
+        // not have the window: `self.fringe` is the switch and the pass is where
+        // it is read, and a state pushed once at start-up would leave F2 silent.
+        window.statics.set_fringe(self.fringe);
         window.statics.render(
             &window.device,
             &window.queue,

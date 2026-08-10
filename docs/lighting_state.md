@@ -184,20 +184,19 @@ kept only so `examples/discard_census.rs` can re-take the number.
 
 **And all three answers are a switch now**, because the acceptance instrument
 here is a person looking at a frame and two of the three had only ever been
-argued about:
+argued about. **F2 cycles it**, the way F11 cycles the lighting views —
+`clamp → discard → volume`, with the state on a log line each time. For a run
+that has to *start* somewhere — a frame dump, a screenshot, a bug report:
 
 ```sh
-OPENSHARD_FRINGE=clamp    cargo run -p openshard-playground   # the default
-OPENSHARD_FRINGE=discard  cargo run -p openshard-playground   # the fringe not drawn
-OPENSHARD_FRINGE=volume   cargo run -p openshard-playground   # the refused facing
+OPENSHARD_FRINGE=discard cargo run -p openshard-playground
 ```
 
-`impostor::Fringe` is the enum, `SpriteRenderer::set_fringe` the setter a key
-would call, and `frame.rs`'s `the_fringe_switch_draws_three_different_frames`
-holds that the switch reaches the picture at all — it was verified by injecting
-a dead uniform slot, not by reading the wiring. Reading it from the environment
-inside the pass is a **stopgap** named as one in `renderer.rs`: the switch
-belongs to whatever owns the keyboard, beside `debug::View`'s own key.
+`impostor::Fringe` is the enum and `SpriteRenderer::set_fringe` is where a frame
+takes it. `frame.rs`'s `the_fringe_switch_draws_three_different_frames` holds
+that the switch reaches the picture at all, in the direction each state claims —
+verified by injecting a dead uniform slot, not by reading the wiring — and
+`grids.rs` pins the three numbers against the shader's own constants.
 
 **3. Phase 7's second half.** A mobile's normal is one vector for the whole
 sprite, so a torch on a figure's left reads no brighter than one on its right.

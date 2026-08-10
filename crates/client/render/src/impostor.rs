@@ -130,8 +130,10 @@ pub fn shows_a_side(lo_z: f32, hi_z: f32) -> bool {
 /// this switch is *for* is the one instrument those measurements could not
 /// replace — a person looking at two frames.
 ///
-/// `docs/lighting_state.md`'s fringe entry has the numbers; `OPENSHARD_FRINGE`
-/// is how [`Fringe::from_env`] names them on a command line.
+/// `docs/lighting_state.md`'s fringe entry has the numbers. **F2 cycles it** in
+/// the client, the way F11 cycles [`crate::debug::View`]; `OPENSHARD_FRINGE`
+/// ([`Fringe::from_env`]) is the same switch for a run that has to *start* in
+/// one of them — a frame dump, a screenshot, a bug report.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Fringe {
