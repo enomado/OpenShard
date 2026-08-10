@@ -340,9 +340,21 @@ So, in order:
    problem; the answer lives in the fit, not in a border.
 
 The one number this does *not* forbid is a rounding-scale tolerance whose size
-comes from the arithmetic rather than from a picture — `RAY_TANGENT_TOLERANCE`,
-`impostor::TANGENT` — and each of those has to state the measurement it was
-sized against, in its own doc comment, next to the number.
+comes from the arithmetic rather than from a picture — `RAY_TANGENT_TOLERANCE` —
+and each of those has to state the measurement it was sized against, in its own
+doc comment, next to the number.
+
+**Nor a quantum, which is a different thing wearing the same shape.**
+`impostor::FRAGMENT` is one step of the screen's sample grid expressed in tiles,
+and it bounds a comparison for the reason a rounding tolerance never can: two
+points closer together than one sample are not two points this renderer can
+distinguish. It replaced a rounding tolerance that had been standing in for it —
+`impostor::TANGENT`, `1e-4` of a tile, sized against a corner's rounding — and
+the replacement was visible on the screen, because every pixel between the two
+sizes had been answered "a point of nothing". A quantum has to name **which two
+grids** it converts between (`docs/pixels.md`) and carry a control that fails
+when it shrinks; a rounding tolerance has to name the arithmetic. Neither may be
+sized by looking at a picture until it looks right.
 
 ## No globals
 

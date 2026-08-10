@@ -155,11 +155,12 @@ fn grid(
 /// The walk is the whole sprite and not the 44-wide tile column
 /// `facing::silhouettes_agree` clips to: the pass draws every pixel of the art,
 /// so a table top hanging past its own cell is exactly the pixel this is about.
-fn overhang(image: &Image, at: (i32, i32), z: i8, volumes: &[Volume]) -> (u32, u32) {
+fn overhang(image: &Image, at: (i32, i32), z: i8, volumes: &[Volume]) -> (u32, u32, Steps) {
     let (width, height) = (image.width(), image.height());
     let middle = f32::from(width) / 2.0;
     let centre_row = f32::from(height) - HALF_TILE;
     let (mut drawn, mut missed) = (0u32, 0u32);
+    let mut steps = Steps::default();
     for row in 0..height {
         for column in 0..width {
             let opaque = image
@@ -174,13 +175,84 @@ fn overhang(image: &Image, at: (i32, i32), z: i8, volumes: &[Volume]) -> (u32, u
             let across = f32::from(column) + 0.5 - middle;
             let down = f32::from(row) + 0.5 - centre_row;
             let start = impostor::ray_from(at, f32::from(z), across, down);
-            let met = volumes
+            // **The nearest miss and not "did any box answer"** — the two are the
+            // same predicate today and stop being one the moment the tolerance
+            // moves, which is the question this histogram exists to settle. A
+            // picture met against several boxes is as far outside as its *best*
+            // box says, so the fold is a minimum and not a count.
+            let nearest = volumes
                 .iter()
-                .any(|volume| impostor::meets(start, volume.lo, volume.hi).hit());
-            missed += u32::from(!met);
+                .map(|volume| impostor::meets(start, volume.lo, volume.hi))
+                .fold(f32::INFINITY, |best, met| best.min(met.outside));
+            if nearest > impostor::FRAGMENT {
+                missed += 1;
+                steps.count(nearest);
+            }
         }
     }
-    (drawn, missed)
+    (drawn, missed, steps)
+}
+
+/// How far the misses miss by, in **fragments** rather than in tiles.
+///
+/// The two are one division apart and the division is the whole point. A
+/// fragment is a virtual pixel, and one step of the screen grid moves a floor's
+/// point by `sqrt(2) / TILE_WIDTH` of a tile — the world line
+/// [`impostor::ray_from`] walks when `across` alone changes is `(1, −1) / 44`.
+/// So a miss of a fraction of a step is a **sample landing between two
+/// fragments**, which no box anywhere can fix, and a miss of several steps is
+/// art genuinely hanging off its own volume. Read in tiles the two are 0.03 and
+/// 0.3 and look like the same kind of number; read in steps one is under 1 and
+/// the other is over 10.
+///
+/// `docs/pixels.md` owns the pair of grids this divides between.
+#[derive(Default)]
+struct Steps {
+    /// Under half a fragment out: the sample-grid case in full, since half a
+    /// step is the furthest a fragment's centre can sit from an edge that
+    /// genuinely passes through that fragment.
+    half: u64,
+    /// Under one.
+    one: u64,
+    /// Under two.
+    two: u64,
+    /// Under eight.
+    eight: u64,
+    /// And the rest — art that overhangs by an object's worth.
+    beyond: u64,
+    /// The largest miss seen, in steps.
+    worst: f32,
+}
+
+/// One step of the fragment grid, in tiles: what a change of one virtual pixel
+/// in `across` does to [`impostor::ray_from`]'s answer.
+const STEP: f32 = std::f32::consts::SQRT_2 / (2.0 * HALF_TILE);
+
+impl Steps {
+    fn count(&mut self, outside: f32) {
+        let steps = outside / STEP;
+        self.worst = self.worst.max(steps);
+        *match steps {
+            s if s < 0.5 => &mut self.half,
+            s if s < 1.0 => &mut self.one,
+            s if s < 2.0 => &mut self.two,
+            s if s < 8.0 => &mut self.eight,
+            _ => &mut self.beyond,
+        } += 1;
+    }
+
+    fn add(&mut self, other: &Steps) {
+        self.half += other.half;
+        self.one += other.one;
+        self.two += other.two;
+        self.eight += other.eight;
+        self.beyond += other.beyond;
+        self.worst = self.worst.max(other.worst);
+    }
+
+    fn total(&self) -> u64 {
+        self.half + self.one + self.two + self.eight + self.beyond
+    }
 }
 
 /// How many drawn pixels lie outside the screen columns this footprint's box
@@ -230,9 +302,18 @@ fn outside_the_band(image: &Image, footprint: Footprint) -> u32 {
 /// floor.** A constant miss says the two disagree about one edge — a rounding
 /// convention, `blocks_silhouette` painting from `head.round()` — and a
 /// proportional one would say they disagree about the projection, which is the
-/// error that would make every share below meaningless. Measured: forty-four
-/// pixels at either height, which is one row of the tile's own width.
-fn controls(at: (i32, i32)) -> Vec<(u8, u32, u32, u32)> {
+/// error that would make every share below meaningless.
+///
+/// **It measured forty-four at either height and now measures none**, and the
+/// forty-four are why [`impostor::FRAGMENT`] exists. One row of the tile's own
+/// width, each pixel `1 / TILE_WIDTH` of a tile outside a box it is plainly a
+/// pixel of — the sample grid, not a disagreement — and on the screen they were
+/// the dashed line along every tile seam that a person reported as a glowing
+/// grid over the floor. A tolerance of one fragment takes the whole row, which
+/// is what makes this control a *gate* on that constant rather than a noise
+/// floor to subtract: it is zero, and nothing but the tolerance shrinking can
+/// put a pixel back into it.
+fn controls(at: (i32, i32)) -> Vec<(u8, u32, u32, u32, Steps)> {
     [5u8, 10]
         .into_iter()
         .map(|top| {
@@ -248,9 +329,9 @@ fn controls(at: (i32, i32)) -> Vec<(u8, u32, u32, u32)> {
                 hi: [own.hi[0] + 100.0, own.hi[1] + 100.0, own.hi[2]],
                 solid: 0,
             };
-            let (drawn, missed) = overhang(&image, at, 0, std::slice::from_ref(&own));
-            let (_, missed_far) = overhang(&image, at, 0, std::slice::from_ref(&elsewhere));
-            (top, drawn, missed, missed_far)
+            let (drawn, missed, steps) = overhang(&image, at, 0, std::slice::from_ref(&own));
+            let (_, missed_far, _) = overhang(&image, at, 0, std::slice::from_ref(&elsewhere));
+            (top, drawn, missed, missed_far, steps)
         })
         .collect()
 }
@@ -266,6 +347,9 @@ struct Tally {
     missed_wide: u64,
     /// And against the box we give it today.
     missed_now: u64,
+    /// Those same misses, sorted by how far out they are in *fragments* — see
+    /// [`Steps`], and it is the number the hit tolerance has to be chosen from.
+    steps: Steps,
     /// Whether today's box is a measured footprint — the class S4 is about.
     footprint: Option<Footprint>,
     /// Placements of it the occlusion grid holds a primitive for, which is where
@@ -418,7 +502,7 @@ fn main() {
                 };
 
                 let now = volumes_of(x, y, item.z, graphic, tile, &shape, &live);
-                let (drawn, missed_now) = overhang(image, (x, y), item.z, &now);
+                let (drawn, missed_now, steps) = overhang(image, (x, y), item.z, &now);
                 let missed_wide = match shape.footprint {
                     // Nothing to compare: the two shapes are the same shape, and
                     // walking the picture twice for one answer is only slower.
@@ -446,6 +530,7 @@ fn main() {
                 tally.placements += 1;
                 tally.drawn += u64::from(drawn);
                 tally.missed_now += u64::from(missed_now);
+                tally.steps.add(&steps);
                 tally.missed_wide += u64::from(missed_wide);
                 tally.footprint = shape.footprint;
                 tally.claim = claim_of(tile, &shape);
@@ -499,11 +584,14 @@ fn report(
     // The instrument's own floor and its own ceiling, before anything it
     // measured is read. See `controls`.
     println!("  control  a whole-tile block's own silhouette against its own box:");
-    for (top, drew, missed, far) in controls(at) {
+    for (top, drew, missed, far, steps) in controls(at) {
         println!(
             "    {top:>2} z units tall   {missed:>4} of {drew:>4} miss ({:>5.2}%)   \
+             worst {:>5.2} fragments, {} of them under one   \
              moved a hundred tiles: {far} of {drew} ({:.2}%)",
             pct(u64::from(missed), u64::from(drew)),
+            steps.worst,
+            steps.half + steps.one,
             pct(u64::from(far), u64::from(drew)),
         );
     }
@@ -523,6 +611,27 @@ fn report(
         missed_now as i64 - missed_wide as i64,
         pct(missed_now, drawn) - pct(missed_wide, drawn),
     );
+
+    // **How far the misses miss by**, which is the question a share cannot
+    // answer and the one the tolerance is chosen from: a miss under one
+    // fragment is the sample grid and a miss over ten is an object. See
+    // [`Steps`].
+    let mut steps = Steps::default();
+    for tally in tallies.values() {
+        steps.add(&tally.steps);
+    }
+    let all = steps.total();
+    println!("  how far out the misses are, in fragments of the screen grid:");
+    for (name, count) in [
+        ("under half a fragment", steps.half),
+        ("half to one", steps.one),
+        ("one to two", steps.two),
+        ("two to eight", steps.eight),
+        ("eight and beyond", steps.beyond),
+    ] {
+        println!("    {name:>22}   {count:>9}  {:>5.2}%", pct(count, all));
+    }
+    println!("    {:>22}   {:>9.2}\n", "the worst", steps.worst);
 
     // **And the same three with the roof cut**, which is the only condition the
     // one recorded measurement of this discard was ever taken under and is what
@@ -557,21 +666,28 @@ fn report(
     // and a lid with no thickness at all overhang their art for reasons that
     // have nothing to do with this plan, and reading their cost as the
     // footprint's would be the same mistake in the other direction.
-    let mut by_claim: BTreeMap<&'static str, (u32, u64, u64, u64)> = BTreeMap::new();
+    let mut by_claim: BTreeMap<&'static str, (u32, u64, u64, u64, Steps)> = BTreeMap::new();
     for tally in tallies.values() {
         let row = by_claim.entry(tally.claim).or_default();
         row.0 += tally.placements;
         row.1 += tally.drawn;
         row.2 += tally.missed_wide;
         row.3 += tally.missed_now;
+        row.4.add(&tally.steps);
     }
     println!("  the same pixels by the kind of box that answered them:\n");
-    println!("    placements     drawn      before       now   claim");
-    for (claim, (count, drew, before, now)) in &by_claim {
+    println!("    placements     drawn      before       now   under a fragment   claim");
+    for (claim, (count, drew, before, now, steps)) in &by_claim {
+        // **And how much of each class's own discard is the sample grid.** The
+        // shares beside it say how much art a box loses; this column says how
+        // much of that loss no box could have prevented, because the sample sits
+        // between two fragments rather than off the volume.
+        let near = steps.half + steps.one;
         println!(
-            "    {count:>10}  {drew:>8}  {:>9.2}%  {:>7.2}%   {claim}",
+            "    {count:>10}  {drew:>8}  {:>9.2}%  {:>7.2}%   {near:>8} {:>6.2}%   {claim}",
             pct(*before, *drew),
             pct(*now, *drew),
+            pct(near, *now),
         );
     }
     println!();

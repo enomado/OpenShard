@@ -87,8 +87,10 @@ const IDS_ID_MASK: u32 = 0xFFFFFFu;
 // **Why the producer stamps it.** Both masks are alive in exactly one place.
 // `Meeting::outside` cannot answer instead — it is `impostor::hit`'s own
 // operand, a per-fragment number with no notion of a neighbour, and while the
-// discard stood it was bounded by `TANGENT` for every surviving fragment, which
-// is a numerical epsilon and not a rim. Nor can a neighbourhood test in
+// discard stood it was bounded by the hit tolerance for every surviving
+// fragment — `TANGENT` then, a numerical epsilon; one fragment of the sample
+// grid now (`FRAGMENT`), which is a real distance and still not a rim: it is
+// bounded either way, and a bound is not a neighbour. Nor can a neighbourhood test in
 // `blit.wesl`: the G-buffer holds one answer per pixel and no record of the art
 // rectangle a pixel came from, so the blit can see *that* a neighbour is
 // unmeasured and never *which* mask made it so.

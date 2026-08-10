@@ -2687,17 +2687,46 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
             )
             .expect("two boxes");
 
-            // A miss is not drawn, and that is the assertion rather than a
-            // filter: the pixel must carry no static at all.
+            // **A miss is drawn, and drawn as a measurement that is missing** —
+            // `statics.wesl`'s own branch, and the assertion is the state it
+            // leaves rather than the pixel's absence. The discard this used to
+            // hold to went out with `62a18a5`: it threw away 11.09% of every
+            // panel's art and 32.44% of every whole-tile one, a display case
+            // losing its whole top, so a fragment whose ray meets nothing keeps
+            // the answer a static with no boxes at all keeps — the tile's centre,
+            // the zero normal, `SolidId::NOBODY`.
+            //
+            // Held to all three and not to the kind alone, because the zero
+            // normal is what `blit.wesl` reads as "no facing, lit from every
+            // side": a producer that quietly gave one of these a face would light
+            // it brighter than the measured surface beside it, which is what a
+            // dashed glowing line along a floor's tile seams was.
             if !met.hit() {
                 outside += 1;
                 worst = worst.max(met.outside);
-                assert_ne!(
+                assert_eq!(
                     gbuffer::ids_kind(places.at(x, y)),
                     Some(Kind::Static),
-                    "({x}, {y}) misses every box by {} of a tile and was drawn anyway",
+                    "({x}, {y}) misses every box by {} of a tile and was not drawn",
                     met.outside,
                 );
+                assert_eq!(
+                    places.normal_at(x, y),
+                    gbuffer::pack_normal([0.0; 3]),
+                    "({x}, {y}) missed every box and was given a facing anyway",
+                );
+                let point = places.position_at(x, y);
+                assert_eq!(
+                    gbuffer::unpack_solid(point[3]),
+                    openshard_client_render::occlusion::SolidId::NOBODY,
+                    "({x}, {y}) missed every box and named one",
+                );
+                for (axis, want) in [(0, f32::from(at.x) + 0.5), (1, f32::from(at.y) + 0.5)] {
+                    assert!(
+                        (point[axis] - want).abs() < 1e-4,
+                        "({x}, {y}) missed every box and is not at its tile's centre: {point:?}",
+                    );
+                }
                 continue;
             }
             assert_eq!(

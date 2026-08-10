@@ -51,17 +51,47 @@ pub const VIEW: [f32; 3] = [1.0, 1.0, Z_PER_TILE];
 const TILE_WIDTH: f32 = crate::camera::TILE_WIDTH as f32;
 
 /// How far outside a box, in tiles, a meeting may measure and still be a
-/// meeting rather than a miss.
+/// meeting rather than a miss: **one fragment of the screen grid.**
 ///
-/// The same razor `blit.wesl`'s `RAY_TANGENT_TOLERANCE` names one level down,
-/// and here for the same reason: a ray reaching a box's own corner leaves two
-/// slabs at one `t`, the clamp that follows subtracts two nearly-equal `f32`s,
-/// and what comes back is rounding rather than a gap. **Measured** — the corner
-/// of a lid, dead on, reads `3.5e-6` of a tile out — so this is thirty times
-/// that and still four hundredths of a *pixel*, which is far below anything a
-/// picture can show. A fragment further out than this is genuinely off its own
-/// volume, which is [`Meeting::outside`]'s whole subject.
-pub const TANGENT: f32 = 1.0e-4;
+/// A fragment is a virtual pixel, and moving one along the screen's `x` axis
+/// moves [`ray_from`]'s answer by `(1, −1) / TILE_WIDTH` of a tile — so the
+/// nearest another sample can ever be is this, the diagonal of one step, in the
+/// tile space [`crate::light::TileVec`] measures. That makes the number the
+/// grid's own quantum rather than a tolerance: a miss shorter than this is an
+/// edge that passed **between two fragments**, which no box anywhere can be
+/// shaped to fix, and a miss longer than it is art that genuinely hangs off its
+/// own volume and has a neighbouring sample to prove it.
+///
+/// **It replaced a numerical epsilon, and the epsilon was answering a different
+/// question.** `TANGENT` was `1e-4` of a tile — thirty times the `3.5e-6` a
+/// ray reaching a lid's own corner rounds to — and it was chosen so that
+/// tangency would not read as a gap. It says nothing about sampling, and
+/// sampling is what the misses turned out to be: `examples/discard_census`'s
+/// positive control draws a whole-tile block's own silhouette against that
+/// block's own box and reports **forty-four misses, every one of them under one
+/// fragment, the worst at 0.71**. Those forty-four are one row of the tile's
+/// width, they are on the screen as a dashed line along every tile seam, and
+/// under the old constant each of them was a pixel the pass had no measurement
+/// for — the tile's centre and no facing, which `blit.wesl` lights from every
+/// side and a person reads as a glowing grid over the floor.
+///
+/// **Argued from both ends**, since a threshold picked from one is a fudge:
+///
+/// - **Above what the sample grid can produce.** The control's own worst is
+///   `1 / TILE_WIDTH` — one fragment along a single world axis, `0.71` of this
+///   — and a miss diagonal in both axes reaches exactly this. Anything smaller
+///   leaves part of the seam unmeasured.
+/// - **Under the distance to the next sample.** One fragment out is where the
+///   neighbouring pixel is, so a miss past it is one the picture itself
+///   distinguishes. Measured over Britain's 121×121: 12.3% of all misses are
+///   under one fragment and the rest run to 133, so this cuts where the two
+///   populations already separate rather than in the middle of one.
+///
+/// The number does **not** move with the zoom. The world passes draw at the
+/// virtual resolution whatever the magnification — a real pixel is
+/// `1 / scale` of a fragment, `docs/pixels.md` — so the grid this is a step of
+/// is the same grid at every rung of the ladder.
+pub const FRAGMENT: f32 = std::f32::consts::SQRT_2 / TILE_WIDTH;
 
 /// One point of the view ray through a sprite fragment: the point at the
 /// static's own base height.
@@ -246,8 +276,9 @@ pub struct Meeting {
     /// one axis, so always one of `+x`, `+y`, `+z`.
     pub normal: [f32; 3],
     /// How far, in **tiles**, the ray passed outside the box before the clamp
-    /// pulled it back — at most [`TANGENT`] for a ray that genuinely went
-    /// through it, and [`Meeting::hit`] is that comparison spelled once.
+    /// pulled it back — at most [`FRAGMENT`] for a ray this grid can tell from
+    /// one that went through, and [`Meeting::hit`] is that comparison spelled
+    /// once.
     ///
     /// The measurement `docs/lighting_rebuild.md` phase 6 asks its own "done
     /// when" to carry, and the reason this is a number rather than an
@@ -267,8 +298,17 @@ pub struct Meeting {
 impl Meeting {
     /// Whether the ray went through the box at all, as against passing beside
     /// it and being clamped onto it.
+    ///
+    /// **"At all" is a question about this screen's grid and not about the
+    /// reals.** A fragment is a sample, its centre lands where the grid put it
+    /// rather than where an edge is, and an edge crossing between two samples
+    /// leaves the nearer one measuring [`FRAGMENT`]-and-under outside a box it
+    /// is plainly a pixel of. Asking for zero there answers "this pixel is a
+    /// point of nothing" about a pixel drawn *on* the surface — see [`FRAGMENT`]
+    /// for the control that measures it and the two ends the number is argued
+    /// from.
     pub fn hit(self) -> bool {
-        self.outside <= TANGENT
+        self.outside <= FRAGMENT
     }
 }
 
@@ -891,5 +931,93 @@ mod tests {
         // second time would be two of them disagreeing about where the seam is,
         // which is the defect a grown mesh hides rather than fixes.
         assert_eq!(surfaces, ["lid_high", "riser_high", "lid_low", "riser_low"]);
+    }
+
+    /// **Every pixel a block's own picture draws meets that block's own box** —
+    /// the claim [`FRAGMENT`] exists for, and the one this grid had never been
+    /// held to.
+    ///
+    /// The picture and the box are the *same* block, stated once and read two
+    /// ways: [`crate::facing::blocks_silhouette`] draws what the art of a
+    /// whole-tile body would be, and the box is that body's own volume. So there
+    /// is nothing here for a footprint to be wrong about and nothing for an
+    /// artist to overhang — a miss can only be the two grids disagreeing, and the
+    /// only disagreement available is the sample.
+    ///
+    /// It measured **forty-four misses at either height** before the tolerance
+    /// became one fragment: one row of the tile's own width, `1 / TILE_WIDTH` of
+    /// a tile out — and on a real frame they were a dashed line along every tile
+    /// seam, drawn with no facing and therefore lit from every side. The glowing
+    /// grid over a lit floor that a person reported was those pixels.
+    ///
+    /// **Three controls rather than one assertion**, because "no misses" is what
+    /// a tolerance of infinity also reports:
+    ///
+    /// - the same picture against a box a hundred tiles away misses *everything*,
+    ///   so the walk is reading the boxes at all;
+    /// - the worst surviving miss is over half a fragment, so the constant is
+    ///   load-bearing at its own size — halving it puts the seam back;
+    /// - and two heights, since a floor that grows with the box would say the two
+    ///   disagree about the projection rather than about the grid.
+    ///
+    /// `examples/discard_census`'s own control is this measurement over the
+    /// client's real art; this is it over art nobody had to ship.
+    #[test]
+    fn every_pixel_of_a_blocks_picture_meets_that_blocks_own_box() {
+        use crate::facing::{Block, Blocks, blocks_silhouette};
+
+        for top in [5u8, 10] {
+            let block = Block::new((0, 8), (0, 8), (0, top)).expect("a whole tile with a height");
+            let image = blocks_silhouette(&Blocks::new(&[block]).expect("one block"));
+            let (width, height) = (image.width(), image.height());
+            let middle = f32::from(width) / 2.0;
+            // The tile's own centre row: a sprite's bottom edge stands on the
+            // diamond's bottom vertex, half a tile below it. `statics::stand_on`,
+            // and the same convention `discard_census` reads a picture in.
+            let centre_row = f32::from(height) - (crate::camera::TILE_HEIGHT / 2) as f32;
+            let (lo, hi) = ([0.0, 0.0, 0.0], [1.0, 1.0, f32::from(top)]);
+            let far = ([100.0, 100.0, 0.0], [101.0, 101.0, f32::from(top)]);
+
+            let (mut drawn, mut missed, mut missed_far, mut worst) = (0u32, 0u32, 0u32, 0.0f32);
+            for row in 0..height {
+                for column in 0..width {
+                    let opaque = image
+                        .pixel(column, row)
+                        .is_some_and(|pixel| !pixel.is_transparent());
+                    if !opaque {
+                        continue;
+                    }
+                    drawn += 1;
+                    let across = f32::from(column) + 0.5 - middle;
+                    let down = f32::from(row) + 0.5 - centre_row;
+                    let from = ray_from((0, 0), 0.0, across, down);
+                    let met = meets(from, lo, hi);
+                    if met.hit() {
+                        worst = worst.max(met.outside);
+                    } else {
+                        missed += 1;
+                    }
+                    missed_far += u32::from(!meets(from, far.0, far.1).hit());
+                }
+            }
+
+            assert!(drawn > 1000, "{top} z tall drew only {drawn} pixels");
+            assert_eq!(
+                missed, 0,
+                "{missed} of {drawn} pixels of a block's own picture missed that block's own box \
+                 at {top} z tall — the tile-seam line FRAGMENT was measured to take",
+            );
+            assert_eq!(
+                missed_far, drawn,
+                "the same picture met a box a hundred tiles away, so this walk is not reading \
+                 boxes at all and the zero above says nothing",
+            );
+            assert!(
+                worst > FRAGMENT / 2.0,
+                "the worst surviving miss is {worst} of a tile, under half of FRAGMENT ({FRAGMENT}) \
+                 — either the sample grid stopped producing this or the constant is now twice the \
+                 size it has to be",
+            );
+        }
     }
 }

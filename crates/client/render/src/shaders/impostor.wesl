@@ -40,11 +40,16 @@ const TILE_WIDTH: f32 = 44.0;
 const VIEW: vec3<f32> = vec3<f32>(1.0, 1.0, Z_PER_TILE);
 
 // How far outside a box, in tiles, a meeting may measure and still be a meeting
-// rather than a miss. `crate::impostor::TANGENT`, and see it for the
-// measurement: a ray reaching a box's own corner leaves two slabs at one `t` and
-// the clamp below then subtracts two nearly-equal floats, which reads `3.5e-6`
-// of a tile out rather than zero.
-const TANGENT: f32 = 1.0e-4;
+// rather than a miss: **one fragment of the screen grid**, `SQRT_2 / TILE_WIDTH`
+// — the distance `ray_from` moves when `across` changes by one virtual pixel,
+// taken diagonally.
+//
+// `crate::impostor::FRAGMENT` carries the argument and the control that measured
+// it. Written here as the number rather than as the division because
+// `tests/grids.rs` pins a shader's copy of a grid constant by reading the
+// literal, and a copy that drifts from `TILE_WIDTH` above is what that pin is
+// for.
+const FRAGMENT: f32 = 0.032141216;
 
 // Where the view ray through one sprite fragment starts: the point at the
 // static's own base height.
@@ -108,8 +113,8 @@ struct Meeting {
     // Which way the surface it met looks — one of `+x`, `+y`, `+z`.
     normal: vec3<f32>,
     // How far, in **tiles**, the ray passed outside the box before that clamp
-    // pulled it back. At most `TANGENT` for a ray that genuinely went through
-    // it; `hit` is that comparison spelled once. This is the number
+    // pulled it back. At most `FRAGMENT` for a ray this grid can tell from one
+    // that went through; `hit` is that comparison spelled once. This is the number
     // `docs/lighting_rebuild.md` phase 6 asks its own "done when" to carry — a
     // sprite overhangs its own volume wherever the fitted box is narrower than
     // the art, and what matters is not that such pixels exist but how far out
@@ -122,8 +127,13 @@ struct Meeting {
 
 // Whether the ray went through the box at all, as against passing beside it and
 // being clamped onto it.
+//
+// "At all" is a question about this screen's grid: an edge crossing between two
+// samples leaves the nearer fragment measuring a fraction of a `FRAGMENT`
+// outside a box it is plainly a pixel of, and asking for zero there answers "a
+// point of nothing" about a pixel drawn on the surface.
 fn hit(met: Meeting) -> bool {
-    return met.outside <= TANGENT;
+    return met.outside <= FRAGMENT;
 }
 
 // Where the view ray through `start` meets the box `lo..=hi`.

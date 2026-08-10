@@ -26,6 +26,7 @@
 //! `facing::tests::a_tile_is_the_width_the_camera_draws_one_at`.
 
 use openshard_client_render::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
+use openshard_client_render::impostor;
 use openshard_client_render::light::Z_PER_TILE;
 
 const IMPOSTOR: &str = include_str!("../src/shaders/impostor.wesl");
@@ -86,6 +87,19 @@ fn the_shaders_restate_the_cameras_constants_and_not_their_own() {
         shader_const(STATICS, "statics.wesl", "Z_STEP"),
         Z_STEP as f32,
         "statics.wesl's height quantum against camera::Z_STEP",
+    );
+    // **The hit tolerance is a grid constant now**, which is why it is pinned
+    // here beside the widths rather than left as a number two files happen to
+    // agree on: it is one step of the fragment grid expressed in tiles, so it
+    // moves with `TILE_WIDTH` above and with nothing else. The shader states the
+    // literal; this is what keeps the literal honest. Compared to seven
+    // decimals, which is where an `f32`'s own precision ends — a tighter
+    // equality would fail on the printed constant rather than on a disagreement.
+    assert!(
+        (shader_const(IMPOSTOR, "impostor.wesl", "FRAGMENT") - impostor::FRAGMENT).abs() < 1e-7,
+        "impostor.wesl's hit tolerance is {} and impostor::FRAGMENT is {}",
+        shader_const(IMPOSTOR, "impostor.wesl", "FRAGMENT"),
+        impostor::FRAGMENT,
     );
     assert_eq!(
         shader_const(STATICS, "statics.wesl", "HALF_TILE_HEIGHT"),

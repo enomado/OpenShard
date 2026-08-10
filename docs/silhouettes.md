@@ -66,8 +66,9 @@ first rule was "the solid the fragment names" and a dump of it *refuted* that
 rule. Here the refutation came off the code rather than off a picture.
 
 1. ~~**`Meeting::outside`, carried into the G-buffer.**~~ **Vacuous.**
-   `impostor::hit` *is* `outside <= TANGENT`, and `TANGENT` is `1e-4` of a tile
-   — a numerical epsilon for a ray that reaches a box's own corner, not a rim.
+   `impostor::hit` *is* `outside <= FRAGMENT` — `TANGENT`, `1e-4` of a tile,
+   when this was written; one step of the sample grid now, and bounded either
+   way, which is what makes the number a bound and not a rim.
    While the box-miss discard stood, every surviving fragment therefore measured
    at most that, and the plan's own sentence above — "a fragment at the box's rim
    sits at the tangent limit; one in the art's interior sits near zero" — is
@@ -211,6 +212,55 @@ is the gate: every rung collects statics over the wall run, and the same `4x`
 that collects none over `AT` still collects its land, which is what attributes the
 zero to the place rather than to the zoom.
 
+### The glowing grid, and the tolerance that was in the wrong units
+
+Reported as *"the tiles inside the house are lit up now"*, off the client's own
+F12 dump at Britain's `(1501, 1655)` — not a lighting defect at all, and this
+plan's own subject: **the two grids, and a threshold stated in the wrong one.**
+
+What the dump says, counted rather than looked at. In a 120×120 window over the
+shop's floor, `normal.png` holds exactly three colours: `(128,128,255)` the
+floor, `(128,255,128)` a wall, and `(128,128,128)` — **the zero normal**, 360
+pixels of it, in a stepped dashed line along every tile seam. Those same pixels
+read `SOLID_NOBODY` in `solid.png`, the art bit and not the box bit in the two
+silhouette layers, and white in `shadow.png`: nothing is shading them. Across
+the whole frame they are about 4% of it.
+
+That is `statics.wesl`'s unmeasured branch — the tile's centre, no facing — and
+`blit.wesl` lights a zero normal *from every side*, with no cosine. So each of
+those pixels comes out brighter than the measured floor around it, and the seams
+draw as a lit grid over the room. Z1 had already named the state; what nobody had
+asked is **why a floor's own pixels were landing in it.**
+
+**Because `impostor::hit` was measuring a sample against a rounding epsilon.**
+`TANGENT` was `1e-4` of a tile, sized against the `3.5e-6` a ray rounds to at a
+box's own corner. The misses are not rounding: `examples/discard_census`'s
+positive control draws a whole-tile block's own silhouette against that block's
+own box — one shape, read two ways, nothing to overhang — and reported **44
+misses of 1936, every one under one fragment, the worst `1/TILE_WIDTH` of a
+tile.** One row of the tile's width, which is the seam.
+
+So the threshold is one **fragment** now (`impostor::FRAGMENT`,
+`SQRT_2 / TILE_WIDTH`): the distance to the next sample, in the tile space the
+comparison is made in. Not a fudge and argued from both ends — above what the
+sample grid can produce (`0.71` of it), under where the picture itself starts
+distinguishing (the next pixel). Over Britain's 121×121 it moves the discard
+from 13.48% of drawn art to 11.83%, and the control from 44 to **0** at both
+heights while the negative control — the same picture against a box a hundred
+tiles away — still misses everything.
+
+The gates are `impostor::tests::every_pixel_of_a_blocks_picture_meets_that_blocks_own_box`
+(the control, plus a floor under the constant's size, so halving it turns red —
+witnessed by mutation), the census's own control line, and `tests/grids.rs`'s pin
+on the shader's copy of the number.
+
+**And what it leaves.** The line was one of two populations, not the whole of
+them: 11.83% of drawn art still misses, running out to 133 fragments, and that
+is real overhang for `docs/footprints.md` rather than sampling. A roof gives up
+40% of its art; a whole-tile claim, 30%. Those pixels are still drawn unmeasured
+and still lit from every side — which is now the *only* reason a pixel is, and a
+much better place to argue from than a seam.
+
 ### Z2 — the ratio, before
 
 The count from Z1 taken at the three places `docs/parity.md`'s gate uses, so
@@ -257,3 +307,16 @@ their own**, because a box that fits the art clips more of the outline.
 - 🚩 **`docs/pixels.md` owes this plan the art texel's own row.** It is the one
   grid with no type and no document, and it is the grid this whole file is
   about.
+- 🚩 **An unmeasured fragment is lit from every side, and that is now the whole
+  of what the state means.** With the seam gone, every pixel left in it is real
+  overhang — 11.83% of drawn art, 40% of a roof's — and each is *brighter* than
+  the measured surface it hangs off, because a zero normal takes no cosine. The
+  brightness was never argued; it fell out of "no facing" meaning "every
+  facing". `docs/footprints.md` shrinks the population; nothing yet decides what
+  the remainder should be lit like.
+- 🚩 **The 1-to-2-fragment population, 135k pixels of Britain's window.** The
+  tolerance cuts at one fragment because that is where a neighbouring sample
+  exists to tell the difference. The bucket just past it is 8% of what is left
+  and nobody has looked at whether it is overhang or the same sampling one step
+  coarser — a magnified frame would say, and the instrument is the two views Z1
+  built.

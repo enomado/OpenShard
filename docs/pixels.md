@@ -135,6 +135,7 @@ is exposed to sub-pixel sampling at all, and that is the one
 |---|---|---|
 | Tile ↔ World pixel | **always**, at every rung and parity | [`project`](../crates/client/render/src/camera.rs#L200)/[`project_exact`](../crates/client/render/src/camera.rs#L216) run before any camera, eye or zoom enters — `HALF_WIDTH = TILE_WIDTH / 2 = 22`, an exact integer, so a tile corner lands on a whole world pixel by construction. This is upstream of the ladder entirely; no `(rung, parity, fraction)` can touch it. |
 | Tile `z` ↔ Impostor tile space | **always** | `Z_PER_TILE = TILE_WIDTH / Z_STEP = 44 / 4 = 11`, an exact integer division of two constants ([`light.rs:274`](../crates/client/render/src/light.rs#L274)). One `Point.z` unit is exactly 11 impostor-space units; there is no rounding to lose. |
+| **Fragment (view-plane pixel) ↔ Impostor tile space** | **never**, and that is the point | A fragment is a sample, not an area: [`ray_from`](../crates/client/render/src/impostor.rs#L112) takes one virtual pixel of `across` to `(1, −1) / TILE_WIDTH` of a tile, so two adjacent samples are `SQRT_2 / TILE_WIDTH` apart in the space `impostor::meets` compares in, and an edge crossing between them is invisible to both. The pair therefore needs a *quantum*, not a rounding tolerance: [`impostor::FRAGMENT`](../crates/client/render/src/impostor.rs#L94) is that step, and `Meeting::hit` is the one comparison that spends it. Sized wrong, this is visible — under the `1e-4` epsilon that preceded it, a floor's own seam row measured "outside its own box" and was drawn as a fragment with no measurement, which `blit.wesl` lights from every side: [`docs/silhouettes.md`](silhouettes.md)'s glowing grid. **Independent of the rung**: the world passes draw at the virtual resolution at every magnification, so a real pixel is `1 / scale` of a fragment and the fragment grid itself does not move. |
 | World pixel ↔ View pixel | **always** | [`to_view`](../crates/client/render/src/camera.rs#L746)/[`to_world`](../crates/client/render/src/camera.rs#L768) are an exact integer translation — subtract `self.eye()` (already rounded to `WorldPixel`) and add `render_width()/2` (integer division, truncating). An integer lattice translated by an integer offset is still that lattice: no rung, parity or fraction can misalign these two, only shift which world pixel sits at view-pixel `(0,0)`. |
 | World point (`f64`, sub-pixel) ↔ View pixel | commensurate **only** when the fractional part is itself zero | [`to_view_exact`](../crates/client/render/src/camera.rs#L758) is the honest case: a body mid-step is *not* meant to land on a view-pixel boundary, and nothing downstream assumes it does. Not a defect — the one grid pair in this table that is supposed to disagree. |
 | **View pixel (art/virtual) ↔ Real (viewport) pixel** | **magnifying rungs** (`scale` = 1, 2, 3, 4 — [`LADDER`](../crates/client/render/src/camera.rs#L292) indices 3–6): commensurate **only** at an odd viewport extent, before the fix; **never**, at either parity, after it. Minifying rungs (`1/2`, `2/3`, `3/4`): not a point-sampling question at all — see below. | This is [`docs/parity.md`](parity.md)'s window-parity finding in full, restated in this table's terms. All three vertex stages end on `real = (pixel - origin) * scale + viewport.size * 0.5` ([`ground.wesl:237`](../crates/client/render/src/shaders/ground.wesl#L237) and its two twins). A fragment samples at `i + 0.5`; at an even extent the world coordinate behind it is always a quarter-fraction of a virtual pixel, never whole — commensurate with *nothing*. At an odd extent, before the fix, `size * 0.5` lost its own half-pixel and the centring put a sample exactly on a whole virtual pixel every `scale`-th column: `i ≡ (scale - 1) (mod scale)`, in the exact numbers `docs/parity.md` derived at `4x` — `i ≡ 3 (mod 4)`. A box's own corner sits at a whole virtual pixel by construction (the Tile ↔ World-pixel row above), so this was the only way a primary ray ever passed exactly through one, which is what fed `impostor::meets`'s unresolved tie. The `floor(viewport.size * 0.5)` fix ([`docs/parity.md`](parity.md) §"Repaired where the sampling is") makes every sample sit at a half-integer over `scale` regardless of parity — no integer `scale` divides a half-integer, so this pair is now provably never commensurate at any magnifying rung, closing the case entirely rather than moving it. |
@@ -372,7 +373,34 @@ item and `docs/silhouettes.md`'s subject. A test cannot stand in for it.
   the first time the build has told those two apart, and evidence the confusion
   is reachable rather than theoretical. A `TilePoint` beside `TileVec` is what
   closes it.
-- 🚩 **Nothing states what a `ViewportRect` is measured in when a docked panel
-  has moved it.** `dump::read_rect` honours an origin, the blit sets a viewport
-  rect, and `Camera` knows an image size — three numbers about the same
-  rectangle, in the same unit, owned by three places.
+- ✅ **What a `ViewportRect` is measured in when a docked panel has moved it —
+  resolved 2026-08-10, by documentation and a gate, no type.** Traced all three
+  owners. `Shell::viewport()` (`crates/client/app/src/shell.rs:585-630`) is the
+  only production site that ever sets a non-zero origin, and its own doc
+  comment already says the right thing: a docked panel shrinks the rect but
+  never re-bases it, so `x`/`y` are **window-absolute** physical pixels both
+  before and after. `Blit::render` (`blit.rs:659-665`) sets that rect as the
+  GPU viewport transform against `target`, which is always the surface — same
+  convention. `dump::read_rect` (`dump.rs:138-215`) has no opinion of its own:
+  it is a raw offset into whatever `wgpu::Texture` it is handed, window-sized
+  or not — its contract is "honour `rect` against `texture`," full stop.
+  `Camera` (`camera.rs:685-711`, `control.rs:157-159`) stores no origin at
+  all; `lib.rs`'s resize drops `viewport.x`/`.y` on the floor deliberately,
+  because the camera's own projection is viewport-local and 0-based —
+  `solids::on_screen` reads only `rect.width`/`.height`, never `.x`/`.y`,
+  which is the build's own proof that nothing downstream expects an origin
+  from the camera.
+
+  So the three never needed to agree on a *type* — they agree on a
+  *convention* (`ViewportRect.x/y` is always window-absolute; `Camera` never
+  claims to know it), and the risk was that the convention held only where
+  every real call site happened to reuse one value, with no test that would
+  fail if a caller sent the blit and the readback to unrelated origins. That
+  gap is now closed by
+  [`a_docked_panels_offset_places_the_same_picture_it_shows_at_the_corner`](../crates/client/render/tests/dump.rs)
+  — the same drawn frame blit once at `(0, 0)` into a target its own size, and
+  once at a corner into a bigger "window" texture the way a docked panel
+  leaves one, then read back and compared byte for byte. It is the missing
+  half of `a_readback_off_the_corner_is_the_same_pixels_shifted`, which only
+  ever exercised `read_rect`'s own arithmetic against one texture read twice
+  and never called `Blit::render` with a non-zero origin at all.
