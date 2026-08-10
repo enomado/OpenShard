@@ -324,16 +324,37 @@ must go red. Depends on the parity item below.
   is the decision. `docs/lighting_rebuild.md`'s phase 6i is the same class's
   other open question. **The sharpest of the three findings below**: the other
   two cost pixels, this one moves shadows on pieces the plan says are not boxes.
-- 🚩 **A tabletop is drawn wider than the base that was measured, and the shader
-  takes the difference off the screen.** `0x0B3D`/`0x0B3E` "counter" lose 21.6%
-  of their art, `0x0865` "wooden fence" 30.2%, `0x0B80` "table" 14.8% — S4's
-  numbers. Three honest answers and this plan picks none of them yet: grow the
-  measured box outward to the art's own silhouette (which is a second
-  measurement and D5's rejected IoU fit by another name), keep the box and
-  accept the loss (which is what shipped, undecided), or stop discarding for
-  this class alone (which reopens `docs/lighting_rebuild.md`'s "One silhouette"
-  for one branch). Whichever it is, the number to beat is in `discard_census.rs`
-  and the fixture is a counter.
+- ✅ **A tabletop is drawn wider than the base that was measured, and the shader
+  took the difference off the screen** — answered 2026-08-10, and by a person
+  pointing at Britain's `(1496, 1663)` and saying the table had been chopped. It
+  had, and by two separate things this step's own instrument then measured:
+  - **the discard**, and the answer is that a miss is no longer one. A fragment
+    whose ray meets no box now keeps the state a static with no box at all
+    keeps — the tile's centre, the zero normal `blit.wesl` reads as "no facing,
+    lit from every side", `SOLID_NOBODY`. The fringe the discard was introduced
+    for lands in the same state, which is what makes it one answer rather than a
+    third. `docs/lighting_rebuild.md`'s "One silhouette" is where that is
+    argued; what this plan contributed is the number that reopened it — the
+    2.38% on record counted *pixels that changed in one frame with the roof
+    cut*, and per picture the discard was throwing away 14.23% of every panel's
+    art and 45.75% of every whole-tile one.
+  - **the geometry**, and the answer is that a table is a box. `0x0B06` reads as
+    `Corner { East, South }` because a tabletop drawn as a diamond has the base
+    edge two walls meeting leave, so it stood as two `PANEL_THICKNESS` slabs —
+    while `Shape::of` had already fitted `prism E 4` to the same picture and
+    `boxes_of` read a prism only under `CLIMBABLE`. It now reads one under the
+    client's `PLATFORM` bit as well. **The score could not have been the gate**:
+    a stone wall scores `0.936` against its best prism and this display case
+    `0.902`. Twenty-one placements of three graphics over Britain's window, none
+    of them occluders.
+
+  What is *not* answered, and it is the narrower version of the same item: the
+  measured footprint is still the box the **base** states, so a counter's top
+  still overhangs its own volume by 21.6% of its art. That no longer costs a
+  pixel — nothing is discarded — but it is still a surface whose normal and
+  height are a plane's rather than the box's, and growing the box outward to the
+  art is D5's rejected IoU fit by another name. Left standing, with the cost now
+  stated in the right units.
 - 🚩 **A post's shadow narrowed and that is probably right.** Sixteen "wooden
   post" placements, six "stone post", a brick wall and an elven bookshelf are
   occluders whose box this plan has already narrowed — 42 in all, against S4's
@@ -342,6 +363,24 @@ must go red. Depends on the parity item below.
   replaced; what is missing is anyone having *looked* at one. A frame at a
   colonnade, before and after, is the cheapest way to find out, and it is the
   same kind of gate S5 is.
+- 🚩 **The no-discard change is written and not committed.** `statics.wesl`'s
+  `if !hit(best) { discard; }` is now `if hit(best) { … }` in the working tree,
+  proven by a picture — `0x0B06` alone at `(1496, 1663)`, `View::Height`, before
+  and after — and it cannot be committed from here: the same file is being
+  rewritten by concurrent work (two hundred lines in flight) and the tree's own
+  pipeline validation fails for that work's reason, not this one. The hunk is
+  one `if` and its comment. Whoever picks it up commits it on its own and
+  re-runs `discard_census.rs`, whose panel and whole-tile shares should then be
+  a statement about *normals* rather than about pixels leaving the screen.
+- 🚩 **`examples/discard_census.rs` reads `boxes_of`'s box and the frame meets
+  the grid's.** `statics::push_volumes` substitutes the occlusion grid's own
+  merged solid wherever the grid names one, so for a piece the grid took in, the
+  census's per-tile box is not the box a fragment is actually met against. The
+  tool's own doc says this "cannot reach the class under measurement" and that
+  is too strong — S4 found 42 placements of the class that *are* in the grid.
+  Nothing measured so far is known to be wrong because of it (the display case
+  is `CLEAR`, and its 53.3% was confirmed by a render), but the census should
+  build the window's grid and consult it, exactly as `push_volumes` does.
 - 🚩 **The frame's own discard has not been re-measured, and the census cannot
   do it.** The 2.38% on record counts pixels that change in a drawn frame;
   `discard_census.rs` counts every sprite pixel in a window, drawn over or not,
