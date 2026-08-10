@@ -38,6 +38,12 @@
 //! - `OPENSHARD_SCENE_EXTRA=x,y,z,graphic[,hue];...` — items to add by hand,
 //!   semicolon-separated. What a DB-pulled decoration (or anything else not on
 //!   the map) comes in as.
+//! - `OPENSHARD_SCENE_IMPOSTOR=0` — meet no sprite against the grid, the way the
+//!   live client draws with its lights *off*: `App::draw` builds no grid at all
+//!   there, so every fragment takes `statics.wesl`'s billboard fallback. The
+//!   client's F10 is this switch and nothing else as far as `View::Normal` is
+//!   concerned, so two dumps either side of it are what a face that "disappears
+//!   when the light goes on" actually is. Default `1`.
 //! - `OPENSHARD_SCENE_VIEWPORT=960x720` — must keep `width * 4` a multiple of
 //!   256 (`wgpu`'s row-copy alignment) or the readback panics; the default is
 //!   already aligned.
@@ -667,6 +673,9 @@ fn main() {
         Some(&static_atlas),
         None,
     );
+    // Named rather than written inline below, because a `const`'s reference is a
+    // temporary and the call outlives it.
+    let no_grid = openshard_client_render::occlusion::Occlusion::EMPTY;
     let openshard_client_render::statics::StaticGeometry {
         quads: item_quads,
         mesh_vertices,
@@ -682,7 +691,24 @@ fn main() {
         &static_atlas,
         &Cutaway::OPEN,
         None,
-        &lighting.occlusion,
+        // The client's own F10, at the one place it reaches the *normal* plane.
+        //
+        // With the lights off, `App::draw` never calls `light::collect` at all
+        // (`sky` is `None` ⇒ `Lighting::NONE`), so `statics::collect` is handed
+        // an empty grid and every fragment takes `statics.wesl`'s billboard
+        // fallback — which always has a facing. Turning the lights on builds the
+        // grid, and from then on a fragment's normal is the *impostor's* answer.
+        // So a face that changes when a person presses F10 is not a lighting
+        // difference at all: it is the two answers disagreeing, and this is the
+        // switch that puts them side by side in one tool.
+        //
+        // The lighting keeps its own grid either way — only what the sprites are
+        // met against changes, which is what keeps the difference readable in
+        // `View::Normal` instead of moving every other plane with it.
+        match env_flag("OPENSHARD_SCENE_IMPOSTOR", true) {
+            true => &lighting.occlusion,
+            false => &no_grid,
+        },
     );
 
     let format = openshard_client_render::blit::WORLD_FORMAT;

@@ -2361,6 +2361,93 @@ Things noticed while writing this, not blocking any phase:
   and for a panel it is the panel's own side), or to stop drawing geometry the
   grid holds nothing for — which 6c already refused, and rightly: the fallback
   is what keeps half of Britain's pictures off billboards.
+- 🚩 **A wall run built of several graphics shows the same "lid at the seam"
+  glow as the cornice above, and it is not that case — these statics *are* in
+  the grid.** Reported live in `openshard-playground`, not yet a checked-in
+  fixture: Britain, `(1507, 1656)`–`(1507, 1662)`, an upper-storey brick wall
+  standing on the tile's `East` edge, three (and more) consecutive tiles each a
+  different graphic — `0x0038`, `0x0035`, a window at `0x003C` — all
+  `WALL|NO_SHOOT|BLOCK`, so `Builder::add` pushes a real panel for every one of
+  them. None of this run is the "point of nothing" the entry above is about.
+  `View::Normal` at the seam between two of these tiles reads a `+z` (lid) band,
+  roughly 20–40 screen pixels wide at `zoom` 4–6, cut into the *middle* of an
+  otherwise uniform `+x` face — not a silhouette edge, since the `+x` colour
+  returns on both sides of it. Reproduces in `isolated_scene`
+  (`OPENSHARD_SCENE_AT=1507,1660,27`) too, measured pixel by pixel, so it is not
+  particular to the live client's own scene assembly.
+  <br>
+  **Ruled out this session, each checked rather than assumed.** The two panels'
+  own end faces (`Solid::box_of`'s outer plane) are bit-for-bit equal — in `f64` and
+  after the `f32` wire round-trip, verified numerically for the real tile
+  coordinates: no rounding anywhere in the box's own extent, on either axis.
+  The defect reproduces with **no active flame** anywhere in the scene
+  (`View::Shadow`/`View::Light`/`View::Sun` all flat there), so it is not
+  `on_the_lit_surface` or the `lit.solid == Some(id)` exemption — there is no
+  shadow ray for either to get wrong. `sample_count` is `1` everywhere in
+  `renderer.rs`/`gbuffer.rs`, no MSAA anywhere to blend a normal across an edge.
+  `depth::base_for` is `x + y`, symmetric in the two axes. The saved world's
+  `decorations`/`items` tables hold nothing near this tile.
+  <br>
+  **Reported direction-specific, and still unexplained.** Seams along a run's
+  `y` — a tile's `East`/`West` panel, thin in `x` — show it; seams along a
+  run's `x` — `North`/`South`, thin in `y` — do not, on the same building.
+  Nothing read this session in `Solid::box_of`, `lit_plane` or `depth::base_for`
+  treats the two axes differently, so the asymmetry itself is still open.
+  **Not yet checked:** the corner case's own guarantee does not obviously reach
+  this one — `Facing::Corner`'s designed `PANEL_THICKNESS`-square overlap is
+  real, but it is for *one* static naming two edges; `boxes_of`'s plain per-tile
+  push has no stated equivalent for *two different* statics meeting across a
+  tile boundary, and whether that gap is real was not settled either way. Nor
+  is the selection `statics.wesl` runs between *different* static instances
+  competing for one screen pixel — this session never opened that shader.
+  <br>
+  **It does not reproduce in `isolated_scene`, and the reason is that the tool
+  and the client do not have the same primitives at the same place.** Measured
+  rather than argued, at `1507,1660` and again at `1505,1653`: over a bare pair
+  of abutting panels, over the four-panel run, and over the whole building with
+  everything the tiles really hold, the `+x` face is continuous across every `y`
+  seam and every `+y` run is `4` screen pixels — `PANEL_THICKNESS`'s own `0.2`
+  of a tile, an honest end face at a free end. The one-pixel runs a census does
+  find are all wedge *tips*: a lid emerging from behind a wall, one pixel on the
+  first row and three on the next. Nothing a person would call a stripe.
+  <br>
+  What is not shared with the client is the **partition**. `merge::merged` runs
+  in `Builder::finish` over the *frame's rectangle*, so which pieces of a run
+  fold into one primitive is a fact about what else got into the picture. Same
+  camera, same place, radius `4` against radius `16`: **132 of 83,830 adjacent
+  pixel pairs change their answer to "one primitive or two"** — seams appear and
+  vanish with the rectangle. And `statics::push_volumes` takes the *grid's*
+  merged box wherever the grid names the piece, so this reaches the normal plane
+  by construction. A defect that lives on a seam therefore cannot be reproduced
+  by pointing the tool at the coordinates: the seam is not there to hit.
+  <br>
+  **Ruled out this session.** The client's F10 is, as far as `View::Normal` is
+  concerned, exactly "meet the sprites against the grid or against nothing" —
+  with the lights off `App::draw` never calls `light::collect`, so
+  `statics::collect` gets an empty grid and every fragment takes
+  `statics.wesl`'s billboard fallback. That switch is now
+  `OPENSHARD_SCENE_IMPOSTOR=0` in `isolated_scene`, and at both places above the
+  two `View::Normal` dumps are **equal to the pixel** (0 of 691,200) while
+  `View::Solid` goes from 87 primitives to none: the merged box and the per-tile
+  box agree everywhere a fragment lands *there*. The **bake** is ruled out too —
+  the client passes `Some(&mut self.occlusion_bake)` and the tool passes `None`,
+  and the only oracles for it held one rectangle still, which is the one state a
+  cache is never asked about. `a_baked_grid_is_the_one_the_walk_builds_after_the_camera_moves`
+  now walks the rectangle across the town a tile a frame and the baked grid is
+  the walked one at every step.
+  <br>
+  **What is left of the difference, ranked, and none of it measured yet:** the
+  frame's rectangle and the live `Cutaway` (both feed the partition above); the
+  **anchor** — the tool translates the place onto `SYN_ANCHOR (100,100)` while
+  the client works at `(1507,1660)`, and `Solid::space` is absolute, so an `f32`
+  ulp there is some sixteen times the one here and any tie on a shared plane is
+  decided at a different precision in the two; the **atlas**, which has grown all
+  session in the client and holds a screen's worth here, and which is where
+  `boxes_of`'s `Shape` comes from; the **clocks** (`0.0` and
+  `StaticAnimations::default()` against advancing ones, so an animated static is
+  a different picture with a different box); the server's **ground items**; and
+  the camera, which follows a walking player at smoothed sub-tile positions
+  rather than sitting on a tile anchor.
 - 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
   showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the

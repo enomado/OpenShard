@@ -613,6 +613,49 @@ mod tests {
         }
     }
 
+    /// The same, with the rectangle **moved between frames** — which is the only
+    /// state a cache is ever asked about in anger.
+    ///
+    /// The gate above and `tests/cost.rs`'s own oracle both hold one rectangle
+    /// still across every batch, so between them they prove a bake right about
+    /// the frame that built it and say nothing about the frame after the player
+    /// took a step. That is the whole point of the cache: a block baked under one
+    /// rectangle is pasted into a *different* one, at a different offset, next to
+    /// different neighbours, possibly on the rim where it was clamped. A block
+    /// that remembered anything about the rectangle it was born under — an
+    /// absolute index, a clamp, a run folded against a neighbour that is no
+    /// longer there — passes every still-camera test in the tree and fails here.
+    ///
+    /// The walk is the oracle at every step, so the assertion is the module's
+    /// own claim held under motion rather than a second, weaker one.
+    #[test]
+    fn a_baked_grid_is_the_one_the_walk_builds_after_the_camera_moves() {
+        let (map, tiledata) = town();
+        let mut bake = Bake::new();
+        // A diagonal walk across the town, one tile a frame, so that every frame
+        // shares most of its blocks with the last and eventually asks for the
+        // rim ones from the other side. Both axes move, because a block is
+        // indexed on both and a bug that swapped them would survive a walk along
+        // one.
+        let mut moved = 0;
+        for step in -4..12 {
+            let bounds = TileBounds {
+                min_x: -3 + step,
+                max_x: 18 + step,
+                min_y: -3 + step,
+                max_y: 18 + step,
+            };
+            let walked = super::super::collect(&map, &[], bounds, &tiledata, &Cutaway::OPEN, None);
+            let baked = collect(&mut bake, &map, &[], bounds, &tiledata, &Cutaway::OPEN, None);
+            assert_eq!(walked, baked, "step {step}");
+            moved += usize::from(walked.solid_count() > 0);
+        }
+        assert!(
+            moved > 4,
+            "a walk that never had a solid under it proves nothing about the cache"
+        );
+    }
+
     /// The frame after the first builds nothing: every block it wants is one it
     /// already has.
     ///
