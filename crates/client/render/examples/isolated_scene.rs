@@ -944,6 +944,13 @@ fn main() {
             &openshard_uofiles::hues::Hues::load(dir.join("hues.mul")).expect("hues.mul"),
         ),
     );
+    // The fringe, as the client's own F2 sets it — `impostor::Fringe`. Here so
+    // that "I pressed the key and saw nothing" is a question this tool can be
+    // asked: two dumps either side of the switch, diffed, say how many pixels it
+    // actually moves in a *drawn frame* rather than in a census of art.
+    let fringe = openshard_client_render::impostor::Fringe::from_env();
+    items_pass.set_fringe(fringe);
+    eprintln!("scene.fringe = {}", fringe.name());
     let mut mesh_pass = MeshFaceRenderer::new(&device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target {

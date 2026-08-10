@@ -192,6 +192,29 @@ that has to *start* somewhere — a frame dump, a screenshot, a bug report:
 OPENSHARD_FRINGE=discard cargo run -p openshard-playground
 ```
 
+**And what the switch actually shows, measured on one real frame** (Britain
+`(1501, 1659)`, radius 12, `960×720`, `isolated_scene`, which reads
+`OPENSHARD_FRINGE` too):
+
+| against the clamp | pixels that change |
+|---|---|
+| `discard`, the lit frame | **46,427 of 691,200 — 6.7%**, and they are not scattered: a stripe out of every course of every roof, so the house is a colander with its own crates showing through |
+| `volume`, the *normal* plane | 1,691 — **0.245%**, thin lines at the ends of wall runs |
+| `volume`, the lit frame | **0** |
+
+The last row is the one worth keeping: the refused rule changes a facing that
+**nothing in that frame was lit by**, so it is invisible where the clamp's own
+position lie is not. It is also the shape of the answer to "I pressed the key
+and saw nothing" — `discard` is unmissable, so a frame where *nothing* moves is
+a frame the switch never reached.
+
+**Daylight is not the reason it might not reach.** A frame with no sky builds an
+*empty* grid rather than no grid, and `statics::push_volumes` calls `boxes_of`
+regardless, so a sprite is met against its own per-tile box either way — with
+`_IMPOSTOR=0` the same two states still differ by 9.7% of the frame. What a grid
+adds is the box's *name* and its merging, not its existence. (This paragraph is
+here because the opposite was written down first and measured false.)
+
 `impostor::Fringe` is the enum and `SpriteRenderer::set_fringe` is where a frame
 takes it. `frame.rs`'s `the_fringe_switch_draws_three_different_frames` holds
 that the switch reaches the picture at all, in the direction each state claims —

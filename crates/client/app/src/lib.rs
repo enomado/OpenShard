@@ -2205,6 +2205,22 @@ impl ApplicationHandler<link::Update> for App {
                     // what a key gives and a setting read at start-up does not.
                     KeyCode::F2 => {
                         self.fringe = self.fringe.next();
+                        // **The state on a line of its own**, which is the whole
+                        // difference between a knob and a knob that looks
+                        // broken: `discard` cuts a stripe out of every course of
+                        // every roof, so a person who sees no change at all is
+                        // looking at a frame this key never reached, and the log
+                        // is what tells those two apart.
+                        //
+                        // It does *not* need the lights on. Daylight builds an
+                        // empty grid, not an absent one, and
+                        // `statics::push_volumes` calls `boxes_of` regardless —
+                        // so a sprite is met against its own per-tile box either
+                        // way, and only the box's *name* (`SolidId::NOBODY`) and
+                        // its merging are what a grid adds. Measured rather than
+                        // reasoned: `isolated_scene` with `_IMPOSTOR=0` still
+                        // moves 9.7% of the frame's pixels between two of these
+                        // states.
                         tracing::info!(fringe = self.fringe.name(), "fringe");
                         true
                     }
