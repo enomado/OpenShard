@@ -2103,8 +2103,20 @@ impl ApplicationHandler<link::Update> for App {
                 if event.state != ElementState::Pressed {
                     return;
                 }
+                // Escape takes the topmost window down and does *not* quit the
+                // client. Quitting on it was this client's own invention — no
+                // reference client does it — and it cost more than a keystroke:
+                // a window whose right button is eaten by a panel over it (see
+                // [`App::close_top_window`]) had no way out at all, because the
+                // one key a player reaches for closed the whole session
+                // instead. Leaving is `CloseRequested`, which is the window
+                // manager's close box and every other application's answer.
                 if code == KeyCode::Escape {
-                    event_loop.exit();
+                    if self.close_top_window() {
+                        if let Some(window) = self.window.as_ref() {
+                            window.window.request_redraw();
+                        }
+                    }
                     return;
                 }
                 let changed = match code {
@@ -3520,7 +3532,43 @@ impl App {
     /// The right button, which is what the reference client closes a gump with,
     /// and it is *not* a conflict with the right-hold that steers: a press over
     /// a window never reaches the world, the same way a press over a panel does
-    /// not. Answers whether a window was closed.
+    /// not. Answers whether the press was the window's — see
+    /// [`App::close_window`].
+    fn close_window_under_pointer(&mut self) -> bool {
+        let Some(subject) = self.window_under_pointer() else {
+            return false;
+        };
+        self.close_window(subject)
+    }
+
+    /// The topmost of this client's own windows, closed from the keyboard.
+    ///
+    /// [`App::own_windows`] is in painter's order, so its last entry is the one
+    /// drawn over the others — which is what a player means by "this window"
+    /// when they have not pointed at anything.
+    ///
+    /// **Why the keyboard needs a route of its own.** A gump window is drawn by
+    /// this client's own pass and egui is painted *over* it, so a floating panel
+    /// standing on one covers it and takes the mouse with it:
+    /// `Shell::on_window_event` claims the click before any of `window_event`'s
+    /// arms are reached, and the right button never gets as far as
+    /// [`App::close_window_under_pointer`]. The skill window cascades to
+    /// `CONTAINER_ORIGIN`, which is inside where the dev window opens — so for
+    /// as long as Escape quit the client, it was a window with no way out.
+    fn close_top_window(&mut self) -> bool {
+        let Some(subject) = self.own_windows.last().map(|window| window.subject) else {
+            return false;
+        };
+        self.close_window(subject)
+    }
+
+    /// Take one window down, whichever gesture asked for it — the right button
+    /// over it, or Escape on the topmost.
+    ///
+    /// Answers whether the window *took* the request rather than whether it
+    /// closed: a `{ noclose }` dialog stays up and still answers true, because
+    /// the press that asked was the window's and must not reach the world
+    /// behind it.
     ///
     /// Nothing goes out on the wire, for either kind. There is no
     /// close-container packet and no close-paperdoll packet — the shard keeps
@@ -3533,10 +3581,7 @@ impl App {
     /// client's close box answers with. A `{ noclose }` layout has no such
     /// answer to give — `dismiss` refuses it — and the window stays up, which is
     /// what that flag is for.
-    fn close_window_under_pointer(&mut self) -> bool {
-        let Some(subject) = self.window_under_pointer() else {
-            return false;
-        };
+    fn close_window(&mut self, subject: WindowSubject) -> bool {
         if let WindowSubject::Dialog(gump_id) = subject {
             let Some(gump) = self.open_gump(gump_id).cloned() else {
                 return false;

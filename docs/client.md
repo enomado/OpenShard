@@ -3956,3 +3956,31 @@ that the ring reaches it. What was found on the way and left undone:
 - **The names are `skills.mul`'s English, not the localized ones.** `SKILL30.ENU`
   and its `.KOR`/`.JPN`/`.CHT` kin are a different file this crate does not read,
   and a client installed in another language will draw English rows.
+
+## Backlog, found while giving Escape something to close
+
+- ~~**Escape quit the client.**~~ It closes the topmost of this client's own
+  windows now — `App::close_top_window`, the same door the right button goes
+  through (`App::close_window`) — and quitting is `CloseRequested`, the window
+  manager's close box, like every other application. No reference client has
+  ever quit on Escape; ours did, and that turned the defect below from an
+  annoyance into a window that could not be closed at all.
+- 🚩 **egui is painted over this client's gump windows and takes their mouse
+  with it.** The gump pass draws into the surface and `Shell::paint` loads over
+  it, so a floating egui window stands on top of a paperdoll, a container or the
+  skill scroll — and `Shell::on_window_event` claims the click first, so
+  `close_window_under_pointer` never hears the right button that would have
+  closed it. This is not hypothetical: the dev window opens at `(16, 48)` and is
+  360x420, `CONTAINER_ORIGIN` is `(120, 80)` and the skill scroll is 345 wide by
+  ~350 tall — the window a player is most likely to open lands *entirely* inside
+  the panel that eats its clicks. Escape is a way out, not a fix. The fix is a
+  decision nobody has taken: either the gump pass draws after egui and the
+  pointer is offered to our windows first (the reference's own order — the
+  game's interface is on top and the dev shell is a tool), or the windows
+  cascade into the world's viewport, which is a constant answering a layering
+  question and would break again the moment a panel moves.
+- **A window still has no memory, and now it has one more reason to want one.**
+  Both the paperdoll's backlog and the skill window's already ask for this. The
+  point Escape adds: with no memory, the *only* place a window can open is the
+  cascade — so a bad cascade is not something a player can work around by
+  putting the window somewhere sensible once.
