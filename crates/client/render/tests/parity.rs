@@ -66,8 +66,21 @@ use openshard_uofiles::tiledata::TileData;
 /// Chosen for a lit pixel too (backlog: "a gate laid on a frame with no flame
 /// that reaches anything is ... blind about the light") — every place here
 /// gets a carried flame at its own coordinates.
+///
+/// **The first one's `z` was `0`, and that is what made five planes gate
+/// nothing.** A place is a *stance* and not a column: the land at
+/// `(1501, 1659)` is at `z = 20` and the floor standing on it at `27`, so a
+/// camera aimed at `0` is a player twenty units under the ground. What follows
+/// is not "a slightly different view" — [`Cutaway::at`] takes its storey from
+/// the same number, so the whole building above was cut away, **78% of the
+/// frame came back as the cleared background**, and [`light::collect`] found
+/// **one** flame (the carried one) where the same place at `27` finds eight.
+/// No flame reached a single drawn pixel there, which left `light`, `flames`,
+/// `shadow` and `reach` *constant* — and a constant plane reports zero
+/// differing pixels whatever the geometry does. See [`plane_colours`], which
+/// is the gate against ever taking such a zero for agreement again.
 const PLACES: [Point; 3] = [
-    Point::new(1501, 1659, 0),
+    Point::new(1501, 1659, 27),
     Point::new(1497, 1626, 10),
     Point::new(1504, 1655, 27),
 ];
@@ -343,6 +356,43 @@ fn dump_all_planes(
     )
 }
 
+/// **How many distinct colours a plane holds where something was drawn** — the
+/// one number that says whether a count of zero differing pixels is evidence.
+///
+/// `docs/parity.md`'s own backlog: five planes came back `0 of 630,000` from a
+/// positive control that reddened nine others, and the entry recorded two
+/// readings of it — either they are blind to a difference that large, or they
+/// are not drawn from the frame under test at all. Measuring says a third
+/// thing, and it is the one nothing in the file could have said: at the place
+/// the control ran, those planes held **one colour**. A plane with one colour
+/// agrees with every other plane of one colour, and no mutation of the
+/// geometry can make it disagree.
+///
+/// The background is excluded by its alpha rather than by its colour:
+/// `blit.wesl` returns the world image's own alpha, and a fragment nothing was
+/// drawn at carries the cleared `0`. Counting it would let a frame that drew
+/// *nothing at all* read as two colours and pass.
+fn plane_colours(pixels: &[u8]) -> usize {
+    let mut seen = BTreeSet::new();
+    for pixel in pixels.chunks_exact(4) {
+        if pixel[3] != 0 {
+            seen.insert([pixel[0], pixel[1], pixel[2]]);
+        }
+    }
+    seen.len()
+}
+
+/// The planes this gate's own inputs hold constant, which therefore gate
+/// nothing and are excluded from [`plane_colours`]'s assertion by name.
+///
+/// One entry, and it is the sun: every [`frame::Inputs`] here sets
+/// `sun: None`, so `blit.wesl`'s sun branch answers its one "there is no sun"
+/// blue at every pixel. **Listed and not tolerated** — D6 says an input that
+/// differs is set the same or the case is not gated, and the same sentence
+/// read from the other end says a plane the inputs flatten is not gated
+/// either. What varying it would cost is `docs/parity.md`'s backlog.
+const CONSTANT_BY_CONSTRUCTION: [View; 1] = [View::Sun];
+
 /// How many pixels of two same-sized RGBA8 buffers disagree.
 fn differing_pixels(a: &[u8], b: &[u8]) -> usize {
     assert_eq!(
@@ -422,7 +472,27 @@ fn gate_at(
     client_planes
         .into_iter()
         .zip(tool_planes)
-        .map(|((view, a), (_, b))| (view, differing_pixels(&a, &b)))
+        .map(|((view, a), (_, b))| {
+            // **Before the comparison, not after it.** A plane that holds one
+            // colour reports zero differing pixels against anything, so every
+            // count below is a claim about the two routes only where this
+            // holds. It is asserted on the *client's* frame — the reference
+            // side — and at every place and both parities the callers ask for,
+            // which is what makes it a statement about the frames this gate
+            // actually drew rather than about the one somebody measured once.
+            if !CONSTANT_BY_CONSTRUCTION.contains(&view) {
+                assert!(
+                    plane_colours(&a) > 1,
+                    "at {at:?}, {}x{}: the {} plane is one colour over everything this frame drew, \
+                     so its count of differing pixels is not evidence of anything — see PLACES's \
+                     own doc for how a z of 0 emptied four of these",
+                    viewport.0,
+                    viewport.1,
+                    view.name(),
+                );
+            }
+            (view, differing_pixels(&a, &b))
+        })
         .collect()
 }
 

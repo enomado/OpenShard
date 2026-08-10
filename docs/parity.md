@@ -565,6 +565,91 @@ and both mistakes are the kind that repeat.
   tie and is not one; without that written down the next session proposes it
   again and spends the same hour.
 
+### The place that was under the ground ✅ 2026-08-10 — why five planes gated nothing
+
+**The backlog offered two readings and the measurement is a third one neither
+covered.** The entry recorded that dropping the map's statics from the tool's
+route reddened nine planes while `light`, `flames`, `shadow`, `reach` and `sun`
+came back `0 of 630,000`, and asked whether those planes were blind to a
+difference that large or were not being drawn from the frame under test at all.
+Both are wrong. **At the place the control ran, those planes held one colour.**
+A plane of one colour agrees with every other plane of one colour, and no
+mutation of the geometry can make it disagree — the zero was never about the
+lighting.
+
+*What was measured, per plane, on one assembled frame at each of `PLACES`
+(distinct colours where something was drawn, and the dominant colour's share of
+the whole viewport):*
+
+```
+(1501,1659,0)    1 light    78.0% of the frame is cleared background
+  kind 3 colours · light 2 · flames 2 · shadow 2 · reach 2 · sun 2
+(1501,1659,27)   8 lights   no background at all
+  kind 2 colours · light 81 · flames 81 · shadow 13 · reach 2 · sun 1
+```
+
+**The cause is one field, and it is a `z`.** `PLACES[0]` was
+`Point::new(1501, 1659, 0)`, where the land is at `z = 20` and the floor
+standing on it at `27` — a camera aimed twenty units under the ground. A place
+is a *stance* and not a column, and `Cutaway::at` takes its storey from the same
+number: the whole building above was cut away, 78% of the frame came back as the
+cleared background, and `light::collect` found **one** flame — the carried one,
+which no walk of the map can miss — where the same place at `27` finds eight.
+Nothing reached a drawn pixel, so four of the five planes were background plus
+one constant. The fifth, `sun`, is one colour at all three places and always
+was: every frame here sets `sun: None`.
+
+**`occluders` at 1,562 pixels beside `sky` at 41,925 has the same root and is
+worth stating** rather than left as the anomaly the entry made of it. Both read
+the same grid and the grids genuinely differ; what differs is *how much of a
+frame each can speak about*. The sky field is a property of a **column**, so
+removing a building opens the sky over every tile it stood on — 30% of what that
+frame drew. The occluders view answers about the **cell the drawn fragment
+itself stands in**, and in a frame that is three-quarters background and
+cut away besides, almost every surviving fragment is land outside the house. It
+is not a plane disagreeing with its neighbour; it is two planes with different
+domains, read as though they had one.
+
+*Repaired, and the repair is two lines and a gate:*
+
+- **`PLACES[0]` is `(1501, 1659, 27)`.** The frame is a frame — no background,
+  eight flames, and `light`/`flames`/`shadow`/`reach` carry 81/81/13/2 colours.
+- **`plane_colours` runs before every comparison, on the client's own side, at
+  every place and both parities.** A plane that is one colour over everything
+  the frame drew is asserted red *there*, with its name in the message, so a
+  count of zero differing pixels is only ever reported about a plane that could
+  have differed. The background is excluded by its alpha and not by its colour:
+  counting it would let a frame that drew nothing at all read as two colours and
+  pass.
+- **`CONSTANT_BY_CONSTRUCTION` is the list, and it has one entry.** `View::Sun`,
+  because `sun: None`. D6 says an input that differs is set the same or the case
+  is not gated; read from the other end, the same sentence says a plane the
+  inputs flatten is not gated either — so it is *listed*, not tolerated, and the
+  backlog carries what varying the sun would cost.
+
+*Witnessed by mutation:* `PLACES[0]`'s `z` put back to `0` turns both
+`the_map_route_and_the_item_route_agree_pixel_for_pixel_at_three_real_places`
+and `the_gate_is_red_when_the_tool_forgets_the_maps_statics` red, naming the
+`light` plane. Restored, all three tests in the file are green, and **the
+positive control now moves sixteen planes where it moved nine**:
+
+```
+lit 213,581 · place 216,665 · kind 217,847 · height 217,631
+normal 126,050 · normal-geometry 126,050 · normal-sprites 5,199
+silhouette-art 16,999 · silhouette-box 16,999 · solid 191,058
+occluders 145,407 · sky 309,198
+light 79,068 · flames 77,956 · shadow 113,859 · reach 54,100
+sun 0   ← the listed constant, and the only one
+```
+
+*What this teaches, and it is the same lesson as the window's parity:* **a
+detector must report what it counted.** The gate had been printing "every plane
+byte-identical" over planes that held one colour, and a person reading that line
+has no way to tell a comparison that passed from a comparison that had nothing
+to compare. `normal-sprites` at 90 pixels in the old run was the same signal and
+was read as "no geometry in it by construction" — which is true, and was not the
+question.
+
 ### P4 — the geometry, in census order
 
 `examples/geometry_census.rs` counts what each box claims. Over 11,184 statics
@@ -876,21 +961,40 @@ a test red, and the test names which grid met which.
   `client/app` asserts what rectangle an atlas is grown over, and this fix
   closes the gap by reading rather than by a gate. That absence of coverage,
   not the wiring, is what is left to look at next.
-- 🚩 **P3's positive control moves nine planes and leaves five of the lighting's
-  own untouched.** Dropping every one of the map's statics from the tool's route
-  at `(1501, 1659)` reddens `lit`, `place`, `kind`, `height`, `normal`,
-  `normal-geometry`, `solid`, `occluders` and `sky` — and `light`, `flames`,
-  `shadow`, `reach` and `sun` come back **0 of 630,000**, alongside
-  `normal-sprites`, which has no geometry in it by construction. `occluders`
-  differing by 1,513 pixels while `shadow` does not is the one that wants
-  reading: a frame whose occluder grid demonstrably changed casts, so far as
-  that plane can say, exactly the same shadows. Either those planes are
-  genuinely blind to a difference this large (in which case the gate is green
-  about them for a reason nobody has written down) or they are not being drawn
-  from the frame under test at all — which is the black `View::Solid` of
-  `tests/cost.rs` again, and the last backlog item below is the same suspicion
-  from the other end. Nothing here is diagnosed; it is what the control printed
-  on 2026-08-10, recorded before it is explained.
+- ✅ **P3's positive control left five of the lighting's own planes untouched**
+  — diagnosed and closed 2026-08-10; see "The place that was under the ground"
+  below.
+- 🚩 **`(1501, 1659, 0)` is in three more places, and it is the same empty
+  frame.** `tests/dump.rs`'s `AT` is that point verbatim, so every picture that
+  file gates is three-quarters cleared background with one flame in it — the
+  planes it dumps are the ones this section just showed to be constant there.
+  And `docs/silhouettes.md` has the *symptom* written down already, diagnosed
+  as far as it could be: `frame::assemble` at that place "returns 595 quads of
+  land and **zero** static quads", read there as "the cull is right and the
+  scene was the wrong scene". It is right, and the reason is the `z`: the land
+  is at 20, the floor at 27, and a camera at 0 cuts the building away above
+  itself. Three documents met the same number from three directions and none of
+  them owned it. What is *not* obvious is what each of those callers should be
+  aimed at instead — `dump.rs` gates a readback and may not care, and the `4x`
+  measurement in `silhouettes.md` would have to be re-run — so this is a
+  finding to spend, not a rename to apply.
+- 🚩 **No frame this gate draws has a sun in it.** `sun: None` at every call
+  site, so `View::Sun` is one colour at all three places and is in
+  `CONSTANT_BY_CONSTRUCTION` for that reason. The sun is the one lighting term
+  with no falloff and no place — one direction for the whole world, walked
+  through the same grid by `sunlight()` — and nothing here has ever compared
+  two routes with it on. A fourth case with a sun would gate it; what it costs
+  is one more assembly per place.
+- 🚩 **The sky *field* never reaches `lit` in any frame anybody compares.**
+  Both the gate and the client's own default flatten the night ambient
+  (`Ambient::flattened`, `App::sky_field` off), which folds the sky's share into
+  the ground term and leaves `lighting.sky` at zero — so `share` multiplies
+  nothing and the field cannot move a lit pixel. `View::Sky` still draws it, and
+  that is how the positive control reddens 309,198 pixels there while `light`
+  moves for an entirely different reason. It is an honest default on both sides
+  and therefore not a parity defect; what it means is that the whole of
+  `docs/lighting_world.md`'s subject is gated by exactly one plane, and by no
+  frame anybody looks at.
 - 🚩 **The other three tools still read no shard database.** `isolated_scene` now
   does (see the section above), and `tile_probe`, `onsite.rs` and
   `geometry_census.rs` do not — so each of them still answers "there is no
