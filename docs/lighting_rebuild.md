@@ -2390,8 +2390,13 @@ Things noticed while writing this, not blocking any phase:
   land clear of it and blaze. Being a point of nothing they cannot be excused by
   identity either.
   <br>
-  🚩 **And the person who reported it named the shape of the answer: give a
-  floor real bounds.** A lid is the one primitive in this grid that is a
+  ✅ **And the person who reported it named the shape of the answer: give a
+  floor real bounds** — done 2026-08-10, `docs/parity.md`'s **P4.1**, which
+  carries what landed and the one thing this paragraph got wrong (the
+  thickness: a `z` unit puts the top of every interior wall under a storey into
+  shadow, measured, so `occlusion::LID_THICKNESS` is `1/64` and argued from the
+  wire's resolution and the screen's instead). A lid was the one primitive in
+  this grid that was a
   *plane* — `min.z == max.z` — and every defect on this list that involves a
   floor is a consequence of that degeneracy rather than of any one rule: the
   corner leak (an interval of no length), the strictness `crosses` needs (a

@@ -181,14 +181,20 @@ impl Solid {
 // flat on given a thickness to be seen by. Two kinds needed that once. A panel
 // stopped needing it at step 23.5, when `Solid::box_of` gave it a real
 // `PANEL_THICKNESS` slab; a lid stopped needing it here, when the same function
-// gave a floor a `z` unit of its own. `DRAWN_LID_THICKNESS` was two `z` units —
-// eight pixels of side band at 1:1, chosen to be *seen* — and the difference
-// between it and the one unit the record now holds is exactly the reason it had
-// to go: an instrument that draws a floor twice as deep as the shadow walk meets
-// it is a picture of somewhere the renderer is not, which is the one failure a
-// view of the geometry may not have. Four pixels of band is what a floor really
-// is, and if that reads too thin the answer is a view that says so rather than a
-// second number.
+// gave a floor an `occlusion::LID_THICKNESS` of its own.
+//
+// **The two numbers were never near each other, and that is why this had to go
+// rather than be adjusted.** `DRAWN_LID_THICKNESS` was two `z` units — eight
+// pixels of side band at 1:1, chosen to be *seen*; the record's own depth is a
+// sixty-fourth of a unit, chosen NOT to be, because a lid's depth is invented
+// into the room below it and any of it that a person could see would be a
+// ceiling that had come down. An instrument drawing a floor a hundred and
+// twenty-eight times deeper than the shadow walk meets it is a picture of
+// somewhere the renderer is not, which is the one failure a view of the
+// geometry may not have. A floor now reads as very nearly the plane it very
+// nearly is, and if that is too thin to find on screen the answer is a view
+// that says where floors are — a highlight, a count, a colour — and not a
+// second thickness.
 //
 // What it did *not* do is worth keeping too: it stopped clamping `z` into an
 // `i8` when `docs/occluders.md`'s S1 took that pin off the wire, for the same

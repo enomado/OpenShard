@@ -527,7 +527,7 @@ const RAY_TANGENT_TOLERANCE: f32 = 1.0e-6;
 // counting that touch would have laid half a floor's shadow across every room lit
 // from inside it.
 //
-// A lid is a box a `z` unit deep now (`occlusion::Solid::box_of`), so both halves
+// A lid is a box a `LID_THICKNESS` deep now (`occlusion::Solid::box_of`), so both halves
 // are `ray_vs_solid`'s: a ray that leaves the top face never enters the box below
 // it, and one that goes from the storey above to the storey below genuinely
 // crosses a volume. A plane's worth of special pleading in two shading languages
@@ -651,8 +651,8 @@ fn own_side(stance: u32) -> u32 {
 fn lit_plane(stance: u32) -> vec2<f32> {
     switch stance {
         // A lid looks up, and the plane it looks out of is its box's `hi` corner
-        // — the surface the art drew, with a `z` unit of the floor's own
-        // thickness hanging below it.
+        // — the surface the art drew, with the floor's own invented depth
+        // hanging below it.
         case STANCE_FLAT: { return vec2<f32>(2.0, 1.0); }
         case STANCE_FACE_NORTH: { return vec2<f32>(1.0, -1.0); }
         case STANCE_FACE_SOUTH: { return vec2<f32>(1.0, 1.0); }
@@ -1071,7 +1071,7 @@ fn primitive_stopped(
     if edges == 0u || edges == EDGE_MASK {
         // A **body** — a whole tile that stands up and whose art would
         // not say which way, **or a lid**: a floor, a rug, a plank, which is a
-        // body one `z` unit deep and no longer a rule of its own.
+        // body a `LID_THICKNESS` deep and no longer a rule of its own.
         // `ray_vs_solid` is an exact slab test, so a hit already means the
         // segment genuinely passed through the box over
         // `hit.entered..hit.leaves`: occlusion is the primitive's own opacity
@@ -1086,7 +1086,7 @@ fn primitive_stopped(
         // footprint it said so at one `t` where both ends of the `z` interval
         // were one number — a floor leaking one bright point per corner of the
         // grid, reported at `(1492, 1642)`, `z 28`. `Solid::box_of` gives a lid a
-        // `z` unit of thickness now, and the strictness `crosses` was protecting
+        // span of its own now, and the strictness `crosses` was protecting
         // — a candle standing on the floor it lights, both ends of every ray on
         // that floor's own plane — is what the geometry says by itself: those
         // rays leave the top face and never enter the box beneath it.

@@ -43,11 +43,11 @@ enum Claim {
     /// base edge measured — `docs/footprints.md`'s S3. The height is still
     /// whatever `tiledata` gives, unmeasured: D1's other half.
     Footprint,
-    /// A lid: the whole tile across, one `z` unit deep. Measured, and a body
+    /// A lid: the whole tile across, `LID_THICKNESS` deep. Measured, and a body
     /// like every other since `docs/parity.md`'s P4 step 1 — it has side faces
     /// with area and an interior a ray can be inside of. The one number it does
-    /// not measure is that depth, which is the `z` unit the wire states a height
-    /// in rather than anything the art said.
+    /// not measure is that depth, which is `occlusion::LID_THICKNESS` — argued
+    /// from the wire's resolution and the screen's, not from the art.
     Lid,
     /// One or two panels on the edges the silhouette named, each inset by
     /// `PANEL_THICKNESS` — a depth no art states.
@@ -63,7 +63,7 @@ impl Claim {
             Claim::WholeTileUnread => "whole tile, the art would not say",
             Claim::WholeTileClimbable => "whole tile, a climbable that would not fit",
             Claim::Footprint => "a measured footprint, narrower than the whole tile",
-            Claim::Lid => "a lid — measured, one z unit deep",
+            Claim::Lid => "a lid — measured, LID_THICKNESS deep",
             Claim::Panels => "panels on the named edges, PANEL_THICKNESS deep",
             Claim::Prism => "a fitted prism, one body a tread",
         }
@@ -148,9 +148,15 @@ fn main() {
                     clear += 1;
                     // The combination that produced this session's specks: no
                     // name in the grid, and a box with side faces to be met on.
+                    // **Deeper than the invented minimum, not merely non-flat.**
+                    // Since `docs/parity.md`'s P4 step 1 a lid is a box too, one
+                    // `LID_THICKNESS` deep — a quarter of a real pixel at the
+                    // deepest zoom — so `min.z != max.z` would now be true of
+                    // every floor in the world and this share would jump without
+                    // a single box having grown a face anybody can meet.
                     let mut has_height = false;
                     occlusion::boxes_of(x, y, item.z, tile, &shape, |_, _, solid| {
-                        has_height |= solid.min.z != solid.max.z;
+                        has_height |= solid.max.z - solid.min.z > occlusion::LID_THICKNESS;
                     });
                     clear_with_height += u32::from(has_height);
                 }

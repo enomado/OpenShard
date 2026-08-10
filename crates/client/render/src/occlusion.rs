@@ -224,6 +224,45 @@ impl std::ops::BitOr for Edges {
 /// already spent, moved into the geometry it was always standing in for
 /// rather than duplicated beside it.
 pub const PANEL_THICKNESS: f64 = 0.2;
+/// How thick a lid is, in `z` units: real geometry, hanging **below** the
+/// surface it is — `docs/parity.md`'s P4 step 1.
+///
+/// A lid used to be a plane, `min.z == max.z`, and every defect involving a
+/// floor was a consequence of that degeneracy rather than of any one rule: the
+/// corner leak (an interval of no length), the strictness `light::crosses`
+/// needed for a candle on the floor it lights, a fragment sitting exactly *in*
+/// the plane and so on neither side of it, and
+/// [`crate::impostor::meets`] having to be told a lid's side faces are lines.
+/// Given a real span each of those dissolves rather than being ruled about: a
+/// ray from its top going up never enters it, one going down does, and its
+/// faces have area.
+///
+/// **Below the surface, because the surface is what a lid is.** The top is the
+/// plane the art draws and the plane a walker stands on, so the invented depth
+/// can only go downwards — a slab hanging *above* would put a floor at the
+/// height of the storey over it, and would move the box's own `max.z`, which is
+/// where [`crate::impostor::meets`] puts every fragment of it.
+///
+/// **1/64, and unlike [`PANEL_THICKNESS`] it is chosen NOT to be seen.** A
+/// panel's 0.2 of a tile is invented inward into its own tile's empty air; a lid's
+/// depth is invented into the *room below it*, because the client's model has
+/// the wall of one storey and the floor of the next meeting at exactly one
+/// plane. Whatever this number is, it lowers that room's ceiling by itself:
+/// measured on `scene::storey_over_a_torch`, a whole `z` unit of it puts the
+/// top of every interior wall under a storey into full shadow — four screen
+/// pixels at 1:1 — where the sconce below lights everything else.
+///
+/// So the two bounds it is picked between, and it is picked at neither end:
+///
+/// - **Above the wire's resolution.** A `z` reaches `±128` and the wire carries
+///   `f32` ([`Solid::wire_box`]), whose ulp there is `2^-16`. This is `2^-6`:
+///   a thousand of them, so no rounding anywhere can collapse the span back to
+///   the plane it replaced.
+/// - **Under what a screen can show.** One `z` unit is
+///   [`crate::camera::Z_STEP`] — four virtual pixels — and the ladder magnifies
+///   to `4x`, so a `z` unit is at most sixteen *real* pixels and this is a
+///   quarter of one at the deepest rung the wheel reaches.
+pub const LID_THICKNESS: f64 = 1.0 / 64.0;
 /// The bit that says a cell holds anything at all.
 ///
 /// Separate from the mask because a lid's mask is legitimately zero, and the
@@ -816,7 +855,7 @@ impl Aperture {
 /// the only geometry: what a view draws and what the walk is tested against come
 /// from one record, which is the whole of what step 23.1 buys. **Every kind is a
 /// real slab now** — a panel is [`PANEL_THICKNESS`] deep into the tile it stands
-/// on, and a lid hangs one `z` unit below the surface it is (`docs/parity.md`'s
+/// on, and a lid hangs [`LID_THICKNESS`] below the surface it is (`docs/parity.md`'s
 /// P4 step 1). Both numbers are the geometry the walk itself reads rather than a
 /// nominal thickness sitting in the field beside it; the thickness a *drawing*
 /// wants is still the view's, and [`crate::solid::drawn`] is where that lives.
@@ -840,7 +879,7 @@ pub struct Solid {
     /// axes and `max` the high one.
     ///
     /// A real volume whatever the kind — a panel is [`PANEL_THICKNESS`] deep
-    /// inward from the plane its face pixels lie on, a lid hangs one `z` unit
+    /// inward from the plane its face pixels lie on, a lid hangs [`LID_THICKNESS`]
     /// below the surface it is, a body fills its whole tile. See
     /// [`Solid::box_of`] for each, and the type doc for why nothing nominal is
     /// stored here.
@@ -980,7 +1019,7 @@ impl Solid {
     /// chances to put a panel on the wrong edge — which decision 39.8's test
     /// caught once already, in the view, where it read as a defect in the map.
     ///
-    /// Every kind comes out a real volume. A lid hangs one `z` unit below the
+    /// Every kind comes out a real volume. A lid hangs [`LID_THICKNESS`] below the
     /// height it lies at — see the branch itself for why the thickness is that
     /// number and why it is taken off the bottom. A panel is a slab,
     /// [`PANEL_THICKNESS`] deep, fattened inward from the plane its face pixels
@@ -1021,36 +1060,17 @@ impl Solid {
         );
         match edges {
             // A lid — a floor, a roof, a plank. The whole tile across, hanging
-            // one `z` unit below the height it lies at.
+            // [`LID_THICKNESS`] below the height it lies at: **a floor is a
+            // body**, `docs/parity.md`'s P4 step 1. See that constant for what
+            // the degeneracy cost, why the depth goes downwards, and why its
+            // size is argued from both ends rather than chosen.
             //
-            // **A floor is a body**, `docs/parity.md`'s P4 step 1 and
-            // `docs/lighting_rebuild.md`'s floor entry: a lid used to come out
-            // *flat*, `min.z == max.z`, and every defect involving a floor was a
-            // consequence of that degeneracy rather than of any one rule — the
-            // corner leak (an interval of no length), the strictness [`crosses`]
-            // needed for a candle on the floor it lights, a fragment sitting
-            // exactly *in* the plane and so on neither side of it, and
-            // [`crate::impostor::meets`] having to be told that a lid's side
-            // faces are lines. Given real bounds each of those dissolves rather
-            // than being ruled about: a ray from its top going up never enters
-            // it, one going down does, and its faces have area.
-            //
-            // **The thickness is one `z` unit and that is the one number here to
-            // justify rather than pick.** [`crate::camera::Z_STEP`] is what one
-            // step of height *is* on this wire; a floor thinner than the quantum
-            // its own height is stated in is a floor the protocol cannot
-            // describe, and a thicker one would swallow whatever stands on the
-            // storey below.
-            //
-            // **It hangs below the surface, and only when there is no span
-            // already.** What a lid *is* is its top — that is the plane a walk
-            // crosses and the plane the art draws — so the unit is taken off the
-            // bottom. `bottom` and `top` are both kept because a static with a
-            // height is a lid whose span really is deep (a plank is not, a sloped
-            // roof section is), and such a lid is a body already: `min(bottom,
-            // top - 1)` leaves it exactly where it stood and only ever moves the
-            // degenerate case.
-            Edges::NONE => min.z = f64::from(bottom.min(top - 1)),
+            // **Only where there is no span already.** `bottom` and `top` are
+            // both kept, because a static with a height is a lid whose span
+            // really is deep — a plank is not, a sloped roof section is — and
+            // such a lid is a body without any help from here. The `min` is what
+            // says so: it moves the degenerate case and nothing else.
+            Edges::NONE => min.z = min.z.min(f64::from(top) - LID_THICKNESS),
             // A body: the whole tile it stands on, from its base to its height,
             // which is what every fallback in this module falls back to.
             Edges::ANY => {}
@@ -4170,7 +4190,7 @@ mod tests {
         }
     }
 
-    /// And the other two kinds: a lid hangs one `z` unit under the surface it
+    /// And the other two kinds: a lid hangs [`LID_THICKNESS`] under the surface it
     /// is, and a body is exactly its tile.
     ///
     /// The companion to the test above, and the same argument said about the
@@ -4193,8 +4213,8 @@ mod tests {
         // block of Britain `artscan`'s `column` example reads.
         let lid = stands_at(x, y, 20, 20, Edges::NONE).space;
         assert!(
-            (lid.max.z - 20.0).abs() < 1e-9 && (lid.min.z - 19.0).abs() < 1e-9,
-            "a lid's top is the height it lies at and it hangs one z unit under it, it is {lid:?}",
+            (lid.max.z - 20.0).abs() < 1e-9 && (lid.min.z - (20.0 - LID_THICKNESS)).abs() < 1e-9,
+            "a lid's top is the height it lies at and it hangs LID_THICKNESS under it, it is {lid:?}",
         );
         // A lid that has a span of its own — a `FLOOR` static with a height, a
         // sloped roof section — is a body already and keeps every unit of it.

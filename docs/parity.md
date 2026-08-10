@@ -575,12 +575,7 @@ height anyway.
 
 The order follows the counts and the blast radius:
 
-1. **A floor is a body** — 39.6% of the world is a plane, and
-   `docs/lighting_rebuild.md`'s floor entry already scopes what changes:
-   `Solid::box_of` gives a lid `bottom - 1 .. top`, the walk's `Edges::NONE` arm
-   becomes an opacity, `occlusion::merge` folds floors as bodies, and
-   `impostor::meets`'s "a lid has no side face" guard dies. The thickness is one
-   `Z_STEP`, which is the quantum the wire states a height in.
+1. **A floor is a body** ✅ 2026-08-10 — see below.
 2. **A `CLEAR` piece with a box** — 15.1%, and the pair that ends both the
    cornice entry and the floor entry. Two honest answers and the plan picks one:
    it stands in the grid (and has a name), or it is given no box (and is a
@@ -593,6 +588,96 @@ The order follows the counts and the blast radius:
 
 Each of the four re-runs the census as its own done-when, and the numbers go in
 `docs/lighting_rebuild.md`'s census section beside the ones above.
+
+#### P4.1 — a floor is a body ✅ 2026-08-10, and the thickness is not the one the plan named
+
+`occlusion::LID_THICKNESS`: a lid's box is `top - 1/64 .. top`, and every rule
+that existed because a lid was a *plane* is gone with the plane.
+
+- **`light::crosses` is deleted, in both languages.** It answered whether a lid
+  was in the way as a crossing of a plane rather than a passage through a box,
+  and it needed a strictness argued at length — a candle standing on the floor
+  it lights sends every ray from that floor's own `z`. `ray_vs_solid`'s exact
+  slab test is both halves now. `blit.wesl`'s copy went with it, which is the
+  only way a formula written twice goes away at all.
+- **`walk_primitives`'s `Edges::NONE` arm is the body's arm**, one `match` arm
+  for both.
+- **`solid::drawn` and `DRAWN_LID_THICKNESS` are deleted.** The debug view
+  fattened a lid by two `z` units so a person could see it — twice as deep as
+  the walk met it. A view of the geometry that draws somewhere the renderer is
+  not is the one failure an instrument may not have; it draws `solid.space` now,
+  and `drawn` had no other caller.
+- `occlusion::merge` needed nothing: it keys on `edges` and spans, so lids fold
+  as bodies without being told. `impostor::meets`'s "a face with no area is not
+  a face" guard stays — it is a rule about the geometry it is handed, and a
+  test may still state a degenerate box — but no box `box_of` builds trips it.
+
+**The gate said no to `Z_STEP`, and that is the entry worth keeping.** The plan
+named one `z` unit, "the quantum the wire states a height in". A floor's depth
+is invented *into the room below it*: the client's model has the wall of one
+storey and the floor of the next meeting at exactly one plane, so any downward
+thickness lowers that room's ceiling. Measured on `scene::storey_over_a_torch`,
+with a sconce two units under it:
+
+```
+z 20.00   0.0298  ← the ambient exactly
+z 19.94   0.0298
+z 19.50   0.0298     the whole of 19..20, in shadow
+z 19.06   0.0298
+z 19.00   0.2872  ← lit
+z 18.00   0.2914
+```
+
+One `z` unit is four screen pixels at 1:1: **a dark band along the top of every
+interior wall under a storey**, where everything below it is lit.
+`a_room_lights_its_own_wall_and_not_the_storey_over_it` is the fixture
+`docs/lighting_rebuild.md`'s floor entry named as the one that catches both
+directions, and it caught this.
+
+So the number is argued from **both** ends instead of taken from the wire, and
+`LID_THICKNESS`'s own doc carries it: above the wire's `f32` ulp at `z = 128` by
+a factor of a thousand, and under a quarter of a *real* pixel at `4x`, the
+deepest rung the ladder reaches. At that depth the ray in the measurement above
+drops out of the slab before it reaches the neighbouring lid's footprint at all
+— the geometry answers "not in the way" rather than a rule answering it — and
+every scene is green.
+
+**A rule that was tried and refuted, recorded so it is not tried again**: *a ray
+that starts inside a primitive is not stopped by it.* It rescues the band on its
+own terms — a fragment buried in a volume is not shadowed by the volume around
+it — and it breaks the wall run: `light_runs_along_a_wall_and_stops_across_it`
+and `a_merged_run_answers_every_ray_the_way_its_own_pieces_did` both go red,
+because a face pixel is drawn `INSIDE` its own panel's slab and the panel beside
+it contains that point too. The exemption for a surface cut into several
+primitives is `on_the_lit_surface`'s plane test and it is already there.
+
+*The census, re-run as this step's own done-when* (`1501 1659 20`, and the
+shares are not the ones at the head of P4 — `8ba38f1` moved four of them under
+this step, so read it as this tool's answer today rather than as a delta):
+
+```
+1381 statics on 41x41 tiles, 138 distinct graphics
+   87   6.3%  a fitted prism, one body a tread
+  484  35.0%  a lid — measured, LID_THICKNESS deep
+   18   1.3%  a measured footprint
+  418  30.3%  panels on the named edges, PANEL_THICKNESS deep
+    7   0.5%  whole tile, a climbable that would not fit
+  367  26.6%  whole tile, the art would not say
+  403  29.2%  a point of NO primitive, 300 of them (21.7%) with real height
+```
+
+**The last line is the one this step could have moved and did not.** "Real
+height" is a box with a side face a fragment can be answered with, and every
+lid in the world has one now — so the count was made to ask
+`max.z - min.z > LID_THICKNESS` rather than `min.z != max.z`, which is the same
+question it was always asking. A share that jumped without a box growing a face
+anybody can meet would have been the census lying about its own change.
+
+*Done:* `cargo test -p openshard-client-render` is green apart from
+`frame.rs`'s `a_sprite_pixel_meets_the_same_box_on_both_sides`, which is
+`62a18a5`'s — that commit takes the `discard` out of `statics.wesl` and the test
+still asserts a miss is not drawn. The lighting suite (44), `traced` (8),
+`parity` (3) and `dump` (6) all run at Britain with the client's own files.
 
 ### P5 — the window-parity finding, made permanent ✅ 2026-08-10
 

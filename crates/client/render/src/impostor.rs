@@ -301,7 +301,7 @@ impl Meeting {
 /// `docs/lighting_rebuild.md` phase 6i's floor entry names.
 ///
 /// **No box `Solid::box_of` builds is flat any more** — `docs/parity.md`'s P4
-/// step 1 gave a lid a `z` unit of thickness, which is the same defect's other
+/// step 1 gave a lid a real span, which is the same defect's other
 /// cure and the one that also answers for the lattice's *neighbours*, a rounding
 /// out on either side. The rule stays because it is a rule about the geometry it
 /// is handed and not about where that geometry came from: a caller may state a

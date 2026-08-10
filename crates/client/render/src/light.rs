@@ -1417,7 +1417,7 @@ const RAY_CUTOFF: f32 = 0.004;
 // touch would have laid half a floor's shadow across every room lit from inside
 // it.
 //
-// `occlusion::Solid::box_of` gives a lid a `z` unit of thickness now, so
+// `occlusion::Solid::box_of` gives a lid a span of its own now, so
 // `ray_vs_solid` is both halves: a ray from the storey above to the storey below
 // genuinely crosses a volume, and a ray in the top face's own plane is excused by
 // `on_the_lit_surface` on the same terms a run of wall is — the neighbouring
@@ -1453,10 +1453,12 @@ const RAY_CUTOFF: f32 = 0.004;
 // lifted a hundred-and-twenty-eighth clear of its own surface is a ray that
 // escapes the occluders standing at that surface's own height.
 //
-// `crosses` needs no nudge either, and never did: its crossing test is strict, so
-// a ray leaving a lid's plane exactly — `under >= high` — reads zero rather than
-// half. That strictness is the same sentence [`ON_TOP`] was, spelled in the place
-// the geometry is decided instead of in the ray's start.
+// `crosses` needed no nudge either, and never did: its crossing test was strict,
+// so a ray leaving a lid's plane exactly — `under >= high` — read zero rather
+// than half. That strictness was the same sentence [`ON_TOP`] was, spelled in the
+// place the geometry is decided instead of in the ray's start — and it is the
+// geometry outright now that a lid is a box, which is `crosses`'s own grave note
+// below.
 
 // **`on_surface` lived here** and went with its only reader, `same_run` —
 // `docs/occluders.md`'s S4. It asked whether a fragment's `z` lay inside a
@@ -1684,9 +1686,9 @@ fn ray_vs_solid(from: [f32; 3], to: [f32; 3], solid: &crate::solid::Solid) -> Op
 //     `a_vertical_ray_meets_what_stands_over_it_whatever_shape_it_is` measures a
 //     fragment inside a wall's own thickness, lit from straight overhead through
 //     twenty `z` of wall, and the branch handed it the full flame;
-//   - it needed [`crosses`] and `over_footprint` — [`ray_vs_solid`]'s two halves
+//   - it needed `crosses` and `over_footprint` — [`ray_vs_solid`]'s two halves
 //     spelled again — because a vertical ray's height answer was once *soft*.
-//     Phase 5 made [`crosses`] a hard crossing test, so the two halves are the
+//     Phase 5 made `crosses` a hard crossing test, so the two halves are the
 //     whole of `ray_vs_solid` and the split had nothing left to buy;
 //   - and it had twice had to grow a gate to stop being a different answer from
 //     the main path: once for sub-tile lids, once when a fitted climbable's
@@ -1737,8 +1739,8 @@ fn lit_plane(surface: Surface) -> Option<(usize, bool)> {
     match surface {
         Surface::Upright => None,
         // A lid looks up, and the plane it looks out of is its box's `max.z` —
-        // the surface the art drew, with a `z` unit of the floor's own thickness
-        // hanging below it.
+        // the surface the art drew, with the floor's own invented depth hanging
+        // below it.
         Surface::Flat => Some((2, true)),
         Surface::Face(face) => {
             let [x, y] = face.outward();
@@ -3055,7 +3057,7 @@ fn walk_primitives(
         let by_surface = match stands.edges {
             // A **lid is a body**, and this arm is the body's — `docs/parity.md`
             // P4 step 1. A lid used to be a plane in `z` and needed a rule of its
-            // own: [`crosses`] over the segment's two ends, because a hit against
+            // own: `crosses` over the segment's two ends, because a hit against
             // a degenerate box says only that the ray touched the plane, and at a
             // corner of the footprint it says that at one `t` where every `z`
             // collapses to one number. A floor leaked one bright point per corner
@@ -3063,11 +3065,11 @@ fn walk_primitives(
             // `docs/lighting_rebuild.md` phase 6i, and cured there by a widening
             // rather than by geometry.
             //
-            // [`crate::occlusion::Solid::box_of`] gives a lid a `z` unit of
-            // thickness now, so [`ray_vs_solid`]'s exact slab test answers it the
+            // [`crate::occlusion::Solid::box_of`] gives a lid a span of its own
+            // now, so [`ray_vs_solid`]'s exact slab test answers it the
             // way it answers every other box: a `Some` here means the segment
             // genuinely went from one side of the floor to the other. What
-            // [`crosses`]'s strictness was protecting — a candle standing on the
+            // `crosses`'s strictness was protecting — a candle standing on the
             // floor it lights, sending every ray from that floor's own plane —
             // is protected by the geometry instead: those rays leave the top face
             // and never enter the box below it, and where the floor is cut into
@@ -3471,7 +3473,7 @@ mod tests {
 
     /// A lid stops a ray that goes through it and nothing that runs along it.
     ///
-    /// **The three cases [`crosses`] existed for, asked of the geometry that
+    /// **The three cases `crosses` existed for, asked of the geometry that
     /// retired it** — `docs/parity.md`'s P4 step 1. They are the same three and
     /// they are the point of the whole change: a floor of the height a real one
     /// has (**zero** in `tiledata.mul`, so `bottom == top`) is a box spanning
@@ -3487,11 +3489,16 @@ mod tests {
     #[test]
     fn a_floor_stops_a_ray_through_it_and_not_one_along_it() {
         let floor = crate::occlusion::Solid::box_of(0, 0, 20, 20, Edges::NONE);
-        assert_eq!(floor.min.z, 19.0, "a lid hangs one z unit below its own top");
-        assert_eq!(floor.max.z, 20.0);
+        assert_eq!(floor.max.z, 20.0, "a lid's top is the height it lies at");
+        assert_eq!(
+            floor.min.z,
+            20.0 - crate::occlusion::LID_THICKNESS,
+            "and it hangs its own invented depth under that",
+        );
 
         // A ray from a wall pixel at 25 down to a torch at 5, straight through
-        // the floor at 20: a real interval inside the box.
+        // the floor at 20: a real interval inside the box, however thin the box
+        // is — which is the whole of what a span buys over a plane.
         let (entered, leaves) =
             ray_vs_solid([0.5, 0.5, 25.0], [0.5, 0.5, 5.0], &floor).expect("it goes through");
         assert!(entered < leaves, "{entered}..{leaves} is a crossing");
@@ -4536,7 +4543,7 @@ mod tests {
     /// `docs/lighting_height.md`'s backlog entry, and the reason the ray above
     /// this one is *slanted*: both walks take a shortcut when a ray has no
     /// horizontal run — there is no direction to step in, so only this one cell
-    /// can hold anything — and the shortcut applied [`crosses`] to **every** lid
+    /// can hold anything — and the shortcut applied `crosses` to **every** lid
     /// on the cell without asking whether the ray is over that lid at all. The
     /// main path stopped doing that when sub-tile footprints landed; the
     /// shortcut did not follow.
@@ -4673,7 +4680,7 @@ mod tests {
     /// collapses to a point at a corner was the one the lid rule was asked
     /// over — the ray's run inside the lid's own horizontal footprint. A ray
     /// through a corner enters and leaves that footprint at one `t`, so both
-    /// ends of it carried one `z` and [`crosses`] answered, honestly, that
+    /// ends of it carried one `z` and `crosses` answered, honestly, that
     /// nothing had crossed anything over an interval of no length. All four
     /// lids sharing the corner answered alike, which is what left a hole.
     ///
@@ -4881,7 +4888,7 @@ mod tests {
     /// slab method correctly
     /// collapses `entered` and `leaves` to the exact same instant on
     /// either one, since a degenerate-thickness box is genuinely crossed
-    /// at one point in `t`, not over an interval. [`crosses`] was never
+    /// at one point in `t`, not over an interval. `crosses` was never
     /// built for that: it reads `entering`/`leaving` as the ray's `z` on
     /// *either side* of a crossing to tell "went through" from "never
     /// close," and a from/to that already collapsed to the same value
