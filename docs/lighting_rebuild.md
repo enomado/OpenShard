@@ -322,16 +322,18 @@ table being stale.
 | 7 | billboards | 🚧 position and the camera-facing normal landed | a mobile pass in a picture harness, the inflated-silhouette candidate, and the choice between them — its *done when* is a person looking at a lit frame |
 | 8 | the sun | ⬜ not started | all of it |
 
-**Where a session starts, as of 6f landing on 2026-08-10:** phase 6e is closed
-and there is no live sub-plan under this document any more — `occluders.md` is a
-record like the seven above it. **6d is closed, and 6f, 6g and 6h are the bill it
-ran up** — three defects in a row, each reported by a person looking at a lit
-frame and none caught by anything under `cargo test`: the sprite path naming the
-wrong tread of a flight, then carrying a corner panel's stance across a tread,
-then being met against a face buried inside a merged solid. **Start at
-[phase 6i](#), which is the account of why nothing caught them and the three
-gates that would have** — it is written as the next session's work and it is
-cheaper than any of the three fixes was. Read 6f's account beside it: it is a
+**Where a session starts, as of 6i's gates landing on 2026-08-10:** phase 6e is
+closed and there is no live sub-plan under this document any more —
+`occluders.md` is a record like the seven above it. **6d is closed, and 6f, 6g
+and 6h are the bill it ran up** — three defects in a row, each reported by a
+person looking at a lit frame and none caught by anything under `cargo test`: the
+sprite path naming the wrong tread of a flight, then carrying a corner panel's
+stance across a tread, then being met against a face buried inside a merged
+solid. [Phase 6i](#) is the account of why nothing caught them and the gates that
+would have; three of its four items are in, and **the one left is its item 1 — a
+fixture that drives `statics::collect` over a fitted climbable**, which is the
+only way any instrument in this tree sees the path a staircase actually takes.
+Its entry point is written under the item. Read 6f's account beside it: it is a
 worked example of removing a pass by what it *computed* rather than by what it
 *delivered*. **Phase 7 is half-open,
 its own account is above, and what it is waiting on is now named rather than
@@ -1450,8 +1452,12 @@ the same shape `the_frame_and_the_path_tracer_agree_about_brightness_on_open_
 ground` already is for the ground plane.
 
 **Phase 6i — the gates 6f, 6g and 6h cost, and why three in a row got through.**
-🟡 *Item 3 landed 2026-08-10, below. Items 1, 2 and the fourth (`synthetic_
-stair`) are where the next session on this track starts.*
+🟡 *Items 2, 3 and the fourth (`synthetic_stair`) landed 2026-08-10, and the
+floor's corner leak with them. **Item 1 is the whole of what is left**, and the
+one open defect beside it is the fringe. Item 2 landed by being read rather than
+done as written — the filter it named is not what excludes a sprite fragment
+from that test — and the floor's leak closed a real hole without explaining the
+picture that found it; both accounts say so where they stand.*
 
 Three defects, one after another, all of them found by **a person looking at a
 lit frame** and none by anything under `cargo test`. They are one failure and it
@@ -1475,6 +1481,18 @@ none of them is "somebody forgot a test".
    defects. *Done when:* one fixture drives `statics::collect` over a fitted
    climbable and compares against the tracer. `tests/frame.rs` already has two
    `statics::collect` call sites to build on, and `tests/cost.rs` a third.
+
+   **The one item of the four still open, and its entry point is narrower than
+   it looks.** Both `frame.rs` call sites hand `collect` a real `Map` off
+   `client_dir()` and an `Occlusion::EMPTY`, so neither is a fixture — they skip
+   where the client files are absent, and they ask nothing about volumes. A
+   *synthetic* map is available and was not when item 3 chose to restate
+   `push_volumes`'s eight lines instead: `uofiles::map::Map::from_blocks` builds
+   the land and `Map::place_static` puts a static on it. What it still needs, and
+   what to cost before planning the rest: a `TileData` the fixture states itself,
+   and — the real constraint — **a picture a `Prism` fits**, since the fit reads
+   the art's silhouette and a rectangle is not a staircase. `tests/prism.rs` is
+   where such a picture would have to come from.
 
 2. **The one gate that states the invariant filters it out.** ✅ *Landed
    2026-08-10, and not where this item said the filter was.*
@@ -1546,13 +1564,47 @@ none of them is "somebody forgot a test".
    reverted.
 
 *And a fourth item, which is a tool that stopped working and nobody noticed.*
-`examples/synthetic_stair.rs` panics outright for `OPENSHARD_STAIR_RUN>1` —
-`gate_against_grid` derives one body per flight per tread and asserts it against
-the grid, and S3b has merged the run into one primitive spanning every flight
-(`this oracle says 101, the grid's own solid says 103`). The **one knob in the
-tree that poses the two-abutting-statics question** — the question 6h turned out
-to be about — has been unusable since the merge landed. Either it learns about
-merging or it states the merged extent; what it must not do is stay red.
+✅ *Landed 2026-08-10.* `examples/synthetic_stair.rs` panicked outright for
+`OPENSHARD_STAIR_RUN>1` — `gate_against_grid` derived one body per flight per
+tread and asserted it against the grid, and S3b had merged the run into one
+primitive spanning every flight (`this oracle says 101, the grid's own solid says
+103`). The **one knob in the tree that poses the two-abutting-statics question** —
+the question 6h turned out to be about — had been unusable since the merge
+landed.
+
+It learns about merging. What made the derivation wrong was a premise that file
+stated out loud and got backwards: *"each flight of a run gets its own `Owner`,
+which is the whole point of building the run"*. An `Owner` is a `(z, graphic)`
+and carries no tile, so the flights of a run are **one** owner and, with one
+`Part` a tread, one primitive a tread. `Body::primitive` names the fold, `merged`
+takes it and checks it is a union of point sets rather than a bounding box (the
+pieces agree exactly off the run's axis and tile that axis with no gap), and the
+gate holds the folded boxes against the grid's own solids **and** asserts every
+flight names one `SolidId` for a tread — which is what makes it a statement about
+the grid rather than about the fixture. `oracle_visible` drops a primitive and no
+longer a piece, matching the walk after the merge. Green where it was red:
+`0/32472` face pixels disagree at `RUN=3`, `0/2304` at `RUN=2 UP=east`, `1/29265`
+at `RUN=4` with four treads.
+
+Two findings came out of running it, and both are worth more than the fix:
+
+- **The flame's position was stated three times** — the `Light` the renderer
+  gets, the crosshair, and the oracle's own tuple — and the three agreed only
+  because they were the same expression, `at + (ldx, ldy)`. Moving the anchor to
+  the run's last tile (so the default flame stands *beside* a wide run instead of
+  inside its third flight) moved one of them, and the face oracle immediately
+  reported **1,375 pixels of a three-flight run as the renderer's fault**. One
+  expression now. An oracle lighting the scene from somewhere the renderer did
+  not is the most expensive shape of instrument defect there is: it reads exactly
+  like the thing it is built to find.
+- **That fixture cannot pose the exemption question it now answers correctly.**
+  Dropping the whole merged tread and dropping only the fragment's own flight's
+  piece give **identical** counts on every scene it builds, because a riser sits
+  on its own body's face and a lid on its own body's top — a ray leaving either
+  never re-enters the tread it belongs to. So the granularity is right by
+  construction and gated by nothing. What would pose it is a fragment whose own
+  primitive stands *between* it and the flame, which for a merged run means
+  looking along the run rather than across it.
 
 **Phase 6h — the impostor meets the *merged* primitive.** *(Landed 2026-08-10.
 `docs/occluders.md`'s D6, which that plan decided and did not do.)* With 6f and
