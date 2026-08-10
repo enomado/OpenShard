@@ -3310,3 +3310,16 @@ outlive the track and belong in this list, since this is the live one:
   the layout outside the shaders. `plan.rs`'s two closures and `frame.rs`'s
   `parity_frame` went through it; they had three copies of the fraction's
   `<< 2`/`<< 9` between them, and the id plane deleted the fraction outright.
+- **A met box is not the same claim as a named solid, and one view was written on
+  the assumption that it is.** `View::NormalGeometry`/`NormalSprites` (the normal
+  plane split by where the vector came from — measured shape versus the picture)
+  first tested `mine != SOLID_NOBODY` for "this fragment is a point of geometry".
+  A picture of it is what refuted it: a static may meet a real volume the grid
+  holds no *solid* for — a floor's own box stands with `edges 0b0000` and stops
+  no light — so every measured face of one read as an unmeasured sprite. The rule
+  landed as `statics.wesl`'s own invariant instead (a static's normal is zero
+  only where the grid holds it no volume at all), and the general point is worth
+  keeping: the position plane's fourth channel answers *which occluder*, not
+  *whether anything was measured*, and nothing in the G-buffer answers the second
+  question outright. A producer that ever gives an unmeasured static a facing
+  breaks the derived test, and there is no assertion anywhere that would notice.

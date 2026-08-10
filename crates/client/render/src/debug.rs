@@ -139,16 +139,50 @@ pub enum View {
     /// over the id, so neighbouring ids are far apart in all three channels and
     /// a seam between two primitives reads at a glance.
     Solid = 12,
+    /// [`View::Normal`] with only the pixels whose vector is **measured
+    /// geometry** left in it, and black everywhere else.
+    ///
+    /// Four producers write the normal plane and one picture of it draws all
+    /// four alike, so a box face the view ray actually met and a billboard
+    /// turned towards the camera are two colours with nothing to say which is
+    /// which. This is the half that is a statement about a shape that exists:
+    /// the land patch's own normal, a mesh face's, and the face of the
+    /// impostor's box a static's fragment met.
+    ///
+    /// The split is read off the vector rather than off the solid the fragment
+    /// names — a static can meet a real box the occlusion grid holds no solid
+    /// for, and the first version of this view drew every one of those as a
+    /// sprite. See `blit.wesl`'s own note: for a static, a non-zero normal is
+    /// the mark of a measured surface, because the one branch that leaves it
+    /// zero is the picture the grid holds no volume for.
+    ///
+    /// Black is not a normal — `normal * 0.5 + 0.5` reaches it only at
+    /// `(-1, -1, -1)`, which is not a unit vector — so nothing left out of the
+    /// layer can be misread as a direction.
+    NormalGeometry = 13,
+    /// The other half: the pixels whose normal comes from the **picture**
+    /// rather than from a shape — a mobile's billboard plane, and a static the
+    /// grid holds no volume for, whose zero vector says only that nothing was
+    /// measured.
+    ///
+    /// The pair is the instrument for *a fringe along a silhouette*. A fragment
+    /// carries one normal, so a sprite drawn over geometry is a hole in
+    /// [`View::NormalGeometry`] with the same shape filled in here — and which
+    /// of the two pictures a fringe appears in names the producer that drew it,
+    /// which a single normal plane cannot do.
+    NormalSprites = 14,
 }
 
 impl View {
     /// Every view, in the order [`View::next`] walks them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Lit,
         Self::Place,
         Self::Kind,
         Self::Height,
         Self::Normal,
+        Self::NormalGeometry,
+        Self::NormalSprites,
         Self::Solid,
         Self::Occluders,
         Self::Light,
@@ -185,6 +219,8 @@ impl View {
             Self::Sky => "sky",
             Self::Flames => "flames",
             Self::Normal => "normal",
+            Self::NormalGeometry => "normal-geometry",
+            Self::NormalSprites => "normal-sprites",
             Self::Solid => "solid",
         }
     }
@@ -295,6 +331,9 @@ mod tests {
         assert_eq!(View::Sky as u32, 9);
         assert_eq!(View::Flames as u32, 10);
         assert_eq!(View::Normal as u32, 11);
+        assert_eq!(View::Solid as u32, 12);
+        assert_eq!(View::NormalGeometry as u32, 13);
+        assert_eq!(View::NormalSprites as u32, 14);
     }
 
     /// Cycling visits every view and comes back. The key that does it is the

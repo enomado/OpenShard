@@ -96,10 +96,11 @@
 //!   this tool has nothing else to do with a frame once it is drawn.
 //! - `OPENSHARD_FRAME_VIEW=n` — index into `debug::View::ALL`, which is an
 //!   order and not the enum's own numbering: `0` `Lit`, `1` `Place`, `2` `Kind`,
-//!   `3` `Height`, `4` `Normal`, `5` `Solid`, `6` `Occluders`, `7` `Light`,
-//!   `8` `Flames`, `9` `Shadow`, `10` `Reach`, `11` `Sun`, `12` `Sky`. Default
-//!   `Lit`. Ignored under `_SOLIDS`. The list is spelled out because it has
-//!   shifted twice under readers who had memorised a number.
+//!   `3` `Height`, `4` `Normal`, `5` `NormalGeometry`, `6` `NormalSprites`,
+//!   `7` `Solid`, `8` `Occluders`, `9` `Light`, `10` `Flames`, `11` `Shadow`,
+//!   `12` `Reach`, `13` `Sun`, `14` `Sky`. Default `Lit`. Ignored under
+//!   `_SOLIDS`. The list is spelled out because it has shifted three times
+//!   under readers who had memorised a number.
 //!
 //! # The occlusion grid alone, nothing drawn to cast a shadow of its own
 //!

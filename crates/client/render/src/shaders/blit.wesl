@@ -239,6 +239,8 @@ const VIEW_SKY: u32 = 9u;
 const VIEW_FLAMES: u32 = 10u;
 const VIEW_NORMAL: u32 = 11u;
 const VIEW_SOLID: u32 = 12u;
+const VIEW_NORMAL_GEOMETRY: u32 = 13u;
+const VIEW_NORMAL_SPRITES: u32 = 14u;
 
 @group(0) @binding(2) var<uniform> lighting: Lighting;
 
@@ -1520,6 +1522,51 @@ fn debug_color(
         // grey rather than a colour is the point: nothing about it reads as a
         // direction, because it is not one.
         return normal * 0.5 + vec3<f32>(0.5);
+    }
+    if view == VIEW_NORMAL_GEOMETRY || view == VIEW_NORMAL_SPRITES {
+        // `VIEW_NORMAL` cut in two by **where the vector came from**, because one
+        // picture of it cannot answer that: a fragment carries one normal and the
+        // plane draws every one of them the same way, so a measured box face and a
+        // billboard's plane are two colours with nothing to say which is which.
+        //
+        // Four producers write the plane and they fall in two groups:
+        //
+        // - *measured* — the land patch's own normal (`ground.wesl`), a mesh
+        //   face's (`mesh_face.wesl`), and the face of the box a static's view ray
+        //   actually met (`statics.wesl` through `package::impostor`). Each is a
+        //   statement about a shape that exists, and each is a **static or the
+        //   ground** by construction: no mobile is ever met against anything.
+        // - *the picture's* — a mobile's billboard plane, and a static the grid
+        //   holds no volume for, whose zero vector says only that nothing was
+        //   measured. Neither is geometry; both are a rectangle of art.
+        //
+        // A fragment is one or the other and never both — the G-buffer keeps one
+        // answer per pixel — so a sprite drawn over geometry is a *hole* in the
+        // geometry layer with the same shape filled in the sprite layer. That is
+        // the whole of what these two views are for: a fringe along a silhouette
+        // is either in one picture or the other, and which one it is names the
+        // producer to go and look at.
+        //
+        // What is not in the layer is **black**, and black is not a normal: it
+        // would need `(-1, -1, -1)`, whose length is `sqrt(3)`, so no unit vector
+        // maps onto it and nothing here reads as a direction it is not.
+        //
+        // **The mark is the vector itself and not the solid it names.** The first
+        // rule written here was `mine != SOLID_NOBODY`, and a picture of it is how
+        // it was caught: a static may meet a real box that the grid holds no
+        // *solid* for — a floor's own volume stands with `edges 0b0000` and stops
+        // no light — so a measured face read as a sprite. What separates the two
+        // groups without a second record is `statics.wesl`'s own invariant: the
+        // one branch there that leaves the vector zero is the static the grid
+        // holds no volume for at all, and a fragment that met a box or came off
+        // the mesh pass always carries a face's cardinal. So for a static a
+        // non-zero normal *is* the mark of a measured surface — and a producer
+        // that ever gives an unmeasured static a facing has to be counted here.
+        let measured = kind == KIND_LAND || (kind == KIND_STATIC && any(normal != vec3<f32>(0.0)));
+        if measured == (view == VIEW_NORMAL_GEOMETRY) {
+            return normal * 0.5 + vec3<f32>(0.5);
+        }
+        return vec3<f32>(0.0);
     }
     if view == VIEW_SOLID {
         // Which primitive this pixel is a point of, as a colour — see
