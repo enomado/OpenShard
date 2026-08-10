@@ -2531,7 +2531,31 @@ Things noticed while writing this, not blocking any phase:
   is what the sprite overhangs onto, and it repeats on a lattice of one tile
   because the boxes are per tile and the furniture tiles across the room.
   <br>
-  **Which makes this the fringe, not a new defect** — the same open item the
+  ❌ **And that is wrong for 59 of the 66, measured by doing it.** A throwaway
+  `if !hit(best) { discard; }` in `statics.wesl` — the whole of "just do not draw
+  the fringe" — takes the count from **66 to 59**. So only seven of them are
+  overhang misses. The rest are *hits*: the ray genuinely enters the box (or
+  grazes it inside `TANGENT`) and leaves through a side face, which is a correct
+  answer about the box and a wrong one about the picture.
+  <br>
+  What the other planes say about them, at the same pixels: the height plane
+  differs from the four neighbours' only in the low bits of one channel — the
+  same surface, not a different body — and only **2 of 66** have all four
+  neighbours naming *one* primitive, so a speck sits on a boundary between
+  primitives rather than marooned inside one. They come in dashes of four along
+  the direction a tile's own `y` edge projects to.
+  <br>
+  The reading that fits all of it, and the part that is still inference: a
+  sprite is 44 pixels wide and **overhangs its neighbours' tiles**, so the pixel
+  drawn over the boundary belongs to a static whose box is a tile away; its ray
+  enters that box near the edge and exits through the side. `nearest` only ever
+  sees one static's own volumes, so no choice between neighbours is involved —
+  which means the fix is not in the selection but in what a box is. It is the
+  accepted cost this document already states — *"statics without a good prism get
+  a rougher volume"* — read back as a lattice, and clipping the sprite does not
+  touch it.
+  <br>
+  **Which makes seven of them the fringe, not a new defect** — the same open item the
   cornice case ends on, with the same three ways out already written there (keep
   it; give a miss no facing, which `blit.wesl` shades as lit from every side; or
   give a miss the face the sprite's own volume presents rather than the nearest
