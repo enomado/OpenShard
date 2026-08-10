@@ -26,7 +26,7 @@
 //! `facing::tests::a_tile_is_the_width_the_camera_draws_one_at`.
 
 use openshard_client_render::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
-use openshard_client_render::impostor;
+use openshard_client_render::impostor::{self, Fringe};
 use openshard_client_render::light::Z_PER_TILE;
 
 const IMPOSTOR: &str = include_str!("../src/shaders/impostor.wesl");
@@ -106,6 +106,20 @@ fn the_shaders_restate_the_cameras_constants_and_not_their_own() {
         (TILE_HEIGHT / 2) as f32,
         "statics.wesl's half tile against camera::TILE_HEIGHT / 2",
     );
+    // **And the fringe switch's three states**, which are a grid constant's
+    // problem exactly: a number written in two files with no compiler between
+    // them, riding in a uniform block. Getting these out of step does not fail
+    // to draw — it draws a *different one of three pictures* than the one the
+    // switch says is on the screen, which is the one thing a knob for looking at
+    // frames must not do.
+    for state in [Fringe::Clamp, Fringe::Discard, Fringe::Volume] {
+        let name = format!("FRINGE_{}", state.name().to_uppercase());
+        assert_eq!(
+            shader_const(IMPOSTOR, "impostor.wesl", &name),
+            state as u32 as f32,
+            "impostor.wesl's {name} against impostor::Fringe::{state:?}",
+        );
+    }
 }
 
 /// **`Point.z` and tile space are commensurate because the division is exact** —

@@ -33,7 +33,10 @@ import package::place_format::{
 };
 import package::normal_format::pack_normal;
 import package::solid_format::{SOLID_NOBODY, pack_solid};
-import package::impostor::{Meeting, billboard_at, billboard_normal, billboard_offset, hit, meets, ray_from};
+import package::impostor::{
+    FRINGE_DISCARD, FRINGE_VOLUME, Meeting, billboard_at, billboard_normal, billboard_offset, hit,
+    meets, presented_face, ray_from,
+};
 
 struct Viewport {
     // The target's size in *real* pixels — see `ground.wgsl`, which documents
@@ -43,7 +46,12 @@ struct Viewport {
     size: vec2<f32>,
     // Real pixels per virtual pixel.
     scale: f32,
-    _padding: f32,
+    // What a fragment whose ray met no box is answered with — `0` the clamp,
+    // `1` not drawn, `2` the volume's presented face. `crate::impostor::Fringe`
+    // is the enum, and this slot was the block's padding until it wanted a
+    // switch. A whole number carried as an `f32` because the block is floats and
+    // three exact small integers survive it.
+    fringe: f32,
     // The virtual-pixel point that lands in the middle of the target.
     origin: vec2<f32>,
     // Uniform blocks are sized in multiples of 16 bytes.
@@ -620,8 +628,21 @@ fn fs_main(in: VertexOut) -> FragmentOut {
         // its lid to its own rim and there is no side face to be handed. Counted
         // before the change: 338 pixels over Britain's 121×121 would have taken
         // one.
+        // **And the switch over the three answers a miss has ever had** —
+        // `crate::impostor::Fringe`, a knob rather than a setting. `FRINGE_CLAMP`
+        // is what every plane downstream is written against; the other two are
+        // here so the decision above can be checked by looking at a frame, which
+        // is this renderer's own acceptance instrument.
+        if !hit(best) && viewport.fringe == FRINGE_DISCARD {
+            // The clipping this pass did for one session: honest about position,
+            // and it takes the top off a display case.
+            discard;
+        }
         at = best.at;
         normal = best.normal;
+        if !hit(best) && viewport.fringe == FRINGE_VOLUME {
+            normal = presented_face(volumes[best_at].lo, volumes[best_at].hi);
+        }
         mine = volumes[best_at].solid;
         // **And the stance the met face is**, which overrides the art's
         // reading above for every static the grid holds a shape for. See

@@ -678,6 +678,14 @@ pub struct SpriteRenderer {
     /// The atlas texture, kept so that it can be grown into rather than
     /// replaced. See [`SpriteRenderer::upload_rows`].
     atlas_texture: wgpu::Texture,
+    /// What a fragment whose ray met no box is answered with — the fringe
+    /// switch, [`crate::impostor::Fringe`], written into this pass's own uniform
+    /// block every frame.
+    ///
+    /// On the pass and not a parameter of [`SpriteRenderer::render`] because it
+    /// is a *state of the picture* rather than a fact about one draw: thirteen
+    /// callers pass their own quads and none of them has an opinion about this.
+    fringe: crate::impostor::Fringe,
     /// The boxes this frame's instances are met against —
     /// [`crate::impostor::Volume`], one flat list for the frame with every
     /// instance naming its own run of it.
@@ -1153,6 +1161,14 @@ impl SpriteRenderer {
             mask_rings,
             mask_capacity,
             atlas_texture,
+            // **Read from the environment here, and that is a stopgap with a
+            // name.** The switch belongs to whatever owns the keyboard —
+            // `crate::debug::View` is cycled by a key in `client/app` and this is
+            // the same kind of knob — but a pass that only ever hears from its
+            // caller cannot be turned by a person playing. When the client grows
+            // the key, it calls [`SpriteRenderer::set_fringe`] and this line
+            // becomes its default.
+            fringe: crate::impostor::Fringe::from_env(),
             volumes,
             volume_capacity: 1,
             layout,
@@ -1181,6 +1197,18 @@ impl SpriteRenderer {
     /// See `docs/gbuffer.md` decision 2 and step 3.
     pub fn instances_buffer(&self) -> &wgpu::Buffer {
         &self.instances
+    }
+
+    /// What a fragment whose ray met no box is answered with, and the switch a
+    /// key would turn — [`crate::impostor::Fringe`].
+    pub fn fringe(&self) -> crate::impostor::Fringe {
+        self.fringe
+    }
+
+    /// Point it at another of the three. Takes effect on the next frame this
+    /// pass draws, since the uniform block is written per render.
+    pub fn set_fringe(&mut self, fringe: crate::impostor::Fringe) {
+        self.fringe = fringe;
     }
 
     /// Draw `quads` into `target`, keeping what is already there.
@@ -1222,7 +1250,10 @@ impl SpriteRenderer {
             target.width as f32,
             target.height as f32,
             projection.scale,
-            0.0,
+            // The fringe switch rides in what was this block's padding —
+            // `statics.wesl`'s `Viewport.fringe`, and `impostor.wesl`'s three
+            // `FRINGE_*` constants are the numbers.
+            self.fringe as u32 as f32,
             projection.origin.x,
             projection.origin.y,
             0.0,

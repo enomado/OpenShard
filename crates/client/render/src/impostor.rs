@@ -121,10 +121,86 @@ pub fn shows_a_side(lo_z: f32, hi_z: f32) -> bool {
     (hi_z - lo_z) * Z_STEP > 1.0
 }
 
-/// Which face this box shows the camera at its largest, as an axis — the face a
-/// miss would take under the rule this renderer **measured and refused**.
+/// What a fragment whose ray met no box is answered with — the **fringe**, and
+/// all three answers this renderer has ever given it.
 ///
-/// Nothing in the pipeline calls this. It is here because
+/// A knob and not a setting: every state but the default is a way of looking at
+/// the frame, in the sense `crate::debug::View` is. The three have each shipped
+/// at some point and each was argued out of the others on a measurement, so what
+/// this switch is *for* is the one instrument those measurements could not
+/// replace — a person looking at two frames.
+///
+/// `docs/lighting_state.md`'s fringe entry has the numbers; `OPENSHARD_FRINGE`
+/// is how [`Fringe::from_env`] names them on a command line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Fringe {
+    /// **The shipped answer.** The nearest point of the box it came closest to,
+    /// with that clamp's own first exit as the face. Every pixel the art drew is
+    /// on screen, and the ones outside their box lie about *where they are* — by
+    /// up to 133 fragments, four tiles.
+    #[default]
+    Clamp = 0,
+    /// **Not drawn at all**, which is what `statics.wesl` did for one session.
+    /// The picture is then clipped to the boxes: honest about position, and it
+    /// takes 11.83% of drawn static art off the screen — 35.2% of a slate roof,
+    /// and the whole top of a display case, which is what a person reported as
+    /// furniture with a hole in it.
+    Discard = 1,
+    /// **The face the volume presents**, [`presented_face`] — measured and
+    /// refused as a default, kept here because refusing it by argument is what
+    /// this backlog item did twice already. Position is still the clamp; only
+    /// the facing changes.
+    Volume = 2,
+}
+
+impl Fringe {
+    /// The next state, wrapping — what a key that cycles this switch does.
+    pub fn next(self) -> Self {
+        match self {
+            Fringe::Clamp => Fringe::Discard,
+            Fringe::Discard => Fringe::Volume,
+            Fringe::Volume => Fringe::Clamp,
+        }
+    }
+
+    /// This state's name, for a log line and for `OPENSHARD_FRINGE`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Fringe::Clamp => "clamp",
+            Fringe::Discard => "discard",
+            Fringe::Volume => "volume",
+        }
+    }
+
+    /// What `OPENSHARD_FRINGE` asks for, [`Fringe::Clamp`] if it asks for
+    /// nothing.
+    ///
+    /// **An unrecognised value panics rather than falling back.** A debug knob
+    /// that silently ignores what it was told is a knob that reports the default
+    /// as though it were the setting, and the whole use of this one is to say
+    /// which of three pictures is on the screen.
+    pub fn from_env() -> Self {
+        let Some(asked) = std::env::var_os("OPENSHARD_FRINGE") else {
+            return Fringe::Clamp;
+        };
+        for state in [Fringe::Clamp, Fringe::Discard, Fringe::Volume] {
+            if asked == *state.name() {
+                return state;
+            }
+        }
+        panic!(
+            "OPENSHARD_FRINGE is {asked:?}; it names one of clamp, discard, volume — \
+             see impostor::Fringe"
+        );
+    }
+}
+
+/// Which face this box shows the camera at its largest, as an axis — the face a
+/// miss takes under [`Fringe::Volume`], the rule this renderer **measured and
+/// refused** as its default.
+///
+/// Nothing in the pipeline calls this on the shipped path. It is here because
 /// `examples/discard_census.rs` calls it, and it does so to print what the rule
 /// would have cost beside what the shipped one costs, out of one walk. The
 /// alternative to keeping it is a document claiming a number no tool can take

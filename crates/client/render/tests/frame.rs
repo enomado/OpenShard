@@ -23,7 +23,7 @@ use openshard_client_render::debug::View;
 use openshard_client_render::geometry::{Rect, Vec2};
 use openshard_client_render::ground::{self, GroundQuad};
 use openshard_client_render::hue::HueRamp;
-use openshard_client_render::impostor::{Range, Volume};
+use openshard_client_render::impostor::{Fringe, Range, Volume};
 use openshard_client_render::light::{Light, Lighting, Surface, WorldVec};
 
 /// The reach the lighting tests give their flame, in tiles.
@@ -2926,6 +2926,142 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
     assert!(outside > 0, "a rectangle over two strips should overhang them");
 }
 
+/// **The fringe switch draws three different frames**, which is the one thing a
+/// knob for looking at frames has to do and the one thing nothing else here
+/// would catch.
+///
+/// `impostor::Fringe` is a debug state in the sense `debug::View` is: two of its
+/// three answers were measured and refused as defaults
+/// (`docs/lighting_state.md`'s fringe entry), and they are kept reachable
+/// because refusing them by argument is what this backlog item had already done
+/// twice. A switch wired to nothing would leave every one of those pictures
+/// identical to the shipped one and read as "I looked and saw no difference" —
+/// so this asserts the difference exists, in the direction each state claims:
+///
+/// - `Discard` draws **strictly fewer** pixels, and every pixel it does draw is
+///   one `Clamp` drew — it removes the fringe rather than moving it.
+/// - `Volume` draws **exactly** the same pixels and gives some of them a
+///   different facing — it moves the normal and nothing else.
+///
+/// The fixture is the sibling sweep's: a plain rectangle over three boxes it
+/// overhangs, so there are misses to argue about at all.
+#[test]
+fn the_fringe_switch_draws_three_different_frames() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+
+    const GRAPHIC: Graphic = Graphic(1);
+    const WIDE: u16 = 44;
+    const TALL: u16 = 105;
+    const ORIGIN: f32 = 10.0;
+    const SIZE: u32 = 128;
+
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let red = Color16(0b0_11111_00000_00000);
+    let statics = StaticAtlas::pack([(
+        GRAPHIC,
+        Image::new(WIDE, TALL, vec![red; usize::from(WIDE) * usize::from(TALL)]),
+    )])
+    .expect("fits");
+    let sprite = statics.sprite(GRAPHIC).expect("packed");
+    let at = Point::new(300, 400, 0);
+    // A panel thin in `y` and a body over it: two boxes whose *presented* faces
+    // differ from each other and from the lid a clamp mostly names, so `Volume`
+    // has something to change. See `impostor::presented_face`.
+    let boxes = [
+        Volume {
+            lo: WorldVec::new(300.0, 400.8, 0.0),
+            hi: WorldVec::new(301.0, 401.0, 12.0),
+            solid: 7,
+        },
+        Volume {
+            lo: WorldVec::new(300.0, 400.0, 0.0),
+            hi: WorldVec::new(301.0, 401.0, 3.0),
+            solid: 11,
+        },
+    ];
+    let quads = [SpriteQuad {
+        rect: Rect {
+            x: ORIGIN,
+            y: ORIGIN,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        },
+        region: sprite.region,
+        depth: 0.4,
+        hue: 0,
+        place: Place::of_static(at),
+        twin: 0,
+        owner: 0,
+        volumes: Range {
+            offset: 0,
+            count: boxes.len() as u32,
+        },
+    }];
+
+    let frame = |fringe| {
+        render_places_with_fringe(
+            &device,
+            &queue,
+            &land,
+            &texmaps,
+            &[],
+            &statics,
+            &quads,
+            &boxes,
+            &[],
+            &[],
+            SIZE,
+            fringe,
+        )
+    };
+    let clamped = frame(Fringe::Clamp);
+    let dropped = frame(Fringe::Discard);
+    let volume = frame(Fringe::Volume);
+
+    let (mut drawn, mut gone, mut appeared, mut turned, mut lost) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let is_static = |places: &Places| {
+                gbuffer::ids_kind(places.at(x, y)) == Some(openshard_client_render::place::Kind::Static)
+            };
+            let (here, without, presented) = (is_static(&clamped), is_static(&dropped), is_static(&volume));
+            drawn += u32::from(here);
+            gone += u32::from(here && !without);
+            appeared += u32::from(!here && without);
+            lost += u32::from(here != presented);
+            if here && presented && clamped.normal_at(x, y) != volume.normal_at(x, y) {
+                turned += 1;
+            }
+        }
+    }
+
+    eprintln!(
+        "{drawn} static fragments under the clamp; discard removes {gone} and adds {appeared}; \
+         the volume's face turns {turned} of them",
+    );
+    assert!(drawn > 0, "the fixture drew nothing at all");
+    assert!(
+        gone > 0,
+        "OPENSHARD_FRINGE=discard drew the same picture as the clamp — the switch reaches nothing",
+    );
+    assert_eq!(
+        appeared, 0,
+        "discarding a miss cannot make a fragment appear: {appeared} did",
+    );
+    assert_eq!(
+        lost, 0,
+        "the volume's face changes a normal and never whether a pixel is drawn: {lost} moved",
+    );
+    assert!(
+        turned > 0,
+        "OPENSHARD_FRINGE=volume gave every fringe fragment the clamp's own face — \
+         either the switch reaches nothing or `presented_face` agrees everywhere here",
+    );
+}
+
 /// A real static's fragment is a point of the primitive it names: its position
 /// on that primitive's own boundary, its normal one of that primitive's
 /// camera-facing faces, and its stance that face's own — `docs/lighting_
@@ -3570,6 +3706,43 @@ fn render_places(
     mesh_rows: &[openshard_client_render::mesh_face::MeshFaceRow],
     size: u32,
 ) -> Places {
+    render_places_with_fringe(
+        device,
+        queue,
+        atlas,
+        texmaps,
+        quads,
+        static_atlas,
+        static_quads,
+        static_boxes,
+        mesh_vertices,
+        mesh_rows,
+        size,
+        Fringe::Clamp,
+    )
+}
+
+/// [`render_places`], with the fringe switch stated rather than defaulted —
+/// `impostor::Fringe`, the three answers a fragment that met no box has had.
+///
+/// A parameter here and a field on the pass in the renderer, for the same
+/// reason: every other caller in this file is asking about a *frame*, and the
+/// switch is a state of the picture that a frame test has no opinion about.
+#[allow(clippy::too_many_arguments)]
+fn render_places_with_fringe(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    quads: &[GroundQuad],
+    static_atlas: &StaticAtlas,
+    static_quads: &[SpriteQuad],
+    static_boxes: &[openshard_client_render::impostor::Volume],
+    mesh_vertices: &[openshard_client_render::mesh_face::MeshFaceVertex],
+    mesh_rows: &[openshard_client_render::mesh_face::MeshFaceRow],
+    size: u32,
+    fringe: Fringe,
+) -> Places {
     // The narrowest plane decides it: the id plane is four bytes a texel where
     // the `place` attachment it replaced was eight, so a size that used to be
     // exactly on the boundary is now half of one.
@@ -3604,6 +3777,7 @@ fn render_places(
 
     let mut ground_pass = GroundRenderer::new(device, queue, format, atlas, texmaps);
     let mut sprite_pass = SpriteRenderer::new(device, queue, format, static_atlas.pixels(), &hue_ramp);
+    sprite_pass.set_fringe(fringe);
     let mut mesh_pass = renderer::MeshFaceRenderer::new(device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let target = Target::whole(&world_view, &depth_view, &gbuffer_views, size, size);

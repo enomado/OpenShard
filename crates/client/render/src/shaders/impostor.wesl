@@ -173,6 +173,46 @@ fn hit(met: Meeting) -> bool {
     return met.outside <= FRAGMENT;
 }
 
+// Which face this box shows the camera at its largest — the face a miss takes
+// under `crate::impostor::Fringe::Volume`, which is a **debug state and not the
+// default**: it was written, measured and refused, and it is reachable only
+// through that switch so the refusal can be checked by eye.
+//
+// The score is the face's own projected area and not a preference: the
+// projection has one null direction, so a face's area on screen is its world
+// area times the cosine to `VIEW`, and for an axis-aligned face those are the
+// other two extents and that axis's own `VIEW` component. A panel presents its
+// own side, a whole tile three `z` units tall presents its lid. Ties go to `z`,
+// then `y`, then `x` — `meets`'s own order. A lid is refused a side by
+// `shows_a_side`, the same rule `meets` refuses it one by.
+//
+// `impostor::presented_face`, and the two are one formula.
+fn presented_face(lo: vec3<f32>, hi: vec3<f32>) -> vec3<f32> {
+    let extent = hi - lo;
+    var face = vec3<f32>(0.0, 0.0, 1.0);
+    var most = VIEW.z * extent.x * extent.y;
+    if shows_a_side(lo.z, hi.z) {
+        let sideways = VIEW.y * extent.z * extent.x;
+        if sideways > most {
+            most = sideways;
+            face = vec3<f32>(0.0, 1.0, 0.0);
+        }
+        let across = VIEW.x * extent.y * extent.z;
+        if across > most {
+            most = across;
+            face = vec3<f32>(1.0, 0.0, 0.0);
+        }
+    }
+    return face;
+}
+
+// The three states of that switch, as the numbers the uniform block carries.
+// `crate::impostor::Fringe` is the enum they are the contract with, and
+// `grids.rs` reads them back out of this source.
+const FRINGE_CLAMP: f32 = 0.0;
+const FRINGE_DISCARD: f32 = 1.0;
+const FRINGE_VOLUME: f32 = 2.0;
+
 // Where the view ray through `start` meets the box `lo..=hi`.
 //
 // Always answers. A ray that misses is answered with the point of the box
@@ -249,9 +289,9 @@ fn meets(start: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> Meeting {
     met.at = clamped;
     // **A miss keeps this face too**, though a ray that passed beside the box
     // left it by none: what the exit names there is whichever plane the clamp
-    // reached first. Giving it the face the *volume* presents instead was
-    // written, measured and refused — `impostor::presented_face` carries the
-    // numbers, and there is deliberately no such function on this side.
+    // reached first. Giving it `presented_face` instead was written, measured
+    // and refused — `impostor::presented_face` carries the numbers — so that
+    // rule lives behind `FRINGE_VOLUME` in the pass rather than here.
     met.normal = normal;
     // A distance rather than the slab test's own `enter <= exit` predicate, and
     // the two cannot disagree because this one *is* the clamp above: a ray that
