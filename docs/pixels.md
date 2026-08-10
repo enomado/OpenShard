@@ -3,6 +3,14 @@
 A living plan, and its own session. The backlog at the end is where the next one
 starts.
 
+**All four phases are done, and the normative half of this page now lives in
+[`docs/lighting_state.md`](lighting_state.md) § *The pixel spaces — the spec***:
+the grids with their types, the six rules a person may assume, and the gate
+holding each. This page stays as the derivation — the per-site census (P1), the
+pair-by-pair commensurability table (P2), and what typing each space turned up
+(P3). Read that one to write code; read this one to find out why a row says
+what it says.
+
 ## The root
 
 **Six grids meet in this renderer and no document lists them.** `docs/camera.md`
