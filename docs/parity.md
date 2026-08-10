@@ -241,6 +241,87 @@ left alone: `view` is what the *window* was showing, while each picture beside i
 is named for the plane it is. A note explaining that would be a line the tool's
 summary does not have, and the two exist to be diffed.
 
+### The shard's own furniture ✅ 2026-08-10 — the tool stops answering about half a street
+
+**`isolated_scene` reads the shard's database, so what the server placed is in
+its frame.** This was the first backlog item, and what it cost is written there:
+four tools agreed there was no cabinet at Britain's `(1504, 1655)` because all
+four read `statics.mul`, and the cabinet is two `decorations` rows.
+
+`examples/shard/mod.rs` is the reader, a shared example module in
+`examples/oracle/mod.rs`'s own shape and for its own reason — the alternative is
+a second copy of two queries the day `tests/` wants them. **It cannot be a
+library, and the rule this time is the workspace's**: `openshard-persistence` is
+a *server* crate and `crates/client/*` may not depend on one, so the two tables
+are read by SQL rather than through its `Store`. That duplicates seven column
+names and six JSON keys, bounded on purpose: a rename in `sqlite.rs`'s `SCHEMA`
+fails here loudly — SQLite has no such column — rather than quietly returning
+nothing, which is the failure mode the whole entry is about.
+
+- **`items` where `loc_kind = 0`** (the ground; `1` is inside a container and `2`
+  is worn) and **`decorations`**, whose record is one JSON blob and so is
+  windowed by `json_extract`. Both over the same `_AT ± _RADIUS` rectangle and
+  the same facet the map came off — named once now, as `FACET`, because three
+  readers agreeing about it by writing `0` out three times is three places to
+  stop agreeing.
+- **On by default, and every way it can fail to read is a panic naming
+  `OPENSHARD_SCENE_SHARD=0`.** An in-memory `database`, a `postgres://` one, a
+  file that is not there: each would otherwise draw a frame missing everything
+  the server placed, which is the original defect with a new cause. The knob is
+  the honest answer ("the map's art alone") and it has to be *asked for*.
+- **Read-only** (`SQLITE_OPEN_READ_ONLY`), so a mistyped path cannot create the
+  empty database that would report "the server placed nothing here", and a live
+  shard's own file is readable while it holds it open.
+- `OPENSHARD_SCENE_CONFIG` says whose shard (default `openshard.toml` in the
+  working directory) and `OPENSHARD_SCENE_SHARD_DB` names a database directly. A
+  relative `database` resolves against the **config's** directory, not the
+  process's: a shard is run from where its config sits, and resolving against
+  the tool's own working directory would make the answer depend on where
+  somebody typed `cargo run`.
+- `OPENSHARD_SCENE_EXTRA` survives, with its job changed: it was how a live
+  decoration got in, by hand, and it is now how a *hypothetical* one does — a
+  torch put where no torch is, to find out what it would light.
+
+**`tests/shard.rs` gates it, and the rows that must *not* come back are the
+gate.** A reader with no `WHERE` clause at all passes a test that only checks
+the cabinet arrives, so the fixture holds a contained item, a worn one, the same
+graphic on the next facet, and one tile past each edge — none of which may
+appear — beside the two the entry is about and one on the window's own corner,
+which must. No GPU and no client files: the database is written row by row. All
+three controls were witnessed by mutation, each turning the gate red: the
+`loc_kind` filter dropped, the decorations' facet condition dropped, and the
+east bound made exclusive.
+
+**And the summary says which.** `Inputs::summary` counts the items a frame drew
+and has no way to say where they came from, so a frame missing everything the
+shard placed and a frame with nothing to place read identically there. Three
+lines beside it — `scene.map`, `scene.shard`, `scene.extra` — name the three
+sources this tool's list is assembled from, `scene.shard` carrying the database's
+path and a count of each table. The client's dump has no such block and cannot:
+its list *is* the server's, arriving on the wire as it is placed.
+
+*Witnessed, and by the thing that started it.* `_AT=1504,1655,27 _RADIUS=4` at
+Britain, the player's own cutaway (`max_z: 47`, `no_draw_roofs: true`), run
+twice either side of the knob:
+
+```
+scene.map   = 114 statics pulled from the map          both runs
+scene.shard = 0 ground items and 6 decorations         vs. off
+                → 120 items, 1 flames                  vs. 114 items, 0 flames
+```
+
+The six are the two bookcases the person asked about (`0x0A97`/`0x0A98` at
+`(1505, 1656)` and `(1506, 1656)`), two more at `(1501, 1656)` and
+`(1502, 1656)`, a door, and the street lamp at `(1507, 1658)` — and the lamp is
+where the flame came from. **The frame the tool drew with the reader off has no
+light in it at all**, which is the entry above in one number: not a dimmer
+picture, a different world.
+
+*Not done, and it is a backlog item below:* `tile_probe`, `onsite.rs` and
+`geometry_census.rs` still read no database. The reader is a module three lines
+of code away from each of them, and each is its own decision about what its
+answer is *about*.
+
 ### P3 — the gate
 
 A test that assembles one real place twice, once with the client's inputs and
@@ -288,28 +369,16 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
 
 ## Backlog
 
-- 🚩 **The tool reads no shard database, so half of what a player is looking at is
-  not in its frame.** Found on 2026-08-10, by answering the wrong question at
-  length: a person asked about a cabinet they could see at Britain's
-  `(1504, 1655)`, and `tile_probe`, `onsite.rs`, `geometry_census.rs` and
-  `isolated_scene.rs` agree there is no cabinet there — because all four read
-  `map`/`statics.mul` and the cabinet is a **`decorations` row**: `0x0A97`/`0x0A98`
-  "bookcase" at `(1505, 1656, 27)` and `(1506, 1656, 27)`. The session spent its
-  first half explaining the nearest map static instead (`0x0B3E` "counter"), which
-  is a different graphic with a different box.
-  <br>
-  The knob that closes it by hand exists — `OPENSHARD_SCENE_EXTRA` takes
-  `x,y,z,graphic` and the defect reproduced at once once the two rows were
-  transcribed into it — and that is exactly the problem: **a hand-transcribed
-  input is not a parity input.** `Inputs::ground_items` is already a field, so
-  what is missing is a reader that fills it: point the tool at `openshard.toml`'s
-  own `database`, pull `items` (`loc_kind = 0`, the facet, the rect the radius
-  covers) and `decorations` (a JSON blob, so `json_extract`) for the same window
-  the statics come from, and let a knob turn it off rather than off by default.
-  <br>
-  Until then "it does not reproduce in the tool" is a **false negative for
-  everything the server placed**, and nothing in the summary says so — the frame
-  looks like a frame, which is this document's own root sentence.
+- 🚩 **The other three tools still read no shard database.** `isolated_scene` now
+  does (see the section above), and `tile_probe`, `onsite.rs` and
+  `geometry_census.rs` do not — so each of them still answers "there is no
+  cabinet at Britain's `(1504, 1655)`" about a cabinet a player can see. The
+  reader is `examples/shard/mod.rs` and reaching it is a `mod shard;`, so the
+  work is not the plumbing: it is deciding, per tool, what its answer is *about*.
+  A census of *the art's* geometry is honest to exclude what no art file holds
+  and dishonest to be read as a census of the world; a probe of a tile is
+  dishonest either way, because a person points it at a place and not at a file.
+  Say which in each tool's own doc, whichever way it goes.
 - 🚩 **Map statics reach the tool's frame through `items::collect` and the
   client's through `statics::collect`.** `isolated_scene` builds a synthetic map
   that carries no statics at all (`Map::from_blocks`) and pushes the real map's
@@ -356,6 +425,13 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
   reaches anything is green about the geometry and blind about the light, and it
   would not say so. P3's three places have to be chosen for a lit pixel, not only
   for a house.
+  <br>
+  **The shard reader changes where to look for one.** A real place's flames are
+  mostly the pack's: the street lamp at `(1507, 1658)` is a `decorations` row,
+  and with the reader off the frame above has *no* light in it at all. So the
+  three places are chosen out of the database — a lamp the shard placed is a lit
+  pixel both ends can be asked about, while an `OPENSHARD_SCENE_EXTRA` torch is
+  one only the tool has.
 - 🚩 **The cost of a Britain-sized synthetic map is unmeasured** (D4). It is a
   `Map::from_blocks` of roughly 200×210 blocks with a land lookup a cell —
   cheap in principle, unmeasured in fact.

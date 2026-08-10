@@ -9,10 +9,10 @@
 //! statics (see `crate::scene`'s own doc) — and puts back only what is asked
 //! for: the real map's statics within a stated radius of a stated point,
 //! optionally filtered to a list of tile IDs, the real ground under them or
-//! none at all, and any hand-named extra items (a live-shard decoration from
-//! `openshard.db`, say — that table is not something this reads itself; see
-//! `docs/lighting.md`'s DB-lookup recipe for pulling one out by hand). Turn
-//! every knob down and what is left is one tile.
+//! none at all, everything the *shard* placed over the same window (see
+//! [`shard`] — its decorations and dropped items, which no client file knows
+//! about), and any hand-named extra items. Turn every knob down and what is
+//! left is one tile.
 //!
 //! Real coordinates translate onto a fixed synthetic anchor
 //! ([`SYN_ANCHOR_NEAR_THE_ORIGIN`]) the same way `crate::scene::CENTRE` does it for the
@@ -35,9 +35,26 @@
 //! - `OPENSHARD_SCENE_GROUND=0` — draw no land at all: an empty atlas, so the
 //!   ground pass still runs (it always clears) but paints nothing. Default is
 //!   the real land, read live off the same facet.
+//! - `OPENSHARD_SCENE_SHARD=0` — read nothing out of the shard's database.
+//!   Default is to read it, because **half of what a player is looking at in a
+//!   town is not on the map**: a pack's decorations and everything anyone has
+//!   dropped live in `openshard.db`, and a tool that reads only `statics.mul`
+//!   answers "it does not reproduce" about every one of them. Both tables are
+//!   pulled over the same `_AT ± _RADIUS` window the statics are, and `_TILES`
+//!   filters them the same way. Turning it off is a legitimate answer — the
+//!   map's art alone — and it is why every failure to read is a panic naming
+//!   this knob rather than an empty result.
+//! - `OPENSHARD_SCENE_CONFIG=/path/openshard.toml` — whose shard. Default
+//!   `openshard.toml` in the current directory, and its `[persistence].database`
+//!   is where the world is (a relative path resolved against the config's own
+//!   directory, which is where a shard is run from).
+//! - `OPENSHARD_SCENE_SHARD_DB=/path/openshard.db` — that database directly,
+//!   for a save that no config names. SQLite only; a `postgres://` config is a
+//!   panic pointing here.
 //! - `OPENSHARD_SCENE_EXTRA=x,y,z,graphic[,hue];...` — items to add by hand,
-//!   semicolon-separated. What a DB-pulled decoration (or anything else not on
-//!   the map) comes in as.
+//!   semicolon-separated. No longer how a live decoration gets in — the reader
+//!   above is — and still how a *hypothetical* one does: a torch put where no
+//!   torch is, to find out what it would light.
 //! - `OPENSHARD_SCENE_NO_ROOFS=1`, `OPENSHARD_SCENE_MAX_Z=n` — the frame's own
 //!   [`Cutaway`], which the client has and this tool did not: no roof drawn
 //!   anywhere, and nothing at or above a height. What a player standing indoors
@@ -169,9 +186,22 @@ use openshard_uofiles::map::{LandCell, Map};
 use openshard_uofiles::texmaps::TexMaps;
 use openshard_uofiles::tiledata::TileData;
 
+// The shard's own `items` and `decorations`, without which this tool draws the
+// client's art and none of the server's furniture — see its own doc, and
+// `docs/parity.md`'s first backlog entry for what that cost.
+mod shard;
+
 /// Where every scene's real anchor lands in the synthetic map — far from its
 /// edge, the same convention `crate::scene::CENTRE` uses.
 const SYN_ANCHOR_NEAR_THE_ORIGIN: (u16, u16) = (100, 100);
+
+/// Which facet every part of this scene comes off.
+///
+/// Felucca, and named once rather than typed at each reader: the map, the land
+/// and the shard's own rows have to agree about it, and a `0` written out three
+/// times is three places for them to stop agreeing. A knob when a second facet
+/// is worth pointing this tool at; a constant until then.
+const FACET: u8 = 0;
 
 /// Where the scene actually goes, which is [`SYN_ANCHOR_NEAR_THE_ORIGIN`] unless
 /// `OPENSHARD_SCENE_ANCHOR=real` says to leave it where the map has it.
@@ -543,7 +573,7 @@ fn main() {
     let dir = PathBuf::from(env("OPENSHARD_CLIENT"));
     let (device, queue) = gpu().expect("an adapter");
 
-    let real_map = Map::load_facet(&dir, 0).expect("Felucca");
+    let real_map = Map::load_facet(&dir, FACET).expect("Felucca");
     let art = Art::open(&dir).expect("artLegacyMUL.uop");
     let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
 
@@ -628,9 +658,71 @@ fn main() {
         }
     }
 
-    // Hand-named extras — typically a live-shard decoration or dropped item
-    // pulled from `openshard.db` by the recipe in `docs/lighting.md`, since
-    // nothing on the map can see those and nothing here reads the DB itself.
+    let from_the_map = items.len();
+
+    // **What the server placed**, read out of the shard's own database over the
+    // same window the statics came from — `docs/parity.md`'s first backlog
+    // entry. Half of what a player is looking at in a town is not on the map at
+    // all: a pack's decorations and anything anyone has dropped live in
+    // `openshard.db`, and a tool that reads only `statics.mul` answers "it does
+    // not reproduce" about every one of them.
+    //
+    // On by default and loud when it cannot read, because the quiet failure is
+    // exactly the one being removed — see [`shard::database_in`], every panic of
+    // which names `OPENSHARD_SCENE_SHARD=0`.
+    //
+    // `_TILES` applies here as it does to the map's statics: it is a filter on
+    // what the scene keeps, not on which file a graphic came out of.
+    let from_the_shard = if env_flag("OPENSHARD_SCENE_SHARD", true) {
+        let database = match env_opt("OPENSHARD_SCENE_SHARD_DB") {
+            Some(path) => PathBuf::from(path),
+            None => shard::database_in(&PathBuf::from(
+                env_opt("OPENSHARD_SCENE_CONFIG").unwrap_or_else(|| "openshard.toml".to_owned()),
+            )),
+        };
+        let placed = shard::read(
+            &database,
+            shard::Window {
+                facet: FACET,
+                min_x: at.x.saturating_sub(radius),
+                max_x: at.x.saturating_add(radius),
+                min_y: at.y.saturating_sub(radius),
+                max_y: at.y.saturating_add(radius),
+            },
+        );
+        let (mut ground, mut decorations) = (0u32, 0u32);
+        for one in &placed {
+            if tile_filter
+                .as_ref()
+                .is_some_and(|allowed| !allowed.contains(&one.graphic))
+            {
+                continue;
+            }
+            match one.source {
+                shard::Source::Ground => ground += 1,
+                shard::Source::Decoration => decorations += 1,
+            }
+            let (sx, sy) = shift(anchor, (one.x, one.y));
+            items.push(GroundItem {
+                at: Point::new(sx, sy, one.z),
+                graphic: Graphic(one.graphic),
+                hue: Hue(one.hue),
+            });
+        }
+        format!(
+            "{ground} ground items and {decorations} decorations from {}",
+            database.display()
+        )
+    } else {
+        "off (OPENSHARD_SCENE_SHARD=0): nothing the server placed is in this frame".to_owned()
+    };
+    let before_the_extras = items.len();
+
+    // Hand-named extras — anything not on the map and not in the shard's own
+    // database either: a graphic somebody wants dropped into the scene to see
+    // what it does. It stopped being the way a live-shard decoration gets in
+    // (that is the reader above), and is still the way a *hypothetical* one
+    // does — a torch put where no torch is, to find out what it would light.
     if let Some(spec) = env_opt("OPENSHARD_SCENE_EXTRA") {
         for entry in spec.split(';').filter(|s| !s.trim().is_empty()) {
             let mut item = parse_extra_item(entry);
@@ -639,6 +731,7 @@ fn main() {
             items.push(item);
         }
     }
+    let hand_named = items.len() - before_the_extras;
     assert!(
         !items.is_empty(),
         "the scene is empty: turn on OPENSHARD_SCENE_STATICS, widen OPENSHARD_SCENE_RADIUS, \
@@ -762,7 +855,20 @@ fn main() {
     // The client's F12 dump writes the same block from the same function, so two
     // frames that disagree are diffed here first: an input that differs is set
     // the same or the case is not compared at all — `docs/parity.md` D6.
-    let asked_for = inputs.summary();
+    //
+    // Three lines the client's own dump does not have, and cannot: its `items`
+    // list *is* the server's, arriving on the wire as it is placed, while this
+    // one is assembled out of three sources by hand. `Inputs::summary` says how
+    // many items a frame drew and has no way to say where they came from — so a
+    // frame missing everything the shard placed and a frame with nothing to
+    // place read identically there, which is the false negative this session
+    // closed. These say which.
+    let asked_for = format!(
+        "{}scene.map = {from_the_map} statics pulled from the map\n\
+         scene.shard = {from_the_shard}\n\
+         scene.extra = {hand_named} hand-named\n",
+        inputs.summary(),
+    );
     eprint!("{asked_for}");
     let openshard_client_render::frame::Frame {
         lighting,

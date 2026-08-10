@@ -2977,11 +2977,13 @@ name = "openshard-client-render"
 version = "0.0.1"
 dependencies = [
  "openshard-client-pathtrace",
+ "openshard-config",
  "openshard-movement",
  "openshard-protocol",
  "openshard-uofiles",
  "pollster",
  "proptest",
+ "rusqlite",
  "tracing",
  "wesl",
  "wgpu",
