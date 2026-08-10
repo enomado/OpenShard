@@ -471,6 +471,40 @@ change: its viewport is `768x512` and `floor` of a whole number is that number.
 **What this does not do is repair `impostor::meets`,** and the backlog says so
 rather than letting a green screen stand in for a correct rule.
 
+### What the two findings teach, and it is not about pixels
+
+Written down because both cost a session's worth of looking in the wrong place,
+and both mistakes are the kind that repeat.
+
+- **A tool that never varies an input cannot be a control for it.** Every
+  viewport ever used here has been even, by unanimous accident and never by a
+  decision. The list of inputs a tool holds *fixed* is as consequential as the
+  list it varies, and nothing anywhere wrote that list down. `Inputs::summary`
+  is the closest thing we have to it — it names eighteen fields and does not
+  name the one that decided this.
+- **A written suspicion is not evidence.** D4 has said since it was drafted that
+  the synthetic anchor makes ties at a shared plane "sixteen times more
+  precisely decided" than the client's — an excellent story, the plan's own
+  first hypothesis, and worth nothing here: real anchor against synthetic gave
+  *identical* counts, plane for plane. The suspicion that is already in the
+  document is the one that gets tested first and believed longest.
+- **A detector fixed at one width answers about the zoom, not the geometry.**
+  The first sliver counter looked for a run exactly one pixel wide and reported
+  **0** at `4x` — where there were 272 runs of four, eight and twelve. Widths
+  had to be a *distribution* before the picture said anything. A detector must
+  report what it counted and at what scale, or its zero is unreadable.
+- **Two pictures with the same colours can differ entirely in distribution.**
+  Eyeballing a downscale showed nothing; a histogram and a run-width table
+  showed the whole thing. The client's frame has eight colours in it — there was
+  never anything to *see* at a glance.
+- **When a repair makes a bad case unreachable rather than correct, say what
+  stays broken and where it is still reachable.** The floor above is a proof
+  about primary samples and says nothing about `light::sample` at a face's own
+  centre.
+- **Record the candidate you refuted.** The selection loop looked like a second
+  tie and is not one; without that written down the next session proposes it
+  again and spends the same hour.
+
 ### P4 — the geometry, in census order
 
 `examples/geometry_census.rs` counts what each box claims. Over 11,184 statics
@@ -499,6 +533,42 @@ The order follows the counts and the blast radius:
 
 Each of the four re-runs the census as its own done-when, and the numbers go in
 `docs/lighting_rebuild.md`'s census section beside the ones above.
+
+### P5 — the window-parity finding, made permanent
+
+**Today the fix is held by an argument in a comment.** Delete the `floor` and
+every test in this repository stays green, because every one of them draws at an
+even extent — which is the same unanimity that hid the defect for as long as it
+existed. A finding that only a person can re-check is a finding on its way to
+being re-derived.
+
+**G1 — the invariant, with no GPU in it.** For every rung of `Zoom::LADDER`,
+both parities of both axes, and every eye fraction that is expressible, assert
+that no primary sample lands on a whole virtual pixel: the sample sits at a
+half-integer over `scale`, and no integer `scale` divides a half-integer. This
+is arithmetic on `Camera` and `Projection`, it runs in microseconds, and it
+states the property rather than the symptom. **Witness it by mutation** — the
+`floor` removed has to turn it red, or it is not the gate it claims to be.
+
+**G2 — an odd case in the picture gates.** `tests/parity.rs` at `901x701`
+beside its `900x700`, and `tests/dump.rs` likewise. Cheap, and it is the half
+that catches a *different* commensurability nobody has thought of yet — G1 only
+gates the one we now understand.
+
+**G3 — the summary states what the parity is.** `Inputs::summary` prints
+`image 1919x2077` and nothing says that the odd is an input. Two dumps whose
+only difference was the window's width by one pixel would today diff in no line
+at all, which is precisely the failure the summary was built to end.
+
+**G4 — the tie in `impostor::meets` gets an answer or a stated reason.** The
+Rust twin is reachable by anything that samples deliberately rather than through
+the pixel grid: `light::sample` at a face's own centre, a probe handed whole
+coordinates, a test. At minimum a case that feeds it a ray exactly through a
+box's corner and asserts what comes back, so the rule is *stated* rather than
+emergent from the order of three `if`s.
+
+*Done when:* removing the `floor` from any one of the three vertex stages turns
+a test red, and the test names which grid met which.
 
 ## Backlog
 
