@@ -29,20 +29,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use openshard_client_render::atlas::FontAtlas;
-use openshard_client_render::gump::{self, ArtFiles, GumpAtlas, GumpPixel, Picture};
+use openshard_client_render::gump::{self, ArtFiles, GumpAtlas, GumpPixel, Picture, Scissor};
 use openshard_client_render::mobiles::EquipmentLayer;
 use openshard_client_render::paperdoll::{self, Wearer, Whose};
+use openshard_client_render::skills::{self, Standing, Tree};
 use openshard_client_render::text::{self, GumpLabel};
 use openshard_client_render::{container, renderer};
 use openshard_protocol::containers::{ContainedItem, GridSlot};
 use openshard_protocol::gump::layout::parse;
 use openshard_protocol::gump::{ButtonId, GumpButton, GumpLayout, GumpPoint, SwitchId};
 use openshard_protocol::serial::Serial;
+use openshard_protocol::skill::SkillLock;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_uofiles::art::Art;
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::font::AsciiFonts;
 use openshard_uofiles::gumpart::Gumps;
+use openshard_uofiles::skillgrp::SkillGroups;
+use openshard_uofiles::skills::{SkillId, Skills as SkillNames};
 use openshard_uofiles::tiledata::TileData;
 
 /// The colour behind the window: one no gump pixel can be, so that "transparent"
@@ -128,6 +132,7 @@ fn what_the_layout_puts_where() {
     paperdolls(&client, &out);
     bag(&client, &out);
     dialog(&client, &out);
+    skill_window(&client, &out);
 }
 
 /// Our own doll and a stranger's, dressed the same.
@@ -175,7 +180,13 @@ fn paperdolls(client: &Client, out: &Path) {
             &client.gumps,
             at,
         );
-        shoot(client, &doll.pictures, &[paperdoll::name(who, at)], out, name);
+        shoot(
+            client,
+            &doll.pictures,
+            &[(paperdoll::name(who, at), None)],
+            out,
+            name,
+        );
     }
 }
 
@@ -227,18 +238,69 @@ fn dialog(client: &Client, out: &Path) {
     // A caption names a *row* of the table that arrived beside the layout, and
     // resolving one is the caller's job — see `gump::Caption`. This is that
     // resolution, and in the app it is the same three lines.
-    let text: Vec<GumpLabel<'_>> = window
+    let text: Vec<(GumpLabel<'_>, Option<Scissor>)> = window
         .captions
         .iter()
-        .map(|caption| GumpLabel {
-            at: caption.at,
-            hue: caption.hue,
-            clip: caption.clip,
-            text: lines[caption.line].as_str(),
-            font: gump::CAPTION_FONT,
+        .map(|caption| {
+            (
+                GumpLabel {
+                    at: caption.at,
+                    hue: caption.hue,
+                    clip: caption.clip,
+                    text: lines[caption.line].as_str(),
+                    font: gump::CAPTION_FONT,
+                },
+                None,
+            )
         })
         .collect();
     shoot(client, &window.pictures, &text, out, "dialog-admin");
+}
+
+/// The skill window, scrolled off its first row.
+///
+/// Scrolled *on purpose*: at the top of the list every row is whole, and the
+/// one thing this window does that no other does — cut a row in half at the
+/// viewport's edge — cannot be seen at all. The picture is the argument for the
+/// scissor, so it has to show one.
+fn skill_window(client: &Client, out: &Path) {
+    let dir = PathBuf::from(std::env::var_os("OPENSHARD_CLIENT").expect("gated by `client()`"));
+    let names = SkillNames::open(&dir).expect("Skills.idx and skills.mul");
+    let groups = SkillGroups::open(&dir).expect("skillgrp.mul");
+    let mut tree = Tree::default();
+    let content = skills::content_height(&names, &groups, &tree);
+    // Half a row down, and one heading shut, so the picture carries both of the
+    // things the tree can do.
+    tree.toggle(SkillGroups::MISC);
+    tree.scroll_to(30, content);
+    let at = GumpPixel::new(0, 0);
+    let sheet = skills::window(
+        &names,
+        &groups,
+        &tree,
+        // A value that says which row it is on rather than a flat number: a
+        // column drawn from the wrong skill looks right until the numbers
+        // differ.
+        |id| {
+            Some(Standing {
+                value: u16::from(id.0) * 10,
+                cap: 1000,
+                lock: match id.0 % 3 {
+                    0 => SkillLock::Up,
+                    1 => SkillLock::Down,
+                    _ => SkillLock::Locked,
+                },
+            })
+        },
+        |text, font| text::gump_width(text, font, &client.fonts),
+        at,
+    );
+    let lines: Vec<(GumpLabel<'_>, Option<Scissor>)> = sheet
+        .lines
+        .iter()
+        .map(|line| (line.label(), line.scissor))
+        .collect();
+    shoot(client, &sheet.pictures, &lines, out, "skills");
 }
 
 /// Composite a laid-out window and write it out.
@@ -251,14 +313,33 @@ fn dialog(client: &Client, out: &Path) {
 /// The text is composited from the *other* atlas, which is the one thing here
 /// that a single GPU pass could not do either: two textures, two draw calls,
 /// and the letters over the art in both.
-fn shoot(client: &Client, pictures: &[Picture], lines: &[GumpLabel<'_>], out: &Path, name: &str) {
+fn shoot(
+    client: &Client,
+    pictures: &[Picture],
+    lines: &[(GumpLabel<'_>, Option<Scissor>)],
+    out: &Path,
+    name: &str,
+) {
     let mut atlas = GumpAtlas::empty();
     atlas
         .add(client.files(), pictures.iter().map(|picture| picture.graphic))
         .expect("the window's art");
     let mut quads = gump::collect(pictures, &atlas);
     assert!(!quads.is_empty(), "{name} drew nothing at all");
-    let glyphs = text::collect_gump(lines, &client.fonts);
+    // A line at a time, because a box is a line's own: the skill window cuts
+    // its rows to the list and writes its total outside it, and a single
+    // `collect_gump` over the lot could only apply one box or none — which is
+    // exactly the mistake the app made before it drew the window and looked.
+    let glyphs: Vec<_> = lines
+        .iter()
+        .flat_map(|(line, scissor)| {
+            let mut quads = text::collect_gump(std::slice::from_ref(line), &client.fonts);
+            if let Some(scissor) = scissor {
+                scissor.cut(&mut quads);
+            }
+            quads
+        })
+        .collect();
     let art_quads = quads.len();
     quads.extend(glyphs);
 
@@ -311,7 +392,7 @@ fn shoot(client: &Client, pictures: &[Picture], lines: &[GumpLabel<'_>], out: &P
     // The corner every line of text was placed from, so that a caption sitting
     // a pixel off its box can be seen to be doing so rather than read as the
     // font's own bearing.
-    for line in lines {
+    for (line, _) in lines {
         mark(
             &mut rgb,
             width,
