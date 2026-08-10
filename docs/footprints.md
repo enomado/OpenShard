@@ -363,24 +363,26 @@ must go red. Depends on the parity item below.
   replaced; what is missing is anyone having *looked* at one. A frame at a
   colonnade, before and after, is the cheapest way to find out, and it is the
   same kind of gate S5 is.
-- 🚩 **The no-discard change is written and not committed.** `statics.wesl`'s
-  `if !hit(best) { discard; }` is now `if hit(best) { … }` in the working tree,
-  proven by a picture — `0x0B06` alone at `(1496, 1663)`, `View::Height`, before
-  and after — and it cannot be committed from here: the same file is being
-  rewritten by concurrent work (two hundred lines in flight) and the tree's own
-  pipeline validation fails for that work's reason, not this one. The hunk is
-  one `if` and its comment. Whoever picks it up commits it on its own and
-  re-runs `discard_census.rs`, whose panel and whole-tile shares should then be
-  a statement about *normals* rather than about pixels leaving the screen.
-- 🚩 **`examples/discard_census.rs` reads `boxes_of`'s box and the frame meets
-  the grid's.** `statics::push_volumes` substitutes the occlusion grid's own
-  merged solid wherever the grid names one, so for a piece the grid took in, the
-  census's per-tile box is not the box a fragment is actually met against. The
-  tool's own doc says this "cannot reach the class under measurement" and that
-  is too strong — S4 found 42 placements of the class that *are* in the grid.
-  Nothing measured so far is known to be wrong because of it (the display case
-  is `CLEAR`, and its 53.3% was confirmed by a render), but the census should
-  build the window's grid and consult it, exactly as `push_volumes` does.
+- ✅ **The no-discard change is written, and it lands with the work beside it.**
+  `statics.wesl`'s `if !hit(best) { discard; }` is `if hit(best) { … }` in the
+  working tree, proven by a picture — `0x0B06` alone at `(1496, 1663)`,
+  `View::Height`, before and after. It could not be committed from this plan's
+  own session: that file was carrying two hundred lines of concurrent work at
+  the time. It does not need to be — `docs/silhouettes.md` has since picked the
+  change up by name and built its own box-edge layer on the state a miss now
+  keeps, so it commits there. What is still owed to *this* plan is one re-run of
+  `discard_census.rs` afterwards: its panel and whole-tile shares become a
+  statement about **normals** rather than about pixels leaving the screen, and
+  the wording in that tool still says "discarded".
+- ✅ **`examples/discard_census.rs` read `boxes_of`'s box where the frame meets
+  the grid's** — fixed 2026-08-10. It builds the window's grid, two of them
+  (merging is a function of the boxes, so a "before" measured against today's
+  grid would be half of each answer), and substitutes a named primitive's own
+  solid exactly as `statics::push_volumes` does. Four shares moved with it:
+  panels 14.23% → 11.09%, whole tile 45.75% → 32.69%, a lid 1.50% → 1.43%, a
+  prism 0.51% → 0.35%. **S4's own number did not move at all** — the footprint
+  class is `CLEAR` to a piece, so it has no merged solid to be measured against,
+  and 7.72% → 15.88% stands as recorded.
 - 🚩 **The frame's own discard has not been re-measured, and the census cannot
   do it.** The 2.38% on record counts pixels that change in a drawn frame;
   `discard_census.rs` counts every sprite pixel in a window, drawn over or not,
