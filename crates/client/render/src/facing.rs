@@ -2134,10 +2134,19 @@ mod tests {
         }
     }
 
-    /// The tile is the camera's tile and not a second opinion about it.
+    /// The tile is the camera's tile and not a second opinion about it — and
+    /// neither is the height quantum, which is spelled out here for the same
+    /// reason and was pinned for neither.
+    ///
+    /// `docs/pixels.md` P4: the copies of a grid constant that no compiler
+    /// relates. The shaders' copies are pinned in `tests/grids.rs`.
     #[test]
     fn a_tile_is_the_width_the_camera_draws_one_at() {
         assert_eq!(TILE_WIDTH as i32, crate::camera::TILE_WIDTH);
+        assert_eq!(Z_STEP as i32, crate::camera::Z_STEP);
+        // Derived and not restated, so this is a statement about the derivation
+        // rather than about a second literal: half a tile is exact.
+        assert_eq!(HALF_TILE_WIDTH * 2.0, TILE_WIDTH);
     }
 
     /// Each of the four, told apart from a picture of it. The property that

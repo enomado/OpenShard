@@ -1,0 +1,134 @@
+//! **The constants that relate one grid to another, wherever they are written
+//! down twice.** `docs/pixels.md` P4, the half of it that is not
+//! `camera::tests::no_primary_sample_lands_on_a_whole_virtual_pixel`.
+//!
+//! P2's table says most pairs of grids in this renderer are commensurate *by
+//! construction* — a tile corner is a whole world pixel because `TILE_WIDTH / 2`
+//! is an integer, and one `Point.z` unit is exactly eleven of `light.rs`'s tile
+//! units because `TILE_WIDTH / Z_STEP` divides evenly. Both claims are about
+//! constants, and a claim about a constant is only as good as the number staying
+//! what the claim was written against.
+//!
+//! Which would be nothing to test if there were one copy of each. There is not:
+//! P1's census found `TILE_WIDTH` and `Z_STEP` restated as independent literals
+//! in [`facing`](openshard_client_render::facing) — deliberately, per its own
+//! comment, so a function handed nothing but pixels need not be handed a camera
+//! — and restated again in the shaders, where the Rust constant cannot reach at
+//! all. `docs/pixels.md`'s backlog carries this as *"`Z_STEP` and `Z_PER_TILE`
+//! are one relationship written twice"*; a copy across the wire is the same
+//! hazard with no compiler on either side of it.
+//!
+//! So the shader's copies are read back out of the shader's own source and
+//! pinned. A constant that is renamed or deleted turns this red rather than
+//! passing vacuously, which is the difference between a gate and a search.
+//!
+//! `facing`'s copies are pinned in its own module, where they are visible:
+//! `facing::tests::a_tile_is_the_width_the_camera_draws_one_at`.
+
+use openshard_client_render::camera::{TILE_HEIGHT, TILE_WIDTH, Z_STEP};
+use openshard_client_render::light::Z_PER_TILE;
+
+const IMPOSTOR: &str = include_str!("../src/shaders/impostor.wesl");
+const STATICS: &str = include_str!("../src/shaders/statics.wesl");
+
+/// One `const NAME: f32 = <number>;` out of a shader's source.
+///
+/// Panics when the name is absent, and that is the point: a shader that renames
+/// its copy of a grid constant has not stopped having one, and a helper that
+/// answered `None` here would let the rename read as "nothing to pin".
+fn shader_const(source: &str, file: &str, name: &str) -> f32 {
+    let prefix = format!("const {name}: f32 = ");
+    let line = source
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| {
+            panic!(
+                "{file} no longer declares `{name}` — if the shader's copy of this grid constant \
+                 moved or was renamed, move this pin with it; if it genuinely stopped having one, \
+                 say so here and take the case out"
+            )
+        });
+    let value = line[prefix.len()..]
+        .split(';')
+        .next()
+        .unwrap_or_else(|| panic!("{file}'s `{name}` has no `;`: {line}"));
+    value
+        .trim()
+        .parse()
+        .unwrap_or_else(|error| panic!("{file}'s `{name}` is not a number: {value:?} ({error})"))
+}
+
+/// **The shaders' copies of the grid constants are the camera's numbers.**
+///
+/// Three of them, and each is a different pair of grids meeting on the GPU:
+/// `impostor.wesl`'s `TILE_WIDTH` converts view-plane pixels to tiles in
+/// `ray_from`, its `Z_PER_TILE` is `VIEW.z` — the one place a shader states the
+/// tile-space metric [`openshard_client_render::light::TileVec`] carries on this
+/// side — and `statics.wesl`'s `Z_STEP` lifts a sprite by its own height.
+///
+/// A disagreement here does not fail to compile and does not fail to draw. It
+/// draws a frame at a slightly different scale from the one every test on this
+/// side asserts about, which is `docs/parity.md`'s subject exactly: two pictures
+/// rather than one wrong one.
+#[test]
+fn the_shaders_restate_the_cameras_constants_and_not_their_own() {
+    assert_eq!(
+        shader_const(IMPOSTOR, "impostor.wesl", "TILE_WIDTH"),
+        TILE_WIDTH as f32,
+        "impostor.wesl's tile width against camera::TILE_WIDTH",
+    );
+    assert_eq!(
+        shader_const(IMPOSTOR, "impostor.wesl", "Z_PER_TILE"),
+        Z_PER_TILE,
+        "impostor.wesl's tile-space metric against light::Z_PER_TILE",
+    );
+    assert_eq!(
+        shader_const(STATICS, "statics.wesl", "Z_STEP"),
+        Z_STEP as f32,
+        "statics.wesl's height quantum against camera::Z_STEP",
+    );
+    assert_eq!(
+        shader_const(STATICS, "statics.wesl", "HALF_TILE_HEIGHT"),
+        (TILE_HEIGHT / 2) as f32,
+        "statics.wesl's half tile against camera::TILE_HEIGHT / 2",
+    );
+}
+
+/// **`Point.z` and tile space are commensurate because the division is exact** —
+/// `docs/pixels.md` P2's second row, as an assertion rather than a sentence.
+///
+/// [`Z_PER_TILE`] is *defined* as `TILE_WIDTH / Z_STEP`, so the two can never
+/// disagree; what they can do is stop dividing evenly. Then `Z_PER_TILE` is
+/// still a number, every expression still compiles, and one `z` unit quietly
+/// stops being a whole count of tile-space units — which is the row's claim, and
+/// the only thing between it and being wrong is `44 % 4`.
+///
+/// The eleven is pinned as well, not because eleven is load-bearing on its own
+/// but because `impostor.wesl` writes it as a literal and the pin above compares
+/// against this.
+#[test]
+fn a_height_unit_is_a_whole_number_of_tile_space_units() {
+    assert_eq!(
+        TILE_WIDTH % Z_STEP,
+        0,
+        "TILE_WIDTH / Z_STEP no longer divides evenly, so one unit of `Point.z` is no longer a \
+         whole count of tile-space units — docs/pixels.md P2's `Tile z ↔ tile space` row is what \
+         stops being true, and `light::TileVec`'s two crossings are where it shows",
+    );
+    assert_eq!(Z_PER_TILE, (TILE_WIDTH / Z_STEP) as f32);
+    assert_eq!(Z_PER_TILE, 11.0);
+}
+
+/// **A tile corner is a whole world pixel** — P2's first row, same treatment.
+///
+/// `project` moves a tile by `HALF_WIDTH = TILE_WIDTH / 2` per step on each
+/// axis. That the halving is exact is why the tile grid and the world-pixel grid
+/// are commensurate at every rung and parity, upstream of any camera — and it is
+/// why a view ray through a whole virtual pixel is a ray through a box's own
+/// corner, which is the whole of the window-parity defect. An odd `TILE_WIDTH`
+/// would not break the renderer; it would break the *derivation*, silently.
+#[test]
+fn a_tile_step_is_a_whole_number_of_world_pixels() {
+    assert_eq!(TILE_WIDTH % 2, 0, "a tile's width no longer halves exactly");
+    assert_eq!(TILE_HEIGHT % 2, 0, "a tile's height no longer halves exactly");
+}

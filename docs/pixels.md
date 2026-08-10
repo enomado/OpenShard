@@ -268,13 +268,54 @@ at odd extents included.
   with [`docs/silhouettes.md`](silhouettes.md), which is entirely about this
   grid, rather than being invented here first.
 
-### P4 — the gates
+### P4 — the gates ✅ 2026-08-10
 
 An invariant of the form "no primary sample lands on a whole virtual pixel at
 any rung, at either parity, at any eye fraction" is a unit test with no GPU in
 it: a loop over the ladder and a divisibility assertion. `docs/parity.md`'s fix
 is currently held by an argument in a comment; this is where it becomes a gate
 that a mutation turns red.
+
+**Done, and the headline gate was already standing.**
+[`camera::tests::no_primary_sample_lands_on_a_whole_virtual_pixel`](../crates/client/render/src/camera.rs#L1148)
+is exactly the test this phase describes — it landed as `docs/parity.md` P5's
+G1, walks all seven rungs × both parities of both axes × every eye fraction the
+quantum can express, asserts the *distance* (`0.5 / scale`, the property) rather
+than the absence, counts what it looked at, and carries
+[`AN_EYE_ON_A_HALF_PIXEL_REACHES_THE_CORNER`](../crates/client/render/src/camera.rs#L1116)
+as a named exception with a hit-counter so the list cannot quietly cover
+nothing. Nothing to add there.
+
+What P2's table left held by argument alone was its *other* rows — the ones that
+say "commensurate **always**, by construction". Each of those is a claim about a
+constant, and this renderer writes its grid constants down more than once.
+
+| Claim | Gate | Where |
+|---|---|---|
+| A tile step is a whole number of world pixels (`TILE_WIDTH / 2` exact) — P2 row 1, and therefore the reason a whole virtual pixel *is* a box's corner | [`a_tile_step_is_a_whole_number_of_world_pixels`](../crates/client/render/tests/grids.rs) | new `tests/grids.rs` |
+| One `Point.z` unit is a whole count of tile-space units (`TILE_WIDTH % Z_STEP == 0`) — P2 row 2 | [`a_height_unit_is_a_whole_number_of_tile_space_units`](../crates/client/render/tests/grids.rs) | same |
+| The **shaders'** copies of `TILE_WIDTH`, `Z_PER_TILE`, `Z_STEP` and `HALF_TILE_HEIGHT` are the camera's numbers | [`the_shaders_restate_the_cameras_constants_and_not_their_own`](../crates/client/render/tests/grids.rs) — reads them back out of `impostor.wesl` / `statics.wesl`'s own source | same |
+| `facing.rs`'s deliberately-independent `Z_STEP`, and that its `HALF_TILE_WIDTH` doubles back exactly | [`facing::tests::a_tile_is_the_width_the_camera_draws_one_at`](../crates/client/render/src/facing.rs#L2138) — its `TILE_WIDTH` was pinned; the other two were not | extended in place |
+
+The shader pins are the ones that were load-bearing and absent: a copy across
+the wire has no compiler on either side of it, and a disagreement there does not
+fail to build and does not fail to draw — it draws a frame at a different scale
+from the one every test on this side asserts about, which is `docs/parity.md`'s
+"two pictures rather than one wrong one" exactly. `shader_const` **panics** on a
+missing name rather than answering `None`: a renamed constant has not stopped
+being a copy, and a helper that shrugged would let the rename read as "nothing
+to pin".
+
+*Witnessed by mutation:* `impostor.wesl`'s `TILE_WIDTH` set to `45.0` turns
+`the_shaders_restate_the_cameras_constants_and_not_their_own` red, reverted
+after.
+
+**Not gated, deliberately.** The atlases' two UV conventions (P2's art-texel
+row) — `atlas.rs` already pins the half-texel inset at its own site
+([`atlas.rs:2030`](../crates/client/render/src/atlas.rs#L2030), and the
+round-trip below it), and what is *un*gated there is not a number but the
+absence of a type carrying which convention a caller is in, which is P3's open
+item and `docs/silhouettes.md`'s subject. A test cannot stand in for it.
 
 ## Backlog
 
@@ -284,7 +325,9 @@ that a mutation turns red.
 - 🚩 **`Z_STEP` and `Z_PER_TILE` are one relationship written twice.**
   `Z_PER_TILE` is *defined* as `TILE_WIDTH / Z_STEP`, so they cannot disagree —
   but a reader meeting `lo.z`/`hi.z` in the impostor has no way to know which of
-  the two `z` units they are in without following the definition.
+  the two `z` units they are in without following the definition. P4 gated the
+  copies that *can* disagree (the shaders', `facing.rs`'s); what is left here is
+  the reading problem, which is a type's job and not a test's.
 - 🚩 **The *whole* real pixel is still untyped, and it is the one the cursor
   arrives on.** `RealPoint` is the fraction; `Camera::pick(x: i32, y: i32)`,
   `Camera::width`/`height`, `image_size` and `ViewportRect` are all whole real
