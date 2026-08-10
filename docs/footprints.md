@@ -151,6 +151,41 @@ is a slab. `arttable`'s own version note covers the trap: a reader that half-rea
 one would answer `footprint: None` for every graphic and look like a detector
 that found nothing.
 
+**D8 — a measured box has to reach its own picture, and a base edge does not
+always belong to the thing standing on it.** Added 2026-08-10, after a person
+pointed at a long table and said we had put a hole in it. Everything above reads
+**one line** — the base edge — and D5's gates all ask whether that line is a
+clean one. None of them asks whose it is. A table's is a leg's, a counter's is a
+foot narrower than its top, a sloped roof's is a V belonging to no box at all;
+each measures cleanly and describes something the picture is *standing on*, so
+the box comes out real, narrow and wrong.
+
+The residual is `facing::OFF_BAND`: **how much of the picture is drawn outside
+the screen columns its own box can reach.** Height-free by construction, which
+is what lets it sit beside gates that must not know a top — a box spans `across`
+from `(x₀ − y₁)·22` to `(x₁ − y₀)·22` and nothing outside that at any height, so
+a pixel outside that band misses the box whatever `tiledata` says.
+
+**It only ever fires where D5a's clamp did**, which is the sharper statement:
+the footprint is derived from the base edge's own extremes, so the base's
+columns are inside the band by construction *unless the box was clipped to the
+tile*. `0x0B80` is drawn 66 columns wide with a clean V across 45 of them — a
+box two tiles across, clamped to one. D5a is right for a bookcase drawn a little
+wider than its cell and wrong for a slab drawn across two, and this is the line
+between them.
+
+*The cap is measured*, in `PLATEAU`'s own manner (`examples/discard_census.rs`
+prints the sweep). The class is bimodal — a wooden post `0.0%`, an elven
+bookshelf `0.0%`, this plan's own bookcases `7.9%`; a table `15.4%`, a counter
+`29.3%`, a slate roof `44.1%` — and every cap from **8% to 12%** keeps the same
+164 placements and leaves the same 1.1% of their art outside. Below 8% the
+fixture this plan was written for goes; at 30% the counters come back and the
+cost jumps to 9.4%. Ten per cent is the middle of that plateau.
+
+*Rejected:* gating on the prism's fit score, which is the same instrument D5
+rejected and would not have worked anyway — over Britain a stone wall scores
+`0.936` against its best prism and a display case `0.902`.
+
 ## Steps
 
 **S1 — the measurement.** ✅ 2026-08-10. `facing::Footprint`,
@@ -292,6 +327,32 @@ it 44–53% (`0x05A2` "slate roof", 48×76 pixels of picture over a box three `z
 units tall). That is `docs/lighting_rebuild.md`'s D1 — the height nobody
 measures — showing up in pixels, and it dwarfs everything this plan moves.
 
+**S6 — the residual, and the class stops taking pictures that are not boxes.**
+✅ 2026-08-10, out of S4's own finding and a person's own picture. D8 above is
+the decision; what it does to the census is:
+
+| | before | after |
+|---|---:|---:|
+| a measured footprint | 219 | **164** |
+| whole tile, the art would not say | 3315 | **3370** |
+
+Fifty-five refusals, and they are the right fifty-five: `0x0B3D`/`0x0B3E`
+"counter" (41 placements), `0x0B80`/`0x0B74` "table", and **the roof pieces** —
+`0x059A` "slate roof" and `0x05C7` "wooden shingles", which closes the backlog
+item about a sloped slab being handed a footprint through a route that never
+asks the `ROOF` bit, and closes it without a rule about roofs. Every picture
+refused here is handed back the whole tile, which is what shipped before S3 and
+is never *wrong*, only wide.
+
+`DETECTOR` 3→4: a table written before this carries rows that stand a table on a
+box its own top hangs outside of.
+
+*Witnessed by mutation, and the first version was not.* It asserted `off_band`'s
+own number, so unwiring the refusal from `measure_footprint` left it green — a
+selector, not a gate. The fixture is now `0x0B80`'s own numbers painted out (66
+columns, the V from 9 to 53), because the refusal only fires where the clamp
+did and `blocks_silhouette` draws exactly one tile.
+
 **S5 — the frame gate.** The bookcase pair, `View::Normal`, asserting the lid
 shrinks to the measured slab, with the whole-tile footprint as the injection that
 must go red. Depends on the parity item below.
@@ -312,7 +373,14 @@ must go red. Depends on the parity item below.
 
 ## Backlog
 
-- 🚩 **A roof piece is given a footprint and nothing stops it.** `0x059A` "slate
+- ✅ **A roof piece is given a footprint and nothing stops it** — closed
+  2026-08-10 by D8's residual, and without the rule about roofs this item was
+  asking for. `0x059A` reads 44.1% of its art outside the box its base states
+  and `0x05C7` 47.2%, so both are refused as pictures that are not boxes rather
+  than as roofs. The `ROOF`-versus-`BACKGROUND` question `boxes_of` raises is
+  untouched and still belongs to `docs/lighting_rebuild.md`'s phase 6i.
+  Superseded text follows for the reasoning: **A roof piece is given a footprint
+  and nothing stops it.** `0x059A` "slate
   roof" measures `x (0,3) y (0,3)` and `0x05C7` "wooden shingles" `x (0,2) y
   (0,3)`, so six placements at Britain now stand — and **occlude** — as roughly
   an eighth of the tile they used to fill. `boxes_of` asks `is_background` and not
