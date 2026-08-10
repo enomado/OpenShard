@@ -2248,6 +2248,36 @@ Things noticed while writing this, not blocking any phase:
   carrying a side face's normal on a surface whose every other pixel carries
   `+z`, at `z ≈ 40`: a lid. A wall's cosine in the middle of a roof. See
   `impostor::meets`.
+- 🚩 **A corner still lights up where a lid meets a side face, and it is the
+  *shadow* term there rather than the face.** The same person, same roof, two
+  tiles over: `1510, 1636` and `1490, 1636`, stand `z 20`, ceiling `z 40`, the
+  roof `0x051C`. Reproduced in `isolated_scene` at both — two or three clusters
+  of three to six pixels, not the one-per-corner lattice the entry above was.
+  <br>
+  A nine-by-nine window of the G-buffer round the brightest one reads like this,
+  and it is the whole diagnosis: the lower half is `+z` and lit and *dark*
+  (a lid facing up, with the cosine giving it nothing), the upper half is `+x`
+  or `+y` and **shadowed**, and along the seam between the two there is a notch
+  of five pixels that are `+x`/`+y` and **lit** — a side face's cosine, at full
+  flame, against neighbours of the same normal and the same `z` that the walk
+  calls shadowed. So it is not which face was met: the face is the same as its
+  neighbours', and the walk answers differently for it.
+  <br>
+  What that leaves is the exemption. `on_the_lit_surface` releases a candidate
+  whose extent along the fragment's own normal axis **ends** on the fragment's
+  plane, and a seam is exactly where a lid's edge and a wall's face share a
+  coordinate — so a fragment there is released from the very primitive that
+  shadows its neighbours. Measured at the other spot: the bright pixel names a
+  different solid from the pixels below it (`0` against `15` and `26`), which is
+  the same sentence from the other end.
+  <br>
+  **What it needs is the instrument this class keeps asking for and the tree
+  does not have: which primitive a pixel names, as a picture.** Four defects on
+  this track have now been "the fragment names the wrong box" (6f, 6h, the lid
+  face, this), and each was diagnosed by hand-decoding the position plane's
+  fourth channel through a throwaway shader edit. A `View::Solid` beside
+  `View::Normal` — the id hashed to a colour — plus a per-pixel *who stopped the
+  ray* probe would have made each of them minutes' work.
 - 🚩 **A sprite's own top edge is serrated, and it is phase 6's stated rule
   showing a consequence nobody had measured.** Seen at Britain's `(1459, 1693)`
   in `View::Light` and again in `View::Normal`: along a wall's top boundary the
