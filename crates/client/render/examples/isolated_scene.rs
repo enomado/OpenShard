@@ -698,78 +698,93 @@ fn main() {
         };
         TexmapAtlas::build(&texmaps_src, &tiledata, wanted).expect("textures fit")
     };
-    let ground_quads = match want_ground {
-        true => ground::collect(&synthetic, &camera, &land_atlas, &texmaps, &cutaway),
-        false => Vec::new(),
-    };
-
     let animations = StaticAnimations::default();
     let needed = items::needed_graphics(&items, &animations);
     let static_atlas = StaticAtlas::build(&art, needed).expect("the scene's own items fit");
-    // **The grid before the pictures**, which is `docs/lighting_height.md` phase
-    // 3's own ordering and the same one `app::render` keeps: what a drawn row
-    // carries beside its picture is the number this grid gave the static it
-    // draws, so a tool that collected its items first would stamp numbers from a
-    // grid that did not exist yet.
-    let mut lighting = light::collect(
-        &synthetic,
-        &items,
-        &camera,
-        &tiledata,
+
+    // Which plane to draw. Read here rather than beside the blit below, because
+    // it is one of `frame::Inputs`'s own fields now: what this tool draws is a
+    // frame like any other, and which of its values is coloured in is an input to
+    // the assembly rather than something done to the answer afterwards.
+    let wanted_view = env_opt("OPENSHARD_FRAME_VIEW")
+        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(|v| openshard_client_render::debug::View::ALL.get(v).copied())
+        .unwrap_or_default();
+    let tuning = env_tuning();
+
+    // **One assembly, the client's own** — `docs/parity.md`, decision D1. Every
+    // way this tool used to differ from `App::draw` is a field below, so a
+    // difference between the two pictures is a difference in these values and
+    // not in which calls somebody wrote out.
+    //
+    // The land atlas is empty under `_GROUND=0`, so there is no branch here for
+    // it: a ground pass over an atlas holding nothing paints nothing, and it
+    // still clears the targets exactly as the live one does.
+    let openshard_client_render::frame::Frame {
+        lighting,
+        ground: ground_quads,
+        statics:
+            openshard_client_render::statics::StaticGeometry {
+                quads: item_quads,
+                mesh_vertices,
+                mesh_rows,
+                // The impostor's boxes — `docs/lighting_rebuild.md` phase 6c —
+                // which this scene's own pixels are met against.
+                boxes,
+            },
+    } = openshard_client_render::frame::assemble(openshard_client_render::frame::Inputs {
+        map: &synthetic,
+        items: &items,
+        camera: &camera,
+        tiledata: &tiledata,
+        animations: &animations,
         // The same cutaway the pictures get, which is the app's own rule: a wall
         // the frame did not draw must not darken the street.
-        &cutaway,
+        cutaway: &cutaway,
+        land: &land_atlas,
+        texmaps: &texmaps,
+        statics: &static_atlas,
         // Flat by default, as the client is: what a roof does to the light under
         // it is a second thing changing every tile of the picture. The client's
         // own F6 is `OPENSHARD_SCENE_SKY_FIELD=1` here, and it is a knob because
         // the field is drawn **per tile with no interpolation** — a candidate
         // whenever what a person is looking at is a tile-shaped step.
-        match env_flag("OPENSHARD_SCENE_SKY_FIELD", false) {
+        sky: Some(match env_flag("OPENSHARD_SCENE_SKY_FIELD", false) {
             true => light::NIGHT,
             false => light::NIGHT.flattened(),
-        },
-        &env_tuning(),
-        0.0,
-        Some(&static_atlas),
-        None,
-    );
-    // Named rather than written inline below, because a `const`'s reference is a
-    // temporary and the call outlives it.
-    let no_grid = openshard_client_render::occlusion::Occlusion::EMPTY;
-    let openshard_client_render::statics::StaticGeometry {
-        quads: item_quads,
-        mesh_vertices,
-        mesh_rows,
-        // The impostor's boxes — `docs/lighting_rebuild.md` phase 6c — which
-        // this scene's own pixels are met against below.
-        boxes,
-    } = items::collect(
-        &items,
-        &camera,
-        &tiledata,
-        &animations,
-        &static_atlas,
-        &cutaway,
-        None,
+        }),
+        // Night, and nobody standing in the scene to carry a lamp: this tool
+        // builds a place rather than following a player.
+        sun: None,
+        carried: None,
+        tuning: &tuning,
+        // The flicker, held at the instant every scene here is read at, so a
+        // dump taken twice is the same dump.
+        flame_time: 0.0,
+        // No bake. The scene is lit once, and an uncached grid is the same grid.
+        bake: None,
+        // Nothing is under a cursor here.
+        highlight: None,
         // The client's own F10, at the one place it reaches the *normal* plane.
         //
-        // With the lights off, `App::draw` never calls `light::collect` at all
-        // (`sky` is `None` ⇒ `Lighting::NONE`), so `statics::collect` is handed
-        // an empty grid and every fragment takes `statics.wesl`'s billboard
-        // fallback — which always has a facing. Turning the lights on builds the
-        // grid, and from then on a fragment's normal is the *impostor's* answer.
-        // So a face that changes when a person presses F10 is not a lighting
-        // difference at all: it is the two answers disagreeing, and this is the
-        // switch that puts them side by side in one tool.
+        // With the lights off, `App::draw` builds no grid at all (`sky` is
+        // `None` ⇒ `Lighting::NONE`), so every fragment takes `statics.wesl`'s
+        // billboard fallback — which always has a facing. Turning the lights on
+        // builds the grid, and from then on a fragment's normal is the
+        // *impostor's* answer. So a face that changes when a person presses F10
+        // is not a lighting difference at all: it is the two answers
+        // disagreeing, and this is the switch that puts them side by side in one
+        // tool.
         //
         // The lighting keeps its own grid either way — only what the sprites are
         // met against changes, which is what keeps the difference readable in
         // `View::Normal` instead of moving every other plane with it.
-        match env_flag("OPENSHARD_SCENE_IMPOSTOR", true) {
-            true => &lighting.occlusion,
-            false => &no_grid,
+        impostor: match env_flag("OPENSHARD_SCENE_IMPOSTOR", true) {
+            true => openshard_client_render::frame::Impostor::Met,
+            false => openshard_client_render::frame::Impostor::Billboards,
         },
-    );
+        view: wanted_view,
+    });
 
     let format = openshard_client_render::blit::WORLD_FORMAT;
     let world = openshard_client_render::blit::world_texture(&device, width, height);
@@ -1003,12 +1018,6 @@ fn main() {
         );
         return;
     }
-
-    let wanted_view = env_opt("OPENSHARD_FRAME_VIEW")
-        .and_then(|v| v.parse::<usize>().ok())
-        .and_then(|v| openshard_client_render::debug::View::ALL.get(v).copied())
-        .unwrap_or_default();
-    lighting.view = wanted_view;
 
     let mut blit = Blit::new(&device, format);
     // No mobile pass in this scene: the dummy stands in for it.

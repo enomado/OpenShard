@@ -48,6 +48,7 @@ pub mod depth;
 pub mod doors;
 pub mod facing;
 pub mod follow;
+pub mod frame;
 pub mod gbuffer;
 pub mod geometry;
 pub mod ground;

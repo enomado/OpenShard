@@ -13,6 +13,12 @@ is written out by hand in at least seven places: `client/app/src/lib.rs`,
 free to pass a different cutaway, a different grid, a different clock — and each
 of them does.
 
+(Eleven, counted properly while P1 was being done: `tests/onsite.rs`,
+`examples/boxes.rs`, `client/render/src/scene.rs` and two more in a **different
+crate**, `client/artscan`'s `examples/probe.rs` and `examples/grid.rs`. That the
+first count was low by four is itself the point — nobody holds the list either.
+P2 has all of them.)
+
 What that costs is not theoretical. In one session (2026-08-10), chasing a
 one-pixel artefact a person could see in the live client:
 
@@ -82,24 +88,67 @@ gated.
 
 ## Phases
 
-### P1 — the assembly, extracted
+### P1 — the assembly, extracted ✅ 2026-08-10
 
-One function, the app's own order (the grid before the pictures, since a drawn
-row carries the number the grid gave the static it draws), and its inputs a
-struct. The app and `isolated_scene` are its first two callers.
+`client/render/src/frame.rs`: [`frame::assemble`] takes one [`frame::Inputs`] and
+returns one [`frame::Frame`] — the lighting, the ground quads and one
+[`StaticGeometry`] with the server's items already absorbed into the map's. The
+app's own order is kept and stated there (the grid before the pictures, since a
+drawn row carries the number the grid gave the static it draws). The app and
+`isolated_scene` are its first two callers, and neither calls a collector any
+more.
 
-*Done when:* neither `client/app/src/lib.rs` nor `examples/isolated_scene.rs`
-calls any of the four collectors directly; `cargo test --workspace` is green; the
-frames both produce at one place are pixel-identical to the ones they produced
-before the extraction, plane by plane. That last one is the whole point — a
-refactor that changed a picture is a refactor that found a bug, and it should be
-reported as one rather than absorbed.
+**The open design question is settled** (it was the third backlog item): the
+assembly takes *borrows in a struct built at the call site*, `bake: Option<&mut
+Bake>` included. The app hands over `&self.map`, `&self.items` and `&mut
+self.occlusion_bake` in one literal — they are disjoint fields, so nothing had to
+move out of `App` and nothing is cloned.
+
+Eighteen fields, no `Default`, and three of them are new as fields rather than as
+constants somebody passed:
+
+- **`sky: Option<Ambient>`** — `None` is the client's daylight, where no grid is
+  built at all. It is what F10 actually switches, which is worth stating because
+  it is *not* the impostor field below.
+- **`impostor: Impostor`** — `Met` or `Billboards`, D3's field. The app passes
+  `Met` always; `isolated_scene`'s `OPENSHARD_SCENE_IMPOSTOR=0` is the only
+  caller that asks for the other.
+- **`sun` / `carried` / `view`** — the three things the app used to do to
+  `Lighting` *after* collecting it, three hundred lines further down the
+  function. They are inputs now, and the comment where they used to be says
+  nothing may touch the lighting between the assembly and the blit. A frame the
+  client draws and a frame a tool dumps are the same frame only for as long as
+  neither has an adjustment of its own afterwards.
+
+*Done:* `examples/isolated_scene.rs` dumps seven planes of Britain's
+`(1501, 1659)` — Lit, Place, Kind, Height, Normal, Solid, Occluders — **byte for
+byte identical** before and after the extraction. `cargo test -p
+openshard-client-render -p openshard-client-app` is green (454 + 142 and the GPU
+suites), clippy silent.
+
+*Not done, and it is the first backlog item below:* **the app's own half was
+verified by reading rather than by a gate.** The client has no frame dump, so
+there is nothing to compare; what was checked is that every argument arrives
+where it used to, that `Lighting::NONE.sun` is `None` so the unconditional
+`lighting.sun = sun` is the old conditional, and that nothing between the old
+collect site and the old adjustment site reads anything of `lighting` but
+`occlusion`.
 
 ### P2 — the remaining callers
 
 `tests/cost.rs`, `tests/frame.rs`, `tests/traced.rs`, `tests/attachment.rs`,
-`examples/two_cubes.rs`. Some of these build synthetic scenes with no map at all
-and will pass fields the app never does; that is what the struct is for.
+`tests/onsite.rs`, `examples/two_cubes.rs`, `examples/boxes.rs`, and
+`client/artscan`'s `examples/probe.rs` and `examples/grid.rs`. **Nine, not the
+five this plan first named** — the two in `artscan` are a different crate and
+were missed entirely, and `onsite.rs` and `boxes.rs` were counted as scene
+fixtures rather than as assemblies. Some of these build synthetic scenes with no
+map at all and will pass fields the app never does; that is what the struct is
+for.
+
+`client/render/src/scene.rs`'s `Scene::lighting` is a tenth, and a different
+kind: it collects lighting and nothing else, for scenes that have no art to draw.
+Whether it becomes an `Inputs` with empty atlases or stays what it is, is a
+decision for P2 and not an oversight.
 
 *Done when:* the four collectors have no caller outside the assembly. D3 lands
 here: `cost.rs` prices a real grid, and its number changes — record both.
@@ -144,16 +193,26 @@ Each of the four re-runs the census as its own done-when, and the numbers go in
 
 ## Backlog
 
-- 🚩 **P1 is not started.** The extraction is the whole of it; everything below
-  waits on it.
+- 🚩 **The client cannot dump a frame, so half of P1 is unwitnessed.** Everything
+  a person can inspect is a tool's picture; the thing that is broken is the one
+  that draws to a window and keeps nothing. Until `App` can be asked for its
+  G-buffer planes at one place — an `OPENSHARD_FRAME_DUMP` of its own, or a
+  headless run that assembles a frame and reads it back without a window — **P3
+  cannot be written at all**, because the gate needs two frames and only one of
+  them exists. This is the next thing to build, and it is a prerequisite rather
+  than a nicety.
+- 🚩 **A parity gate needs a place where the lighting is reachable.** At Britain's
+  `(1501, 1659)`, a torch dropped in by `OPENSHARD_SCENE_EXTRA` at the client's
+  own default brightness and reach changes the Lit plane **not by one byte** — it
+  is shut inside a house and everything its pool would touch is under a roof. The
+  seven-plane comparison P1 was checked with only became sensitive to the
+  lighting at `_BRIGHTNESS=4 _REACH=3`. A gate laid on a frame with no flame that
+  reaches anything is green about the geometry and blind about the light, and it
+  would not say so. P3's three places have to be chosen for a lit pixel, not only
+  for a house.
 - 🚩 **The cost of a Britain-sized synthetic map is unmeasured** (D4). It is a
   `Map::from_blocks` of roughly 200×210 blocks with a land lookup a cell —
   cheap in principle, unmeasured in fact.
-- 🚩 **The app's own inputs are not all reachable from a test.** `App` owns the
-  bake, the clocks and the item list; whether the assembly takes them by
-  reference or the app hands over a built struct is P1's one open design
-  question, and it should be settled by writing the signature rather than by
-  arguing.
 - 🚩 **`examples/two_cubes.rs`, `synthetic_stair.rs` and `boxes.rs` build meshes
   by hand** — four hand-built diagnostic scenes, each its own copy, called out in
   `statics.rs`'s own note at `push_mesh`'s grave. They are not frame assemblies
