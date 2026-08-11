@@ -33,19 +33,23 @@ to satisfy a `u32`."
 By grep, `facet: u8` (as a function parameter, struct field, or enum variant
 field) appears in:
 
-| crate | files | occurrences |
-|---|---|---|
-| `world` | `tick.rs`, `tick/{command,gates,decor,regions,travel,fields,death,tests}.rs`, `gm.rs`, `spawner.rs`, `events.rs` | ~38 |
-| `scripting` | `lib.rs`, `engine/ops.rs` | ~16 |
-| `persistence` | `record.rs`, `sqlite.rs`, `pg.rs` | ~10, **not in scope — see Decisions** |
-| `ai` | `lib.rs` | 7 |
-| `magic` | `travel.rs` | 5 |
-| `npc` | `guards.rs`, `live.rs`, `spawn.rs` | 5 |
-| `items` | `spawn.rs` | 4 |
-| `state` | `harvest.rs` | 2 |
-| `skills` | `handlers/harvest.rs` | 1 |
-| `uofiles` | `map.rs` | 1, **not in scope — see Decisions** |
-| examples (`render`, `uofiles`) | 2, follow their crate's fix |
+The survey below is the one taken when the plan was written; the **status**
+column is kept current as stages land, because a count that only ever
+described the starting position is a count nobody can act on.
+
+| crate | files | occurrences | status |
+|---|---|---|---|
+| `world` | `tick.rs`, `tick/{command,gates,decor,regions,travel,fields,death,tests}.rs`, `gm.rs`, `spawner.rs`, `events.rs` | ~38 | `travel`, `gates`, `events` done; `regions` all but its two `Command` handlers; the rest open |
+| `scripting` | `lib.rs`, `engine/ops.rs` | ~16 | open, and F4 is unanswered |
+| `persistence` | `record.rs`, `sqlite.rs`, `pg.rs` | ~10 | **not in scope — see Decisions** |
+| `ai` | `lib.rs` | 7 | done (pilot) |
+| `magic` | `travel.rs` | 5 | done |
+| `npc` | `guards.rs`, `live.rs`, `spawn.rs` | 5 | `guards`/`live` done; `spawn.rs`'s `SpawnSpec` blocked on `Command` |
+| `items` | `spawn.rs` | 4 | half done; `spawn_item`/`spawn_container` blocked on `Command` |
+| `state` | `harvest.rs` | 2 | done — but the crate's real stage was four `components.rs` fields the survey missed, also done |
+| `skills` | `handlers/harvest.rs` | 1 | done |
+| `uofiles` | `map.rs` | 1 | **not in scope — see Decisions** |
+| examples (`render`, `uofiles`) | | 2 | follow their crate's fix |
 
 Every occurrence outside the two carve-outs below is the same shape checked
 by hand while scoping this plan: `ai::lib.rs`'s `foe_in_sight`, `probe`,
