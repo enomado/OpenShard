@@ -411,7 +411,8 @@ impl World {
             // for nothing.
             rune: registry.get::<RuneMark>(item).map(|mark| {
                 (
-                    mark.facet,
+                    // `.0` at the record seam: a saved facet is a SQL column.
+                    mark.facet.0,
                     mark.destination.x,
                     mark.destination.y,
                     mark.destination.z,
@@ -424,7 +425,7 @@ impl World {
                     .entries
                     .iter()
                     .map(|entry| RunebookEntryData {
-                        facet: entry.facet,
+                        facet: entry.facet.0,
                         x: entry.destination.x,
                         y: entry.destination.y,
                         z: entry.destination.z,
@@ -472,7 +473,7 @@ impl World {
             self.state.registry.insert(
                 entity,
                 RuneMark {
-                    facet,
+                    facet: Facet(facet),
                     destination: Point::new(x, y, z),
                 },
             );
@@ -485,7 +486,7 @@ impl World {
                         .entries
                         .iter()
                         .map(|entry| RunebookEntry {
-                            facet: entry.facet,
+                            facet: Facet(entry.facet),
                             destination: Point::new(entry.x, entry.y, entry.z),
                             description: entry.description.clone(),
                         })

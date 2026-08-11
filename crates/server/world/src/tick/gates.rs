@@ -69,7 +69,7 @@ impl World {
     /// Split out so a runebook's Gate button reaches exactly the same rules — a
     /// second copy of the both-ends check is how a book quietly becomes a way
     /// past a region that bars gating.
-    pub(super) fn open_gate_to(&mut self, caster: EntityId, there_facet: u8, there: Point) {
+    pub(super) fn open_gate_to(&mut self, caster: EntityId, there_facet: Facet, there: Point) {
         let Some((here_facet, here)) = magic::standing_at(&self.state, caster) else {
             return;
         };
@@ -78,7 +78,7 @@ impl World {
             self.notify_self(caster, "You cannot gate to another facet.");
             return;
         }
-        if !self.state.facets.contains_key(&Facet(there_facet)) {
+        if !self.state.facets.contains_key(&there_facet) {
             self.notify_self(caster, magic::TravelKind::GateTo.refusal());
             return;
         }
@@ -132,7 +132,7 @@ impl World {
     /// clock contradicting this one) and emits an `ItemSpawned` the pack would
     /// read as somebody dropping something. A gate owns its own lifetime, and a
     /// permanent one owns none at all.
-    pub(super) fn spawn_gate(&mut self, facet: u8, at: Point, gate: Moongate) -> Option<EntityId> {
+    pub(super) fn spawn_gate(&mut self, facet: Facet, at: Point, gate: Moongate) -> Option<EntityId> {
         let Ok((entity, _serial)) = self.state.registry.spawn_with_serial(SerialKind::Item) else {
             warn!("out of item serials; not opening a gate");
             return None;
@@ -145,12 +145,9 @@ impl World {
             },
         );
         self.state.registry.insert(entity, Position(at));
-        self.state.registry.insert(entity, Facet(facet));
+        self.state.registry.insert(entity, facet);
         self.state.registry.insert(entity, gate);
-        self.state
-            .facet_state_mut(Facet(facet))
-            .sectors
-            .insert(entity, at);
+        self.state.facet_state_mut(facet).sectors.insert(entity, at);
         // No obstruction, ever: a gate is walked *into*. Blocking the tile is how
         // the walk-in trigger becomes dead code that reads as a movement bug.
         self.state.reveal(entity);
@@ -166,7 +163,7 @@ impl World {
     pub(super) fn place_public_moongates(&mut self) -> usize {
         let mut placed = 0;
         for gate in magic::PUBLIC_MOONGATES {
-            if !self.state.facets.contains_key(&Facet(gate.facet)) {
+            if !self.state.facets.contains_key(&gate.facet) {
                 continue;
             }
             if self.public_gate_entity(gate.facet, gate.at).is_some() {
@@ -189,13 +186,13 @@ impl World {
                 },
             );
             self.state.registry.insert(entity, Position(gate.at));
-            self.state.registry.insert(entity, Facet(gate.facet));
+            self.state.registry.insert(entity, gate.facet);
             self.state.registry.insert(entity, Decoration);
             self.state
                 .registry
                 .insert(entity, Name(format!("a moongate to {}", gate.name)));
             self.state
-                .facet_state_mut(Facet(gate.facet))
+                .facet_state_mut(gate.facet)
                 .sectors
                 .insert(entity, gate.at);
             self.state.reveal(entity);
@@ -205,12 +202,12 @@ impl World {
     }
 
     /// The spell-laid gate standing on a tile, if any.
-    pub(super) fn gate_at(&self, facet: u8, at: Point) -> Option<EntityId> {
+    pub(super) fn gate_at(&self, facet: Facet, at: Point) -> Option<EntityId> {
         self.state
             .registry
             .query::<Moongate>()
             .find(|(entity, _)| {
-                self.state.facet_of(*entity) == Facet(facet)
+                self.state.facet_of(*entity) == facet
                     && self
                         .state
                         .registry
@@ -222,14 +219,14 @@ impl World {
 
     /// The city moongate standing on a tile, as an entity — the drawn item, so a
     /// reach check has something to measure against.
-    pub(super) fn public_gate_entity(&self, facet: u8, at: Point) -> Option<EntityId> {
+    pub(super) fn public_gate_entity(&self, facet: Facet, at: Point) -> Option<EntityId> {
         magic::public_gate_at(facet, at)?;
         self.state
             .registry
             .query::<Drawn>()
             .find(|(entity, graphic)| {
                 graphic.id == MOONGATE_GRAPHIC
-                    && self.state.facet_of(*entity) == Facet(facet)
+                    && self.state.facet_of(*entity) == facet
                     && self
                         .state
                         .registry
@@ -254,7 +251,7 @@ impl World {
         self.state
             .registry
             .get::<Position>(entity)
-            .is_some_and(|at| magic::public_gate_at(self.state.facet_of(entity).0, at.0).is_some())
+            .is_some_and(|at| magic::public_gate_at(self.state.facet_of(entity), at.0).is_some())
     }
 
     /// Close the gates whose time is up — the tick counter, like a field and a
@@ -298,9 +295,9 @@ impl World {
             .collect();
         for (entity, to) in moved {
             let facet = self.state.facet_of(entity);
-            if let Some(gate) = self.gate_at(facet.0, to) {
+            if let Some(gate) = self.gate_at(facet, to) {
                 self.use_gate(entity, gate);
-            } else if let Some(gate) = self.public_gate_entity(facet.0, to) {
+            } else if let Some(gate) = self.public_gate_entity(facet, to) {
                 // A city gate offers a list rather than taking you somewhere:
                 // it is one gate with nine destinations, not a pair.
                 self.open_gate_gump(entity, gate);
@@ -486,11 +483,11 @@ impl World {
     }
 
     /// The arrival both kinds of gate share.
-    fn travel_through(&mut self, traveller: EntityId, facet: u8, destination: Point) {
-        if !self.state.facets.contains_key(&Facet(facet)) {
+    fn travel_through(&mut self, traveller: EntityId, facet: Facet, destination: Point) {
+        if !self.state.facets.contains_key(&facet) {
             return;
         }
-        self.state.move_to(traveller, Facet(facet), destination);
+        self.state.move_to(traveller, facet, destination);
         self.state.play_sound(traveller, GATE_USE_SOUND);
     }
 }

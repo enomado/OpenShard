@@ -333,25 +333,73 @@ dependency and an F2 disk-seam question: whether the record structs keep the
 because none of the four can convert without their `world` readers in the
 same commit (F5). Do not treat "`state::harvest` done" as "`state` done".
 
+## The travel half of `world`, and `magic` with it — done
+
+The four `state` component fields the amendment above named, plus every
+`world` reader and writer of them, plus the whole of `magic::travel.rs` — one
+commit, because none of the three could move without the other two (F5). What
+made this a stage rather than the `world` stage is that **nothing in it
+touches `Command`**: every function here is called from another function in
+the same three files, and the two that *are* `Command` handlers were left bare
+on purpose (below).
+
+- **`state::components.rs`: `RuneMark`, `RunebookEntry`, `Moongate`,
+  `InRegion` → `facet: Facet`.** All four are saved components, so the disk
+  seam is where their `u8` now lives and nowhere else —
+  `world::tick/persist.rs` gained four conversions (`mark.facet.0`,
+  `entry.facet.0` out; `Facet(facet)`, `Facet(entry.facet)` back), each the
+  F2 shape and one of them already carrying that comment verbatim.
+- **`magic::travel.rs` closed entirely**: `may_travel`, `describe`,
+  `public_gate_at`, the `PublicGate.facet` field and the private `gate()`
+  row-constructor take `Facet`; `standing_at` and `destination_of` *return*
+  `(Facet, Point)` instead of `(u8, Point)`. The nine-row `PUBLIC_MOONGATES`
+  table now reads `gate("Britain", Facet(0), ...)` — one wrap per row rather
+  than a bare `u8` parameter kept for terseness, because a bare `facet: u8`
+  left anywhere in the file is exactly what F6's gate would have to
+  allowlist. `describe` keeps one `.0`, inside its `format!` — the display
+  leaf, the same reading as `default_vein`'s arithmetic leaf in the harvest
+  stage.
+- **`world::tick/travel.rs`**: `travel_to` and `can_stand_at` → `Facet`, and
+  with them five `Facet(facet)` rewraps and two `.0`s vanish from `mark_rune`
+  (whose `facet` came from `state.facet_of(caster)` all along).
+- **`world::tick/gates.rs`**: `open_gate_to`, `spawn_gate`, `gate_at`,
+  `public_gate_entity`, `travel_through` → `Facet`. `spawn_gate`'s
+  `registry.insert(entity, Facet(facet))` became `insert(entity, facet)` —
+  the component it inserts *is* `Facet`, so the parameter had been unwrapped
+  purely to be wrapped again on the next line.
+- **`world::tick/regions.rs`**: the private `Crossing.facet` and the public
+  `World::region_at` → `Facet`; `restore_regions`'s `BTreeMap` is keyed by
+  `Facet` with the conversion moved to where it reads the record.
+  `find_crossings`'s `seen.facet == facet.0` is now `== facet`, which is the
+  comparison the field's own doc comment argues for.
+- **`world::events.rs`: `RegionChanged.facet` → `Facet`.** Its only readers
+  are `guard_crossings` and two tests, so it went with its producer.
+
+**Left bare on purpose: `register_regions` and `clear_regions`.** Both are
+handlers for a `Command` variant whose field is still a `u8`, so wrapping them
+would move the `.0` into `tick.rs`'s dispatch `match` and buy nothing — the
+`spawn_item` finding again, third instance. A comment on `clear_regions` says
+so in the source, since that is where the next reader will ask.
+
+Counts: `state/components.rs` 4 → 0. `magic/travel.rs` 5 → 0. `world/tick/
+travel.rs` 2 → 0, `gates.rs` 5 → 0, `regions.rs` 4 → 2 (the two `Command`
+handlers), `events.rs` 1 → 0. Call sites updated: `world/tick/travel_tests.rs`
+(21 lines), `server/src/scripting.rs` (3, `World::region_at` being `pub`),
+`items/src/drag.rs` (0 — both sides of `RunebookEntry { facet: mark.facet }`
+moved together, which is the pilot's shape at its purest).
+
 ## What's next
 
-`magic` moves after `state`/`world` clear
-`RuneMark` and `travel_to`, not in F3's original position — see the amendment
-above. `world` remains the big one, and is now also where `Command::
-SpawnMobile`/`SpawnItem`/`SpawnContainer`/`RegisterRegions` need to convert
-to unblock `SpawnSpec`, `spawn_item`, `spawn_container` — record that
-explicitly in `world`'s stage notes when it starts, so it isn't rediscovered
-a third time.
-`state::harvest` + `skills::handlers::harvest` together after that. `world`
-(`tick.rs` and eight `tick/*.rs` files, plus `gm.rs`, `spawner.rs`,
-`events.rs`) is the big one and should not be attempted in less than two
-sessions of its own — `tick/command.rs`'s `Command` enum alone is six
-variants, each read by `tick.rs`'s own dispatch `match`, each written by a
-`scripting::engine::ops.rs` `op_*` function, so its stage cannot land without
-`scripting` deciding F4 first for the fields that cross into it. Converting
-`world`'s `Command` fields is also what unblocks the `SpawnSpec` fields left
-bare above — record that in `world`'s stage notes when it starts. `scripting`
-closes the sweep. The gate (above) lands once `world` and `scripting` are
-both done. Amendment 3 (pilot) above is a standing reminder for every
-remaining stage: grep a function's callers workspace-wide, not just within
-the crate F3 assigned it to.
+`world` is the remainder and is still the big one: `tick.rs`, `gm.rs`,
+`spawner.rs`, `tick/{command,decor,death,fields}.rs` and the two region
+handlers above. Its centre is `tick/command.rs`'s `Command` enum — seven
+variants carrying `facet: u8`, each read by `tick.rs`'s own dispatch `match`
+and each written by a `scripting::engine::ops.rs` `op_*` function — so the
+stage cannot land without `scripting` answering F4 first for the fields that
+cross into it. Converting those `Command` fields is what unblocks, in one
+move, `npc`/`items`/`scripting`'s `SpawnSpec.facet`, `items::spawn_item`,
+`items::spawn_container` and the two region handlers: everything this sweep
+has deliberately left bare is waiting on that one enum. `scripting` closes the
+sweep; the gate (above) lands once both are done. Amendment 3 (pilot) remains
+a standing reminder for every stage: grep a function's callers workspace-wide,
+not just within the crate F3 assigned it to.

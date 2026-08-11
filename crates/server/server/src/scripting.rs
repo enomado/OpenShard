@@ -1474,7 +1474,7 @@ mod tests {
         world.tick(now); // the world takes them
 
         let britain = world
-            .region_at(0, openshard_protocol::world::Point::new(1363, 1600, 0))
+            .region_at(Facet(0), openshard_protocol::world::Point::new(1363, 1600, 0))
             .expect("the player is standing in Britain");
         assert_eq!(britain.name, "Britain");
         assert!(britain.flags.guarded);
@@ -1483,11 +1483,11 @@ mod tests {
         // The height band came across too: the dungeon is below, not underfoot.
         assert!(
             world
-                .region_at(0, openshard_protocol::world::Point::new(1355, 1555, 0))
+                .region_at(Facet(0), openshard_protocol::world::Point::new(1355, 1555, 0))
                 .is_some_and(|r| r.name == "Britain")
         );
         let deep = world
-            .region_at(0, openshard_protocol::world::Point::new(1355, 1555, -40))
+            .region_at(Facet(0), openshard_protocol::world::Point::new(1355, 1555, -40))
             .expect("the dungeon is under it");
         assert_eq!(deep.name, "Covetous");
         assert!(deep.flags.no_teleport);

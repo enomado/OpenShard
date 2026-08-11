@@ -102,7 +102,7 @@ impl World {
             return;
         };
         // Mark has one end — where you are standing is where the rune points.
-        if !magic::may_travel(&self.state, caster, magic::TravelKind::Mark, facet.0, at) {
+        if !magic::may_travel(&self.state, caster, magic::TravelKind::Mark, facet, at) {
             self.notify_self(caster, magic::TravelKind::Mark.refusal());
             return;
         }
@@ -110,7 +110,7 @@ impl World {
         self.state.registry.insert(
             rune,
             RuneMark {
-                facet: facet.0,
+                facet,
                 destination: at,
             },
         );
@@ -123,7 +123,7 @@ impl World {
         // re-sends a tooltip mid-life yet (the roadmap records that as a gap), so
         // the client picks the new one up the next time it asks, and the spell's
         // own line says what was marked meanwhile.
-        let name = magic::describe(&self.state, facet.0, at);
+        let name = magic::describe(&self.state, facet, at);
         self.state
             .registry
             .insert(rune, Name(format!("a recall rune ({name})")));
@@ -158,7 +158,7 @@ impl World {
     pub(super) fn travel_to(
         &mut self,
         traveller: EntityId,
-        facet: u8,
+        facet: Facet,
         destination: Point,
         kind: magic::TravelKind,
     ) {
@@ -173,11 +173,11 @@ impl World {
         // you walk to. `cross_facet_travel` turns it into the behaviour from AoS
         // on. The machinery underneath works either way — this is a rule, not a
         // missing feature.
-        if Facet(facet) != here && !self.state.gameplay.cross_facet_travel {
+        if facet != here && !self.state.gameplay.cross_facet_travel {
             self.notify_self(traveller, "You cannot recall to another facet.");
             return;
         }
-        if !self.state.facets.contains_key(&Facet(facet)) {
+        if !self.state.facets.contains_key(&facet) {
             self.notify_self(traveller, arriving.refusal());
             return;
         }
@@ -207,13 +207,13 @@ impl World {
         // arriving, and they are the whole of what an onlooker at either end
         // sees of a recall.
         self.state.play_sound(traveller, RECALL_SOUND);
-        self.state.move_to(traveller, Facet(facet), destination);
+        self.state.move_to(traveller, facet, destination);
         self.state.play_sound(traveller, RECALL_SOUND);
     }
 
     /// Whether a mobile could stand on this tile — the arrival test.
-    fn can_stand_at(&self, facet: u8, at: Point) -> bool {
-        let state = self.state.facet_state(Facet(facet));
+    fn can_stand_at(&self, facet: Facet, at: Point) -> bool {
+        let state = self.state.facet_state(facet);
         // A facet with no map is development mode, where every tile is allowed;
         // the same convention the step check uses.
         if state.terrain.is_none() {

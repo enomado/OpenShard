@@ -23,7 +23,7 @@ use openshard_protocol::identity::AccountName;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::wire::{Graphic, Hue, Layer, SoundId};
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Facet, Point};
 use openshard_protocol::{access::AccessLevel, direction::Facing};
 
 /// Where a mobile or item is.
@@ -1305,7 +1305,7 @@ pub const RUNEBOOK_GRAPHIC: Graphic = Graphic(0x22C5);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct RuneMark {
     /// Which facet the destination is on.
-    pub facet: u8,
+    pub facet: Facet,
     /// The tile the rune was marked on.
     pub destination: Point,
 }
@@ -1318,7 +1318,7 @@ pub struct RuneMark {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RunebookEntry {
     /// Which facet the destination is on.
-    pub facet: u8,
+    pub facet: Facet,
     /// The tile bound.
     pub destination: Point,
     /// What to call it in the window — the region's name where there is one.
@@ -1368,7 +1368,7 @@ pub const MOONGATE_GRAPHIC: Graphic = Graphic(0x0F6C);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Moongate {
     /// Which facet the far end is on.
-    pub facet: u8,
+    pub facet: Facet,
     /// The tile it leads to.
     pub destination: Point,
     /// The tick it closes, or `None` for one that never does.
@@ -1918,7 +1918,7 @@ pub struct InRegion {
     /// zero, so region 3 in Felucca and region 3 in Ilshenar compare equal —
     /// and a traveller crossing between them would look to the diff like
     /// somebody who had not moved: no `RegionChanged`, no music, no guards.
-    pub facet: u8,
+    pub facet: Facet,
     /// The region's id on that facet, or `None` out in the wilds.
     pub region: Option<u16>,
 }

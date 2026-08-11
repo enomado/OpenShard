@@ -16,7 +16,7 @@ use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::{RawButtonId, RawGumpId, RawSwitchId};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Graphic;
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Facet, Point};
 
 /// A character entered the world.
 ///
@@ -265,7 +265,7 @@ pub struct RegionChanged {
     /// Their wire identity.
     pub serial: Serial,
     /// The facet the crossing happened on.
-    pub facet: u8,
+    pub facet: Facet,
     /// The region left, if they were in one.
     pub from: Option<u16>,
     /// The region entered, if they are in one now.

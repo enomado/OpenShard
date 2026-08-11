@@ -304,7 +304,7 @@ fn the_same_region_id_on_two_facets_is_still_a_crossing() {
     assert_eq!(
         world.state.registry.get::<InRegion>(traveller),
         Some(&InRegion {
-            facet: 0,
+            facet: Facet(0),
             region: Some(0)
         }),
         "it is in Britain, region zero of facet zero"
@@ -327,7 +327,7 @@ fn the_same_region_id_on_two_facets_is_still_a_crossing() {
     assert_eq!(
         world.state.registry.get::<InRegion>(traveller),
         Some(&InRegion {
-            facet: 1,
+            facet: Facet(1),
             region: Some(0)
         }),
         "and the memory now names the facet it is on"
@@ -551,7 +551,7 @@ fn a_rune_on_the_floor_cannot_be_marked_but_can_be_recalled_from() {
     world.state.registry.insert(
         rune,
         RuneMark {
-            facet: 0,
+            facet: Facet(0),
             destination: Point::new(START.0 + 5, START.1 + 5, 0),
         },
     );
@@ -601,7 +601,7 @@ fn a_no_recall_region_bars_arriving_and_marking_but_not_leaving() {
     world.state.registry.insert(
         rune,
         RuneMark {
-            facet: 0,
+            facet: Facet(0),
             destination: inside,
         },
     );
@@ -619,7 +619,7 @@ fn a_no_recall_region_bars_arriving_and_marking_but_not_leaving() {
     world.state.registry.insert(
         rune,
         RuneMark {
-            facet: 0,
+            facet: Facet(0),
             destination: out,
         },
     );
@@ -643,7 +643,7 @@ fn a_rune_marked_on_another_facet_is_a_walk_unless_the_shard_says_otherwise() {
     world.state.registry.insert(
         rune,
         RuneMark {
-            facet: 1,
+            facet: Facet(1),
             destination: far,
         },
     );
@@ -670,7 +670,7 @@ fn a_criminal_cannot_recall_away_and_it_costs_them_nothing_to_find_out() {
     world.state.registry.insert(
         rune,
         RuneMark {
-            facet: 0,
+            facet: Facet(0),
             destination: Point::new(START.0 + 9, START.1, 0),
         },
     );
@@ -709,15 +709,17 @@ fn a_gate_opens_at_both_ends_and_each_leads_to_the_other() {
     world.state.registry.insert(
         rune,
         RuneMark {
-            facet: 0,
+            facet: Facet(0),
             destination: there,
         },
     );
 
     cast_at(&mut world, connection, GATE_TRAVEL, rune_serial, now);
 
-    let near = world.gate_at(0, here).expect("a gate at the caster");
-    let far = world.gate_at(0, there).expect("and one at the destination");
+    let near = world.gate_at(Facet(0), here).expect("a gate at the caster");
+    let far = world
+        .gate_at(Facet(0), there)
+        .expect("and one at the destination");
     assert_eq!(world.registry().get::<Moongate>(near).unwrap().destination, there);
     assert_eq!(world.registry().get::<Moongate>(far).unwrap().destination, here);
 }
@@ -738,10 +740,10 @@ fn walking_into_a_gate_takes_you_through_it() {
     let onto = openshard_movement::step_from(from, Direction::North).expect("a tile north");
     let far = Point::new(START.0 + 30, START.1, 0);
     world.spawn_gate(
-        0,
+        Facet(0),
         onto,
         Moongate {
-            facet: 0,
+            facet: Facet(0),
             destination: far,
             expires_at: None,
         },
@@ -777,10 +779,10 @@ fn a_gate_closes_on_its_own_and_leaves_nothing_behind() {
     let at = Point::new(START.0 + 2, START.1, 0);
     let gate = world
         .spawn_gate(
-            0,
+            Facet(0),
             at,
             Moongate {
-                facet: 0,
+                facet: Facet(0),
                 destination: Point::new(START.0 + 9, START.1, 0),
                 expires_at: Some(3),
             },
@@ -813,10 +815,10 @@ fn a_gate_is_not_swept_into_the_save() {
     let mut world = world();
     let _ = enter(&mut world, now);
     world.spawn_gate(
-        0,
+        Facet(0),
         Point::new(START.0 + 2, START.1, 0),
         Moongate {
-            facet: 0,
+            facet: Facet(0),
             destination: Point::new(START.0 + 9, START.1, 0),
             expires_at: Some(9_999),
         },
@@ -845,18 +847,18 @@ fn two_gates_never_stand_on_one_tile() {
     world.state.registry.insert(
         rune,
         RuneMark {
-            facet: 0,
+            facet: Facet(0),
             destination: there,
         },
     );
     let here = world.registry().get::<Position>(caster).unwrap().0;
 
     cast_at(&mut world, connection, GATE_TRAVEL, rune_serial, now);
-    let first = world.gate_at(0, here).expect("the first gate");
+    let first = world.gate_at(Facet(0), here).expect("the first gate");
     cast_at(&mut world, connection, GATE_TRAVEL, rune_serial, now);
 
     assert_eq!(
-        world.gate_at(0, here),
+        world.gate_at(Facet(0), here),
         Some(first),
         "the second cast opened nothing new"
     );
@@ -896,7 +898,7 @@ fn a_city_moongate_does_not_seal_the_tile_it_stands_on() {
     assert!(
         !world
             .state
-            .facet_state(Facet(britain.facet))
+            .facet_state(britain.facet)
             .obstructions
             .is_blocked(britain.at.x, britain.at.y),
         "nothing bars the tile"
@@ -1092,7 +1094,7 @@ fn a_charge_takes_you_there_for_free_and_is_spent() {
         .cloned()
         .unwrap();
     owned.entries.push(openshard_state::components::RunebookEntry {
-        facet: 0,
+        facet: Facet(0),
         destination: there,
         description: "Britain".into(),
     });

@@ -78,11 +78,11 @@ impl TravelKind {
 ///
 /// Staff pass, through the one exemption door `is_staff`.
 #[must_use]
-pub fn may_travel(state: &WorldState, mobile: EntityId, kind: TravelKind, facet: u8, at: Point) -> bool {
+pub fn may_travel(state: &WorldState, mobile: EntityId, kind: TravelKind, facet: Facet, at: Point) -> bool {
     if state.is_staff(mobile) {
         return true;
     }
-    state.region_at(Facet(facet), at).is_none_or(|region| {
+    state.region_at(facet, at).is_none_or(|region| {
         // `no_teleport` bars every kind at either end — a jail is a jail.
         // `no_recall` bars all but leaving.
         !region.flags.no_teleport && !(kind.barred_by_no_recall() && region.flags.no_recall)
@@ -92,11 +92,11 @@ pub fn may_travel(state: &WorldState, mobile: EntityId, kind: TravelKind, facet:
 /// Where a mobile is standing, as the pair [`may_travel`] wants — the departure
 /// end of any travel it is about to attempt.
 #[must_use]
-pub fn standing_at(state: &WorldState, mobile: EntityId) -> Option<(u8, Point)> {
+pub fn standing_at(state: &WorldState, mobile: EntityId) -> Option<(Facet, Point)> {
     state
         .registry
         .get::<Position>(mobile)
-        .map(|at| (state.facet_of(mobile).0, at.0))
+        .map(|at| (state.facet_of(mobile), at.0))
 }
 
 /// Where a marked rune points, if it is marked at all.
@@ -104,7 +104,7 @@ pub fn standing_at(state: &WorldState, mobile: EntityId) -> Option<(u8, Point)> 
 /// A blank rune has no [`RuneMark`] rather than a marked flag set false, so this
 /// is the whole of "is this rune usable".
 #[must_use]
-pub fn destination_of(state: &WorldState, rune: EntityId) -> Option<(u8, Point)> {
+pub fn destination_of(state: &WorldState, rune: EntityId) -> Option<(Facet, Point)> {
     state
         .registry
         .get::<RuneMark>(rune)
@@ -117,9 +117,11 @@ pub fn destination_of(state: &WorldState, rune: EntityId) -> Option<(u8, Point)>
 /// the same reason — a rune that reads "1495, 1629" in a list of sixteen is a
 /// rune nobody can find twice.
 #[must_use]
-pub fn describe(state: &WorldState, facet: u8, at: Point) -> String {
-    state.region_at(Facet(facet), at).map_or_else(
-        || format!("{}, {} (facet {facet})", at.x, at.y),
+pub fn describe(state: &WorldState, facet: Facet, at: Point) -> String {
+    state.region_at(facet, at).map_or_else(
+        // `.0` at the display leaf: what a player reads is the number, and there
+        // is no `Display` on the domain type to borrow instead.
+        || format!("{}, {} (facet {})", at.x, at.y, facet.0),
         |region| region.name.clone(),
     )
 }
@@ -130,7 +132,7 @@ pub struct PublicGate {
     /// What the destination list calls it.
     pub name: &'static str,
     /// Which facet it stands on.
-    pub facet: u8,
+    pub facet: Facet,
     /// The tile it stands on, which is also the tile it takes you to.
     pub at: Point,
 }
@@ -143,19 +145,19 @@ pub struct PublicGate {
 /// `guarded` flag and nothing else, so the ninth gate ships rather than being
 /// silently dropped to match.
 pub static PUBLIC_MOONGATES: &[PublicGate] = &[
-    gate("Moonglow", 0, 4467, 1283, 5),
-    gate("Britain", 0, 1336, 1997, 5),
-    gate("Jhelom", 0, 1499, 3771, 5),
-    gate("Yew", 0, 771, 752, 5),
-    gate("Minoc", 0, 2701, 692, 5),
-    gate("Trinsic", 0, 1828, 2948, -20),
-    gate("Skara Brae", 0, 643, 2067, 5),
-    gate("Magincia", 0, 3563, 2139, 5),
-    gate("Buccaneer's Den", 0, 2711, 2234, 0),
+    gate("Moonglow", Facet(0), 4467, 1283, 5),
+    gate("Britain", Facet(0), 1336, 1997, 5),
+    gate("Jhelom", Facet(0), 1499, 3771, 5),
+    gate("Yew", Facet(0), 771, 752, 5),
+    gate("Minoc", Facet(0), 2701, 692, 5),
+    gate("Trinsic", Facet(0), 1828, 2948, -20),
+    gate("Skara Brae", Facet(0), 643, 2067, 5),
+    gate("Magincia", Facet(0), 3563, 2139, 5),
+    gate("Buccaneer's Den", Facet(0), 2711, 2234, 0),
 ];
 
 /// One row, kept terse so the nine read at a glance.
-const fn gate(name: &'static str, facet: u8, x: u16, y: u16, z: i8) -> PublicGate {
+const fn gate(name: &'static str, facet: Facet, x: u16, y: u16, z: i8) -> PublicGate {
     PublicGate {
         name,
         facet,
@@ -171,7 +173,7 @@ const fn gate(name: &'static str, facet: u8, x: u16, y: u16, z: i8) -> PublicGat
 /// keeps it out of the schema, and what makes a restored one correct with no
 /// restore hook to forget.
 #[must_use]
-pub fn public_gate_at(facet: u8, at: Point) -> Option<&'static PublicGate> {
+pub fn public_gate_at(facet: Facet, at: Point) -> Option<&'static PublicGate> {
     PUBLIC_MOONGATES
         .iter()
         .find(|gate| gate.facet == facet && gate.at.x == at.x && gate.at.y == at.y)

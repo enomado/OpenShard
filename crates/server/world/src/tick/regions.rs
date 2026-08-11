@@ -29,7 +29,7 @@ use crate::events::RegionChanged;
 struct Crossing {
     entity: EntityId,
     serial: Serial,
-    facet: u8,
+    facet: Facet,
     from: Option<u16>,
     to: Option<u16>,
     name: String,
@@ -68,6 +68,12 @@ impl World {
     }
 
     /// Forget a facet's regions.
+    ///
+    /// Bare `u8`, and [`register_regions`](Self::register_regions) with it: both
+    /// are handlers for a [`Command`](crate::tick::command::Command) variant
+    /// whose own field is still bare, so wrapping here would only move the `.0`
+    /// into the dispatch `match`. They convert with `Command`, not before —
+    /// `docs/facet_newtype.md`'s `world` stage.
     pub(super) fn clear_regions(&mut self, facet: u8) {
         if self.state.facets.contains_key(&Facet(facet)) {
             self.state.facet_state_mut(Facet(facet)).regions.clear();
@@ -78,8 +84,8 @@ impl World {
     /// The region at a point on a facet, if any — the outside world's way in,
     /// beside [`sectors`](World::sectors).
     #[must_use]
-    pub fn region_at(&self, facet: u8, point: openshard_protocol::world::Point) -> Option<&Region> {
-        self.state.region_at(Facet(facet), point)
+    pub fn region_at(&self, facet: Facet, point: openshard_protocol::world::Point) -> Option<&Region> {
+        self.state.region_at(facet, point)
     }
 
     /// Every facet's regions as saveable records.
@@ -121,11 +127,13 @@ impl World {
     /// connects; a facet the shard no longer loads is dropped with a word, not a
     /// panic.
     pub fn restore_regions(&mut self, records: Vec<openshard_persistence::RegionRecord>) {
-        let mut by_facet: std::collections::BTreeMap<u8, Vec<openshard_state::Region>> =
+        // Keyed by the domain type from the first line in: `record.facet` is a
+        // SQL column, and this is the seam where it becomes a facet again.
+        let mut by_facet: std::collections::BTreeMap<Facet, Vec<openshard_state::Region>> =
             std::collections::BTreeMap::new();
         for record in records {
             by_facet
-                .entry(record.facet)
+                .entry(Facet(record.facet))
                 .or_default()
                 .push(openshard_state::Region {
                     id: record.id,
@@ -157,16 +165,19 @@ impl World {
                 });
         }
         for (facet, mut regions) in by_facet {
-            if !self.state.facets.contains_key(&Facet(facet)) {
-                warn!(facet, "saved regions for a facet this shard has not loaded");
+            if !self.state.facets.contains_key(&facet) {
+                warn!(
+                    facet = facet.0,
+                    "saved regions for a facet this shard has not loaded"
+                );
                 continue;
             }
             // Saved in id order, and `set` renumbers by position — so sorting here
             // is what keeps an id meaning the same thing after a restart.
             regions.sort_by_key(|region| region.id);
             let count = regions.len();
-            self.state.facet_state_mut(Facet(facet)).regions.set(regions);
-            info!(facet, count, "regions restored");
+            self.state.facet_state_mut(facet).regions.set(regions);
+            info!(facet = facet.0, count, "regions restored");
         }
     }
 
@@ -232,7 +243,7 @@ impl World {
                 // The facet is half the comparison: the same id on two facets is
                 // two different places, so a traveller has crossed even when the
                 // number has not changed.
-                if known && from == to && seen.is_some_and(|seen| seen.facet == facet.0) {
+                if known && from == to && seen.is_some_and(|seen| seen.facet == facet) {
                     return None;
                 }
                 if !known && to.is_none() {
@@ -241,7 +252,7 @@ impl World {
                 Some(Crossing {
                     entity,
                     serial: self.state.registry.serial_of(entity)?,
-                    facet: facet.0,
+                    facet,
                     from,
                     to,
                     name: region.map(|r| r.name.clone()).unwrap_or_default(),
