@@ -40,7 +40,7 @@ described the starting position is a count nobody can act on.
 | crate | files | occurrences | status |
 |---|---|---|---|
 | `world` | `tick.rs`, `tick/{command,gates,decor,regions,travel,fields,death,tests}.rs`, `gm.rs`, `spawner.rs`, `events.rs` | ~38 | `travel`, `gates`, `events` done; `regions` all but its two `Command` handlers; the rest open |
-| `scripting` | `lib.rs`, `engine/ops.rs` | ~16 | open, and F4 is unanswered |
+| `scripting` | `lib.rs`, `engine/ops.rs` | ~16 | open; F4 answered, stage not started |
 | `persistence` | `record.rs`, `sqlite.rs`, `pg.rs` | ~10 | **not in scope — see Decisions** |
 | `ai` | `lib.rs` | 7 | done (pilot) |
 | `magic` | `travel.rs` | 5 | done |
@@ -116,24 +116,36 @@ fields can stop needing a `.0` to build. `scripting` closes the sweep, not
 because it is hardest technically but because its `facet: u8` fields are a
 **third kind of boundary**, not yet decided (F4).
 
-**F4. `scripting`'s boundary is not decided yet, and starts as an open
-question, not a default answer.** Every `facet: u8` in `scripting::lib.rs`
-(`ScriptEvent` variants, notifications *to* Rhai) and the `#[derive(serde::
-Deserialize)] *Spec` structs in `engine/ops.rs` (`SpawnSpec`, `ContainerSpec`,
-region/door specs, read *from* Rhai) is a genuine serialization boundary in
-the sense F2 already carved out for persistence — but unlike `persistence`,
-this one is plausibly closable: `ClilocId` and `SoundId` already gained
-`#[serde(transparent)]` `Serialize`/`Deserialize` for exactly this reason
-(`protocol_newtypes.md`'s N3 backlog, closed by "N-tables"). If `Facet` gains
-the same derives, the `*Spec` structs can hold `pub facet: Facet` directly and
-lose their per-call `Facet(spec.facet)` conversions; `ScriptEvent`'s outbound
-variants gain the same for free. What is *not* decided yet is whether the
-handful of `op_*` functions that take `facet: u8` as a **direct** Rhai-bound
-argument (`op_clear_regions`, `public_gate_at`'s script-facing callers, if
-any) can bind `Facet` the same way — that depends on how this crate's Rhai
-integration resolves native function parameter types, which the sweep has not
-inspected yet. The `scripting` stage starts by answering that question, not
-by assuming the persistence answer transfers.
+**F4. Answered — corrected premise first.** This section originally asked how
+"this crate's Rhai integration resolves native function parameter types."
+There is no Rhai integration: `scripting` embeds `deno_core`/V8 (a
+TypeScript/JS runtime, see the crate's own `Cargo.toml` description), and its
+native-function boundary is the `#[op2]` proc macro, not `rhai::register_fn`.
+The question the wrong name was pointing at still had a real answer, once
+asked correctly.
+
+`engine/ops.rs`'s `#[derive(serde::Deserialize)] *Spec` structs (`SpawnSpec`,
+`ContainerSpec`, region/door specs) and `lib.rs`'s `Event`/`Command` enum
+fields are a serde boundary exactly like F2's persistence carve-out — but
+plausibly closable the same way `ClilocId`/`SoundId` closed theirs
+(`protocol_newtypes.md`'s N3 backlog): give `Facet` `#[serde(transparent)]`
+and these fields hold `pub facet: Facet` directly, no per-call
+`Facet(spec.facet)` conversion.
+
+The one site that is *not* this shape: `op_clear_regions(state: &mut OpState,
+facet: u8)` (`ops.rs:866`) binds `facet` as a **direct `#[op2(fast)]`
+argument**. `#[op2]`'s fast path only accepts primitives it knows natively
+(numeric types, `bool`, `#[string] String`, byte buffers) — it has no
+mechanism to bind a single-field tuple struct positionally, the same
+constraint Rhai's fast path would have imposed. The crate's own precedent
+settles this rather than leaving it open: `Serial`, the crate's most-used
+domain identifier, is `pub type Serial = u32` here (`lib.rs:42`) — a plain
+alias, not a newtype, chosen specifically so it crosses the op2/JS boundary
+bare. No newtype (`Graphic`, `Hue`, `ClilocId`, `SoundId`) is ever bound as a
+direct op2 parameter; all of them appear only as primitive fields inside
+`#[serde]` spec structs. `op_clear_regions` stays `facet: u8`, converted with
+`Facet(facet)`/`.0` at its call site — the same exception `Serial` already is,
+not a gap this sweep left open.
 
 **F5. No compatibility shims.** Same as `protocol_newtypes.md`'s N11: a stage
 wraps a group of signatures **and** updates every call site in the same
@@ -413,10 +425,14 @@ backlog note's own reasoning: that stage's log lines get written once now.
 `spawner.rs`, `tick/{command,decor,death,fields}.rs` and the two region
 handlers above. Its centre is `tick/command.rs`'s `Command` enum — seven
 variants carrying `facet: u8`, each read by `tick.rs`'s own dispatch `match`
-and each written by a `scripting::engine::ops.rs` `op_*` function — so the
-stage cannot land without `scripting` answering F4 first for the fields that
-cross into it. Converting those `Command` fields is what unblocks, in one
-move, `npc`/`items`/`scripting`'s `SpawnSpec.facet`, `items::spawn_item`,
+and each written by a `scripting::engine::ops.rs` `op_*` function. F4 is now
+answered (above), so the stage is unblocked on that question — but `Command`'s
+fields and `scripting`'s `*Spec`/`Event` fields feed each other (an `op_*`
+function builds a `Command` from a deserialized spec), so converting one side
+without the other just moves the `.0` rather than removing it; the two stages
+should land together or `world` immediately after `scripting`, not
+independently. Converting `Command`'s fields is what unblocks, in one move,
+`npc`/`items`/`scripting`'s `SpawnSpec.facet`, `items::spawn_item`,
 `items::spawn_container` and the two region handlers: everything this sweep
 has deliberately left bare is waiting on that one enum. `scripting` closes the
 sweep; the gate (above) lands once both are done. Amendment 3 (pilot) remains
