@@ -23,7 +23,7 @@ use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
 
 use crate::app::App;
-use crate::presentation::{cluttered, cluttered_with_doors_open, terrain};
+use crate::world::{cluttered, cluttered_with_doors_open, terrain};
 use crate::{DEAD_ZONE, TURN_ZONE, steer};
 
 impl App {

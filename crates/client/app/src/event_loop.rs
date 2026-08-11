@@ -17,7 +17,8 @@ use winit::window::WindowId;
 
 use crate::app::App;
 use crate::picking::SelectedIdentity;
-use crate::presentation::{cluttered, cluttered_with_doors_open, frame_dump_root};
+use crate::presentation::frame_dump_root;
+use crate::world::{cluttered, cluttered_with_doors_open};
 use crate::{DOUBLE_CLICK, GLIDE_INTERVAL, PAGE_PIXELS, desk, keys, link, shell, steer};
 
 impl ApplicationHandler<link::Update> for App {

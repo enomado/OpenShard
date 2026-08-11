@@ -24,7 +24,7 @@ use openshard_client_render::control::Control;
 use openshard_client_render::mobiles;
 use openshard_protocol::direction::Facing;
 
-use crate::presentation::Chat;
+use crate::chat::Chat;
 use crate::window::Screen;
 use crate::{
     GLIDE_INTERVAL, desk, frames, graphics, input, picking, replay, resources, shell, steer, windows, world,

@@ -24,7 +24,7 @@ use openshard_uofiles::map::Map;
 
 use crate::app::App;
 use crate::picking::{Pick, SelectedIdentity};
-use crate::presentation::{cluttered, cluttered_with_doors_open, terrain};
+use crate::world::{cluttered, cluttered_with_doors_open, terrain};
 use crate::{desk, frames, shell, steer};
 
 impl App {

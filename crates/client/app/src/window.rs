@@ -38,7 +38,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
 use crate::app::App;
-use crate::{TTF_BASE_PIXEL_HEIGHT, desk, profile, shell};
+use crate::crowd::Who;
+use crate::{TTF_BASE_PIXEL_HEIGHT, desk, graphics, profile, resources, shell, world};
 
 /// Why the client could not start.
 ///
@@ -220,6 +221,125 @@ pub(crate) fn wanted_in(
         .animations
         .extend(mobiles::needed_animations(drawn, equip_conv));
     wanted
+}
+
+/// Grows or, on eviction, wholly rebuilds `window`'s atlases so this frame's
+/// picture has everywhere it needs already packed before anything reads them
+/// — see `App::draw_from`'s Step three doc for where this call sits.
+///
+/// A free function and not a method on `App`: this is the one part of
+/// presenting a frame that really does write `self` — `resources.anim`,
+/// `graphics.covered`, `repacks` — and by taking exactly those fields rather
+/// than `&mut self` it stays legible from its signature alone that nothing
+/// else on `App` moves here. The same reasoning
+/// [`crate::picking::SelectedIdentity::as_static`]'s doc gives for being a
+/// free function rather than a method.
+///
+/// Returns whether a full rebuild ran, for [`crate::frames::Frame::repacked`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ready_atlases(
+    resources: &mut resources::Resources,
+    graphics: &mut graphics::GraphicsSettings,
+    world: &world::WorldState,
+    repacks: &mut u64,
+    window: &mut Screen,
+    want: TileBounds,
+    wanted: &Wanted,
+    drawn: &[(Who, Mobile)],
+) -> bool {
+    // Set only on a successful rebuild — the counter `docs/camera.md`
+    // asks for, so the frame that stalled for one can be told apart from
+    // one that is merely heavy. See [`Frame::repacked`](crate::frames::Frame).
+    let mut repacked = false;
+    // Full rebuild and not grow, either because the atlas just filled up
+    // (the ordinary eviction) or because a debug edit changed a shape the
+    // atlas already has packed and `grow` cannot see that on its own — it
+    // only asks whether a graphic is packed *at all* (its own doc), so a
+    // stair already on screen when its prism changes would never be
+    // re-offered. Both land in the same rebuild, for the same reason: the
+    // texture a bind group points at is the one the old atlas was
+    // uploaded to.
+    let evict = if resources.repack_forced {
+        resources.repack_forced = false;
+        true
+    } else {
+        // Grow rather than rebuild. What is new is added to the textures
+        // already bound, a band of rows at a time, and a frame where the
+        // camera stood still reads four `BTreeSet`s and touches no file
+        // and no GPU.
+        let grown = window.atlases.grow(
+            &resources.art,
+            &resources.texmaps,
+            &resources.tiledata,
+            &mut resources.anim,
+            wanted,
+        );
+        // Whatever was packed is uploaded, including on the way out of a
+        // failure: a growth that stopped part way still wrote pixels, and
+        // pixels the device has not been told about are sampled as
+        // whatever was there before. Cheap to do unconditionally — the
+        // band is empty when nothing grew — and it is one fewer path
+        // where an atlas and its texture can disagree.
+        window.atlases.upload(
+            &window.queue,
+            &window.renderer,
+            &window.statics,
+            &window.mobile_pass,
+        );
+        match grown {
+            Ok(()) => {
+                graphics.covered = Some(want);
+                false
+            }
+            Err(AtlasError::Full { .. }) => true,
+            Err(error) => {
+                eprintln!("growing the atlases: {error}");
+                false
+            }
+        }
+    };
+    if evict {
+        // Costly and rare on the ordinary path — where the old
+        // arrangement paid it every few tiles — and it is the *only*
+        // thing that reclaims space, so an atlas that only ever grew
+        // would eventually stay full for ever. Cheap and deliberate on
+        // the debug-edit path: one static's worth of texture, asked for
+        // once per slider change.
+        //
+        // `covered` is cleared first: a rebuild forgets, so the next
+        // frame may not assume anything about what the atlases hold. Set
+        // again below only if the rebuild succeeds.
+        graphics.covered = None;
+        match Atlases::build(
+            &resources.art,
+            resources.surfaces.as_ref(),
+            &resources.texmaps,
+            &resources.tiledata,
+            &mut resources.anim,
+            &wanted_in(
+                &resources.map,
+                [want],
+                &world.items,
+                &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
+                &world.tile_animations,
+                &resources.equip_conv,
+            ),
+        ) {
+            Ok(atlases) => {
+                window.install_atlases(atlases, &resources.hue_ramp);
+                graphics.covered = Some(want);
+                repacked = true;
+                *repacks += 1;
+            }
+            // One screen does not fit one atlas, which is a different
+            // statement from "the atlas filled up": no eviction can help
+            // and the frame draws with sprites missing. Named here rather
+            // than hidden, and it is what the standing backlog item about
+            // a failed repack is about.
+            Err(error) => eprintln!("packing the art on screen: {error}"),
+        }
+    }
+    repacked
 }
 
 /// Everything a window needs, built once the window exists.

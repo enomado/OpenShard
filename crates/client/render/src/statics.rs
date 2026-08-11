@@ -171,6 +171,23 @@ pub struct StaticGeometry {
     pub boxes: Vec<crate::impostor::Volume>,
 }
 
+/// [`StaticGeometry`] with its `quads` already spent — the honest way to
+/// carry the other three of its four fields once something has consumed
+/// `quads` on its own (`sprite::split_corners`, in the client's own
+/// `frame_geometry.rs`, which needs it by value and cannot leave a copy
+/// behind). A [`StaticGeometry`] with an emptied `quads` would say "no
+/// statics drew" to anything that read it; this says nothing about quads at
+/// all, because it has no field to ask.
+#[derive(Debug, Default)]
+pub struct StaticMesh {
+    /// See [`StaticGeometry::mesh_vertices`].
+    pub mesh_vertices: Vec<MeshFaceVertex>,
+    /// See [`StaticGeometry::mesh_rows`].
+    pub mesh_rows: Vec<MeshFaceRow>,
+    /// See [`StaticGeometry::boxes`].
+    pub boxes: Vec<crate::impostor::Volume>,
+}
+
 impl StaticGeometry {
     /// Append another frame's-worth of statics to this one, as one set.
     ///

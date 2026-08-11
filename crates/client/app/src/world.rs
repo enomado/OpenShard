@@ -17,9 +17,11 @@ use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles::Mobile;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::world::Point;
+use openshard_uofiles::map::Map;
+use openshard_uofiles::tiledata::TileData;
 
 use crate::crowd::{Crowd, Who};
-use crate::{clutter, link};
+use crate::{clutter, link, resources};
 
 /// What the connection has told this client the world looks like — see the
 /// module docs.
@@ -138,4 +140,48 @@ impl WorldState {
             .drawn_for(self.me())
             .unwrap_or_else(|| Gaze::on(self.player.at))
     }
+}
+
+/// The client's own map, unclutted by anything the shard has stood on it —
+/// [`cluttered`] is what a step decision should actually ask.
+///
+/// A facade over [`resources::Resources::map`] and
+/// [`resources::Resources::tiledata`], which travel together in every caller
+/// that wants either: the split that put them in `Resources` and
+/// [`WorldState::clutter`] in `WorldState` is about what changes
+/// together (disk-read once against updated every packet), not about who
+/// asks for them together, and this is the seam that reunites the two.
+///
+/// **A free function taking `&Resources`, not an `App` method taking
+/// `&self`.** A method on `App` borrows the whole of it, so a caller that
+/// also holds `&mut self.steer` beside the terrain — every arrow key and
+/// every replanned step does — could no longer compile: the borrow checker
+/// sees disjoint *fields* through a chain of `.` projections but not through
+/// a method call, which is opaque to it. Passing `&self.resources` here is
+/// the same projection the field access always was, just wrapped.
+pub(crate) fn terrain(resources: &resources::Resources) -> openshard_movement::MapTerrain<&Map, &TileData> {
+    openshard_movement::MapTerrain::new(resources.map.as_ref(), &resources.tiledata)
+}
+
+/// [`terrain`] with the shard's own items laid over it — what every step
+/// decision on this end should actually ask. See [`clutter::Clutter::over`],
+/// and `terrain`'s own docs for why this takes references rather than being
+/// an `App` method.
+pub(crate) fn cluttered<'a>(
+    world: &'a WorldState,
+    resources: &'a resources::Resources,
+) -> clutter::Cluttered<'a, openshard_movement::MapTerrain<&'a Map, &'a TileData>> {
+    world.clutter.over(&resources.map, &resources.tiledata)
+}
+
+/// The same, read as though every shut door on it stood open: what a route
+/// may be *planned* through, and never what decides a step. See
+/// [`clutter::Clutter::over_with_doors_open`].
+pub(crate) fn cluttered_with_doors_open<'a>(
+    world: &'a WorldState,
+    resources: &'a resources::Resources,
+) -> clutter::Cluttered<'a, openshard_movement::MapTerrain<&'a Map, &'a TileData>> {
+    world
+        .clutter
+        .over_with_doors_open(&resources.map, &resources.tiledata)
 }

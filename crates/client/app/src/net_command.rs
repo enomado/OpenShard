@@ -15,7 +15,7 @@ use openshard_movement::Terrain;
 use openshard_uofiles::anim::is_ghost;
 
 use crate::app::App;
-use crate::presentation::cluttered;
+use crate::world::cluttered;
 use crate::{clutter, crowd, link};
 
 impl App {

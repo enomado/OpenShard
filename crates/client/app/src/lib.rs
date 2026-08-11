@@ -54,6 +54,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod app;
+mod chat;
 mod clutter;
 mod crowd;
 mod desk;
@@ -61,6 +62,7 @@ mod desk;
 #[cfg(test)]
 mod dst;
 mod event_loop;
+mod frame_geometry;
 mod frames;
 mod graphics;
 mod gump;
@@ -73,6 +75,7 @@ mod picking;
 mod picking_query;
 mod presentation;
 mod profile;
+mod render_passes;
 mod replay;
 mod resources;
 mod shell;
@@ -127,6 +130,7 @@ pub fn load_env() {
 }
 
 use app::App;
+use chat::Chat;
 use crowd::Crowd;
 use openshard_client_net::session::Plan;
 use openshard_client_net::transport::Dial;
@@ -138,7 +142,6 @@ use openshard_client_render::control::Control;
 use openshard_client_render::debug::View;
 use openshard_client_render::follow::{Gaze, Rig};
 use openshard_client_render::frame::{self};
-use presentation::Chat;
 use windows::WindowSubject;
 // `gump_art` and not `gump`: this crate has a module of that name — the egui
 // half of the same window — and the two are deliberately not merged. One
