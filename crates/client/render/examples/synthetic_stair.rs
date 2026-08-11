@@ -1919,6 +1919,7 @@ fn main() {
         view: selected,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
     // The CPU twin of a pixel, on demand. A picture says a fragment came out
     // black; this says *what* took its ray, by name — and after

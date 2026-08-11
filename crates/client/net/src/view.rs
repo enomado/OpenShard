@@ -79,6 +79,14 @@ pub struct Player {
     /// modelled — see its docs — and guessing one here would be a second
     /// answer to the same question.
     pub war: bool,
+    /// Whether this character is a ghost.
+    ///
+    /// The `0x2C` this end never had a decoder for until now — see
+    /// `docs/combat.md`'s D9 and P4. It gates more than the tonemap's grey:
+    /// no attack goes out from a ghost, and a ghost stands with no war stance
+    /// even with [`war`](Self::war) still set, the same
+    /// `!InWarMode || IsDead` the reference draws by.
+    pub dead: bool,
     /// Where it stands.
     pub position: Point,
     /// Which way it faces, and whether it is running.
@@ -433,6 +441,10 @@ impl WorldView {
                 // `0x1B` means: a session starts out of war, and a shard that
                 // logs a character back in fighting says so with a `0x72`.
                 war: false,
+                // Same reasoning as `war`: a `0x1B` says nothing about death,
+                // and a relogged ghost gets its own `0x2C` right behind it
+                // (`enter.rs`'s `enter_ghost_state`).
+                dead: false,
                 position: start.position,
                 facing: start.facing,
                 equipment: Vec::new(),
@@ -479,14 +491,17 @@ impl WorldView {
         self.containers.remove(&container).is_some()
     }
 
-    /// Forget a dialog this client has just answered.
+    /// Forget a dialog, whether the client just answered it or the server
+    /// tore it down unprompted with `0xBF 0x04`.
     ///
-    /// The one thing about a gump the server never says. A reply button closes
-    /// the window *on the client* — that is what the reference client does, and
-    /// what the server assumes when it waits for one `0xB1` per window — so the
-    /// close is knowledge this end has and no packet carries, the same shape as
-    /// [`player_stepped`](Self::player_stepped) learning a position from an ack
-    /// that carries none.
+    /// A reply button closes the window *on the client* — that is what the
+    /// reference client does, and what the server assumes when it waits for
+    /// one `0xB1` per window — so most closes are knowledge this end has and
+    /// no packet carries, the same shape as
+    /// [`player_stepped`](Self::player_stepped) learning a position from an
+    /// ack that carries none. `CloseGump` is the one exception: a script or
+    /// quest step dismissing its own window without a client reply and
+    /// without redrawing it, so this end learns of it only from the wire.
     ///
     /// Answers whether anything was actually open under that id, so a caller can
     /// tell a real close from a stale click on a window the server already
@@ -587,6 +602,13 @@ impl WorldView {
                     }
                 }
             }
+            // `0xBF 0x04`: the one case where the server *does* say a gump
+            // closed, unprompted by any client reply — a script or a quest
+            // step tearing down its own window rather than replacing it with
+            // a fresh `0xB0`. `gump_closed` is the same removal the client
+            // already runs on its own reply; this just lets the server drive
+            // it too.
+            ServerPacket::CloseGump(close) => self.gump_closed(close.gump_id),
             // Speech, a system line, an NPC — all one journal, whichever of the
             // two wire shapes it arrived as.
             ServerPacket::SpokenMessage(line) => {
@@ -612,6 +634,10 @@ impl WorldView {
                     // model, and reading one out of it would be a second answer
                     // to `war`'s question — see `Player::war`.
                     war: self.player.war,
+                    // `0x20`'s reason again: this is a position and an
+                    // appearance, and death is neither — it has its own
+                    // packet, `0x2C`.
+                    dead: self.player.dead,
                     position: update.position,
                     facing: update.facing,
                     // `0x20` is a position and an appearance, never a paperdoll:
@@ -668,6 +694,9 @@ impl WorldView {
                     // Kept, for `0x20`'s reason above: a `0x78` describes a body
                     // and what hangs on it, and the stance is not one of those.
                     war: self.player.war,
+                    // Kept, for the same reason: a `0x78` describes a body
+                    // and its gear, and death is `0x2C`'s to say.
+                    dead: self.player.dead,
                     position: incoming.position,
                     facing: incoming.facing,
                     equipment: incoming.equipment.clone(),
@@ -788,6 +817,15 @@ impl WorldView {
                 self.player.war = mode.war;
                 changed
             }
+            // `0x2C`: this end just died, or came back. `docs/combat.md`'s
+            // D9 — the one packet that greys the whole screen, gates an
+            // attack off a ghost's own click, and drops the war stance even
+            // if `war` is still set.
+            ServerPacket::DeathStatus(status) => {
+                let changed = self.player.dead != status.dead;
+                self.player.dead = status.dead;
+                changed
+            }
             // The whole skill list. It **replaces** rather than merges: this is
             // the shard stating every skill it knows of, so a row that is not in
             // it is a row this character no longer has — and a client that
@@ -854,7 +892,7 @@ mod tests {
     use openshard_protocol::direction::Direction;
     use openshard_protocol::items::WorldItem;
     use openshard_protocol::mobile::{MobileIncoming, MobileMove, Remove};
-    use openshard_protocol::world::PlayerUpdate;
+    use openshard_protocol::world::{DeathStatus, PlayerUpdate};
 
     use super::*;
 
@@ -1027,6 +1065,39 @@ mod tests {
         assert!(
             !view.gump_closed(GumpId(0x00AD_0001)),
             "answering twice closes nothing the second time"
+        );
+    }
+
+    /// `0xBF 0x04`: a quest step or script dismissing its own window with no
+    /// client reply and no redraw to replace it — the one case the server
+    /// does say a gump closed, unlike the reply-driven close above.
+    #[test]
+    fn the_server_can_close_a_gump_the_client_never_answered() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::GumpDisplay(
+            openshard_protocol::gump::GumpDisplay {
+                serial: GumpKey::on(start().serial),
+                gump_id: GumpId(0x00AD_0001),
+                at: GumpPoint::new(100, 100),
+                layout: "{ resizepic 0 0 5054 300 270 }".to_owned(),
+                lines: Vec::new(),
+            },
+        ));
+        assert_eq!(view.gumps.len(), 1);
+
+        assert!(
+            view.apply(&ServerPacket::CloseGump(openshard_protocol::gump::CloseGump {
+                gump_id: GumpId(0x00AD_0001),
+                button: openshard_protocol::gump::ButtonId(0),
+            }))
+        );
+        assert!(view.gumps.is_empty());
+        assert!(
+            !view.apply(&ServerPacket::CloseGump(openshard_protocol::gump::CloseGump {
+                gump_id: GumpId(0x00AD_0001),
+                button: openshard_protocol::gump::ButtonId(0),
+            })),
+            "closing what is already closed is no change"
         );
     }
 
@@ -1339,6 +1410,25 @@ mod tests {
             !view.apply(&ServerPacket::WarMode(WarMode { war: false })),
             "the same stance twice is not a change"
         );
+    }
+
+    /// `0x2C` — `docs/combat.md` D9/P4. The one packet that puts a ghost on
+    /// screen; before this arm existed the byte decoded fine and `apply` had
+    /// nowhere to put it.
+    #[test]
+    fn death_status_is_the_players_own() {
+        let mut view = WorldView::entered(start());
+        assert!(!view.player.dead, "a session starts alive");
+
+        assert!(view.apply(&ServerPacket::DeathStatus(DeathStatus { dead: true })));
+        assert!(view.player.dead);
+        assert!(
+            !view.apply(&ServerPacket::DeathStatus(DeathStatus { dead: true })),
+            "the same status twice is not a change"
+        );
+
+        assert!(view.apply(&ServerPacket::DeathStatus(DeathStatus { dead: false })));
+        assert!(!view.player.dead, "resurrection un-says it");
     }
 
     /// A stranger's `0x88` says whether *they* are at war, and this client is

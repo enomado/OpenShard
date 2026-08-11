@@ -229,7 +229,7 @@ impl World {
                 continue;
             };
             if done.resurrected {
-                self.resurrect(done.patient);
+                self.resurrect(done.patient, false);
                 continue;
             }
             if done.cured {

@@ -105,6 +105,7 @@ impl World {
                     night_home: None,
                     banker: false,
                     vendor: false,
+                    healer: false,
                     equipment: Vec::new(),
                     skills: creature.skills.clone(),
                 },

@@ -10,8 +10,9 @@ use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_protocol::world::{Facet, Point};
 use openshard_state::WorldState;
 use openshard_state::components::{
-    Aggression, Banker, Body, Brain, Fame, Heading, Hitpoints, Karma, MeleeDamage, Movement, Name, NightHome,
-    Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed, Title, body_opens_doors, creature_name,
+    Aggression, Banker, Body, Brain, Fame, Heading, Healer, Hitpoints, Karma, MeleeDamage, Movement, Name,
+    NightHome, Npc, Position, RangedAttack, Resistance, Skills, SwingSpeed, Title, body_opens_doors,
+    creature_name,
 };
 use tracing::{debug, warn};
 
@@ -89,6 +90,9 @@ pub struct SpawnSpec {
     /// Whether this mobile is a shopkeeper — it answers double-click with a
     /// buy gump and "sell" with an offer.
     pub vendor: bool,
+    /// Whether this mobile is a healer — a ghost that double-clicks it or comes
+    /// near is offered a free resurrection.
+    pub healer: bool,
     /// Worn clothing and gear, `(graphic, layer, hue)` — so it is not naked.
     ///
     /// **Additive, not a replacement.** A mobile with a `title` is always dressed by
@@ -136,6 +140,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         night_home,
         banker,
         vendor,
+        healer,
         equipment,
         skills,
     } = spec;
@@ -302,6 +307,9 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     if banker {
         state.registry.insert(entity, Banker);
     }
+    if healer {
+        state.registry.insert(entity, Healer);
+    }
     // The trade itself, kept on the mobile: it is the key its speech table is
     // looked up by every time someone talks near it, so it cannot live only in the
     // spawn call that placed it — see `MobileRecord::title`.
@@ -314,7 +322,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     // as statues: a name, and no life at all. A declared trade is now enough, and a
     // service still is, so a pack that names neither a trade nor a service is the
     // only way to get a prop — which is what a prop should take.
-    if state.registry.has::<Title>(entity) || banker || vendor {
+    if state.registry.has::<Title>(entity) || banker || vendor || healer {
         // The first beat is jittered across one beat's worth of ticks, the way
         // `register_spawner` jitters a fresh region's first spawn. A `Populate` places
         // seven hundred townsfolk on one tick, and a shared `next_beat` of zero puts

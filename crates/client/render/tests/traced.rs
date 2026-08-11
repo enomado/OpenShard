@@ -585,6 +585,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
         // different number than the client does would be measuring a different
         // estimate.
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
 
     let surface = device.create_texture(&wgpu::TextureDescriptor {

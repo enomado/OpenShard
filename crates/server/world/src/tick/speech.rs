@@ -41,7 +41,7 @@ impl World {
                         .is_some_and(|c| c.eq_ignore_ascii_case("res"))
                     {
                         if self.state.registry.has::<Ghost>(actor) {
-                            self.resurrect(actor);
+                            self.resurrect(actor, true);
                             self.notify_self(actor, "You are alive again.");
                         } else {
                             self.notify_self(actor, "You are not dead.");

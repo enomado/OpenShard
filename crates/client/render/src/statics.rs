@@ -223,6 +223,7 @@ pub fn collect(
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
     occlusion: &crate::occlusion::Occlusion,
+    player_rect: Option<Rect>,
 ) -> StaticGeometry {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);

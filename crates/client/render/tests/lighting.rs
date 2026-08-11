@@ -1692,6 +1692,7 @@ fn a_merged_run_answers_every_ray_the_way_its_own_pieces_did() {
         view: openshard_client_render::debug::View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
 
     // Three flames: one squarely north of the run, one south of it, and one
@@ -1821,6 +1822,7 @@ fn a_ray_through_the_gap_between_two_walls_on_one_tile_passes() {
         view: openshard_client_render::debug::View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
 
     // Due east of the wall, level with the flame: the ray runs straight through
@@ -1950,6 +1952,7 @@ fn a_segment_through_two_panes_on_one_tile_is_dimmed_by_both_of_them() {
         view: openshard_client_render::debug::View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
 
     let east = (GLAZING.0 + 2, GLAZING.1);
@@ -2037,6 +2040,7 @@ fn ray(grid: &occlusion::Occlusion, from: (f32, f32, f32), to: (f32, f32, f32)) 
         view: debug::View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
     let tile = (from.0.floor() as i32, from.1.floor() as i32);
     light::sample(Spot::at(Vec2::new(from.0, from.1), from.2, tile), &lighting).reaches[0].through
@@ -2285,6 +2289,7 @@ fn a_point_on_its_own_tiles_far_edge_reads_that_tile_not_the_next_one() {
         view: debug::View::default(),
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
 
     // The tile's own middle in `y`, and its far edge: both are points of the
@@ -2510,6 +2515,7 @@ fn a_vertical_ray_meets_what_stands_over_it_whatever_shape_it_is() {
             view: debug::View::Lit,
             flame_radius: 0.0,
             shadow_rays: ShadowRays::DEFAULT,
+            dead: false,
         };
 
         // The positive control: every ray actually walked has no horizontal run.
@@ -2753,6 +2759,7 @@ fn a_brute_force_oracle_agrees_with_the_walk_over_a_grid_of_lights() {
             view: debug::View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
         for &(at, z) in &spots {
             let spot = Spot::flat(at, z, (100, 100));
@@ -2899,6 +2906,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle() {
             view: debug::View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
 
         let spot = Spot::flat(spot_at, spot_z, spot_tile);
@@ -3017,6 +3025,7 @@ fn a_brute_force_oracle_agrees_with_the_exact_walk_over_a_grid_of_lights() {
             view: debug::View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
         for &(at, z) in &spots {
             let spot = Spot::flat(at, z, (100, 100));
@@ -3145,6 +3154,7 @@ fn a_fuzzed_flame_near_a_row_edge_agrees_with_the_brute_force_oracle_through_the
             view: debug::View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
 
         let spot = Spot::flat(spot_at, spot_z, spot_tile);
@@ -3317,6 +3327,7 @@ fn a_landing_cut_into_three_primitives_is_not_shadowed_by_its_own_pieces() {
             // every ray is the one ray lying in the plane, which is D2's own.
             flame_radius: 0.0,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
         // Across the tread's own lid, right up to the seam its flight shares with
         // the next: the last hundredth of a tile is where the crossing point of a
@@ -3437,6 +3448,7 @@ fn the_pinned_corner_graze_is_blocked_and_all_three_oracles_say_so() {
         view: debug::View::default(),
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
 
     // 1. The exact answer, per ray, in double precision and over the frame's own
@@ -3737,6 +3749,7 @@ fn a_segment_through_the_corner_two_leaves_meet_at_finds_what_stands_there() {
                 // every sample off the line this whole fixture is about.
                 flame_radius: 0.0,
                 shadow_rays: ShadowRays::DEFAULT,
+                dead: false,
             };
             // Collected rather than asserted on the spot, so an injection says
             // **which** rungs of the ladder are load-bearing instead of stopping

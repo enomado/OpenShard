@@ -46,6 +46,7 @@ use std::time::Duration;
 use openshard_client_render::bench::{Metrics, Reading};
 use openshard_client_render::blit::ViewportRect;
 use openshard_client_render::camera::Camera;
+use openshard_client_render::facing::{Face, Prism};
 use openshard_client_render::follow::Rig;
 use openshard_client_render::light;
 use openshard_client_render::solid::Cut;
@@ -391,6 +392,11 @@ pub enum Selection {
     Static {
         static_: openshard_client_render::statics::PickedStatic,
         tile: PickedTile,
+        /// The prism `static_.graphic`'s `Shape` currently carries, if any —
+        /// `None` for a graphic with no fitted stair. What the live geometry
+        /// editor (`tile_tab`'s edit toggle) starts from and, while it is
+        /// open, redraws against.
+        prism: Option<Prism>,
     },
     /// A creature — `None` once the one the click landed on is no longer
     /// drawn (walked out of range, or the shard forgot it), which is a
@@ -515,6 +521,13 @@ pub struct Request {
     /// scenario can be: a `teleport` is over in one, and a `back_and_forth`
     /// worth reading is longer than the window that shows it.
     pub scope_span: Option<Duration>,
+    /// A hand edit to a graphic's prism, on the frame a slider in the
+    /// selected-tile panel moved.
+    ///
+    /// Sandbox only — this authors the running client's own in-memory table
+    /// and repacks so the shape redraws immediately, and nothing here writes
+    /// to disk. See `App::apply`.
+    pub authored_prism: Option<(Graphic, Prism)>,
 }
 
 /// What the cursor is allowed to light up.
@@ -1468,7 +1481,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     // world. The hover readout changes on every mouse move, so the selection
     // is the one thing on this tab that only changes when the player clicks,
     // which is what makes it worth reading and copying.
-    selected_panel(ui, hud.selected.as_ref());
+    selected_panel(ui, hud.selected.as_ref(), request);
     ui.separator();
     ui.monospace("hover");
     tile_panel(ui, "hover", hud.hover.as_ref(), None);
@@ -1547,7 +1560,7 @@ fn selected_text(selection: &Selection) -> String {
 /// dragging across any part of it — the header, one row, or the whole box —
 /// selects that text the way a terminal does, with a `Ctrl+C` at the end of
 /// the drag rather than a "copy" button beside every number.
-fn selected_panel(ui: &mut egui::Ui, selection: Option<&Selection>) {
+fn selected_panel(ui: &mut egui::Ui, selection: Option<&Selection>, request: &mut Request) {
     let Some(selection) = selection else {
         ui.monospace("selected: —  (click the world to hold something)");
         return;
@@ -1559,6 +1572,48 @@ fn selected_panel(ui: &mut egui::Ui, selection: Option<&Selection>) {
         }
     });
     tile_panel(ui, "selected", selection.tile(), selected_marked(selection));
+    if let Selection::Static {
+        static_,
+        prism: Some(prism),
+        ..
+    } = selection
+    {
+        prism_editor(ui, static_.graphic, *prism, request);
+    }
+}
+
+/// A live, in-memory edit to a selected stair's own prism: drag a height or
+/// pick a different climb axis and the same static redraws with it, in the
+/// running client, on the next frame.
+///
+/// Sandbox only — see [`Request::authored_prism`] and `App::apply`. Nothing
+/// here writes to disk; this is for finding the right numbers by eye before
+/// they are written down by hand in the art table this graphic's row lives
+/// in.
+fn prism_editor(ui: &mut egui::Ui, graphic: Graphic, prism: Prism, request: &mut Request) {
+    ui.separator();
+    ui.monospace("edit prism");
+    let mut up = prism.up();
+    let mut heights: Vec<u8> = prism.treads().to_vec();
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        for face in [Face::North, Face::East, Face::South, Face::West] {
+            changed |= ui.selectable_value(&mut up, face, format!("{face:?}")).changed();
+        }
+    });
+    for (tread, height) in heights.iter_mut().enumerate() {
+        // A generous sandbox bound and not `facing::MAX_PRISM`, which is
+        // private to the crate that runs the fit search this editor plays no
+        // part in — see the module doc.
+        changed |= ui
+            .add(egui::Slider::new(height, 0..=40).text(format!("tread {tread}")))
+            .changed();
+    }
+    if changed {
+        if let Some(edited) = Prism::new(up, &heights) {
+            request.authored_prism = Some((graphic, edited));
+        }
+    }
 }
 
 /// The three things drawn *on* the world rather than beside it: the terrain

@@ -185,6 +185,7 @@ fn draw_britain(
         // Set per plane by `dump::planes`; what it is here is what a caller that
         // never dumped would draw.
         view: View::Lit,
+        dead: false,
     };
     // The summary is the other half of a dump — see `Inputs::summary`. Asked for
     // here so that a change that breaks it breaks a test rather than a person's

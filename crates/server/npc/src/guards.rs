@@ -223,6 +223,7 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
             night_home: None,
             banker: false,
             vendor: false,
+            healer: false,
             equipment: GUARD_KIT.to_vec(),
             skills: Vec::new(),
         },

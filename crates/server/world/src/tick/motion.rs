@@ -115,6 +115,9 @@ impl World {
                     facing,
                 });
                 self.state.refresh_around(entity);
+                // A ghost that just walked into a healer's reach is offered a
+                // free resurrection — ServUO's `BaseHealer.OnMovement`.
+                self.offer_resurrection_nearby(entity);
             }
             Walk::Turned { facing } => {
                 self.state.registry.insert(entity, Heading(facing));

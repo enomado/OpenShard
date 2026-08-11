@@ -3816,12 +3816,28 @@ outlive the track and belong in this list, since this is the live one:
   measure a residual can solve for the tread heights that minimise it, at which
   point `interiors_agree` stops being a tie-break and starts being the fit.
   <br>
-  *Two smaller things the gate's own run turned up, neither closed.* The
-  tie-break picks with `max_by`, so **exactly equal** interior agreements are
-  still resolved by iteration order — rare now that the measure is continuous,
-  but nothing states a rule for it. And two-tread fits agree with their art at
-  5.76 px against the three-tread fits' 3.98, which is unexplained and may just
-  be that the two-tread population is mostly not stairs.
+  *Two smaller things the gate's own run turned up, both now closed.* **The
+  exact-tie rule is stated.** `best_prism`'s interior tie-break used
+  `Iterator::max_by`, which keeps the *last* equally-best candidate — the
+  opposite of the outline-score tie one line above it (`if score > best.1`,
+  strict, keeps the *first*). Two unstated conventions for the same kind of
+  tie in the same function; replaced with `earliest_of_best_interior`, which
+  keeps the first candidate on an exact match and is pinned by its own unit
+  test built from hand-chosen `f32`s rather than a picture, since real art
+  essentially never produces two candidates that agree with it to the last
+  bit. **The two-tread residual gap is
+  answered.** `prism_axis --debug` on its worst offenders (`0x4702` Magencia
+  QuarterWall, `0x51DF`/`0x5237` Virtue Floor, `0xB11B` Zen Garden Large,
+  `0x4627`/`0x4617`/`0x4621` the three Spire Slope/Base graphics, all two-tread)
+  against `0x42FE`/`0x42FF` Large Stairs Carpet (three-tread) for contrast —
+  looked at by eye, confirmed 2026-08-11: every worst two-tread offender is a
+  floor, rug, or ramp, not a staircase. The wall detector's corner test and the
+  outline-only `silhouettes_agree` score both pass a shallow brightness
+  gradient across a flat or sloped surface as a two-step climb; a real flight
+  is rarely just two treads, so the two-tread bucket is disproportionately
+  these false positives rather than short real stairs, which is why its mean
+  residual (5.76 px) reads worse than the three-tread bucket's (3.98) — the gap
+  is population composition, not a geometric effect the model is missing.
   <br>
   **Two earlier framings died on the way here and are worth the lines.** *The
   boxes disagree about the climb axis* — six graphics, four axes — is true and is

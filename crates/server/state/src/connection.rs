@@ -143,6 +143,10 @@ pub struct Connection {
     /// shape, and for the same reason: the reply carries a button and a switch,
     /// never *which* gate asked.
     pub gate_gump: Option<EntityId>,
+    /// The healer this client has a "wouldst thou like to be resurrected?"
+    /// confirm open for. The `gate_gump` shape: a reply carries only a button, so
+    /// *which* healer asked has to live here, not in the packet.
+    pub healer_gump: Option<EntityId>,
 }
 
 impl Connection {
@@ -162,6 +166,7 @@ impl Connection {
             craft_gump: None,
             runebook_gump: None,
             gate_gump: None,
+            healer_gump: None,
         }
     }
 

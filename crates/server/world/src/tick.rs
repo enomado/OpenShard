@@ -96,6 +96,7 @@ mod defaults;
 mod enter;
 mod fields;
 mod gates;
+mod healer;
 mod motion;
 mod persist;
 mod regions;
@@ -843,6 +844,7 @@ impl World {
                 night_home,
                 banker,
                 vendor,
+                healer,
                 equipment,
                 skills,
             } => {
@@ -872,6 +874,7 @@ impl World {
                         night_home,
                         banker,
                         vendor,
+                        healer,
                         equipment,
                         skills,
                     },
@@ -1017,6 +1020,14 @@ impl World {
                         self.state.registry.entity_of(serial),
                     ) {
                         quests::talk_to(&mut self.state, player, target);
+                    }
+                    // And, if it is a healer and the clicker a ghost, it offers
+                    // a free resurrection — ServUO's `BaseHealer.OnDoubleClick`.
+                    if let (Some(&player), Some(target)) = (
+                        self.state.players.get(&connection),
+                        self.state.registry.entity_of(serial),
+                    ) {
+                        self.click_healer(player, target);
                     }
                     // A trapped chest goes off before it opens — and then opens
                     // anyway, which is ServUO's `ExecuteTrap`: a trap hurts, it

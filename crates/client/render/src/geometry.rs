@@ -49,3 +49,21 @@ pub struct Rect {
     pub width: f32,
     pub height: f32,
 }
+
+impl Rect {
+    /// Whether this rectangle and `other` share any pixel, in the space both
+    /// are stated in — a caller's to keep true, the same way every other
+    /// function in this module leaves the space to its doc comment rather than
+    /// the type.
+    ///
+    /// Touching edges do not count: `<`/`>`, not `<=`/`>=`, which is the usual
+    /// convention for a half-open pixel rectangle and keeps two rectangles that
+    /// merely share a border from reading as overlapping.
+    #[must_use]
+    pub fn intersects(&self, other: &Self) -> bool {
+        self.x < other.x + other.width
+            && other.x < self.x + self.width
+            && self.y < other.y + other.height
+            && other.y < self.y + self.height
+    }
+}

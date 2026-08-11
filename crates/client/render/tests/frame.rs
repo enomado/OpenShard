@@ -941,6 +941,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
         view: View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
     let dummy_instances = openshard_client_render::blit::dummy_instances(&device);
     let dummy_mesh_instances = openshard_client_render::blit::dummy_mesh_instances(&device);
@@ -1178,6 +1179,7 @@ fn a_wall_stops_the_light_behind_it() {
             view: View::Lit,
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         blit.render(
@@ -6029,6 +6031,7 @@ fn the_shader_reads_a_primitive_at_no_fraction_a_byte_could_name() {
             view: View::default(),
             flame_radius: openshard_client_render::light::FLAME_RADIUS,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
         let fixture = Fixture {
             surface: Surface::Upright,
@@ -6238,6 +6241,7 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
         // does now.
         flame_radius: 0.0,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
     let straight = openshard_client_render::light::flame_points(
         openshard_client_render::light::Spot::flat(over, 1.0, (i32::from(cx), i32::from(cy))),
@@ -6334,6 +6338,7 @@ fn the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside() {
             view: View::default(),
             flame_radius: 0.0,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
         let fixture = Fixture {
             // A point of nothing, looking nowhere: the wall is a different
@@ -6476,6 +6481,7 @@ fn a_fragment_a_hair_inside_a_wall_is_shadowed_by_the_cell_it_drifted_into() {
         view: View::default(),
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
     let fixture = Fixture {
         surface: Surface::Upright,
@@ -7330,6 +7336,7 @@ fn the_shader_meets_what_stands_at_the_corner_two_leaves_meet_at() {
             view: View::Shadow,
             flame_radius: 0.0,
             shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+            dead: false,
         };
         let frame = parity_frame(&device, &queue, &lighting, 64, 64, Fixture::ground());
         shadow_drawn(frame.pixel(ON_THE_PLANE.0, ON_THE_PLANE.1))

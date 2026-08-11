@@ -161,7 +161,7 @@ use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
 use openshard_protocol::wire::{Graphic, Hue, RawSkillId};
 use openshard_protocol::world::Point;
-use openshard_uofiles::anim::Anim;
+use openshard_uofiles::anim::{Anim, is_ghost};
 use openshard_uofiles::animdata::AnimData;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::equipconv::EquipConv;
@@ -670,6 +670,7 @@ pub fn run<D: Dial + Send + 'static>(
         map,
         art,
         surfaces,
+        repack_forced: false,
         texmaps,
         tiledata,
         hue_ramp,
@@ -1161,6 +1162,39 @@ impl Screen {
             pass.upload_rows(&self.queue, atlas.pixels(), rows);
         }
     }
+
+    /// Recreate the three passes an atlas rebuild invalidates, and adopt the
+    /// new atlas: the shared body of the eviction branch of the ordinary
+    /// grow/evict cycle and of a forced rebuild the debug HUD asks for
+    /// directly — see `App::apply`'s `authored_prism`. Both need the same
+    /// thing for the same reason: the texture a bind group points at is the
+    /// one the old atlas was uploaded to, so a pass that keeps the old one
+    /// draws the old pixels under a bind group that now names a different
+    /// texture.
+    fn install_atlases(&mut self, atlases: Atlases, hue_ramp: &HueRamp) {
+        self.renderer = GroundRenderer::new(
+            &self.device,
+            &self.queue,
+            blit::WORLD_FORMAT,
+            &atlases.land,
+            &atlases.texmaps,
+        );
+        self.statics = SpriteRenderer::new(
+            &self.device,
+            &self.queue,
+            blit::WORLD_FORMAT,
+            atlases.statics.pixels(),
+            hue_ramp,
+        );
+        self.mobile_pass = SpriteRenderer::new(
+            &self.device,
+            &self.queue,
+            blit::WORLD_FORMAT,
+            atlases.mobiles.pixels(),
+            hue_ramp,
+        );
+        self.atlases = atlases;
+    }
 }
 
 /// One of this client's own windows, and the one thing about it the shard never
@@ -1383,6 +1417,15 @@ struct App {
     /// away and rebuilt when one fills up, and a measurement of an install does
     /// not become untrue when a texture runs out of shelf space.
     surfaces: Option<openshard_client_render::arttable::ArtTable>,
+    /// A hand edit changed a graphic's shape in [`App::surfaces`] since the
+    /// atlases were last packed — set by [`App::apply`]'s `authored_prism`.
+    ///
+    /// The ordinary grow/evict cycle cannot see this on its own: growing only
+    /// asks whether a graphic is packed *at all* (`Atlases::grow`'s own doc),
+    /// so a graphic already on screen when its shape changes is never
+    /// re-offered. This is the one case that has to force the full rebuild
+    /// eviction otherwise waits for a full atlas to trigger.
+    repack_forced: bool,
     texmaps: TexMaps,
     /// Shared with the shard thread, the same way [`App::map`] is — see
     /// [`link::connect`]: the walk prediction weighs a pier's or a bridge's
@@ -1408,6 +1451,13 @@ struct App {
     /// [`Screen::atlases`] documents from the other side — the CPU half of an
     /// atlas builds quads and outlives any one surface.
     gump_atlas: GumpAtlas,
+    /// The client's own text table, keyed by cliloc number — `None` when
+    /// `Cliloc.enu` could not be read (missing, or a newer BWT-compressed
+    /// one). A dialog whose layout named a cliloc rather than a wire line
+    /// (`gump::Element::Localized`) draws nothing for that line without it,
+    /// the same tolerance a missing gump art or a missing font glyph gets —
+    /// see `gump::Dialogs::lines`.
+    cliloc: Option<Cliloc>,
     /// The operator-supplied TrueType face, when `run` was asked to draw
     /// through one instead — `None` is the ordinary, `fonts.mul`-only run. Held here
     /// rather than only in [`Screen`] because it does not depend on a window
@@ -2991,10 +3041,10 @@ impl App {
     ///
     /// - **At peace, nothing is sent.** Not a refusal — a click at peace is a
     ///   selection, which the caller has already made.
-    /// - **A ghost sends nothing.** `Player::war` is the shard's answer and a
-    ///   dead character's is false, so this is currently that fact read twice
-    ///   rather than a second rule. It stops being that when `0x2C` lands and
-    ///   the client knows it is dead on its own (`docs/combat.md`, P4).
+    /// - **A ghost sends nothing.** `Player::dead` is `0x2C`'s own answer
+    ///   (`docs/combat.md`, D9/P4) — a ghost that somehow still carries the war
+    ///   flag still sends no attack, the same `!InWarMode || IsDead` the
+    ///   reference gates a swing by.
     /// - **A body with no serial is the offline viewer's placeholder** and
     ///   there is nothing to name.
     ///
@@ -3007,7 +3057,7 @@ impl App {
         let Some(view) = self.view.as_ref() else {
             return;
         };
-        if !view.player.war {
+        if !view.player.war || view.player.dead {
             return;
         }
         // `on_mobile` is a `Who` — `None` inside the `Some` is a body no shard
@@ -4060,7 +4110,9 @@ impl App {
                 view.player.body,
                 body.predicted.facing,
                 view.player.hue,
-                view.player.war,
+                // A ghost stands with no sword drawn even if `war` is still
+                // set — D9's `!InWarMode || IsDead`.
+                view.player.war && !view.player.dead,
             ),
             false => self.crowd.see(
                 me,
@@ -4070,8 +4122,9 @@ impl App {
                 view.player.hue,
                 // Our own stance is the `0x72`'s and the `0x88`'s, not a bit of
                 // a `0x77` — no `0x77` ever describes this body. See
-                // `view::Player::war` beside `view::Mobile::war`.
-                view.player.war,
+                // `view::Player::war` beside `view::Mobile::war`. Gated on
+                // death for the same reason as the branch above.
+                view.player.war && !view.player.dead,
             ),
         };
         self.player.equipment = crowd::worn(&view.player.equipment, &self.tiledata);
@@ -4128,13 +4181,16 @@ impl App {
                 // Their stance is a bit of the flag byte the same packet
                 // carried — `view::Mobile::war` — so a shopkeeper who draws a
                 // sword changes how they stand on the next `0x77` about them.
+                // A ghost is drawn no sword regardless: nothing on the wire
+                // says a stranger died, but their body id does — see
+                // `is_ghost` — the same D9 gate the player's own body gets.
                 let mut drawn = self.crowd.see(
                     who,
                     mobile.position,
                     mobile.body,
                     mobile.facing,
                     mobile.hue,
-                    mobile.war(),
+                    mobile.war() && !is_ghost(mobile.body.0),
                 );
                 drawn.equipment = crowd::worn(&mobile.equipment, &self.tiledata);
                 (who, drawn)
@@ -4408,6 +4464,10 @@ impl App {
             SelectedIdentity::Static(picked) => shell::Selection::Static {
                 static_: picked,
                 tile: self.tile_info(picked.at.x, picked.at.y),
+                prism: self
+                    .surfaces
+                    .as_ref()
+                    .and_then(|surfaces| surfaces.shape(picked.graphic).prism),
             },
             SelectedIdentity::Mobile(who) => shell::Selection::Mobile(
                 self.drawn_mobiles()
@@ -4698,6 +4758,25 @@ impl App {
             Some(shell::ScriptRequest::Run(name)) => self.start_replay(name),
             Some(shell::ScriptRequest::Stop) => self.replay = None,
             None => {}
+        }
+        if let Some((graphic, prism)) = request.authored_prism {
+            let shape = openshard_client_render::occlusion::Shape {
+                prism: Some(prism),
+                ..self
+                    .surfaces
+                    .as_ref()
+                    .map_or(openshard_client_render::occlusion::Shape::UNREAD, |surfaces| {
+                        surfaces.shape(graphic)
+                    })
+            };
+            self.surfaces.get_or_insert_default().author(graphic, shape);
+            self.repack_forced = true;
+            // Cleared like the eviction branch clears it: the next `wanted`
+            // this frame computes has to be the whole visible set and not a
+            // delta off the *old* atlas's coverage, since a delta would not
+            // include `graphic` if it was already on screen before the edit
+            // — which, for the debug HUD, it always was.
+            self.covered = None;
         }
     }
 
@@ -5638,95 +5717,94 @@ impl App {
         let Some(window) = self.window.as_mut() else {
             return;
         };
-        // Grow rather than rebuild. What is new is added to the textures
-        // already bound, a band of rows at a time, and a frame where the camera
-        // stood still reads four `BTreeSet`s and touches no file and no GPU.
-        let grown = window
-            .atlases
-            .grow(&self.art, &self.texmaps, &self.tiledata, &mut self.anim, &wanted);
-        // Whatever was packed is uploaded, including on the way out of a failure:
-        // a growth that stopped part way still wrote pixels, and pixels the
-        // device has not been told about are sampled as whatever was there
-        // before. Cheap to do unconditionally — the band is empty when nothing
-        // grew — and it is one fewer path where an atlas and its texture can
-        // disagree.
-        window.atlases.upload(
-            &window.queue,
-            &window.renderer,
-            &window.statics,
-            &window.mobile_pass,
-        );
-        // Set only in the branch below, on a successful rebuild — this is the
-        // counter `docs/camera.md` asks for, so the frame that stalled for it
-        // can be told apart from one that is merely heavy. See
-        // [`Frame::repacked`](frames::Frame).
+        // Set only on a successful rebuild — the counter `docs/camera.md`
+        // asks for, so the frame that stalled for one can be told apart from
+        // one that is merely heavy. See [`Frame::repacked`](frames::Frame).
         let mut repacked = false;
-        match grown {
-            Ok(()) => self.covered = Some(want),
-            // Full, and this is the eviction: pack an atlas for what is on
-            // screen now and throw away everything the camera has walked past.
-            // Costly and rare — where the old arrangement paid it every few
-            // tiles — and it is the *only* thing that reclaims space, so an
-            // atlas that only ever grew would eventually stay full for ever.
-            //
-            // The passes are rebuilt with it, because the texture a bind group
-            // points at is the one the old atlas was uploaded to.
-            Err(AtlasError::Full { .. }) => {
-                // `covered` is cleared first: a rebuild forgets, so the next
-                // frame may not assume anything about what the atlases hold.
-                // Set again below only if the rebuild succeeds.
-                self.covered = None;
-                match Atlases::build(
-                    &self.art,
-                    self.surfaces.as_ref(),
-                    &self.texmaps,
-                    &self.tiledata,
-                    &mut self.anim,
-                    &wanted_in(
-                        &self.map,
-                        [want],
-                        &self.items,
-                        &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
-                        &self.tile_animations,
-                        &self.equip_conv,
-                    ),
-                ) {
-                    Ok(atlases) => {
-                        window.renderer = GroundRenderer::new(
-                            &window.device,
-                            &window.queue,
-                            blit::WORLD_FORMAT,
-                            &atlases.land,
-                            &atlases.texmaps,
-                        );
-                        window.statics = SpriteRenderer::new(
-                            &window.device,
-                            &window.queue,
-                            blit::WORLD_FORMAT,
-                            atlases.statics.pixels(),
-                            &self.hue_ramp,
-                        );
-                        window.mobile_pass = SpriteRenderer::new(
-                            &window.device,
-                            &window.queue,
-                            blit::WORLD_FORMAT,
-                            atlases.mobiles.pixels(),
-                            &self.hue_ramp,
-                        );
-                        window.atlases = atlases;
-                        self.covered = Some(want);
-                        repacked = true;
-                        self.repacks += 1;
-                    }
-                    // One screen does not fit one atlas, which is a different
-                    // statement from "the atlas filled up": no eviction can help
-                    // and the frame draws with sprites missing. Named here
-                    // rather than hidden, and it is what the standing backlog
-                    // item about a failed repack is about.
-                    Err(error) => eprintln!("packing the art on screen: {error}"),
+        // Full rebuild and not grow, either because the atlas just filled up
+        // (the ordinary eviction) or because a debug edit changed a shape the
+        // atlas already has packed and `grow` cannot see that on its own — it
+        // only asks whether a graphic is packed *at all* (its own doc), so a
+        // stair already on screen when its prism changes would never be
+        // re-offered. Both land in the same rebuild, for the same reason: the
+        // texture a bind group points at is the one the old atlas was
+        // uploaded to.
+        let evict = if self.repack_forced {
+            self.repack_forced = false;
+            true
+        } else {
+            // Grow rather than rebuild. What is new is added to the textures
+            // already bound, a band of rows at a time, and a frame where the
+            // camera stood still reads four `BTreeSet`s and touches no file
+            // and no GPU.
+            let grown =
+                window
+                    .atlases
+                    .grow(&self.art, &self.texmaps, &self.tiledata, &mut self.anim, &wanted);
+            // Whatever was packed is uploaded, including on the way out of a
+            // failure: a growth that stopped part way still wrote pixels, and
+            // pixels the device has not been told about are sampled as
+            // whatever was there before. Cheap to do unconditionally — the
+            // band is empty when nothing grew — and it is one fewer path
+            // where an atlas and its texture can disagree.
+            window.atlases.upload(
+                &window.queue,
+                &window.renderer,
+                &window.statics,
+                &window.mobile_pass,
+            );
+            match grown {
+                Ok(()) => {
+                    self.covered = Some(want);
+                    false
+                }
+                Err(AtlasError::Full { .. }) => true,
+                Err(error) => {
+                    eprintln!("growing the atlases: {error}");
+                    false
                 }
             }
-            Err(error) => eprintln!("growing the atlases: {error}"),
+        };
+        if evict {
+            // Costly and rare on the ordinary path — where the old
+            // arrangement paid it every few tiles — and it is the *only*
+            // thing that reclaims space, so an atlas that only ever grew
+            // would eventually stay full for ever. Cheap and deliberate on
+            // the debug-edit path: one static's worth of texture, asked for
+            // once per slider change.
+            //
+            // `covered` is cleared first: a rebuild forgets, so the next
+            // frame may not assume anything about what the atlases hold. Set
+            // again below only if the rebuild succeeds.
+            self.covered = None;
+            match Atlases::build(
+                &self.art,
+                self.surfaces.as_ref(),
+                &self.texmaps,
+                &self.tiledata,
+                &mut self.anim,
+                &wanted_in(
+                    &self.map,
+                    [want],
+                    &self.items,
+                    &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
+                    &self.tile_animations,
+                    &self.equip_conv,
+                ),
+            ) {
+                Ok(atlases) => {
+                    window.install_atlases(atlases, &self.hue_ramp);
+                    self.covered = Some(want);
+                    repacked = true;
+                    self.repacks += 1;
+                }
+                // One screen does not fit one atlas, which is a different
+                // statement from "the atlas filled up": no eviction can help
+                // and the frame draws with sprites missing. Named here rather
+                // than hidden, and it is what the standing backlog item about
+                // a failed repack is about.
+                Err(error) => eprintln!("packing the art on screen: {error}"),
+            }
         }
 
         // Three time-varying halves of a mobile, filled in per frame rather
@@ -5947,6 +6025,10 @@ impl App {
             // checking the place channel wants to see, without having to make it
             // night first.
             view: self.light_view,
+            // `docs/combat.md`'s D9: the screen greys for the character this
+            // client is, not for the offline placeholder — which has no view
+            // and so is never a ghost.
+            dead: self.view.as_ref().is_some_and(|view| view.player.dead),
         };
         // **What the frame was asked for**, kept beside the pictures the dump
         // below writes. A picture on its own cannot be reproduced: two frames

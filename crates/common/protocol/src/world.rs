@@ -674,6 +674,16 @@ impl EncodePacket for DeathStatus {
     }
 }
 
+impl DecodePacket for DeathStatus {
+    const ID: u8 = 0x2C;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self {
+            dead: reader.u8()? == 0,
+        })
+    }
+}
+
 // -- 0x02 walk request ----------------------------------------------------
 
 /// The sequence byte of a `0x02` walk request, exactly as the client sent it.

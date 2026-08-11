@@ -155,6 +155,10 @@ impl World {
         if self.handle_runebook_gump(connection, &response) {
             return;
         }
+        // And a healer's "wouldst thou like to be resurrected?" confirm.
+        if self.handle_healer_gump(connection, &response) {
+            return;
+        }
         // A reply to a gump that is *not* the engine's own belongs to the pack
         // that opened it (a notice board, a shard's custom menu). Forward it as a
         // `GumpAnswered` rather than dropping it, then stop — only the admin gump

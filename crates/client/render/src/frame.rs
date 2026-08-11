@@ -216,6 +216,17 @@ pub struct Inputs<'a> {
     /// property of the person looking, which is why it is set on the way out
     /// rather than walked with the tiles.
     pub view: View,
+    /// Whether the player's own character is a ghost — `view::Player::dead`,
+    /// `0x2C`. Set on the way out beside [`view`](Self::view) for the same
+    /// reason: a fact about the person looking, not about the tiles walked to
+    /// light them. `docs/combat.md`'s D9.
+    pub dead: bool,
+    /// Where the player's own picture lands on screen this frame —
+    /// [`crate::mobiles::screen_rect`] — so a tree standing over it can be cut
+    /// away. `None` for a caller with no player on screen to protect: the
+    /// offline placeholder, a tool building a place rather than following a
+    /// character.
+    pub player_rect: Option<crate::geometry::Rect>,
 }
 
 impl Inputs<'_> {
@@ -336,6 +347,8 @@ impl Inputs<'_> {
             },
         );
         line("view", self.view.name().to_owned());
+        line("dead", format!("{}", self.dead));
+        line("player_rect", format!("{:?}", self.player_rect));
         out
     }
 }
@@ -394,6 +407,8 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
         impostor,
         draw,
         view,
+        dead,
+        player_rect,
     } = inputs;
 
     let mut lighting = match sky {
@@ -426,6 +441,7 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
         lighting.hold(tuning.applied_headlight(light::carried(at, offset, facing, flame_time)));
     }
     lighting.view = view;
+    lighting.dead = dead;
 
     // **The lighting above was collected from the whole world, and only the
     // drawing below is filtered** — see [`Draw`]. A frame with the crowd ticked
@@ -454,7 +470,9 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     // Reaching the same picture by handing this function fewer items would be a
     // different world, lit differently, and the summary would not say so.
     let mut geometry = match draw.statics {
-        true => crate::statics::collect(map, camera, tiledata, animations, statics, cutaway, met),
+        true => crate::statics::collect(
+            map, camera, tiledata, animations, statics, cutaway, met, player_rect,
+        ),
         false => StaticGeometry::default(),
     };
     // Through the same pass as the map's statics, because they are the same

@@ -41,7 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use openshard_protocol::gump::layout::Element;
-use openshard_protocol::gump::{GumpButton, RawButtonId, RawSwitchId};
+use openshard_protocol::gump::{GUMP_WHITE, GumpButton, RawButtonId, RawSwitchId};
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::art::{Art, ArtError};
@@ -783,23 +783,37 @@ pub const CAPTION_FONT: Font = Font(1);
 
 /// One line of a window's text, resolved to where it goes.
 ///
-/// The line itself is *not* here: a layout names a row of the text table that
-/// arrived beside it, and looking that up needs the whole
-/// [`OpenGump`](openshard_client_net::view::OpenGump) rather than the layout —
-/// which this crate has never heard of and should not. So this carries the
-/// index, and whoever holds the table turns it into glyphs through
-/// [`crate::text`].
+/// The text itself is *not* here: a layout names either a row of the table
+/// that arrived beside the packet (`{ text }`, `{ croppedtext }`,
+/// `{ htmlgump }`) or a number in the client's own `Cliloc.enu`
+/// (`{ xmfhtmlgump }` and kin) — and turning either into a string needs
+/// something this crate has never heard of and should not: the whole
+/// [`OpenGump`](openshard_client_net::view::OpenGump) for the first, a loaded
+/// cliloc table for the second. So this carries only which source and which
+/// key, and whoever holds both turns it into glyphs through [`crate::text`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Caption {
     /// Its top-left corner, in the window's own gump pixels.
     pub at: GumpPixel,
     /// The hue the layout asked for.
     pub hue: Hue,
-    /// Which line of the gump's text table.
-    pub line: usize,
-    /// The box it is clipped to — `{ croppedtext }` — or `None` for a
-    /// `{ text }`, which overflows rather than clipping.
+    /// Where the text comes from.
+    pub source: CaptionSource,
+    /// The box it is clipped to — `{ croppedtext }` — or `None` for anything
+    /// else, which overflows rather than clipping.
     pub clip: Option<(i32, i32)>,
+}
+
+/// Which table a [`Caption`]'s text is a key into.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CaptionSource {
+    /// A row of the gump's own text table — wire-carried, so it exists only
+    /// alongside the packet that named it.
+    Line(usize),
+    /// A number in the client's own `Cliloc.enu`. Nothing travelled for this
+    /// one; the shard sent the number on the belief every client already has
+    /// the sentence.
+    Cliloc(u32),
 }
 
 /// What a click on one of a window's pictures means.
@@ -1012,7 +1026,7 @@ pub fn window(
             Element::Label { x, y, hue, line } => drawn.captions.push(Caption {
                 at: at.offset(GumpPixel::new(*x, *y)),
                 hue: text_hue(*hue),
-                line: *line,
+                source: CaptionSource::Line(*line),
                 clip: None,
             }),
             Element::CroppedLabel {
@@ -1025,7 +1039,42 @@ pub fn window(
             } => drawn.captions.push(Caption {
                 at: at.offset(GumpPixel::new(*x, *y)),
                 hue: text_hue(*hue),
-                line: *line,
+                source: CaptionSource::Line(*line),
+                clip: Some((*width, *height)),
+            }),
+            // `{ htmlgump }` — wire-carried text, the same table `{ text }`
+            // reads, just longer and wrapped rather than one line. The wire
+            // form carries no separate hue (a real client colours it, if at
+            // all, with an embedded `<basefont>` tag this pass does not
+            // parse), so it draws in the layout's default white rather than
+            // untinted — the same fallback `{ xmfhtmlgump }` below takes.
+            Element::Html {
+                x,
+                y,
+                width,
+                height,
+                line,
+                ..
+            } => drawn.captions.push(Caption {
+                at: at.offset(GumpPixel::new(*x, *y)),
+                hue: text_hue(GUMP_WHITE),
+                source: CaptionSource::Line(*line),
+                clip: Some((*width, *height)),
+            }),
+            // The `xmfhtml*` family — a cliloc number, not a line: nothing
+            // travelled on the wire for this one, so resolving it needs the
+            // client's own `Cliloc.enu`, which whoever draws `drawn.captions`
+            // holds and this crate does not. See [`CaptionSource::Cliloc`].
+            Element::Localized {
+                x,
+                y,
+                width,
+                height,
+                cliloc,
+            } => drawn.captions.push(Caption {
+                at: at.offset(GumpPixel::new(*x, *y)),
+                hue: text_hue(GUMP_WHITE),
+                source: CaptionSource::Cliloc(*cliloc),
                 clip: Some((*width, *height)),
             }),
             Element::TextEntry {

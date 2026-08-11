@@ -211,11 +211,16 @@ impl World {
 
     /// Bring a ghost back to life: lift the [`Ghost`] marker, restore the living
     /// body it remembered, strip the death shroud, and tell the client it is alive
-    /// again. Restores a share of hit points so the raised player is not standing
-    /// at zero, one blow from dying again. Nothing happens to a mobile that is not
-    /// a ghost. The corpse stays where it lies — a resurrected player walks back to
-    /// loot it, as in UO.
-    pub(super) fn resurrect(&mut self, entity: EntityId) {
+    /// again. Nothing happens to a mobile that is not a ghost. The corpse stays
+    /// where it lies — a resurrected player walks back to loot it, as in UO.
+    ///
+    /// `full` decides how many hit points come back. A spell or a bandage — the
+    /// price of which was surviving the fight that killed you, or somebody else's
+    /// reagents and minutes — gives a tenth of max, ServUO's number, enough not to
+    /// re-die on sight. A healer's free resurrection (`full: true`) restores the
+    /// full pool instead, ServUO's `BaseHealer.OfferResurrection` — the price
+    /// there is walking to a healer in town, not the fight itself.
+    pub(super) fn resurrect(&mut self, entity: EntityId, full: bool) {
         let Some(&Ghost { body: living }) = self.state.registry.get::<Ghost>(entity) else {
             return;
         };
@@ -226,10 +231,23 @@ impl World {
         self.state.registry.insert(entity, living);
         self.strip_death_shroud(serial);
 
-        // Back on its feet with a fraction of its hit points, not zero — ServUO
-        // resurrects to roughly a tenth of the max, enough to not re-die on sight.
+        // A healer's offer may still be standing (a bandage or a spell can land
+        // while a ghost has not yet answered "wouldst thou like to be
+        // resurrected?"). Any path back to life retires it — otherwise the
+        // healer field on `Connection` outlives this death, and the next one
+        // makes `offer_resurrection_nearby` treat a stale, out-of-range healer
+        // as still pending: it closes and redraws the confirm on every step
+        // near a healer instead of asking once.
+        if let Some(row) = self.state.row_of_mut(entity) {
+            row.healer_gump = None;
+        }
+        self.close_healer_gump(entity);
+
+        // Back on its feet with hit points, not zero. A spell or bandage gives a
+        // fraction — ServUO's roughly a tenth of the max, enough not to re-die on
+        // sight — a healer's free resurrection gives the whole pool.
         if let Some(hits) = self.state.registry.get::<Hitpoints>(entity).copied() {
-            let revived = (hits.max / 10).max(1);
+            let revived = if full { hits.max } else { (hits.max / 10).max(1) };
             self.state.registry.insert(
                 entity,
                 Hitpoints {

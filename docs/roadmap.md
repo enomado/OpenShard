@@ -2358,6 +2358,13 @@ Roughly in dependency order, each script-first:
   way. Deferred: quest chains, `ApprenticeObjective`, the question-and-answer
   objective, reward *choice*, the staff force-complete button, and a converter
   pass over ServUO's own `BaseQuest` subclasses now that the model matches theirs.
+  Filed and closed as a non-bug: on an already-accepted quest's Description /
+  Objectives / Rewards page, the button drawn with the close-box art
+  (`0x2EEC`/`0x2EEE`) is `CLOSE_QUEST`, not `CLOSE` — it redraws the Main
+  section rather than closing the window, same as `MondainQuestGump.OnResponse`.
+  The window is `no_close()` throughout (a right click never dismisses it), so
+  a real close is reachable only from Main. Confusing, but retail-accurate;
+  kept for parity rather than "fixed".
 
 ### Not built, and until now not written down
 

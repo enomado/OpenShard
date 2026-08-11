@@ -48,10 +48,11 @@ use std::collections::{BTreeSet, HashMap};
 
 use openshard_client_net::view::OpenGump;
 use openshard_client_render::atlas::FontAtlas;
-use openshard_client_render::gump::{self, CAPTION_FONT, GumpAtlas, GumpPixel, Hit, Window};
+use openshard_client_render::gump::{self, CAPTION_FONT, CaptionSource, GumpAtlas, GumpPixel, Hit, Window};
 use openshard_client_render::text::{self, GumpLabel};
 use openshard_protocol::gump::layout::{Element, Flag};
 use openshard_protocol::gump::{GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
+use openshard_uofiles::cliloc::Cliloc;
 
 use crate::link::GumpReply;
 
@@ -198,16 +199,33 @@ impl Dialogs {
     /// this client draws that the layout did not ask for, and it is the one
     /// thing a player cannot otherwise see: which of two boxes the keys are
     /// going into.
-    pub fn lines<'a>(&'a self, gump: &'a OpenGump, window: &Window, fonts: &FontAtlas) -> Vec<GumpLabel<'a>> {
+    pub fn lines<'a>(
+        &'a self,
+        gump: &'a OpenGump,
+        window: &Window,
+        fonts: &FontAtlas,
+        cliloc: Option<&'a Cliloc>,
+    ) -> Vec<GumpLabel<'a>> {
         let mut lines: Vec<GumpLabel<'a>> = window
             .captions
             .iter()
             .filter_map(|caption| {
+                // A wire line is missing when the layout named a row past the
+                // table's end — a bug on the sending side. A cliloc is missing
+                // both when this client has no `Cliloc.enu` at all and when
+                // the number simply is not one of the ~40,000 it holds; either
+                // way there is nothing to draw and the caption is dropped
+                // rather than shown as a placeholder, the same tolerance
+                // `gump.line` already has.
+                let text = match caption.source {
+                    CaptionSource::Line(line) => gump.line(line)?,
+                    CaptionSource::Cliloc(number) => cliloc?.get(number)?,
+                };
                 Some(GumpLabel {
                     at: caption.at,
                     hue: caption.hue,
                     clip: caption.clip,
-                    text: gump.line(caption.line)?,
+                    text,
                     font: CAPTION_FONT,
                 })
             })

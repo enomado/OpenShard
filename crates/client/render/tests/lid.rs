@@ -207,6 +207,7 @@ fn draw(
         impostor: Impostor::Met,
         draw: frame::Draw::EVERYTHING,
         view: View::Lit,
+        dead: false,
     };
 
     let frame::Frame {

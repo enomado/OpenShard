@@ -390,6 +390,7 @@ fn into_world(command: ScriptCommand) -> Option<Command> {
             night_home,
             banker,
             vendor,
+            healer,
             equipment,
             skills,
         } => Command::SpawnMobile {
@@ -419,6 +420,7 @@ fn into_world(command: ScriptCommand) -> Option<Command> {
             night_home: night_home.map(|(x, y, z)| openshard_protocol::world::Point::new(x, y, z)),
             banker,
             vendor,
+            healer,
             // The script bridge is a serialization seam like SQL or the wire, so
             // the JSON number becomes a `Layer` here — `docs/protocol_newtypes.md`
             // N3 amendment 9, the same place `Command::Speak`'s hue is made.
@@ -1100,6 +1102,7 @@ mod tests {
             night_home: None,
             banker: false,
             vendor: false,
+            healer: false,
             equipment: Vec::new(),
             skills: Vec::new(),
         });
@@ -1174,6 +1177,7 @@ mod tests {
             night_home: None,
             banker: false,
             vendor: false,
+            healer: false,
             equipment: Vec::new(),
             skills: Vec::new(),
         });

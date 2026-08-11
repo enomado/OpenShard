@@ -41,6 +41,7 @@ use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
 use crate::depth;
+use crate::geometry::Rect;
 use crate::ground::corner_heights;
 
 /// How tall the client assumes a body is, for the ceiling test.
@@ -425,6 +426,25 @@ pub fn shows(cutaway: &Cutaway, z: i8, tile: &StaticTile) -> bool {
 /// the line drawn exactly here.
 pub fn drawn_in_any_frame(z: i8, tile: &StaticTile) -> bool {
     under_ceiling(depth::static_priority_z(z, tile), tile)
+}
+
+/// Whether a foliage static's own picture is standing over the player's.
+///
+/// A tree's leaves in the reference client fade — `ApplyFoliageTransparency`,
+/// `GameSceneDrawingSorting.CheckIfBehindATree` — walking a `TreeUnion` table
+/// so a multi-tile canopy fades as one piece, at a fixed partial alpha. This
+/// crate blends nothing yet (this module's own doc, above), so what lands here
+/// is the fade's endpoint with neither refinement: no tree union, and hidden
+/// outright rather than dimmed. `screen_rect` is the exact rectangle
+/// [`crate::statics::stand_on`] draws the sprite at, in the same space
+/// [`crate::mobiles::screen_rect`] answers for the player, so this is asking
+/// whether the two pictures share a pixel — the same question the reference
+/// answers with `Exstentions.InRect`.
+///
+/// Only asked of a tile [`TileFlags::is_foliage`] already says yes to: nothing
+/// else in a frame hides for standing behind the player.
+pub fn hides_foliage_over(player_rect: Rect, screen_rect: Rect) -> bool {
+    player_rect.intersects(&screen_rect)
 }
 
 #[cfg(test)]

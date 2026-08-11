@@ -118,6 +118,7 @@ fn populate(gameplay: Gameplay, creatures: u32, players: u32) -> (World, u32) {
                 night_home: None,
                 banker: false,
                 vendor: false,
+                healer: false,
                 equipment: Vec::new(),
                 skills: Vec::new(),
             });

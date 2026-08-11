@@ -952,6 +952,7 @@ fn main() {
         view: View::Lit,
         flame_radius: flame_radius(),
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
     // Where the flame itself is, in the one place every consumer of it reads:
     // the crosshair on the dumped frames, the two visibility oracles, and the

@@ -397,6 +397,9 @@ pub enum Command {
         banker: bool,
         /// Whether it is a shopkeeper — double-click opens its shop.
         vendor: bool,
+        /// Whether it is a healer — a ghost that comes near or double-clicks it is
+        /// offered a free resurrection.
+        healer: bool,
         /// Worn clothing and gear, so it is not naked. **Additive**: an NPC with a
         /// `title` is always dressed by the core (ServUO's `InitBody`/`InitOutfit`
         /// off `title`/`shoe`) and this is worn over that base, winning any layer

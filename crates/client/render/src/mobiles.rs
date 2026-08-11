@@ -675,6 +675,24 @@ fn opaque_under(placement: &Placement, atlas: &AnimAtlas, in_view: ViewPixel) ->
 /// Not a fixed offset above [`cell_centre`]: a dragon and a rat stand on the
 /// same tile centre and hold their heads at wildly different heights, and only
 /// the packed frame's own rectangle knows which.
+/// Where a mobile's own picture lands on screen, for a caller that needs the
+/// rectangle rather than a point on it — [`head_anchor`]'s twin.
+///
+/// `cutaway::hides_foliage_over` reads this for the player's own body: a
+/// tree's leaves fading nobody's screen but this crate has no fade yet, so
+/// `docs/combat.md`'s D9 neighbour is a hard cut instead — see
+/// [`crate::cutaway`]'s module doc on why foliage was absent until now.
+#[must_use]
+pub fn screen_rect(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<Rect> {
+    let placement = place(
+        mobile,
+        openshard_uofiles::anim::animation_body(mobile.body),
+        camera,
+        atlas,
+    )?;
+    Some(placement.rect)
+}
+
 pub fn head_anchor(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<ViewPixel> {
     let placement = place(
         mobile,

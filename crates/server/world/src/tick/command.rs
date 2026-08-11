@@ -582,6 +582,9 @@ pub enum Command {
         banker: bool,
         /// Whether it is a shopkeeper — double-click opens its shop.
         vendor: bool,
+        /// Whether it is a healer — a ghost that comes near or double-clicks it is
+        /// offered a free resurrection.
+        healer: bool,
         /// Worn clothing and gear, as `(graphic, layer, hue)` — so an NPC is not
         /// naked. Drawn in its `0x78`.
         equipment: Vec<(Graphic, Layer, Hue)>,

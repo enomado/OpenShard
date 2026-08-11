@@ -339,7 +339,7 @@ impl World {
                 // Raise the aimed ghost. A no-op on the living (or on a bad
                 // target), so a misfired Resurrection wastes the cast, no more.
                 if let Some(entity) = target_serial.and_then(|s| self.state.registry.entity_of(s)) {
-                    self.resurrect(entity);
+                    self.resurrect(entity, false);
                 }
             }
             SpellEffect::Mark => self.mark_rune(caster, target_serial),

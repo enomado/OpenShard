@@ -166,6 +166,8 @@ struct MobileSpec {
     #[serde(default)]
     vendor: bool,
     #[serde(default)]
+    healer: bool,
+    #[serde(default)]
     equipment: Vec<WornItemSpec>,
     #[serde(default)]
     skills: Vec<SkillSpec>,
@@ -226,6 +228,7 @@ fn op_spawn_mobile(state: &mut OpState, #[serde] spec: MobileSpec) {
         night_home: spec.night_home,
         banker: spec.banker,
         vendor: spec.vendor,
+        healer: spec.healer,
         equipment,
         skills,
     });

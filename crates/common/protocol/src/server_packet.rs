@@ -185,7 +185,7 @@ impl ServerPacket {
             Self::CharacterListUpdate(_) => CharacterListUpdate::ID,
             Self::PlayerStart(_) => <PlayerStart as EncodePacket>::ID,
             Self::PlayerUpdate(_) => <PlayerUpdate as EncodePacket>::ID,
-            Self::DeathStatus(_) => DeathStatus::ID,
+            Self::DeathStatus(_) => <DeathStatus as EncodePacket>::ID,
             Self::WalkAck(_) => <WalkAck as EncodePacket>::ID,
             Self::WalkReject(_) => <WalkReject as EncodePacket>::ID,
             Self::LoginComplete(_) => <LoginComplete as EncodePacket>::ID,
@@ -472,6 +472,9 @@ impl ServerPacket {
             <WarMode as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::WarMode)
                 .map_err(ServerDecodeError::WarMode)?,
+            <DeathStatus as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::DeathStatus)
+                .map_err(ServerDecodeError::DeathStatus)?,
             // Both `0x3A`s. The id routes them together and the type byte tells
             // them apart, which is why this is the one arm that decodes into a
             // decision rather than into a variant — see `SkillsPacket`.
@@ -545,6 +548,8 @@ pub enum ServerDecodeError {
     OpenPaperdoll(DecodeError),
     /// `0x72` did not decode.
     WarMode(DecodeError),
+    /// `0x2C` did not decode.
+    DeathStatus(DecodeError),
     /// `0xD1` did not decode.
     LogoutAck(DecodeError),
     /// `0x3A` did not decode — either of the two, since the id is shared and
@@ -579,6 +584,7 @@ impl fmt::Display for ServerDecodeError {
             Self::ContainerContents(error) => ("0x3C container contents", error),
             Self::OpenPaperdoll(error) => ("0x88 paperdoll", error),
             Self::WarMode(error) => ("0x72 war mode", error),
+            Self::DeathStatus(error) => ("0x2C death status", error),
             Self::LogoutAck(error) => ("0xD1 logout ack", error),
             Self::Skills(error) => ("0x3A skills", error),
             Self::LocalizedMessage(error) => ("0xC1 localized message", error),
@@ -1546,6 +1552,21 @@ mod tests {
             ServerPacket::decode(&bytes, version()),
             Ok(Some(ServerPacket::LogoutAck(crate::world::LogoutAck)))
         );
+    }
+
+    /// `docs/combat.md` P4/D9: the client never had a decoder for `0x2C`, so a
+    /// death that arrived over the wire dropped silently and the world never
+    /// greyed. Round-tripped like [`the_answers_a_paperdoll_waits_for_are_decoded`]
+    /// above.
+    #[test]
+    fn death_status_is_decoded() {
+        for dead in [true, false] {
+            let bytes = ServerPacket::DeathStatus(DeathStatus { dead }).encode(version());
+            assert_eq!(
+                ServerPacket::decode(&bytes, version()),
+                Ok(Some(ServerPacket::DeathStatus(DeathStatus { dead })))
+            );
+        }
     }
 
     #[test]

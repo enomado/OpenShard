@@ -622,6 +622,7 @@ fn main() {
         view: View::Lit,
         flame_radius: openshard_client_render::light::FLAME_RADIUS,
         shadow_rays: openshard_client_render::light::ShadowRays::DEFAULT,
+        dead: false,
     };
     // Where the flame itself projects to, marked directly on every dumped
     // frame below: `examples/synthetic_stair.rs`'s own trick, since "is the

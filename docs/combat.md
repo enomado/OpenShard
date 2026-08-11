@@ -40,7 +40,7 @@ other half, and this is the whole of the gap:
 | `0x11` mobile status | → client | yes | yes | **nothing reads it** |
 | `0x6E` animation | → client | yes | **no** | — |
 | `0xE2` new animation | → client | yes | **no** | — |
-| `0x2C` death status | → client | yes | **no** | — |
+| `0x2C` death status | → client | yes | yes | the tonemap's grey (P4) |
 | `0x54` sound | → client | yes | **no** | — (M6) |
 | `0x70`/`0xC0` effects | → client | yes | **no** | — |
 | `0x1A` world item | → client | yes, **no direction** | yes, **refuses direction** | as a static |
@@ -328,6 +328,20 @@ rather than sliding.
 
 **Done when:** dying greys the world and resurrection un-greys it; a ghost
 walks; a ghost's click sends no attack; and the paperdoll of a ghost is bald.
+
+#### Built
+
+All four items are in, and one detail changed shape once the code was in
+front of it: the war-stance gate (item 3) is not only `Player::war`'s own
+click-side branch — a stranger drawn as a ghost keeps no sword either, gated
+off `anim::is_ghost(mobile.body)` rather than a field this client does not
+have, since nothing on the wire says a stranger died but their body id
+already does. `light::Lighting::dead` rides in `view`'s own padding, the same
+word `shadow_rays` already claims — `blit.wesl`'s `dead()` reads it and
+desaturates the shaded pixel to its Rec. 601 luma, after everything else the
+pass computes, so a torch's pool is still brighter than the street and just
+colourless. Item 4 needed no code, as written; it has now been looked at and
+draws as described.
 
 ---
 

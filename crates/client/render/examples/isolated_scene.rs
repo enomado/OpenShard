@@ -895,6 +895,9 @@ fn main() {
         // the world is given and only the drawing can be narrowed.
         draw: openshard_client_render::frame::Draw::EVERYTHING,
         view: wanted_view,
+        // Not a fact this tool has an opinion on: it builds a place, not a
+        // character standing in it.
+        dead: false,
     };
     // **What this frame was asked for**, printed and written beside the picture.
     // The client's F12 dump writes the same block from the same function, so two

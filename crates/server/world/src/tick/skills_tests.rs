@@ -1362,6 +1362,7 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> S
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });

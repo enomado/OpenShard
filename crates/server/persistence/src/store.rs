@@ -629,6 +629,7 @@ mod tests {
             wander: true,
             banker: false,
             vendor: false,
+            healer: false,
             title: None,
             npc_home: None,
             night_home: None,

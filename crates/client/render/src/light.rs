@@ -599,6 +599,10 @@ pub struct Lighting {
     /// same points — which is what keeps every parity oracle comparing two
     /// answers rather than two sample counts.
     pub shadow_rays: ShadowRays,
+    /// Whether the player's own character is a ghost — `view::Player::dead`,
+    /// `0x2C`. `docs/combat.md`'s D9: one uniform, one branch, and the whole
+    /// lit frame desaturates rather than every quad carrying its own hue.
+    pub dead: bool,
 }
 
 impl Lighting {
@@ -619,6 +623,7 @@ impl Lighting {
         view: crate::debug::View::Lit,
         flame_radius: FLAME_RADIUS,
         shadow_rays: ShadowRays::DEFAULT,
+        dead: false,
     };
 
     /// Whether this would change a single pixel.
@@ -644,12 +649,15 @@ impl Lighting {
     }
 
     /// A debug view is never the identity, however empty the frame's lighting is
-    /// — that is the whole of what it draws.
+    /// — that is the whole of what it draws. Neither is a ghost's frame: `dead`
+    /// desaturates every pixel the world image has, which is the one change
+    /// this struct can make without a light, a wall or a view asking for it.
     pub fn is_identity(&self) -> bool {
         self.lights.is_empty()
             && self.ambient == Ambient::DAY
             && self.occlusion.is_empty()
             && self.view.is_lit()
+            && !self.dead
     }
 }
 
@@ -1006,6 +1014,10 @@ pub fn collect(
         // the shader, and neither can be applied to a `Light`.
         flame_radius: tuning.flame_radius,
         shadow_rays: tuning.shadow_rays,
+        // Not the geometry's to know either, for `view`'s own reason: a
+        // caller wanting the grey screen sets it on the way to the blit —
+        // see `Lighting::dead`.
+        dead: false,
     }
 }
 
@@ -4150,6 +4162,7 @@ mod tests {
             view: crate::debug::View::Lit,
             flame_radius: FLAME_RADIUS,
             shadow_rays: ShadowRays::DEFAULT,
+            dead: false,
         };
         // Along `x` and at the flame's own height, so the distance is the offset
         // and nothing has to be derived. `Spot::at` has no facing, so the cosine
@@ -4554,6 +4567,7 @@ mod tests {
             view: crate::debug::View::default(),
             flame_radius: FLAME_RADIUS,
             shadow_rays: ShadowRays::DEFAULT,
+            dead: false,
         };
 
         let sample = sample(spot, &lighting);
@@ -4673,6 +4687,7 @@ mod tests {
                 view: crate::debug::View::default(),
                 flame_radius: FLAME_RADIUS,
                 shadow_rays: ShadowRays::DEFAULT,
+                dead: false,
             };
             let streaming = sample(spot, &lighting).reaches[0].through;
             let exact = sample_exact(spot, &lighting).reaches[0].through;
@@ -4810,6 +4825,7 @@ mod tests {
                 // straight up — see this test's own doc comment.
                 flame_radius: 0.0,
                 shadow_rays: ShadowRays::DEFAULT,
+                dead: false,
             };
             // The positive control, and it is the whole reason this test is worth
             // anything: every one of the rays actually walked has to have no
@@ -4944,6 +4960,7 @@ mod tests {
             // One exact ray — see this test's own doc.
             flame_radius: 0.0,
             shadow_rays: ShadowRays::DEFAULT,
+            dead: false,
         };
         // A point of no primitive: the fragment is in the air over the floor, so
         // no exemption is in play and what answers is the lid rule alone.
@@ -5015,6 +5032,7 @@ mod tests {
             view: crate::debug::View::default(),
             flame_radius: FLAME_RADIUS,
             shadow_rays: ShadowRays::DEFAULT,
+            dead: false,
         };
 
         // `blocked`: whether the straight segment from `(102.5, y)` to the

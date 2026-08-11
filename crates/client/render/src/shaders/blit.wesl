@@ -209,10 +209,13 @@ struct Lighting {
     // right by construction — the grid is grown by the widest pool's reach, so
     // nothing outside it could shadow anything this frame draws.
     grid: vec4<i32>,
-    // Which picture to draw: `crate::debug::View` in the first component, the
-    // rest padding. Zero is the lit frame and every other value is a diagnostic
-    // drawn from the values this pass lit it with — see `docs/lighting.md`,
-    // decision 8. The numbers are pinned in a test on the Rust side.
+    // Which picture to draw: `crate::debug::View` in the first component,
+    // `shadow_rays` in the second, whether this is a ghost's frame in the
+    // third — `light::Lighting::dead`, `docs/combat.md`'s D9 — the fourth
+    // still padding. Zero is the lit frame and every other value is a
+    // diagnostic drawn from the values this pass lit it with — see
+    // `docs/lighting.md`, decision 8. The numbers are pinned in a test on the
+    // Rust side.
     view: vec4<u32>,
     // Which way the sun is — `x` and `y` in tiles, `z` in tiles as well — and in
     // the fourth component the height above which nothing in this frame's grid
@@ -434,6 +437,13 @@ fn flame_radius() -> f32 {
 // not a truncation of one pattern but a pattern of its own.
 fn shadow_rays() -> u32 {
     return lighting.view.y;
+}
+
+// Whether the player's own body is a ghost. `light::Lighting::dead`, the
+// third word of the same padding `shadow_rays` claims above — `docs/combat.md`
+// D9: one uniform, one branch, and the whole lit frame desaturates.
+fn dead() -> bool {
+    return lighting.view.z != 0u;
 }
 
 // Turns of the sample spiral between one point of a flame and the next: the
@@ -1974,5 +1984,17 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // Alpha carried through untouched, not written as `1.0`: this pass shades an
     // image and lighting is about how bright a pixel is, not about whether it is
     // there.
-    return vec4<f32>(shade(color.rgb, lit), color.a);
+    let shaded = shade(color.rgb, lit);
+
+    // D9's grey: a ghost's own screen loses its colour, not its brightness — the
+    // same lit value, collapsed to the luma ClassicUO's own black-and-white
+    // effect uses (Rec. 601), so a dark corner is still a dark corner and a
+    // torch's pool is still brighter than the street, just colourless. One
+    // branch, after everything else this pass computes, because death changes
+    // what a pixel is *shown as* and nothing about what lit it.
+    if dead() {
+        let luma = dot(shaded, vec3<f32>(0.299, 0.587, 0.114));
+        return vec4<f32>(luma, luma, luma, color.a);
+    }
+    return vec4<f32>(shaded, color.a);
 }

@@ -1888,15 +1888,37 @@ pub fn best_prism(image: &Image) -> (Prism, f32) {
         }
     }
     if per_axis.len() > 1 {
-        let winner = per_axis
+        let scored: Vec<(Prism, f32, f32)> = per_axis
             .into_iter()
             .filter_map(|(prism, score)| interiors_agree(image, &prism).map(|agree| (prism, score, agree)))
-            .max_by(|a, b| a.2.total_cmp(&b.2));
-        if let Some((prism, score, _)) = winner {
+            .collect();
+        if let Some((prism, score)) = earliest_of_best_interior(scored) {
             best = (prism, score);
         }
     }
     best
+}
+
+/// Which rival axis [`best_prism`]'s interior tie-break keeps when two of them
+/// agree with the art **exactly** as well as each other.
+///
+/// Rare — the measure is continuous, so an exact tie is a coincidence rather
+/// than something the search is likely to hit — but the line above already has
+/// an answer for the same question one step earlier: `if score > best.1`
+/// is a strict inequality, so an outline-score tie keeps whichever candidate
+/// `candidates()` produced first. This keeps the interior tie-break's own
+/// answer consistent with it rather than inventing a second, unstated
+/// convention (`Iterator::max_by` favours the *last* equally-maximum element,
+/// the opposite rule) — first found, first kept, at both stages of the same
+/// search.
+fn earliest_of_best_interior(candidates: Vec<(Prism, f32, f32)>) -> Option<(Prism, f32)> {
+    candidates
+        .into_iter()
+        .fold(None, |acc: Option<(Prism, f32, f32)>, next| match acc {
+            Some(acc) if acc.2 >= next.2 => Some(acc),
+            _ => Some(next),
+        })
+        .map(|(prism, score, _)| (prism, score))
 }
 
 /// The most blocks a [`crate::occlusion::Shape`] may be authored with —
@@ -3512,6 +3534,36 @@ mod tests {
             (min_y, max_y),
             (100.0, 101.0),
             "West's climb axis is x, so y stays the whole tile"
+        );
+    }
+
+    /// [`earliest_of_best_interior`] on an **exact** tie keeps the first
+    /// candidate, the same convention `best_prism` already uses one line above
+    /// it for an exact outline-score tie (`if score > best.1`, strict).
+    ///
+    /// Built from hand-chosen `f32`s rather than a picture: the whole point is
+    /// that two candidates agree with the art *exactly* as well as each other,
+    /// which real art almost never produces (the doc comment on
+    /// `earliest_of_best_interior` says why this is a corner case worth pinning
+    /// rather than one worth chasing through pixels).
+    #[test]
+    fn an_exact_interior_tie_keeps_the_first_candidate_found() {
+        let first = Prism::new(Face::North, &[1, 3, 5]).expect("three treads");
+        let second = Prism::new(Face::West, &[1, 3, 5]).expect("three treads");
+        let (winner, score) = earliest_of_best_interior(vec![(first, 0.97, 0.75), (second, 0.97, 0.75)])
+            .expect("two candidates, one winner");
+        assert_eq!(winner.up(), first.up(), "the earlier candidate keeps the tie");
+        assert_eq!(score, 0.97);
+
+        // And a later, strictly better agreement still overturns it — the tie
+        // rule only applies when the two are exactly equal.
+        let third = Prism::new(Face::South, &[1, 3, 5]).expect("three treads");
+        let (winner, _) = earliest_of_best_interior(vec![(first, 0.97, 0.75), (third, 0.97, 0.80)])
+            .expect("two candidates, one winner");
+        assert_eq!(
+            winner.up(),
+            third.up(),
+            "a strictly better later candidate still wins"
         );
     }
 }

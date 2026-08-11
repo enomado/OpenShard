@@ -776,6 +776,11 @@ pub struct MobileRecord {
     pub banker: bool,
     /// Whether it keeps a shop.
     pub vendor: bool,
+    /// Whether it offers a free resurrection to a ghost that comes near or
+    /// double-clicks it. Defaulted, like `pet` and `night_home`, so an older save
+    /// loads with no healers rather than failing to parse.
+    #[serde(default)]
+    pub healer: bool,
     /// The trade it plies, ServUO-style ("the blacksmith"). `None` for a creature.
     ///
     /// Saved because it is a *key*, not decoration: the speech table an NPC answers

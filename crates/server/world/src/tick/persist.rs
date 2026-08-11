@@ -8,10 +8,10 @@ use openshard_protocol::identity::CharacterName;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_state::components::{
     Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy, DoneQuest, Escortable, Field,
-    Frozen, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price, Quality, QuestGiver,
-    QuestLog, QuestState, RangedAttack, Restock, RuneMark, Runebook, RunebookEntry, Skills, Spellbook,
-    StatMod, StatMods, StockRecord, SwingSpeed, Title, TradeWindow, Trap, TrapKind, Vendor, body_opens_doors,
-    effect,
+    Frozen, Healer, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price, Quality,
+    QuestGiver, QuestLog, QuestState, RangedAttack, Restock, RuneMark, Runebook, RunebookEntry, Skills,
+    Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title, TradeWindow, Trap, TrapKind, Vendor,
+    body_opens_doors, effect,
 };
 
 /// The serials [`World::restore_characters`] reserved, and the proof it ran.
@@ -567,6 +567,7 @@ impl World {
                 wander,
                 banker: registry.has::<Banker>(entity),
                 vendor: registry.has::<Vendor>(entity),
+                healer: registry.has::<Healer>(entity),
                 title: registry.get::<Title>(entity).map(|t| t.0.clone()),
                 npc_home: npc.map(|n| (n.home.x, n.home.y, n.home.z)),
                 npc_wander: npc.map_or(0, |n| n.wander),
@@ -1348,6 +1349,9 @@ impl World {
             }
             if record.vendor {
                 registry.insert(entity, Vendor);
+            }
+            if record.healer {
+                registry.insert(entity, Healer);
             }
             // The trade, without which a restored NPC is a mute statue: every
             // keyword it answers is looked up by this string.

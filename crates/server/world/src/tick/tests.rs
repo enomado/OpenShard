@@ -2365,6 +2365,7 @@ fn spawn_mobile_full(
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -2677,6 +2678,247 @@ fn resurrection_brings_a_ghost_back() {
     );
 }
 
+fn spawn_healer(world: &mut World, at: Point, now: Instant) -> (EntityId, Serial) {
+    world.queue(Command::SpawnMobile {
+        body: openshard_protocol::wire::Graphic(0x0190),
+        hue: openshard_protocol::wire::Hue(0),
+        hits: 100,
+        notoriety: 1,
+        damage: 0,
+        resistance: 0,
+        swing: 0,
+        sight: 0,
+        aggression: 2,
+        beat: 0,
+        ranged: 0,
+        ranged_kind: 0,
+        wander: false,
+        position: at,
+        facet: Facet(0),
+        name: None,
+        title: Some("the healer".to_owned()),
+        shoe: 0,
+        fame: 0,
+        karma: 0,
+        night_home: None,
+        banker: false,
+        vendor: false,
+        healer: true,
+        equipment: Vec::new(),
+        skills: Vec::new(),
+    });
+    world.tick(now);
+    let healer = world
+        .registry()
+        .query::<openshard_state::components::Healer>()
+        .map(|(entity, _)| entity)
+        .next()
+        .expect("a spawned healer");
+    let serial = world.registry().serial_of(healer).unwrap();
+    (healer, serial)
+}
+
+/// A `Command::GumpResponse` naming the healer confirm and a chosen button —
+/// the shape `admin_response` uses for the admin gump.
+fn healer_response(connection: ConnectionId, player: Serial, button: u32) -> Command {
+    Command::GumpResponse {
+        connection,
+        response: openshard_protocol::gump::GumpResponse {
+            serial: openshard_protocol::gump::RawGumpKey(player.raw()),
+            gump_id: openshard_protocol::gump::RawGumpId(super::healer::HEALER_GUMP.0),
+            button: openshard_protocol::gump::RawButtonId(button),
+            switches: Vec::new(),
+            text_entries: Vec::new(),
+        },
+    }
+}
+
+#[test]
+fn a_ghost_double_clicking_a_healer_is_offered_a_free_resurrection() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    let (healer, healer_serial) = spawn_healer(&mut world, Point::new(START.0, START.1 - 1, 0), now);
+
+    world.queue(Command::Damage {
+        serial,
+        amount: 500,
+        damage_type: 0,
+        by: None,
+    });
+    world.tick(now);
+    assert!(world.state.registry.has::<Ghost>(entity), "dead first");
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::DoubleClick {
+        connection: player,
+        request: UseRequest::Use(RawSerial(healer_serial.raw())),
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world.state.row_of(entity).and_then(|row| row.healer_gump),
+        Some(healer),
+        "the confirm is remembered against this healer, so the reply can be checked against it"
+    );
+    let packets = packets_for(&mut world, player);
+    assert!(
+        packets.iter().any(|p| p[0] == 0xB0),
+        "the confirm gump is drawn (0xB0)"
+    );
+
+    // Answer "yes" (CONTINUE) — full hit points, unlike a spell's or a
+    // bandage's tenth.
+    world.queue(healer_response(player, serial, 1));
+    world.tick(now);
+
+    assert!(!world.state.registry.has::<Ghost>(entity), "alive again");
+    let hits = world.registry().get::<Hitpoints>(entity).unwrap();
+    assert_eq!(
+        hits.current, hits.max,
+        "a healer's free resurrection gives full hit points"
+    );
+}
+
+#[test]
+fn cancelling_the_healer_gump_leaves_the_ghost_dead() {
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    let (_, healer_serial) = spawn_healer(&mut world, Point::new(START.0, START.1 - 1, 0), now);
+
+    world.queue(Command::Damage {
+        serial,
+        amount: 500,
+        damage_type: 0,
+        by: None,
+    });
+    world.tick(now);
+    world.queue(Command::DoubleClick {
+        connection: player,
+        request: UseRequest::Use(RawSerial(healer_serial.raw())),
+    });
+    world.tick(now);
+
+    // CANCEL — button 0, the close box's own id.
+    world.queue(healer_response(player, serial, 0));
+    world.tick(now);
+
+    assert!(
+        world.state.registry.has::<Ghost>(entity),
+        "still a ghost — cancelling asked for nothing"
+    );
+    assert_eq!(
+        world.state.row_of(entity).and_then(|row| row.healer_gump),
+        None,
+        "the answered offer is forgotten either way"
+    );
+}
+
+#[test]
+fn double_clicking_a_healer_out_of_reach_says_so_instead_of_nothing() {
+    // A double-click that reached a real healer and still failed should not
+    // read the same as a click on empty ground or the wrong NPC — see
+    // `click_healer`'s doc comment.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    let (_, healer_serial) = spawn_healer(&mut world, Point::new(START.0, START.1 - 5, 0), now);
+
+    world.queue(Command::Damage {
+        serial,
+        amount: 500,
+        damage_type: 0,
+        by: None,
+    });
+    world.tick(now);
+    let _ = packets_for(&mut world, player);
+
+    world.queue(Command::DoubleClick {
+        connection: player,
+        request: UseRequest::Use(RawSerial(healer_serial.raw())),
+    });
+    world.tick(now);
+
+    assert_eq!(
+        world.state.row_of(entity).and_then(|row| row.healer_gump),
+        None,
+        "too far — no confirm was opened"
+    );
+    let packets = packets_for(&mut world, player);
+    assert!(
+        packets.iter().any(|p| p[0] == 0x1C),
+        "told why, rather than left to wonder if the click even landed"
+    );
+}
+
+#[test]
+fn walking_near_a_healer_offers_resurrection_with_no_click_at_all() {
+    // ServUO's `BaseHealer.OnMovement`: the healer notices a ghost arriving,
+    // no double-click needed. And a ghost that walks back out of reach is not
+    // left with a stale, unanswerable window — the offer clears, so
+    // approaching again asks afresh.
+    let now = Instant::now();
+    let mut world = world();
+    let player = enter(&mut world, now);
+    let entity = world.state.players[&player];
+    let serial = serial_of(&world, player);
+    let (healer, _) = spawn_healer(&mut world, Point::new(START.0, START.1 - 3, 0), now);
+
+    world.queue(Command::Damage {
+        serial,
+        amount: 500,
+        damage_type: 0,
+        by: None,
+    });
+    world.tick(now);
+    assert!(world.state.registry.has::<Ghost>(entity));
+    assert_eq!(
+        world.state.row_of(entity).and_then(|row| row.healer_gump),
+        None,
+        "three tiles off — too far to be noticed yet"
+    );
+
+    // Walk north, toward the healer, one step per tick and well spaced in
+    // time so the pace budget never refuses a step.
+    let mut step_time = now;
+    for sequence in 0..2u8 {
+        step_time += std::time::Duration::from_millis(300);
+        world.queue(Command::Walk {
+            connection: player,
+            request: walk(sequence, Direction::North),
+        });
+        world.tick(step_time);
+    }
+    assert_eq!(
+        world.state.row_of(entity).and_then(|row| row.healer_gump),
+        Some(healer),
+        "coming within reach offers a resurrection with no double-click"
+    );
+
+    // And walk back out again — four steps south is well past the range
+    // whichever tile the offer first fired on.
+    for sequence in 2..6u8 {
+        step_time += std::time::Duration::from_millis(300);
+        world.queue(Command::Walk {
+            connection: player,
+            request: walk(sequence, Direction::South),
+        });
+        world.tick(step_time);
+    }
+    assert_eq!(
+        world.state.row_of(entity).and_then(|row| row.healer_gump),
+        None,
+        "walking back out of range clears the pending offer"
+    );
+}
+
 #[test]
 fn a_ghost_is_hidden_from_the_living() {
     // The living cannot see the dead: when a player dies, every living watcher is
@@ -2873,6 +3115,7 @@ fn a_creature_dies_with_its_own_voice() {
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -3514,6 +3757,7 @@ fn a_creature_can_be_given_combat_skills() {
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: vec![(WRESTLING_SKILL.id(), 700), (TACTICS_SKILL.id(), 500)],
     });
@@ -6920,6 +7164,7 @@ fn spawn_creature(world: &mut World, point: Point, sight: u8, wander: bool, now:
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -7919,6 +8164,7 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
         night_home: None,
         banker: false,
         vendor: true,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -8499,6 +8745,7 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
         night_home: None,
         banker: false,
         vendor: true,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -8877,6 +9124,7 @@ fn spawn_banker(world: &mut World, at: Point, now: Instant) {
         night_home: None,
         banker: true,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -8979,6 +9227,7 @@ pub(super) fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: 
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -9148,6 +9397,7 @@ fn spawn_creature_with_standing(world: &mut World, fame: i32, karma: i32, now: I
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -9415,6 +9665,7 @@ fn a_non_human_townsperson_keeps_its_own_body() {
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -9673,6 +9924,7 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
         night_home: None,
         banker: false,
         vendor: true,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -9762,6 +10014,7 @@ fn spawn_shopkeeper(world: &mut World, now: Instant) -> (EntityId, Serial) {
         night_home: None,
         banker: false,
         vendor: true,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -9977,6 +10230,7 @@ fn a_townsperson_walks_home_at_night_when_the_shard_asks_for_it() {
         night_home: Some(home),
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -10287,6 +10541,7 @@ fn a_spawn_stands_on_the_floor_not_under_it() {
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -10335,6 +10590,7 @@ fn an_unnamed_creature_takes_its_body_default_name() {
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -10515,6 +10771,7 @@ pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant
         night_home: None,
         banker: false,
         vendor: true,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -11498,6 +11755,7 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -11566,6 +11824,7 @@ fn spawn_brained(world: &mut World, body: u16, at: Point, sight: u8, now: Instan
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -11752,6 +12011,7 @@ fn spawn_postured(world: &mut World, at: Point, sight: u8, aggression: u8, now: 
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -11919,6 +12179,7 @@ fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, Serial)
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -12256,6 +12517,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
         night_home: None,
         banker: false,
         vendor: true,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -12422,6 +12684,7 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
         night_home: None,
         banker: false,
         vendor: true,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -12543,6 +12806,7 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
         night_home: None,
         banker: false,
         vendor: true,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });
@@ -12662,6 +12926,7 @@ fn spawn_archer_bodied(world: &mut World, body: u16, at: Point, now: Instant) ->
         night_home: None,
         banker: false,
         vendor: false,
+        healer: false,
         equipment: Vec::new(),
         skills: Vec::new(),
     });

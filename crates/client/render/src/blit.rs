@@ -714,14 +714,16 @@ fn lighting_bytes(lighting: &Lighting) -> Vec<u8> {
     }
 
     // `view`: which of the pass's own values to draw instead of the frame, and
-    // beside it how many rays a fragment casts at each flame — one of the three
-    // words of padding this field carried, claimed the way this file claims one:
-    // when a reader exists, which is `blit.wesl`'s `shadow_rays`. The two words
-    // after it are still padding, because a uniform block's members are aligned
-    // to sixteen bytes and the array that follows has to start on one.
+    // beside it how many rays a fragment casts at each flame, and beside that
+    // whether this is a ghost's frame — three of the three words of padding
+    // this field carried, claimed the way this file claims one: when a reader
+    // exists, which is `blit.wesl`'s `shadow_rays` and `dead`. The last word is
+    // still padding, because a uniform block's members are aligned to sixteen
+    // bytes and the array that follows has to start on one.
     bytes.extend_from_slice(&(lighting.view as u32).to_le_bytes());
     bytes.extend_from_slice(&lighting.shadow_rays.raw().to_le_bytes());
-    bytes.extend_from_slice(&[0; 8]);
+    bytes.extend_from_slice(&(lighting.dead as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
 
     // The sun: its direction, then the height above which nothing in this
     // frame's grid can stop it. That height is where a sunbeam's segment *ends* —

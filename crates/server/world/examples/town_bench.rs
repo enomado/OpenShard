@@ -103,6 +103,7 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
                 night_home: None,
                 banker: false,
                 vendor: placed.is_multiple_of(3),
+                healer: false,
                 equipment: Vec::new(),
                 skills: Vec::new(),
             });

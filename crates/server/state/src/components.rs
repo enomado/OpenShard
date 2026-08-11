@@ -1648,6 +1648,17 @@ pub struct Ghost {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Banker;
 
+/// Marks a mobile as a healer: a townsperson who offers a ghost that comes near
+/// or double-clicks it a free resurrection, no spell or bandage needed.
+///
+/// The service, not the person — same shape as [`Banker`]. Unlike a spell's or a
+/// bandage's resurrection (a tenth of max hit points, so the raised are not one
+/// blow from dying again), a healer's is ServUO's `BaseHealer.OfferResurrection`:
+/// full hit points, because the price here is walking to a healer in town rather
+/// than surviving the fight that killed you.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Healer;
+
 /// The trade a townsperson plies, in ServUO's form — "the blacksmith", "the
 /// banker". The `Title` beside a `BaseVendor`'s `Name`.
 ///
