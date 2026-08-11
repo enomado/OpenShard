@@ -48,8 +48,11 @@
 //! absence draws a layer that should have been hidden, which is a garment
 //! poking out from under a robe — visible, and not a hole.
 //!
-//! **Buttons**, and picking a worn item out of the picture. Both are M5's, and
-//! both want the item's serial, which this end reaches through the mobile.
+//! **Buttons**, and picking a worn item out of the picture, are M5's. The
+//! backpack is the one exception: [`DollButton::Backpack`] answers a double
+//! click the way the three scrolls do, because opening it needs nothing this
+//! module cannot already draw. Both of what remains want the item's serial,
+//! which this end reaches through the mobile.
 
 use std::collections::BTreeMap;
 
@@ -144,6 +147,12 @@ pub enum DollButton {
     Party,
     /// The virtue menu at the top of the frame.
     Virtue,
+    /// The backpack, drawn last and outside the layer order — see [`window`].
+    /// Answers a double click the same way the three scrolls do
+    /// (`PaperDollInteractable.OnMouseDoubleClick`, the backpack's own arm of
+    /// it): opening it is the one piece of "picking a worn item out of the
+    /// picture" this client draws before the rest of M5 lands.
+    Backpack,
 }
 
 /// Where the column of buttons starts and how far apart they sit —
@@ -799,8 +808,13 @@ pub fn window(
             draw(pictures, item);
         }
     }
+    let mut backpack_index = None;
     if let Some(item) = worn(Layer::BACKPACK) {
         draw(pictures, item);
+        backpack_index = Some(pictures.len() - 1);
+    }
+    if let Some(index) = backpack_index {
+        doll.hits.insert(index, DollButton::Backpack);
     }
     doll
 }

@@ -2952,16 +2952,23 @@ have to grow the atlas's own rasterization height instead of the finished
 quad — a second, differently-shaped feature, not built here because nobody
 has asked for a bigger *TrueType* chat yet, only a bigger classic one.
 
-### Fixed, but the shape is a patch — see `client_window_state.md`
+### The reopening window, and the overlay that replaced the patch — see `client_window_state.md`
 
 A locally-closed container, paperdoll or dialog reopened itself a beat
 later (2026-08-11): `App`'s own copy of `WorldView` learned of the close,
 the shard thread's copy did not, and the next packet that changed anything
-nearby cloned the still-open copy over it. Patched with
-`link::Command::CloseWindow` — the shard thread's copy is now told too — but
-that is two mutable copies of "what is open" kept in step by remembering to
-write both, not by construction. [`client_window_state.md`](client_window_state.md)
-is the living plan for the honest fix.
+nearby cloned the still-open copy over it. First patched with
+`link::Command::CloseWindow` alone — the shard thread's copy told too, but
+two mutable copies of "what is open" kept in step by remembering to write
+both, not by construction. Built out the same day into the honest fix:
+`App::locally_closed`, a prediction-and-reconciliation overlay mirroring
+`link::Body::predicted`/`corrected` one layer down — `App` no longer writes
+its own `view` locally at all, closing sets the overlay and sends the
+command, and `reconcile_own_windows` (pulled out of `sync_own_windows` so it
+is testable without a real `App`) clears an entry only once a fresh
+snapshot agrees the subject is gone.
+[`client_window_state.md`](client_window_state.md) has the decision record
+and the test that reproduces the original bug.
 
 ### The route a Ctrl-drag draws, and what is left around it
 

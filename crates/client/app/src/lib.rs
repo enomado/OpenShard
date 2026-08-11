@@ -48,6 +48,7 @@
 //! against a facet nobody is serving.
 
 use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -155,11 +156,12 @@ use openshard_movement::{Heading, Lean, Leeway, Terrain};
 use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::gump::GumpId;
+use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::speech::Font;
 use openshard_protocol::version::ClientVersion;
-use openshard_protocol::wire::{Graphic, Hue, RawSkillId};
+use openshard_protocol::wire::{Graphic, Hue, Layer, RawSkillId};
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::{Anim, is_ghost};
 use openshard_uofiles::animdata::AnimData;
@@ -798,6 +800,7 @@ pub fn run<D: Dial + Send + 'static>(
         pointer_inside: false,
         pointer_gump: GumpPixel::new(0, 0),
         own_windows: Vec::new(),
+        locally_closed: HashSet::new(),
         drawn_windows: Vec::new(),
         dragging: None,
         held_doll: None,
@@ -1848,6 +1851,19 @@ struct App {
     /// over the others and the first one picking finds. One list and not two,
     /// because a bag dragged over a paperdoll has to stay over it.
     own_windows: Vec<OwnWindow>,
+    /// A window this end has closed, ahead of the shard thread's own
+    /// [`view::WorldView`](openshard_client_net::view::WorldView) agreeing.
+    ///
+    /// [`link::Body::predicted`]'s counterpart for a window's openness rather
+    /// than a body's tile: `close_window`/`answer_gump` insert here and send
+    /// the [`link::Command::CloseWindow`], the same instant, instead of
+    /// mutating [`App::view`] directly — that copy is never the source of
+    /// truth, see `docs/client_window_state.md`'s D2. `sync_own_windows`
+    /// treats a subject in this set as closed regardless of what the view
+    /// still says, and drops the entry once a fresh `Update::World` agrees —
+    /// the same reconciliation `Folded::corrected` runs for a mispredicted
+    /// step, one layer down.
+    locally_closed: HashSet<WindowSubject>,
     /// Every open window as the last frame laid it out: its subject, and the
     /// pictures that were drawn for it in painter's order.
     ///
@@ -2795,6 +2811,123 @@ impl ApplicationHandler<link::Update> for App {
     }
 }
 
+/// [`App::sync_own_windows`]'s membership logic, pulled out to a free
+/// function so it can be exercised without an `App` — which needs real
+/// client asset files to construct at all, the same reason `dst.rs` mirrors
+/// `App`'s walk loop rather than driving the real thing in a test.
+///
+/// Opens a window for everything `view` has that `own_windows` does not, and
+/// drops every window whose subject `view` (and, for the one kind it cannot
+/// answer for, `skills_open`) no longer has — except a subject in
+/// `locally_closed`, which stays dropped and stays un-reopened regardless of
+/// what `view` says, until `view` itself agrees the subject is gone. That is
+/// the reconciliation: an overlay entry survives only until the view it is
+/// ahead of catches up, the same moment `Folded::corrected` would clear a
+/// mispredicted step in `link.rs`, one layer down. A subject the view never
+/// lists in the first place (`Skills`) has nothing to reconcile against and
+/// is not put in the overlay at all.
+fn reconcile_own_windows(
+    view: &openshard_client_net::view::WorldView,
+    own_windows: &mut Vec<OwnWindow>,
+    locally_closed: &mut HashSet<WindowSubject>,
+    skills_open: bool,
+) {
+    locally_closed.retain(|subject| match *subject {
+        WindowSubject::Container(serial) => view.containers.contains_key(&serial),
+        WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
+        WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
+        WindowSubject::Skills => false,
+    });
+    own_windows.retain(|window| {
+        if locally_closed.contains(&window.subject) {
+            return false;
+        }
+        match window.subject {
+            WindowSubject::Container(serial) => view.containers.contains_key(&serial),
+            WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
+            WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
+            // The one kind the view cannot answer for — see the variant's
+            // docs. Closing it is what empties `skills`, so this is that fact
+            // read back rather than a second copy of it.
+            WindowSubject::Skills => skills_open,
+        }
+    });
+    // Containers first and paperdolls after, and both in the view's own
+    // iteration order — which is a `HashMap`'s and therefore not stable. That
+    // decides only where two windows opened on the *same frame* cascade to,
+    // and nothing else: a window's position is its own from the moment it is
+    // placed.
+    let wanted = view
+        .containers
+        .keys()
+        .map(|serial| WindowSubject::Container(*serial))
+        .chain(
+            view.paperdolls
+                .keys()
+                .map(|serial| WindowSubject::Paperdoll(*serial)),
+        );
+    for subject in wanted.collect::<Vec<_>>() {
+        if own_windows.iter().any(|window| window.subject == subject) {
+            continue;
+        }
+        // Still overlaid: the view has not caught up with the close yet, and
+        // re-opening it here is exactly the reopen this overlay exists to
+        // stop.
+        if locally_closed.contains(&subject) {
+            continue;
+        }
+        let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
+        own_windows.push(OwnWindow {
+            subject,
+            at: GumpPixel::new(
+                CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
+                CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
+            ),
+        });
+    }
+    // The skill window, which nothing in the view asked for: the player did,
+    // by pressing Skills. Cascaded like a bag, for want of anywhere better —
+    // the reference remembers where this one was left, which is the backlog
+    // entry every window kind here shares.
+    if skills_open
+        && !own_windows
+            .iter()
+            .any(|window| window.subject == WindowSubject::Skills)
+    {
+        let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
+        own_windows.push(OwnWindow {
+            subject: WindowSubject::Skills,
+            at: GumpPixel::new(
+                CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
+                CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
+            ),
+        });
+    }
+    // A dialog is placed where the shard asked for it, and it is the only
+    // window kind that is: a `0xB0` carries a coordinate and a `0x24` does
+    // not. So no cascade — two dialogs the shard put in one place are two
+    // dialogs the shard put in one place, and moving them would be this
+    // client second-guessing a layout it was handed.
+    let dialogs: Vec<(GumpId, GumpPixel)> = view
+        .gumps
+        .iter()
+        .map(|gump| (gump.gump_id, GumpPixel::new(gump.at.x, gump.at.y)))
+        .collect();
+    for (gump_id, at) in dialogs {
+        let subject = WindowSubject::Dialog(gump_id);
+        if own_windows.iter().any(|window| window.subject == subject) {
+            continue;
+        }
+        // Overlaid the same as a container or paperdoll: `answer_gump` sets
+        // this before the view has forgotten the dialog, and the view is
+        // what is stale here — see `App::answer_gump`.
+        if locally_closed.contains(&subject) {
+            continue;
+        }
+        own_windows.push(OwnWindow { subject, at });
+    }
+}
+
 impl App {
     /// Take a step, answering whether anything on screen changed.
     ///
@@ -3161,82 +3294,16 @@ impl App {
             self.held_skill = None;
             return;
         };
-        self.own_windows.retain(|window| match window.subject {
-            WindowSubject::Container(serial) => view.containers.contains_key(&serial),
-            WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
-            WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
-            // The one kind the view cannot answer for — see the variant's docs.
-            // Closing it is what empties `skills`, so this is that fact read
-            // back rather than a second copy of it.
-            WindowSubject::Skills => self.skills.is_some(),
-        });
         // The state a dialog holds that no packet does, kept in step with the
         // same list: a window the shard has taken away forgets its page, its
         // switches and the finger on it — see `gump::Dialogs::sync`.
         self.dialogs.sync(&view.gumps);
-        // Containers first and paperdolls after, and both in the view's own
-        // iteration order — which is a `HashMap`'s and therefore not stable.
-        // That decides only where two windows opened on the *same frame*
-        // cascade to, and nothing else: a window's position is its own from the
-        // moment it is placed.
-        let wanted = view
-            .containers
-            .keys()
-            .map(|serial| WindowSubject::Container(*serial))
-            .chain(
-                view.paperdolls
-                    .keys()
-                    .map(|serial| WindowSubject::Paperdoll(*serial)),
-            );
-        for subject in wanted.collect::<Vec<_>>() {
-            if self.own_windows.iter().any(|window| window.subject == subject) {
-                continue;
-            }
-            let step = self.own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
-            self.own_windows.push(OwnWindow {
-                subject,
-                at: GumpPixel::new(
-                    CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
-                    CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
-                ),
-            });
-        }
-        // The skill window, which nothing in the view asked for: the player did,
-        // by pressing Skills. Cascaded like a bag, for want of anywhere better
-        // — the reference remembers where this one was left, which is the
-        // backlog entry every window kind here shares.
-        if self.skills.is_some()
-            && !self
-                .own_windows
-                .iter()
-                .any(|window| window.subject == WindowSubject::Skills)
-        {
-            let step = self.own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
-            self.own_windows.push(OwnWindow {
-                subject: WindowSubject::Skills,
-                at: GumpPixel::new(
-                    CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
-                    CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
-                ),
-            });
-        }
-        // A dialog is placed where the shard asked for it, and it is the only
-        // window kind that is: a `0xB0` carries a coordinate and a `0x24` does
-        // not. So no cascade — two dialogs the shard put in one place are two
-        // dialogs the shard put in one place, and moving them would be this
-        // client second-guessing a layout it was handed.
-        let dialogs: Vec<(GumpId, GumpPixel)> = view
-            .gumps
-            .iter()
-            .map(|gump| (gump.gump_id, GumpPixel::new(gump.at.x, gump.at.y)))
-            .collect();
-        for (gump_id, at) in dialogs {
-            let subject = WindowSubject::Dialog(gump_id);
-            if self.own_windows.iter().any(|window| window.subject == subject) {
-                continue;
-            }
-            self.own_windows.push(OwnWindow { subject, at });
-        }
+        reconcile_own_windows(
+            view,
+            &mut self.own_windows,
+            &mut self.locally_closed,
+            self.skills.is_some(),
+        );
     }
 
     /// Which window the cursor is over, topmost first, or `None`.
@@ -3637,14 +3704,31 @@ impl App {
         };
         let own = view.player.serial == mobile;
         let war = view.player.war;
-        // Before the link is borrowed, and for all three scrolls rather than
-        // only the one with a packet: the pair is a fact about the gesture, and
+        // The equipment list this doll's serial actually is: our own carries it
+        // on `Player`, everybody else on the `Mobile` the view filed them under.
+        // Neither `EquipmentLayer` nor `paperdoll::Doll` carries a serial at
+        // all — see the module doc on `paperdoll` — so the backpack's has to be
+        // read back off the same list the `0x88`/`0x78` filled in.
+        let equipment: &[Equipment] = match own {
+            true => &view.player.equipment,
+            false => view
+                .mobiles
+                .get(&mobile)
+                .map_or(&[] as &[Equipment], |mobile| mobile.equipment.as_slice()),
+        };
+        let backpack = equipment
+            .iter()
+            .find(|item| item.layer == Layer::BACKPACK)
+            .map(|item| item.serial);
+        // Before the link is borrowed, and for all four of these rather than
+        // only the ones with a packet: the pair is a fact about the gesture, and
         // a scroll that recorded no first click would let a *later* click on
         // another scroll pair with something older than it.
         let paired = match button {
-            paperdoll::DollButton::Profile | paperdoll::DollButton::Party | paperdoll::DollButton::Virtue => {
-                self.scroll_paired(subject, button)
-            }
+            paperdoll::DollButton::Profile
+            | paperdoll::DollButton::Party
+            | paperdoll::DollButton::Virtue
+            | paperdoll::DollButton::Backpack => self.scroll_paired(subject, button),
             _ => false,
         };
         let Some(link) = self.link.as_ref() else {
@@ -3689,6 +3773,16 @@ impl App {
             // of the three with a packet — the reference's `0xB1` under a gump
             // id nobody opened, see `openshard_client_net::doll::virtue`.
             paperdoll::DollButton::Virtue if paired => link.virtue(mobile),
+            // The backpack, the same double click again: `0x06` on its serial,
+            // exactly what a bag on the ground gets from
+            // [`App::use_under_cursor`]. Nothing is opened here — the `0x24`
+            // that answers it is what does, the same rule that keeps the door
+            // and the toggle from acting before the shard has.
+            paperdoll::DollButton::Backpack if paired => {
+                if let Some(serial) = backpack {
+                    link.use_object(serial);
+                }
+            }
             // Everything else: a stranger's Status, the first click of a pair,
             // and the four buttons with nothing to send.
             _ => {}
@@ -3783,10 +3877,9 @@ impl App {
     ///
     /// Nothing goes out on the wire, for either kind. There is no
     /// close-container packet and no close-paperdoll packet — the shard keeps
-    /// its own list of who has what open — which is why the view is told: see
-    /// `WorldView::container_closed`, which drops the contents with the window,
-    /// and `WorldView::paperdoll_closed`, which drops nothing else at all
-    /// because the equipment belongs to the body.
+    /// its own list of who has what open — which is why this end predicts the
+    /// close locally (see [`App::locally_closed`]) rather than waiting for a
+    /// packet that never comes.
     /// A dialog is the one kind that *does* send something: the shard is
     /// waiting for a `0xB1` and gets button zero, which is what the reference
     /// client's close box answers with. A `{ noclose }` layout has no such
@@ -3808,33 +3901,36 @@ impl App {
             self.dragging = None;
             return true;
         }
-        let Some(view) = self.view.as_mut() else {
+        if self.view.is_none() {
             return false;
-        };
+        }
         match subject {
             WindowSubject::Container(serial) => {
-                view.container_closed(serial);
-                // The shard thread's own `WorldView` — not this copy — is
-                // what every future snapshot is cloned whole from. Left
-                // untold, the next packet that changes anything at all
-                // resends this window's stale, still-open entry and undoes
-                // the close the moment it lands. See `link::Command::CloseWindow`.
+                // The overlay, not `self.view`, is what says this is closed —
+                // that copy is never authoritative, see D2 in
+                // `docs/client_window_state.md`. The shard thread's own
+                // `WorldView` is what every future snapshot is cloned whole
+                // from, and telling it is what `link::Command::CloseWindow`
+                // is for; the overlay is what keeps this end from drawing the
+                // stale, still-open entry in the meantime.
+                self.locally_closed.insert(subject);
                 if let Some(link) = self.link.as_ref() {
                     link.close_window(link::CloseTarget::Container(serial));
                 }
             }
             WindowSubject::Paperdoll(serial) => {
-                view.paperdoll_closed(serial);
+                self.locally_closed.insert(subject);
                 if let Some(link) = self.link.as_ref() {
                     link.close_window(link::CloseTarget::Paperdoll(serial));
                 }
             }
-            // Nothing in the view to tell: the skills stay where they are, the
-            // way a paperdoll's equipment does. What closing takes away is the
-            // tree — which headings were shut and where the list was scrolled to
-            // — and that is deliberate: the reference's window does not remember
-            // either, and a window with no memory is the backlog entry both
-            // kinds already share.
+            // Nothing in the view to tell and so nothing to overlay: the
+            // skills stay where they are, the way a paperdoll's equipment
+            // does. What closing takes away is the tree — which headings were
+            // shut and where the list was scrolled to — and that is
+            // deliberate: the reference's window does not remember either,
+            // and a window with no memory is the backlog entry both kinds
+            // already share.
             WindowSubject::Skills => {
                 self.skills = None;
                 self.held_skill = None;
@@ -3865,10 +3961,10 @@ impl App {
 
     /// Answer an open dialog and take it off the screen.
     ///
-    /// The close is this end's, and it is why the view is touched here rather
-    /// than waiting for a packet: the server sends one `0xB0` and waits for one
-    /// `0xB1`, and nothing ever arrives to say the window is gone. See
-    /// [`WorldView::gump_closed`](openshard_client_net::view::WorldView::gump_closed).
+    /// The close is this end's, and it is why the overlay is set here rather
+    /// than waiting for a packet: the server sends one `0xB0` and waits for
+    /// one `0xB1`, and nothing ever arrives to say the window is gone. See
+    /// [`App::locally_closed`].
     fn answer_gump(&mut self, reply: link::GumpReply) {
         let gump_id = openshard_protocol::gump::GumpId(reply.gump_id.0);
         if let Some(link) = self.link.as_ref() {
@@ -3879,8 +3975,8 @@ impl App {
             // `link::Command::CloseWindow`.
             link.close_window(link::CloseTarget::Gump(gump_id));
         }
-        if let Some(view) = self.view.as_mut() {
-            view.gump_closed(gump_id);
+        if self.view.is_some() {
+            self.locally_closed.insert(WindowSubject::Dialog(gump_id));
         }
     }
 
@@ -7573,6 +7669,82 @@ mod tests {
     /// A paperdoll window, for the pairing tests below.
     fn doll(serial: u32) -> WindowSubject {
         WindowSubject::Paperdoll(Serial::new(serial).expect("a serial"))
+    }
+
+    /// A bare view with our own body entered and nothing else — enough to
+    /// carry a paperdoll or container entry for the tests below.
+    fn bare_view() -> openshard_client_net::view::WorldView {
+        openshard_client_net::view::WorldView::entered(openshard_protocol::world::PlayerStart {
+            serial: Serial::new(0x0000_002A).expect("a serial"),
+            body: Graphic(0x0190),
+            position: Point::new(1475, 1770, 20),
+            facing: Facing::walking(Direction::South),
+            map: openshard_protocol::world::MapSize::BRITANNIA,
+        })
+    }
+
+    /// The bug this overlay exists to close: a paperdoll this end closed
+    /// stays closed even when the next snapshot — cloned from the link
+    /// thread's own `WorldView` before it has heard about the close — still
+    /// lists it open. `docs/client_window_state.md`'s S3.
+    #[test]
+    fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
+        let subject = doll(0x2A);
+        let WindowSubject::Paperdoll(serial) = subject else {
+            unreachable!()
+        };
+
+        let mut view = bare_view();
+        view.paperdolls.insert(
+            serial,
+            openshard_client_net::view::Paperdoll {
+                name: "Someone".to_string(),
+                can_lift: false,
+            },
+        );
+        let mut own_windows = Vec::new();
+        let mut locally_closed = HashSet::new();
+
+        // The window opens, same as any other frame's sync.
+        reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+        assert!(
+            own_windows.iter().any(|window| window.subject == subject),
+            "the paperdoll opened"
+        );
+
+        // The close: this end's overlay is set, but nothing about `view` —
+        // the stand-in for the link thread's copy — has changed yet, exactly
+        // as it has not the instant `App::close_window` sends the command.
+        own_windows.retain(|window| window.subject != subject);
+        locally_closed.insert(subject);
+
+        // An unrelated world change arrives — a mobile's own step would be
+        // enough — and is folded into a snapshot that is still, itself,
+        // built from the link thread's pre-close copy: `view` here is
+        // unchanged, standing in for exactly that clone.
+        reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+        assert!(
+            !own_windows.iter().any(|window| window.subject == subject),
+            "the closed paperdoll must not reopen just because an unrelated \
+             change folded in before the close reached the link thread's view"
+        );
+        assert!(
+            locally_closed.contains(&subject),
+            "the overlay survives until the view itself agrees the paperdoll is gone"
+        );
+
+        // The link thread has now applied `CloseWindow` and a fresh snapshot
+        // reflects it — the reconciliation this overlay is for.
+        view.paperdolls.remove(&serial);
+        reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+        assert!(
+            !locally_closed.contains(&subject),
+            "the overlay clears once the view it was ahead of agrees"
+        );
+        assert!(
+            !own_windows.iter().any(|window| window.subject == subject),
+            "and the window stays closed, not reopened by the overlay clearing"
+        );
     }
 
     /// The three scrolls answer a double click, and this is what makes two

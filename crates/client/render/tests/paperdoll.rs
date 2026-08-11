@@ -93,7 +93,11 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
     let doll = paperdoll::window(Some(&wearer), whose, None, &equip_conv, &gumps, at);
     let stack = stack(&doll);
 
-    assert_eq!(stack.len(), 4, "a body, two garments and a bag");
+    assert_eq!(
+        stack.len(),
+        3,
+        "a body and two garments — the backpack is a hit now, not a plain layer"
+    );
     assert_eq!(
         doll.pictures[0].graphic,
         GumpArt::Gump(paperdoll::frame(whose)),
@@ -129,10 +133,16 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
         &equip_conv,
         &gumps,
     );
+    let last = doll.pictures.len() - 1;
     assert_eq!(
-        stack[3].graphic,
+        doll.pictures[last].graphic,
         GumpArt::Gump(backpack),
         "the backpack is drawn last, outside the order"
+    );
+    assert_eq!(
+        doll.hits.get(&last),
+        Some(&paperdoll::DollButton::Backpack),
+        "and it answers a double click, the one worn item that does"
     );
 }
 
