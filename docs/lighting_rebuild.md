@@ -3427,10 +3427,44 @@ outlive the track and belong in this list, since this is the live one:
   aside on purpose.** Closing it means a real tile-coordinate type, whose call
   sites reach into `bake.rs`'s whole coordinate system (`origin`, `tile_of`,
   `spill_of`, block and cell indices) — D7's ground, and its own pass.
-- **The hierarchy's cost is unmeasured on a real frame.** S5 left `tests/cost.rs`
+- **The hierarchy's cost is unmeasured on a real frame.** ~~S5 left `tests/cost.rs`
   reporting the tree, and the run itself is the user's — a heavy live run, not a
   suite gate. Until it is taken, "a BVH is cheaper than the grid" is an argument
-  rather than a number.
+  rather than a number.~~ **Taken 2026-08-11**, `tests/cost.rs`, Britain at the
+  widest zoom (1/2×, world image 3840×2160), seven flames:
+
+  | case | ms/frame | ns/pixel | over `dark` |
+  |---|---|---|---|
+  | copy | 0.482 | 0.232 | −29.1% |
+  | dark | 0.679 | 0.328 | +0.0% |
+  | far | 0.723 | 0.349 | +6.5% |
+  | night | 1.865 | 0.900 | +174.5% |
+  | sun | 1.165 | 0.562 | +71.4% |
+
+  The tree itself is cheap: `far` (7 flames moved 1000 tiles off, so every
+  fragment's broad-phase misses and no node is ever tested) sits 6.5% over the
+  `dark` floor. The weight is the `night` row's own 174.5%, and that is the
+  ray count and not the traversal — `arrival`'s eight rays per flame in reach,
+  each its own `walk` of the tree — matching the same fixture's 4:1-zoom
+  reading above (§ phase 5b, one ray vs eight). So "a BVH is cheaper than the
+  grid" is now a number for the tree walk specifically, and the number the
+  blit pass pays a real frame for is soft shadows' ray count, not the
+  hierarchy under them.
+
+  *Two levers follow from that, neither taken yet.* **`shadow_rays` itself** —
+  already a runtime knob (`Tuning::shadow_rays`, default `SHADOW_RAYS = 8`) —
+  is the cheap one: the cost above scales close to linearly with the count
+  (phase 5b's table, one ray vs eight), and turning it down is a quality trade
+  a person can look at, not a code change. **Packet traversal** is the one that
+  is not a trade: `arrival`'s eight rays share an origin and nearly share a
+  direction (a small disc on a distant flame), so `walk` pays for the same
+  upper tree nodes eight separate times. Testing a node once against the
+  bundle's own bound and only descending per-ray at the leaves would cut node
+  visits without moving a single answer — packet/beam traversal, not a
+  tolerance — but it touches `walk`/`arrival` in `blit.wesl` and their CPU
+  mirror in `light.rs`'s `walk_primitives`/`arrival`, and every oracle both
+  already answer to (`tests/lighting.rs`'s fuzz, `boxes.rs`, `synthetic_stair.rs`)
+  would have to agree with it before it lands.
 - **A sconce's own art says how far it stands out from its wall, and nothing reads
   it.** `MOUNTED_CLEARANCE` is `0.7` of a tile because half a tile reaches the
   plane and a fifth clears it; the sprite shows the real overhang and
@@ -3732,6 +3766,52 @@ outlive the track and belong in this list, since this is the live one:
   scored this way, which is `geometry_census`'s 3.2% fitted-prism class — the
   tables, counters and display cases `boxes_of`'s `PLATFORM` branch admits on
   exactly the same terms.
+  <br>
+  **Step 1 (measure) and step 2 (`interiors_agree`) done, 2026-08-11 — steps 3
+  and 4 still open.** Step 1: over the whole install, 373 multi-tread fits, 0
+  with no confident interior edge at all, mean residual 8.35 view px (median
+  8.45, p90 10.28, max 12.02) — `docs/lighting_state.md`'s 🚩 entry has the full
+  breakdown. Step 2: `interiors_agree` (`facing.rs`) is a coverage fraction —
+  of a candidate's sampled interior-boundary columns, how many find a confident
+  brightness edge nearby — used by `best_prism` **only as a tie-break between
+  rival climb axes within `TIE_MARGIN = 0.01` of each other on outline alone**,
+  never summed into `silhouettes_agree` and never moving a fit-or-refuse
+  verdict. `prism_axis`'s own duplicated projection math (`project`,
+  `boundary_columns`, `luma`, `strongest_edge`) moved into `facing.rs` with it,
+  so the tool and the production scorer share one copy. Measured effect: **27
+  of the 309 accepted near-ties (8.7%) flip axis** under the tie-break.
+  `DETECTOR` is 5.
+  <br>
+  **Steps 3 and 4 done the same day, and step 3 rewrote step 2's own
+  measurement.** The gate is a pair in `tests/prism.rs`: a **hermetic** fixture
+  (a shaded drawing of a known prism this test makes itself, so plain
+  `cargo test` runs it with no install) and the six graphics of `(1454, 1728)`
+  held to four decimals, both fault-injected on the art side (flattened to no
+  brightness step) and the model side (rotated to every rival axis). It failed on
+  its first run for a real reason: a west-climbing stair and *the same stair
+  mirrored* both scored `1.0`. Two causes — `luma` counted material-over-nothing
+  as a step, so the interior term was re-scoring the **silhouette**
+  `silhouettes_agree` already covers; and it counted an edge's *presence* inside
+  a ±16-row window while one tread rises 8 px, which answers yes to every rival.
+  Both fixed: a transparent pixel is an absence, and the term measures
+  **closeness** to either end of the riser (a joint is a face with two drawn
+  edges, not one of them by convention). `DETECTOR` is **6**. What moved: the
+  tie-break now flips **16** of 309 near-ties rather than 27, and the residual
+  this whole track is about reads **4.97 px** to the nearer riser end (7.07 to
+  the crest) against the 8.35 first reported — the defect is real and about half
+  its reported size.
+  <br>
+  **Step 4 is measured and answered no.** `MAX_TREADS` at 6 and at 8 buys 15
+  more fitted pictures of 2,985 (0.5%) and no accuracy at all — residual 4.97 /
+  5.00 / 5.13 px at cap 4 / 6 / 8, and by profile size the three-tread fits (the
+  real flights) agree at 3.98 px while every size above four sits at 5.2–6.8.
+  The crowd sitting exactly on the cap never clears (120 at 4, 71 at 6, 87 at 8),
+  which is an even climb approximating a shape that is not a stair rather than
+  stairs the model cannot hold. It stays at four, and `facing::MAX_TREADS`'s own
+  doc carries the table. **What is left of this entry is the original defect**:
+  the model's riser sits ~5 px from the drawn joint, which is a *placement*
+  problem — where `boundary_columns` puts a crest — and neither the tie-break nor
+  the cap moves it.
   <br>
   **Two earlier framings died on the way here and are worth the lines.** *The
   boxes disagree about the climb axis* — six graphics, four axes — is true and is

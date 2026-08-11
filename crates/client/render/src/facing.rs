@@ -114,7 +114,28 @@ use openshard_uofiles::image::Image;
 /// detector 3 carries those rows and a client reading it would stand a table on
 /// a box its own tabletop hangs outside of, which is the defect that gate was
 /// added for.
-pub const DETECTOR: u32 = 4;
+///
+/// **Five** for [`best_prism`]'s own tie-break: a coin-flip margin between
+/// rival climb axes is disproportionately a refused picture's signature
+/// (`docs/lighting_state.md`'s 🚩 entry, 45.9% of refusals against 10.4% of
+/// fits), and among the *accepted* near-ties, [`interiors_agree`] can now
+/// move which prism wins. A table written by detector 4 has no row that ever
+/// took the tie-break, so a graphic whose interior the art disagrees with
+/// could be stamped with the wrong axis and look exactly as fresh as one
+/// measured after.
+///
+/// **Six** for what [`interiors_agree`] measures. Detector 5 counted *presence*
+/// — a confident edge anywhere inside [`SEARCH`] — and `tests/prism.rs`'s own
+/// fault injection showed that could not separate a stair from the same stair
+/// mirrored (both scored `1.0`), because the window is wider than a tread's own
+/// rise. It now measures **closeness**, to either end of the riser rather than
+/// to one of them by convention, and [`luma`] treats a transparent pixel as an
+/// absence so the silhouette's own edge is no longer counted as evidence about
+/// the interior. On the whole install this moves the tie-break's effect from 27
+/// of 309 accepted near-ties to **16**, and those 16 are a different, better
+/// evidenced set: a table written by detector 5 can carry an axis picked on a
+/// measurement that could not tell the two apart.
+pub const DETECTOR: u32 = 6;
 
 /// Which edge of its tile a wall stands on.
 ///
@@ -1722,6 +1743,32 @@ const MAX_PRISM: u8 = 20;
 ///
 /// It is a cap on the *model*, which is why it is public: it is what makes a
 /// [`Prism`] a fixed-size `Copy` value with no allocation behind it.
+///
+/// # Raising it was measured, and it buys nothing
+///
+/// 32% of multi-tread fits use all four, which read as a cap the population is
+/// piling up against — `docs/lighting_rebuild.md`'s backlog step 4. Run at 6 and
+/// at 8 over the whole install (`openshard-client-artscan`'s `prism_axis`
+/// report, 2026-08-11):
+///
+/// | cap | pictures that fit | multi-tread fits | at the cap | residual, nearer riser end |
+/// |---|---|---|---|---|
+/// | 4 | 2,985 | 373 | 120 | 4.97 px |
+/// | 6 | 3,000 | 412 | 71 | 5.00 px |
+/// | 8 | 3,006 | 432 | 87 | 5.13 px |
+///
+/// **The pile-up never clears.** Whatever the cap is, a crowd of pictures sits
+/// exactly on it, which is the signature of an even climb approximating a shape
+/// that is not a stair rather than of stairs with more steps than the model can
+/// hold. And the extra treads do not find drawn joints: broken out by profile
+/// size at cap 8, the three-tread fits — the real flights — agree with the art
+/// at **3.98 px** while every size above four sits at 5.2–6.8, no better than
+/// the coarse profiles they replaced. What raising it does buy is 15 more
+/// pictures fitting at all (0.5%), on a fit whose interior is no more agreed
+/// with than the wall-corner reading it replaces.
+///
+/// So it stays at four, and the number that would change that is a residual
+/// which *improves* with tread count — not a count of pictures at the cap.
 pub const MAX_TREADS: u16 = 4;
 
 /// What solid this picture is of, or `None` where no prism is a good enough
@@ -1752,15 +1799,40 @@ pub fn prism_of(image: &Image) -> Option<Prism> {
     (score >= PRISM_FITS).then_some(best)
 }
 
+/// How close two candidates' [`silhouettes_agree`] scores have to be before
+/// [`best_prism`] treats them as tied on outline alone and asks
+/// [`interiors_agree`] which one the art's own interior joints agree with,
+/// rather than trusting whichever the sweep happened to find first.
+///
+/// Ten-thousandths — an order of magnitude under the smallest *confident*
+/// margin measured on a real flight (`+0.0775`, `0x0751`) and two above the
+/// one picture that showed the coin-flip signature (`+0.0024`, `0x0756`).
+/// `docs/lighting_state.md`'s 🚩 entry "A fit is scored on its outline, and
+/// the surfaces are inside it" is where both numbers came from. Below this
+/// margin, silhouette agreement alone is not evidence of which candidate is
+/// right.
+const TIE_MARGIN: f32 = 0.01;
+
 /// The best-fitting prism for a picture and how much of it agrees, whether or not
 /// that is enough to be an answer.
 ///
 /// What the tools call: a person looking at a graphic wants the score even when
 /// it is 0.4, because a refusal with no number attached cannot be argued with.
 /// [`prism_of`] is this with [`PRISM_FITS`] applied.
+///
+/// Two candidates can score within [`TIE_MARGIN`] of each other on outline
+/// alone and still disagree about which way the picture climbs — the
+/// silhouette cannot see inside itself to say which is right. When that
+/// happens between two or more *rival climb axes*, each represented by its
+/// own best-scoring multi-tread near-tie, [`interiors_agree`] breaks the
+/// tie between them; a rival tread count on the *same* axis is not this
+/// ambiguity and is left alone. [`silhouettes_agree`] itself is never summed
+/// with it and a picture's fit-or-refuse verdict never moves, only *which*
+/// near-equally scored prism is returned.
 pub fn best_prism(image: &Image) -> (Prism, f32) {
     let drawn = drawn_count(image);
     let mut best = (Prism::box_of(0), 0.0);
+    let mut ties: Vec<(Prism, f32)> = Vec::new();
     for candidate in candidates() {
         // **An exact bound, not a heuristic.** The score is
         // `both / either`, and whatever the two silhouettes overlap, `both` is at
@@ -1773,17 +1845,55 @@ pub fn best_prism(image: &Image) -> (Prism, f32) {
         // a picture ten rows tall dismisses every prism twice its size on one
         // division. Nothing about the answer changes — `tests/prism.rs` scores
         // the same stairs at the same numbers.
+        //
+        // Loosened by `TIE_MARGIN` below what it would otherwise be: a
+        // candidate that cannot beat `best` but could still *tie* it has to
+        // be scored too, or the tie-break below would never see it. `best.1`
+        // only grows as the scan proceeds, so this bound stays safe — a
+        // candidate pruned against an earlier, smaller `best.1` is provably
+        // also unable to tie the final, larger one.
         let (low, high) = (drawn.min(candidate.drawn), drawn.max(candidate.drawn));
         let ceiling = match high {
             0 => 0.0,
             _ => low as f32 / high as f32,
         };
-        if ceiling <= best.1 {
+        if ceiling <= best.1 - TIE_MARGIN {
             continue;
         }
         let score = silhouettes_agree(image, &candidate.silhouette);
         if score > best.1 {
             best = (candidate.prism, score);
+        }
+        if score >= best.1 - TIE_MARGIN {
+            ties.push((candidate.prism, score));
+        }
+    }
+    ties.retain(|(_, score)| *score >= best.1 - TIE_MARGIN);
+    // One representative per climb axis — its own best-scoring near-tied
+    // candidate. A rival tread count on the *same* axis is not the
+    // ambiguity `interiors_agree` exists to resolve (nothing in
+    // `docs/lighting_state.md`'s 🚩 entry is about that), and letting it win
+    // would swap a correct fit for a needlessly finer one on no evidence:
+    // more treads can shave a hair off the outline score without the art
+    // agreeing with a single one of the extra joints.
+    let mut per_axis: Vec<(Prism, f32)> = Vec::new();
+    for (prism, score) in ties {
+        if prism.treads().len() < 2 {
+            continue;
+        }
+        match per_axis.iter_mut().find(|(rival, _)| rival.up() == prism.up()) {
+            Some(entry) if entry.1 >= score => {}
+            Some(entry) => *entry = (prism, score),
+            None => per_axis.push((prism, score)),
+        }
+    }
+    if per_axis.len() > 1 {
+        let winner = per_axis
+            .into_iter()
+            .filter_map(|(prism, score)| interiors_agree(image, &prism).map(|agree| (prism, score, agree)))
+            .max_by(|a, b| a.2.total_cmp(&b.2));
+        if let Some((prism, score, _)) = winner {
+            best = (prism, score);
         }
     }
     best
@@ -2116,6 +2226,251 @@ fn drawn_at(image: &Image, column: u16, row: u16) -> bool {
         .pixel(x as u16, image.height() - 1 - row)
         .unwrap_or(Color16::TRANSPARENT)
         .is_transparent()
+}
+
+/// How many rows either side of a model boundary's own row [`strongest_edge`]
+/// searches for the art's nearest brightness edge.
+///
+/// Generous enough to find a joint the model mis-locates by a whole tread's
+/// worth of `z` (the flight `docs/lighting_state.md`'s 🚩 entry was found on
+/// was off by `10.5 - 2.5 = 8` view px) without wandering far enough to lock
+/// onto a neighbouring step instead.
+const SEARCH: i32 = 16;
+
+/// The smallest brightness step, summed over the widened `0..=765` range of
+/// the three channels, that [`strongest_edge`] counts as an edge at all
+/// rather than texture noise.
+///
+/// **Chosen, not measured** — `openshard-client-artscan`'s `prism_axis`
+/// example's `--debug` picture is the eyeball check this number was picked
+/// against: on five real graphics the line it draws tracks the artist's own
+/// drawn joint, and over the whole install every one of 373 multi-tread fits
+/// found a confident edge somewhere on its own steps. It wants to clear the
+/// graininess a stone stair's own shading has between adjacent pixels while
+/// still catching a real material change — the same judgement call
+/// `docs/style.md`'s "no fudge constants" wants stated plainly rather than
+/// hidden behind a derivation that isn't there.
+///
+/// `pub` because [`strongest_edge`] reports a raw strength rather than
+/// applying this gate itself, so a caller outside this module —
+/// `prism_axis`'s own `report`/`--debug` — needs the same number to decide
+/// what counts as confident, not a second one that could drift from this
+/// one.
+pub const STRONG_EDGE: i32 = 60;
+
+/// Where a point at height `z`, run `run` along `up`'s climb and `perp` of the
+/// way across the tile on the other axis, projects — [`drawn_at`]'s own
+/// space: `column` is the tile column [`silhouettes_agree`] compares, and
+/// `row_from_bottom` counts up from the picture's own last row, the way a
+/// real sprite and a drawn silhouette are both anchored ([`prism_silhouette`]'s
+/// own `bottom`).
+///
+/// The algebraic inverse of the `run` match and the `column`/`down`
+/// arithmetic inside [`prism_silhouette`]: that function turns a sample
+/// `(u, v)` into a run along `up`'s climb and a screen position; this turns a
+/// chosen run back into the `(u, v)` the same projection would place it at.
+fn project(up: Face, run: f32, perp: f32, z: f32) -> (f32, f32) {
+    let (u, v) = match up {
+        Face::East => (run, perp),
+        Face::West => (1.0 - run, perp),
+        Face::South => (perp, run),
+        Face::North => (perp, 1.0 - run),
+    };
+    let column = (u - v) * HALF_TILE_WIDTH + HALF_TILE_WIDTH;
+    let row_from_bottom = HALF_TILE_WIDTH - (u + v - 1.0) * HALF_TILE_WIDTH + z * Z_STEP;
+    (column, row_from_bottom)
+}
+
+/// One internal step boundary's own crest — the plane at `run`, height `z` —
+/// swept across the tile and bucketed into the 44 columns a picture can land
+/// in, averaging where several samples share a column.
+///
+/// 128 samples of the perpendicular axis, the same density
+/// [`prism_silhouette`] sweeps both axes at — fine enough that no column of a
+/// 44-wide picture is skipped.
+///
+/// `pub` for [`interiors_agree`]'s own use and `openshard-client-artscan`'s
+/// `prism_axis` example, which draws the same projection this crate scores
+/// by — [`silhouettes_agree`]'s own doc is why a second copy of an alignment
+/// rule is worth avoiding.
+pub fn boundary_columns(up: Face, run: f32, z: u8) -> Vec<(u16, f32)> {
+    const SAMPLES: i32 = 128;
+    const WIDTH: usize = 44;
+    let mut buckets: Vec<Vec<f32>> = vec![Vec::new(); WIDTH];
+    for i in 0..=SAMPLES {
+        let perp = i as f32 / SAMPLES as f32;
+        let (column, row) = project(up, run, perp, f32::from(z));
+        let bucket = column.floor();
+        if bucket < 0.0 || bucket >= WIDTH as f32 {
+            continue;
+        }
+        buckets[bucket as usize].push(row);
+    }
+    buckets
+        .into_iter()
+        .enumerate()
+        .filter_map(|(column, rows)| match rows.is_empty() {
+            true => None,
+            false => Some((column as u16, rows.iter().sum::<f32>() / rows.len() as f32)),
+        })
+        .collect()
+}
+
+/// The luma at one pixel of `image`, or `None` off its edge **or where the
+/// picture draws nothing** — the sum of the widened 8-bit channels, `0..=765`,
+/// which is all [`strongest_edge`]'s vertical-gradient search needs and is
+/// cheaper than a weighted one.
+///
+/// # Why a transparent pixel is an absence and not a black
+///
+/// A drawn pixel above nothing is the sprite's own **silhouette**, and against
+/// zero it is always a step of several hundred — the largest one most columns of
+/// a small sprite hold. Counted as luma it would make [`strongest_edge`] answer
+/// the outline wherever a model boundary comes within [`SEARCH`] rows of it, so
+/// [`interiors_agree`] would be scoring the very thing
+/// [`silhouettes_agree`] already scores and calling it evidence about the
+/// interior. `tests/prism.rs`'s own fault injection is what said so out loud: on
+/// a drawing of a west-climbing stair, a *north*-climbing prism of the same
+/// profile scored a perfect `1.0` too, because every one of its misplaced crests
+/// found the silhouette instead of a joint.
+///
+/// So the gradient is taken between two pixels the artist actually drew, and a
+/// boundary that projects onto the outline finds nothing rather than everything.
+fn luma(image: &Image, x: i32, y: i32) -> Option<i32> {
+    if x < 0 || y < 0 {
+        return None;
+    }
+    let pixel = image.pixel(u16::try_from(x).ok()?, u16::try_from(y).ok()?)?;
+    if pixel.is_transparent() {
+        return None;
+    }
+    let (r, g, b) = pixel.rgb8();
+    Some(i32::from(r) + i32::from(g) + i32::from(b))
+}
+
+/// The row nearest `near` in column `x` of `image` where its own brightness
+/// takes its sharpest step, and how big that step is — `None` off the
+/// picture.
+///
+/// A plain vertical Sobel-style difference between neighbouring rows,
+/// maximised over [`SEARCH`] rows either side of `near`: the art has no fixed
+/// edge list, so this is a search rather than a reading, the same posture
+/// [`prism_of`]'s own doc takes for the silhouette.
+///
+/// `pub` for the same reason [`boundary_columns`] is.
+pub fn strongest_edge(image: &Image, x: i32, near: i32) -> Option<(i32, i32)> {
+    if x < 0 || x >= i32::from(image.width()) {
+        return None;
+    }
+    let mut best: Option<(i32, i32)> = None;
+    for y in (near - SEARCH)..=(near + SEARCH) {
+        let (Some(a), Some(b)) = (luma(image, x, y), luma(image, x, y + 1)) else {
+            continue;
+        };
+        let strength = (a - b).abs();
+        if best.is_none_or(|(_, s)| strength > s) {
+            best = Some((y, strength));
+        }
+    }
+    best
+}
+
+/// Where a projected `(column, row_from_bottom)` — [`boundary_columns`]'s own
+/// output space — lands in an art picture's real pixel grid: `x` centred the
+/// way [`drawn_at`] centres a narrower sprite in the 44-wide tile, `y`
+/// counted from the top the way [`Image::pixel`] wants it.
+///
+/// `pub` for the same reason [`boundary_columns`]/[`strongest_edge`] are:
+/// `prism_axis` draws the same projection this crate scores by, and a second
+/// copy of the coordinate conversion would be a second place for it to drift
+/// from this one.
+pub fn art_xy(image: &Image, column: u16, row_from_bottom: f32) -> (i32, i32) {
+    let offset = (44 - i32::from(image.width())) / 2;
+    let x = i32::from(column) - offset;
+    let y = i32::from(image.height()) - 1 - row_from_bottom.round() as i32;
+    (x, y)
+}
+
+/// How much of a prism's own interior boundaries the art agrees with — the
+/// tie-break [`best_prism`] reaches for when two multi-tread candidates'
+/// outlines are within [`TIE_MARGIN`] of each other.
+///
+/// `None` for a prism with fewer than two treads: a box has no interior
+/// boundary to ask about, and "nothing to check" is neither agreement nor
+/// disagreement — [`Option`] is what that absence is for, not a zero
+/// pretending to be a measurement.
+///
+/// Unlike [`silhouettes_agree`], this is not a drawn-pixel ratio: it is a mean
+/// over sampled interior-boundary columns, across every tread joint the prism
+/// has, of **how close** the art's nearest confident brightness edge
+/// ([`STRONG_EDGE`]) sits to where the model places that joint —
+/// `1 - distance / SEARCH` for a column that finds one, and zero for a column
+/// that finds none. A candidate whose step count and rhythm match nothing the
+/// art drew scores low here even when its outline is a near-perfect match — the
+/// discriminator a rival-axis tie needs and `silhouettes_agree` cannot supply,
+/// because a filled silhouette cannot see its own interior.
+///
+/// # Why closeness and not a count
+///
+/// It counted *presence* first — the fraction of columns finding any confident
+/// edge inside the window — and `tests/prism.rs`'s own fixture is what said that
+/// could not work: on a drawing of a west-climbing stair, a **north**-climbing
+/// prism of the same profile scored `0.935` against the right one's `1.0`, and
+/// an **east**-climbing one — the same stair mirrored — scored `1.0` exactly.
+///
+/// The reason is arithmetic rather than a bad threshold. [`SEARCH`] is 16 rows
+/// because the model's own crest is systematically 8–12 view px from the drawn
+/// joint (`docs/lighting_state.md`'s 🚩 entry, measured over the whole install),
+/// while one tread of a five-`z` flight rises `2 * Z_STEP = 8` px. A window
+/// wider than the thing it is trying to resolve answers *yes* to every rival, so
+/// presence carried almost no information and a reversal carried none at all.
+/// Distance inside the same window does: a wrong axis finds edges, but finds
+/// them further away.
+pub fn interiors_agree(art: &Image, prism: &Prism) -> Option<f32> {
+    let treads = prism.treads();
+    if treads.len() < 2 {
+        return None;
+    }
+    let (mut agreement, mut total) = (0.0f32, 0u32);
+    for (index, &crest) in treads.iter().enumerate().skip(1) {
+        let run = index as f32 / treads.len() as f32;
+        // A joint is a **riser**, not a line: a vertical face spanning the two
+        // treads' own heights at one plane of the tile, and the artist draws an
+        // edge at each of its ends — the near tread's top where the riser starts
+        // and the far tread's top where it ends. Probing only the crest asks for
+        // one of two equally real lines by convention, and a picture that draws
+        // the other one reads as a whole tread's worth of error. Both ends are
+        // probed and the better answer is the joint's, so the measure has no
+        // convention in it to be wrong about.
+        let foot = treads[index - 1];
+        let ends = [
+            boundary_columns(prism.up(), run, crest),
+            boundary_columns(prism.up(), run, foot),
+        ];
+        for (column, _) in &ends[0] {
+            total += 1;
+            let mut best = 0.0f32;
+            for end in &ends {
+                let Some(&(_, row_of_end)) = end.iter().find(|(other, _)| other == column) else {
+                    continue;
+                };
+                let (x, y) = art_xy(art, *column, row_of_end);
+                let Some((row, strength)) = strongest_edge(art, x, y) else {
+                    continue;
+                };
+                if strength >= STRONG_EDGE {
+                    // `strongest_edge` only ever looks inside `SEARCH`, so the
+                    // distance is in `0..=SEARCH` and this is in `0.0..=1.0`.
+                    best = best.max(1.0 - (row - y).abs() as f32 / SEARCH as f32);
+                }
+            }
+            agreement += best;
+        }
+    }
+    match total {
+        0 => None,
+        _ => Some(agreement / total as f32),
+    }
 }
 
 #[cfg(test)]
