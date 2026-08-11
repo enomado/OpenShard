@@ -2754,17 +2754,21 @@ throughout, `config`'s bare integers are gameplay quantities the protocol
 sweep's own ALLOWLIST precedent already excludes, and `metrics` is an
 unimplemented stub.
 
-The single largest finding is out of scope for one pass and is recorded
-rather than attempted: **`Facet` — `protocol::world::Facet(pub u8)` — is typed
-correctly in exactly the places `world::tick::command` already uses it, and a
-bare `facet: u8` everywhere else**, which by grep is upward of eighty
-signatures across `ai`, `npc`, `items`, `world`, `magic`, `scripting`,
-`skills`, `state` and their tests. This is the same shape and the same scale
-as the `protocol` crate's own N1–N10 sweep, and wants the same treatment: a
-dedicated multi-session pass with its own machine-checked coverage, not a
-slice riding along with something else. `persistence::record`'s bare
-`facet: u8` fields are not part of that count — they are the disk boundary,
-where `.0` is expected to surface once the fields above it carry the type.
+The single largest finding is out of scope for one pass and now has its own
+living plan, [`facet_newtype.md`](facet_newtype.md): **`Facet` —
+`protocol::world::Facet(pub u8)` — is typed correctly in exactly the places
+`world::tick::command` already uses it, and a bare `facet: u8` everywhere
+else**, which by grep is upward of eighty signatures across `ai`, `npc`,
+`items`, `world`, `magic`, `scripting`, `skills`, `state` and their tests.
+This is the same shape and the same scale as the `protocol` crate's own
+N1–N10 sweep, and wants the same treatment: a dedicated multi-session pass
+with its own machine-checked coverage, not a slice riding along with
+something else. `persistence::record`'s bare `facet: u8` fields are not part
+of that count — they are the disk boundary, where `.0` is expected to surface
+once the fields above it carry the type. **Pilot landed:** `ai::lib.rs` (7
+occurrences) plus its callers in `npc::live.rs` and `quests::progress.rs` — see
+`facet_newtype.md`'s "Amendments forced by the pilot" for what a
+single-crate occurrence count misses.
 
 Fixed in this pass, each contained to one or two files and verified with a
 full `cargo check`/`test`/`clippy`/`fmt` of the crates touched:

@@ -83,10 +83,10 @@ pub fn guard_keywords(state: &mut WorldState, connection: ConnectionId, actor: E
         return;
     };
     let facet = state.facet_of(actor);
-    if !guarded_here(state, facet.0, at) {
+    if !guarded_here(state, facet, at) {
         return;
     }
-    if !call_guards(state, at, facet.0) {
+    if !call_guards(state, at, facet) {
         notify(state, connection, "The guards find no one to punish here.");
     }
 }
@@ -96,7 +96,7 @@ pub fn guard_keywords(state: &mut WorldState, connection: ConnectionId, actor: E
 /// ServUO's `GuardedRegion.CallGuards`: the first candidate within
 /// [`CALL_RANGE`] is taken, and only one guard is made — a call is not a militia
 /// muster.
-pub fn call_guards(state: &mut WorldState, at: Point, facet: u8) -> bool {
+pub fn call_guards(state: &mut WorldState, at: Point, facet: Facet) -> bool {
     let Some(target) = nearest_candidate(state, at, facet) else {
         return false;
     };
@@ -112,7 +112,7 @@ pub fn hunt_with_guards(state: &mut WorldState, target: EntityId) -> bool {
         return false;
     };
     let facet = state.facet_of(target);
-    if !guarded_here(state, facet.0, at) || !is_candidate(state, target) {
+    if !guarded_here(state, facet, at) || !is_candidate(state, target) {
         return false;
     }
     make_guard(state, target);
@@ -121,10 +121,10 @@ pub fn hunt_with_guards(state: &mut WorldState, target: EntityId) -> bool {
 
 /// Whether a guarded region covers a point — and whether the shard has guards on
 /// at all.
-fn guarded_here(state: &WorldState, facet: u8, at: Point) -> bool {
+fn guarded_here(state: &WorldState, facet: Facet, at: Point) -> bool {
     state.gameplay.guards
         && state
-            .region_at(Facet(facet), at)
+            .region_at(facet, at)
             .is_some_and(|region| region.flags.guarded)
 }
 
@@ -167,10 +167,10 @@ fn is_candidate(state: &WorldState, mobile: EntityId) -> bool {
 }
 
 /// The nearest guard-worthy mobile to a point, on the same facet.
-fn nearest_candidate(state: &WorldState, at: Point, facet: u8) -> Option<EntityId> {
+fn nearest_candidate(state: &WorldState, at: Point, facet: Facet) -> Option<EntityId> {
     state
         .facets
-        .get(&Facet(facet))?
+        .get(&facet)?
         .sectors
         .nearby(at, CALL_RANGE)
         .filter(|&(entity, _)| is_candidate(state, entity))

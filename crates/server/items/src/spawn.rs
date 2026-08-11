@@ -151,7 +151,13 @@ pub fn equip_new_container(
 /// its own serial, so the client's drag and its eventual drop still name it,
 /// and the copy is what the ground is left with. Straight from Sphere's
 /// `CItem::UnStackSplit`.
-pub fn spawn_leftover(state: &mut WorldState, original: EntityId, amount: u16, position: Point, facet: u8) {
+pub fn spawn_leftover(
+    state: &mut WorldState,
+    original: EntityId,
+    amount: u16,
+    position: Point,
+    facet: Facet,
+) {
     let Some(&Drawn { id, hue }) = state.registry.get::<Drawn>(original) else {
         return;
     };
@@ -166,21 +172,18 @@ pub fn spawn_leftover(state: &mut WorldState, original: EntityId, amount: u16, p
     state.registry.insert(leftover, Stackable);
     set_stack_amount(state, leftover, amount);
     state.registry.insert(leftover, Position(position));
-    state.registry.insert(leftover, Facet(facet));
+    state.registry.insert(leftover, facet);
     mark_decay(state, leftover);
-    state
-        .facet_state_mut(Facet(facet))
-        .sectors
-        .insert(leftover, position);
+    state.facet_state_mut(facet).sectors.insert(leftover, position);
     state.reveal(leftover);
 }
 
 /// Land an item on the ground at `position` and draw it for everyone in range.
-pub fn place_on_ground(state: &mut WorldState, item: EntityId, position: Point, facet: u8) {
+pub fn place_on_ground(state: &mut WorldState, item: EntityId, position: Point, facet: Facet) {
     state.registry.insert(item, Position(position));
-    state.registry.insert(item, Facet(facet));
+    state.registry.insert(item, facet);
     // Back on the ground, back on the decay clock.
     mark_decay(state, item);
-    state.facet_state_mut(Facet(facet)).sectors.insert(item, position);
+    state.facet_state_mut(facet).sectors.insert(item, position);
     state.reveal(item);
 }
