@@ -57,6 +57,56 @@
 
 use std::time::Duration;
 
+use openshard_client_render::bench::{Metrics, Reading};
+
+/// What the perf panels are allowed to know, gathered each frame.
+///
+/// Self-contained on purpose: unlike the rest of [`crate::shell::Hud`], nothing
+/// here is a per-frame answer about the camera or the world — it comes entirely
+/// off the scope, the frame ring, the GPU's own passes and the atlas counter, so
+/// it can be built without the camera or the picks that frame's `hud()` call
+/// also gathers. See `App::perf`.
+pub struct Perf {
+    /// The last few seconds of the eye, one entry per frame.
+    ///
+    /// Owned rather than borrowed because this is a snapshot and not a view of
+    /// the app; a few hundred `f64`s a frame is what that costs, and it is what
+    /// keeps the panels unable to reach back into the camera.
+    pub readings: Vec<Reading>,
+    /// What those frames come to, and `None` before there are enough of them to
+    /// difference. Absent rather than zeroed: a metric over one frame is not a
+    /// small number, it is not a number.
+    pub metrics: Option<Metrics>,
+    /// How long a window the scope keeps, for the chart's own axis.
+    pub scope_span: Duration,
+    /// The last few seconds of the event loop, one entry per drawn frame.
+    pub frames: Vec<Frame>,
+    /// How long a window those cover, for that chart's own axis.
+    pub frames_span: Duration,
+    /// The worst frame rate in that window, and `None` before there is a frame
+    /// to have a rate.
+    pub worst_fps: Option<f64>,
+    /// What the device spent on the last frame it finished, pass by pass — the
+    /// answer to "which pass" once [`Frame::gpu`] has said the device is where
+    /// the frame went.
+    ///
+    /// Empty both when the adapter cannot write timestamp queries and before the
+    /// first frame's queries have come back; the panel tells those two apart by
+    /// asking the ring, which carries `None` for the first and a number for the
+    /// second. See [`crate::profile`].
+    pub gpu_passes: Vec<crate::profile::Pass>,
+    /// How many full atlas repacks this session has paid for. See
+    /// [`Frame::repacked`] for which frame in the window below was one of them.
+    pub repacks: u64,
+    /// What is currently asking for frames.
+    ///
+    /// Shown beside the rate because it is the *reason* for it: a client paced
+    /// by the display and one paced by the animation clock report the same kind
+    /// of number and mean opposite things by it, and a panel that only showed
+    /// the rate would read the second as a fault.
+    pub pacing: Pacing,
+}
+
 /// What is deciding when the next frame is drawn.
 ///
 /// The other half of any answer about a frame rate: 12.5 frames a second is a

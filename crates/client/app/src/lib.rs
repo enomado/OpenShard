@@ -62,13 +62,19 @@ mod desk;
 #[cfg(test)]
 mod dst;
 mod frames;
+mod graphics;
 mod gump;
+mod input;
 mod keys;
 mod link;
+mod picking;
 mod profile;
 mod replay;
+mod resources;
 mod shell;
 mod steer;
+mod windows;
+mod world;
 
 /// The camera this client opens with: the reference one, the eye on the body to
 /// the pixel.
@@ -131,6 +137,8 @@ use openshard_client_render::depth;
 use openshard_client_render::follow::{Gaze, Rig};
 use openshard_client_render::frame::{self, Impostor};
 use openshard_client_render::gbuffer::Gbuffer;
+use picking::{Pick, SelectedIdentity};
+use windows::{Drawn, WindowSubject, reconcile_own_windows};
 // `gump_art` and not `gump`: this crate has a module of that name — the egui
 // half of the same window — and the two are deliberately not merged. One
 // draws the art, the other answers the buttons.
@@ -149,7 +157,6 @@ use openshard_client_render::select::{self, Select, Selection};
 use openshard_client_render::skills;
 use openshard_client_render::solids::{self, SolidsRenderer};
 use openshard_client_render::sprite::{SpriteQuad, split_corners};
-use openshard_client_render::statics::PickedStatic;
 use openshard_client_render::text::{self, GumpLabel, Label};
 use openshard_client_render::{ground, statics};
 use openshard_movement::{Heading, Lean, Leeway, Terrain};
@@ -157,6 +164,7 @@ use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::gump::GumpId;
 use openshard_protocol::mobile::Equipment;
+#[cfg(test)]
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::speech::Font;
@@ -662,67 +670,99 @@ pub fn run<D: Dial + Send + 'static>(
     });
 
     let mut app = App {
-        tile_animations: StaticAnimations::build(&animdata, &tiledata),
-        // Daylight until asked otherwise: the lighting pass is then exactly the
-        // copy the blit has always been.
-        night: false,
-        // The fringe as the environment asks for it, which is `Fringe::Clamp`
-        // when it asks for nothing — F2 cycles from wherever that leaves it.
-        fringe: openshard_client_render::impostor::Fringe::from_env(),
-        sunlit: false,
-        // And the sky field off with it: while the point lights are the subject,
-        // the ambient holds still. See `App::sky_field`.
-        sky_field: false,
-        // And a torch in hand for when it is not daylight: see `App::lantern`.
-        lantern: true,
-        light_view: View::Lit,
-        // The whole world. A client that started with anything ticked off would
-        // be a client showing a picture nobody asked for.
-        drawing: frame::Draw::EVERYTHING,
-        frame_dump: None,
-        frame_dumps: 0,
-        flame_clock: std::time::Duration::ZERO,
-        map,
-        art,
-        surfaces,
-        repack_forced: false,
-        texmaps,
-        tiledata,
-        hue_ramp,
-        font_atlas,
-        gumps,
-        gump_atlas: GumpAtlas::empty(),
-        cliloc,
-        ttf_font,
-        anim,
-        equip_conv,
-        skill_names,
-        skill_groups,
+        // Built before `resources` moves `tiledata` and `map` into it: this
+        // borrows both.
+        world: world::WorldState {
+            tile_animations: StaticAnimations::build(&animdata, &tiledata),
+            flame_clock: std::time::Duration::ZERO,
+            // 400 is the male human body. Its group and frame come from the
+            // crowd on the first redraw, which is also what decides that a
+            // placeholder nobody is walking stands.
+            player: Mobile {
+                at: start,
+                body: Graphic(400),
+                group: openshard_uofiles::anim::BodyKind::of(Graphic(400)).standing(),
+                facing: Direction::SouthEast,
+                frame: 0,
+                from: None,
+                hue: Hue::NONE,
+                drawn: Gaze::on(start),
+                equipment: Vec::new(),
+            },
+            cutaway_at: start,
+            others: Vec::new(),
+            items: Vec::new(),
+            item_serials: Vec::new(),
+            clutter: clutter::Clutter::default(),
+            view: None,
+            connection: String::from("offline"),
+            link,
+            facet_checked: false,
+            crowd: {
+                // The body's ease, which is not the camera's — see `STARTUP_EASE`.
+                let mut crowd = Crowd::default();
+                crowd.set_ease(STARTUP_EASE);
+                crowd
+            },
+        },
+        resources: resources::Resources {
+            map,
+            art,
+            surfaces,
+            repack_forced: false,
+            texmaps,
+            tiledata,
+            hue_ramp,
+            font_atlas,
+            gumps,
+            gump_atlas: GumpAtlas::empty(),
+            cliloc,
+            ttf_font,
+            anim,
+            equip_conv,
+            skill_names,
+            skill_groups,
+        },
+        graphics: graphics::GraphicsSettings {
+            // Daylight until asked otherwise: the lighting pass is then
+            // exactly the copy the blit has always been.
+            night: false,
+            // The fringe as the environment asks for it, which is
+            // `Fringe::Clamp` when it asks for nothing — F2 cycles from
+            // wherever that leaves it.
+            fringe: openshard_client_render::impostor::Fringe::from_env(),
+            sunlit: false,
+            // And the sky field off with it: while the point lights are the
+            // subject, the ambient holds still. See `GraphicsSettings::sky_field`.
+            sky_field: false,
+            // And a torch in hand for when it is not daylight: see
+            // `GraphicsSettings::lantern`.
+            lantern: true,
+            light_view: View::Lit,
+            // The whole world. A client that started with anything ticked off
+            // would be a client showing a picture nobody asked for.
+            drawing: frame::Draw::EVERYTHING,
+            frame_dump: None,
+            frame_dumps: 0,
+            show_terrain: false,
+            show_occluders: false,
+            show_solids: solids,
+            solids_only: false,
+            solids_opaque: false,
+            solids_everything: false,
+            solids_held: 0,
+            solids_drawn: 0,
+            occlusion_bake: occlusion::bake::Bake::new(),
+            // The item under the cursor, ringed and lit, and the ground
+            // otherwise: see `shell::HighlightTarget` and `shell::HighlightStyle`.
+            highlight: shell::HighlightTarget::default(),
+            highlight_style: shell::HighlightStyle::default(),
+            covered: None,
+        },
         // The device's own limit replaces WebGL2's floor once there is a device
         // to ask; the floor is the smallest thing this has to run on.
         control: Control::new(Camera::new(start, 1024, 768), 2048, STARTUP_RIG),
         zoom_limit_reported: false,
-        // 400 is the male human body. Its group and frame come from the crowd
-        // on the first redraw, which is also what decides that a placeholder
-        // nobody is walking stands.
-        player: Mobile {
-            at: start,
-            body: Graphic(400),
-            group: openshard_uofiles::anim::BodyKind::of(Graphic(400)).standing(),
-            facing: Direction::SouthEast,
-            frame: 0,
-            from: None,
-            hue: Hue::NONE,
-            drawn: Gaze::on(start),
-            equipment: Vec::new(),
-        },
-        cutaway_at: start,
-        others: Vec::new(),
-        items: Vec::new(),
-        item_serials: Vec::new(),
-        clutter: clutter::Clutter::default(),
-        view: None,
-        connection: String::from("offline"),
         shell: None,
         // What the last run left. A file that cannot be read is worth saying so
         // about and not worth refusing to start over: the defaults are a working
@@ -735,8 +775,6 @@ pub fn run<D: Dial + Send + 'static>(
                 desk::Desk::default()
             }
         },
-        link,
-        facet_checked: false,
         steer: {
             // The one decision about walking that is a player's taste rather
             // than a rule: whether a body that has walked into something
@@ -776,56 +814,40 @@ pub fn run<D: Dial + Send + 'static>(
             });
             steer
         },
-        aiming: false,
-        ctrl_held: false,
-        crowd: {
-            // The body's ease, which is not the camera's — see `STARTUP_EASE`.
-            let mut crowd = Crowd::default();
-            crowd.set_ease(STARTUP_EASE);
-            crowd
+        input: input::Input {
+            aiming: false,
+            ctrl_held: false,
+            // No click has landed, so the next one cannot be the second of a
+            // pair.
+            last_click: None,
+            // Nobody has pointed at anything yet, and a window that opens
+            // under a resting cursor hears `CursorEntered` on the first move.
+            pointer_inside: false,
+            pointer_gump: GumpPixel::new(0, 0),
+            focused: true,
+            occluded: false,
         },
         next_tick: Instant::now(),
         last_advance: Instant::now(),
         last_frame: Instant::now(),
         window: None,
         pending: shell::Request::default(),
-        on_static: None,
-        on_mobile: None,
-        on_item: None,
-        selected: None,
-        // No click has landed, so the next one cannot be the second of a pair.
-        last_click: None,
-        // Nobody has pointed at anything yet, and a window that opens under a
-        // resting cursor hears `CursorEntered` on the first move.
-        pointer_inside: false,
-        pointer_gump: GumpPixel::new(0, 0),
-        own_windows: Vec::new(),
-        locally_closed: HashSet::new(),
-        drawn_windows: Vec::new(),
-        dragging: None,
-        held_doll: None,
-        // Shut until the player presses Skills on their own paperdoll: the
-        // shard sends the whole list at world entry, and a window that opened
-        // on the packet would open itself at every login.
-        skills: None,
-        held_skill: None,
-        last_scroll: None,
+        picking: picking::Picking::default(),
+        windows: windows::Windows {
+            own_windows: Vec::new(),
+            locally_closed: HashSet::new(),
+            drawn_windows: Vec::new(),
+            dragging: None,
+            held_doll: None,
+            // Shut until the player presses Skills on their own paperdoll:
+            // the shard sends the whole list at world entry, and a window
+            // that opened on the packet would open itself at every login.
+            skills: None,
+            held_skill: None,
+            last_scroll: None,
+            dialogs: gump::Dialogs::default(),
+        },
         chat: Chat::default(),
-        dialogs: gump::Dialogs::default(),
-        show_terrain: false,
-        show_occluders: false,
-        show_solids: solids,
-        solids_only: false,
-        solids_opaque: false,
-        solids_everything: false,
-        solids_held: 0,
-        solids_drawn: 0,
-        occlusion_bake: occlusion::bake::Bake::new(),
-        // The item under the cursor, ringed and lit, and the ground otherwise:
-        // see `shell::HighlightTarget` and `shell::HighlightStyle`.
-        highlight: shell::HighlightTarget::default(),
-        highlight_style: shell::HighlightStyle::default(),
-        covered: None,
         scope: Scope::new(SCOPE_SPAN),
         frames: frames::Frames::new(FRAMES_SPAN),
         repacks: 0,
@@ -833,8 +855,6 @@ pub fn run<D: Dial + Send + 'static>(
         // the handle is the subscription. See `profile::serve`.
         #[cfg(not(target_arch = "wasm32"))]
         _puffin: profile::serve(),
-        focused: true,
-        occluded: false,
         scripts: bench::scripts(),
         replay: None,
     };
@@ -1227,90 +1247,6 @@ impl Screen {
     }
 }
 
-/// One of this client's own windows, and the one thing about it the shard never
-/// says.
-///
-/// Neither packet carries a position: a `0x24` names a container and a gump, a
-/// `0x88` names a mobile, and where the window goes is entirely the client's —
-/// once the player has dragged one it is the player's. That is the whole of
-/// this type. Everything else about the window is looked up in the
-/// [`WorldView`] by serial every frame, so a window can never hold a stale copy
-/// of what is in the bag or on the body.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct OwnWindow {
-    /// What it is a window over.
-    subject: WindowSubject,
-    /// Its top-left corner on the surface.
-    at: GumpPixel,
-}
-
-/// What a window is over: a bag's contents, a body, or a dialog the shard drew.
-///
-/// One list holds all three, because dragging, raising, hit-testing and closing
-/// are the same gesture over any of them — decision 5 in `docs/client.md`, and
-/// the reason the container's window machinery was written in this client's own
-/// gump pixels rather than as an egui window. They differ in exactly two
-/// places, and each is a `match` three arms long: what is laid out for it (see
-/// [`App::drawn_windows`], which is also what the pointer is tested against),
-/// and what closing one means.
-///
-/// The dialog is the newest of the three and the one that had to *leave*
-/// somewhere to get here: a `0xB0` was an egui window with the shard's art
-/// drawn underneath it, which is two windows' worth of frame and two opinions
-/// about where every button is. See `crate::gump`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum WindowSubject {
-    /// A container the shard has opened, by its serial.
-    Container(Serial),
-    /// A mobile whose paperdoll the shard has opened, by its serial. The same
-    /// serial may name a container *and* a paperdoll — a player is both — which
-    /// is why this is the identity and not the serial alone.
-    Paperdoll(Serial),
-    /// A `0xB0` dialog, by the id the shard filed it under.
-    Dialog(GumpId),
-    /// This character's skills. No key at all: a `0x3A` carries no serial, so
-    /// there is one skill window and it is always about the body at this end of
-    /// the connection — see `view::Player::skills`.
-    ///
-    /// The one window kind whose *existence* is not in the view. A container
-    /// window is open because the shard opened it and a dialog because the
-    /// shard drew it, so `sync_own_windows` can read both off the view; this one
-    /// is open because the player pressed Skills, and `App::skills` is where
-    /// that fact lives.
-    Skills,
-}
-
-/// What the last frame drew for one window, and what it answers to.
-///
-/// Three shapes because the three window kinds answer different questions about
-/// a click: a dialog's picture may be a button or a switch, a paperdoll's may be
-/// one of the frame's own buttons, and a container's is an item or the bag. What
-/// they have in common is the list of pictures, which is what the pointer is
-/// tested against — see [`App::window_under_pointer`].
-enum Drawn {
-    /// A dialog: pictures, captions, hits and fields.
-    Dialog(gump_art::Window),
-    /// A container: the background and every icon in it.
-    Container(Vec<gump_art::Picture>),
-    /// A paperdoll: the frame, its furniture and the doll.
-    Paperdoll(paperdoll::Doll),
-    /// The skill window: the scroll, the rows inside its viewport, and the bar.
-    Skills(skills::Sheet),
-}
-
-impl Drawn {
-    /// What was drawn, in painter's order — the one question every window kind
-    /// answers the same way.
-    fn pictures(&self) -> &[gump_art::Picture] {
-        match self {
-            Self::Dialog(window) => &window.pictures,
-            Self::Container(pictures) => pictures,
-            Self::Paperdoll(doll) => &doll.pictures,
-            Self::Skills(sheet) => &sheet.pictures,
-        }
-    }
-}
-
 /// The speech line: what has not been said yet, and whether the keyboard is
 /// listening for it.
 ///
@@ -1386,257 +1322,16 @@ impl Chat {
     }
 }
 
-/// Where the first container window opens, and how far each one after it is
-/// offset.
-///
-/// A cascade rather than a pile: the shard sends no position, and two windows at
-/// one coordinate look like one window with the wrong contents. The reference
-/// client remembers a per-container position across sessions; this does not yet,
-/// and the note is in `docs/client.md`.
-const CONTAINER_CASCADE: GumpPixel = GumpPixel::new(24, 24);
-
-/// The corner the cascade starts from.
-const CONTAINER_ORIGIN: GumpPixel = GumpPixel::new(120, 80);
-
-/// How many windows the cascade steps before it starts over, so that a player
-/// who opens a dozen bags does not push the last of them off the screen.
-const CONTAINER_CASCADE_LENGTH: i32 = 8;
-
-/// What a left click named, kept as identity rather than as data — see
-/// [`App::selected`] for why. [`App::resolve_selection`] is the only reader.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum SelectedIdentity {
-    /// Bare ground: nothing with its own identity was under the cursor.
-    Tile { x: u16, y: u16 },
-    /// The map's own furniture — never moves, so the pick itself is kept
-    /// rather than just a reference to re-look-up.
-    Static(PickedStatic),
-    /// A creature, by [`Who`] — `None` for the player's own body.
-    Mobile(Who),
-    /// An item lying on the ground, by its serial.
-    Item(Serial),
-}
-
-impl SelectedIdentity {
-    /// The static half alone, for the two render passes that wash and mask
-    /// it — [`openshard_client_render::select`] and [`statics::selected`].
-    /// `None` whenever a click landed on anything else, which is what
-    /// switches both passes off.
-    ///
-    /// A free function on the value rather than a method on `App`: both call
-    /// sites read `self.selected` while `self.window` is already borrowed
-    /// mutably, and a method taking `&self` would borrow the whole struct
-    /// where a direct field read borrows only the one field.
-    fn as_static(self) -> Option<PickedStatic> {
-        match self {
-            SelectedIdentity::Static(picked) => Some(picked),
-            _ => None,
-        }
-    }
-
-    /// The mobile half alone, for the held-selection ring — see
-    /// [`Screen::held_mask`].
-    fn as_mobile(self) -> Option<Who> {
-        match self {
-            SelectedIdentity::Mobile(who) => Some(who),
-            _ => None,
-        }
-    }
-
-    /// The item half alone, for the held-selection ring.
-    fn as_item(self) -> Option<Serial> {
-        match self {
-            SelectedIdentity::Item(serial) => Some(serial),
-            _ => None,
-        }
-    }
-}
-
 struct App {
-    /// The facet, shared with the shard thread — see [`link::connect`].
-    map: Arc<Map>,
-    art: Art,
-    /// What was measured off that art off the clock, or `None` for a run with no
-    /// table beside the install — see `run`, which says which it is and carries
-    /// on either way.
-    ///
-    /// It lives here rather than in [`Atlases`] because the atlases are thrown
-    /// away and rebuilt when one fills up, and a measurement of an install does
-    /// not become untrue when a texture runs out of shelf space.
-    surfaces: Option<openshard_client_render::arttable::ArtTable>,
-    /// A hand edit changed a graphic's shape in [`App::surfaces`] since the
-    /// atlases were last packed — set by [`App::apply`]'s `authored_prism`.
-    ///
-    /// The ordinary grow/evict cycle cannot see this on its own: growing only
-    /// asks whether a graphic is packed *at all* (`Atlases::grow`'s own doc),
-    /// so a graphic already on screen when its shape changes is never
-    /// re-offered. This is the one case that has to force the full rebuild
-    /// eviction otherwise waits for a full atlas to trigger.
-    repack_forced: bool,
-    texmaps: TexMaps,
-    /// Shared with the shard thread, the same way [`App::map`] is — see
-    /// [`link::connect`]: the walk prediction weighs a pier's or a bridge's
-    /// deck now, not only the land, and that needs `tiledata.mul` on both ends
-    /// of the channel.
-    tiledata: Arc<TileData>,
-    /// Every hue the client ships, packed once: unlike the sprite atlases it
-    /// tints, nothing about it depends on where the camera is standing.
-    hue_ramp: HueRamp,
-    /// Every glyph `fonts.mul` ships, packed once for the reason `hue_ramp` is:
-    /// nothing about it depends on the camera, and unlike a graphic there is no
-    /// "not currently visible" character to leave unpacked.
-    font_atlas: FontAtlas,
-    /// The client's gump art, or `None` when it could not be opened — see
-    /// `run`, which says so once and carries on.
-    gumps: Option<Gumps>,
-    /// The gump pictures packed so far.
-    ///
-    /// Grown a window at a time rather than built up front, unlike
-    /// [`App::font_atlas`]: `gumpartLegacyMUL.uop` is 5,556 entries and a
-    /// session opens a handful of them, so "the whole file" is the one thing
-    /// this must not be. It lives on `App` and not on [`Screen`] for the reason
-    /// [`Screen::atlases`] documents from the other side — the CPU half of an
-    /// atlas builds quads and outlives any one surface.
-    gump_atlas: GumpAtlas,
-    /// The client's own text table, keyed by cliloc number — `None` when
-    /// `Cliloc.enu` could not be read (missing, or a newer BWT-compressed
-    /// one). A dialog whose layout named a cliloc rather than a wire line
-    /// (`gump::Element::Localized`) draws nothing for that line without it,
-    /// the same tolerance a missing gump art or a missing font glyph gets —
-    /// see `gump::Dialogs::lines`.
-    cliloc: Option<Cliloc>,
-    /// The operator-supplied TrueType face, when `run` was asked to draw
-    /// through one instead — `None` is the ordinary, `fonts.mul`-only run. Held here
-    /// rather than only in [`Screen`] because it does not depend on a window
-    /// existing: it is what [`Screen::ttf_atlas`] is grown from, every frame
-    /// [`App::draw`] sees new characters in what is being said.
-    ttf_font: Option<TtfFont>,
-    /// The animations, open but not read: `anim.mul` is 195MB and frames come
-    /// out of it a body at a time. `&mut` because reading one seeks the file.
-    anim: Anim,
-    /// What a worn item's own graphic resolves to for drawing — see
-    /// [`EquipConv`]. Read once at startup like [`App::hues`]: unlike `anim`,
-    /// the whole table is small enough to hold rather than seek into.
-    equip_conv: EquipConv,
-    /// What the client's own files call each skill, and which heading each one
-    /// is filed under: the two tables the skill window's rows are built from.
-    ///
-    /// Read at startup and held, like [`App::equip_conv`] and unlike
-    /// [`App::anim`]: fifty-eight names and fifty-eight group numbers are under
-    /// a kilobyte between them, and the window asks for all of both every frame
-    /// it is open.
-    skill_names: SkillNames,
-    /// Which heading each skill is under — see [`App::skill_names`].
-    skill_groups: SkillGroups,
-    /// The statics that move on their own — fires, torches, water wheels — and
-    /// how far into their cycles they are.
-    ///
-    /// One of the clocks this app owns, and it is advanced from the same sampled
-    /// instant as the crowd and the eye. Its own module argues why it is a system
-    /// rather than a flag on a quad: see [`StaticAnimations`].
-    tile_animations: StaticAnimations,
-    /// Whether the world is drawn as if it were night: dark ambient, and the
-    /// fires on the map lighting what is around them. Toggled with F10.
-    ///
-    /// A local switch and not the shard's clock, because there is no time of day
-    /// on the wire yet. When there is, this is the field it writes to and
-    /// nothing below it changes — the ambient is already a colour per frame
-    /// rather than a constant read by the shader.
-    night: bool,
-    /// What a fragment whose ray met no box is answered with — the **fringe**,
-    /// [`openshard_client_render::impostor::Fringe`]. Cycled with F2, and
-    /// handed to the statics pass every frame.
-    ///
-    /// Here rather than owned by that pass because this is where the keyboard
-    /// is, which is the whole reason it is a key: two of the three states are
-    /// answers this renderer measured and refused, and what a refusal on this
-    /// track answers to is a person looking at two pictures of one instant.
-    /// `docs/lighting_state.md`'s fringe entry carries the numbers, and
-    /// `OPENSHARD_FRINGE` is the same switch for a run that starts in one state.
-    fringe: openshard_client_render::impostor::Fringe,
-    /// Whether a tile's ambient depends on how much of the sky its column can
-    /// see: a room under a roof darker than the road outside it, before anything
-    /// burns. Toggled with F6.
-    ///
-    /// **Off by default**, and that is a decision rather than an oversight. The
-    /// sky field is a plan of its own — `docs/lighting_world.md` — and what it
-    /// does is change the ambient of every tile in the frame, which is exactly
-    /// the thing that must hold still while the pools of the point lights are
-    /// being judged. A torch that looks wrong indoors is otherwise two questions
-    /// at once, and the flat ambient is the honest baseline to compare against:
-    /// see [`light::Ambient::flattened`].
-    sky_field: bool,
-    /// Whether the day has a sun in it: a direction, a wall's shadow lying
-    /// across the street, and a lit patch on the floor behind a window. Toggled
-    /// with F8, and ignored at night.
-    ///
-    /// Off by default, and that is not shyness: the sun's ray is walked for
-    /// *every* ground pixel of a daylit frame, where firelight is walked only
-    /// inside a pool. Until there is a measurement on Britain at the widest zoom
-    /// — step 6 of `docs/lighting.md`, which is still open — the sky is a key
-    /// somebody turns on rather than a cost every frame pays.
-    sunlit: bool,
-    /// Whether the player is carrying a light: a torch in the hand, throwing a
-    /// beam the way the character is facing. Toggled with F7, and it does nothing
-    /// in plain daylight, where the whole lighting pass is a copy.
-    ///
-    /// On by default, unlike the sun, and the cost is the reason the two differ:
-    /// this is one more flame in a loop that already runs sixty-four of them, and
-    /// a beam leaves that loop on a dot product for every fragment it does not
-    /// point at. It is here at all because it is what makes a dark room
-    /// *navigable* — the ambient floor is deliberately small, and without
-    /// something in the hand a windowless cellar is a black rectangle with a
-    /// character somewhere in it.
-    ///
-    /// A client-side guess, in the way `light::flame` is: nothing on the wire
-    /// says a mobile is holding a torch. When the equipment layers are read for
-    /// one, this is the field that answers from them and nothing below changes.
-    lantern: bool,
-    /// Which of the lighting pass's own values the blit draws instead of the
-    /// frame. Cycled with F11, and [`View::Lit`] is the picture.
-    ///
-    /// Beside `night` rather than inside the renderer because it is a property of
-    /// the person looking: the world is walked identically whichever view is on,
-    /// and the field is written onto the frame's `Lighting` on its way to the
-    /// blit. `docs/lighting.md`, decision 8.
-    light_view: View,
-    /// Which of the world's producers this client is drawing — the World tab's
-    /// own boxes, and [`frame::Draw::EVERYTHING`] until somebody unticks one.
-    ///
-    /// Beside `light_view` for the same reason it is: a property of the person
-    /// looking rather than of the world. The G-buffer holds one answer per pixel,
-    /// so a person who wants to look at a wall a body is standing in front of
-    /// cannot get it out of the picture — the body's pixels *are* the body's.
-    /// This is how they ask for a frame the body is not in, with everything still
-    /// standing in the grid and still casting its own shadow.
-    drawing: frame::Draw,
-    /// Where the next frame writes itself out, when somebody has pressed F12.
-    ///
-    /// **`docs/parity.md`'s first backlog item.** The tools could always dump a
-    /// picture and the client — the thing that is actually broken — could dump
-    /// nothing, so every artefact a person reported was *searched for* in a
-    /// tool's frame rather than compared against this one's. A defect visible in
-    /// one and absent in the other says nothing about either until both can be
-    /// laid side by side.
-    ///
-    /// Armed here and spent in [`App::draw`], because what is dumped has to be a
-    /// frame drawn the ordinary way through the ordinary passes. A dump
-    /// assembled on the spot for the camera would be a fourteenth assembly, and
-    /// a picture of one.
-    frame_dump: Option<std::path::PathBuf>,
-    /// How many have been written this run — the number in each dump's own
-    /// directory name, so a second press does not overwrite the picture the
-    /// first one was taken to compare against.
-    frame_dumps: u32,
-    /// How long the flames have been burning, in the same span every other clock
-    /// in the frame is advanced by.
-    ///
-    /// Its own accumulator rather than an `Instant`, for the reason
-    /// [`StaticAnimations`] has one: `openshard-client-render` reads no clock,
-    /// so the time arrives as a number, and a number sampled once per frame is
-    /// what keeps a torch's flicker on the same instant as the body walking
-    /// past it.
-    flame_clock: std::time::Duration,
+    /// The client's own asset files, read once and held for the run — see
+    /// [`resources::Resources`].
+    resources: resources::Resources,
+    /// The debug-view and lighting switches a person has set on this run —
+    /// see [`graphics::GraphicsSettings`].
+    graphics: graphics::GraphicsSettings,
+    /// What the shard, or its absence, has said the world looks like — see
+    /// [`world::WorldState`].
+    world: world::WorldState,
     /// The camera, who is allowed to move it, and what a drag has not yet spent.
     ///
     /// All of it arithmetic, and all of it in `client/render` where it can be
@@ -1648,68 +1343,6 @@ struct App {
     /// rect, which looks exactly like a bug in the projection — so it is
     /// reported, and once.
     zoom_limit_reported: bool,
-    /// This client's own body.
-    ///
-    /// Connected, it is what the server says: `0x1B` puts it somewhere and
-    /// every ack, `0x20` and `0x21` moves it. Offline it is a placeholder
-    /// standing wherever the camera looks, which is enough to hold the
-    /// animation reader, the frame atlas and the placement against a real
-    /// install.
-    player: Mobile,
-    /// The tile roof-cutaway is computed from — see `draw`'s use of it with
-    /// [`openshard_client_render::cutaway::Cutaway`].
-    ///
-    /// Deliberately not always `player.at`: that is this end's own optimistic
-    /// *prediction*, published the instant a step is sent and corrected only
-    /// a round trip later (see `link::Body`), and `Steering::detour`
-    /// (`steer.rs`) means a held direction pinned against an obstacle asks
-    /// for the very tile it is going to be refused on, every hold, for as
-    /// long as it is held. Feeding that straight to `Cutaway::at` flips which
-    /// roof is drawn hidden for exactly the frame between sending the doomed
-    /// step and the `0x21` undoing it — a real defect this field exists to
-    /// close, not the deliberate lag-compensation `player.at` is for the
-    /// body's own drawn position. This only ever advances to a tile the
-    /// client's own static map agrees is reachable from the last one it
-    /// held, so a refusal is never drawn from; a correction snaps it the same
-    /// way it snaps `player.at`.
-    cutaway_at: Point,
-    /// Everyone else on screen, as `0x77` and `0x78` last described them, each
-    /// beside the serial the crowd's clocks are keyed by.
-    ///
-    /// Empty offline, and rebuilt whole from the [`WorldView`] on every update:
-    /// the view is the record of what arrived and this is a projection of it,
-    /// so there is nothing here to keep in step by hand.
-    others: Vec<(Who, Mobile)>,
-    /// Everything lying on the ground, as `0x1A` and `0x1D` last left it.
-    ///
-    /// A projection of the view like [`App::others`], and drawn through the
-    /// same atlas and the same pass as the map's own statics: an item's picture
-    /// is a static's picture. Two lists rather than one because the map's
-    /// furniture never moves and these come and go with every packet.
-    items: Vec<GroundItem>,
-    /// What each of those items is called on the wire, at the same index.
-    ///
-    /// The renderer drops the serial — it draws pictures and owns no model of
-    /// the world — and a click has to put it back, because "use this" is a
-    /// serial and nothing else. Built in the same pass as [`App::items`] and
-    /// never separately: two loops over one map is how the lists drift, and a
-    /// drifted index sends the shard a double-click on whatever was next.
-    item_serials: Vec<Serial>,
-    /// Which of those items a step cannot go through, indexed by tile.
-    ///
-    /// A third projection of the view beside [`App::items`] and [`App::others`],
-    /// rebuilt with them: the map's own files hold no barrel, so without this
-    /// every terrain check here looks straight through one and the shard refuses
-    /// the step this end thought was open. See `clutter.rs`.
-    clutter: clutter::Clutter,
-    /// The last thing the server said, whole.
-    ///
-    /// Kept only for the HUD's world window, which lists what has been decoded
-    /// with the serials the three projections above drop. The renderer reads
-    /// those.
-    view: Option<Box<WorldView>>,
-    /// What the connection is doing, for the status strip.
-    connection: String,
     /// The dev HUD, once there is a window to put it on.
     shell: Option<shell::Shell>,
     /// What the HUD looked like when the client last closed: which tab, where
@@ -1720,16 +1353,6 @@ struct App {
     /// shell because half of it — the frame — is the *platform's* window, which
     /// the HUD does not own and cannot ask about.
     desk: desk::Desk,
-    /// The shard, if this run logged in to one.
-    ///
-    /// `None` is the offline viewer, and it is what the keyboard asks: a step
-    /// is a `0x02` when there is somebody to send it to, and a camera move when
-    /// there is not.
-    link: Option<link::Link>,
-    /// Whether the shard's facet has been compared with the one loaded. See
-    /// [`App::entered`]: once, because it cannot change without a `0xBF 0x08`
-    /// nothing here reads yet.
-    facet_checked: bool,
     /// Where the player is asking to walk — the arrows, and the tile the mouse
     /// last sent the body to.
     ///
@@ -1738,22 +1361,9 @@ struct App {
     /// speedhack, and a mouse held over the ground reports a move a pixel. One
     /// clock paces all of them. See `steer.rs`.
     steer: steer::Steering,
-    /// Whether the right button is down, which is what makes dragging steer: a
-    /// heading (or, with Ctrl, a destination) is restated on every cursor move
-    /// while it is.
-    aiming: bool,
-    /// Whether Ctrl is held, which is what turns the right-hold from a heading
-    /// — the default "run toward the cursor" idiom, no map involved — into a
-    /// move order that plans a route with `find_path`. See `steer.rs`'s
-    /// module docs.
-    ctrl_held: bool,
-    /// What everyone on screen was doing a moment ago: which animation each is
-    /// playing, and how far into it.
-    ///
-    /// The layer above [`WorldView`] that ages what it sees — see `crowd.rs`.
-    /// Real time and not the world tick: there is no world here to tick, and a
-    /// real client's body animation is a wall-clock timer too.
-    crowd: Crowd,
+    /// What the window system and the mouse have last said — see
+    /// [`input::Input`].
+    input: input::Input,
     /// When the clock next advances a frame.
     next_tick: Instant,
     /// When it last did.
@@ -1788,237 +1398,14 @@ struct App {
     /// keyboard and mouse event here already has: they arrive between frames and
     /// land on the next one.
     pending: shell::Request,
-    /// What the last drawn frame found the cursor on, when it was the map's own
-    /// furniture and nothing nearer.
-    ///
-    /// A frame behind, and that is what makes it right rather than what it costs:
-    /// a click arrives *between* frames, so the picture it is a click on is the
-    /// one already drawn. Picking again at the click would ask a camera that has
-    /// moved since — see the `MouseInput` arm, where this is read.
-    ///
-    /// It is also the tile marker's reason for going out: a wall under the cursor
-    /// is what the click would take, so the diamond on the ground behind it must
-    /// not be drawn as well. See [`shell::Hud::hover_lit`].
-    on_static: Option<PickedStatic>,
-    /// The same, one rung up the pick order: a creature under the cursor, by
-    /// identity rather than by the frame's own transient index — [`Who`] survives
-    /// to the click, an index into a `Vec` rebuilt every frame does not.
-    on_mobile: Option<Who>,
-    /// The same, for the shard's own items lying on the ground.
-    on_item: Option<Serial>,
-    /// What a left click last landed on, kept by *identity* until the next click
-    /// — a coordinate, a static's own graphic-and-place, or a creature's or
-    /// item's serial. Never the data itself: [`App::hud`] turns this into a
-    /// [`shell::Selection`] fresh every frame, the same way [`App::tile_info`]
-    /// always re-reads the column rather than remembering one — so a selected
-    /// mobile's row keeps up with it walking, and a selected item's row goes
-    /// away the moment it is picked up, instead of the panel quietly lying about
-    /// where either still is.
-    selected: Option<SelectedIdentity>,
-    /// When the last left click landed, or `None` when the one before it
-    /// already made a pair.
-    ///
-    /// The whole of this client's double-click detection, and the reason it is
-    /// here rather than asked of the window system: the world's clicks do not go
-    /// through egui — see the `MouseInput` arm — and `winit` reports presses,
-    /// not gestures. Cleared when a pair fires, which is what stops three clicks
-    /// from being two double-clicks; ClassicUO's `GameController` zeroes its own
-    /// `lastClickTime` in the same place and for the same reason.
-    last_click: Option<Instant>,
-    /// Whether the cursor is inside the window at all.
-    ///
-    /// The other half of "does the world own the mouse", and the half no egui
-    /// state can answer: a cursor that has left the window stops sending
-    /// positions, so the last one it sent stays true for ever and the highlight
-    /// it picked sits on the ground with nobody pointing at it. `CursorLeft` is
-    /// the only event that says so.
-    pointer_inside: bool,
-    /// Where the cursor is in *gump* pixels — measured from the surface's own
-    /// top left, not the viewport's.
-    ///
-    /// A second cursor and not the one [`control`](App::control) keeps, because
-    /// the two are measured from different corners: the world's is relative to
-    /// the viewport, so that the camera zooms about the picture's centre and not
-    /// the window's, and an interface has no viewport at all. Converting one
-    /// into the other at each use is the arithmetic the two pixel types exist to
-    /// stop being done wrong once.
-    pointer_gump: GumpPixel,
-    /// The windows this client has open of its own — containers and paperdolls
-    /// alike — bottom to top.
-    ///
-    /// Painter's order *is* z-order here, the same as the pictures inside one:
-    /// the pass has no depth, so the last window in the list is the one drawn
-    /// over the others and the first one picking finds. One list and not two,
-    /// because a bag dragged over a paperdoll has to stay over it.
-    own_windows: Vec<OwnWindow>,
-    /// A window this end has closed, ahead of the shard thread's own
-    /// [`view::WorldView`](openshard_client_net::view::WorldView) agreeing.
-    ///
-    /// [`link::Body::predicted`]'s counterpart for a window's openness rather
-    /// than a body's tile: `close_window`/`answer_gump` insert here and send
-    /// the [`link::Command::CloseWindow`], the same instant, instead of
-    /// mutating [`App::view`] directly — that copy is never the source of
-    /// truth, see `docs/client_window_state.md`'s D2. `sync_own_windows`
-    /// treats a subject in this set as closed regardless of what the view
-    /// still says, and drops the entry once a fresh `Update::World` agrees —
-    /// the same reconciliation `Folded::corrected` runs for a mispredicted
-    /// step, one layer down.
-    locally_closed: HashSet<WindowSubject>,
-    /// Every open window as the last frame laid it out: its subject, and the
-    /// pictures that were drawn for it in painter's order.
-    ///
-    /// **What is clicked is what was drawn**, which is why this is remembered
-    /// rather than recomputed at the press. A paperdoll's layout is not a
-    /// function of the window alone — it reads the view, the tiledata and the
-    /// client's own `gumpart` to decide which picture a worn item is — and a
-    /// second walk asking those questions again is a second answer waiting to
-    /// disagree with the one on the screen. It is the same rule
-    /// [`items::place`] follows in the world, one layer up.
-    ///
-    /// A frame behind, therefore: a window that has just opened is not pickable
-    /// until it has been drawn once, which is also the frame its art is packed
-    /// on and so the frame it first has any pixels to be picked by.
-    drawn_windows: Vec<(WindowSubject, Drawn)>,
-    /// The window being dragged and where inside it the player grabbed it, or
-    /// `None` when nothing is being dragged.
-    ///
-    /// Keyed by subject rather than by index: raising a window on the press
-    /// reorders the list, so an index taken at the press names a different
-    /// window by the time the mouse moves.
-    dragging: Option<(WindowSubject, GumpPixel)>,
-    /// The paperdoll button the mouse went down on, and whose doll it is.
-    ///
-    /// [`gump::Dialogs::holding`]'s counterpart for the one window kind that is
-    /// not a layout, and the same three things it buys: the pressed picture is
-    /// drawn while the finger is down, the release acts only if the pointer is
-    /// still on the *same* button, and a press on a button does not also drag
-    /// the frame under it.
-    ///
-    /// Keyed by subject, not by picture index: the doll is laid out afresh every
-    /// frame — a hat coming off changes how many pictures are in front of the
-    /// buttons — so an index taken at the press names a different picture by the
-    /// time the button comes up. The button itself is stable.
-    held_doll: Option<(WindowSubject, paperdoll::DollButton)>,
-    /// The last completed click on one of a paperdoll's three scrolls, and when.
-    ///
-    /// The scrolls answer a *double* click where the seven buttons answer a
-    /// single one (`GumpPic.MouseDoubleClick` against `Button`'s
-    /// `OnButtonClick`), and this is that pair. Separate from
-    /// [`last_click`](App::last_click), which pairs clicks on the *world*: a
-    /// click on a window never reaches that one, and a pair has to be two
-    /// clicks on the same picture of the same window rather than two clicks
-    /// anywhere.
-    last_scroll: Option<(Instant, WindowSubject, paperdoll::DollButton)>,
-    /// The skill window, when it is open: which headings are shut and how far
-    /// down it is scrolled.
-    ///
-    /// `Some` *is* the window being open. Two facts in one field on purpose:
-    /// every other window kind is open because the view holds its subject, and
-    /// this one has no subject in the view to be open because of — so a
-    /// separate `skills_open: bool` beside a `Tree` would be a second answer to
-    /// the same question, able to say the window is shut while its scroll
-    /// position stands.
-    skills: Option<skills::Tree>,
-    /// What the mouse went down on in the skill window, if anything.
-    ///
-    /// [`held_doll`](App::held_doll)'s twin, and keyed the same way — by what
-    /// was pressed rather than by which picture, because the window is laid out
-    /// afresh every frame and an index would name a different row by the time
-    /// the button came up. A held [`skills::Hit::Thumb`] is also what makes the
-    /// bar follow the pointer: see [`App::drag_thumb`].
-    held_skill: Option<skills::Hit>,
+    /// What is under the cursor, and what the last click named — see
+    /// [`picking::Picking`].
+    picking: picking::Picking,
+    /// The player's own windows, and what the mouse is doing to them — see
+    /// [`windows::Windows`].
+    windows: windows::Windows,
     /// The speech line — see [`Chat`].
     chat: Chat,
-    /// What every open `0xB0` dialog is holding that no packet carries: the
-    /// page it is showing, the switches the player has set, what has been typed
-    /// into its fields and which button the finger is on. See [`crate::gump`].
-    dialogs: gump::Dialogs,
-    /// Whether the HUD is drawing what `common/movement` thinks of the ground —
-    /// see [`App::terrain_overlay`].
-    ///
-    /// Off by default and paid for only while it is on: the overlay asks a
-    /// walkability question of every tile in view and plans a route every frame,
-    /// which is a bill worth a debugging picture and not worth a frame nobody is
-    /// looking at.
-    show_terrain: bool,
-    /// Whether the HUD is drawing the lighting's occlusion grid as boxes — see
-    /// [`shell::draw_occluders`](crate::shell) and `docs/lighting.md`, step 14.
-    ///
-    /// Off by default and paid for only while it is on, like the terrain
-    /// overlay: the grid is a second walk of the map's statics over the same
-    /// bounds the frame's lighting walks a moment later.
-    show_occluders: bool,
-    /// Whether the HUD is drawing the same grid as *solids* — decision 39 and
-    /// step 23.0 of `docs/lighting.md`, and [`shell::draw_solids`](crate::shell).
-    ///
-    /// Beside the wireframe rather than instead of it, and that is the design: a
-    /// solid hides what stands behind it and a wireframe shows it, so the two
-    /// answer different halves of "is the geometry where I think it is". Both on
-    /// at once is a legitimate reading and is what the outline over a filled face
-    /// is for.
-    show_solids: bool,
-    /// Whether the world image is skipped while solids are drawn — boxes alone
-    /// over a blank frame, with no sprite between their faces to compare them
-    /// against. F5's own picture is deliberately the opposite of this
-    /// (decision 39.2, "the wall's sprite is visible inside the box that
-    /// claims to contain it"); this is for reading the box's own shape without
-    /// the art arguing with it.
-    solids_only: bool,
-    /// Whether the solids view's fills are a straight overwrite instead of
-    /// blended in — `solids::Style::opaque`, threaded through from
-    /// [`shell::Request::solids_opaque`]. Off by default, matching the
-    /// translucent fill the view always drew before this existed.
-    solids_opaque: bool,
-    /// Whether either of those two views draws the **whole** grid rather than
-    /// what stands above the player's feet — the second datum, and the enum it
-    /// resolves to is [`solid::Cut`](openshard_client_render::solid::Cut).
-    ///
-    /// A `bool` here and an enum there, and the split is deliberate: what a
-    /// person picks is one of two questions and holds across frames, while the
-    /// cut in force carries the player's own `z` and is a fact about the frame
-    /// it is drawn in. [`App::solid_cut`] is the one place the two are joined,
-    /// so a stale `z` cannot be stored anywhere.
-    ///
-    /// Off, because the whole grid over a town is unreadable — a pier is a slab
-    /// on every plank — and the readable answer is the one a person should get
-    /// without asking. What it costs to have it be a switch at all is the
-    /// backlog entry it closes: a hole in a floor and a floor below the cut are
-    /// the same picture, and no count beside the checkbox can tell them apart.
-    solids_everything: bool,
-    /// How many solids the last frame's pass was handed, and how many of those
-    /// it drew — the rest fell outside the viewport.
-    ///
-    /// Kept and shown because a view that quietly draws a fraction of a grid
-    /// looks exactly like a grid with little in it, which is
-    /// [`Surface::stands`](openshard_client_render::occlusion::Surface::stands)'
-    /// argument applied to the other end of the same picture. Zero on a frame
-    /// the view was off, which the checkbox beside it already says.
-    solids_held: usize,
-    /// The half of that pair that reached the target.
-    solids_drawn: usize,
-    /// The blocks of the occlusion grid built for earlier frames — see
-    /// [`occlusion::bake`](openshard_client_render::occlusion::bake) and
-    /// `docs/lighting.md`'s step 21.5.
-    ///
-    /// Owned by the app because it is the app that has more than one frame. It
-    /// is one map's, and this client has one map; a second facet would want a
-    /// second bake, and the field being here rather than global is what would
-    /// make that a change to one line.
-    occlusion_bake: occlusion::bake::Bake,
-    /// What the cursor is allowed to light up, and how an item says it is the
-    /// one lit. Both are the HUD's to set — see [`shell::HighlightTarget`].
-    highlight: shell::HighlightTarget,
-    highlight_style: shell::HighlightStyle,
-    /// The tile rectangle whose land and statics have been offered to the
-    /// atlases, or `None` when nothing has.
-    ///
-    /// The state the band walk in [`App::draw`] is built on, and the one thing
-    /// here that is wrong in silence: an atlas rebuilt behind this field's back
-    /// forgets graphics that this still claims were offered, and the tiles that
-    /// needed them simply stop being drawn — along one edge, at one camera
-    /// position. So it is set from exactly two places, both of which have just
-    /// finished packing, and cleared before anything that forgets.
-    covered: Option<TileBounds>,
     /// The last few seconds of the eye, for the scope in the HUD.
     ///
     /// Recorded every frame the camera is advanced, from the same three values
@@ -2045,18 +1432,6 @@ struct App {
     /// flamegraph is a separate viewer rather than a tab in this window.
     #[cfg(not(target_arch = "wasm32"))]
     _puffin: Option<puffin_http::Server>,
-    /// Whether the window has the keyboard.
-    ///
-    /// Half of [`App::watched`], and true at construction: a window is mapped
-    /// focused and winit sends no event to say the thing it has just done.
-    focused: bool,
-    /// Whether the compositor says the window is entirely covered.
-    ///
-    /// The other half of [`App::watched`]. Its own field rather than folded into
-    /// the first, because the two arrive as two events in an order nothing
-    /// promises, and one `bool` written by both would read the second one's
-    /// answer to the first one's question.
-    occluded: bool,
     /// The bench's scenarios, built once.
     ///
     /// Held rather than rebuilt per frame because the HUD lists their names, and
@@ -2081,7 +1456,8 @@ impl ApplicationHandler<link::Update> for App {
         // a turn taking 416ms instead of 400, which is a body a frame behind
         // itself and then yanked forward.
         let now = Instant::now();
-        self.crowd
+        self.world
+            .crowd
             .advance(now.saturating_duration_since(self.last_advance));
         self.last_advance = now;
         match update {
@@ -2092,7 +1468,7 @@ impl ApplicationHandler<link::Update> for App {
             // of a client that has lost its shard.
             link::Update::Lost(reason) => {
                 eprintln!("disconnected: {reason}");
-                self.link = None;
+                self.world.link = None;
                 return;
             }
         }
@@ -2103,7 +1479,7 @@ impl ApplicationHandler<link::Update> for App {
         // from its first frame; it is a `min` rather than an assignment because
         // a clock already running at the glide rate is the earlier of the two.
         let soon = now + GLIDE_INTERVAL;
-        if self.crowd.anyone_gliding() && self.next_tick > soon {
+        if self.world.crowd.anyone_gliding() && self.next_tick > soon {
             self.next_tick = soon;
         }
         if let Some(window) = self.window.as_ref() {
@@ -2140,7 +1516,7 @@ impl ApplicationHandler<link::Update> for App {
             // everything is both the fix and the behaviour.
             if matches!(event, WindowEvent::KeyboardInput { .. }) {
                 self.steer.clear();
-                self.aiming = false;
+                self.input.aiming = false;
             }
             if let Some(window) = self.window.as_ref() {
                 window.window.request_redraw();
@@ -2213,18 +1589,18 @@ impl ApplicationHandler<link::Update> for App {
                 //
                 // Escape gives the keyboard back rather than quitting the
                 // client, which is what the arm further down would do.
-                if self.dialogs.typing() {
+                if self.windows.dialogs.typing() {
                     if event.state == ElementState::Pressed {
                         match code {
                             KeyCode::Escape | KeyCode::Enter | KeyCode::NumpadEnter => {
-                                self.dialogs.unfocus();
+                                self.windows.dialogs.unfocus();
                             }
                             KeyCode::Backspace => {
-                                self.dialogs.backspace();
+                                self.windows.dialogs.backspace();
                             }
                             _ => {
                                 if let Some(text) = event.text.as_deref() {
-                                    self.dialogs.typed(text);
+                                    self.windows.dialogs.typed(text);
                                 }
                             }
                         }
@@ -2240,13 +1616,13 @@ impl ApplicationHandler<link::Update> for App {
                 if let Some(direction) = keys::Held::direction_of(code) {
                     let step = match event.state {
                         ElementState::Pressed => {
-                            let opened = self.clutter.over_with_doors_open(&self.map, &self.tiledata);
-                            let cluttered = self.clutter.over(&self.map, &self.tiledata);
+                            let opened = cluttered_with_doors_open(&self.world, &self.resources);
+                            let cluttered = cluttered(&self.world, &self.resources);
                             self.steer.press(
                                 direction,
-                                self.player.at,
+                                self.world.player.at,
                                 Instant::now(),
-                                self.player.facing,
+                                self.world.player.facing,
                                 steer::Ground {
                                     real: &cluttered,
                                     through_doors: &opened,
@@ -2344,7 +1720,7 @@ impl ApplicationHandler<link::Update> for App {
                     // by side, and there is no time of day on the wire yet for
                     // it to follow — see `App::night`.
                     KeyCode::F10 => {
-                        self.night = !self.night;
+                        self.graphics.night = !self.graphics.night;
                         true
                     }
                     // The lighting's own values, one after another — see
@@ -2357,7 +1733,7 @@ impl ApplicationHandler<link::Update> for App {
                     // only honest test of a shadow is the two pictures of the
                     // same instant, one with it and one without.
                     KeyCode::F8 => {
-                        self.sunlit = !self.sunlit;
+                        self.graphics.sunlit = !self.graphics.sunlit;
                         true
                     }
                     // The sky field on and off — what a roof does to the light
@@ -2365,7 +1741,7 @@ impl ApplicationHandler<link::Update> for App {
                     // for the same reason: the two pictures of one instant are the
                     // only way to see which of the two terms a dark room came from.
                     KeyCode::F6 => {
-                        self.sky_field = !self.sky_field;
+                        self.graphics.sky_field = !self.graphics.sky_field;
                         true
                     }
                     // The torch in the player's own hand, on and off — the same
@@ -2373,7 +1749,7 @@ impl ApplicationHandler<link::Update> for App {
                     // and here it is also the only way to see what the map's own
                     // fires are doing without a beam swinging across them.
                     KeyCode::F7 => {
-                        self.lantern = !self.lantern;
+                        self.graphics.lantern = !self.graphics.lantern;
                         true
                     }
                     // The occlusion grid as solids — step 23.0. A key beside the
@@ -2383,7 +1759,7 @@ impl ApplicationHandler<link::Update> for App {
                     // and the world without, and a hand that has to find a
                     // checkbox has moved the camera by the time it is back.
                     KeyCode::F5 => {
-                        self.show_solids = !self.show_solids;
+                        self.graphics.show_solids = !self.graphics.show_solids;
                         true
                     }
                     // The world image, off underneath the solids — the opposite
@@ -2392,7 +1768,7 @@ impl ApplicationHandler<link::Update> for App {
                     // looking at the box itself, with nothing behind it arguing
                     // about what shape it is.
                     KeyCode::F3 => {
-                        self.solids_only = !self.solids_only;
+                        self.graphics.solids_only = !self.graphics.solids_only;
                         true
                     }
                     // And how much of the grid either view draws — the second
@@ -2401,12 +1777,12 @@ impl ApplicationHandler<link::Update> for App {
                     // is it under my feet", and the two pictures that answer it
                     // differ in nothing but this.
                     KeyCode::F4 => {
-                        self.solids_everything = !self.solids_everything;
+                        self.graphics.solids_everything = !self.graphics.solids_everything;
                         true
                     }
                     KeyCode::F11 => {
-                        self.light_view = self.light_view.next();
-                        tracing::info!(view = self.light_view.name(), "lighting view");
+                        self.graphics.light_view = self.graphics.light_view.next();
+                        tracing::info!(view = self.graphics.light_view.name(), "lighting view");
                         true
                     }
                     // What a fragment whose ray met no box is answered with, one
@@ -2418,7 +1794,7 @@ impl ApplicationHandler<link::Update> for App {
                     // person looking at two pictures of one instant, which is
                     // what a key gives and a setting read at start-up does not.
                     KeyCode::F2 => {
-                        self.fringe = self.fringe.next();
+                        self.graphics.fringe = self.graphics.fringe.next();
                         // **The state on a line of its own**, which is the whole
                         // difference between a knob and a knob that looks
                         // broken: `discard` cuts a stripe out of every course of
@@ -2435,7 +1811,7 @@ impl ApplicationHandler<link::Update> for App {
                         // reasoned: `isolated_scene` with `_IMPOSTOR=0` still
                         // moves 9.7% of the frame's pixels between two of these
                         // states.
-                        tracing::info!(fringe = self.fringe.name(), "fringe");
+                        tracing::info!(fringe = self.graphics.fringe.name(), "fringe");
                         true
                     }
                     // This frame, written out: every plane the blit can draw of
@@ -2449,8 +1825,9 @@ impl ApplicationHandler<link::Update> for App {
                     // person is looking at, and anything that had to be switched
                     // on beforehand would dump a different one.
                     KeyCode::F12 => {
-                        self.frame_dump = Some(frame_dump_root().join(format!("frame-{}", self.frame_dumps)));
-                        self.frame_dumps += 1;
+                        self.graphics.frame_dump =
+                            Some(frame_dump_root().join(format!("frame-{}", self.graphics.frame_dumps)));
+                        self.graphics.frame_dumps += 1;
                         true
                     }
                     _ => false,
@@ -2471,7 +1848,7 @@ impl ApplicationHandler<link::Update> for App {
                 // heading to a move order (or back) on the next cursor move —
                 // no special-casing needed, `walk_toward_cursor` reads this
                 // fresh every call.
-                self.ctrl_held = modifiers.state().control_key();
+                self.input.ctrl_held = modifiers.state().control_key();
             }
             // A window that loses focus never hears the key come up, and a
             // character that keeps walking into a wall while its player is in
@@ -2483,14 +1860,14 @@ impl ApplicationHandler<link::Update> for App {
             // that would have asked for the next one is the one that stopped
             // being drawn.
             WindowEvent::Focused(focused) => {
-                self.focused = focused;
+                self.input.focused = focused;
                 if focused {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
                     }
                 } else {
                     self.steer.clear();
-                    self.aiming = false;
+                    self.input.aiming = false;
                 }
             }
             // Entirely covered by another window: the compositor will not show
@@ -2498,7 +1875,7 @@ impl ApplicationHandler<link::Update> for App {
             // and falls back to the animation clock. Uncovered, it restarts the
             // same way focus does.
             WindowEvent::Occluded(occluded) => {
-                self.occluded = occluded;
+                self.input.occluded = occluded;
                 if !occluded {
                     if let Some(window) = self.window.as_ref() {
                         window.window.request_redraw();
@@ -2510,16 +1887,16 @@ impl ApplicationHandler<link::Update> for App {
             // reaches here even when egui consumed the move that preceded it:
             // `on_window_event` does not claim these.
             WindowEvent::CursorEntered { .. } => {
-                self.pointer_inside = true;
+                self.input.pointer_inside = true;
             }
             WindowEvent::CursorLeft { .. } => {
-                self.pointer_inside = false;
+                self.input.pointer_inside = false;
                 if let Some(window) = self.window.as_ref() {
                     window.window.request_redraw();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer_inside = true;
+                self.input.pointer_inside = true;
                 // Relative to the *viewport* and not the window: the camera's
                 // own centre is the viewport's, so a cursor measured from the
                 // window would zoom about a point half a panel away.
@@ -2531,7 +1908,7 @@ impl ApplicationHandler<link::Update> for App {
                 // corner and in gump pixels, which is what everything drawn by
                 // the gump pass is placed in.
                 let scale = self.gump_scale();
-                self.pointer_gump = GumpPixel::new(
+                self.input.pointer_gump = GumpPixel::new(
                     (position.x as f32 / scale) as i32,
                     (position.y as f32 / scale) as i32,
                 );
@@ -2543,7 +1920,7 @@ impl ApplicationHandler<link::Update> for App {
                 // `walk_toward_cursor` and `steer.rs`'s module docs for why
                 // those are two different things and not one idiom stated
                 // twice.
-                if self.aiming {
+                if self.input.aiming {
                     changed |= self.walk_toward_cursor();
                 }
                 if changed {
@@ -2560,7 +1937,7 @@ impl ApplicationHandler<link::Update> for App {
                 // panel — reached here and not through egui, because `consumed`
                 // above already sent every click the UI wanted to it.
                 if button == winit::event::MouseButton::Left && state == ElementState::Released {
-                    self.dragging = None;
+                    self.windows.dragging = None;
                     // And a button that was pressed on a dialog is answered on
                     // the way up, if the pointer is still on it — see
                     // `gump::Dialogs::release`.
@@ -2603,7 +1980,11 @@ impl ApplicationHandler<link::Update> for App {
                     // about two places at once, which is what this arm used to
                     // do; a mobile or an item stands exactly where it says it
                     // does, so no such correction applies to either.
-                    self.selected = match (self.on_mobile, self.on_item, self.on_static) {
+                    self.picking.selected = match (
+                        self.picking.on_mobile,
+                        self.picking.on_item,
+                        self.picking.on_static,
+                    ) {
                         (Some(who), _, _) => Some(SelectedIdentity::Mobile(who)),
                         (None, Some(serial), _) => Some(SelectedIdentity::Item(serial)),
                         (None, None, Some(picked)) => Some(SelectedIdentity::Static(picked)),
@@ -2630,11 +2011,12 @@ impl ApplicationHandler<link::Update> for App {
                     // `openshard_client_net::interact`.
                     let now = Instant::now();
                     let paired = self
+                        .input
                         .last_click
                         .is_some_and(|last| now.duration_since(last) <= DOUBLE_CLICK);
                     // Cleared on a pair rather than restarted, so a third click
                     // starts a fresh one — ClassicUO's own reset.
-                    self.last_click = (!paired).then_some(now);
+                    self.input.last_click = (!paired).then_some(now);
                     if paired {
                         self.use_under_cursor(camera);
                     }
@@ -2657,8 +2039,8 @@ impl ApplicationHandler<link::Update> for App {
                         window.window.request_redraw();
                     }
                 } else if button == winit::event::MouseButton::Right {
-                    self.aiming = state == ElementState::Pressed;
-                    if self.aiming {
+                    self.input.aiming = state == ElementState::Pressed;
+                    if self.input.aiming {
                         if self.walk_toward_cursor() {
                             if let Some(window) = self.window.as_ref() {
                                 window.window.request_redraw();
@@ -2723,13 +2105,16 @@ impl ApplicationHandler<link::Update> for App {
             // replans: see `steer::Ground`. Built here rather than held, for the
             // reason the single terrain always was — they borrow the map and the
             // view, and the walk borrows `steer` mutably beside them.
-            let opened = self.clutter.over_with_doors_open(&self.map, &self.tiledata);
-            let cluttered = self.clutter.over(&self.map, &self.tiledata);
+            let opened = cluttered_with_doors_open(&self.world, &self.resources);
+            let cluttered = cluttered(&self.world, &self.resources);
             let ground = steer::Ground {
                 real: &cluttered,
                 through_doors: &opened,
             };
-            let Some(facing) = self.steer.due(now, self.player.at, self.player.facing, ground) else {
+            let Some(facing) = self
+                .steer
+                .due(now, self.world.player.at, self.world.player.facing, ground)
+            else {
                 break;
             };
             moved |= self.walk(facing);
@@ -2811,121 +2196,1340 @@ impl ApplicationHandler<link::Update> for App {
     }
 }
 
-/// [`App::sync_own_windows`]'s membership logic, pulled out to a free
-/// function so it can be exercised without an `App` — which needs real
-/// client asset files to construct at all, the same reason `dst.rs` mirrors
-/// `App`'s walk loop rather than driving the real thing in a test.
+/// The client's own map, unclutted by anything the shard has stood on it —
+/// [`cluttered`] is what a step decision should actually ask.
 ///
-/// Opens a window for everything `view` has that `own_windows` does not, and
-/// drops every window whose subject `view` (and, for the one kind it cannot
-/// answer for, `skills_open`) no longer has — except a subject in
-/// `locally_closed`, which stays dropped and stays un-reopened regardless of
-/// what `view` says, until `view` itself agrees the subject is gone. That is
-/// the reconciliation: an overlay entry survives only until the view it is
-/// ahead of catches up, the same moment `Folded::corrected` would clear a
-/// mispredicted step in `link.rs`, one layer down. A subject the view never
-/// lists in the first place (`Skills`) has nothing to reconcile against and
-/// is not put in the overlay at all.
-fn reconcile_own_windows(
-    view: &openshard_client_net::view::WorldView,
-    own_windows: &mut Vec<OwnWindow>,
-    locally_closed: &mut HashSet<WindowSubject>,
-    skills_open: bool,
-) {
-    locally_closed.retain(|subject| match *subject {
-        WindowSubject::Container(serial) => view.containers.contains_key(&serial),
-        WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
-        WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
-        WindowSubject::Skills => false,
-    });
-    own_windows.retain(|window| {
-        if locally_closed.contains(&window.subject) {
-            return false;
-        }
-        match window.subject {
-            WindowSubject::Container(serial) => view.containers.contains_key(&serial),
-            WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
-            WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
-            // The one kind the view cannot answer for — see the variant's
-            // docs. Closing it is what empties `skills`, so this is that fact
-            // read back rather than a second copy of it.
-            WindowSubject::Skills => skills_open,
-        }
-    });
-    // Containers first and paperdolls after, and both in the view's own
-    // iteration order — which is a `HashMap`'s and therefore not stable. That
-    // decides only where two windows opened on the *same frame* cascade to,
-    // and nothing else: a window's position is its own from the moment it is
-    // placed.
-    let wanted = view
-        .containers
-        .keys()
-        .map(|serial| WindowSubject::Container(*serial))
-        .chain(
-            view.paperdolls
-                .keys()
-                .map(|serial| WindowSubject::Paperdoll(*serial)),
+/// A facade over [`resources::Resources::map`] and
+/// [`resources::Resources::tiledata`], which travel together in every caller
+/// that wants either: the split that put them in `Resources` and
+/// [`world::WorldState::clutter`] in `WorldState` is about what changes
+/// together (disk-read once against updated every packet), not about who
+/// asks for them together, and this is the seam that reunites the two.
+///
+/// **A free function taking `&Resources`, not an `App` method taking
+/// `&self`.** A method on `App` borrows the whole of it, so a caller that
+/// also holds `&mut self.steer` beside the terrain — every arrow key and
+/// every replanned step does — could no longer compile: the borrow checker
+/// sees disjoint *fields* through a chain of `.` projections but not through
+/// a method call, which is opaque to it. Passing `&self.resources` here is
+/// the same projection the field access always was, just wrapped.
+fn terrain(resources: &resources::Resources) -> openshard_movement::MapTerrain<&Map, &TileData> {
+    openshard_movement::MapTerrain::new(resources.map.as_ref(), &resources.tiledata)
+}
+
+/// [`terrain`] with the shard's own items laid over it — what every step
+/// decision on this end should actually ask. See [`clutter::Clutter::over`],
+/// and `terrain`'s own docs for why this takes references rather than being
+/// an `App` method.
+fn cluttered<'a>(
+    world: &'a world::WorldState,
+    resources: &'a resources::Resources,
+) -> clutter::Cluttered<'a, openshard_movement::MapTerrain<&'a Map, &'a TileData>> {
+    world.clutter.over(&resources.map, &resources.tiledata)
+}
+
+/// The same, read as though every shut door on it stood open: what a route
+/// may be *planned* through, and never what decides a step. See
+/// [`clutter::Clutter::over_with_doors_open`].
+fn cluttered_with_doors_open<'a>(
+    world: &'a world::WorldState,
+    resources: &'a resources::Resources,
+) -> clutter::Cluttered<'a, openshard_movement::MapTerrain<&'a Map, &'a TileData>> {
+    world
+        .clutter
+        .over_with_doors_open(&resources.map, &resources.tiledata)
+}
+
+/// Grows or, on eviction, wholly rebuilds `window`'s atlases so this frame's
+/// picture has everywhere it needs already packed before anything reads them
+/// — see `App::draw_from`'s Step three doc for where this call sits.
+///
+/// A free function and not a method on `App`: this is the one part of
+/// presenting a frame that really does write `self` — `resources.anim`,
+/// `graphics.covered`, `repacks` — and by taking exactly those fields rather
+/// than `&mut self` it stays legible from its signature alone that nothing
+/// else on `App` moves here. The same reasoning
+/// [`picking::SelectedIdentity::as_static`]'s doc gives for being a free
+/// function rather than a method.
+///
+/// Returns whether a full rebuild ran, for [`frames::Frame::repacked`].
+#[allow(clippy::too_many_arguments)]
+fn ready_atlases(
+    resources: &mut resources::Resources,
+    graphics: &mut graphics::GraphicsSettings,
+    world: &world::WorldState,
+    repacks: &mut u64,
+    window: &mut Screen,
+    want: TileBounds,
+    wanted: &Wanted,
+    drawn: &[(Who, Mobile)],
+) -> bool {
+    // Set only on a successful rebuild — the counter `docs/camera.md`
+    // asks for, so the frame that stalled for one can be told apart from
+    // one that is merely heavy. See [`Frame::repacked`](frames::Frame).
+    let mut repacked = false;
+    // Full rebuild and not grow, either because the atlas just filled up
+    // (the ordinary eviction) or because a debug edit changed a shape the
+    // atlas already has packed and `grow` cannot see that on its own — it
+    // only asks whether a graphic is packed *at all* (its own doc), so a
+    // stair already on screen when its prism changes would never be
+    // re-offered. Both land in the same rebuild, for the same reason: the
+    // texture a bind group points at is the one the old atlas was
+    // uploaded to.
+    let evict = if resources.repack_forced {
+        resources.repack_forced = false;
+        true
+    } else {
+        // Grow rather than rebuild. What is new is added to the textures
+        // already bound, a band of rows at a time, and a frame where the
+        // camera stood still reads four `BTreeSet`s and touches no file
+        // and no GPU.
+        let grown = window.atlases.grow(
+            &resources.art,
+            &resources.texmaps,
+            &resources.tiledata,
+            &mut resources.anim,
+            wanted,
         );
-    for subject in wanted.collect::<Vec<_>>() {
-        if own_windows.iter().any(|window| window.subject == subject) {
-            continue;
+        // Whatever was packed is uploaded, including on the way out of a
+        // failure: a growth that stopped part way still wrote pixels, and
+        // pixels the device has not been told about are sampled as
+        // whatever was there before. Cheap to do unconditionally — the
+        // band is empty when nothing grew — and it is one fewer path
+        // where an atlas and its texture can disagree.
+        window.atlases.upload(
+            &window.queue,
+            &window.renderer,
+            &window.statics,
+            &window.mobile_pass,
+        );
+        match grown {
+            Ok(()) => {
+                graphics.covered = Some(want);
+                false
+            }
+            Err(AtlasError::Full { .. }) => true,
+            Err(error) => {
+                eprintln!("growing the atlases: {error}");
+                false
+            }
         }
-        // Still overlaid: the view has not caught up with the close yet, and
-        // re-opening it here is exactly the reopen this overlay exists to
-        // stop.
-        if locally_closed.contains(&subject) {
-            continue;
+    };
+    if evict {
+        // Costly and rare on the ordinary path — where the old
+        // arrangement paid it every few tiles — and it is the *only*
+        // thing that reclaims space, so an atlas that only ever grew
+        // would eventually stay full for ever. Cheap and deliberate on
+        // the debug-edit path: one static's worth of texture, asked for
+        // once per slider change.
+        //
+        // `covered` is cleared first: a rebuild forgets, so the next
+        // frame may not assume anything about what the atlases hold. Set
+        // again below only if the rebuild succeeds.
+        graphics.covered = None;
+        match Atlases::build(
+            &resources.art,
+            resources.surfaces.as_ref(),
+            &resources.texmaps,
+            &resources.tiledata,
+            &mut resources.anim,
+            &wanted_in(
+                &resources.map,
+                [want],
+                &world.items,
+                &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
+                &world.tile_animations,
+                &resources.equip_conv,
+            ),
+        ) {
+            Ok(atlases) => {
+                window.install_atlases(atlases, &resources.hue_ramp);
+                graphics.covered = Some(want);
+                repacked = true;
+                *repacks += 1;
+            }
+            // One screen does not fit one atlas, which is a different
+            // statement from "the atlas filled up": no eviction can help
+            // and the frame draws with sprites missing. Named here rather
+            // than hidden, and it is what the standing backlog item about
+            // a failed repack is about.
+            Err(error) => eprintln!("packing the art on screen: {error}"),
         }
-        let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
-        own_windows.push(OwnWindow {
-            subject,
-            at: GumpPixel::new(
-                CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
-                CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
-            ),
-        });
     }
-    // The skill window, which nothing in the view asked for: the player did,
-    // by pressing Skills. Cascaded like a bag, for want of anywhere better —
-    // the reference remembers where this one was left, which is the backlog
-    // entry every window kind here shares.
-    if skills_open
-        && !own_windows
-            .iter()
-            .any(|window| window.subject == WindowSubject::Skills)
-    {
-        let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
-        own_windows.push(OwnWindow {
-            subject: WindowSubject::Skills,
-            at: GumpPixel::new(
-                CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
-                CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
-            ),
-        });
+    repacked
+}
+
+/// The shard's dialogs, in the client's own art, packed and drawn — a
+/// container, a paperdoll, the skill sheet, all three through one machinery.
+/// None of them is an egui window: their position, their drag, their
+/// z-order and their hit test are this client's, in gump pixels, which is
+/// decision 5 in `docs/client.md`. See `own_windows`, `crate::gump`,
+/// `openshard_client_render::container` and
+/// `openshard_client_render::paperdoll`.
+///
+/// A free function for the same reason [`encode_world_passes`] is one:
+/// `resources.gump_atlas` grows and `windows.drawn_windows` is written here,
+/// and both are named in the signature rather than reached through
+/// `&mut self`. Does nothing when there is no gump file or no pass to draw
+/// through — an offline run with neither.
+fn draw_gump_windows(
+    resources: &mut resources::Resources,
+    world: &world::WorldState,
+    windows: &mut windows::Windows,
+    shell: Option<&shell::Shell>,
+    window: &mut Screen,
+    encoder: &mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+) {
+    if let (Some(files), Some(pass)) = (resources.gumps.as_ref(), window.gump_pass.as_mut()) {
+        // Every open dialog's art, packed before anything is laid out.
+        //
+        // Before, and not on the way, for two reasons. A `{ resizepic }`
+        // cannot be placed until its nine pieces have been packed — where
+        // its edges go is decided by how big its corners turned out to be —
+        // and a page button flips pages inside the client, so what a window
+        // needs is *every* page's art rather than the showing one's.
+        // `gump::art_of` is that list, asked for on the frame the window is
+        // drawn on because that is the frame that knows it is open at all.
+        let open = world
+            .view
+            .as_ref()
+            .map(|view| view.gumps.as_slice())
+            .unwrap_or_default();
+        let mut pictures = Vec::new();
+        for gump in open {
+            let art_files = gump_art::ArtFiles {
+                gumps: files,
+                items: &resources.art,
+            };
+            if let Err(error) = resources
+                .gump_atlas
+                .add(art_files, gump_art::art_of(&gump.elements))
+            {
+                // Said once per window and then drawn without whatever is
+                // missing: a dialog with a hole in it is still a dialog the
+                // player can read, and a client that refused to draw one
+                // would take the shard's staff commands down with it.
+                eprintln!("packing gump art for {:?}: {error}", gump.gump_id);
+            }
+        }
+        // This client's own windows — a dialog, a container, a paperdoll —
+        // all three through one machinery.
+        //
+        // Bottom to top, which is the list's own order: the pass has no
+        // depth, so later is over.
+        //
+        // The layouts are built before the loop that packs them, so that
+        // nothing borrows the view while the atlas is being grown.
+        // Paired with their subjects rather than left parallel to
+        // `own_windows`: a container whose entry has gone from the view is
+        // skipped below, and an index into one list would then name the
+        // wrong window in the other. This list is what the pointer is
+        // tested against next frame — see `windows::Windows::drawn_windows`.
+        let mut drawn_windows: Vec<(WindowSubject, Drawn)> = Vec::new();
+        if let Some(view) = world.view.as_ref() {
+            for open in &windows.own_windows {
+                match open.subject {
+                    WindowSubject::Dialog(gump_id) => {
+                        let Some(gump) = view.gumps.iter().find(|gump| gump.gump_id == gump_id) else {
+                            continue;
+                        };
+                        // The page, the switches and the pressed button are
+                        // the three things the wire does not carry, and all
+                        // three come out of `Dialogs` — which is also what
+                        // the press that set them wrote to, so what is drawn
+                        // pressed is what the release will act on.
+                        drawn_windows.push((
+                            open.subject,
+                            Drawn::Dialog(windows.dialogs.layout(gump, open.at, &resources.gump_atlas)),
+                        ));
+                    }
+                    WindowSubject::Skills => {
+                        let Some(tree) = windows.skills.as_ref() else {
+                            continue;
+                        };
+                        // The three sources meet here and nowhere else: the
+                        // names and the tree out of the client's files, the
+                        // numbers out of the view, and how wide a string
+                        // came out of the font atlas — which is what puts a
+                        // value's right edge where it belongs and starts a
+                        // heading's rule at the end of its name.
+                        //
+                        // The wire's `u8` becomes a `SkillId` here, at the
+                        // one seam that holds both: `view::Player::skills`
+                        // is keyed by what the shard said, and the files'
+                        // numbering is the type the window is written
+                        // against. A skill the files do not name has no row
+                        // to put a number on, and is dropped by `names.get`
+                        // inside the layout rather than here.
+                        drawn_windows.push((
+                            open.subject,
+                            Drawn::Skills(skills::window(
+                                &resources.skill_names,
+                                &resources.skill_groups,
+                                tree,
+                                |id| {
+                                    view.player.skills.get(&id.0).map(|line| skills::Standing {
+                                        value: line.value,
+                                        cap: line.cap,
+                                        // The player's own click, held over
+                                        // the shard's line — see
+                                        // `Tree::lock_of`'s doc.
+                                        lock: tree.lock_of(id, line.lock),
+                                    })
+                                },
+                                |text, font| text::gump_width(text, font, &resources.font_atlas),
+                                open.at,
+                            )),
+                        ));
+                    }
+                    WindowSubject::Container(serial) => {
+                        let Some(gump) = view.containers.get(&serial).copied() else {
+                            continue;
+                        };
+                        let contents: Vec<ContainedItem> =
+                            view.contents.get(&serial).cloned().unwrap_or_default();
+                        drawn_windows.push((
+                            open.subject,
+                            Drawn::Container(container::window(gump, &contents, open.at)),
+                        ));
+                    }
+                    WindowSubject::Paperdoll(serial) => {
+                        // Whose body and whose equipment, read off the view
+                        // inline rather than through a method: the
+                        // surface's window is held mutably across this
+                        // loop, and a `&self` call would borrow all of it.
+                        // Nothing else asks these questions — the hit test
+                        // reads the list this builds (`drawn_windows`)
+                        // rather than working out the body a second time,
+                        // which is what used to make a paperdoll whose two
+                        // answers disagreed a window that could not be
+                        // closed.
+                        let own = view.player.serial == serial;
+                        let body = match own {
+                            true => Some((view.player.body, view.player.hue)),
+                            // A paperdoll of a mobile this client has never
+                            // been told the body of: the frame is drawn and
+                            // the doll is not, until the `0x77` arrives.
+                            false => view.mobiles.get(&serial).map(|m| (m.body, m.hue)),
+                        };
+                        // The `0x88` carries no equipment — see
+                        // `WorldView::paperdolls` — so it is read off the
+                        // body the window names.
+                        let equipment = match own {
+                            true => crowd::worn(&view.player.equipment, &resources.tiledata),
+                            false => match view.mobiles.get(&serial) {
+                                Some(mobile) => crowd::worn(&mobile.equipment, &resources.tiledata),
+                                None => Vec::new(),
+                            },
+                        };
+                        let wearer = body.map(|(body, hue)| paperdoll::Wearer {
+                            body,
+                            hue,
+                            equipment: &equipment,
+                        });
+                        // The stance, off the player and not off the `0x88`
+                        // the window opened on: a `0x72` moves it while
+                        // that packet stands still, and the toggle is the
+                        // one picture on the frame that has to follow. See
+                        // `WorldView::player`'s `war`, which is where both
+                        // packets are folded to.
+                        let whose = match own {
+                            true => paperdoll::Whose::Own { war: view.player.war },
+                            false => paperdoll::Whose::Another,
+                        };
+                        // Which button the finger is on, if it is on one of
+                        // this window's. Held per window rather than per
+                        // client: two dolls can be open and only the pressed
+                        // one draws a pressed picture.
+                        let held = windows
+                            .held_doll
+                            .filter(|(window, _)| *window == open.subject)
+                            .map(|(_, button)| button);
+                        drawn_windows.push((
+                            open.subject,
+                            Drawn::Paperdoll(paperdoll::window(
+                                wearer.as_ref(),
+                                whose,
+                                held,
+                                &resources.equip_conv,
+                                files,
+                                open.at,
+                            )),
+                        ));
+                    }
+                }
+            }
+        }
+        for (_, window) in &drawn_windows {
+            let art_files = gump_art::ArtFiles {
+                gumps: files,
+                items: &resources.art,
+            };
+            // Everything the window will draw, packed before it is drawn —
+            // a picture the atlas grew on the *next* frame would draw the
+            // window with a hole in it once. Said and drawn anyway on a
+            // failure, for `gump::art_of`'s reason above.
+            if let Err(error) = resources
+                .gump_atlas
+                .add(art_files, paperdoll::art_of(window.pictures()))
+            {
+                eprintln!("packing window art: {error}");
+            }
+            pictures.extend(window.pictures().iter().copied());
+        }
+        // What the pointer is tested against from here on, and the atlas it
+        // is tested in is the one just grown for it: the hit test and the
+        // frame are now the same list. Kept even when it is empty — the
+        // windows this frame drew none of are windows nothing can click.
+        windows.drawn_windows = drawn_windows;
+        if let Some(rows) = resources.gump_atlas.take_dirty() {
+            pass.upload_rows(&window.queue, resources.gump_atlas.pixels(), rows);
+        }
+        let quads = gump_art::collect(&pictures, &resources.gump_atlas);
+        let timed = profile::begin(window.gpu.as_ref(), "gump art", encoder);
+        pass.render(
+            &window.device,
+            &window.queue,
+            encoder,
+            gump_art::Frame {
+                target: view,
+                width: window.config.width,
+                height: window.config.height,
+                // A whole number, and the same one egui is laying its
+                // widgets out at: gump art is five-bit pixel art sampled
+                // with Nearest, and a fractional scale doubles some of its
+                // rows and not others.
+                // egui's own, and not the window's scale factor rounded:
+                // the art is placed at coordinates egui laid out in
+                // points, so any other number here slides a window's
+                // pictures off its buttons.
+                scale: shell.map(|shell| shell.pixels_per_point()).unwrap_or(1.0),
+            },
+            &quads,
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
     }
-    // A dialog is placed where the shard asked for it, and it is the only
-    // window kind that is: a `0xB0` carries a coordinate and a `0x24` does
-    // not. So no cascade — two dialogs the shard put in one place are two
-    // dialogs the shard put in one place, and moving them would be this
-    // client second-guessing a layout it was handed.
-    let dialogs: Vec<(GumpId, GumpPixel)> = view
-        .gumps
+}
+
+/// The speech line and the journal above it, over the finished picture and
+/// under egui's — the same corner `shell::speech_line`'s `egui::Panel::bottom`
+/// used to claim before this moved to the client's own rendering. Always
+/// drawn, unlike [`draw_gump_windows`]: the font atlas needs no shard-sent
+/// gump art to exist, so there is nothing here to be `None` until.
+///
+/// The plainest of this frame's free functions: every parameter is `&`, and
+/// the one exception — `text_quads` — is appended to rather than replaced,
+/// so the caller keeps owning the one instance buffer `GumpRenderer` has
+/// room for (see the comment at this call's site in `App::draw_from`).
+/// Nothing here is written back to `self` at all.
+#[allow(clippy::too_many_arguments)]
+fn draw_chat_and_speech(
+    resources: &resources::Resources,
+    world: &world::WorldState,
+    chat: &Chat,
+    shell: Option<&shell::Shell>,
+    window: &mut Screen,
+    encoder: &mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    chat_style: desk::Chat,
+    screen_speech: &[text::ScreenLabel<'_>],
+    text_quads: &mut Vec<SpriteQuad>,
+) {
+    let scale = shell.map(|shell| shell.pixels_per_point()).unwrap_or(1.0);
+    // The surface's size in gump pixels rather than real ones —
+    // `Frame::scale`'s doc is what the one below multiplies out, and
+    // this is that arithmetic done once for where the corner is
+    // rather than for every quad in it.
+    let canvas = GumpPixel::new(
+        (window.config.width as f32 / scale) as i32,
+        (window.config.height as f32 / scale) as i32,
+    );
+    let font = Font::DEFAULT;
+    // The TrueType path draws at [`TTF_BASE_PIXEL_HEIGHT`] regardless
+    // of [`desk::ChatScale`] — see [`scaled_gump_quads`]'s doc for
+    // why an integer upscale is right for `fonts.mul` and wrong for an
+    // antialiased face — so the line spacing only grows when the
+    // glyphs it is spacing actually will.
+    let line_height = match resources.ttf_font {
+        Some(_) => CHAT_LINE_HEIGHT,
+        None => CHAT_LINE_HEIGHT * chat_style.scale.raw() as i32,
+    };
+    let input_at = GumpPixel::new(CHAT_MARGIN, canvas.y - CHAT_MARGIN - line_height);
+
+    // Owned before it is borrowed into `GumpLabel`s: the journal's own
+    // strings are formatted here (name and text joined the way
+    // `shell::Hud::said` used to) and the prompt is built from
+    // the caller's own chat, so both need somewhere to live for the length of
+    // `collect_gump`'s borrow.
+    let mut rows: Vec<(GumpPixel, Hue, Font, String)> = Vec::new();
+    if let Some(view) = world.view.as_ref() {
+        for (row, line) in view.journal.iter().rev().take(CHAT_LINES).enumerate() {
+            let at = GumpPixel::new(CHAT_MARGIN, input_at.y - line_height * (row as i32 + 1));
+            let text = match line.name.is_empty() {
+                true => line.text.clone(),
+                false => format!("{}: {}", line.name, line.text),
+            };
+            rows.push((at, line.hue, line.font, text));
+        }
+    }
+    let prompt = match chat.focused {
+        true => format!("say: {}", chat.typed),
+        // A hint and not an empty line: there is no mouse click to
+        // discover this by any more (see `App::window_event`'s
+        // `KeyCode::Enter` arm), so the one thing worth saying here is
+        // the key that opens it.
+        false => "[Enter] say".to_owned(),
+    };
+    let mut labels: Vec<GumpLabel<'_>> = rows
         .iter()
-        .map(|gump| (gump.gump_id, GumpPixel::new(gump.at.x, gump.at.y)))
+        .map(|(at, hue, font, text)| GumpLabel {
+            at: *at,
+            text,
+            font: *font,
+            hue: *hue,
+            clip: None,
+        })
         .collect();
-    for (gump_id, at) in dialogs {
-        let subject = WindowSubject::Dialog(gump_id);
-        if own_windows.iter().any(|window| window.subject == subject) {
-            continue;
+    labels.push(GumpLabel {
+        at: input_at,
+        text: &prompt,
+        font,
+        hue: Hue(chat_style.hue),
+        clip: None,
+    });
+    // The caret, a lone glyph rather than a new quad primitive: the
+    // gump pass draws through an atlas of packed sprites and has
+    // nothing that paints a solid rectangle, and `fonts.mul` already
+    // has a `|` to stand in for one — as does every TrueType face,
+    // `.notdef` or otherwise (`openshard_uofiles::ttf_font::TtfFont::glyph`'s
+    // "never fails" doc). Blinks off wall-clock time rather than a
+    // stored `Instant`, so nothing on `Chat` has to track when focus
+    // began.
+    let caret_text = "|";
+    let blink_on = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| (elapsed.as_millis() / 500) % 2 == 0)
+        .unwrap_or(true);
+    // `fonts.mul` has no Cyrillic past `0xFF` — see `run`'s
+    // `--ttf-font` doc — and this is the box a player actually reads
+    // what they typed back from, so unlike the dialog captions
+    // `text_quads` carries below, this switches to `App::ttf_font`
+    // and `Screen::ttf_gump_pass` whenever one is set rather than
+    // drawing a line nobody can read the second half of.
+    if let Some(font) = &resources.ttf_font {
+        let atlas = window
+            .ttf_atlas
+            .as_mut()
+            .expect("create_window builds ttf_atlas whenever ttf_font is set");
+        let wanted = labels
+            .iter()
+            .flat_map(|label| label.text.chars())
+            .chain(std::iter::once('|'));
+        if let Err(error) = atlas.add(font, wanted) {
+            // Same corner as the speech line's own `atlas.add` above.
+            eprintln!("packing ttf glyphs: {error}");
         }
-        // Overlaid the same as a container or paperdoll: `answer_gump` sets
-        // this before the view has forgotten the dialog, and the view is
-        // what is stale here — see `App::answer_gump`.
-        if locally_closed.contains(&subject) {
-            continue;
+        // `labels`' own positions are gump pixels, `rows`/`input_at`'s
+        // space — real pixels only once here, not per glyph inside
+        // `collect_gump_ttf`: see that function's doc for why the
+        // earlier per-glyph version read soft and its baseline
+        // sawtoothed.
+        let to_real = |p: GumpPixel| {
+            GumpPixel::new(
+                (p.x as f32 * scale).round() as i32,
+                (p.y as f32 * scale).round() as i32,
+            )
+        };
+        let mut real_labels: Vec<GumpLabel<'_>> = labels
+            .iter()
+            .map(|label| GumpLabel {
+                at: to_real(label.at),
+                ..*label
+            })
+            .collect();
+        let prefix_width = text::gump_width_ttf("say: ", atlas);
+        if chat.focused && blink_on {
+            let real_input_at = to_real(input_at);
+            let caret_x = prefix_width + text::gump_width_ttf(&chat.typed[..chat.cursor], atlas);
+            real_labels.push(GumpLabel {
+                at: GumpPixel::new(real_input_at.x + caret_x, real_input_at.y),
+                text: caret_text,
+                font: Font::DEFAULT,
+                hue: Hue(chat_style.hue),
+                clip: None,
+            });
         }
-        own_windows.push(OwnWindow { subject, at });
+        let mut hud_quads = text::collect_gump_ttf(&real_labels, atlas);
+        // Overhead speech's own quads, folded into this same list
+        // rather than a render call of their own — `GumpRenderer::render`'s
+        // doc is explicit that a second call the same frame does not
+        // add a second draw, it *replaces* the first: the instances
+        // live in one buffer written through `queue.write_buffer`,
+        // which lands before either call's encoded draw actually
+        // runs, so a first, separate `screen_speech` call earlier in
+        // the frame was silently overwritten by this one and never
+        // drew anything. One call, everything it should draw.
+        hud_quads.extend(text::collect_screen_ttf(screen_speech, atlas));
+        // Picks up this call's own `add` above and, the first time
+        // through this frame, the speech line's — see
+        // `Screen::upload_ttf_dirty`'s doc.
+        window.upload_ttf_dirty();
+        let timed = profile::begin(window.gpu.as_ref(), "ttf gump text", encoder);
+        window
+            .ttf_gump_pass
+            .as_mut()
+            .expect("create_window builds ttf_gump_pass whenever ttf_atlas is")
+            .render(
+                &window.device,
+                &window.queue,
+                encoder,
+                gump_art::Frame {
+                    target: view,
+                    width: window.config.width,
+                    height: window.config.height,
+                    // Not `scale`: `hud_quads` are already in real
+                    // pixels, so the shader's own multiply — the one
+                    // `text_quads` below still needs, being in gump
+                    // pixels — would double it.
+                    scale: 1.0,
+                },
+                &hud_quads,
+            );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    } else {
+        let prefix_width = text::gump_width("say: ", font, &resources.font_atlas);
+        if chat.focused && blink_on {
+            let caret_x =
+                prefix_width + text::gump_width(&chat.typed[..chat.cursor], font, &resources.font_atlas);
+            labels.push(GumpLabel {
+                at: GumpPixel::new(input_at.x + caret_x, input_at.y),
+                text: caret_text,
+                font,
+                hue: Hue(chat_style.hue),
+                clip: None,
+            });
+        }
+        text_quads.extend(scaled_gump_quads(
+            &labels,
+            &resources.font_atlas,
+            chat_style.scale.raw(),
+        ));
     }
+    // The one call, with the windows' lines already in front of the
+    // chat's: painter's order inside a single pass, and the only order
+    // there is — see `text_quads` for what a second call would cost.
+    // Draws only the windows' captions when `App::ttf_font` is set:
+    // the chat's own quads went through `ttf_gump_pass` above instead.
+    let timed = profile::begin(window.gpu.as_ref(), "gump text", encoder);
+    window.gump_text_pass.render(
+        &window.device,
+        &window.queue,
+        encoder,
+        gump_art::Frame {
+            target: view,
+            width: window.config.width,
+            height: window.config.height,
+            scale,
+        },
+        text_quads,
+    );
+    profile::end(window.gpu.as_ref(), encoder, timed);
+}
+
+/// Records every world-space pass into `encoder`, from the ground up to the
+/// hover and held rings — the one part of presenting a frame that is
+/// **only** drawing, in the sense the module docs on
+/// [`crate::graphics::GraphicsSettings`] and [`crate::picking::Picking`]
+/// argue for: a free function taking `&mut GraphicsSettings` for the one
+/// pair of fields it writes (`solids_held`, `solids_drawn`, this frame's own
+/// count of what the solids view was handed and drew) and `&Picking` for the
+/// one it only reads. See [`assemble_geometry`]'s doc for the same shape one
+/// step earlier in the frame.
+///
+/// `encoder` and `window` are threaded through rather than returned: the
+/// gump windows, the chat line and egui all record into the same encoder
+/// after this call returns, and `App::draw_from` is what owns that sequence.
+#[allow(clippy::too_many_arguments)]
+fn encode_world_passes(
+    graphics: &mut graphics::GraphicsSettings,
+    picking: &picking::Picking,
+    window: &mut Screen,
+    encoder: &mut wgpu::CommandEncoder,
+    target: Target<'_>,
+    view: &wgpu::TextureView,
+    world_view: &wgpu::TextureView,
+    gbuffer_views: &openshard_client_render::gbuffer::Views,
+    viewport: ViewportRect,
+    camera: Camera,
+    solid_cut: openshard_client_render::solid::Cut,
+    quads: &[ground::GroundQuad],
+    static_instances: &openshard_client_render::sprite::InstanceRows,
+    static_boxes: &[openshard_client_render::impostor::Volume],
+    mesh_vertices: &[openshard_client_render::mesh_face::MeshFaceVertex],
+    mesh_rows: &[openshard_client_render::mesh_face::MeshFaceRow],
+    mobile_quads: &[SpriteQuad],
+    text_quads: &[SpriteQuad],
+    outline_quads: &[SpriteQuad],
+    held_item_outline: &[SpriteQuad],
+    mobile_outline: &[SpriteQuad],
+    held_mobile_outline: &[SpriteQuad],
+    select_quads: &[SpriteQuad],
+    lighting: &light::Lighting,
+    render_width: u32,
+    render_height: u32,
+) {
+    // Ground first, because it clears; statics after, into what it left.
+    // Which covers which is decided by the depth they share, not by this
+    // order — the order only decides who clears.
+    //
+    // Every pass from here to the submit is bracketed by `profile::begin`
+    // and `profile::end`: the GPU's own timestamps, which are the one half
+    // of a frame's cost no clock on this thread can see. See [`profile`] for
+    // why that is so and why the bracket is a pair of calls rather than a
+    // scope guard. Nothing when the adapter has no timestamp queries.
+    let timed = profile::begin(window.gpu.as_ref(), "ground", encoder);
+    window
+        .renderer
+        .render(&window.device, &window.queue, encoder, target, quads);
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    // Handed over every frame rather than on the key, because the key does
+    // not have the window: `graphics.fringe` is the switch and the pass is where
+    // it is read, and a state pushed once at start-up would leave F2 silent.
+    window.statics.set_fringe(graphics.fringe);
+    let timed = profile::begin(window.gpu.as_ref(), "statics", encoder);
+    window.statics.render(
+        &window.device,
+        &window.queue,
+        encoder,
+        target,
+        &static_instances.rows,
+        static_boxes,
+        Some(static_instances.drawn),
+    );
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    // Right after statics, into the same static's own pixels its
+    // billboard sprite just drew — `docs/gbuffer.md` step 4c. Depth and
+    // place only, never colour: this only gives a climbable static's
+    // pixels a more honest per-face normal than one blended stance could.
+    let timed = profile::begin(window.gpu.as_ref(), "mesh faces", encoder);
+    window.mesh_pass.render(
+        &window.device,
+        &window.queue,
+        encoder,
+        target,
+        mesh_vertices,
+        mesh_rows,
+    );
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    let timed = profile::begin(window.gpu.as_ref(), "mobiles", encoder);
+    window.mobile_pass.render(
+        &window.device,
+        &window.queue,
+        encoder,
+        target,
+        mobile_quads,
+        // A mobile has no volume — `docs/lighting_rebuild.md` says so in as
+        // many words, and phase 7 is what gives a billboard a normal.
+        &[],
+        None,
+    );
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    // The silhouettes, here and not later: the mask is depth-tested against
+    // what the three world passes have drawn, so a barrel behind a wall is
+    // kept out of it — and the text pass below writes depth at the near
+    // plane over everything, which would punch the mask through.
+    let mask_view = window
+        .outline_mask
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    // One item is one ring; the pass numbers groups, so each quad is a group
+    // of its own — see `SpriteRenderer::render_mask`.
+    let item_rings: Vec<&[SpriteQuad]> = outline_quads.iter().map(std::slice::from_ref).collect();
+    let timed = profile::begin(window.gpu.as_ref(), "outline mask: items", encoder);
+    window.statics.render_mask(
+        &window.device,
+        &window.queue,
+        encoder,
+        target,
+        &mask_view,
+        &item_rings,
+    );
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    // And a creature through its own atlas, in *one* group: a body and
+    // everything it wears is one thing being pointed at, and one ring goes
+    // round the lot. This pass clears the mask too, which is why it is
+    // skipped when nothing is ringed — the items' pass above has already
+    // written the frame's answer, and a second clear would erase it.
+    if !mobile_outline.is_empty() {
+        let timed = profile::begin(window.gpu.as_ref(), "outline mask: mobiles", encoder);
+        window.mobile_pass.render_mask(
+            &window.device,
+            &window.queue,
+            encoder,
+            target,
+            &mask_view,
+            &[mobile_outline],
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
+    // And the held selection into its own mask, through the same pass and
+    // the same depth buffer: what is washed is what is *visible* of the
+    // selected static, so a wall the player has walked behind is not painted
+    // over the thing now in front of it. One group, because a selection is
+    // one thing — the pass numbers groups for the ring's sake and the wash
+    // reads only "is this texel nought".
+    let select_view = window
+        .select_mask
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    if !select_quads.is_empty() {
+        let timed = profile::begin(window.gpu.as_ref(), "select mask", encoder);
+        window.statics.render_mask(
+            &window.device,
+            &window.queue,
+            encoder,
+            target,
+            &select_view,
+            &[select_quads],
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
+    // And the held mobile or item's own ring silhouette, into
+    // `Screen::held_mask` — the same two-pass shape as the hover ring
+    // above (items first, unconditionally, so an empty frame still clears
+    // the mask; the mobile pass gated because it clears the mask too).
+    // Not folded into the hover mask above: a click's ring must survive
+    // the cursor moving off the thing, and that mask is overwritten fresh
+    // every frame from whatever the cursor is over *this* frame alone.
+    let held_view = window
+        .held_mask
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let held_item_rings: Vec<&[SpriteQuad]> = held_item_outline.iter().map(std::slice::from_ref).collect();
+    let timed = profile::begin(window.gpu.as_ref(), "held mask: items", encoder);
+    window.statics.render_mask(
+        &window.device,
+        &window.queue,
+        encoder,
+        target,
+        &held_view,
+        &held_item_rings,
+    );
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    if !held_mobile_outline.is_empty() {
+        let timed = profile::begin(window.gpu.as_ref(), "held mask: mobiles", encoder);
+        window.mobile_pass.render_mask(
+            &window.device,
+            &window.queue,
+            encoder,
+            target,
+            &held_view,
+            &[held_mobile_outline],
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
+    // Always `text_pass`, `fonts.mul`'s own: `text_quads` is empty
+    // whenever `App::ttf_font` is set, since a TrueType face's speech
+    // draws after the blit instead — see `screen_speech`'s own comment
+    // above and the render call after it, below.
+    let timed = profile::begin(window.gpu.as_ref(), "overhead text", encoder);
+    window.text_pass.render(
+        &window.device,
+        &window.queue,
+        encoder,
+        target,
+        text_quads,
+        &[],
+        None,
+    );
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    // And the world image onto the surface, into the rect the panels left
+    // free. Magnified this is a copy — the image is already the viewport's
+    // size and the magnification happened in the vertex transform — and
+    // minified it is where the shrinking happens, which is why the zoom is
+    // still what picks the sampler.
+    //
+    // The lighting — the flames, the sun, the lantern in the player's hand
+    // and which of the pass's own values is drawn — was assembled at the top
+    // of the frame, out of `frame::Inputs`. Nothing between there and here
+    // may touch it: a frame this client draws and a frame a tool dumps are
+    // the same frame only for as long as neither of them has an adjustment
+    // of its own afterwards. `docs/parity.md`.
+    //
+    // **Solids alone**, `App::solids_only`: the surface is cleared and the
+    // world image is not drawn onto it at all, so the boxes below stand
+    // over nothing that could be mistaken for their own shape. `lighting`
+    // is unaffected either way — it is what the solids pass reads its grid
+    // from, and it was already built above whichever branch runs here.
+    if graphics.solids_only && graphics.show_solids {
+        let timed = profile::begin(window.gpu.as_ref(), "solids-only clear", encoder);
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("solids-only clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(openshard_client_render::renderer::CLEAR),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    } else {
+        // **The pass to watch.** Deferred shading over the whole viewport:
+        // every light in range walked per fragment, the sun, the occlusion
+        // grid. `tests/cost.rs` measures it offline; this is the same pass
+        // on the frame as played.
+        let timed = profile::begin(window.gpu.as_ref(), "blit: lighting", encoder);
+        window.blit.render(
+            &window.device,
+            &window.queue,
+            encoder,
+            blit::Frame {
+                target: view,
+                world: world_view,
+                gbuffer: gbuffer_views,
+                face_instances: window.statics.instances_buffer(),
+                mobile_instances: window.mobile_pass.instances_buffer(),
+                mesh_instances: window.mesh_pass.rows_buffer(),
+                ground_instances: window.renderer.instances_buffer(),
+                zoom: camera.zoom(),
+                rect: viewport,
+            },
+            lighting,
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
+    // The occlusion grid as solids, when somebody asked for it — step 23.0.
+    // First of what is drawn over the lit picture, so the highlights stay on
+    // top of it: a diagnostic must not hide the thing the cursor is naming.
+    //
+    // The grid drawn is the frame's **own** — `lighting.occlusion`, which is
+    // the list the shader is walking this same frame — and not a second walk
+    // of the map. A picture of a grid rebuilt beside the one in force would
+    // be a claim about a grid nothing rendered.
+    if graphics.show_solids {
+        let standing = openshard_client_render::solid::standing(&lighting.occlusion, solid_cut);
+        graphics.solids_held = standing.len();
+        let timed = profile::begin(window.gpu.as_ref(), "solids", encoder);
+        graphics.solids_drawn = window.solids.render(
+            &window.device,
+            &window.queue,
+            encoder,
+            solids::Frame {
+                target: view,
+                size: (window.config.width, window.config.height),
+                rect: viewport,
+            },
+            &camera,
+            &standing,
+            solids::Style {
+                opaque: graphics.solids_opaque,
+                ..solids::Style::default()
+            },
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
+    // The held selection's wash, first of the two things drawn over the lit
+    // picture: the wall the click named and the ground it stands on. Under
+    // the ring rather than over it, because they answer different questions
+    // — the wash is what is *held* and the ring is what the cursor is on —
+    // and the live one has to stay readable while it passes over the held
+    // one.
+    //
+    // Skipped when nothing is selected, and the whole cost of a frame with
+    // nothing selected is that comparison: the mask is not drawn either.
+    if let Some(picked) = picking
+        .selected
+        .and_then(SelectedIdentity::as_static)
+        .filter(|_| !select_quads.is_empty())
+    {
+        let timed = profile::begin(window.gpu.as_ref(), "selection wash", encoder);
+        window.select.render(
+            &window.device,
+            &window.queue,
+            encoder,
+            select::Frame {
+                target: view,
+                mask: &select_view,
+                ids: &gbuffer_views.ids,
+                face_instances: window.statics.instances_buffer(),
+                ground_instances: window.renderer.instances_buffer(),
+                size: (render_width, render_height),
+                rect: viewport,
+            },
+            // The tile the *static* stands on, and not `selected_tile`: the
+            // ground being washed is the ground under the thing that was
+            // picked, which is the whole of "and the tile it stands on". The
+            // two are usually different tiles — a wall's picture stands up
+            // the screen from its own cell, so the ground under the cursor is
+            // the cell behind it.
+            Selection::DEFAULT.on((picked.at.x, picked.at.y)),
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
+    // And the ring on top of that, over the same rectangle — after the blit
+    // so it is drawn in screen pixels and unlit: a highlight that dimmed at
+    // night would stop working exactly when the picture is hardest to read.
+    // Skipped entirely on the ordinary frame, where nothing is under the
+    // cursor and the mask is empty. **Both silhouette lists**, or a ringed
+    // creature draws its mask into a texture no pass ever reads and the
+    // highlight is simply absent — which is what an item-only test of this
+    // condition looked like from the outside.
+    // The held ring, drawn first of the two so the live hover ring stays
+    // on top and readable when the cursor is over the very thing that is
+    // selected — the same ordering the wash and the hover ring keep,
+    // and for the same reason. `Ring::SELECTED`'s own pipeline call: one
+    // [`Ring`] per `Outline::render`, so the held ring's colour cannot be
+    // the hover ring's even for one frame.
+    if !held_item_outline.is_empty() || !held_mobile_outline.is_empty() {
+        let timed = profile::begin(window.gpu.as_ref(), "held ring", encoder);
+        window.outline.render(
+            &window.device,
+            &window.queue,
+            encoder,
+            outline::Frame {
+                target: view,
+                mask: &held_view,
+                mask_size: (render_width, render_height),
+                rect: viewport,
+            },
+            Ring::SELECTED.for_zoom(camera.zoom()),
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
+    if !outline_quads.is_empty() || !mobile_outline.is_empty() {
+        let timed = profile::begin(window.gpu.as_ref(), "outline ring", encoder);
+        window.outline.render(
+            &window.device,
+            &window.queue,
+            encoder,
+            outline::Frame {
+                target: view,
+                mask: &mask_view,
+                mask_size: (render_width, render_height),
+                rect: viewport,
+            },
+            // The soft ring — an edge with a glow behind it — widened when
+            // the world is minified, where one mask texel is less than one
+            // screen pixel and a hairline breaks into a dashed line. See
+            // `Ring::for_zoom`.
+            Ring::SOFT.for_zoom(camera.zoom()),
+        );
+        profile::end(window.gpu.as_ref(), encoder, timed);
+    }
+}
+
+/// Everything `frame::assemble` and its neighbours collected for one frame —
+/// see [`assemble_geometry`]'s own doc.
+struct FrameGeometry {
+    /// The flames, the grid they are occluded by, the ambient, and the two
+    /// per-fragment knobs the lighting pass reads — `frame::assemble`'s own.
+    lighting: light::Lighting,
+    /// The land, back to front.
+    quads: Vec<ground::GroundQuad>,
+    /// The map's furniture and the server's items, split so a corner static's
+    /// two faces carry their own id — see `sprite::split_corners`.
+    static_instances: openshard_client_render::sprite::InstanceRows,
+    /// Every box every drawn static stands as — `docs/lighting_rebuild.md`
+    /// phase 6.
+    static_boxes: Vec<openshard_client_render::impostor::Volume>,
+    /// Raw vertices for every visible climbable static's mesh.
+    mesh_vertices: Vec<openshard_client_render::mesh_face::MeshFaceVertex>,
+    /// One row per face represented in `mesh_vertices`.
+    mesh_rows: Vec<openshard_client_render::mesh_face::MeshFaceRow>,
+    /// What a click is holding, placed exactly as the picture placed it.
+    select_quads: Vec<SpriteQuad>,
+    /// The silhouette the hover ring is grown from.
+    outline_quads: Vec<SpriteQuad>,
+    /// The same, for what a click is holding.
+    held_item_outline: Vec<SpriteQuad>,
+    /// The creature silhouette the hover ring is grown from.
+    mobile_outline: Vec<SpriteQuad>,
+    /// The same, for what a click is holding.
+    held_mobile_outline: Vec<SpriteQuad>,
+    /// The crowd's own pictures.
+    mobile_quads: Vec<SpriteQuad>,
+    /// What the frame was asked for, in the same words `frame::Inputs::summary`
+    /// gives — kept beside the pictures for the F12 dump. `None` unless a
+    /// dump is armed.
+    asked_for: Option<String>,
+}
+
+/// Everything the world's pictures are built from, out of `frame::assemble`
+/// and the outline/mobile collectors beside it — the part of presenting a
+/// frame that is genuinely **only** drawing: every parameter here is `&`
+/// except `graphics`, which is handed over for the one field
+/// `frame::Inputs::bake` writes through (`occlusion_bake`) rather than for
+/// `self` as a whole. See [`ready_atlases`]'s doc for the same shape applied
+/// to the atlases, and `App::draw_from`'s Step three doc for where this call
+/// sits between them.
+#[allow(clippy::too_many_arguments)]
+fn assemble_geometry(
+    resources: &resources::Resources,
+    graphics: &mut graphics::GraphicsSettings,
+    world: &world::WorldState,
+    picking: &picking::Picking,
+    window: &Screen,
+    camera: Camera,
+    cutaway: &Cutaway,
+    tuning: &light::Tuning,
+    lit_item: Option<usize>,
+    lit_mobile: Option<usize>,
+    held_item: Option<usize>,
+    held_mobile: Option<usize>,
+    drawn: &[Mobile],
+) -> FrameGeometry {
+    // Three skies and not two: night, a daylight with a sun in it, and the
+    // plain daylight that is the identity — the frame the blit has always
+    // copied through untouched. The middle one is a key today; see
+    // `App::sunlit`.
+    let sky = match (graphics.night, graphics.sunlit) {
+        (true, _) => Some(light::NIGHT),
+        (false, true) => Some(light::SKYLIGHT),
+        // Daylight, where the pass is a copy and no grid is built at all —
+        // unless the solids view is on, and then the grid *is* the subject.
+        // `Ambient::DAY` flattened is the identity, so the picture under the
+        // boxes is the same daylight frame it was; what it buys is that the
+        // list drawn is the one the shader would walk, out of the same bake,
+        // rather than a second walk of the map made for the view. See
+        // `docs/lighting.md` step 23.0.
+        (false, false) => graphics.show_solids.then_some(light::Ambient::DAY),
+    };
+    // And whether a tile's share of it depends on what stands over the tile.
+    // Off by default: see `App::sky_field`, and `light::Ambient::flattened`
+    // for why the flat one is the baseline rather than a lesser version.
+    let sky = match graphics.sky_field {
+        true => sky,
+        false => sky.map(light::Ambient::flattened),
+    };
+    // One pick (`lit_item`, at the top of the frame), two effects, and the
+    // style decides which of them is asked for. `None` is how each is
+    // switched off, so neither pass has a mode to branch on: the hue pass
+    // draws an item that is not highlighted, and the silhouette pass is
+    // handed an empty list.
+    let hued = graphics.highlight_style.hues().then_some(lit_item).flatten();
+    let ringed = graphics.highlight_style.rings().then_some(lit_item).flatten();
+
+    // Where the player's own picture will land, asked before the statics
+    // are collected rather than after: `frame::assemble` places a tree's
+    // canopy against this rectangle, so a leaf that would be drawn over
+    // the body is cut instead of hung over it — see
+    // `cutaway::hides_foliage_over`. `None` only for the one frame the
+    // atlas has not yet grown a frame for this body and group, same as
+    // `mobiles::head_anchor`'s own gap.
+    let player_rect = mobiles::screen_rect(&world.player, &camera, &window.atlases.mobiles);
+
+    // **One assembly, and the client is a caller of it like any other** —
+    // `docs/parity.md`, decision D1. This sequence used to be written out by
+    // hand here and in six other places, every one of them free to pass a
+    // different cutaway, a different grid or a different clock; each of them
+    // did, and the difference was only ever found by reading. Everything a
+    // caller may honestly differ on is a field of `frame::Inputs` now, so
+    // what this frame is can be compared against what a tool's frame is
+    // rather than pieced together from two call sites.
+    let inputs = frame::Inputs {
+        map: &resources.map,
+        items: &world.items,
+        camera: &camera,
+        tiledata: &resources.tiledata,
+        animations: &world.tile_animations,
+        cutaway,
+        land: &window.atlases.land,
+        texmaps: &window.atlases.texmaps,
+        // The pictures, which is where an occluder's *facing* comes from: a
+        // wall stops a ray only where the ray crosses the side the wall
+        // stands on, and only the art says which side that is. One atlas for
+        // the grid and for both sprite passes, so they cannot be about two
+        // different sets of sprites.
+        statics: &window.atlases.statics,
+        sky,
+        // The sun is a property of the sky and not of the tiles, so it is an
+        // input to the frame rather than something walked with them — and
+        // never at night, where a second source lighting every roof would
+        // undo the whole point of the dark. Where the Light tab put it,
+        // which is `light::midday` until somebody moves a slider — see
+        // `light::SunTuning`.
+        sun: (graphics.sunlit && !graphics.night).then(|| tuning.sun.sun()),
+        // And the flame in the player's own hand, which no walk of the map
+        // could have found — see `light::carried`. The offset is where the
+        // sprite is *actually* drawn this instant, past `at`'s tile, so the
+        // pool glides with the walk instead of jumping once a step.
+        carried: graphics.lantern.then_some((
+            world.player.at,
+            mobiles::walked_offset(&world.player),
+            world.player.facing,
+        )),
+        tuning,
+        flame_time: world.flame_clock.as_secs_f32(),
+        // The blocks of the occlusion grid built for earlier frames. A
+        // camera that has moved a tile wants the same five hundred and fifty
+        // blocks it wanted last frame bar a handful — see `occlusion::bake`,
+        // and `StaticAtlas::revision` for what makes this let go when the
+        // atlas learns something new about a graphic.
+        bake: Some(&mut graphics.occlusion_bake),
+        highlight: hued,
+        // The live client meets every sprite against its own boxes whenever
+        // it has a grid at all. F10 is not this field: turning the lights off
+        // takes the *sky* away, and a frame with no sky has no grid for
+        // anything to be met against.
+        impostor: Impostor::Met,
+        // Which producers this frame draws — the World tab's own boxes. The
+        // whole world unless somebody has ticked one off, and the lighting is
+        // collected from all of it whatever they tick: see `frame::Draw`.
+        draw: graphics.drawing,
+        // The view is the looker's, not the world's: a diagnostic draws from
+        // the values this frame was lit with, and in daylight those are the
+        // ambient and the place attachment — which is exactly what a person
+        // checking the place channel wants to see, without having to make it
+        // night first.
+        view: graphics.light_view,
+        // `docs/combat.md`'s D9: the screen greys for the character this
+        // client is, not for the offline placeholder — which has no view
+        // and so is never a ghost.
+        dead: world.view.as_ref().is_some_and(|view| view.player.dead),
+        player_rect,
+    };
+    // **What the frame was asked for**, kept beside the pictures the dump
+    // below writes. A picture on its own cannot be reproduced: two frames
+    // that differ say nothing about *which* input differed, and the client's
+    // arguments were readable until now only by reading this function. Only
+    // when a dump is armed — `summary` walks every field and allocates.
+    let asked_for = graphics.frame_dump.as_ref().map(|_| inputs.summary());
+    let frame::Frame {
+        lighting,
+        ground: quads,
+        statics:
+            statics::StaticGeometry {
+                quads: static_quads,
+                mesh_vertices,
+                mesh_rows,
+                boxes: static_boxes,
+            },
+    } = frame::assemble(inputs);
+
+    // What a click is holding, placed exactly as the picture placed it —
+    // `statics::selected` is `statics::collect`'s own arithmetic — so the
+    // mask lands on the wall's pixels rather than beside them. Empty on
+    // every frame with nothing selected, which is what switches the pass off.
+    let select_quads = statics::selected(
+        &camera,
+        &resources.tiledata,
+        &world.tile_animations,
+        &window.atlases.statics,
+        cutaway,
+        picking.selected.and_then(SelectedIdentity::as_static),
+    );
+    // The same quads as the picture's, so the ring lands on the sprite
+    // rather than beside it — see `items::outlined`.
+    let outline_quads = items::outlined(
+        &world.items,
+        &camera,
+        &resources.tiledata,
+        &world.tile_animations,
+        &window.atlases.statics,
+        cutaway,
+        ringed,
+    );
+    // The held item's own silhouette, through the same function and for
+    // the same reason — a second call rather than folding `held_item` into
+    // `ringed` above, because the two are drawn with different [`Ring`]s
+    // into different masks: this is what a click named, not what the
+    // cursor is over.
+    let held_item_outline = items::outlined(
+        &world.items,
+        &camera,
+        &resources.tiledata,
+        &world.tile_animations,
+        &window.atlases.statics,
+        cutaway,
+        held_item,
+    );
+    // A corner static's two faces get their own id past this point — see
+    // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
+    let static_instances = split_corners(static_quads);
+    // The same two effects for a creature, off the same style switch and
+    // the same one-pick-a-frame rule: `lit_mobile` and `lit_item` are never
+    // both `Some` (see where they are asked), so exactly one of the four
+    // lists below is ever non-empty.
+    let mobile_hued = graphics.highlight_style.hues().then_some(lit_mobile).flatten();
+    let mobile_ringed = graphics.highlight_style.rings().then_some(lit_mobile).flatten();
+    let mobile_outline = mobiles::outlined(
+        drawn,
+        &camera,
+        &window.atlases.mobiles,
+        cutaway,
+        &resources.equip_conv,
+        mobile_ringed,
+    );
+    // The held mobile's own silhouette — see `held_item_outline` above for
+    // why this is a second call and not `mobile_ringed` itself.
+    let held_mobile_outline = mobiles::outlined(
+        drawn,
+        &camera,
+        &window.atlases.mobiles,
+        cutaway,
+        &resources.equip_conv,
+        held_mobile,
+    );
+    let mobile_quads = mobiles::collect(
+        drawn,
+        &camera,
+        &window.atlases.mobiles,
+        cutaway,
+        &resources.equip_conv,
+        mobile_hued,
+    );
+    FrameGeometry {
+        lighting,
+        quads,
+        static_instances,
+        static_boxes,
+        mesh_vertices,
+        mesh_rows,
+        select_quads,
+        outline_quads,
+        held_item_outline,
+        mobile_outline,
+        held_mobile_outline,
+        mobile_quads,
+        asked_for,
+    }
+}
+
+/// One frame's own facts — see [`App::frame_facts`]'s doc for what makes this
+/// worth a struct: every field is a pure question of `&self`, asked once
+/// against one camera, and nothing here is written back except through the
+/// three lines at `App::draw_from`'s call site that read `pick.static_`,
+/// `on_mobile` and `on_item` back out again.
+struct FrameFacts {
+    /// Whether anybody is looking at the window at all — see [`App::watched`].
+    watched: bool,
+    /// The roof cutaway this frame's picks and picture are both drawn under.
+    cutaway: Cutaway,
+    /// What the cursor is over and what it lit — see [`Pick`].
+    pick: Pick,
+    /// The crowd as the mobile pass's own atlas already has it packed — the
+    /// list `on_mobile` indexes into, and `None` before there is a window at
+    /// all.
+    drawn_mobiles: Option<Vec<(Who, Mobile)>>,
+    /// The creature the cursor is over, indexing `drawn_mobiles` — the
+    /// unfiltered form of [`Pick::mobile`], kept here because
+    /// `App::draw_from` reads it back into `self.picking` regardless of the
+    /// highlight mode: what a click selects is not a question about lighting.
+    on_mobile: Option<usize>,
+    /// The item the cursor is over, indexing `self.world.items` — the
+    /// unfiltered form of [`Pick::item`], for the same reason.
+    on_item: Option<usize>,
+    /// What a click is holding, turned back into an index into
+    /// `drawn_mobiles`.
+    held_mobile: Option<usize>,
+    /// What a click is holding, turned back into an index into
+    /// `self.world.item_serials`.
+    held_item: Option<usize>,
 }
 
 impl App {
@@ -2945,7 +3549,7 @@ impl App {
         // handshake — a client that stepped locally and corrected later would
         // be predicting, and the prediction lives in `Walk` where it can be
         // rolled back.
-        if let Some(link) = self.link.as_ref() {
+        if let Some(link) = self.world.link.as_ref() {
             link.step(facing);
             return false;
         }
@@ -2962,15 +3566,21 @@ impl App {
         // the body on every one of them was a real body covering twice the
         // ground its pace implied.
         let turn = matches!(
-            openshard_movement::intend(self.player.at, Facing::walking(self.player.facing), facing),
+            openshard_movement::intend(
+                self.world.player.at,
+                Facing::walking(self.world.player.facing),
+                facing
+            ),
             openshard_movement::Intent::Turned { .. }
         );
         let (x, y) = match turn {
-            true => (self.player.at.x, self.player.at.y),
+            true => (self.world.player.at.x, self.world.player.at.y),
             false => {
                 let (dx, dy) = facing.direction.step();
-                let x = (i32::from(self.player.at.x) + dx).clamp(0, self.map.width() as i32 - 1);
-                let y = (i32::from(self.player.at.y) + dy).clamp(0, self.map.height() as i32 - 1);
+                let x =
+                    (i32::from(self.world.player.at.x) + dx).clamp(0, self.resources.map.width() as i32 - 1);
+                let y =
+                    (i32::from(self.world.player.at.y) + dy).clamp(0, self.resources.map.height() as i32 - 1);
                 (x as u16, y as u16)
             }
         };
@@ -2984,8 +3594,9 @@ impl App {
         // climbs a staircase; the nearest-height guess walks through it. See
         // `link.rs`'s online `Command::Step`, which wants the identical answer
         // once a server is involved.
-        let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
-        let ground = i8::try_from(terrain.predict_step(self.player.at, x, y)).unwrap_or(self.player.at.z);
+        let terrain = terrain(&self.resources);
+        let ground =
+            i8::try_from(terrain.predict_step(self.world.player.at, x, y)).unwrap_or(self.world.player.at.z);
         // The crowd's clock first, before the step is folded in, and for the
         // same reason `App::user_event` does it for a step off the wire: a step
         // is timestamped with `Crowd`'s own `now`, and this is called from
@@ -2995,7 +3606,8 @@ impl App {
         // stale instant. This is the offline half of the walk and it had the
         // defect the online half was already fixed for.
         let now = Instant::now();
-        self.crowd
+        self.world
+            .crowd
             .advance(now.saturating_duration_since(self.last_advance));
         self.last_advance = now;
         // Through the crowd like anyone else, so the placeholder walks when it
@@ -3005,23 +3617,23 @@ impl App {
         // sent this placeholder a `0x78` — so whatever it was already wearing
         // is carried across by hand, the way `WorldView` carries it across a
         // `0x77`/`0x20` that names none either.
-        let equipment = std::mem::take(&mut self.player.equipment);
-        self.player = self.crowd.see(
+        let equipment = std::mem::take(&mut self.world.player.equipment);
+        self.world.player = self.world.crowd.see(
             None,
             Point::new(x, y, ground),
-            self.player.body,
+            self.world.player.body,
             facing,
-            self.player.hue,
+            self.world.player.hue,
             // At peace, and not a placeholder for an unknown: this is the
             // offline viewer's body, and there is no shard to have put it in a
             // stance. See `App::walk`'s own docs.
             false,
         );
-        self.player.equipment = equipment;
+        self.world.player.equipment = equipment;
         // Offline there is no shard to refuse a step, so nothing here is
         // speculative the way an online prediction is — trusted outright,
         // same as a correction is.
-        self.cutaway_at = self.player.at;
+        self.world.cutaway_at = self.world.player.at;
         // Offline the body is what the camera is locked to, exactly as the
         // server's is when there is a server. Unlocked, walking still walks and
         // the body may leave the screen — walking and looking are different
@@ -3043,7 +3655,7 @@ impl App {
     /// nearest one — a move order nobody gave is worse than one that did
     /// nothing.
     /// The mouse's whole share of walking, one call for both of its idioms:
-    /// `self.ctrl_held` says which. Without Ctrl this is a heading — no map
+    /// `self.input.ctrl_held` says which. Without Ctrl this is a heading — no map
     /// touched, no route planned, the same "run toward the cursor" a strategy
     /// game's held mouse button means. With it, a move order: a route planned
     /// with `find_path` to the exact tile. See `steer.rs`'s module docs for why
@@ -3053,26 +3665,26 @@ impl App {
         let Some(tile) = self.pick_tile(*self.control.camera()) else {
             return false;
         };
-        let opened = self.clutter.over_with_doors_open(&self.map, &self.tiledata);
-        let cluttered = self.clutter.over(&self.map, &self.tiledata);
+        let opened = cluttered_with_doors_open(&self.world, &self.resources);
+        let cluttered = cluttered(&self.world, &self.resources);
         let ground = steer::Ground {
             real: &cluttered,
             through_doors: &opened,
         };
-        let facing = if self.ctrl_held {
+        let facing = if self.input.ctrl_held {
             self.steer.go_to(
                 (tile.at.x, tile.at.y),
-                self.player.at,
+                self.world.player.at,
                 Instant::now(),
-                self.player.facing,
+                self.world.player.facing,
                 ground,
             )
         } else {
             self.steer.steer(
                 self.ask_to_cursor(*self.control.camera()),
-                self.player.at,
+                self.world.player.at,
                 Instant::now(),
-                self.player.facing,
+                self.world.player.facing,
                 ground,
             )
         };
@@ -3130,7 +3742,7 @@ impl App {
         let cursor = self.control.cursor();
         // The body's *drawn* pixel, height and all: what a player aims relative
         // to is the sprite they can see, not the tile beneath it.
-        ask_between(camera::project(self.player.at), camera.pick(cursor))
+        ask_between(camera::project(self.world.player.at), camera.pick(cursor))
     }
 
     /// Double-click whatever the cursor is over: ask the shard to use it.
@@ -3167,7 +3779,12 @@ impl App {
         // The same cutaway the frame was drawn with, computed the same way: a
         // barrel hidden under a roof this client is not drawing is not something
         // the player can have pointed at.
-        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
+        let cutaway = Cutaway::at(
+            &self.resources.map,
+            &self.resources.tiledata,
+            self.world.cutaway_at,
+            true,
+        );
         // A creature under the cursor takes the click, and no item is used: it
         // is what the highlight is telling the player they are pointing at, and
         // using the barrel *behind* the shopkeeper is the one answer that is
@@ -3181,31 +3798,31 @@ impl App {
             &camera,
             &window.atlases.mobiles,
             &cutaway,
-            &self.equip_conv,
+            &self.resources.equip_conv,
             self.control.cursor(),
         );
         if let Some(index) = on_mobile {
             // A body with no serial is one this client is drawing without the
             // shard having named it — the offline viewer's placeholder — and
             // there is nothing to ask about.
-            if let (Some(serial), Some(link)) = (drawn[index].0, self.link.as_ref()) {
+            if let (Some(serial), Some(link)) = (drawn[index].0, self.world.link.as_ref()) {
                 link.use_object(serial);
             }
             return;
         }
         let Some(index) = items::pick(
-            &self.items,
+            &self.world.items,
             &camera,
-            &self.tiledata,
-            &self.tile_animations,
+            &self.resources.tiledata,
+            &self.world.tile_animations,
             &window.atlases.statics,
             &cutaway,
             self.control.cursor(),
         ) else {
             return;
         };
-        let serial = self.item_serials[index];
-        match self.link.as_ref() {
+        let serial = self.world.item_serials[index];
+        match self.world.link.as_ref() {
             Some(link) => link.use_object(serial),
             None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),
         }
@@ -3231,7 +3848,7 @@ impl App {
     /// always have been: what the player clicked is what they were shown they
     /// were pointing at.
     fn attack_under_cursor(&self) {
-        let Some(view) = self.view.as_ref() else {
+        let Some(view) = self.world.view.as_ref() else {
             return;
         };
         if !view.player.war || view.player.dead {
@@ -3240,7 +3857,7 @@ impl App {
         // `on_mobile` is a `Who` — `None` inside the `Some` is a body no shard
         // has named, which the offline viewer draws and nothing can be asked
         // about.
-        let Some(Some(mobile)) = self.on_mobile else {
+        let Some(Some(mobile)) = self.picking.on_mobile else {
             return;
         };
         // Attacking yourself is a packet the shard refuses (`combat::attack`
@@ -3249,7 +3866,7 @@ impl App {
         if mobile == view.player.serial {
             return;
         }
-        match self.link.as_ref() {
+        match self.world.link.as_ref() {
             Some(link) => link.attack(mobile),
             None => tracing::info!(serial = mobile.raw(), "nothing attacked: no shard is connected"),
         }
@@ -3283,26 +3900,26 @@ impl App {
     /// with it (see `WorldView::apply`'s `Remove` arm), and a window over
     /// nothing must not outlive it.
     fn sync_own_windows(&mut self) {
-        let Some(view) = self.view.as_ref() else {
+        let Some(view) = self.world.view.as_ref() else {
             // No world, no windows: a map viewer has no shard to have opened
             // one, and anything left over is from a session that has ended.
-            self.own_windows.clear();
+            self.windows.own_windows.clear();
             // Including the skill window, whose existence is this field: a tree
             // left standing here would reopen the window at the next login with
             // the last session's headings shut.
-            self.skills = None;
-            self.held_skill = None;
+            self.windows.skills = None;
+            self.windows.held_skill = None;
             return;
         };
         // The state a dialog holds that no packet does, kept in step with the
         // same list: a window the shard has taken away forgets its page, its
         // switches and the finger on it — see `gump::Dialogs::sync`.
-        self.dialogs.sync(&view.gumps);
+        self.windows.dialogs.sync(&view.gumps);
         reconcile_own_windows(
             view,
-            &mut self.own_windows,
-            &mut self.locally_closed,
-            self.skills.is_some(),
+            &mut self.windows.own_windows,
+            &mut self.windows.locally_closed,
+            self.windows.skills.is_some(),
         );
     }
 
@@ -3316,13 +3933,13 @@ impl App {
     /// a hole in the frame's own corner is not: both fall out of asking the
     /// list, and neither did when this asked the background alone.
     ///
-    /// The list is the last frame's — see [`App::drawn_windows`] for why it is
+    /// The list is the last frame's — see [`windows::Windows::drawn_windows`] for why it is
     /// remembered rather than laid out again here — and the z-order is
-    /// [`App::own_windows`]'s, which is current: raising a window on the press
+    /// [`windows::Windows::own_windows`]'s, which is current: raising a window on the press
     /// must not wait for a frame.
     fn window_under_pointer(&self) -> Option<WindowSubject> {
-        let cursor = self.pointer_gump;
-        self.own_windows.iter().rev().find_map(|window| {
+        let cursor = self.input.pointer_gump;
+        self.windows.own_windows.iter().rev().find_map(|window| {
             let drawn = self.drawn(window.subject)?;
             // A dialog's fields are the one part of a window that is a box
             // rather than a picture — see `gump::Field` — and a click in one is
@@ -3334,14 +3951,15 @@ impl App {
                     return Some(window.subject);
                 }
             }
-            gump_art::pick(drawn.pictures(), cursor, &self.gump_atlas).map(|_| window.subject)
+            gump_art::pick(drawn.pictures(), cursor, &self.resources.gump_atlas).map(|_| window.subject)
         })
     }
 
     /// What the last frame drew for one window, or `None` for a window that has
     /// not been drawn yet — every window on the frame its packet arrived.
     fn drawn(&self, subject: WindowSubject) -> Option<&Drawn> {
-        self.drawn_windows
+        self.windows
+            .drawn_windows
             .iter()
             .find(|(drawn, _)| *drawn == subject)
             .map(|(_, drawn)| drawn)
@@ -3350,7 +3968,8 @@ impl App {
     /// The dialog a subject names, out of the view, or `None` if the shard has
     /// taken it away since.
     fn open_gump(&self, gump_id: GumpId) -> Option<&openshard_client_net::view::OpenGump> {
-        self.view
+        self.world
+            .view
             .as_ref()?
             .gumps
             .iter()
@@ -3361,12 +3980,13 @@ impl App {
     /// the one drawn over the others.
     fn raise_window(&mut self, subject: WindowSubject) {
         if let Some(index) = self
+            .windows
             .own_windows
             .iter()
             .position(|window| window.subject == subject)
         {
-            let window = self.own_windows.remove(index);
-            self.own_windows.push(window);
+            let window = self.windows.own_windows.remove(index);
+            self.windows.own_windows.push(window);
         }
     }
 
@@ -3386,7 +4006,7 @@ impl App {
         let Some(subject) = self.window_under_pointer() else {
             // A press that missed every window gives the keyboard back: a field
             // stays focused only while the player is still in the dialog.
-            self.dialogs.unfocus();
+            self.windows.dialogs.unfocus();
             return false;
         };
         self.raise_window(subject);
@@ -3402,14 +4022,16 @@ impl App {
                     // window is borrowed out of `self`. A laid-out window is a
                     // few hundred bytes and this happens once per click.
                     let window = window.clone();
-                    let cursor = self.pointer_gump;
+                    let cursor = self.input.pointer_gump;
                     let gump = gump.clone();
-                    self.dialogs.press(&gump, &window, cursor, &self.gump_atlas)
+                    self.windows
+                        .dialogs
+                        .press(&gump, &window, cursor, &self.resources.gump_atlas)
                 }
                 _ => false,
             };
             if taken {
-                self.dragging = None;
+                self.windows.dragging = None;
                 return true;
             }
             // `{ nomove }`: the press is still the window's — it must not reach
@@ -3419,7 +4041,7 @@ impl App {
                 .open_gump(gump_id)
                 .is_some_and(|gump| gump::flags(gump).no_move)
             {
-                self.dragging = None;
+                self.windows.dragging = None;
                 return true;
             }
         }
@@ -3431,8 +4053,8 @@ impl App {
         // doll up.
         if let WindowSubject::Paperdoll(_) = subject {
             if let Some(button) = self.doll_button_under_pointer(subject) {
-                self.held_doll = Some((subject, button));
-                self.dragging = None;
+                self.windows.held_doll = Some((subject, button));
+                self.windows.dragging = None;
                 return true;
             }
         }
@@ -3443,22 +4065,23 @@ impl App {
         // move both at once.
         if subject == WindowSubject::Skills {
             if let Some(hit) = self.skill_hit_under_pointer() {
-                self.held_skill = Some(hit);
-                self.dragging = None;
+                self.windows.held_skill = Some(hit);
+                self.windows.dragging = None;
                 return true;
             }
         }
         let grab = self
+            .windows
             .own_windows
             .last()
             .map(|window| {
                 GumpPixel::new(
-                    self.pointer_gump.x - window.at.x,
-                    self.pointer_gump.y - window.at.y,
+                    self.input.pointer_gump.x - window.at.x,
+                    self.input.pointer_gump.y - window.at.y,
                 )
             })
             .unwrap_or_default();
-        self.dragging = Some((subject, grab));
+        self.windows.dragging = Some((subject, grab));
         true
     }
 
@@ -3466,7 +4089,7 @@ impl App {
     /// over one at all.
     ///
     /// Against the list the last frame drew and the atlas it was drawn from —
-    /// [`App::drawn_windows`]' rule — so this and the picture on the screen
+    /// [`windows::Windows::drawn_windows`]' rule — so this and the picture on the screen
     /// cannot answer differently. `hits` is what turns an index into a meaning;
     /// a picture that is not in it is the frame, the body or a garment, and a
     /// press there is a press on the window.
@@ -3474,7 +4097,11 @@ impl App {
         let Some(Drawn::Paperdoll(doll)) = self.drawn(subject) else {
             return None;
         };
-        let index = gump_art::pick(&doll.pictures, self.pointer_gump, &self.gump_atlas)?;
+        let index = gump_art::pick(
+            &doll.pictures,
+            self.input.pointer_gump,
+            &self.resources.gump_atlas,
+        )?;
         doll.hits.get(&index).copied()
     }
 
@@ -3489,7 +4116,7 @@ impl App {
         let Some(Drawn::Skills(sheet)) = self.drawn(WindowSubject::Skills) else {
             return None;
         };
-        sheet.hit(self.pointer_gump, &self.gump_atlas)
+        sheet.hit(self.input.pointer_gump, &self.resources.gump_atlas)
     }
 
     /// How tall the list is right now — what every scroll is clamped against.
@@ -3498,8 +4125,10 @@ impl App {
     /// clamp against a stale height either refuses a scroll that is now legal or
     /// allows one that is not.
     fn skill_content(&self) -> i32 {
-        match self.skills.as_ref() {
-            Some(tree) => skills::content_height(&self.skill_names, &self.skill_groups, tree),
+        match self.windows.skills.as_ref() {
+            Some(tree) => {
+                skills::content_height(&self.resources.skill_names, &self.resources.skill_groups, tree)
+            }
             None => 0,
         }
     }
@@ -3515,12 +4144,12 @@ impl App {
         // borrow and this one cannot both stand.
         let jumped = match hit {
             skills::Hit::Track => match self.drawn(WindowSubject::Skills) {
-                Some(Drawn::Skills(sheet)) => Some(sheet.offset_at(self.pointer_gump, content)),
+                Some(Drawn::Skills(sheet)) => Some(sheet.offset_at(self.input.pointer_gump, content)),
                 _ => None,
             },
             _ => None,
         };
-        let Some(tree) = self.skills.as_mut() else {
+        let Some(tree) = self.windows.skills.as_mut() else {
             return;
         };
         match hit {
@@ -3529,7 +4158,8 @@ impl App {
             // so it is clamped against what the list is *now*.
             skills::Hit::Heading(group) => {
                 tree.toggle(group);
-                let content = skills::content_height(&self.skill_names, &self.skill_groups, tree);
+                let content =
+                    skills::content_height(&self.resources.skill_names, &self.resources.skill_groups, tree);
                 tree.scroll_to(tree.offset(), content);
             }
             skills::Hit::Up => tree.scroll_by(-skills::STEP, content),
@@ -3545,6 +4175,7 @@ impl App {
             // sends nothing here.
             skills::Hit::Lock(id) => {
                 let shard = self
+                    .world
                     .view
                     .as_ref()
                     .and_then(|view| view.player.skills.get(&id.0))
@@ -3556,12 +4187,12 @@ impl App {
                     SkillLock::Locked => SkillLock::Up,
                 };
                 tree.set_lock(id, next);
-                if let Some(link) = self.link.as_ref() {
+                if let Some(link) = self.world.link.as_ref() {
                     link.set_skill_lock(RawSkillId(id.0), next);
                 }
             }
             skills::Hit::Use(id) => {
-                if let Some(link) = self.link.as_ref() {
+                if let Some(link) = self.world.link.as_ref() {
                     link.use_skill(RawSkillId(id.0));
                 }
             }
@@ -3575,15 +4206,15 @@ impl App {
     /// for the same reason: a drag is a gesture that is under way between a
     /// press and a release, and the release only ends it.
     fn drag_thumb(&mut self) -> bool {
-        if self.held_skill != Some(skills::Hit::Thumb) {
+        if self.windows.held_skill != Some(skills::Hit::Thumb) {
             return false;
         }
         let content = self.skill_content();
         let Some(Drawn::Skills(sheet)) = self.drawn(WindowSubject::Skills) else {
             return false;
         };
-        let offset = sheet.offset_at(self.pointer_gump, content);
-        let Some(tree) = self.skills.as_mut() else {
+        let offset = sheet.offset_at(self.input.pointer_gump, content);
+        let Some(tree) = self.windows.skills.as_mut() else {
             return false;
         };
         let before = tree.offset();
@@ -3603,7 +4234,7 @@ impl App {
             return false;
         }
         let content = self.skill_content();
-        if let Some(tree) = self.skills.as_mut() {
+        if let Some(tree) = self.windows.skills.as_mut() {
             // A notch is a row, and up the wheel is up the list.
             let step = match notches > 0.0 {
                 true => -skills::STEP,
@@ -3621,7 +4252,7 @@ impl App {
     /// the button comes back up on the way out either way, and a page button
     /// changes what the window is showing without a packet leaving.
     fn release_on_own_window(&mut self) -> bool {
-        if let Some(hit) = self.held_skill.take() {
+        if let Some(hit) = self.windows.held_skill.take() {
             // The same "still on the same picture" rule the doll's buttons
             // follow. The thumb is the exception that needs no arm: it has
             // already done its work, on every mouse move since the press.
@@ -3630,7 +4261,7 @@ impl App {
             }
             return true;
         }
-        if let Some((subject, button)) = self.held_doll.take() {
+        if let Some((subject, button)) = self.windows.held_doll.take() {
             // Only if the pointer is still on the same button. A press that
             // slid off one is not a click on it — the reference's own rule for
             // every control it draws — and it is not a click on whatever the
@@ -3642,7 +4273,7 @@ impl App {
             // to come back up.
             return true;
         }
-        let Some(gump_id) = self.dialogs.holding() else {
+        let Some(gump_id) = self.windows.dialogs.holding() else {
             return false;
         };
         let subject = WindowSubject::Dialog(gump_id);
@@ -3651,14 +4282,19 @@ impl App {
         };
         let window = window.clone();
         let gump = gump.clone();
-        let cursor = self.pointer_gump;
-        let reply = self.dialogs.release(&gump, &window, cursor, &self.gump_atlas);
+        let cursor = self.input.pointer_gump;
+        let reply = self
+            .windows
+            .dialogs
+            .release(&gump, &window, cursor, &self.resources.gump_atlas);
         if let Some(reply) = reply {
             // A reply takes the window down with it: the shard sends one `0xB0`
             // and waits for one `0xB1`, and nothing ever arrives to say the
             // dialog is gone. `answer_gump` is what tells the view.
             self.answer_gump(reply);
-            self.own_windows.retain(|window| window.subject != subject);
+            self.windows
+                .own_windows
+                .retain(|window| window.subject != subject);
         }
         true
     }
@@ -3699,7 +4335,7 @@ impl App {
         // is this question and not a second field: only our own frame carries
         // the six buttons and the toggle, but a stranger's carries Status and
         // the profile scroll, and those name the body they were clicked on.
-        let Some(view) = self.view.as_ref() else {
+        let Some(view) = self.world.view.as_ref() else {
             return;
         };
         let own = view.player.serial == mobile;
@@ -3731,7 +4367,7 @@ impl App {
             | paperdoll::DollButton::Backpack => self.scroll_paired(subject, button),
             _ => false,
         };
-        let Some(link) = self.link.as_ref() else {
+        let Some(link) = self.world.link.as_ref() else {
             return;
         };
         // Set inside the match and acted on after it: the link is borrowed out
@@ -3792,14 +4428,14 @@ impl App {
             // alone — the headings the player shut stay shut — and asks the
             // shard for the list once more, which is what the reference's own
             // button does.
-            self.skills.get_or_insert_with(skills::Tree::default);
+            self.windows.skills.get_or_insert_with(skills::Tree::default);
         }
     }
 
     /// Whether this click on a scroll is the second of a pair, on the same
     /// scroll of the same window.
     ///
-    /// [`App::last_click`]'s rule, applied to a picture instead of the world:
+    /// [`input::Input::last_click`]'s rule, applied to a picture instead of the world:
     /// cleared when a pair fires, so a third click starts a fresh one, and the
     /// subject and the button are both compared — two clicks on two different
     /// scrolls are two first clicks, not a double click on the second.
@@ -3808,19 +4444,23 @@ impl App {
     /// first click and never reach here.
     fn scroll_paired(&mut self, subject: WindowSubject, button: paperdoll::DollButton) -> bool {
         let now = Instant::now();
-        let paired = scroll_pairs(self.last_scroll, now, subject, button);
-        self.last_scroll = (!paired).then_some((now, subject, button));
+        let paired = scroll_pairs(self.windows.last_scroll, now, subject, button);
+        self.windows.last_scroll = (!paired).then_some((now, subject, button));
         paired
     }
 
     /// Move the window being dragged so that the point the player grabbed stays
     /// under the cursor. Answers whether anything moved.
     fn drag_own_window(&mut self) -> bool {
-        let Some((subject, grab)) = self.dragging else {
+        let Some((subject, grab)) = self.windows.dragging else {
             return false;
         };
-        let at = GumpPixel::new(self.pointer_gump.x - grab.x, self.pointer_gump.y - grab.y);
+        let at = GumpPixel::new(
+            self.input.pointer_gump.x - grab.x,
+            self.input.pointer_gump.y - grab.y,
+        );
         let Some(window) = self
+            .windows
             .own_windows
             .iter_mut()
             .find(|window| window.subject == subject)
@@ -3848,7 +4488,7 @@ impl App {
 
     /// The topmost of this client's own windows, closed from the keyboard.
     ///
-    /// [`App::own_windows`] is in painter's order, so its last entry is the one
+    /// [`windows::Windows::own_windows`] is in painter's order, so its last entry is the one
     /// drawn over the others — which is what a player means by "this window"
     /// when they have not pointed at anything.
     ///
@@ -3861,7 +4501,7 @@ impl App {
     /// `CONTAINER_ORIGIN`, which is inside where the dev window opens — so for
     /// as long as Escape quit the client, it was a window with no way out.
     fn close_top_window(&mut self) -> bool {
-        let Some(subject) = self.own_windows.last().map(|window| window.subject) else {
+        let Some(subject) = self.windows.own_windows.last().map(|window| window.subject) else {
             return false;
         };
         self.close_window(subject)
@@ -3878,7 +4518,7 @@ impl App {
     /// Nothing goes out on the wire, for either kind. There is no
     /// close-container packet and no close-paperdoll packet — the shard keeps
     /// its own list of who has what open — which is why this end predicts the
-    /// close locally (see [`App::locally_closed`]) rather than waiting for a
+    /// close locally (see [`windows::Windows::locally_closed`]) rather than waiting for a
     /// packet that never comes.
     /// A dialog is the one kind that *does* send something: the shard is
     /// waiting for a `0xB1` and gets button zero, which is what the reference
@@ -3890,37 +4530,39 @@ impl App {
             let Some(gump) = self.open_gump(gump_id).cloned() else {
                 return false;
             };
-            let Some(reply) = self.dialogs.dismiss(&gump) else {
+            let Some(reply) = self.windows.dialogs.dismiss(&gump) else {
                 // Answered by its own buttons or not at all. The press is still
                 // the window's — it must not steer the body — so this says the
                 // window took it.
                 return true;
             };
             self.answer_gump(reply);
-            self.own_windows.retain(|window| window.subject != subject);
-            self.dragging = None;
+            self.windows
+                .own_windows
+                .retain(|window| window.subject != subject);
+            self.windows.dragging = None;
             return true;
         }
-        if self.view.is_none() {
+        if self.world.view.is_none() {
             return false;
         }
         match subject {
             WindowSubject::Container(serial) => {
-                // The overlay, not `self.view`, is what says this is closed —
+                // The overlay, not `self.world.view`, is what says this is closed —
                 // that copy is never authoritative, see D2 in
                 // `docs/client_window_state.md`. The shard thread's own
                 // `WorldView` is what every future snapshot is cloned whole
                 // from, and telling it is what `link::Command::CloseWindow`
                 // is for; the overlay is what keeps this end from drawing the
                 // stale, still-open entry in the meantime.
-                self.locally_closed.insert(subject);
-                if let Some(link) = self.link.as_ref() {
+                self.windows.locally_closed.insert(subject);
+                if let Some(link) = self.world.link.as_ref() {
                     link.close_window(link::CloseTarget::Container(serial));
                 }
             }
             WindowSubject::Paperdoll(serial) => {
-                self.locally_closed.insert(subject);
-                if let Some(link) = self.link.as_ref() {
+                self.windows.locally_closed.insert(subject);
+                if let Some(link) = self.world.link.as_ref() {
                     link.close_window(link::CloseTarget::Paperdoll(serial));
                 }
             }
@@ -3932,13 +4574,15 @@ impl App {
             // and a window with no memory is the backlog entry both kinds
             // already share.
             WindowSubject::Skills => {
-                self.skills = None;
-                self.held_skill = None;
+                self.windows.skills = None;
+                self.windows.held_skill = None;
             }
             WindowSubject::Dialog(_) => unreachable!("answered above"),
         }
-        self.own_windows.retain(|window| window.subject != subject);
-        self.dragging = None;
+        self.windows
+            .own_windows
+            .retain(|window| window.subject != subject);
+        self.windows.dragging = None;
         true
     }
 
@@ -3953,7 +4597,7 @@ impl App {
     /// silently: the map viewer has nobody to talk to, and a chat box that
     /// swallowed what was typed would read as a broken connection.
     fn say(&mut self, line: String) {
-        match self.link.as_ref() {
+        match self.world.link.as_ref() {
             Some(link) => link.say(line),
             None => tracing::info!(%line, "nothing said: no shard is connected"),
         }
@@ -3964,10 +4608,10 @@ impl App {
     /// The close is this end's, and it is why the overlay is set here rather
     /// than waiting for a packet: the server sends one `0xB0` and waits for
     /// one `0xB1`, and nothing ever arrives to say the window is gone. See
-    /// [`App::locally_closed`].
+    /// [`windows::Windows::locally_closed`].
     fn answer_gump(&mut self, reply: link::GumpReply) {
         let gump_id = openshard_protocol::gump::GumpId(reply.gump_id.0);
-        if let Some(link) = self.link.as_ref() {
+        if let Some(link) = self.world.link.as_ref() {
             link.answer_gump(reply);
             // The reply itself leaves on the wire, but nothing about it tells
             // the shard thread's own `WorldView` — which every future
@@ -3975,8 +4619,8 @@ impl App {
             // `link::Command::CloseWindow`.
             link.close_window(link::CloseTarget::Gump(gump_id));
         }
-        if self.view.is_some() {
-            self.locally_closed.insert(WindowSubject::Dialog(gump_id));
+        if self.world.view.is_some() {
+            self.windows.locally_closed.insert(WindowSubject::Dialog(gump_id));
         }
     }
 
@@ -3986,8 +4630,8 @@ impl App {
     /// a relock mid-step would otherwise land up to half a tile from the sprite
     /// and be corrected on the frame after.
     fn relock(&mut self) {
-        self.player.drawn = self.drawn_player();
-        self.control.relock(mobiles::gaze(&self.player));
+        self.world.player.drawn = self.world.drawn_player();
+        self.control.relock(mobiles::gaze(&self.world.player));
     }
 
     /// Where our own body is drawn this instant, off the crowd's clock.
@@ -3998,12 +4642,6 @@ impl App {
     /// number. A crowd that has never heard of us — before a shard names the
     /// body, and for the frame a placeholder is created on — answers with the
     /// tile, which is where a body nobody is easing stands.
-    fn drawn_player(&self) -> Gaze {
-        self.crowd
-            .drawn_for(self.me())
-            .unwrap_or_else(|| Gaze::on(self.player.at))
-    }
-
     /// Whether there is anybody to show a frame to: the window has the keyboard
     /// and is not covered.
     ///
@@ -4012,7 +4650,7 @@ impl App {
     /// crowd has to be where it would have been when the player comes back —
     /// but it does it on the animation clock rather than at the display's rate.
     fn watched(&self) -> bool {
-        self.focused && !self.occluded
+        self.input.focused && !self.input.occluded
     }
 
     /// What is deciding when the next frame is drawn.
@@ -4050,7 +4688,7 @@ impl App {
     /// The fallback timer's interval. See [`App::pacing`] for when it is the one
     /// that decides.
     fn redraw_interval(&self) -> std::time::Duration {
-        let moving = self.crowd.anyone_gliding() || self.control.settling() || self.replay.is_some();
+        let moving = self.world.crowd.anyone_gliding() || self.control.settling() || self.replay.is_some();
         if moving { GLIDE_INTERVAL } else { FRAME_DELAY }
     }
 
@@ -4062,7 +4700,7 @@ impl App {
     /// refuses anyway, because a guard that only lives in a widget is a guard
     /// until somebody adds a keybinding.
     fn start_replay(&mut self, name: &str) {
-        if self.link.is_some() {
+        if self.world.link.is_some() {
             return;
         }
         let Some(script) = self.scripts.iter().find(|script| script.name == name).cloned() else {
@@ -4070,10 +4708,14 @@ impl App {
         };
         // The height the script's own `z = 0` means here. Read once, from the
         // tile it starts on — see `Replay`'s docs on why not per tile.
-        let ground = script.knots().first().map_or(self.player.at.z, |knot| {
-            Self::in_bounds(i32::from(knot.from.x), i32::from(knot.from.y), &self.map)
-                .and_then(|(x, y)| self.map.land(x, y))
-                .map_or(self.player.at.z, |cell| cell.z)
+        let ground = script.knots().first().map_or(self.world.player.at.z, |knot| {
+            Self::in_bounds(
+                i32::from(knot.from.x),
+                i32::from(knot.from.y),
+                &self.resources.map,
+            )
+            .and_then(|(x, y)| self.resources.map.land(x, y))
+            .map_or(self.world.player.at.z, |cell| cell.z)
         });
         let replay = replay::Replay::new(script, ground);
         if let Some(start) = replay.start() {
@@ -4081,20 +4723,20 @@ impl App {
             // that strolled to the start of a scenario would be measured on the
             // way there, and an eye that eased across a facet is a second
             // motion on top of the one being looked at.
-            let (body, hue) = (self.player.body, self.player.hue);
-            let equipment = std::mem::take(&mut self.player.equipment);
-            let war = self.view.as_ref().is_some_and(|view| view.player.war);
-            self.player = self.crowd.snap(
-                self.me(),
+            let (body, hue) = (self.world.player.body, self.world.player.hue);
+            let equipment = std::mem::take(&mut self.world.player.equipment);
+            let war = self.world.view.as_ref().is_some_and(|view| view.player.war);
+            self.world.player = self.world.crowd.snap(
+                self.world.me(),
                 start,
                 body,
-                Facing::walking(self.player.facing),
+                Facing::walking(self.world.player.facing),
                 hue,
                 war,
             );
-            self.player.equipment = equipment;
-            self.cutaway_at = self.player.at;
-            self.control.relock(mobiles::gaze(&self.player));
+            self.world.player.equipment = equipment;
+            self.world.cutaway_at = self.world.player.at;
+            self.control.relock(mobiles::gaze(&self.world.player));
         }
         // The frames either side of a start are two different runs, and a metric
         // over both is a number about nothing.
@@ -4113,31 +4755,29 @@ impl App {
         let moves = replay.advance(elapsed);
         let finished = replay.finished();
         for step in moves {
-            let (body, hue) = (self.player.body, self.player.hue);
-            let equipment = std::mem::take(&mut self.player.equipment);
+            let (body, hue) = (self.world.player.body, self.world.player.hue);
+            let equipment = std::mem::take(&mut self.world.player.equipment);
             // The stance the session is actually in: a replay walks this body
             // through a recorded route, and what it is wearing or holding is
             // not part of the recording — so a scenario replayed while at war
             // is drawn at war, exactly as the same walk would be live.
-            let war = self.view.as_ref().is_some_and(|view| view.player.war);
-            self.player = match step.glided {
-                true => self.crowd.see(self.me(), step.to, body, step.facing, hue, war),
-                false => self.crowd.snap(self.me(), step.to, body, step.facing, hue, war),
+            let war = self.world.view.as_ref().is_some_and(|view| view.player.war);
+            self.world.player = match step.glided {
+                true => self
+                    .world
+                    .crowd
+                    .see(self.world.me(), step.to, body, step.facing, hue, war),
+                false => self
+                    .world
+                    .crowd
+                    .snap(self.world.me(), step.to, body, step.facing, hue, war),
             };
-            self.player.equipment = equipment;
-            self.cutaway_at = self.player.at;
+            self.world.player.equipment = equipment;
+            self.world.cutaway_at = self.world.player.at;
         }
         if finished {
             self.replay = None;
         }
-    }
-
-    /// Who the crowd knows our own body as.
-    ///
-    /// Our serial once a shard has named us, and `None` for the offline
-    /// placeholder — see [`Who`].
-    fn me(&self) -> Who {
-        self.view.as_ref().map(|view| view.player.serial)
     }
 
     /// Point the eye at our own body, wherever the glide has it this instant.
@@ -4153,8 +4793,8 @@ impl App {
     /// through lags by whatever the difference was — which varies frame to
     /// frame, and varying lag is what an eye reads as a stutter.
     fn follow_player(&mut self, elapsed: std::time::Duration) {
-        self.player.drawn = self.drawn_player();
-        let gaze = mobiles::gaze(&self.player);
+        self.world.player.drawn = self.world.drawn_player();
+        let gaze = mobiles::gaze(&self.world.player);
         self.control.follow_body(gaze, elapsed);
         // What the eye was asked for, what the screen was given, and what the
         // filter had before the quantiser — the three the bench records, from
@@ -4221,18 +4861,18 @@ impl App {
         // shard serving a different one draws this client the wrong ground with
         // no complaint from either end. Said once, because it is a
         // misconfiguration and not an event.
-        if !self.facet_checked {
-            self.facet_checked = true;
-            if u32::from(view.map.width) != self.map.width()
-                || u32::from(view.map.height) != self.map.height()
+        if !self.world.facet_checked {
+            self.world.facet_checked = true;
+            if u32::from(view.map.width) != self.resources.map.width()
+                || u32::from(view.map.height) != self.resources.map.height()
             {
                 eprintln!(
                     "the shard's facet is {}x{} and {} is {}x{}: the ground drawn is not the ground you are standing on",
                     view.map.width,
                     view.map.height,
-                    self.map.facet_name(),
-                    self.map.width(),
-                    self.map.height(),
+                    self.resources.map.facet_name(),
+                    self.resources.map.width(),
+                    self.resources.map.height(),
                 );
             }
         }
@@ -4249,7 +4889,7 @@ impl App {
         // Ours is the one body whose pace is not guessed at: we send its steps.
         // Said every update rather than once, because the serial is the shard's
         // to name and nothing here is told when it does.
-        self.crowd.commanding(me);
+        self.world.crowd.commanding(me);
         // A rollback is also the one thing that makes `steer.rs`'s idea of which
         // way this body was last sent a lie — it is a step ahead of the shard on
         // purpose, and a refusal is the shard saying that step never happened.
@@ -4259,8 +4899,8 @@ impl App {
         if body.corrected {
             self.steer.corrected(body.predicted.facing.direction);
         }
-        self.player = match body.corrected {
-            true => self.crowd.snap(
+        self.world.player = match body.corrected {
+            true => self.world.crowd.snap(
                 me,
                 body.predicted.position,
                 view.player.body,
@@ -4270,7 +4910,7 @@ impl App {
                 // set — D9's `!InWarMode || IsDead`.
                 view.player.war && !view.player.dead,
             ),
-            false => self.crowd.see(
+            false => self.world.crowd.see(
                 me,
                 body.predicted.position,
                 view.player.body,
@@ -4283,7 +4923,7 @@ impl App {
                 view.player.war && !view.player.dead,
             ),
         };
-        self.player.equipment = crowd::worn(&view.player.equipment, &self.tiledata);
+        self.world.player.equipment = crowd::worn(&view.player.equipment, &self.resources.tiledata);
         // Sorted by serial for the same reason, and for one more: two items on
         // one tile at one height are drawn in the order they arrive here, so an
         // order that changed every frame would flicker.
@@ -4294,21 +4934,21 @@ impl App {
         // folded in is part of that.
         let mut items: Vec<_> = view.items.iter().collect();
         items.sort_unstable_by_key(|(serial, _)| serial.raw());
-        self.items.clear();
-        self.item_serials.clear();
+        self.world.items.clear();
+        self.world.item_serials.clear();
         for (serial, item) in items {
-            self.items.push(GroundItem {
+            self.world.items.push(GroundItem {
                 at: item.position,
                 graphic: item.graphic,
                 hue: item.hue,
             });
-            self.item_serials.push(*serial);
+            self.world.item_serials.push(*serial);
         }
         // The same list read for a second question — not what to draw, but what
         // a step cannot go through. Rebuilt here rather than per decision: one
         // click plans a route over hundreds of tiles, and each of them would
         // otherwise rescan everything on screen. See `clutter.rs`.
-        self.clutter = clutter::Clutter::of(&self.items, &self.tiledata);
+        self.world.clutter = clutter::Clutter::of(&self.world.items, &self.resources.tiledata);
         // `cutaway_at` follows the same prediction `player.at` does, with one
         // guard: it only ever advances to a tile the client's own static map
         // agrees is reachable from the one it already held. A correction is
@@ -4316,13 +4956,13 @@ impl App {
         // is; an optimistic step is only trusted here when it is not one
         // `Steering::detour` is going to have offered into a wall this end
         // can already see — see the field's own doc for why.
-        self.cutaway_at = match body.corrected {
+        self.world.cutaway_at = match body.corrected {
             true => body.predicted.position,
             false => {
-                let terrain = self.clutter.over(&self.map, &self.tiledata);
-                match terrain.can_step(self.cutaway_at, body.predicted.position) {
+                let terrain = cluttered(&self.world, &self.resources);
+                match terrain.can_step(self.world.cutaway_at, body.predicted.position) {
                     Some(_) => body.predicted.position,
-                    None => self.cutaway_at,
+                    None => self.world.cutaway_at,
                 }
             }
         };
@@ -4330,7 +4970,7 @@ impl App {
         // in a different order every frame is a rebuild every frame.
         let mut others: Vec<_> = view.mobiles.iter().collect();
         others.sort_unstable_by_key(|(serial, _)| serial.raw());
-        self.others = others
+        self.world.others = others
             .into_iter()
             .map(|(serial, mobile)| {
                 let who = Some(*serial);
@@ -4340,7 +4980,7 @@ impl App {
                 // A ghost is drawn no sword regardless: nothing on the wire
                 // says a stranger died, but their body id does — see
                 // `is_ghost` — the same D9 gate the player's own body gets.
-                let mut drawn = self.crowd.see(
+                let mut drawn = self.world.crowd.see(
                     who,
                     mobile.position,
                     mobile.body,
@@ -4348,7 +4988,7 @@ impl App {
                     mobile.hue,
                     mobile.war() && !is_ghost(mobile.body),
                 );
-                drawn.equipment = crowd::worn(&mobile.equipment, &self.tiledata);
+                drawn.equipment = crowd::worn(&mobile.equipment, &self.resources.tiledata);
                 (who, drawn)
             })
             .collect();
@@ -4356,31 +4996,33 @@ impl App {
         // goes with them. Our own body is kept by its serial like anyone else's;
         // the placeholder's `None` is gone the moment a shard names us, which is
         // right — it was never a mobile.
-        self.crowd.retain(|who| {
+        self.world.crowd.retain(|who| {
             who.is_some_and(|serial| serial == view.player.serial || view.mobiles.contains_key(&serial))
         });
-        self.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
+        self.world.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
         // The newest line in the journal, heard once and hung over its
         // speaker's head for a while — compared against the old view, still
-        // in `self.view` at this point, so a redraw that changed nothing else
+        // in `self.world.view` at this point, so a redraw that changed nothing else
         // does not restart the hold on the same sentence. A system line
         // (`serial: None`) has no mobile to hang over and is left for the
         // HUD's world window instead, which is not built yet.
         if let Some(latest) = view.journal.back() {
             let already_heard = self
+                .world
                 .view
                 .as_ref()
                 .is_some_and(|previous| previous.journal.back() == Some(latest));
             if !already_heard {
                 if let Some(serial) = latest.serial {
-                    self.crowd
+                    self.world
+                        .crowd
                         .hear(Some(serial), latest.text.clone(), latest.font, latest.hue);
                 }
             }
         }
         // Whole, for the HUD's world window: the three projections above are
         // what the renderer wants, and none of them keeps a serial.
-        self.view = Some(Box::new(view.clone()));
+        self.world.view = Some(Box::new(view.clone()));
         // The camera follows the body, which is what `0x20` is for — unless it
         // has been unlocked, in which case the eye is the mouse's and the body
         // is free to walk off the screen. `Home` puts it back. After the view is
@@ -4407,15 +5049,17 @@ impl App {
     /// map. Shared by the live hover and a click's frozen selection, so the two
     /// can never disagree about what a tile contains.
     fn tile_info(&self, x: u16, y: u16) -> shell::PickedTile {
-        let land = self.map.land(x, y);
+        let land = self.resources.map.land(x, y);
         let statics = self
+            .resources
             .map
             .statics_at(x, y)
             // Wrapped here rather than in `uofiles`: `StaticItem` holds bare
             // `u16`s, and typing the format reader is a `common/` decision of
             // its own. This is the boundary the HUD's own types start at.
             .map(|item| {
-                let priority_z = depth::static_priority_z(item.z, self.tiledata.static_tile(item.tile));
+                let priority_z =
+                    depth::static_priority_z(item.z, self.resources.tiledata.static_tile(item.tile));
                 (
                     Graphic(item.tile),
                     shell::Height(item.z),
@@ -4427,17 +5071,18 @@ impl App {
         // A server item (the shard's own decoration, not the client's map art)
         // sorts exactly like a static — `statics::place` reads it through the
         // same `depth::static_priority_z` — but lives in a different list:
-        // `self.map.statics_at` only ever answers from the client's own files,
+        // `self.resources.map.statics_at` only ever answers from the client's own files,
         // so a sign or a prop the shard's script placed is invisible to it.
         // Missing it here is what let a static-only panel misname what was
         // actually drawing over a mobile on screen.
         let items = self
+            .world
             .items
             .iter()
             .filter(|item| item.at.x == x && item.at.y == y)
             .map(|item| {
                 let priority_z =
-                    depth::static_priority_z(item.at.z, self.tiledata.static_tile(item.graphic.0));
+                    depth::static_priority_z(item.at.z, self.resources.tiledata.static_tile(item.graphic.0));
                 (
                     item.graphic,
                     shell::Height(item.at.z),
@@ -4468,8 +5113,8 @@ impl App {
         // the cursor unable to hit a pier tile at all. `predict_z` is the same
         // "which surface, coming from here" the walk itself uses, asked from the
         // body's own height so a floor overhead does not win over the street.
-        let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
-        let stand = terrain.predict_z(x, y, i32::from(self.player.at.z));
+        let terrain = terrain(&self.resources);
+        let stand = terrain.predict_z(x, y, i32::from(self.world.player.at.z));
         // Clamped rather than unwrapped: a `z` outside `i8` is a corrupt
         // block, and a diamond at the wrong height beats a panic in a HUD.
         let stand_z = stand.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
@@ -4485,11 +5130,11 @@ impl App {
         // exactly the land's average height is drawn sloped; it is level ground
         // wherever that coincidence is not one, and a corner off by a unit or
         // two is a better wrong answer than a marker that ignores the hill.
-        let corners = match self.map.average_land_z(x, y) == Some(stand_z) {
+        let corners = match self.resources.map.average_land_z(x, y) == Some(stand_z) {
             // `land_corners` reads top, right, *left*, bottom, and the facet
             // wants top, right, bottom, left — swapping the pair is what keeps
             // the quad from being a bow tie.
-            true => match self.map.land_corners(x, y) {
+            true => match self.resources.map.land_corners(x, y) {
                 Some([top, right, left, bottom]) => [top, right, bottom, left],
                 None => [stand_z; 4],
             },
@@ -4506,7 +5151,7 @@ impl App {
         // would be one of its own. The surfaces themselves come from the map:
         // where a floor *is* is a fact about the facet, and only whether a body
         // fits on it depends on what has been put there since.
-        let cluttered = self.clutter.over(&self.map, &self.tiledata);
+        let cluttered = cluttered(&self.world, &self.resources);
         let mut levels: Vec<(shell::Height, bool)> = terrain
             .surfaces(x, y)
             .into_iter()
@@ -4566,7 +5211,7 @@ impl App {
                 }
                 let x = i32::from(centre.at.x) + dx;
                 let y = i32::from(centre.at.y) + dy;
-                if let Some((x, y)) = Self::in_bounds(x, y, &self.map) {
+                if let Some((x, y)) = Self::in_bounds(x, y, &self.resources.map) {
                     ring.push(self.tile_info(x, y));
                 }
             }
@@ -4590,21 +5235,22 @@ impl App {
     /// a step lands on are one answer rather than two.
     ///
     /// `camera` is the frame's own and not `self.control`'s, for the reason
-    /// [`App::hud`] takes one: what tile a pixel is over is a question about the
-    /// picture being drawn, and reading it from a camera that has moved since is
-    /// how the highlight ends up a frame away from the ground under it.
+    /// [`App::frame_facts`] takes one: what tile a pixel is over is a question
+    /// about the picture being drawn, and reading it from a camera that has
+    /// moved since is how the highlight ends up a frame away from the ground
+    /// under it.
     fn pick_tile(&self, camera: Camera) -> Option<shell::PickedTile> {
         let cursor = self.control.cursor();
         let world_px = camera.pick(cursor);
-        let near = i32::from(self.player.at.z);
-        let (mut x, mut y) = camera::unproject(world_px, self.player.at.z);
-        if let Some((ux, uy)) = Self::in_bounds(x, y, &self.map) {
-            let terrain = openshard_movement::MapTerrain::new(self.map.as_ref(), &self.tiledata);
+        let near = i32::from(self.world.player.at.z);
+        let (mut x, mut y) = camera::unproject(world_px, self.world.player.at.z);
+        if let Some((ux, uy)) = Self::in_bounds(x, y, &self.resources.map) {
+            let terrain = terrain(&self.resources);
             let z = terrain.predict_z(ux, uy, near);
             let z = z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
             (x, y) = camera::unproject(world_px, z);
         }
-        let (x, y) = Self::in_bounds(x, y, &self.map)?;
+        let (x, y) = Self::in_bounds(x, y, &self.resources.map)?;
         Some(self.tile_info(x, y))
     }
 
@@ -4621,6 +5267,7 @@ impl App {
                 static_: picked,
                 tile: self.tile_info(picked.at.x, picked.at.y),
                 prism: self
+                    .resources
                     .surfaces
                     .as_ref()
                     .and_then(|surfaces| surfaces.shape(picked.graphic).prism),
@@ -4638,7 +5285,7 @@ impl App {
                             you: drawn_who.is_none(),
                             serial: match drawn_who {
                                 Some(serial) => Some(serial),
-                                None => self.view.as_ref().map(|view| view.player.serial),
+                                None => self.world.view.as_ref().map(|view| view.player.serial),
                             },
                             body: mobile.body,
                             hue: mobile.hue,
@@ -4648,13 +5295,16 @@ impl App {
                         (picked, self.tile_info(mobile.at.x, mobile.at.y))
                     }),
             ),
-            SelectedIdentity::Item(serial) => {
-                shell::Selection::Item(self.item_serials.iter().position(|held| *held == serial).map(
-                    |index| {
-                        let item = self.items[index];
+            SelectedIdentity::Item(serial) => shell::Selection::Item(
+                self.world
+                    .item_serials
+                    .iter()
+                    .position(|held| *held == serial)
+                    .map(|index| {
+                        let item = self.world.items[index];
                         let priority_z = shell::PriorityZ(depth::static_priority_z(
                             item.at.z,
-                            self.tiledata.static_tile(item.graphic.0),
+                            self.resources.tiledata.static_tile(item.graphic.0),
                         ));
                         let picked = shell::PickedItem {
                             serial,
@@ -4664,9 +5314,8 @@ impl App {
                             priority_z,
                         };
                         (picked, self.tile_info(item.at.x, item.at.y))
-                    },
-                ))
-            }
+                    }),
+            ),
         }
     }
 
@@ -4680,9 +5329,9 @@ impl App {
     fn solid_cut(&self) -> openshard_client_render::solid::Cut {
         use openshard_client_render::solid::Cut;
 
-        match self.solids_everything {
+        match self.graphics.solids_everything {
             true => Cut::Nothing,
-            false => Cut::BelowFeet(self.player.at.z),
+            false => Cut::BelowFeet(self.world.player.at.z),
         }
     }
 
@@ -4735,15 +5384,15 @@ impl App {
     fn terrain_overlay(&self, camera: Camera) -> shell::TerrainOverlay {
         use openshard_movement::{PLAYER_HEIGHT, Tile};
 
-        let terrain = self.clutter.over(&self.map, &self.tiledata);
-        let near = i32::from(self.player.at.z);
+        let terrain = cluttered(&self.world, &self.resources);
+        let near = i32::from(self.world.player.at.z);
         let mut open = Vec::new();
         let mut blocked = Vec::new();
         // The same clamp the ground pass uses, so the wash covers exactly the
         // tiles that were drawn and no strip of it hangs off the map.
         if let Some((xs, ys)) = camera
             .visible_tiles()
-            .clamp_to(self.map.width(), self.map.height())
+            .clamp_to(self.resources.map.width(), self.resources.map.height())
         {
             for y in ys {
                 for x in xs.clone() {
@@ -4798,8 +5447,8 @@ impl App {
     /// The cost is one bounded [`find_path`] (two, where the way is barred)
     /// while a destination is live, and nothing at all otherwise.
     fn route_shown(&self, hover: Option<&shell::PickedTile>) -> Option<shell::Route> {
-        let opened = self.clutter.over_with_doors_open(&self.map, &self.tiledata);
-        let cluttered = self.clutter.over(&self.map, &self.tiledata);
+        let opened = cluttered_with_doors_open(&self.world, &self.resources);
+        let cluttered = cluttered(&self.world, &self.resources);
         let ground = steer::Ground {
             real: &cluttered,
             through_doors: &opened,
@@ -4810,11 +5459,11 @@ impl App {
             // question — "where would a click here take me" — and is asked only
             // while somebody has that overlay open to read the answer against.
             None => {
-                let tile = hover.filter(|_| self.show_terrain)?;
+                let tile = hover.filter(|_| self.graphics.show_terrain)?;
                 (tile.at.x, tile.at.y)
             }
         };
-        let plan = steer::plan(ground, self.player.at, goal)?;
+        let plan = steer::plan(ground, self.world.player.at, goal)?;
         // Directions walked out into the tiles they land on. `step_allowed`
         // because it is what corrects a step's `z` to the surface it lands on,
         // which is the height the line is drawn at — and over each half's own
@@ -4839,8 +5488,8 @@ impl App {
         // line and not a dot. The barred half carries on from wherever the open
         // one stopped — the body's tile when nothing at all is walkable, which
         // is a body standing at the shut door.
-        let mut open = vec![self.player.at];
-        open.extend(walk_out(&cluttered, self.player.at, plan.open));
+        let mut open = vec![self.world.player.at];
+        open.extend(walk_out(&cluttered, self.world.player.at, plan.open));
         let from = *open.last().unwrap();
         let mut barred = walk_out(&opened, from, plan.barred);
         if !barred.is_empty() {
@@ -4875,37 +5524,37 @@ impl App {
         // either side of it were flown by the same camera, and what the scope
         // measures is the eye against the body it was given.
         if let Some(ease) = request.ease {
-            self.crowd.set_ease(ease);
+            self.world.crowd.set_ease(ease);
         }
         if let Some(draw) = request.draw {
-            self.drawing = draw;
+            self.graphics.drawing = draw;
         }
         if let Some(show) = request.show_terrain {
-            self.show_terrain = show;
+            self.graphics.show_terrain = show;
         }
         if let Some(show) = request.show_occluders {
-            self.show_occluders = show;
+            self.graphics.show_occluders = show;
         }
         if let Some(show) = request.show_solids {
-            self.show_solids = show;
+            self.graphics.show_solids = show;
         }
         if let Some(only) = request.solids_only {
-            self.solids_only = only;
+            self.graphics.solids_only = only;
         }
         if let Some(opaque) = request.solids_opaque {
-            self.solids_opaque = opaque;
+            self.graphics.solids_opaque = opaque;
         }
         // The variant and not the `z` in it: what the person picked holds across
         // frames, and the height they were standing at when they picked it is
         // this frame's business — see [`App::solid_cut`].
         if let Some(cut) = request.solid_cut {
-            self.solids_everything = matches!(cut, openshard_client_render::solid::Cut::Nothing);
+            self.graphics.solids_everything = matches!(cut, openshard_client_render::solid::Cut::Nothing);
         }
         if let Some(target) = request.highlight {
-            self.highlight = target;
+            self.graphics.highlight = target;
         }
         if let Some(style) = request.highlight_style {
-            self.highlight_style = style;
+            self.graphics.highlight_style = style;
         }
         // The window the metrics are taken over, and not a clear: the frames
         // already held were flown by the same rig.
@@ -4921,20 +5570,24 @@ impl App {
             let shape = openshard_client_render::occlusion::Shape {
                 prism: Some(prism),
                 ..self
+                    .resources
                     .surfaces
                     .as_ref()
                     .map_or(openshard_client_render::occlusion::Shape::UNREAD, |surfaces| {
                         surfaces.shape(graphic)
                     })
             };
-            self.surfaces.get_or_insert_default().author(graphic, shape);
-            self.repack_forced = true;
+            self.resources
+                .surfaces
+                .get_or_insert_default()
+                .author(graphic, shape);
+            self.resources.repack_forced = true;
             // Cleared like the eviction branch clears it: the next `wanted`
             // this frame computes has to be the whole visible set and not a
             // delta off the *old* atlas's coverage, since a delta would not
             // include `graphic` if it was already on screen before the edit
             // — which, for the debug HUD, it always was.
-            self.covered = None;
+            self.graphics.covered = None;
         }
     }
 
@@ -4950,65 +5603,101 @@ impl App {
     /// no tile and lights no item, so nothing is highlighted under the panel and
     /// nothing is highlighted where the pointer *was* when it went over one; a
     /// pointer that has left the window is the other half, and the one no egui
-    /// state can answer — see [`App::pointer_inside`] and
+    /// state can answer — see [`input::Input::pointer_inside`] and
     /// [`shell::Shell::holds_pointer`].
     fn world_owns_pointer(&self) -> bool {
-        self.pointer_inside && !self.shell.as_ref().is_some_and(shell::Shell::holds_pointer)
+        self.input.pointer_inside && !self.shell.as_ref().is_some_and(shell::Shell::holds_pointer)
     }
 
-    /// `lit_item` and `lit_mobile` are what [`items::pick`] and
-    /// [`mobiles::pick`] answered for this frame, handed in
-    /// rather than asked again: the HUD and the world passes are two readers of
-    /// one picture, and the tile marker is drawn or not drawn on the strength of
-    /// whether an item took the highlight. Asking twice would be two answers to
-    /// "what is the cursor on", and the frame where they disagree is the frame a
-    /// barrel is ringed *and* the ground under it is diamonded.
+    /// `pick` is what [`items::pick`], [`mobiles::pick`] and
+    /// [`statics::pick`] answered for this frame, handed in as the one value
+    /// [`App::frame_facts`] built them into rather than asked again: the HUD
+    /// and the world passes are two readers of one picture, and the tile
+    /// marker is drawn or not drawn on the strength of whether an item took
+    /// the highlight. Asking twice would be two answers to "what is the
+    /// cursor on", and the frame where they disagree is the frame a barrel is
+    /// ringed *and* the ground under it is diamonded.
     ///
     /// `cutaway` is handed in for the third reader of that same rule: the
     /// occluder overlay draws the grid the frame's lighting is about to build,
     /// and a grid built from a second cutaway would draw boxes for the storey
     /// this frame took away.
-    fn hud(
-        &self,
-        camera: Camera,
-        lit_item: Option<usize>,
-        lit_mobile: Option<usize>,
-        on_static: Option<PickedStatic>,
-        cutaway: &Cutaway,
-    ) -> shell::Hud {
-        let hover = match self.world_owns_pointer() {
-            true => self.pick_tile(camera),
-            false => None,
-        };
-        let neighbours = hover.as_ref().map_or_else(Vec::new, |tile| self.tile_ring(tile));
-        let (mobiles, items) = match self.view.as_ref() {
-            Some(view) => {
-                let mut mobiles: Vec<_> = view
-                    .mobiles
-                    .iter()
-                    .map(|(serial, mobile)| (*serial, mobile.body, mobile.position))
-                    .collect();
-                // Sorted, so a `HashMap`'s iteration order does not reshuffle
-                // the list under the reader's eyes every frame.
-                mobiles.sort_unstable_by_key(|(serial, _, _)| *serial);
-                let mut items: Vec<_> = view
-                    .items
-                    .iter()
-                    .map(|(serial, item)| (*serial, item.graphic, item.position))
-                    .collect();
-                items.sort_unstable_by_key(|(serial, _, _)| *serial);
-                (mobiles, items)
-            }
-            None => (Vec::new(), Vec::new()),
-        };
+    fn hud(&self, camera: Camera, pick: &Pick, cutaway: &Cutaway) -> shell::Hud {
         shell::Hud {
-            ease: self.crowd.ease(),
-            connection: self.connection.clone(),
-            serial: self.view.as_ref().map(|view| view.player.serial),
-            position: self.player.at,
-            camera,
             locked: self.control.follow() == Follow::Body,
             rig: self.control.rig(),
+            perf: self.perf(),
+            scripts: self.scripts.iter().map(|script| script.name).collect(),
+            replay: self.replay.as_ref().map(|replay| {
+                let length = replay.length().as_secs_f32().max(0.001);
+                (replay.name(), replay.at().as_secs_f32() / length)
+            }),
+            draw: self.graphics.drawing,
+            show_terrain: self.graphics.show_terrain,
+            // The tile is lit when nothing else took the highlight. Under
+            // `Items` nothing ever does, which is the mode's whole content; the
+            // ground is still hovered and the panel still reads it.
+            hover_lit: match self.graphics.highlight {
+                // The map's own furniture counts here as much as an item does,
+                // and it is the case this rule was missing: a wall under the
+                // cursor is what a click takes, so a diamond drawn on the ground
+                // *behind* it — which is where the cursor unprojects to, a wall
+                // being taller than the cell it stands on — is the client
+                // pointing at two tiles at once. That is the disagreement this
+                // arm exists to stop, and it had one more source than it knew.
+                shell::HighlightTarget::Auto => {
+                    pick.item.is_none() && pick.mobile.is_none() && pick.static_.is_none()
+                }
+                shell::HighlightTarget::Items => false,
+                shell::HighlightTarget::Tiles => true,
+            },
+            highlight: self.graphics.highlight,
+            highlight_style: self.graphics.highlight_style,
+            terrain: self.graphics.show_terrain.then(|| self.terrain_overlay(camera)),
+            route: self.route_shown(pick.tile.as_ref()),
+            show_occluders: self.graphics.show_occluders,
+            show_solids: self.graphics.show_solids,
+            solids_only: self.graphics.solids_only,
+            solids_opaque: self.graphics.solids_opaque,
+            solid_cut: self.solid_cut(),
+            solids: (self.graphics.solids_held, self.graphics.solids_drawn),
+            // The grid the lighting will build a few lines later in the same
+            // frame, built here a second time rather than kept from the last
+            // one: the HUD is drawn before the world passes, and a wireframe a
+            // frame behind the picture it is a claim about slides off every wall
+            // as the camera pans — which is the one artefact an instrument for
+            // finding misplaced occluders must not have.
+            //
+            // `light::lit_tiles`, not `camera.visible_tiles`: the grid is grown
+            // by the widest pool's reach, and a box drawn over a rectangle the
+            // shader did not walk would be a picture of this overlay's own
+            // bounds rather than of the lighting's.
+            occluders: self.graphics.show_occluders.then(|| {
+                occlusion::collect(
+                    &self.resources.map,
+                    &self.world.items,
+                    light::lit_tiles(&camera, &self.tuning()),
+                    &self.resources.tiledata,
+                    cutaway,
+                    // The same atlas the frame's own grid is built from, or the
+                    // wireframe would draw boxes the shader does not have.
+                    self.window.as_ref().map(|window| &window.atlases.statics),
+                )
+            }),
+            pick: pick.clone(),
+            selected: self
+                .picking
+                .selected
+                .map(|identity| self.resolve_selection(identity)),
+            goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
+        }
+    }
+
+    /// The perf snapshot the HUD panels read, gathered on its own because
+    /// nothing in it needs the camera or this frame's picks — see
+    /// [`frames::Perf`].
+    fn perf(&self) -> frames::Perf {
+        frames::Perf {
             readings: bench::readings(self.scope.samples()),
             // Two frames is one difference and no derivative of it. Absent
             // rather than a zero, which would read as "the eye was perfectly
@@ -5020,7 +5709,7 @@ impl App {
             worst_fps: self.frames.worst_fps(),
             // Which pass ate the device's frame. Cloned into the snapshot like
             // everything else here — a dozen short strings a frame — for the
-            // reason `Hud::readings` is: a panel that could reach back into the
+            // reason `Perf` exists: a panel that could reach back into the
             // screen would be reading a frame the screen has moved past.
             gpu_passes: self
                 .window
@@ -5034,73 +5723,6 @@ impl App {
             // a slow frame if the loop is on the animation clock, it is a frame
             // nobody asked for sooner.
             pacing: self.pacing(),
-            scripts: self.scripts.iter().map(|script| script.name).collect(),
-            replay: self.replay.as_ref().map(|replay| {
-                let length = replay.length().as_secs_f32().max(0.001);
-                (replay.name(), replay.at().as_secs_f32() / length)
-            }),
-            offline: self.link.is_none(),
-            mobiles,
-            items,
-            draw: self.drawing,
-            show_terrain: self.show_terrain,
-            // The tile is lit when nothing else took the highlight. Under
-            // `Items` nothing ever does, which is the mode's whole content; the
-            // ground is still hovered and the panel still reads it.
-            hover_lit: match self.highlight {
-                // The map's own furniture counts here as much as an item does,
-                // and it is the case this rule was missing: a wall under the
-                // cursor is what a click takes, so a diamond drawn on the ground
-                // *behind* it — which is where the cursor unprojects to, a wall
-                // being taller than the cell it stands on — is the client
-                // pointing at two tiles at once. That is the disagreement this
-                // arm exists to stop, and it had one more source than it knew.
-                shell::HighlightTarget::Auto => {
-                    lit_item.is_none() && lit_mobile.is_none() && on_static.is_none()
-                }
-                shell::HighlightTarget::Items => false,
-                shell::HighlightTarget::Tiles => true,
-            },
-            lit_mobile,
-            lit_item,
-            lit_static: on_static,
-            highlight: self.highlight,
-            highlight_style: self.highlight_style,
-            terrain: self.show_terrain.then(|| self.terrain_overlay(camera)),
-            route: self.route_shown(hover.as_ref()),
-            show_occluders: self.show_occluders,
-            show_solids: self.show_solids,
-            solids_only: self.solids_only,
-            solids_opaque: self.solids_opaque,
-            solid_cut: self.solid_cut(),
-            solids: (self.solids_held, self.solids_drawn),
-            // The grid the lighting will build a few lines later in the same
-            // frame, built here a second time rather than kept from the last
-            // one: the HUD is drawn before the world passes, and a wireframe a
-            // frame behind the picture it is a claim about slides off every wall
-            // as the camera pans — which is the one artefact an instrument for
-            // finding misplaced occluders must not have.
-            //
-            // `light::lit_tiles`, not `camera.visible_tiles`: the grid is grown
-            // by the widest pool's reach, and a box drawn over a rectangle the
-            // shader did not walk would be a picture of this overlay's own
-            // bounds rather than of the lighting's.
-            occluders: self.show_occluders.then(|| {
-                occlusion::collect(
-                    &self.map,
-                    &self.items,
-                    light::lit_tiles(&camera, &self.tuning()),
-                    &self.tiledata,
-                    cutaway,
-                    // The same atlas the frame's own grid is built from, or the
-                    // wireframe would draw boxes the shader does not have.
-                    self.window.as_ref().map(|window| &window.atlases.statics),
-                )
-            }),
-            hover,
-            neighbours,
-            selected: self.selected.map(|identity| self.resolve_selection(identity)),
-            goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
         }
     }
 
@@ -5110,15 +5732,20 @@ impl App {
     ///
     /// The group is refreshed from the crowd here and not in
     /// [`App::advance_to_clocks`] alone, because this list is what *packs* the
-    /// atlas as well as what draws from it — see [`App::wanted_in`]. `self.player`
-    /// and `self.others` hold the group as of the last packet, and
+    /// atlas as well as what draws from it — see [`App::wanted_in`]. `self.world.player`
+    /// and `self.world.others` hold the group as of the last packet, and
     /// [`Crowd::advance`] changes it without one: a body that walked into view
     /// and then stopped is drawn standing while the packet-time list still says
     /// walking. Pack one group and draw another and [`mobiles::place`] finds no
     /// frame, so the body simply vanishes — and stays vanished for as long as it
     /// stands still, there being no further packet to correct the list with.
     fn drawn_mobiles(&self) -> Vec<(Who, Mobile)> {
-        Self::everyone_drawn(&self.crowd, self.me(), &self.player, &self.others)
+        Self::everyone_drawn(
+            &self.world.crowd,
+            self.world.me(),
+            &self.world.player,
+            &self.world.others,
+        )
     }
 
     /// [`App::drawn_mobiles`] over the four fields it reads, so a test can build
@@ -5206,7 +5833,7 @@ impl App {
     /// the pick still names the same creature to the passes below.
     fn drawn_now(&self, atlas: &AnimAtlas) -> Vec<(Who, Mobile)> {
         let mut drawn = self.drawn_mobiles();
-        Self::advance_to_clocks(&self.crowd, atlas, &mut drawn);
+        Self::advance_to_clocks(&self.world.crowd, atlas, &mut drawn);
         drawn
     }
 
@@ -5356,17 +5983,17 @@ impl App {
 
         let wanted = self.wanted_now();
         let atlases = Atlases::build(
-            &self.art,
-            self.surfaces.as_ref(),
-            &self.texmaps,
-            &self.tiledata,
-            &mut self.anim,
+            &self.resources.art,
+            self.resources.surfaces.as_ref(),
+            &self.resources.texmaps,
+            &self.resources.tiledata,
+            &mut self.resources.anim,
             &wanted,
         )
         .map_err(StartupError::Atlas)?;
         // What the atlases were built for, which is what the band walk in
         // `draw` subtracts from on the next frame.
-        self.covered = Some(light::lit_tiles(self.control.camera(), &self.tuning()));
+        self.graphics.covered = Some(light::lit_tiles(self.control.camera(), &self.tuning()));
         // The world passes draw into the world texture, so they take *its*
         // format and not the surface's — the two differ on an HDR display,
         // where the first non-sRGB surface format is `Rgba16Float`.
@@ -5382,14 +6009,14 @@ impl App {
             &queue,
             blit::WORLD_FORMAT,
             atlases.statics.pixels(),
-            &self.hue_ramp,
+            &self.resources.hue_ramp,
         );
         let mobile_pass = SpriteRenderer::new(
             &device,
             &queue,
             blit::WORLD_FORMAT,
             atlases.mobiles.pixels(),
-            &self.hue_ramp,
+            &self.resources.hue_ramp,
         );
         // No atlas and no format: this pass writes only place and the shared
         // depth buffer, so it does not need rebuilding here on every atlas
@@ -5401,8 +6028,8 @@ impl App {
             &device,
             &queue,
             blit::WORLD_FORMAT,
-            self.font_atlas.pixels(),
-            &self.hue_ramp,
+            self.resources.font_atlas.pixels(),
+            &self.resources.hue_ramp,
         );
         // Scaled by the window's own density: a `TtfAtlas` bakes one pixel
         // size into every glyph it packs (see its doc), so the size has to be
@@ -5410,14 +6037,15 @@ impl App {
         // `run` cannot ask before one does, and rebuilding a size already
         // packed at is exactly the "ten faces" cost `ttf_font`'s doc explains
         // this engine does not pay.
-        let (ttf_atlas, ttf_gump_pass) = match &self.ttf_font {
+        let (ttf_atlas, ttf_gump_pass) = match &self.resources.ttf_font {
             Some(_) => {
                 let atlas = TtfAtlas::empty(TTF_BASE_PIXEL_HEIGHT * window.scale_factor() as f32);
                 // The surface's format, `gump_text_pass`'s own reason: overhead
                 // speech and the HUD's speech line and journal both draw over
                 // the finished frame, not into the world image — see
                 // `Screen::ttf_gump_pass`'s doc.
-                let gump_pass = GumpRenderer::new(&device, &queue, format, atlas.pixels(), &self.hue_ramp);
+                let gump_pass =
+                    GumpRenderer::new(&device, &queue, format, atlas.pixels(), &self.resources.hue_ramp);
                 (Some(atlas), Some(gump_pass))
             }
             None => (None, None),
@@ -5475,15 +6103,25 @@ impl App {
         // And the interface's, bound to the surface's format for the same
         // reason: a gump is drawn on the finished picture, and the night that
         // dimmed the world has already been applied to it.
-        let gump_pass = self
-            .gumps
-            .as_ref()
-            .map(|_| GumpRenderer::new(&device, &queue, format, self.gump_atlas.pixels(), &self.hue_ramp));
+        let gump_pass = self.resources.gumps.as_ref().map(|_| {
+            GumpRenderer::new(
+                &device,
+                &queue,
+                format,
+                self.resources.gump_atlas.pixels(),
+                &self.resources.hue_ramp,
+            )
+        });
         // The interface's text, built once and unconditionally for the same
         // reason `text_pass` is: `font_atlas` is the whole of `fonts.mul`,
         // packed at startup, and never goes stale.
-        let gump_text_pass =
-            GumpRenderer::new(&device, &queue, format, self.font_atlas.pixels(), &self.hue_ramp);
+        let gump_text_pass = GumpRenderer::new(
+            &device,
+            &queue,
+            format,
+            self.resources.font_atlas.pixels(),
+            &self.resources.hue_ramp,
+        );
         // The HUD, with the surface's own format: egui picks its fragment entry
         // point from whether that format is sRGB, and this one deliberately is
         // not.
@@ -5587,12 +6225,12 @@ impl App {
             .map(|(_, mobile)| mobile)
             .collect();
         wanted_in(
-            &self.map,
+            &self.resources.map,
             bands,
-            &self.items,
+            &self.world.items,
             &drawn,
-            &self.tile_animations,
-            &self.equip_conv,
+            &self.world.tile_animations,
+            &self.resources.equip_conv,
         )
     }
 
@@ -5608,45 +6246,54 @@ impl App {
         // filled by `client/net`, which knows nothing about screens, so a
         // window appearing is this end noticing.
         self.sync_own_windows();
-        // The animation clock moves here, at the top of the frame that is about
-        // to show its answer — not when the timer that asked for this frame
-        // fired.
-        //
-        // A glide is a position read off a clock, so the moment that clock is
-        // read has to be the moment the picture is built or the walk judders:
-        // the timer fires, the loop then lays out the UI, grows an atlas and
-        // waits on the swapchain, and however long that took is error in the
-        // body's position — error that varies frame to frame, which is exactly
-        // what an eye reads as a stutter. It also puts the sampling back in step
-        // with the display: `WaitUntil` is a floor, the timer's 16ms beats
-        // against a 60Hz refresh, and a frame drawn from the previous tick's
-        // clock lands on the wrong side of that beat every second or so.
-        //
-        // Whatever really passed — see `App::last_advance`. A stall longer than
-        // a frame, the window minimised or the machine asleep, moves the clock
-        // the whole way rather than queuing a burst of catch-up frames for time
-        // nobody watched: a body that was walking through it has long since
-        // arrived.
-        let elapsed = started.saturating_duration_since(self.last_advance);
-
         // # The frame is three steps, and this is the first of them
         //
-        // Everything that writes runs here, before anything reads. What the
-        // shell asked for last frame, then every clock, then the eye — and after
-        // this block nothing in the frame moves the world or the camera again.
-        //
-        // The defect it is written against: the HUD used to be built at the top
-        // of the frame and the eye moved a few lines further down, so the
-        // overlay egui laid out — the tile highlight, the hover, the walk goal —
-        // was drawn against the *previous* frame's camera while the world pass
-        // below drew from this one's. The gap between them is one frame of camera
-        // motion, which is not a constant: it is whatever the display gave this
-        // frame, so the markers shivered against the ground they were meant to be
-        // lying on, and every missed interval made them jump. Reordering two
-        // calls would have fixed today's version of it and left the shape that
-        // produced it, which is a second reader picking the camera up at a
-        // different moment. So the frame is staged instead, and the snapshot
-        // below is what both readers are handed.
+        // Everything that writes runs in `Self::advance`, before anything
+        // reads — see that method's own doc for why the clock and the eye
+        // move there and not here. After it returns, nothing in the frame
+        // moves the world or the camera again; the snapshot below is what
+        // every reader from here on is handed.
+        self.advance(started);
+        let camera = *self.control.camera();
+        self.draw_from(started, camera);
+    }
+
+    /// **Step one of three**: everything that writes. What the shell asked
+    /// for last frame, then every clock, then the eye.
+    ///
+    /// The animation clock moves here, at the top of the frame that is about
+    /// to show its answer — not when the timer that asked for this frame
+    /// fired.
+    ///
+    /// A glide is a position read off a clock, so the moment that clock is
+    /// read has to be the moment the picture is built or the walk judders:
+    /// the timer fires, the loop then lays out the UI, grows an atlas and
+    /// waits on the swapchain, and however long that took is error in the
+    /// body's position — error that varies frame to frame, which is exactly
+    /// what an eye reads as a stutter. It also puts the sampling back in step
+    /// with the display: `WaitUntil` is a floor, the timer's 16ms beats
+    /// against a 60Hz refresh, and a frame drawn from the previous tick's
+    /// clock lands on the wrong side of that beat every second or so.
+    ///
+    /// Whatever really passed — see `App::last_advance`. A stall longer than
+    /// a frame, the window minimised or the machine asleep, moves the clock
+    /// the whole way rather than queuing a burst of catch-up frames for time
+    /// nobody watched: a body that was walking through it has long since
+    /// arrived.
+    ///
+    /// The defect this staging is written against: the HUD used to be built
+    /// at the top of the frame and the eye moved a few lines further down, so
+    /// the overlay egui laid out — the tile highlight, the hover, the walk
+    /// goal — was drawn against the *previous* frame's camera while the world
+    /// pass below drew from this one's. The gap between them is one frame of
+    /// camera motion, which is not a constant: it is whatever the display
+    /// gave this frame, so the markers shivered against the ground they were
+    /// meant to be lying on, and every missed interval made them jump.
+    /// Reordering two calls would have fixed today's version of it and left
+    /// the shape that produced it, which is a second reader picking the
+    /// camera up at a different moment. So the frame is staged instead.
+    fn advance(&mut self, started: Instant) {
+        let elapsed = started.saturating_duration_since(self.last_advance);
         let asked = std::mem::take(&mut self.pending);
         self.apply(asked);
         // The viewport the last frame's layout left free — `Shell` holds it
@@ -5656,17 +6303,17 @@ impl App {
             let viewport = shell.viewport();
             self.control.resize(viewport.width, viewport.height);
         }
-        self.crowd.advance(elapsed);
+        self.world.crowd.advance(elapsed);
         // The statics that move on their own, on the same span as everybody
         // else. Its own clock inside — a fire's cycle has nothing to do with a
         // walk's — and one *sample*, which is the whole rule: two clocks read
         // from two `Instant::now()`s a few hundred microseconds apart would put
         // a torch and the body that walks past it on two different instants.
-        self.tile_animations.advance(elapsed);
+        self.world.tile_animations.advance(elapsed);
         // And the flames, off the same span: a fire's animation frame and the
         // brightness of the pool it casts are two clocks describing one fire,
         // and they are advanced together or they describe two.
-        self.flame_clock += elapsed;
+        self.world.flame_clock += elapsed;
         self.last_advance = started;
         // Whatever scenario is being walked delivers its knots for the span that
         // just passed, before the eye is asked where the body is: a step that
@@ -5679,20 +6326,23 @@ impl App {
         // and is then walked across for the next 400ms, so every frame in
         // between has a different answer.
         self.follow_player(elapsed);
+    }
 
-        // # Step two: one snapshot, and it is a value
-        //
-        // The camera the whole frame is built from, copied out rather than read
-        // back from `self.control` at each use. A `&Camera` handed to five
-        // collectors is five reads of a field that something between them might
-        // have moved — which is the defect above, expressed as a borrow. A
-        // `Camera` is `Copy`, so this costs nothing and cannot be stale in one
-        // place and fresh in another.
-        let camera = *self.control.camera();
-
-        // Read before the window is borrowed below, for the same reason the line
-        // above is: the borrow is of `self`, and the pacing at the foot of this
-        // frame is a fact about the whole app rather than about it.
+    /// **Step two**: one snapshot, and it is a value.
+    ///
+    /// Every question this frame's picture and HUD are built from, asked
+    /// once against one camera and one cutaway and answered as a plain
+    /// value — purely a function of `&self`, so a caller cannot mistake this
+    /// for a place the frame's state changes. It has none: `on_static`,
+    /// `on_mobile` and `on_item` still have to land in `self.picking` for the
+    /// click to read next frame, but that write happens in the three lines at
+    /// `draw_from`'s call site instead, which is the "mutations applied
+    /// separately" half of the shape `Self::advance` set up for the first
+    /// step.
+    fn frame_facts(&self, camera: Camera) -> FrameFacts {
+        // Read before the window is borrowed below, for the same reason the
+        // pacing at the foot of the frame is a fact about the whole app
+        // rather than about it.
         let watched = self.watched();
         // The same, for the two the item highlight needs — both are questions
         // about the whole of `self` and are asked once, here.
@@ -5705,14 +6355,28 @@ impl App {
         // not walked indoors, and the client's rule is about where the body is.
         // See `openshard_client_render::cutaway`.
         //
-        // `self.cutaway_at`, not `self.player.at`: the latter is this end's
+        // `self.world.cutaway_at`, not `self.world.player.at`: the latter is this end's
         // own unconfirmed prediction, which for one frame can be a tile a
         // held direction was refused on — see the field's own doc.
         //
         // Here, in the snapshot, and not beside the passes that draw from it:
         // the item pick below needs it, and the pick has to be answered before
         // the HUD is built — see the next paragraph.
-        let cutaway = Cutaway::at(&self.map, &self.tiledata, self.cutaway_at, true);
+        let cutaway = Cutaway::at(
+            &self.resources.map,
+            &self.resources.tiledata,
+            self.world.cutaway_at,
+            true,
+        );
+        // The ground tile under the cursor, and its ring — asked here beside
+        // the picks below rather than a second time when the HUD is built:
+        // this used to be `App::hud`'s own call to `Self::pick_tile`, a second
+        // "what is the cursor over" answered from a *different* camera in
+        // spirit even when it happened to be the same value in practice. One
+        // frame's worth of picks belongs in one place — this function — same
+        // as `on_mobile`/`on_item`/`on_static` below.
+        let hover = owns_pointer.then(|| self.pick_tile(camera)).flatten();
+        let neighbours = hover.as_ref().map_or_else(Vec::new, |tile| self.tile_ring(tile));
         // What the cursor is over, asked here rather than remembered from the
         // last click: the picture moves under a still mouse — the body walks,
         // the camera follows, a door swings — so where the cursor is pointing is
@@ -5750,7 +6414,7 @@ impl App {
         // ring, the wash, the tile marker and the click cannot disagree about it.
         // Kept whole, and not just picked from: the click reads a mobile back by
         // [`Who`] rather than by this index, which is only ever good for this
-        // one frame's own `Vec` — see `self.on_mobile` below.
+        // one frame's own `Vec` — see `FrameFacts::on_mobile`.
         let drawn_mobiles = self
             .window
             .as_ref()
@@ -5761,7 +6425,7 @@ impl App {
                 &camera,
                 &window.atlases.mobiles,
                 &cutaway,
-                &self.equip_conv,
+                &self.resources.equip_conv,
                 cursor,
             ),
             _ => None,
@@ -5769,10 +6433,10 @@ impl App {
         let on_item = match owns_pointer && on_mobile.is_none() {
             true => self.window.as_ref().and_then(|window| {
                 items::pick(
-                    &self.items,
+                    &self.world.items,
                     &camera,
-                    &self.tiledata,
-                    &self.tile_animations,
+                    &self.resources.tiledata,
+                    &self.world.tile_animations,
                     &window.atlases.statics,
                     &cutaway,
                     cursor,
@@ -5795,10 +6459,10 @@ impl App {
         let on_static = match owns_pointer && on_mobile.is_none() && on_item.is_none() {
             true => self.window.as_ref().and_then(|window| {
                 statics::pick(
-                    &self.map,
+                    &self.resources.map,
                     &camera,
-                    &self.tiledata,
-                    &self.tile_animations,
+                    &self.resources.tiledata,
+                    &self.world.tile_animations,
                     &window.atlases.statics,
                     &cutaway,
                     cursor,
@@ -5806,58 +6470,98 @@ impl App {
             }),
             false => None,
         };
-        // Kept for the click, which happens between frames and therefore points
-        // at the picture the *last* frame drew. Reading it back here rather than
-        // picking again there is what makes the wash land on the wall the player
-        // was looking at: a second pick would use a camera that has moved since,
-        // and the two answers differ by however far the eye travelled in a frame.
-        //
-        // The mobile and item halves are kept by identity rather than by
-        // `on_mobile`/`on_item`'s own index, because those only index *this*
-        // frame's transient `Vec`s — a click between frames has no such `Vec` to
-        // read them back from, only a [`Who`] or a [`Serial`] that still means
-        // the same creature or item next frame.
-        self.on_static = on_static;
-        self.on_mobile = on_mobile.and_then(|index| {
-            drawn_mobiles
-                .as_ref()
-                .and_then(|drawn| drawn.get(index))
-                .map(|(who, _)| *who)
-        });
-        self.on_item = on_item.map(|index| self.item_serials[index]);
         // What the mode allows to light up. `Tiles` lights neither, which is the
         // whole of that setting; the facts above are unchanged by it.
-        let lit_mobile = on_mobile.filter(|_| self.highlight != shell::HighlightTarget::Tiles);
-        let lit_item = on_item.filter(|_| self.highlight != shell::HighlightTarget::Tiles);
+        let lit_mobile = on_mobile.filter(|_| self.graphics.highlight != shell::HighlightTarget::Tiles);
+        let lit_item = on_item.filter(|_| self.graphics.highlight != shell::HighlightTarget::Tiles);
 
         // What a click is *holding*, turned from identity back into this
-        // frame's index — the reverse of `self.on_mobile`/`self.on_item` just
-        // above. This is the held ring's own pick, asked once here rather than
-        // at every reader, for the reason `lit_item`'s doc gives for asking
+        // frame's index — the reverse of `on_mobile`/`on_item` just above.
+        // This is the held ring's own pick, asked once here rather than at
+        // every reader, for the reason `lit_item`'s doc gives for asking
         // `on_item` once: two lookups are two chances to disagree about which
         // creature a `Who` still names.
         //
         // Valid only while the crowd is actually drawn: `drawn` below is
-        // emptied whole when `self.drawing.mobiles` is off, and an index into
+        // emptied whole when `self.graphics.drawing.mobiles` is off, and an index into
         // `drawn_mobiles` would then point at a `Vec` the held ring never
         // sees.
         let held_mobile = self
+            .picking
             .selected
             .and_then(SelectedIdentity::as_mobile)
-            .filter(|_| self.drawing.mobiles)
+            .filter(|_| self.graphics.drawing.mobiles)
             .and_then(|who| {
                 drawn_mobiles
                     .as_ref()
                     .and_then(|drawn| drawn.iter().position(|(candidate, _)| *candidate == who))
             });
         let held_item = self
+            .picking
             .selected
             .and_then(SelectedIdentity::as_item)
             .and_then(|serial| {
-                self.item_serials
+                self.world
+                    .item_serials
                     .iter()
                     .position(|candidate| *candidate == serial)
             });
+        FrameFacts {
+            watched,
+            cutaway,
+            pick: Pick {
+                tile: hover,
+                neighbours,
+                static_: on_static,
+                mobile: lit_mobile,
+                item: lit_item,
+            },
+            drawn_mobiles,
+            on_mobile,
+            on_item,
+            held_mobile,
+            held_item,
+        }
+    }
+
+    /// **Steps two and three**: the frame `Self::advance` staged for. Takes
+    /// the camera as a parameter rather than reading `self.control` again —
+    /// a `&Camera` handed to five collectors is five reads of a field that
+    /// something between them might have moved, which is the defect
+    /// `Self::advance`'s doc is written against, expressed as a borrow. A
+    /// `Camera` is `Copy`, so the one read in `draw` costs nothing and cannot
+    /// be stale in one place and fresh in another.
+    fn draw_from(&mut self, started: Instant, camera: Camera) {
+        // # Step two: one snapshot, and it is a value
+        //
+        // `Self::frame_facts` asks every question this frame's picture and HUD
+        // are built from, purely against `&self` — and answers three of them,
+        // `on_static`/`on_mobile`/`on_item`, into `self.picking` right here,
+        // which is the "mutations applied separately" half of the shape
+        // `Self::advance` set up for the first: a function that only *asks*
+        // stays a function that only asks, and the one write this frame still
+        // owes `self.picking` is named where it happens rather than folded into
+        // the asking.
+        let facts = self.frame_facts(camera);
+        self.picking.on_static = facts.pick.static_;
+        self.picking.on_mobile = facts.on_mobile.and_then(|index| {
+            facts
+                .drawn_mobiles
+                .as_ref()
+                .and_then(|drawn| drawn.get(index))
+                .map(|(who, _)| *who)
+        });
+        self.picking.on_item = facts.on_item.map(|index| self.world.item_serials[index]);
+        let FrameFacts {
+            watched,
+            cutaway,
+            pick,
+            drawn_mobiles: _,
+            on_mobile: _,
+            on_item: _,
+            held_mobile,
+            held_item,
+        } = facts;
 
         // # Step three: present. Nothing below this line writes the world.
         //
@@ -5874,11 +6578,11 @@ impl App {
         // in it is a function of them. The one sampling of time that the frame is
         // built from is `started`, at the top.
         let ui_started = Instant::now();
-        let hud = self.hud(camera, lit_item, lit_mobile, on_static, &cutaway);
+        let hud = self.hud(camera, &pick, &cutaway);
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {
-                let (request, output) = shell.run(window, &hud);
+                let (request, output) = shell.run(window, &hud, camera, &self.world);
                 let viewport = shell.viewport();
                 Some((request, output, viewport))
             }
@@ -5903,7 +6607,7 @@ impl App {
         // Gathered before the window is borrowed, and not inside the borrow: it
         // reads the whole of `self`, and the window is part of it.
         let want = light::lit_tiles(&camera, &tuning);
-        let wanted = self.wanted_since(camera, &tuning, self.covered);
+        let wanted = self.wanted_since(camera, &tuning, self.graphics.covered);
         let mut drawn = self.drawn_mobiles();
         // Likewise: the cut the solids view is drawn under reads the player, and
         // the pass that uses it runs inside the window's borrow.
@@ -5912,103 +6616,24 @@ impl App {
         let Some(window) = self.window.as_mut() else {
             return;
         };
-        // Set only on a successful rebuild — the counter `docs/camera.md`
-        // asks for, so the frame that stalled for one can be told apart from
-        // one that is merely heavy. See [`Frame::repacked`](frames::Frame).
-        let mut repacked = false;
-        // Full rebuild and not grow, either because the atlas just filled up
-        // (the ordinary eviction) or because a debug edit changed a shape the
-        // atlas already has packed and `grow` cannot see that on its own — it
-        // only asks whether a graphic is packed *at all* (its own doc), so a
-        // stair already on screen when its prism changes would never be
-        // re-offered. Both land in the same rebuild, for the same reason: the
-        // texture a bind group points at is the one the old atlas was
-        // uploaded to.
-        let evict = if self.repack_forced {
-            self.repack_forced = false;
-            true
-        } else {
-            // Grow rather than rebuild. What is new is added to the textures
-            // already bound, a band of rows at a time, and a frame where the
-            // camera stood still reads four `BTreeSet`s and touches no file
-            // and no GPU.
-            let grown =
-                window
-                    .atlases
-                    .grow(&self.art, &self.texmaps, &self.tiledata, &mut self.anim, &wanted);
-            // Whatever was packed is uploaded, including on the way out of a
-            // failure: a growth that stopped part way still wrote pixels, and
-            // pixels the device has not been told about are sampled as
-            // whatever was there before. Cheap to do unconditionally — the
-            // band is empty when nothing grew — and it is one fewer path
-            // where an atlas and its texture can disagree.
-            window.atlases.upload(
-                &window.queue,
-                &window.renderer,
-                &window.statics,
-                &window.mobile_pass,
-            );
-            match grown {
-                Ok(()) => {
-                    self.covered = Some(want);
-                    false
-                }
-                Err(AtlasError::Full { .. }) => true,
-                Err(error) => {
-                    eprintln!("growing the atlases: {error}");
-                    false
-                }
-            }
-        };
-        if evict {
-            // Costly and rare on the ordinary path — where the old
-            // arrangement paid it every few tiles — and it is the *only*
-            // thing that reclaims space, so an atlas that only ever grew
-            // would eventually stay full for ever. Cheap and deliberate on
-            // the debug-edit path: one static's worth of texture, asked for
-            // once per slider change.
-            //
-            // `covered` is cleared first: a rebuild forgets, so the next
-            // frame may not assume anything about what the atlases hold. Set
-            // again below only if the rebuild succeeds.
-            self.covered = None;
-            match Atlases::build(
-                &self.art,
-                self.surfaces.as_ref(),
-                &self.texmaps,
-                &self.tiledata,
-                &mut self.anim,
-                &wanted_in(
-                    &self.map,
-                    [want],
-                    &self.items,
-                    &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
-                    &self.tile_animations,
-                    &self.equip_conv,
-                ),
-            ) {
-                Ok(atlases) => {
-                    window.install_atlases(atlases, &self.hue_ramp);
-                    self.covered = Some(want);
-                    repacked = true;
-                    self.repacks += 1;
-                }
-                // One screen does not fit one atlas, which is a different
-                // statement from "the atlas filled up": no eviction can help
-                // and the frame draws with sprites missing. Named here rather
-                // than hidden, and it is what the standing backlog item about
-                // a failed repack is about.
-                Err(error) => eprintln!("packing the art on screen: {error}"),
-            }
-        }
+        let repacked = ready_atlases(
+            &mut self.resources,
+            &mut self.graphics,
+            &self.world,
+            &mut self.repacks,
+            window,
+            want,
+            &wanted,
+            &drawn,
+        );
 
         // Three time-varying halves of a mobile, filled in per frame rather
         // than per packet: the crowd is the only thing that knows what a
         // clock — and a group — has done since the `0x77` landed, and
-        // `self.player`/`self.others` were built when it did. Against the atlas
+        // `self.world.player`/`self.world.others` were built when it did. Against the atlas
         // as it stands *after* this frame's growth, which is the one the
         // picture below is drawn from.
-        Self::advance_to_clocks(&self.crowd, &window.atlases.mobiles, &mut drawn);
+        Self::advance_to_clocks(&self.world.crowd, &window.atlases.mobiles, &mut drawn);
         // Whoever the crowd is still holding a line for, hung above whichever
         // of `drawn`'s mobiles their serial belongs to. Read out here, before
         // `who` is dropped below: a label with no mobile to anchor to has
@@ -6017,7 +6642,7 @@ impl App {
         let speech: Vec<(ViewPixel, String, Font, Hue)> = drawn
             .iter()
             .filter_map(|(who, mobile)| {
-                let (text, font, hue) = self.crowd.speaking(*who)?;
+                let (text, font, hue) = self.world.crowd.speaking(*who)?;
                 let anchor = mobiles::head_anchor(mobile, &camera, &window.atlases.mobiles)?;
                 Some((anchor, text.to_string(), font, hue))
             })
@@ -6033,7 +6658,7 @@ impl App {
         // thing standing in the street — `Kind::Nothing`, see `crate::place::Kind`
         // — and turning the crowd off to look at a wall is not a request to go
         // deaf.
-        let drawn: Vec<Mobile> = match self.drawing.mobiles {
+        let drawn: Vec<Mobile> = match self.graphics.drawing.mobiles {
             true => drawn.into_iter().map(|(_, mobile)| mobile).collect(),
             false => Vec::new(),
         };
@@ -6126,206 +6751,43 @@ impl App {
         // below draw from, so a torch that was not drawn casts nothing and a
         // torch that was is lighting the pixels it is standing in rather than the
         // pixels it stood in last frame.
-        // Three skies and not two: night, a daylight with a sun in it, and the
-        // plain daylight that is the identity — the frame the blit has always
-        // copied through untouched. The middle one is a key today; see
-        // `App::sunlit`.
-        let sky = match (self.night, self.sunlit) {
-            (true, _) => Some(light::NIGHT),
-            (false, true) => Some(light::SKYLIGHT),
-            // Daylight, where the pass is a copy and no grid is built at all —
-            // unless the solids view is on, and then the grid *is* the subject.
-            // `Ambient::DAY` flattened is the identity, so the picture under the
-            // boxes is the same daylight frame it was; what it buys is that the
-            // list drawn is the one the shader would walk, out of the same bake,
-            // rather than a second walk of the map made for the view. See
-            // `docs/lighting.md` step 23.0.
-            (false, false) => self.show_solids.then_some(light::Ambient::DAY),
-        };
-        // And whether a tile's share of it depends on what stands over the tile.
-        // Off by default: see `App::sky_field`, and `light::Ambient::flattened`
-        // for why the flat one is the baseline rather than a lesser version.
-        let sky = match self.sky_field {
-            true => sky,
-            false => sky.map(light::Ambient::flattened),
-        };
-        // One pick (`lit_item`, at the top of the frame), two effects, and the
-        // style decides which of them is asked for. `None` is how each is
-        // switched off, so neither pass has a mode to branch on: the hue pass
-        // draws an item that is not highlighted, and the silhouette pass is
-        // handed an empty list.
-        let hued = self.highlight_style.hues().then_some(lit_item).flatten();
-        let ringed = self.highlight_style.rings().then_some(lit_item).flatten();
-
-        // Where the player's own picture will land, asked before the statics
-        // are collected rather than after: `frame::assemble` places a tree's
-        // canopy against this rectangle, so a leaf that would be drawn over
-        // the body is cut instead of hung over it — see
-        // `cutaway::hides_foliage_over`. `None` only for the one frame the
-        // atlas has not yet grown a frame for this body and group, same as
-        // `mobiles::head_anchor`'s own gap.
-        let player_rect = mobiles::screen_rect(&self.player, &camera, &window.atlases.mobiles);
-
-        // **One assembly, and the client is a caller of it like any other** —
-        // `docs/parity.md`, decision D1. This sequence used to be written out by
-        // hand here and in six other places, every one of them free to pass a
-        // different cutaway, a different grid or a different clock; each of them
-        // did, and the difference was only ever found by reading. Everything a
-        // caller may honestly differ on is a field of `frame::Inputs` now, so
-        // what this frame is can be compared against what a tool's frame is
-        // rather than pieced together from two call sites.
-        let inputs = frame::Inputs {
-            map: &self.map,
-            items: &self.items,
-            camera: &camera,
-            tiledata: &self.tiledata,
-            animations: &self.tile_animations,
-            cutaway: &cutaway,
-            land: &window.atlases.land,
-            texmaps: &window.atlases.texmaps,
-            // The pictures, which is where an occluder's *facing* comes from: a
-            // wall stops a ray only where the ray crosses the side the wall
-            // stands on, and only the art says which side that is. One atlas for
-            // the grid and for both sprite passes, so they cannot be about two
-            // different sets of sprites.
-            statics: &window.atlases.statics,
-            sky,
-            // The sun is a property of the sky and not of the tiles, so it is an
-            // input to the frame rather than something walked with them — and
-            // never at night, where a second source lighting every roof would
-            // undo the whole point of the dark. Where the Light tab put it,
-            // which is `light::midday` until somebody moves a slider — see
-            // `light::SunTuning`.
-            sun: (self.sunlit && !self.night).then(|| tuning.sun.sun()),
-            // And the flame in the player's own hand, which no walk of the map
-            // could have found — see `light::carried`. The offset is where the
-            // sprite is *actually* drawn this instant, past `at`'s tile, so the
-            // pool glides with the walk instead of jumping once a step.
-            carried: self.lantern.then_some((
-                self.player.at,
-                mobiles::walked_offset(&self.player),
-                self.player.facing,
-            )),
-            tuning: &tuning,
-            flame_time: self.flame_clock.as_secs_f32(),
-            // The blocks of the occlusion grid built for earlier frames. A
-            // camera that has moved a tile wants the same five hundred and fifty
-            // blocks it wanted last frame bar a handful — see `occlusion::bake`,
-            // and `StaticAtlas::revision` for what makes this let go when the
-            // atlas learns something new about a graphic.
-            bake: Some(&mut self.occlusion_bake),
-            highlight: hued,
-            // The live client meets every sprite against its own boxes whenever
-            // it has a grid at all. F10 is not this field: turning the lights off
-            // takes the *sky* away, and a frame with no sky has no grid for
-            // anything to be met against.
-            impostor: Impostor::Met,
-            // Which producers this frame draws — the World tab's own boxes. The
-            // whole world unless somebody has ticked one off, and the lighting is
-            // collected from all of it whatever they tick: see `frame::Draw`.
-            draw: self.drawing,
-            // The view is the looker's, not the world's: a diagnostic draws from
-            // the values this frame was lit with, and in daylight those are the
-            // ambient and the place attachment — which is exactly what a person
-            // checking the place channel wants to see, without having to make it
-            // night first.
-            view: self.light_view,
-            // `docs/combat.md`'s D9: the screen greys for the character this
-            // client is, not for the offline placeholder — which has no view
-            // and so is never a ghost.
-            dead: self.view.as_ref().is_some_and(|view| view.player.dead),
-            player_rect,
-        };
-        // **What the frame was asked for**, kept beside the pictures the dump
-        // below writes. A picture on its own cannot be reproduced: two frames
-        // that differ say nothing about *which* input differed, and the client's
-        // arguments were readable until now only by reading this function. Only
-        // when a dump is armed — `summary` walks every field and allocates.
-        let asked_for = self.frame_dump.as_ref().map(|_| inputs.summary());
-        let frame::Frame {
-            lighting,
-            ground: quads,
-            statics:
-                statics::StaticGeometry {
-                    quads: static_quads,
-                    mesh_vertices,
-                    mesh_rows,
-                    boxes: static_boxes,
-                },
-        } = frame::assemble(inputs);
-
-        // What a click is holding, placed exactly as the picture placed it —
-        // `statics::selected` is `statics::collect`'s own arithmetic — so the
-        // mask lands on the wall's pixels rather than beside them. Empty on
-        // every frame with nothing selected, which is what switches the pass off.
-        let select_quads = statics::selected(
-            &camera,
-            &self.tiledata,
-            &self.tile_animations,
-            &window.atlases.statics,
+        //
+        // `assemble_geometry` is a free function for the same reason
+        // `ready_atlases` is one: it is handed `&mut self.graphics` only for
+        // the one field it writes (`occlusion_bake`, through
+        // `frame::Inputs::bake`), and every other field it reads is a plain
+        // `&`, so the signature alone says this is not a place `self.world`
+        // or `self.resources` change.
+        let geometry = assemble_geometry(
+            &self.resources,
+            &mut self.graphics,
+            &self.world,
+            &self.picking,
+            window,
+            camera,
             &cutaway,
-            self.selected.and_then(SelectedIdentity::as_static),
-        );
-        // The same quads as the picture's, so the ring lands on the sprite
-        // rather than beside it — see `items::outlined`.
-        let outline_quads = items::outlined(
-            &self.items,
-            &camera,
-            &self.tiledata,
-            &self.tile_animations,
-            &window.atlases.statics,
-            &cutaway,
-            ringed,
-        );
-        // The held item's own silhouette, through the same function and for
-        // the same reason — a second call rather than folding `held_item` into
-        // `ringed` above, because the two are drawn with different [`Ring`]s
-        // into different masks: this is what a click named, not what the
-        // cursor is over.
-        let held_item_outline = items::outlined(
-            &self.items,
-            &camera,
-            &self.tiledata,
-            &self.tile_animations,
-            &window.atlases.statics,
-            &cutaway,
+            &tuning,
+            pick.item,
+            pick.mobile,
             held_item,
-        );
-        // A corner static's two faces get their own id past this point — see
-        // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
-        let static_instances = split_corners(static_quads);
-        // The same two effects for a creature, off the same style switch and
-        // the same one-pick-a-frame rule: `lit_mobile` and `lit_item` are never
-        // both `Some` (see where they are asked), so exactly one of the four
-        // lists below is ever non-empty.
-        let mobile_hued = self.highlight_style.hues().then_some(lit_mobile).flatten();
-        let mobile_ringed = self.highlight_style.rings().then_some(lit_mobile).flatten();
-        let mobile_outline = mobiles::outlined(
-            &drawn,
-            &camera,
-            &window.atlases.mobiles,
-            &cutaway,
-            &self.equip_conv,
-            mobile_ringed,
-        );
-        // The held mobile's own silhouette — see `held_item_outline` above for
-        // why this is a second call and not `mobile_ringed` itself.
-        let held_mobile_outline = mobiles::outlined(
-            &drawn,
-            &camera,
-            &window.atlases.mobiles,
-            &cutaway,
-            &self.equip_conv,
             held_mobile,
-        );
-        let mobile_quads = mobiles::collect(
             &drawn,
-            &camera,
-            &window.atlases.mobiles,
-            &cutaway,
-            &self.equip_conv,
-            mobile_hued,
         );
+        let FrameGeometry {
+            lighting,
+            quads,
+            static_instances,
+            static_boxes,
+            mesh_vertices,
+            mesh_rows,
+            select_quads,
+            outline_quads,
+            held_item_outline,
+            mobile_outline,
+            held_mobile_outline,
+            mobile_quads,
+            asked_for,
+        } = geometry;
         // `fonts.mul` or the operator-supplied TrueType face, never a mix
         // within one frame — see `run`'s doc for why `ttf_font` is an
         // all-or-nothing switch. `fonts.mul` still draws into the world
@@ -6337,7 +6799,9 @@ impl App {
         // it into `hud_quads` for `Screen::ttf_gump_pass`'s one call — see
         // `text::ScreenLabel`'s doc for why the pass and `hud_quads`'s own
         // comment for why it has to be one call.
-        let (text_quads, screen_speech): (Vec<SpriteQuad>, Vec<text::ScreenLabel<'_>>) = match &self.ttf_font
+        let (text_quads, screen_speech): (Vec<SpriteQuad>, Vec<text::ScreenLabel<'_>>) = match &self
+            .resources
+            .ttf_font
         {
             Some(font) => {
                 let atlas = window
@@ -6401,7 +6865,7 @@ impl App {
                         depth: 0.0,
                     })
                     .collect();
-                (text::collect(&labels, &self.font_atlas), Vec::new())
+                (text::collect(&labels, &self.resources.font_atlas), Vec::new())
             }
         };
         // Uploads whatever the `add` above (and the HUD's own, further down
@@ -6422,349 +6886,41 @@ impl App {
         let mut encoder = window
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        // Ground first, because it clears; statics after, into what it left.
-        // Which covers which is decided by the depth they share, not by this
-        // order — the order only decides who clears.
-        //
-        // Every pass from here to the submit is bracketed by `profile::begin`
-        // and `profile::end`: the GPU's own timestamps, which are the one half
-        // of a frame's cost no clock on this thread can see. See [`profile`] for
-        // why that is so and why the bracket is a pair of calls rather than a
-        // scope guard. Nothing when the adapter has no timestamp queries.
-        let timed = profile::begin(window.gpu.as_ref(), "ground", &mut encoder);
-        window
-            .renderer
-            .render(&window.device, &window.queue, &mut encoder, target, &quads);
-        profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        // Handed over every frame rather than on the key, because the key does
-        // not have the window: `self.fringe` is the switch and the pass is where
-        // it is read, and a state pushed once at start-up would leave F2 silent.
-        window.statics.set_fringe(self.fringe);
-        let timed = profile::begin(window.gpu.as_ref(), "statics", &mut encoder);
-        window.statics.render(
-            &window.device,
-            &window.queue,
+        // `encode_world_passes` is a free function for the same reason
+        // `assemble_geometry` is one: every world pass it records is drawn
+        // from the values handed to it, and the one thing on `self` it
+        // writes — `graphics.solids_held`/`graphics.solids_drawn` — is
+        // written through the `&mut GraphicsSettings` its signature already
+        // names, not through a `&mut self` that would let it touch anything
+        // else too.
+        encode_world_passes(
+            &mut self.graphics,
+            &self.picking,
+            window,
             &mut encoder,
             target,
-            &static_instances.rows,
+            &view,
+            &world_view,
+            &gbuffer_views,
+            viewport,
+            camera,
+            solid_cut,
+            &quads,
+            &static_instances,
             &static_boxes,
-            Some(static_instances.drawn),
-        );
-        profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        // Right after statics, into the same static's own pixels its
-        // billboard sprite just drew — `docs/gbuffer.md` step 4c. Depth and
-        // place only, never colour: this only gives a climbable static's
-        // pixels a more honest per-face normal than one blended stance could.
-        let timed = profile::begin(window.gpu.as_ref(), "mesh faces", &mut encoder);
-        window.mesh_pass.render(
-            &window.device,
-            &window.queue,
-            &mut encoder,
-            target,
             &mesh_vertices,
             &mesh_rows,
-        );
-        profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        let timed = profile::begin(window.gpu.as_ref(), "mobiles", &mut encoder);
-        window.mobile_pass.render(
-            &window.device,
-            &window.queue,
-            &mut encoder,
-            target,
             &mobile_quads,
-            // A mobile has no volume — `docs/lighting_rebuild.md` says so in as
-            // many words, and phase 7 is what gives a billboard a normal.
-            &[],
-            None,
-        );
-        profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        // The silhouettes, here and not later: the mask is depth-tested against
-        // what the three world passes have drawn, so a barrel behind a wall is
-        // kept out of it — and the text pass below writes depth at the near
-        // plane over everything, which would punch the mask through.
-        let mask_view = window
-            .outline_mask
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        // One item is one ring; the pass numbers groups, so each quad is a group
-        // of its own — see `SpriteRenderer::render_mask`.
-        let item_rings: Vec<&[SpriteQuad]> = outline_quads.iter().map(std::slice::from_ref).collect();
-        let timed = profile::begin(window.gpu.as_ref(), "outline mask: items", &mut encoder);
-        window.statics.render_mask(
-            &window.device,
-            &window.queue,
-            &mut encoder,
-            target,
-            &mask_view,
-            &item_rings,
-        );
-        profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        // And a creature through its own atlas, in *one* group: a body and
-        // everything it wears is one thing being pointed at, and one ring goes
-        // round the lot. This pass clears the mask too, which is why it is
-        // skipped when nothing is ringed — the items' pass above has already
-        // written the frame's answer, and a second clear would erase it.
-        if !mobile_outline.is_empty() {
-            let timed = profile::begin(window.gpu.as_ref(), "outline mask: mobiles", &mut encoder);
-            window.mobile_pass.render_mask(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                target,
-                &mask_view,
-                &[&mobile_outline],
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
-        // And the held selection into its own mask, through the same pass and
-        // the same depth buffer: what is washed is what is *visible* of the
-        // selected static, so a wall the player has walked behind is not painted
-        // over the thing now in front of it. One group, because a selection is
-        // one thing — the pass numbers groups for the ring's sake and the wash
-        // reads only "is this texel nought".
-        let select_view = window
-            .select_mask
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        if !select_quads.is_empty() {
-            let timed = profile::begin(window.gpu.as_ref(), "select mask", &mut encoder);
-            window.statics.render_mask(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                target,
-                &select_view,
-                &[&select_quads],
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
-        // And the held mobile or item's own ring silhouette, into
-        // `Screen::held_mask` — the same two-pass shape as the hover ring
-        // above (items first, unconditionally, so an empty frame still clears
-        // the mask; the mobile pass gated because it clears the mask too).
-        // Not folded into the hover mask above: a click's ring must survive
-        // the cursor moving off the thing, and that mask is overwritten fresh
-        // every frame from whatever the cursor is over *this* frame alone.
-        let held_view = window
-            .held_mask
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let held_item_rings: Vec<&[SpriteQuad]> =
-            held_item_outline.iter().map(std::slice::from_ref).collect();
-        let timed = profile::begin(window.gpu.as_ref(), "held mask: items", &mut encoder);
-        window.statics.render_mask(
-            &window.device,
-            &window.queue,
-            &mut encoder,
-            target,
-            &held_view,
-            &held_item_rings,
-        );
-        profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        if !held_mobile_outline.is_empty() {
-            let timed = profile::begin(window.gpu.as_ref(), "held mask: mobiles", &mut encoder);
-            window.mobile_pass.render_mask(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                target,
-                &held_view,
-                &[&held_mobile_outline],
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
-        // Always `text_pass`, `fonts.mul`'s own: `text_quads` is empty
-        // whenever `App::ttf_font` is set, since a TrueType face's speech
-        // draws after the blit instead — see `screen_speech`'s own comment
-        // above and the render call after it, below.
-        let timed = profile::begin(window.gpu.as_ref(), "overhead text", &mut encoder);
-        window.text_pass.render(
-            &window.device,
-            &window.queue,
-            &mut encoder,
-            target,
             &text_quads,
-            &[],
-            None,
+            &outline_quads,
+            &held_item_outline,
+            &mobile_outline,
+            &held_mobile_outline,
+            &select_quads,
+            &lighting,
+            render_width,
+            render_height,
         );
-        profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        // And the world image onto the surface, into the rect the panels left
-        // free. Magnified this is a copy — the image is already the viewport's
-        // size and the magnification happened in the vertex transform — and
-        // minified it is where the shrinking happens, which is why the zoom is
-        // still what picks the sampler.
-        //
-        // The lighting — the flames, the sun, the lantern in the player's hand
-        // and which of the pass's own values is drawn — was assembled at the top
-        // of the frame, out of `frame::Inputs`. Nothing between there and here
-        // may touch it: a frame this client draws and a frame a tool dumps are
-        // the same frame only for as long as neither of them has an adjustment
-        // of its own afterwards. `docs/parity.md`.
-        //
-        // **Solids alone**, `App::solids_only`: the surface is cleared and the
-        // world image is not drawn onto it at all, so the boxes below stand
-        // over nothing that could be mistaken for their own shape. `lighting`
-        // is unaffected either way — it is what the solids pass reads its grid
-        // from, and it was already built above whichever branch runs here.
-        if self.solids_only && self.show_solids {
-            let timed = profile::begin(window.gpu.as_ref(), "solids-only clear", &mut encoder);
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("solids-only clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(openshard_client_render::renderer::CLEAR),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                multiview_mask: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        } else {
-            // **The pass to watch.** Deferred shading over the whole viewport:
-            // every light in range walked per fragment, the sun, the occlusion
-            // grid. `tests/cost.rs` measures it offline; this is the same pass
-            // on the frame as played.
-            let timed = profile::begin(window.gpu.as_ref(), "blit: lighting", &mut encoder);
-            window.blit.render(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                blit::Frame {
-                    target: &view,
-                    world: &world_view,
-                    gbuffer: &gbuffer_views,
-                    face_instances: window.statics.instances_buffer(),
-                    mobile_instances: window.mobile_pass.instances_buffer(),
-                    mesh_instances: window.mesh_pass.rows_buffer(),
-                    ground_instances: window.renderer.instances_buffer(),
-                    zoom: camera.zoom(),
-                    rect: viewport,
-                },
-                &lighting,
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
-        // The occlusion grid as solids, when somebody asked for it — step 23.0.
-        // First of what is drawn over the lit picture, so the highlights stay on
-        // top of it: a diagnostic must not hide the thing the cursor is naming.
-        //
-        // The grid drawn is the frame's **own** — `lighting.occlusion`, which is
-        // the list the shader is walking this same frame — and not a second walk
-        // of the map. A picture of a grid rebuilt beside the one in force would
-        // be a claim about a grid nothing rendered.
-        if self.show_solids {
-            let standing = openshard_client_render::solid::standing(&lighting.occlusion, solid_cut);
-            self.solids_held = standing.len();
-            let timed = profile::begin(window.gpu.as_ref(), "solids", &mut encoder);
-            self.solids_drawn = window.solids.render(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                solids::Frame {
-                    target: &view,
-                    size: (window.config.width, window.config.height),
-                    rect: viewport,
-                },
-                &camera,
-                &standing,
-                solids::Style {
-                    opaque: self.solids_opaque,
-                    ..solids::Style::default()
-                },
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
-        // The held selection's wash, first of the two things drawn over the lit
-        // picture: the wall the click named and the ground it stands on. Under
-        // the ring rather than over it, because they answer different questions
-        // — the wash is what is *held* and the ring is what the cursor is on —
-        // and the live one has to stay readable while it passes over the held
-        // one.
-        //
-        // Skipped when nothing is selected, and the whole cost of a frame with
-        // nothing selected is that comparison: the mask is not drawn either.
-        if let Some(picked) = self
-            .selected
-            .and_then(SelectedIdentity::as_static)
-            .filter(|_| !select_quads.is_empty())
-        {
-            let timed = profile::begin(window.gpu.as_ref(), "selection wash", &mut encoder);
-            window.select.render(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                select::Frame {
-                    target: &view,
-                    mask: &select_view,
-                    ids: &gbuffer_views.ids,
-                    face_instances: window.statics.instances_buffer(),
-                    ground_instances: window.renderer.instances_buffer(),
-                    size: (render_width, render_height),
-                    rect: viewport,
-                },
-                // The tile the *static* stands on, and not `selected_tile`: the
-                // ground being washed is the ground under the thing that was
-                // picked, which is the whole of "and the tile it stands on". The
-                // two are usually different tiles — a wall's picture stands up
-                // the screen from its own cell, so the ground under the cursor is
-                // the cell behind it.
-                Selection::DEFAULT.on((picked.at.x, picked.at.y)),
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
-        // And the ring on top of that, over the same rectangle — after the blit
-        // so it is drawn in screen pixels and unlit: a highlight that dimmed at
-        // night would stop working exactly when the picture is hardest to read.
-        // Skipped entirely on the ordinary frame, where nothing is under the
-        // cursor and the mask is empty. **Both silhouette lists**, or a ringed
-        // creature draws its mask into a texture no pass ever reads and the
-        // highlight is simply absent — which is what an item-only test of this
-        // condition looked like from the outside.
-        // The held ring, drawn first of the two so the live hover ring stays
-        // on top and readable when the cursor is over the very thing that is
-        // selected — the same ordering the wash and the hover ring keep,
-        // and for the same reason. `Ring::SELECTED`'s own pipeline call: one
-        // [`Ring`] per `Outline::render`, so the held ring's colour cannot be
-        // the hover ring's even for one frame.
-        if !held_item_outline.is_empty() || !held_mobile_outline.is_empty() {
-            let timed = profile::begin(window.gpu.as_ref(), "held ring", &mut encoder);
-            window.outline.render(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                outline::Frame {
-                    target: &view,
-                    mask: &held_view,
-                    mask_size: (render_width, render_height),
-                    rect: viewport,
-                },
-                Ring::SELECTED.for_zoom(camera.zoom()),
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
-        if !outline_quads.is_empty() || !mobile_outline.is_empty() {
-            let timed = profile::begin(window.gpu.as_ref(), "outline ring", &mut encoder);
-            window.outline.render(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                outline::Frame {
-                    target: &view,
-                    mask: &mask_view,
-                    mask_size: (render_width, render_height),
-                    rect: viewport,
-                },
-                // The soft ring — an edge with a glow behind it — widened when
-                // the world is minified, where one mask texel is less than one
-                // screen pixel and a hairline breaks into a dashed line. See
-                // `Ring::for_zoom`.
-                Ring::SOFT.for_zoom(camera.zoom()),
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
         // The shard's dialogs, in the client's own art, over the finished
         // picture and under egui's.
         //
@@ -6780,241 +6936,19 @@ impl App {
         // page's art and not the showing one's — `gump::art_of` is that list,
         // and it is asked for on the frame the window is drawn on because that
         // is the frame that knows the window is open at all.
-        if let (Some(files), Some(pass)) = (self.gumps.as_ref(), window.gump_pass.as_mut()) {
-            // Every open dialog's art, packed before anything is laid out.
-            //
-            // Before, and not on the way, for two reasons. A `{ resizepic }`
-            // cannot be placed until its nine pieces have been packed — where
-            // its edges go is decided by how big its corners turned out to be —
-            // and a page button flips pages inside the client, so what a window
-            // needs is *every* page's art rather than the showing one's.
-            // `gump::art_of` is that list, asked for on the frame the window is
-            // drawn on because that is the frame that knows it is open at all.
-            let open = self
-                .view
-                .as_ref()
-                .map(|view| view.gumps.as_slice())
-                .unwrap_or_default();
-            let mut pictures = Vec::new();
-            for gump in open {
-                let art_files = gump_art::ArtFiles {
-                    gumps: files,
-                    items: &self.art,
-                };
-                if let Err(error) = self.gump_atlas.add(art_files, gump_art::art_of(&gump.elements)) {
-                    // Said once per window and then drawn without whatever is
-                    // missing: a dialog with a hole in it is still a dialog the
-                    // player can read, and a client that refused to draw one
-                    // would take the shard's staff commands down with it.
-                    eprintln!("packing gump art for {:?}: {error}", gump.gump_id);
-                }
-            }
-            // This client's own windows — a dialog, a container, a paperdoll —
-            // all three through one machinery. None of them is an egui window:
-            // their position, their drag, their z-order and their hit test are
-            // this client's, in gump pixels, which is decision 5 in
-            // `docs/client.md`. See `own_windows`, `crate::gump`,
-            // `openshard_client_render::container` and
-            // `openshard_client_render::paperdoll`.
-            //
-            // Bottom to top, which is the list's own order: the pass has no
-            // depth, so later is over.
-            //
-            // The layouts are built before the loop that packs them, so that
-            // nothing borrows the view while the atlas is being grown.
-            // Paired with their subjects rather than left parallel to
-            // `own_windows`: a container whose entry has gone from the view is
-            // skipped below, and an index into one list would then name the
-            // wrong window in the other. This list is what the pointer is
-            // tested against next frame — see `App::drawn_windows`.
-            let mut windows: Vec<(WindowSubject, Drawn)> = Vec::new();
-            if let Some(view) = self.view.as_ref() {
-                for open in &self.own_windows {
-                    match open.subject {
-                        WindowSubject::Dialog(gump_id) => {
-                            let Some(gump) = view.gumps.iter().find(|gump| gump.gump_id == gump_id) else {
-                                continue;
-                            };
-                            // The page, the switches and the pressed button are
-                            // the three things the wire does not carry, and all
-                            // three come out of `Dialogs` — which is also what
-                            // the press that set them wrote to, so what is drawn
-                            // pressed is what the release will act on.
-                            windows.push((
-                                open.subject,
-                                Drawn::Dialog(self.dialogs.layout(gump, open.at, &self.gump_atlas)),
-                            ));
-                        }
-                        WindowSubject::Skills => {
-                            let Some(tree) = self.skills.as_ref() else {
-                                continue;
-                            };
-                            // The three sources meet here and nowhere else: the
-                            // names and the tree out of the client's files, the
-                            // numbers out of the view, and how wide a string
-                            // came out of the font atlas — which is what puts a
-                            // value's right edge where it belongs and starts a
-                            // heading's rule at the end of its name.
-                            //
-                            // The wire's `u8` becomes a `SkillId` here, at the
-                            // one seam that holds both: `view::Player::skills`
-                            // is keyed by what the shard said, and the files'
-                            // numbering is the type the window is written
-                            // against. A skill the files do not name has no row
-                            // to put a number on, and is dropped by `names.get`
-                            // inside the layout rather than here.
-                            windows.push((
-                                open.subject,
-                                Drawn::Skills(skills::window(
-                                    &self.skill_names,
-                                    &self.skill_groups,
-                                    tree,
-                                    |id| {
-                                        view.player.skills.get(&id.0).map(|line| skills::Standing {
-                                            value: line.value,
-                                            cap: line.cap,
-                                            // The player's own click, held over
-                                            // the shard's line — see
-                                            // `Tree::lock_of`'s doc.
-                                            lock: tree.lock_of(id, line.lock),
-                                        })
-                                    },
-                                    |text, font| text::gump_width(text, font, &self.font_atlas),
-                                    open.at,
-                                )),
-                            ));
-                        }
-                        WindowSubject::Container(serial) => {
-                            let Some(gump) = view.containers.get(&serial).copied() else {
-                                continue;
-                            };
-                            let contents: Vec<ContainedItem> =
-                                view.contents.get(&serial).cloned().unwrap_or_default();
-                            windows.push((
-                                open.subject,
-                                Drawn::Container(container::window(gump, &contents, open.at)),
-                            ));
-                        }
-                        WindowSubject::Paperdoll(serial) => {
-                            // Whose body and whose equipment, read off the view
-                            // inline rather than through a method: the
-                            // surface's window is held mutably across this
-                            // loop, and a `&self` call would borrow all of it.
-                            // Nothing else asks these questions — the hit test
-                            // reads the list this builds (`drawn_windows`)
-                            // rather than working out the body a second time,
-                            // which is what used to make a paperdoll whose two
-                            // answers disagreed a window that could not be
-                            // closed.
-                            let own = view.player.serial == serial;
-                            let body = match own {
-                                true => Some((view.player.body, view.player.hue)),
-                                // A paperdoll of a mobile this client has never
-                                // been told the body of: the frame is drawn and
-                                // the doll is not, until the `0x77` arrives.
-                                false => view.mobiles.get(&serial).map(|m| (m.body, m.hue)),
-                            };
-                            // The `0x88` carries no equipment — see
-                            // `WorldView::paperdolls` — so it is read off the
-                            // body the window names.
-                            let equipment = match own {
-                                true => crowd::worn(&view.player.equipment, &self.tiledata),
-                                false => match view.mobiles.get(&serial) {
-                                    Some(mobile) => crowd::worn(&mobile.equipment, &self.tiledata),
-                                    None => Vec::new(),
-                                },
-                            };
-                            let wearer = body.map(|(body, hue)| paperdoll::Wearer {
-                                body,
-                                hue,
-                                equipment: &equipment,
-                            });
-                            // The stance, off the player and not off the `0x88`
-                            // the window opened on: a `0x72` moves it while
-                            // that packet stands still, and the toggle is the
-                            // one picture on the frame that has to follow. See
-                            // `WorldView::player`'s `war`, which is where both
-                            // packets are folded to.
-                            let whose = match own {
-                                true => paperdoll::Whose::Own { war: view.player.war },
-                                false => paperdoll::Whose::Another,
-                            };
-                            // Which button the finger is on, if it is on one of
-                            // this window's. Held per window rather than per
-                            // client: two dolls can be open and only the pressed
-                            // one draws a pressed picture.
-                            let held = self
-                                .held_doll
-                                .filter(|(window, _)| *window == open.subject)
-                                .map(|(_, button)| button);
-                            windows.push((
-                                open.subject,
-                                Drawn::Paperdoll(paperdoll::window(
-                                    wearer.as_ref(),
-                                    whose,
-                                    held,
-                                    &self.equip_conv,
-                                    files,
-                                    open.at,
-                                )),
-                            ));
-                        }
-                    }
-                }
-            }
-            for (_, window) in &windows {
-                let art_files = gump_art::ArtFiles {
-                    gumps: files,
-                    items: &self.art,
-                };
-                // Everything the window will draw, packed before it is drawn —
-                // a picture the atlas grew on the *next* frame would draw the
-                // window with a hole in it once. Said and drawn anyway on a
-                // failure, for `gump::art_of`'s reason above.
-                if let Err(error) = self
-                    .gump_atlas
-                    .add(art_files, paperdoll::art_of(window.pictures()))
-                {
-                    eprintln!("packing window art: {error}");
-                }
-                pictures.extend(window.pictures().iter().copied());
-            }
-            // What the pointer is tested against from here on, and the atlas it
-            // is tested in is the one just grown for it: the hit test and the
-            // frame are now the same list. Kept even when it is empty — the
-            // windows this frame drew none of are windows nothing can click.
-            self.drawn_windows = windows;
-            if let Some(rows) = self.gump_atlas.take_dirty() {
-                pass.upload_rows(&window.queue, self.gump_atlas.pixels(), rows);
-            }
-            let quads = gump_art::collect(&pictures, &self.gump_atlas);
-            let timed = profile::begin(window.gpu.as_ref(), "gump art", &mut encoder);
-            pass.render(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                gump_art::Frame {
-                    target: &view,
-                    width: window.config.width,
-                    height: window.config.height,
-                    // A whole number, and the same one egui is laying its
-                    // widgets out at: gump art is five-bit pixel art sampled
-                    // with Nearest, and a fractional scale doubles some of its
-                    // rows and not others.
-                    // egui's own, and not the window's scale factor rounded:
-                    // the art is placed at coordinates egui laid out in
-                    // points, so any other number here slides a window's
-                    // pictures off its buttons.
-                    scale: self
-                        .shell
-                        .as_ref()
-                        .map(|shell| shell.pixels_per_point())
-                        .unwrap_or(1.0),
-                },
-                &quads,
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
+        // `draw_gump_windows` is a free function for the same reason as its
+        // neighbours above: `resources.gump_atlas` and `windows.drawn_windows`
+        // are the two things on `self` it really writes, and both are named
+        // in its signature rather than reached through `&mut self`.
+        draw_gump_windows(
+            &mut self.resources,
+            &self.world,
+            &mut self.windows,
+            self.shell.as_ref(),
+            window,
+            &mut encoder,
+            &view,
+        );
         // Every line of gump-space text this frame, from both the blocks below.
         //
         // **One list because there is one pass.** `GumpRenderer` holds a single
@@ -7046,19 +6980,20 @@ impl App {
             // one. Extended onto the same draw call, which is the point — one
             // texture, one pass, whatever produced the quads.
             let mut cut: Vec<SpriteQuad> = Vec::new();
-            for (subject, drawn) in &self.drawn_windows {
+            for (subject, drawn) in &self.windows.drawn_windows {
                 match (subject, drawn) {
                     (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
                         if let Some(gump) = self
+                            .world
                             .view
                             .as_ref()
                             .and_then(|view| view.gumps.iter().find(|gump| gump.gump_id == *gump_id))
                         {
-                            labels.extend(self.dialogs.lines(
+                            labels.extend(self.windows.dialogs.lines(
                                 gump,
                                 laid_out,
-                                &self.font_atlas,
-                                self.cliloc.as_ref(),
+                                &self.resources.font_atlas,
+                                self.resources.cliloc.as_ref(),
                             ));
                         }
                     }
@@ -7069,13 +7004,17 @@ impl App {
                         // than the doll, for the reason the plate is part of the
                         // frame: it moves with the window and not with the body.
                         let at = self
+                            .windows
                             .own_windows
                             .iter()
                             .find(|window| window.subject == *subject)
                             .map(|window| window.at);
                         if let (Some(at), Some(doll)) = (
                             at,
-                            self.view.as_ref().and_then(|view| view.paperdolls.get(serial)),
+                            self.world
+                                .view
+                                .as_ref()
+                                .and_then(|view| view.paperdolls.get(serial)),
                         ) {
                             labels.push(paperdoll::name(&doll.name, at));
                         }
@@ -7091,7 +7030,7 @@ impl App {
                         for line in &sheet.lines {
                             let mut quads = openshard_client_render::text::collect_gump(
                                 &[line.label()],
-                                &self.font_atlas,
+                                &self.resources.font_atlas,
                             );
                             // Its own box, and not the window's: the rows are cut
                             // to the list and the total written under them is not
@@ -7108,222 +7047,25 @@ impl App {
             }
             text_quads.extend(openshard_client_render::text::collect_gump(
                 &labels,
-                &self.font_atlas,
+                &self.resources.font_atlas,
             ));
             text_quads.extend(cut);
         }
-        // The speech line and the journal above it, over the finished picture
-        // and under egui's, the same corner `shell::speech_line`'s
-        // `egui::Panel::bottom` used to claim before this moved to the
-        // client's own rendering. Always drawn, unlike the block above: the
-        // font atlas needs no shard-sent gump art to exist, so there is
-        // nothing here to be `None` until.
-        {
-            let scale = self
-                .shell
-                .as_ref()
-                .map(|shell| shell.pixels_per_point())
-                .unwrap_or(1.0);
-            // The surface's size in gump pixels rather than real ones —
-            // `Frame::scale`'s doc is what the one below multiplies out, and
-            // this is that arithmetic done once for where the corner is
-            // rather than for every quad in it.
-            let canvas = GumpPixel::new(
-                (window.config.width as f32 / scale) as i32,
-                (window.config.height as f32 / scale) as i32,
-            );
-            let font = Font::DEFAULT;
-            // The TrueType path draws at [`TTF_BASE_PIXEL_HEIGHT`] regardless
-            // of [`desk::ChatScale`] — see [`scaled_gump_quads`]'s doc for
-            // why an integer upscale is right for `fonts.mul` and wrong for an
-            // antialiased face — so the line spacing only grows when the
-            // glyphs it is spacing actually will.
-            let line_height = match self.ttf_font {
-                Some(_) => CHAT_LINE_HEIGHT,
-                None => CHAT_LINE_HEIGHT * chat_style.scale.raw() as i32,
-            };
-            let input_at = GumpPixel::new(CHAT_MARGIN, canvas.y - CHAT_MARGIN - line_height);
-
-            // Owned before it is borrowed into `GumpLabel`s: the journal's own
-            // strings are formatted here (name and text joined the way
-            // `shell::Hud::said` used to) and the prompt is built from
-            // `self.chat`, so both need somewhere to live for the length of
-            // `collect_gump`'s borrow.
-            let mut rows: Vec<(GumpPixel, Hue, Font, String)> = Vec::new();
-            if let Some(view) = self.view.as_ref() {
-                for (row, line) in view.journal.iter().rev().take(CHAT_LINES).enumerate() {
-                    let at = GumpPixel::new(CHAT_MARGIN, input_at.y - line_height * (row as i32 + 1));
-                    let text = match line.name.is_empty() {
-                        true => line.text.clone(),
-                        false => format!("{}: {}", line.name, line.text),
-                    };
-                    rows.push((at, line.hue, line.font, text));
-                }
-            }
-            let prompt = match self.chat.focused {
-                true => format!("say: {}", self.chat.typed),
-                // A hint and not an empty line: there is no mouse click to
-                // discover this by any more (see `App::window_event`'s
-                // `KeyCode::Enter` arm), so the one thing worth saying here is
-                // the key that opens it.
-                false => "[Enter] say".to_owned(),
-            };
-            let mut labels: Vec<GumpLabel<'_>> = rows
-                .iter()
-                .map(|(at, hue, font, text)| GumpLabel {
-                    at: *at,
-                    text,
-                    font: *font,
-                    hue: *hue,
-                    clip: None,
-                })
-                .collect();
-            labels.push(GumpLabel {
-                at: input_at,
-                text: &prompt,
-                font,
-                hue: Hue(chat_style.hue),
-                clip: None,
-            });
-            // The caret, a lone glyph rather than a new quad primitive: the
-            // gump pass draws through an atlas of packed sprites and has
-            // nothing that paints a solid rectangle, and `fonts.mul` already
-            // has a `|` to stand in for one — as does every TrueType face,
-            // `.notdef` or otherwise (`openshard_uofiles::ttf_font::TtfFont::glyph`'s
-            // "never fails" doc). Blinks off wall-clock time rather than a
-            // stored `Instant`, so nothing on `Chat` has to track when focus
-            // began.
-            let caret_text = "|";
-            let blink_on = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| (elapsed.as_millis() / 500) % 2 == 0)
-                .unwrap_or(true);
-            // `fonts.mul` has no Cyrillic past `0xFF` — see `run`'s
-            // `--ttf-font` doc — and this is the box a player actually reads
-            // what they typed back from, so unlike the dialog captions
-            // `text_quads` carries below, this switches to `App::ttf_font`
-            // and `Screen::ttf_gump_pass` whenever one is set rather than
-            // drawing a line nobody can read the second half of.
-            if let Some(font) = &self.ttf_font {
-                let atlas = window
-                    .ttf_atlas
-                    .as_mut()
-                    .expect("create_window builds ttf_atlas whenever ttf_font is set");
-                let wanted = labels
-                    .iter()
-                    .flat_map(|label| label.text.chars())
-                    .chain(std::iter::once('|'));
-                if let Err(error) = atlas.add(font, wanted) {
-                    // Same corner as the speech line's own `atlas.add` above.
-                    eprintln!("packing ttf glyphs: {error}");
-                }
-                // `labels`' own positions are gump pixels, `rows`/`input_at`'s
-                // space — real pixels only once here, not per glyph inside
-                // `collect_gump_ttf`: see that function's doc for why the
-                // earlier per-glyph version read soft and its baseline
-                // sawtoothed.
-                let to_real = |p: GumpPixel| {
-                    GumpPixel::new(
-                        (p.x as f32 * scale).round() as i32,
-                        (p.y as f32 * scale).round() as i32,
-                    )
-                };
-                let mut real_labels: Vec<GumpLabel<'_>> = labels
-                    .iter()
-                    .map(|label| GumpLabel {
-                        at: to_real(label.at),
-                        ..*label
-                    })
-                    .collect();
-                let prefix_width = text::gump_width_ttf("say: ", atlas);
-                if self.chat.focused && blink_on {
-                    let real_input_at = to_real(input_at);
-                    let caret_x =
-                        prefix_width + text::gump_width_ttf(&self.chat.typed[..self.chat.cursor], atlas);
-                    real_labels.push(GumpLabel {
-                        at: GumpPixel::new(real_input_at.x + caret_x, real_input_at.y),
-                        text: caret_text,
-                        font: Font::DEFAULT,
-                        hue: Hue(chat_style.hue),
-                        clip: None,
-                    });
-                }
-                let mut hud_quads = text::collect_gump_ttf(&real_labels, atlas);
-                // Overhead speech's own quads, folded into this same list
-                // rather than a render call of their own — `GumpRenderer::render`'s
-                // doc is explicit that a second call the same frame does not
-                // add a second draw, it *replaces* the first: the instances
-                // live in one buffer written through `queue.write_buffer`,
-                // which lands before either call's encoded draw actually
-                // runs, so a first, separate `screen_speech` call earlier in
-                // the frame was silently overwritten by this one and never
-                // drew anything. One call, everything it should draw.
-                hud_quads.extend(text::collect_screen_ttf(&screen_speech, atlas));
-                // Picks up this call's own `add` above and, the first time
-                // through this frame, the speech line's — see
-                // `Screen::upload_ttf_dirty`'s doc.
-                window.upload_ttf_dirty();
-                let timed = profile::begin(window.gpu.as_ref(), "ttf gump text", &mut encoder);
-                window
-                    .ttf_gump_pass
-                    .as_mut()
-                    .expect("create_window builds ttf_gump_pass whenever ttf_atlas is")
-                    .render(
-                        &window.device,
-                        &window.queue,
-                        &mut encoder,
-                        gump_art::Frame {
-                            target: &view,
-                            width: window.config.width,
-                            height: window.config.height,
-                            // Not `scale`: `hud_quads` are already in real
-                            // pixels, so the shader's own multiply — the one
-                            // `text_quads` below still needs, being in gump
-                            // pixels — would double it.
-                            scale: 1.0,
-                        },
-                        &hud_quads,
-                    );
-                profile::end(window.gpu.as_ref(), &mut encoder, timed);
-            } else {
-                let prefix_width = text::gump_width("say: ", font, &self.font_atlas);
-                if self.chat.focused && blink_on {
-                    let caret_x = prefix_width
-                        + text::gump_width(&self.chat.typed[..self.chat.cursor], font, &self.font_atlas);
-                    labels.push(GumpLabel {
-                        at: GumpPixel::new(input_at.x + caret_x, input_at.y),
-                        text: caret_text,
-                        font,
-                        hue: Hue(chat_style.hue),
-                        clip: None,
-                    });
-                }
-                text_quads.extend(scaled_gump_quads(
-                    &labels,
-                    &self.font_atlas,
-                    chat_style.scale.raw(),
-                ));
-            }
-            // The one call, with the windows' lines already in front of the
-            // chat's: painter's order inside a single pass, and the only order
-            // there is — see `text_quads` for what a second call would cost.
-            // Draws only the windows' captions when `App::ttf_font` is set:
-            // the chat's own quads went through `ttf_gump_pass` above instead.
-            let timed = profile::begin(window.gpu.as_ref(), "gump text", &mut encoder);
-            window.gump_text_pass.render(
-                &window.device,
-                &window.queue,
-                &mut encoder,
-                gump_art::Frame {
-                    target: &view,
-                    width: window.config.width,
-                    height: window.config.height,
-                    scale,
-                },
-                &text_quads,
-            );
-            profile::end(window.gpu.as_ref(), &mut encoder, timed);
-        }
+        // `draw_chat_and_speech` is a free function like its neighbours
+        // above, though a plainer one: nothing it is handed is written back
+        // to `self` at all, only appended to the caller's own `text_quads`.
+        draw_chat_and_speech(
+            &self.resources,
+            &self.world,
+            &self.chat,
+            self.shell.as_ref(),
+            window,
+            &mut encoder,
+            &view,
+            chat_style,
+            &screen_speech,
+            &mut text_quads,
+        );
         // The UI over it, with no depth attachment: the world's depth buffer
         // ordered the world, and this is drawn on the result.
         if let (Some(shell), Some((_, output, _))) = (self.shell.as_mut(), ui) {
@@ -7365,7 +7107,7 @@ impl App {
         // What a comparison wants is the world as the blit left it, so the blit
         // is run again into a texture of its own — the same pass, the same
         // lighting, the same rect — once per plane. `docs/parity.md` D5.
-        if let Some(into) = self.frame_dump.take() {
+        if let Some(into) = self.graphics.frame_dump.take() {
             let dump = window.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("frame dump"),
                 size: wgpu::Extent3d {
@@ -7831,7 +7573,7 @@ mod tests {
     /// the last packet named.
     ///
     /// The two used to be different lists. `App::wanted_in` asked
-    /// `needed_animations` about `self.player`/`self.others`, built at the last
+    /// `needed_animations` about `self.world.player`/`self.world.others`, built at the last
     /// `see`, while `mobiles::collect` drew the group `Crowd::group_for` gives —
     /// and `Crowd::advance` moves a body from walking to standing with no packet
     /// in between. So a body that stopped was drawn from a standing frame the
@@ -7851,7 +7593,7 @@ mod tests {
             Hue::NONE,
             false,
         );
-        // The snapshot the app would store in `self.player`: walking, because a
+        // The snapshot the app would store in `self.world.player`: walking, because a
         // step had just landed when the packet was folded.
         let stepped = crowd.see(
             None,

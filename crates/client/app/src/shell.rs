@@ -43,7 +43,7 @@
 
 use std::time::Duration;
 
-use openshard_client_render::bench::{Metrics, Reading};
+use openshard_client_render::bench::Reading;
 use openshard_client_render::blit::ViewportRect;
 use openshard_client_render::camera::Camera;
 use openshard_client_render::facing::{Face, Prism};
@@ -55,6 +55,8 @@ use openshard_protocol::wire::{Graphic, Hue};
 use winit::window::Window;
 
 use crate::desk::{Desk, Tab};
+use crate::picking::Pick;
+use crate::world::WorldState;
 
 /// What the panels are asked to display.
 ///
@@ -62,114 +64,34 @@ use crate::desk::{Desk, Tab};
 /// the HUD is a projection of state it does not own, and this is the list of
 /// what it is allowed to know.
 pub struct Hud {
-    /// The shard, if there is one, and what it is doing.
-    pub connection: String,
-    /// Our own serial, once a shard has given us one.
-    pub serial: Option<Serial>,
-    /// Where our body stands, as the server last said.
-    pub position: openshard_protocol::world::Point,
-    /// The camera, read for its zoom, eye and viewport.
-    pub camera: Camera,
     /// Whether the camera is locked to the body.
     pub locked: bool,
     /// What the eye is following with — every number a camera is made of.
     pub rig: Rig,
-    /// How far the drawn bodies lag the walk they are doing. Beside the rig and
-    /// not inside it — see the slider.
-    pub ease: crate::crowd::Ease,
-    /// The last few seconds of the eye, one entry per frame.
-    ///
-    /// Owned rather than borrowed because the HUD is a snapshot and not a view
-    /// of the app; a few hundred `f64`s a frame is what that costs, and it is
-    /// what keeps the panels unable to reach back into the camera.
-    pub readings: Vec<Reading>,
-    /// What those frames come to, and `None` before there are enough of them to
-    /// difference. Absent rather than zeroed: a metric over one frame is not a
-    /// small number, it is not a number.
-    pub metrics: Option<Metrics>,
-    /// How long a window the scope keeps, for the chart's own axis.
-    pub scope_span: Duration,
-    /// The last few seconds of the event loop, one entry per drawn frame.
-    pub frames: Vec<crate::frames::Frame>,
-    /// How long a window those cover, for that chart's own axis.
-    pub frames_span: Duration,
-    /// The worst frame rate in that window, and `None` before there is a frame
-    /// to have a rate.
-    pub worst_fps: Option<f64>,
-    /// What the device spent on the last frame it finished, pass by pass — the
-    /// answer to "which pass" once [`crate::frames::Frame::gpu`] has said the
-    /// device is where the frame went.
-    ///
-    /// Empty both when the adapter cannot write timestamp queries and before the
-    /// first frame's queries have come back; the panel tells those two apart by
-    /// asking the ring, which carries `None` for the first and a number for the
-    /// second. See [`crate::profile`].
-    pub gpu_passes: Vec<crate::profile::Pass>,
-    /// How many full atlas repacks this session has paid for. See
-    /// [`crate::frames::Frame::repacked`] for which frame in the window below
-    /// was one of them.
-    pub repacks: u64,
-    /// What is currently asking for frames.
-    ///
-    /// Shown beside the rate because it is the *reason* for it: a client paced
-    /// by the display and one paced by the animation clock report the same kind
-    /// of number and mean opposite things by it, and a panel that only showed
-    /// the rate would read the second as a fault.
-    pub pacing: crate::frames::Pacing,
+    /// The perf snapshot the frame/rig panels read — readings, metrics, the
+    /// frame ring, GPU passes and pacing. Self-contained, unlike the rest of
+    /// this struct: see [`crate::frames::Perf`] for why it is its own type
+    /// rather than fields here.
+    pub perf: crate::frames::Perf,
     /// The bench's scenarios, by name, in the order it ships them.
     pub scripts: Vec<&'static str>,
     /// The one being replayed, and how far through it is from zero to one.
     pub replay: Option<(&'static str, f32)>,
-    /// Whether there is no shard, which is the only state a replay may run in:
-    /// connected, the body goes where the `0x22` says, and a second writer is
-    /// two clients fighting over one character.
-    pub offline: bool,
-    /// Everyone else on screen: serial, body, position.
-    pub mobiles: Vec<(Serial, Graphic, openshard_protocol::world::Point)>,
-    /// The ground items the view is holding: serial, graphic, position.
-    pub items: Vec<(Serial, Graphic, openshard_protocol::world::Point)>,
-    /// What tile the cursor is over right now, if it is over the world and on
-    /// the map. Live, and gone the instant the cursor leaves — see `selected`
-    /// for what a click keeps.
+    /// What the cursor is over this frame — the ground tile, its neighbour
+    /// ring, and whichever of a mobile/an item/a static took the pick — all
+    /// answered once in `App::frame_facts` and carried whole rather than
+    /// unpacked into fields here. See [`Pick`].
     ///
-    /// The *fact*, always answered: the panel reads it whatever is highlighted,
-    /// and so does the route the terrain overlay draws. Whether the marker is
-    /// drawn on it is [`Hud::hover_lit`].
-    pub hover: Option<PickedTile>,
-    /// The eight tiles around [`Hud::hover`], drawn as bare wireframes beside
-    /// its box so the ground's *slope* is visible and not just its height.
-    ///
-    /// Empty when nothing is hovered, and short by however many of the eight
-    /// fell off the map.
-    pub neighbours: Vec<PickedTile>,
+    /// [`Pick::tile`] is the *fact*, always answered: the panel reads it
+    /// whatever is highlighted, and so does the route the terrain overlay
+    /// draws. Whether the marker is drawn on it is [`Hud::hover_lit`].
+    pub pick: Pick,
     /// Whether the tile marker is this frame's highlight.
     ///
     /// False when an item took it — see [`HighlightTarget`]. Decided by the app
     /// and not here, because it is the answer to "is there an item under the
     /// cursor", which is a question about the world rather than about the HUD.
     pub hover_lit: bool,
-    /// What the two object picks answered this frame: the creature under the
-    /// cursor and the item under it, as indices into the lists the passes draw
-    /// from.
-    ///
-    /// An instrument, and one worth its line: "nothing is highlighted" has two
-    /// completely different causes — a pick that found nothing, and a pick that
-    /// found something the ring pass then failed to draw — and from the picture
-    /// alone they are the same blank screen.
-    pub lit_mobile: Option<usize>,
-    /// The item half of the same. Never `Some` at the same time as
-    /// [`Hud::lit_mobile`]: one highlight a frame, and creatures win.
-    pub lit_item: Option<usize>,
-    /// And the map's own furniture, which is the third and last link of that
-    /// chain: answered only where neither of the two above found anything, since
-    /// a wall loses to everything that has a serial.
-    ///
-    /// It is not drawn as a highlight today — what a *click* on it does is the
-    /// wash, and that is held rather than hovered — but it is what puts the tile
-    /// marker out: pointing at a wall and diamonding the ground behind it is one
-    /// question answered twice. Shown here because that absence otherwise has no
-    /// visible cause.
-    pub lit_static: Option<openshard_client_render::statics::PickedStatic>,
     /// Which of the two the cursor may light, for the picker that says so.
     pub highlight: HighlightTarget,
     /// And how an item says it, when it is the one lit.
@@ -751,7 +673,13 @@ impl Shell {
     /// from the viewport this leaves *before* the world is drawn into it: a
     /// frame that laid out its UI after drawing the world would size the world
     /// from the previous frame's panels.
-    pub fn run(&mut self, window: &Window, hud: &Hud) -> (Request, egui::FullOutput) {
+    pub fn run(
+        &mut self,
+        window: &Window,
+        hud: &Hud,
+        camera: Camera,
+        world: &WorldState,
+    ) -> (Request, egui::FullOutput) {
         let input = self.state.take_egui_input(window);
         let mut request = Request::default();
         // What the panels leave behind, taken from the root `Ui` *after* they
@@ -760,7 +688,7 @@ impl Shell {
         let mut free = egui::Rect::from_min_size(egui::Pos2::ZERO, self.context.content_rect().size());
         let desk = &mut self.desk;
         let output = self.context.run_ui(input, |ui| {
-            request = layout(ui, hud, desk);
+            request = layout(ui, hud, camera, world, desk);
             free = ui.available_rect_before_wrap();
         });
         // The scale lives in egui — Ctrl+`+` is egui's own shortcut and writes it
@@ -859,7 +787,7 @@ impl Shell {
 /// than egui's. Building the paperdoll and containers here would decide M4
 /// without arguing it; the speech line already had that argument, in the
 /// commit that moved it off this file.
-fn layout(root: &mut egui::Ui, hud: &Hud, desk: &mut Desk) -> Request {
+fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, desk: &mut Desk) -> Request {
     let mut request = Request::default();
     // egui 0.35 hands the frame a root `Ui`: panels are shown inside it and
     // what is left of it is the world's viewport, while windows float over the
@@ -868,17 +796,15 @@ fn layout(root: &mut egui::Ui, hud: &Hud, desk: &mut Desk) -> Request {
 
     egui::Panel::top("status").show(root, |ui| {
         ui.horizontal(|ui| {
-            ui.label(&hud.connection);
+            ui.label(&world.connection);
             ui.separator();
-            match hud.serial {
+            match world.view.as_ref().map(|view| view.player.serial) {
                 Some(serial) => ui.label(format!("serial {serial}")),
                 None => ui.label("no serial"),
             };
             ui.separator();
-            ui.label(format!(
-                "{}, {}, {}",
-                hud.position.x, hud.position.y, hud.position.z
-            ));
+            let at = world.player.at;
+            ui.label(format!("{}, {}, {}", at.x, at.y, at.z));
             ui.separator();
             // What the frame cost to *build*, and not how long it took: paced by
             // the display, every frame takes a refresh interval whatever it was
@@ -887,7 +813,8 @@ fn layout(root: &mut egui::Ui, hud: &Hud, desk: &mut Desk) -> Request {
             // two here and an integer would read as zero.
             ui.label(format!(
                 "{:.1} ms",
-                hud.frames
+                hud.perf
+                    .frames
                     .last()
                     .map_or(0.0, |frame| frame.build().as_secs_f64() * 1_000.0)
             ));
@@ -948,11 +875,11 @@ fn layout(root: &mut egui::Ui, hud: &Hud, desk: &mut Desk) -> Request {
         egui::ScrollArea::vertical()
             .id_salt(desk.tab.title())
             .show(ui, |ui| match desk.tab {
-                Tab::Camera => camera_panel(ui, hud, &mut request),
-                Tab::Rig => rig_panel(ui, hud, &mut request),
+                Tab::Camera => camera_panel(ui, hud, camera, &mut request),
+                Tab::Rig => rig_panel(ui, hud, world, &mut request),
                 Tab::Frames => frames_panel(ui, hud),
-                Tab::World => world_panel(ui, hud, &mut request),
-                Tab::Tile => tile_tab(ui, hud, &mut request),
+                Tab::World => world_panel(ui, hud, world, &mut request),
+                Tab::Tile => tile_tab(ui, hud, world, &mut request),
                 Tab::Light => light_panel(ui, &mut desk.light),
                 Tab::Chat => chat_panel(ui, &mut desk.chat),
             });
@@ -971,7 +898,7 @@ fn layout(root: &mut egui::Ui, hud: &Hud, desk: &mut Desk) -> Request {
         });
     }
 
-    overlays(root, hud);
+    overlays(root, hud, camera);
 
     request
 }
@@ -1174,30 +1101,26 @@ fn chat_panel(ui: &mut egui::Ui, chat: &mut crate::desk::Chat) {
 }
 
 /// Where the eye is, what it is looking at, and whether it is following.
-fn camera_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
-    let eye = hud.camera.eye();
+fn camera_panel(ui: &mut egui::Ui, hud: &Hud, camera: Camera, request: &mut Request) {
+    let eye = camera.eye();
     egui::Grid::new("camera").num_columns(2).show(ui, |ui| {
         ui.label("zoom");
-        ui.label(hud.camera.zoom().to_string());
+        ui.label(camera.zoom().to_string());
         ui.end_row();
         ui.label("eye");
         ui.label(format!("{}, {} px", eye.x, eye.y));
         ui.end_row();
         ui.label("tile");
-        let (x, y) = hud.camera.eye_tile();
+        let (x, y) = camera.eye_tile();
         ui.label(format!("{x}, {y}"));
         ui.end_row();
         ui.label("viewport");
-        ui.label(format!("{}x{}", hud.camera.width, hud.camera.height));
+        ui.label(format!("{}x{}", camera.width, camera.height));
         ui.end_row();
         ui.label("drawn");
         // The offscreen image, which is the viewport only at zoom 1 and
         // is what the GPU's texture limit applies to.
-        ui.label(format!(
-            "{}x{}",
-            hud.camera.render_width(),
-            hud.camera.render_height()
-        ));
+        ui.label(format!("{}x{}", camera.render_width(), camera.render_height()));
         ui.end_row();
     });
     ui.horizontal(|ui| {
@@ -1217,7 +1140,13 @@ fn camera_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
 }
 
 /// What the view has decoded, with the serials the renderer drops.
-fn world_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
+///
+/// Reads `world` — the same [`WorldState`] the world pass draws from — directly
+/// rather than through a `Hud` snapshot: unlike the camera and the picks, there
+/// is no per-frame reading this panel must agree with, so a live borrow costs
+/// nothing a clone would have bought.
+fn world_panel(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Request) {
+    let view = world.view.as_deref();
     // **What the frame draws**, which is the only way to look at a surface
     // something else is standing in front of: the G-buffer holds one answer per
     // pixel, so a wall behind a body is not dimmed or half-shown in a diagnostic,
@@ -1258,22 +1187,33 @@ fn world_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     );
 
     ui.separator();
-    ui.label(format!(
-        "{} mobiles, {} ground items",
-        hud.mobiles.len(),
-        hud.items.len()
-    ));
-    for (serial, body, at) in &hud.mobiles {
-        ui.label(format!("{serial}  body {}  {}, {}, {}", body.0, at.x, at.y, at.z));
-    }
-    if !hud.items.is_empty() {
-        ui.separator();
-    }
-    for (serial, graphic, at) in &hud.items {
-        ui.label(format!(
-            "{serial}  item {}  {}, {}, {}",
-            graphic.0, at.x, at.y, at.z
-        ));
+    let mobiles = view.map_or(0, |view| view.mobiles.len());
+    let items = view.map_or(0, |view| view.items.len());
+    ui.label(format!("{mobiles} mobiles, {items} ground items"));
+    if let Some(view) = view {
+        // Sorted, so a `HashMap`'s iteration order does not reshuffle the list
+        // under the reader's eyes every frame.
+        let mut mobiles: Vec<_> = view.mobiles.iter().collect();
+        mobiles.sort_unstable_by_key(|(serial, _)| **serial);
+        for (serial, mobile) in mobiles {
+            let at = mobile.position;
+            ui.label(format!(
+                "{serial}  body {}  {}, {}, {}",
+                mobile.body.0, at.x, at.y, at.z
+            ));
+        }
+        if !view.items.is_empty() {
+            ui.separator();
+        }
+        let mut items: Vec<_> = view.items.iter().collect();
+        items.sort_unstable_by_key(|(serial, _)| **serial);
+        for (serial, item) in items {
+            let at = item.position;
+            ui.label(format!(
+                "{serial}  item {}  {}, {}, {}",
+                item.graphic.0, at.x, at.y, at.z
+            ));
+        }
     }
 }
 
@@ -1281,7 +1221,7 @@ fn world_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
 ///
 /// Named for the tab and not for [`tile_panel`], which is the readout of *one*
 /// tile that this calls twice — for what is hovered and for what is selected.
-fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
+fn tile_tab(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Request) {
     let mut show = hud.show_terrain;
     if ui
         .checkbox(&mut show, "terrain — walkable green, blocked red")
@@ -1421,7 +1361,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     ui.horizontal(|ui| {
         ui.label("draw (F4)");
         for (cut, name) in [
-            (Cut::BelowFeet(hud.position.z), "above your feet"),
+            (Cut::BelowFeet(world.player.at.z), "above your feet"),
             (Cut::Nothing, "everything"),
         ] {
             let picked = std::mem::discriminant(&hud.solid_cut) == std::mem::discriminant(&cut);
@@ -1460,11 +1400,11 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     ui.separator();
     ui.label(format!(
         "under cursor — mobile {}, item {}, static {}",
-        match hud.lit_mobile {
+        match hud.pick.mobile {
             Some(index) => index.to_string(),
             None => "—".to_string(),
         },
-        match hud.lit_item {
+        match hud.pick.item {
             Some(index) => index.to_string(),
             None => "—".to_string(),
         },
@@ -1473,7 +1413,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         // under the cursor — a wall's picture stands up the screen from the cell
         // it is built on. The hover readout below names the other one, so the two
         // rows together are the whole of why they differ.
-        match &hud.lit_static {
+        match &hud.pick.static_ {
             Some(picked) => format!(
                 "0x{:04X} at {}, {}, {}",
                 picked.graphic.0, picked.at.x, picked.at.y, picked.at.z
@@ -1488,7 +1428,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     selected_panel(ui, hud.selected.as_ref(), request);
     ui.separator();
     ui.monospace("hover");
-    tile_panel(ui, "hover", hud.hover.as_ref(), None);
+    tile_panel(ui, "hover", hud.pick.tile.as_ref(), None);
 }
 
 /// What a left click actually landed on, printed as one of the four things it
@@ -1626,7 +1566,7 @@ fn prism_editor(ui: &mut egui::Ui, graphic: Graphic, prism: Prism, request: &mut
 /// Taken out of [`layout`] with the rest of the panels' bodies, and for the same
 /// reason — what is left in `layout` is then the arrangement, one screenful of
 /// it, and nothing else.
-fn overlays(root: &mut egui::Ui, hud: &Hud) {
+fn overlays(root: &mut egui::Ui, hud: &Hud, camera: Camera) {
     // Every panel has claimed its edge by now, so what is left of the root `Ui`
     // is the world's own rectangle — the very rect `Shell::run` reads back a
     // moment later and hands the camera. Read *here*, at the foot of the layout
@@ -1640,7 +1580,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
     // The terrain map goes down first: it is a wash over the ground, and the
     // three markers below are read against it.
     if let Some(terrain) = &hud.terrain {
-        draw_terrain(&world, &hud.camera, terrain, viewport.min);
+        draw_terrain(&world, &camera, terrain, viewport.min);
     }
     // Then what stands up out of it. Over the wash and under the markers: the
     // boxes are read against the ground the wash colours, and a highlight the
@@ -1653,13 +1593,13 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
     // is the pair of facts the two views exist to be read as; the other one
     // hides the measurement behind the drawing.
     if let Some(occluders) = hud.occluders.as_ref().filter(|_| hud.show_occluders) {
-        draw_occluders(&world, &hud.camera, occluders, hud.solid_cut, viewport.min);
+        draw_occluders(&world, &camera, occluders, hud.solid_cut, viewport.min);
     }
     // The way the body is going, over the wash and under everything the cursor
     // is doing: it is a standing answer to an order already given, and must not
     // cover the marker that says what the *next* click would do.
     if let Some(route) = &hud.route {
-        draw_route(&world, &hud.camera, route, viewport.min);
+        draw_route(&world, &camera, route, viewport.min);
     }
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
@@ -1672,10 +1612,10 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
     // boxes around one is a lantern, and the tile under the cursor stops being
     // the brightest thing on screen.
     if hud.hover_lit {
-        for tile in &hud.neighbours {
+        for tile in &hud.pick.neighbours {
             draw_tile_highlight(
                 &world,
-                &hud.camera,
+                &camera,
                 tile,
                 viewport.min,
                 egui::Color32::TRANSPARENT,
@@ -1683,10 +1623,10 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
             );
         }
     }
-    if let Some(tile) = hud.hover.as_ref().filter(|_| hud.hover_lit) {
+    if let Some(tile) = hud.pick.tile.as_ref().filter(|_| hud.hover_lit) {
         draw_tile_highlight(
             &world,
-            &hud.camera,
+            &camera,
             tile,
             viewport.min,
             egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40),
@@ -1696,7 +1636,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
     if let Some(tile) = hud.selected.as_ref().and_then(Selection::tile) {
         draw_tile_highlight(
             &world,
-            &hud.camera,
+            &camera,
             tile,
             viewport.min,
             egui::Color32::from_rgba_unmultiplied(0, 220, 255, 60),
@@ -1707,7 +1647,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
     if let Some(tile) = &hud.goal {
         draw_tile_highlight(
             &world,
-            &hud.camera,
+            &camera,
             tile,
             viewport.min,
             egui::Color32::from_rgba_unmultiplied(0, 255, 120, 50),
@@ -1728,7 +1668,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud) {
 /// The numbers and the curves come off one arithmetic — `bench::readings` — so a
 /// figure that disagrees with the shape beside it means the metric is wrong,
 /// which is a thing to be able to see rather than to reason about.
-fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
+fn rig_panel(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Request) {
     let mut rig = hud.rig;
     ui.horizontal(|ui| {
         ui.label("preset");
@@ -1789,9 +1729,10 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     ui.separator();
     ui.horizontal(|ui| {
         ui.label("body ease");
-        let mut ease = hud.ease;
+        let world_ease = world.crowd.ease();
+        let mut ease = world_ease;
         ui.add(egui::Slider::new(&mut ease.tau, 0.0..=0.5).suffix(" s"));
-        if ease != hud.ease {
+        if ease != world_ease {
             request.ease = Some(ease);
         }
         let literal = format!("Ease {{ tau: {:?} }}", ease.tau);
@@ -1803,7 +1744,7 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
 
     ui.horizontal(|ui| {
         ui.label("scope");
-        let mut span = hud.scope_span.as_secs_f32();
+        let mut span = hud.perf.scope_span.as_secs_f32();
         // Logarithmic: the useful settings are a second apart at one end and
         // several seconds apart at the other, and a linear slider spends most
         // of its length on the end nobody is looking at.
@@ -1820,7 +1761,7 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
     });
 
     ui.separator();
-    match hud.metrics {
+    match hud.perf.metrics {
         Some(metrics) => {
             egui::Grid::new("metrics").num_columns(4).show(ui, |ui| {
                 ui.label("lag");
@@ -1849,13 +1790,15 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
         }
     }
 
-    let span = hud.scope_span.as_secs_f32().max(0.001);
+    let span = hud.perf.scope_span.as_secs_f32().max(0.001);
     let last = hud
+        .perf
         .readings
         .last()
         .map_or(0.0, |reading| reading.at.as_secs_f32());
     let series = |of: fn(&Reading) -> Option<f64>| -> Vec<(f32, f32)> {
-        hud.readings
+        hud.perf
+            .readings
             .iter()
             .filter_map(|reading| {
                 of(reading).map(|value| (reading.at.as_secs_f32() - (last - span), value as f32))
@@ -1886,14 +1829,15 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
             }
         }
         None => {
+            let offline = world.link.is_none();
             ui.horizontal_wrapped(|ui| {
                 for name in &hud.scripts {
-                    if ui.add_enabled(hud.offline, egui::Button::new(*name)).clicked() {
+                    if ui.add_enabled(offline, egui::Button::new(*name)).clicked() {
                         request.script = Some(ScriptRequest::Run(name));
                     }
                 }
             });
-            if !hud.offline {
+            if !offline {
                 ui.label(
                     egui::RichText::new(
                         "a scenario walks the body itself, so it needs a client with no shard",
@@ -1921,7 +1865,7 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, request: &mut Request) {
 /// that says how much of the frame was still free. See [`crate::frames`].
 fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
     let ms = |duration: Duration| duration.as_secs_f64() * 1_000.0;
-    let last = hud.frames.last();
+    let last = hud.perf.frames.last();
     egui::Grid::new("frames").num_columns(4).show(ui, |ui| {
         ui.label("fps");
         match last {
@@ -1932,7 +1876,7 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
             None => ui.label("—"),
         };
         ui.label("worst");
-        match hud.worst_fps {
+        match hud.perf.worst_fps {
             Some(worst) => ui.label(format!("{worst:.0}")),
             None => ui.label("—"),
         };
@@ -1998,12 +1942,12 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
     // frame recorded them, so this reads down a frame in the order it was drawn
     // — and it is the last resolved frame rather than the one just built, a
     // couple behind whatever `gpu` above belongs to.
-    if !hud.gpu_passes.is_empty() {
+    if !hud.perf.gpu_passes.is_empty() {
         egui::CollapsingHeader::new("what the gpu drew")
             .default_open(false)
             .show(ui, |ui| {
                 egui::Grid::new("gpu passes").num_columns(2).show(ui, |ui| {
-                    for pass in &hud.gpu_passes {
+                    for pass in &hud.perf.gpu_passes {
                         // Nested scopes are indented rather than added up: the
                         // total above counts the outermost only, and a reader
                         // has to be able to see which rows are inside which.
@@ -2021,9 +1965,9 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
     if last.is_some_and(|frame| frame.repacked) {
         ui.label(egui::RichText::new("this frame repacked the atlas").color(egui::Color32::YELLOW));
     }
-    if hud.repacks > 0 {
+    if hud.perf.repacks > 0 {
         ui.label(
-            egui::RichText::new(format!("atlas repacks this session: {}", hud.repacks))
+            egui::RichText::new(format!("atlas repacks this session: {}", hud.perf.repacks))
                 .weak()
                 .small(),
         );
@@ -2032,7 +1976,7 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
     // reading. What is asking for frames is the whole answer, and when it is the
     // animation clock that is a rule rather than a symptom — see `App::pacing`.
     ui.label(
-        egui::RichText::new(match hud.pacing {
+        egui::RichText::new(match hud.perf.pacing {
             crate::frames::Pacing::Display => {
                 "the display is the pacer: a frame is asked for as soon as the last is queued, and the surface presents in FIFO"
             }
@@ -2044,10 +1988,11 @@ fn frames_panel(ui: &mut egui::Ui, hud: &Hud) {
         .small(),
     );
 
-    let span = hud.frames_span.as_secs_f32().max(0.001);
-    let end = hud.frames.last().map_or(0.0, |frame| frame.at.as_secs_f32());
+    let span = hud.perf.frames_span.as_secs_f32().max(0.001);
+    let end = hud.perf.frames.last().map_or(0.0, |frame| frame.at.as_secs_f32());
     let series = |of: fn(&crate::frames::Frame) -> f64| -> Vec<(f32, f32)> {
-        hud.frames
+        hud.perf
+            .frames
             .iter()
             .map(|frame| (frame.at.as_secs_f32() - (end - span), of(frame) as f32))
             .collect()
