@@ -89,8 +89,8 @@ pub(super) fn anatomy(state: &mut WorldState, actor: EntityId, target: EntityId)
         state.localized_message(actor, ANATOMY_NOT_ALIVE, "");
         return;
     };
-    let id = Skill::Anatomy.id();
-    let margin = margin(crate::skill_value(state, actor, id), 25, 4);
+    let skill = Skill::Anatomy;
+    let margin = margin(crate::skill_value(state, actor, skill), 25, 4);
     let strength = fuzzed_index(state, i32::from(stats.strength), margin);
     let dexterity = fuzzed_index(state, i32::from(stats.dexterity), margin);
     let stamina = state
@@ -99,7 +99,7 @@ pub(super) fn anatomy(state: &mut WorldState, actor: EntityId, target: EntityId)
         .map_or(100, |s| pool_percent(s.current, s.max));
     let stamina = fuzzed_index(state, stamina, margin);
 
-    if roll_skill_band(state, actor, id, 0, 1000) {
+    if roll_skill_band(state, actor, skill, 0, 1000) {
         state.private_overhead_cliloc(
             actor,
             target,
@@ -109,7 +109,7 @@ pub(super) fn anatomy(state: &mut WorldState, actor: EntityId, target: EntityId)
         // The endurance line is a second sentence, and only a trained eye sees it.
         // ServUO reads the *base* here, not the effective value: a strong smith
         // does not learn to read a stranger's breathing.
-        if trained(state, actor, id) >= ANATOMY_STAMINA_AT {
+        if trained(state, actor, skill) >= ANATOMY_STAMINA_AT {
             state.private_overhead_cliloc(actor, target, ClilocId(ANATOMY_STAMINA + stamina), "");
         }
     } else {
@@ -127,8 +127,8 @@ pub(super) fn eval_int(state: &mut WorldState, actor: EntityId, target: EntityId
         state.localized_message(actor, EVAL_INT_ITEM, "");
         return;
     };
-    let id = Skill::EvalInt.id();
-    let margin = margin(crate::skill_value(state, actor, id), 20, 5);
+    let skill = Skill::EvalInt;
+    let margin = margin(crate::skill_value(state, actor, skill), 20, 5);
     let intelligence = fuzzed_index(state, i32::from(stats.intelligence), margin);
     let mana = state
         .registry
@@ -143,9 +143,9 @@ pub(super) fn eval_int(state: &mut WorldState, actor: EntityId, target: EntityId
         }
     });
 
-    if roll_skill_band(state, actor, id, 0, 1200) {
+    if roll_skill_band(state, actor, skill, 0, 1200) {
         state.private_overhead_cliloc(actor, target, ClilocId(EVAL_INT_RESULT + intelligence + body), "");
-        if trained(state, actor, id) >= EVAL_INT_MANA_AT {
+        if trained(state, actor, skill) >= EVAL_INT_MANA_AT {
             state.private_overhead_cliloc(actor, target, ClilocId(EVAL_INT_MANA + mana), "");
         }
     } else {
@@ -167,9 +167,9 @@ fn mobile_stats(state: &WorldState, entity: EntityId) -> Option<Stats> {
 /// What a mobile has actually *trained*, in tenths — the base, with no help from
 /// its stats. The threshold at which a lore skill starts telling you more reads
 /// this rather than the effective value, as ServUO's do.
-fn trained(state: &WorldState, entity: EntityId, id: u8) -> u16 {
+fn trained(state: &WorldState, entity: EntityId, skill: Skill) -> u16 {
     state
         .registry
         .get::<openshard_state::Skills>(entity)
-        .map_or(0, |s| s.get(id))
+        .map_or(0, |s| s.get(skill))
 }

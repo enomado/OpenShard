@@ -55,12 +55,19 @@ impl WeaponSkill {
     /// come from the client's own table.
     #[must_use]
     pub const fn skill_id(self) -> u8 {
+        self.skill().id()
+    }
+
+    /// The same mapping as [`skill_id`](Self::skill_id), as the domain type rather
+    /// than its wire byte — what everything except a wire/test boundary wants.
+    #[must_use]
+    pub const fn skill(self) -> Skill {
         match self {
-            Self::Swords => Skill::Swords.id(),
-            Self::Macing => Skill::Macing.id(),
-            Self::Fencing => Skill::Fencing.id(),
-            Self::Archery => Skill::Archery.id(),
-            Self::Wrestling => Skill::Wrestling.id(),
+            Self::Swords => Skill::Swords,
+            Self::Macing => Skill::Macing,
+            Self::Fencing => Skill::Fencing,
+            Self::Archery => Skill::Archery,
+            Self::Wrestling => Skill::Wrestling,
         }
     }
 }

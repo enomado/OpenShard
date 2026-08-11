@@ -79,16 +79,16 @@ pub(super) fn taming(state: &mut WorldState, tamer: EntityId, target: EntityId) 
         state.localized_message(tamer, TOO_MANY_FOLLOWERS, "");
         return None;
     }
-    let id = Skill::AnimalTaming.id();
-    let skill = crate::skill_value(state, tamer, id);
-    if skill < what.min_skill {
+    let skill = Skill::AnimalTaming;
+    let value = crate::skill_value(state, tamer, skill);
+    if value < what.min_skill {
         state.private_overhead_cliloc(tamer, target, NO_CHANCE, "");
         return None;
     }
     // The anger roll: a beast that is not simply given to you may turn instead, and
     // then it is a fight rather than a taming. Rolled on the world's own generator,
     // so a bad approach replays.
-    if skill < ANGER_STOPS_AT && state.rng.below(100) < ANGER_CHANCE {
+    if value < ANGER_STOPS_AT && state.rng.below(100) < ANGER_CHANCE {
         state.private_overhead_cliloc(tamer, target, ANGERED, "");
         return Some(Tamed {
             creature: target,
@@ -102,7 +102,7 @@ pub(super) fn taming(state: &mut WorldState, tamer: EntityId, target: EntityId) 
     // so an animal at the edge of your ability teaches most — the same band shape
     // every other roll in the engine uses.
     let min = i32::from(what.min_skill);
-    if !roll_skill_band(state, tamer, id, min, min + 400) {
+    if !roll_skill_band(state, tamer, skill, min, min + 400) {
         state.private_overhead_cliloc(tamer, target, NO_CHANCE, "");
         return None;
     }

@@ -64,7 +64,7 @@ pub fn chance(state: &WorldState, crafter: EntityId, system: &CraftSystemDef, re
     let mut main = None;
     for want in recipe.skills {
         let floor = want.min - recipe.min_skill_offset;
-        let value = i32::from(skill_value(state, crafter, want.skill.id()));
+        let value = i32::from(skill_value(state, crafter, want.skill));
         if value < floor {
             all_skills = false;
         }
@@ -103,7 +103,7 @@ pub(crate) fn roll(
             roll_skill_band(
                 state,
                 crafter,
-                want.skill.id(),
+                want.skill,
                 want.min - recipe.min_skill_offset,
                 want.max,
             );
@@ -129,7 +129,7 @@ pub(crate) fn train_per_item(state: &mut WorldState, crafter: EntityId, recipe: 
             roll_skill_band(
                 state,
                 crafter,
-                want.skill.id(),
+                want.skill,
                 want.min - recipe.min_skill_offset,
                 want.max,
             );
@@ -177,7 +177,7 @@ fn exceptional_chance(
     if recipe.always_exceptional {
         return 1000;
     }
-    let main = skill_value(state, crafter, system.skill.id());
+    let main = skill_value(state, crafter, system.skill);
     exceptional_curve(system.eca, success, i32::from(main))
 }
 

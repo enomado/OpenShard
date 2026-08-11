@@ -61,7 +61,7 @@ const SPIRIT_SPEAK_DELAY: u64 = TICKS_PER_SECOND;
 /// clock, and the mana rate reads the marker where it decides rather than having
 /// anything folded into it.
 pub(super) fn meditation(state: &mut WorldState, actor: EntityId) {
-    let id = Skill::Meditation.id();
+    let skill = Skill::Meditation;
     // A cursor already up is something else being concentrated on.
     if state.has_target(actor) {
         state.localized_message(actor, BUSY, "");
@@ -97,9 +97,9 @@ pub(super) fn meditation(state: &mut WorldState, actor: EntityId) {
     // is nearly certain. Rolled against the world's own generator, not a skill
     // check — ServUO is explicit that this must *bypass* the check so a failed
     // attempt does not train (`CheckSkill` is called only on success, below).
-    let skill = i32::from(crate::skill_value(state, actor, id)) / 10;
+    let value = i32::from(crate::skill_value(state, actor, skill)) / 10;
     let missing = i32::from(mana.max.saturating_sub(mana.current));
-    let chance = 50 + (skill - missing) * 2;
+    let chance = 50 + (value - missing) * 2;
     let roll = i32::try_from(state.rng.below(100)).unwrap_or(0);
     crate::set_skill_delay(state, actor, MEDITATION_DELAY);
     if chance <= roll {
@@ -108,7 +108,7 @@ pub(super) fn meditation(state: &mut WorldState, actor: EntityId) {
     }
     // The trance took. The skill check here is for the *gain* alone; its result is
     // deliberately ignored, which is what ServUO does with it.
-    let _ = roll_skill_band(state, actor, id, 0, 1000);
+    let _ = roll_skill_band(state, actor, skill, 0, 1000);
     state.registry.insert(actor, Meditating);
     state.localized_message(actor, TRANCE, "");
     state.play_sound(actor, TRANCE_SOUND);
@@ -122,9 +122,9 @@ pub(super) fn meditation(state: &mut WorldState, actor: EntityId) {
 /// is measured in seconds, and a restored one would be a contact whose expiry
 /// nobody remembers announcing.
 pub(super) fn spirit_speak(state: &mut WorldState, actor: EntityId) {
-    let id = Skill::SpiritSpeak.id();
+    let skill = Skill::SpiritSpeak;
     crate::set_skill_delay(state, actor, SPIRIT_SPEAK_DELAY);
-    if !roll_skill_band(state, actor, id, 0, 1000) {
+    if !roll_skill_band(state, actor, skill, 0, 1000) {
         // A failed contact takes away any contact still standing, which is
         // ServUO's `CanHearGhosts = false` on the failure branch.
         state.registry.remove::<HearsGhosts>(actor);
@@ -134,7 +134,7 @@ pub(super) fn spirit_speak(state: &mut WorldState, actor: EntityId) {
     // An existing contact is not extended — ServUO only starts a timer when there
     // is none, so a second use inside the first says the line and nothing more.
     if !state.registry.has::<HearsGhosts>(actor) {
-        let base = u64::from(trained(state, actor, id)) / 10;
+        let base = u64::from(trained(state, actor, skill)) / 10;
         let seconds = (base * 90 / 50).max(CONTACT_FLOOR_SECONDS);
         let until = state.ticks + seconds * TICKS_PER_SECOND;
         state.registry.insert(actor, HearsGhosts { until });
@@ -162,11 +162,11 @@ fn hands_free(state: &WorldState, actor: EntityId) -> bool {
 /// What a mobile has actually *trained*, in tenths — the base, with no help from
 /// its stats. The length of a Spirit Speak contact reads this rather than the
 /// effective value, as ServUO's does.
-fn trained(state: &WorldState, entity: EntityId, id: u8) -> u16 {
+fn trained(state: &WorldState, entity: EntityId, skill: Skill) -> u16 {
     state
         .registry
         .get::<openshard_state::Skills>(entity)
-        .map_or(0, |s| s.get(id))
+        .map_or(0, |s| s.get(skill))
 }
 
 /// Tell a mobile its contact with the dead has lapsed — the line ServUO sends when

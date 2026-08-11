@@ -45,6 +45,7 @@ use crate::quest::QuestDefs;
 use crate::region::{Region, Regions};
 use crate::rng::Rng;
 use crate::sectors::{Sectors, VIEW_RANGE};
+use crate::skill::Skill;
 
 /// A character's height above the ground when the facet has no map to ask.
 const Z_WITHOUT_A_MAP: i8 = 0;
@@ -705,8 +706,8 @@ pub enum TargetPurpose {
     /// A skill waiting for the thing it was pointed at — "whom shall I examine?".
     /// Which skill asked is all that needs remembering; the rest is the skill's own.
     Skill {
-        /// Which skill, by id.
-        skill: u8,
+        /// Which skill.
+        skill: Skill,
     },
     /// A skill's *second* cursor: it has one answer and wants another.
     ///
@@ -716,8 +717,8 @@ pub enum TargetPurpose {
     /// The first answer is carried as an entity and re-checked when the second
     /// lands: a potion drunk or dropped while the cursor was up poisons nothing.
     SkillSecond {
-        /// Which skill, by id.
-        skill: u8,
+        /// Which skill.
+        skill: Skill,
         /// What its first cursor came back with.
         first: EntityId,
     },

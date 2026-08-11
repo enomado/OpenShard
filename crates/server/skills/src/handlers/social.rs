@@ -122,8 +122,8 @@ pub(super) fn begging(state: &mut WorldState, actor: EntityId, target: EntityId)
         state.private_overhead_cliloc(actor, target, NOT_TRUSTWORTHY, "");
         return;
     }
-    let id = Skill::Begging.id();
-    if !roll_skill_band(state, actor, id, 0, 1000) {
+    let skill = Skill::Begging;
+    if !roll_skill_band(state, actor, skill, 0, 1000) {
         state.localized_message(actor, UNWILLING, "");
         return;
     }
@@ -169,11 +169,11 @@ pub struct Begged {
 /// Whether a mobile knows enough to attempt a trap at all — the two prerequisites
 /// ServUO checks before it even raises the cursor.
 pub(super) fn may_remove_traps(state: &mut WorldState, actor: EntityId) -> bool {
-    if crate::skill_value(state, actor, Skill::Lockpicking.id()) < TRAP_PREREQUISITE {
+    if crate::skill_value(state, actor, Skill::Lockpicking) < TRAP_PREREQUISITE {
         state.localized_message(actor, NOT_ENOUGH_LOCKS, "");
         return false;
     }
-    if crate::skill_value(state, actor, Skill::DetectHidden.id()) < TRAP_PREREQUISITE {
+    if crate::skill_value(state, actor, Skill::DetectHidden) < TRAP_PREREQUISITE {
         state.localized_message(actor, NOT_PERCEPTIVE, "");
         return false;
     }
@@ -196,9 +196,9 @@ pub(super) fn remove_trap(state: &mut WorldState, actor: EntityId, target: Entit
         state.localized_message(actor, NOT_TRAPPED, "");
         return;
     };
-    let id = Skill::RemoveTrap.id();
+    let skill = Skill::RemoveTrap;
     let band = i32::from(power);
-    if roll_skill_band(state, actor, id, band, band + TRAP_BAND_WIDTH) {
+    if roll_skill_band(state, actor, skill, band, band + TRAP_BAND_WIDTH) {
         state.registry.remove::<Trap>(target);
         state.localized_message(actor, TRAP_REMOVED, "");
     } else {

@@ -79,9 +79,8 @@ const ASKS: &[(Skill, Ask)] = &[
     (Skill::AnimalLore, Ask { prompt: ClilocId(500_328), range: 8 }), // What animal should I look at?
 ];
 
-/// The ask for a skill id, if the core raises a cursor for it.
-fn ask_for(id: u8) -> Option<&'static Ask> {
-    let skill = Skill::from_id(id)?;
+/// The ask for a skill, if the core raises a cursor for it.
+fn ask_for(skill: Skill) -> Option<&'static Ask> {
     ASKS.iter()
         .find(|(candidate, _)| *candidate == skill)
         .map(|(_, ask)| ask)
@@ -92,44 +91,44 @@ fn ask_for(id: u8) -> Option<&'static Ask> {
 /// Called after the gates and after the event, so a pack that wants a skill to
 /// mean something else has already seen it and the core is the fallback, not the
 /// competition.
-pub(crate) fn start(state: &mut WorldState, actor: EntityId, id: u8) -> bool {
+pub(crate) fn start(state: &mut WorldState, actor: EntityId, skill: Skill) -> bool {
     // A skill that asks a question puts up its cursor and waits; the answer arrives
     // in [`on_target`] a packet later.
-    if let Some(ask) = ask_for(id) {
+    if let Some(ask) = ask_for(skill) {
         // Remove Trap is the one that refuses *before* the cursor: ServUO checks
         // the two skills it leans on in `OnUse` and never raises a target for
         // someone who could not disarm anything anyway.
-        if Skill::from_id(id) == Some(Skill::RemoveTrap) && !social::may_remove_traps(state, actor) {
+        if skill == Skill::RemoveTrap && !social::may_remove_traps(state, actor) {
             return true;
         }
-        return raise_cursor(state, actor, id, ask.prompt);
+        return raise_cursor(state, actor, skill, ask.prompt);
     }
     // And a skill a mobile turns on itself resolves here and now.
-    match Skill::from_id(id) {
-        Some(Skill::Meditation) => {
+    match skill {
+        Skill::Meditation => {
             mind::meditation(state, actor);
             true
         }
-        Some(Skill::SpiritSpeak) => {
+        Skill::SpiritSpeak => {
             mind::spirit_speak(state, actor);
             true
         }
-        Some(Skill::Hiding) => {
+        Skill::Hiding => {
             stealth::hiding(state, actor);
             true
         }
-        Some(Skill::Stealth) => {
+        Skill::Stealth => {
             stealth::stealth(state, actor);
             true
         }
-        Some(Skill::DetectHidden) => {
+        Skill::DetectHidden => {
             stealth::detect_hidden(state, actor);
             true
         }
         // The bard skills raise their own cursors, because the reach is the bard's
         // (`8 + value/15`) rather than a constant, and each wants an instrument in
         // the pack before it asks anything.
-        Some(Skill::Peacemaking | Skill::Provocation | Skill::Discordance) => bard::start(state, actor, id),
+        Skill::Peacemaking | Skill::Provocation | Skill::Discordance => bard::start(state, actor, skill),
         _ => false,
     }
 }
@@ -158,14 +157,17 @@ pub fn expire_ghost_contact(state: &mut WorldState) {
 /// Returns a theft to carry out, if the skill was Stealing and it resolved: moving
 /// an item into a pack is `items`' door and turning a thief criminal is `combat`'s,
 /// so this decides and the tick applies — the split `ai::think_one` uses.
-pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: Option<Serial>) -> Outcome {
+pub fn on_target(state: &mut WorldState, actor: EntityId, skill: Skill, target: Option<Serial>) -> Outcome {
     // The bard skills judge their own reach, which widens with the skill, so they
     // are not in the fixed table.
-    if let Some(skill @ (Skill::Peacemaking | Skill::Provocation | Skill::Discordance)) = Skill::from_id(id) {
+    if matches!(
+        skill,
+        Skill::Peacemaking | Skill::Provocation | Skill::Discordance
+    ) {
         let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
             return Outcome::default();
         };
-        if !within(state, actor, target, bard::bard_range(state, actor, id)) {
+        if !within(state, actor, target, bard::bard_range(state, actor, skill)) {
             return Outcome::default();
         }
         match skill {
@@ -175,7 +177,7 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: Option
         }
         return Outcome::default();
     }
-    let Some(ask) = ask_for(id) else {
+    let Some(ask) = ask_for(skill) else {
         return Outcome::default();
     };
     let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
@@ -187,14 +189,14 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: Option
     if !within(state, actor, target, ask.range) {
         return Outcome::default();
     }
-    match Skill::from_id(id) {
-        Some(Skill::Stealing) => {
+    match skill {
+        Skill::Stealing => {
             return Outcome {
                 stolen: stealth::stealing(state, actor, target),
                 ..Outcome::default()
             };
         }
-        Some(Skill::AnimalTaming) => {
+        Skill::AnimalTaming => {
             return Outcome {
                 tamed: taming::taming(state, actor, target),
                 ..Outcome::default()
@@ -202,19 +204,19 @@ pub fn on_target(state: &mut WorldState, actor: EntityId, id: u8, target: Option
         }
         _ => {}
     }
-    match Skill::from_id(id) {
-        Some(Skill::Anatomy) => lore::anatomy(state, actor, target),
-        Some(Skill::EvalInt) => lore::eval_int(state, actor, target),
-        Some(Skill::ArmsLore) => appraise::arms_lore(state, actor, target),
-        Some(Skill::ItemId) => appraise::item_id(state, actor, target),
-        Some(Skill::Forensics) => forensics::forensics(state, actor, target),
-        Some(Skill::AnimalLore) => animal::animal_lore(state, actor, target),
-        Some(Skill::TasteId) => poison::taste_id(state, actor, target),
+    match skill {
+        Skill::Anatomy => lore::anatomy(state, actor, target),
+        Skill::EvalInt => lore::eval_int(state, actor, target),
+        Skill::ArmsLore => appraise::arms_lore(state, actor, target),
+        Skill::ItemId => appraise::item_id(state, actor, target),
+        Skill::Forensics => forensics::forensics(state, actor, target),
+        Skill::AnimalLore => animal::animal_lore(state, actor, target),
+        Skill::TasteId => poison::taste_id(state, actor, target),
         // Poisoning is the one skill that asks twice: this was the potion, and the
         // next cursor asks what to put it on.
-        Some(Skill::Poisoning) => poison::chose_potion(state, actor, target),
-        Some(Skill::Begging) => social::begging(state, actor, target),
-        Some(Skill::RemoveTrap) => social::remove_trap(state, actor, target),
+        Skill::Poisoning => poison::chose_potion(state, actor, target),
+        Skill::Begging => social::begging(state, actor, target),
+        Skill::RemoveTrap => social::remove_trap(state, actor, target),
         _ => {}
     }
     Outcome::default()
@@ -237,12 +239,12 @@ pub struct Outcome {
 pub fn on_second_target(
     state: &mut WorldState,
     actor: EntityId,
-    id: u8,
+    skill: Skill,
     first: EntityId,
     target: Option<Serial>,
 ) {
-    if Skill::from_id(id) == Some(Skill::Provocation) {
-        let range = bard::bard_range(state, actor, id);
+    if skill == Skill::Provocation {
+        let range = bard::bard_range(state, actor, skill);
         if let Some(victim) = target.and_then(|s| state.registry.entity_of(s)) {
             if within(state, actor, victim, range) {
                 bard::provoke_second(state, actor, first, victim);
@@ -250,7 +252,7 @@ pub fn on_second_target(
         }
         return;
     }
-    let Some(ask) = ask_for(id) else {
+    let Some(ask) = ask_for(skill) else {
         return;
     };
     let Some(target) = target.and_then(|s| state.registry.entity_of(s)) else {
@@ -259,7 +261,7 @@ pub fn on_second_target(
     if !within(state, actor, target, ask.range) {
         return;
     }
-    if Skill::from_id(id) == Some(Skill::Poisoning) {
+    if skill == Skill::Poisoning {
         poison::apply_to(state, actor, first, target);
     }
 }
@@ -272,7 +274,7 @@ pub fn on_second_target(
 pub fn on_item_target(
     state: &mut WorldState,
     actor: EntityId,
-    id: u8,
+    skill: Skill,
     item: EntityId,
     target: Option<Serial>,
 ) -> (Option<BandageStarted>, Option<LockpickBroke>) {
@@ -282,9 +284,9 @@ pub fn on_item_target(
     if !within(state, actor, target, bandage::HEAL_RANGE) {
         return (None, None);
     }
-    match Skill::from_id(id) {
-        Some(Skill::Healing) => (bandage::begin_heal(state, actor, item, target), None),
-        Some(Skill::Lockpicking) => (None, bandage::pick_lock(state, actor, item, target)),
+    match skill {
+        Skill::Healing => (bandage::begin_heal(state, actor, item, target), None),
+        Skill::Lockpicking => (None, bandage::pick_lock(state, actor, item, target)),
         _ => (None, None),
     }
 }
@@ -321,14 +323,14 @@ pub(super) fn within(state: &WorldState, a: EntityId, b: EntityId, range: u32) -
 /// Put up a cursor that must pick an object, remembering which skill asked, and
 /// prompt the asker with the skill's own line. Returns whether a cursor went up —
 /// a creature has none, and a skill that cannot ask has not started.
-pub(super) fn raise_cursor(state: &mut WorldState, actor: EntityId, id: u8, prompt: ClilocId) -> bool {
+pub(super) fn raise_cursor(state: &mut WorldState, actor: EntityId, skill: Skill, prompt: ClilocId) -> bool {
     let Some(&Client { connection, .. }) = state.registry.get::<Client>(actor) else {
         return false; // a creature has no cursor to raise
     };
     let Some(serial) = state.registry.serial_of(actor) else {
         return false;
     };
-    state.raise_target(actor, TargetPurpose::Skill { skill: id });
+    state.raise_target(actor, TargetPurpose::Skill { skill });
     state.localized_message(actor, prompt, "");
     send_object_cursor(state, connection, serial.raw());
     true
@@ -343,7 +345,7 @@ mod tests {
         // A cursor for a skill the button refuses would never be raised: the gate
         // runs first. So each row here must be a skill ServUO marks usable.
         for (skill, _) in ASKS {
-            let info = openshard_state::skill::info(skill.id()).expect("a real skill");
+            let info = skill.info();
             assert!(info.usable, "{} is not usable from the window", info.name);
         }
     }

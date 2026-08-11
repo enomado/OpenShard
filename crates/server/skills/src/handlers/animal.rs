@@ -63,8 +63,8 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
         return;
     }
 
-    let id = Skill::AnimalLore.id();
-    let skill = crate::skill_value(state, looker, id);
+    let skill = Skill::AnimalLore;
+    let value = crate::skill_value(state, looker, skill);
     let controlled = state.registry.has::<Pet>(target);
     let tameable = state
         .registry
@@ -77,18 +77,18 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
     // depend on how much the reader knows.
     let allowed = if controlled {
         true
-    } else if skill < TAMED_ONLY_BELOW {
+    } else if value < TAMED_ONLY_BELOW {
         state.localized_message(looker, ONLY_TAMED, "");
         return;
-    } else if skill < TAMEABLE_ONLY_BELOW {
+    } else if value < TAMEABLE_ONLY_BELOW {
         if !tameable {
             state.localized_message(looker, ONLY_TAMEABLE, "");
             return;
         }
-        roll_skill_band(state, looker, id, 800, 1200)
+        roll_skill_band(state, looker, skill, 800, 1200)
     } else {
         let floor = if tameable { 800 } else { 1000 };
-        roll_skill_band(state, looker, id, floor, 1200)
+        roll_skill_band(state, looker, skill, floor, 1200)
     };
     if !allowed {
         state.localized_message(looker, NOTHING_OFFHAND, "");
@@ -97,7 +97,7 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
     // A tamed creature read by its owner trains nothing extra; the roll above is
     // the only check, exactly as ServUO's `SendGump` calls `CheckTargetSkill` once.
     if controlled {
-        let _ = roll_skill_band(state, looker, id, 0, 1200);
+        let _ = roll_skill_band(state, looker, skill, 0, 1200);
     }
     show_window(state, looker, target);
 }
@@ -229,7 +229,7 @@ fn show_window(state: &mut WorldState, looker: EntityId, target: EntityId) {
         (312, ClilocId(1_044_106), Skill::Meditation),
     ];
     for (y, label, skill) in combat {
-        let value = skills.as_ref().map_or(0, |s| s.get(skill.id()));
+        let value = skills.as_ref().map_or(0, |s| s.get(skill));
         row(&mut gump, y, label, tenths(value));
     }
     gump.image(128, 260, 2086);

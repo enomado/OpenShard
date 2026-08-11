@@ -74,7 +74,7 @@ pub fn use_bandage(state: &mut WorldState, healer: EntityId, bandage: EntityId) 
     state.raise_target(
         healer,
         TargetPurpose::SkillSecond {
-            skill: Skill::Healing.id(),
+            skill: Skill::Healing,
             first: bandage,
         },
     );
@@ -184,13 +184,13 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
         }
         // Veterinary for a creature, Healing for a person — ServUO's
         // `GetPrimarySkill`, which is the whole difference between the two skills.
-        let id = if state.registry.has::<openshard_state::components::Client>(patient) {
-            Skill::Healing.id()
+        let skill = if state.registry.has::<openshard_state::components::Client>(patient) {
+            Skill::Healing
         } else {
-            Skill::Veterinary.id()
+            Skill::Veterinary
         };
-        let healing = crate::skill_value(state, healer, id);
-        let anatomy = crate::skill_value(state, healer, Skill::Anatomy.id());
+        let healing = crate::skill_value(state, healer, skill);
+        let anatomy = crate::skill_value(state, healer, Skill::Anatomy);
 
         if state.registry.has::<Ghost>(patient) {
             // A resurrection: 80.0 in both, then `(healing - 68) / 50`.
@@ -232,7 +232,7 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
         // is `anatomy/5 + healing/5 + 3` to `anatomy/5 + healing/2 + 10` — pre-AoS,
         // so Anatomy is worth as much as Healing to a field surgeon.
         let chance = (i32::from(healing) + 100) / 10;
-        let took = roll_skill_band(state, healer, id, 0, 1000)
+        let took = roll_skill_band(state, healer, skill, 0, 1000)
             && chance > i32::try_from(state.rng.below(1000)).unwrap_or(0);
         if !took {
             state.localized_message(healer, BARELY_HELP, "");
@@ -261,7 +261,7 @@ pub fn use_lockpick(state: &mut WorldState, picker: EntityId, pick: EntityId) ->
     state.raise_target(
         picker,
         TargetPurpose::SkillSecond {
-            skill: Skill::Lockpicking.id(),
+            skill: Skill::Lockpicking,
             first: pick,
         },
     );
@@ -286,14 +286,20 @@ pub(super) fn pick_lock(
         state.localized_message(picker, NOT_LOCKED, "");
         return None;
     };
-    let id = Skill::Lockpicking.id();
+    let skill = Skill::Lockpicking;
     // Below the lock's own requirement nothing happens but a broken pick — ServUO
     // refuses outright rather than letting a novice grind a vault open.
-    if crate::skill_value(state, picker, id) < required_skill {
+    if crate::skill_value(state, picker, skill) < required_skill {
         state.localized_message(picker, LOCK_TOO_HARD, "");
         return None;
     }
-    if roll_skill_band(state, picker, id, i32::from(required_skill), i32::from(max_skill)) {
+    if roll_skill_band(
+        state,
+        picker,
+        skill,
+        i32::from(required_skill),
+        i32::from(max_skill),
+    ) {
         state.registry.remove::<Lock>(target);
         state.localized_message(picker, LOCK_YIELDS, "");
         return None;

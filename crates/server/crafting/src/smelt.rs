@@ -83,7 +83,7 @@ pub fn smelt(state: &mut WorldState, smelter: EntityId, ore: EntityId) -> bool {
     let difficulty = DIFFICULTY[metal];
     // The flat gate, and it is not the same question as the roll: a metal beyond
     // you is not a hard smelt, it is one you have never been taught.
-    if difficulty > DIFFICULTY[0] && difficulty > i32::from(skill_value(state, smelter, Skill::Mining.id())) {
+    if difficulty > DIFFICULTY[0] && difficulty > i32::from(skill_value(state, smelter, Skill::Mining)) {
         state.localized_message(smelter, TOO_STRANGE, "");
         return true;
     }
@@ -98,7 +98,7 @@ pub fn smelt(state: &mut WorldState, smelter: EntityId, ore: EntityId) -> bool {
     if !roll_skill_band(
         state,
         smelter,
-        Skill::Mining.id(),
+        Skill::Mining,
         difficulty - BAND,
         difficulty + BAND,
     ) {

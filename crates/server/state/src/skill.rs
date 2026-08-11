@@ -37,7 +37,10 @@ pub enum StatCode {
 ///
 /// The numbering is OSI's, not alphabetical and not ours: `skills.mul` fixes it,
 /// and ids 0–48 are the pre-AoS set, 49–51 AoS, 52–53 SE, 54 ML, 55–57 SA.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+///
+/// `PartialOrd`/`Ord` follow the `#[repr(u8)]` discriminant, i.e. `id()` order —
+/// what [`components::Skills::ids`](crate::components::Skills::ids) sorts by.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(u8)]
 pub enum Skill {
     /// Alchemy — "Alchemist".

@@ -1073,7 +1073,7 @@ fn discordance_makes_a_creature_worse_at_everything_at_once() {
         value: 1000,
     });
     world.tick(now);
-    let before = openshard_skills::skill_value(&world.state, entity, Skill::Wrestling.id());
+    let before = openshard_skills::skill_value(&world.state, entity, Skill::Wrestling);
     let _ = packets_for(&mut world, bard);
 
     let said = use_skill_on(&mut world, bard, Skill::Discordance, creature, now);
@@ -1084,7 +1084,7 @@ fn discordance_makes_a_creature_worse_at_everything_at_once() {
             .has::<openshard_state::components::Discorded>(entity),
         "a grandmaster puts a rat out of tune: {said:?}"
     );
-    let after = openshard_skills::skill_value(&world.state, entity, Skill::Wrestling.id());
+    let after = openshard_skills::skill_value(&world.state, entity, Skill::Wrestling);
     assert!(
         after < before,
         "and it is worse at everything: {before} → {after}"

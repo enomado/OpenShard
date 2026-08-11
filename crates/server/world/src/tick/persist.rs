@@ -596,7 +596,7 @@ impl World {
                 spawned_by: registry.get::<SpawnedBy>(entity).map(|s| s.0),
                 effects: Self::effects_of(registry, entity, self.state.ticks),
                 skills: registry.get::<Skills>(entity).map_or_else(Vec::new, |s| {
-                    s.entries().map(|(id, value, _)| (id, value)).collect()
+                    s.entries().map(|(skill, value, _)| (skill.id(), value)).collect()
                 }),
                 quest_giver: registry
                     .get::<QuestGiver>(entity)
@@ -794,11 +794,11 @@ impl World {
         });
         let skills = registry.get::<Skills>(entity).map_or_else(Vec::new, |s| {
             s.entries()
-                .map(|(id, value, lock)| openshard_persistence::SkillRecord {
-                    id,
+                .map(|(skill, value, lock)| openshard_persistence::SkillRecord {
+                    id: skill.id(),
                     value,
                     lock: lock.to_bits(),
-                    cap: s.cap(id),
+                    cap: s.cap(skill),
                 })
                 .collect()
         });
@@ -1416,7 +1416,9 @@ impl World {
             if !record.skills.is_empty() {
                 let mut sheet = Skills::default();
                 for (id, value) in &record.skills {
-                    sheet.set(*id, *value);
+                    if let Some(skill) = openshard_state::skill::Skill::from_id(*id) {
+                        sheet.set(skill, *value);
+                    }
                 }
                 self.state.registry.insert(entity, sheet);
             }

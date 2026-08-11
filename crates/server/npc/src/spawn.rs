@@ -217,7 +217,9 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     if !skills.is_empty() {
         let mut sheet = Skills::default();
         for (id, value) in skills {
-            sheet.set(id, value);
+            if let Some(skill) = openshard_state::skill::Skill::from_id(id) {
+                sheet.set(skill, value);
+            }
         }
         state.registry.insert(entity, sheet);
     }

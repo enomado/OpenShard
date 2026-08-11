@@ -41,12 +41,12 @@ const LIVING_BAND: (i32, i32) = (360, 1000);
 
 /// Read what a target has to say about a crime.
 pub(super) fn forensics(state: &mut WorldState, actor: EntityId, target: EntityId) {
-    let id = Skill::Forensics.id();
-    let skill = crate::skill_value(state, actor, id);
+    let skill = Skill::Forensics;
+    let value = crate::skill_value(state, actor, skill);
     if state.registry.has::<Corpse>(target) {
-        read_corpse(state, actor, target, skill);
+        read_corpse(state, actor, target, value);
     } else if state.registry.has::<openshard_state::components::Body>(target) {
-        read_the_living(state, actor, skill);
+        read_the_living(state, actor, value);
     } else {
         // An item that is not a corpse. ServUO reads a picked lock here and a few
         // Stygian-Abyss trinkets; the lock's picker is recorded by Lockpicking,
@@ -57,13 +57,13 @@ pub(super) fn forensics(state: &mut WorldState, actor: EntityId, target: EntityI
 }
 
 /// A corpse: who it was killed by, and who has been through it since.
-fn read_corpse(state: &mut WorldState, actor: EntityId, corpse: EntityId, skill: u16) {
-    if skill < CORPSE_MIN {
+fn read_corpse(state: &mut WorldState, actor: EntityId, corpse: EntityId, value: u16) {
+    if value < CORPSE_MIN {
         state.localized_message(actor, NOTHING_UNUSUAL, "");
         return;
     }
-    let id = Skill::Forensics.id();
-    if !roll_skill_band(state, actor, id, CORPSE_BAND.0, CORPSE_BAND.1) {
+    let skill = Skill::Forensics;
+    if !roll_skill_band(state, actor, skill, CORPSE_BAND.0, CORPSE_BAND.1) {
         state.localized_message(actor, NOTHING_USEFUL, "");
         return;
     }
@@ -105,13 +105,13 @@ fn read_corpse(state: &mut WorldState, actor: EntityId, corpse: EntityId, skill:
 /// Thieves' Guild, and there are no guilds yet, so a successful read honestly finds
 /// nothing — which is a different sentence from failing to read at all, and the
 /// client has both.
-fn read_the_living(state: &mut WorldState, actor: EntityId, skill: u16) {
-    if skill < LIVING_MIN {
+fn read_the_living(state: &mut WorldState, actor: EntityId, value: u16) {
+    if value < LIVING_MIN {
         state.localized_message(actor, NOTHING_UNUSUAL, "");
         return;
     }
-    let id = Skill::Forensics.id();
-    if roll_skill_band(state, actor, id, LIVING_BAND.0, LIVING_BAND.1) {
+    let skill = Skill::Forensics;
+    if roll_skill_band(state, actor, skill, LIVING_BAND.0, LIVING_BAND.1) {
         state.localized_message(actor, NOTHING_UNUSUAL, "");
     } else {
         state.localized_message(actor, NOTHING_USEFUL, "");

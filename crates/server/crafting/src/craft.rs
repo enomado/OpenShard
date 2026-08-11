@@ -363,7 +363,7 @@ fn grandmaster(state: &WorldState, crafter: EntityId, def: &CraftSystemDef) -> b
     state
         .registry
         .get::<openshard_state::components::Skills>(crafter)
-        .is_some_and(|skills| skills.get(def.skill.id()) >= MARK_AT)
+        .is_some_and(|skills| skills.get(def.skill) >= MARK_AT)
 }
 
 /// Spend a use off the tool, and make it gone if that was the last.

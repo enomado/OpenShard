@@ -291,13 +291,13 @@ fn deliver(
     // order — one says the vein is beyond you, the other whether this swing found
     // anything. The band roll is the same call combat's to-hit makes, so a miner
     // trains from the attempt.
-    let value = skill_value(state, harvester, def.skill.id());
+    let value = skill_value(state, harvester, def.skill);
     let able = i32::from(value) >= resource.req_skill;
     let struck = able
         && roll_skill_band(
             state,
             harvester,
-            def.skill.id(),
+            def.skill,
             resource.min_skill,
             resource.max_skill,
         );
@@ -463,7 +463,7 @@ fn choose_resource(
     if vein.fallback_chance > state.rng.below(10_000) {
         return fallback;
     }
-    let value = i32::from(skill_value(state, harvester, def.skill.id()));
+    let value = i32::from(skill_value(state, harvester, def.skill));
     if value < primary.req_skill || value < primary.min_skill {
         return fallback;
     }

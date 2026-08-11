@@ -182,7 +182,7 @@ impl Scripts {
             for e in bus.read(&mut self.used) {
                 events.push(ScriptEvent::SkillUsed {
                     serial: e.serial.raw(),
-                    skill: e.skill,
+                    skill: e.skill.id(),
                     success: e.success,
                     value: e.value,
                 });
@@ -190,7 +190,7 @@ impl Scripts {
             for e in bus.read(&mut self.requested) {
                 events.push(ScriptEvent::SkillRequested {
                     serial: e.serial.raw(),
-                    skill: e.skill,
+                    skill: e.skill.id(),
                 });
             }
             for e in bus.read(&mut self.cast) {

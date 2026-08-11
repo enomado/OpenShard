@@ -36,7 +36,7 @@ impl World {
             .get::<Skills>(player)
             .cloned()
             .unwrap_or_default();
-        skills.set_lock(named.id(), lock);
+        skills.set_lock(named, lock);
         self.state.registry.insert(player, skills);
     }
 
@@ -101,16 +101,16 @@ impl World {
     /// have lent it their share (`skills::skill_value`). Both fields existed on the
     /// wire from the start and carried the same number, which is the sort of gap a
     /// client cannot report — it simply draws two identical figures.
-    fn skill_entry(&self, entity: EntityId, id: u8) -> SkillEntry {
+    fn skill_entry(&self, entity: EntityId, skill: Skill) -> SkillEntry {
         let skills = self.state.registry.get::<Skills>(entity);
         SkillEntry {
-            id,
-            value: openshard_skills::skill_value(&self.state, entity, id),
-            base: skills.map_or(0, |s| s.get(id)),
-            lock: skills.map_or(SkillLock::Up, |s| s.lock(id)),
+            id: skill.id(),
+            value: openshard_skills::skill_value(&self.state, entity, skill),
+            base: skills.map_or(0, |s| s.get(skill)),
+            lock: skills.map_or(SkillLock::Up, |s| s.lock(skill)),
             // Per skill, not one number for the sheet: a cap is the mobile's own,
             // and only falls back to the shard's for a mobile with no sheet yet.
-            cap: skills.map_or(self.state.gameplay.skill_cap, |s| s.cap(id)),
+            cap: skills.map_or(self.state.gameplay.skill_cap, |s| s.cap(skill)),
         }
     }
 
@@ -118,7 +118,8 @@ impl World {
     /// client of `version` knows, trained or not, at its value, lock and cap.
     fn skill_entries(&self, entity: EntityId, version: ClientVersion) -> Vec<SkillEntry> {
         (0..skill_count(version) as u8)
-            .map(|id| self.skill_entry(entity, id))
+            // `skill_count` never exceeds `Skill`'s own 58, so every id here is valid.
+            .map(|id| self.skill_entry(entity, Skill::from_id(id).expect("id under skill_count is valid")))
             .collect()
     }
 

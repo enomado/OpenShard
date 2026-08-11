@@ -29,8 +29,9 @@
 
 use openshard_entities::EntityId;
 use openshard_protocol::skill::SkillLock;
+use openshard_state::WorldState;
 use openshard_state::components::{Client, Skills, Stats};
-use openshard_state::{WorldState, skill};
+use openshard_state::skill::Skill;
 
 use crate::SkillChanged;
 use crate::stats::try_stat_gain;
@@ -59,11 +60,11 @@ const SKILL_100: u16 = 1000;
 /// raises a smith's effective skill for as long as it lasts, with no bookkeeping
 /// anywhere and nothing to undo when it expires.
 #[must_use]
-pub fn skill_value(state: &WorldState, entity: EntityId, id: u8) -> u16 {
+pub fn skill_value(state: &WorldState, entity: EntityId, skill: Skill) -> u16 {
     let base = discorded(
         state,
         entity,
-        state.registry.get::<Skills>(entity).map_or(0, |s| s.get(id)),
+        state.registry.get::<Skills>(entity).map_or(0, |s| s.get(skill)),
     );
     // From AoS the stat influence is gone: ServUO calls `AOS.DisableStatInfluences()`
     // at startup, which zeroes the three scale columns in place. An `if` says the
@@ -71,9 +72,7 @@ pub fn skill_value(state: &WorldState, entity: EntityId, id: u8) -> u16 {
     if state.gameplay.combat_era >= 2 {
         return base;
     }
-    let Some(info) = skill::info(id) else {
-        return base;
-    };
+    let info = skill.info();
     if info.stat_total == 0 {
         return base; // the common case: no stat lends to this skill
     }
@@ -131,11 +130,11 @@ fn discorded(state: &WorldState, entity: EntityId, base: u16) -> u16 {
 pub fn roll_skill_band(
     state: &mut WorldState,
     entity: EntityId,
-    id: u8,
+    skill: Skill,
     min_skill: i32,
     max_skill: i32,
 ) -> bool {
-    let value = i32::from(skill_value(state, entity, id));
+    let value = i32::from(skill_value(state, entity, skill));
     if value < min_skill {
         return false; // too difficult
     }
@@ -144,7 +143,7 @@ pub fn roll_skill_band(
     }
     // The band is non-empty here: `min_skill < value < max_skill`.
     let chance = (value - min_skill) * 1000 / (max_skill - min_skill);
-    check(state, entity, id, chance.clamp(0, 1000) as u32)
+    check(state, entity, skill, chance.clamp(0, 1000) as u32)
 }
 
 /// Roll a skill against a chance already worked out (per-mille), and teach from
@@ -153,24 +152,24 @@ pub fn roll_skill_band(
 /// For a caller that computes its own odds rather than naming a band: combat's
 /// to-hit is a formula over two mobiles' weapon skills, not a difficulty, but a
 /// swing still trains the skill the same way.
-pub fn roll_skill_chance(state: &mut WorldState, entity: EntityId, id: u8, chance: u32) -> bool {
-    check(state, entity, id, chance.min(1000))
+pub fn roll_skill_chance(state: &mut WorldState, entity: EntityId, skill: Skill, chance: u32) -> bool {
+    check(state, entity, skill, chance.min(1000))
 }
 
 /// The heart: draw for success, then draw for a gain — in that fixed order, so
 /// the sequence replays.
-fn check(state: &mut WorldState, entity: EntityId, id: u8, chance: u32) -> bool {
+fn check(state: &mut WorldState, entity: EntityId, skill: Skill, chance: u32) -> bool {
     if state.gameplay.total_skill_cap == 0 {
         return false; // ServUO's `Skills.Cap == 0` guard
     }
     let success = state.rng.below(1000) <= chance;
-    let gain = gain_chance(state, entity, id, chance, success);
+    let gain = gain_chance(state, entity, skill, chance, success);
     // A skill under 10.0 always takes something from the attempt — the first few
     // points come for the asking, which is what stops a new character grinding a
     // hundred failures for their first tenth.
-    let base = state.registry.get::<Skills>(entity).map_or(0, |s| s.get(id));
+    let base = state.registry.get::<Skills>(entity).map_or(0, |s| s.get(skill));
     if base < EASY_GAIN_BELOW || state.rng.below(1000) <= gain {
-        gain_skill(state, entity, id);
+        gain_skill(state, entity, skill);
     }
     success
 }
@@ -184,12 +183,12 @@ fn check(state: &mut WorldState, entity: EntityId, id: u8, chance: u32) -> bool 
 /// at one still teaches a fifth — and the whole is halved once more and scaled by
 /// the skill's `gain_factor`.
 #[must_use]
-pub fn gain_chance(state: &WorldState, entity: EntityId, id: u8, chance: u32, success: bool) -> u32 {
+pub fn gain_chance(state: &WorldState, entity: EntityId, skill: Skill, chance: u32, success: bool) -> u32 {
     let skills = state.registry.get::<Skills>(entity);
     let total_cap = state.gameplay.total_skill_cap.max(1);
     let total = skills.map_or(0, Skills::total).min(total_cap);
-    let cap = skills.map_or(state.gameplay.skill_cap, |s| s.cap(id)).max(1);
-    let base = skills.map_or(0, |s| s.get(id)).min(cap);
+    let cap = skills.map_or(state.gameplay.skill_cap, |s| s.cap(skill)).max(1);
+    let base = skills.map_or(0, |s| s.get(skill)).min(cap);
 
     // Headroom under the two caps, each as a per-mille fraction, averaged.
     let mut gain =
@@ -205,7 +204,7 @@ pub fn gain_chance(state: &WorldState, entity: EntityId, id: u8, chance: u32, su
     };
     gain += (1000 - chance.min(1000)) * weight / 1000;
     gain /= 2;
-    gain = gain * skill::info(id).map_or(1000, |i| i.gain_factor) / 1000;
+    gain = gain * skill.info().gain_factor / 1000;
     gain.clamp(MIN_GAIN_CHANCE, 1000)
 }
 
@@ -221,14 +220,14 @@ pub fn gain_chance(state: &WorldState, entity: EntityId, id: u8, chance: u32, su
 ///
 /// The total cap binds players only. A creature's sheet is a spawn's data, not a
 /// build, and ServUO exempts it the same way (`if (!from.Player || …)`).
-fn gain_skill(state: &mut WorldState, entity: EntityId, id: u8) {
+fn gain_skill(state: &mut WorldState, entity: EntityId, skill: Skill) {
     let Some(skills) = state.registry.get::<Skills>(entity).cloned() else {
         // No sheet at all: nothing to train. `set_skill` gives a mobile one.
         return;
     };
-    let base = skills.get(id);
-    let cap = skills.cap(id);
-    if base >= cap || skills.lock(id) != SkillLock::Up {
+    let base = skills.get(skill);
+    let cap = skills.cap(skill);
+    if base >= cap || skills.lock(skill) != SkillLock::Up {
         // Locked, set to fall, or already at its ceiling. Deliberately no stat
         // gain either — ServUO reads the same lock for both.
         return;
@@ -243,12 +242,12 @@ fn gain_skill(state: &mut WorldState, entity: EntityId, id: u8) {
     let mut skills = skills;
     let mut lowered = None;
     if player {
-        lowered = reduce_a_down_skill(state, &mut skills, id, to_gain);
+        lowered = reduce_a_down_skill(state, &mut skills, skill, to_gain);
     }
     let fits = !player || skills.total() + u32::from(to_gain) <= state.gameplay.total_skill_cap;
     let raised = fits.then(|| {
         let raised = base.saturating_add(to_gain).min(cap);
-        skills.set(id, raised);
+        skills.set(skill, raised);
         raised
     });
     // Written back whichever way it went: a "down" skill gives ground even on the
@@ -258,18 +257,18 @@ fn gain_skill(state: &mut WorldState, entity: EntityId, id: u8) {
     // Both halves of the move are announced, so an open window follows a skill
     // that falls as well as one that rises.
     if let Some(serial) = state.registry.serial_of(entity) {
-        for (skill, value) in lowered.into_iter().chain(raised.map(|v| (id, v))) {
+        for (moved, value) in lowered.into_iter().chain(raised.map(|v| (skill, v))) {
             state.bus.send(SkillChanged {
                 entity,
                 serial,
-                skill,
+                skill: moved,
                 value,
             });
         }
     }
 
     if raised.is_some() {
-        try_stat_gain(state, entity, id);
+        try_stat_gain(state, entity, skill);
     }
 }
 
@@ -290,17 +289,17 @@ fn gain_skill(state: &mut WorldState, entity: EntityId, id: u8) {
 fn reduce_a_down_skill(
     state: &mut WorldState,
     skills: &mut Skills,
-    gaining: u8,
+    gaining: Skill,
     to_gain: u16,
-) -> Option<(u8, u16)> {
+) -> Option<(Skill, u16)> {
     let total_cap = state.gameplay.total_skill_cap.max(1);
     let fullness = (skills.total() * 1000 / total_cap).min(1000);
     if state.rng.below(1000) >= fullness {
         return None;
     }
-    let victim = skills
-        .ids()
-        .find(|&id| id != gaining && skills.lock(id) == SkillLock::Down && skills.get(id) >= to_gain)?;
+    let victim = skills.ids().find(|&skill| {
+        skill != gaining && skills.lock(skill) == SkillLock::Down && skills.get(skill) >= to_gain
+    })?;
     let lowered = skills.get(victim) - to_gain;
     skills.set(victim, lowered);
     Some((victim, lowered))

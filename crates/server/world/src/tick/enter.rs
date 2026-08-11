@@ -295,9 +295,12 @@ impl World {
                 let mut skills = openshard_state::components::Skills::default();
                 let shard_cap = self.state.gameplay.skill_cap;
                 for (id, value, lock, cap) in sheet.skills {
-                    skills.set(id, value);
-                    skills.set_lock(id, lock);
-                    skills.set_cap(id, if cap == 0 { shard_cap } else { cap });
+                    let Some(skill) = openshard_state::skill::Skill::from_id(id) else {
+                        continue;
+                    };
+                    skills.set(skill, value);
+                    skills.set_lock(skill, lock);
+                    skills.set_cap(skill, if cap == 0 { shard_cap } else { cap });
                 }
                 self.state.registry.insert(entity, skills);
             }

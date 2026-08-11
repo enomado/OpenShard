@@ -23,6 +23,8 @@ use openshard_protocol::identity::AccountName;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::wire::{Graphic, Hue, Layer, SoundId};
+
+use crate::skill::Skill;
 use openshard_protocol::world::{Facet, Point};
 use openshard_protocol::{access::AccessLevel, direction::Facing};
 
@@ -883,45 +885,45 @@ pub const DEFAULT_SKILL_CAP: u16 = 1000;
 /// not all fifty-odd at zero. An id it has never trained reads as zero.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Skills {
-    values: HashMap<u8, u16>,
+    values: HashMap<Skill, u16>,
     /// How the window trains each skill — `Up` unless the player set an arrow.
     /// Sparse like the values: an untouched skill trains up.
-    locks: HashMap<u8, SkillLock>,
+    locks: HashMap<Skill, SkillLock>,
     /// The ceiling on each skill, in tenths. Sparse like the rest: an untouched
     /// skill caps at [`DEFAULT_SKILL_CAP`]. Per-skill and not one shard-wide
     /// number because the gain chance reads *this* skill's headroom, and because
     /// a reward or a profession raises one skill's ceiling alone.
-    caps: HashMap<u8, u16>,
+    caps: HashMap<Skill, u16>,
 }
 
 impl Skills {
     /// The value of `skill`, in tenths; zero if the mobile has never had it.
-    pub fn get(&self, skill: u8) -> u16 {
+    pub fn get(&self, skill: Skill) -> u16 {
         self.values.get(&skill).copied().unwrap_or(0)
     }
 
     /// Set `skill` to `value` tenths.
-    pub fn set(&mut self, skill: u8, value: u16) {
+    pub fn set(&mut self, skill: Skill, value: u16) {
         self.values.insert(skill, value);
     }
 
     /// How `skill` is set to train; `Up` unless the player moved its arrow.
-    pub fn lock(&self, skill: u8) -> SkillLock {
+    pub fn lock(&self, skill: Skill) -> SkillLock {
         self.locks.get(&skill).copied().unwrap_or_default()
     }
 
     /// Set how `skill` trains — the up/down/lock arrow.
-    pub fn set_lock(&mut self, skill: u8, lock: SkillLock) {
+    pub fn set_lock(&mut self, skill: Skill, lock: SkillLock) {
         self.locks.insert(skill, lock);
     }
 
     /// The ceiling on `skill`, in tenths; [`DEFAULT_SKILL_CAP`] unless one was set.
-    pub fn cap(&self, skill: u8) -> u16 {
+    pub fn cap(&self, skill: Skill) -> u16 {
         self.caps.get(&skill).copied().unwrap_or(DEFAULT_SKILL_CAP)
     }
 
     /// Set the ceiling on `skill`, in tenths.
-    pub fn set_cap(&mut self, skill: u8, cap: u16) {
+    pub fn set_cap(&mut self, skill: Skill, cap: u16) {
         self.caps.insert(skill, cap);
     }
 
@@ -935,16 +937,17 @@ impl Skills {
         self.values.values().map(|&v| u32::from(v)).sum()
     }
 
-    /// Every trained skill and its lock, for persistence — `(id, value, lock)`,
-    /// in no particular order. A skill at zero with a moved arrow still counts,
-    /// so a "down" lock the player set is not forgotten.
-    pub fn entries(&self) -> impl Iterator<Item = (u8, u16, SkillLock)> + '_ {
-        self.ids().map(move |id| (id, self.get(id), self.lock(id)))
+    /// Every trained skill and its lock, for persistence — `(skill, value,
+    /// lock)`, in no particular order. A skill at zero with a moved arrow
+    /// still counts, so a "down" lock the player set is not forgotten.
+    pub fn entries(&self) -> impl Iterator<Item = (Skill, u16, SkillLock)> + '_ {
+        self.ids()
+            .map(move |skill| (skill, self.get(skill), self.lock(skill)))
     }
 
-    /// Every skill id this mobile has a value, a lock or a cap for, ascending.
-    /// The one place the three sparse maps are unioned.
-    pub fn ids(&self) -> impl Iterator<Item = u8> + '_ {
+    /// Every skill this mobile has a value, a lock or a cap for, ascending by
+    /// id. The one place the three sparse maps are unioned.
+    pub fn ids(&self) -> impl Iterator<Item = Skill> + '_ {
         self.values
             .keys()
             .chain(self.locks.keys())

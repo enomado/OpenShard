@@ -37,7 +37,7 @@ pub use travel::{
 const DEFAULT_INTELLIGENCE: u16 = 100;
 
 /// Meditation's skill id, which sets the mana regen rate.
-const MEDITATION_SKILL: u8 = Skill::Meditation.id();
+const MEDITATION_SKILL: Skill = Skill::Meditation;
 
 /// A spell was cast: the mana was paid and the skill rolled. What the spell
 /// *does* is a script's to decide — this only says who cast what at whom, and
@@ -115,6 +115,15 @@ pub fn cast_spell(state: &mut WorldState, cast: Cast<'_>) {
         });
     };
 
+    // `skill` crossed the command queue unchecked (N3's "the queue is a
+    // delivery, not a checkpoint"); this is the seam that owns the roll, so this
+    // is where an id past the table is refused — the same shape
+    // `skills::set_skill` uses.
+    let Some(skill) = Skill::from_id(skill) else {
+        fizzle(state);
+        return;
+    };
+
     let have = state.registry.get::<Mana>(caster).map_or(0, |m| m.current);
     // Not enough mana, or the pack is short a reagent — the spell fizzles, and
     // nothing is spent either way.
@@ -164,7 +173,7 @@ pub fn pay_and_roll(
     mana: u16,
     min_skill: i32,
     max_skill: i32,
-    skill: u8,
+    skill: Skill,
     pack: Option<Serial>,
     reagents: &[(Graphic, u16)],
     mana_loss_on_fail: bool,

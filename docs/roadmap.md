@@ -2797,12 +2797,26 @@ full `cargo check`/`test`/`clippy`/`fmt` of the crates touched:
 
 Still open, ranked by how strong the case is:
 
-- **`Skill` (`state::skill`, with `.id()`/`from_id()`) is unwrapped at its own
-  component.** `state::components::Skills::{get, set, lock, set_lock, cap,
-  set_cap}` all take `skill: u8`, and the byte radiates from there through
-  `skills::{lib.rs, check.rs}` and `combat::{weapons.rs, lib.rs}` — the widest
-  single leak found, because the wrap already exists and is discarded at the
-  first call in nearly every reader and writer of a mobile's skill sheet.
+- ~~**`Skill` (`state::skill`, with `.id()`/`from_id()`) is unwrapped at its own
+  component.**~~ Fixed: `state::components::Skills`'s three maps are keyed by
+  `Skill` now (it gained `PartialOrd`/`Ord`, matching `id()` order, so
+  `ids()`'s `BTreeSet` needed no other change), and `get`/`set`/`lock`/
+  `set_lock`/`cap`/`set_cap`/`entries` all take or return `Skill` in place of
+  the byte. The wrap the entry named — discarded at the first call in nearly
+  every reader — is gone from `skills::{lib.rs, check.rs, button.rs, stats.rs,
+  handlers/*.rs}`, `combat::{weapons.rs, lib.rs}`, `crafting::{chance, consume,
+  craft, smelt}.rs` and `magic::{lib.rs, spells.rs}`. `state::runtime::
+  TargetPurpose::{Skill, SkillSecond}` carries it too, which is what let
+  `skills::handlers::mod.rs`'s dispatch chain (`start`/`on_target`/
+  `on_second_target`/`on_item_target`/`raise_cursor`) stop re-deriving a
+  `Skill` from `Skill::from_id` and immediately discarding it back to the byte
+  it was — the sharpest instance the original finding described. What stays
+  bare, each promoting `Skill::from_id` at the one seam that first reads it
+  (`skills::set_skill`/`set_skill_cap`/`use_skill`, `magic::cast_spell`, and
+  the `world`/`scripting` command-queue fields those read from): the
+  `Command`/`ScriptEvent` boundary, same shape as N3's "the queue is a
+  delivery, not a checkpoint" — asserted by
+  `crates/server/state/tests/skill_bare_fields.rs`.
 - **`Direction` (`protocol::direction`, with `from_bits`/`to_bits`) is
   unwrapped through `ai`'s pathing core.** `ai::{step_toward, think_one,
   kite_step}` return `Option<u8>`; `state::components::ChasePath::steps:

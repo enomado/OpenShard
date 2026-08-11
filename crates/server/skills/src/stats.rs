@@ -20,7 +20,8 @@
 
 use openshard_entities::EntityId;
 use openshard_state::components::{LastStatGain, StatLock, StatLocks, Stats};
-use openshard_state::{StatCode, WorldState, skill};
+use openshard_state::skill::Skill;
+use openshard_state::{StatCode, WorldState};
 
 use crate::apply_stats;
 
@@ -33,11 +34,9 @@ const MIN_STAT: u16 = 10;
 /// (thousandths `2000`) becomes `2000 * 10 / 333` ≈ 60‰, which is ServUO's 6%.
 const GAIN_DIVISOR_MILLI: u32 = 333;
 
-/// Try to nudge a stat after `id` trained. Called by the skill gain, once.
-pub(crate) fn try_stat_gain(state: &mut WorldState, entity: EntityId, id: u8) {
-    let Some(info) = skill::info(id) else {
-        return;
-    };
+/// Try to nudge a stat after `skill` trained. Called by the skill gain, once.
+pub(crate) fn try_stat_gain(state: &mut WorldState, entity: EntityId, skill: Skill) {
+    let info = skill.info();
     let locks = state
         .registry
         .get::<StatLocks>(entity)

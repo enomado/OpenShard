@@ -57,17 +57,17 @@ const SKILL_PER_STEALTH_STEP: u16 = 100;
 /// is what stops hiding being a combat escape, and it is checked both ways (your
 /// own combatant, and anyone whose target is you).
 pub(super) fn hiding(state: &mut WorldState, actor: EntityId) {
-    let id = Skill::Hiding.id();
-    // `min((100 - skill)/2 + 8, 18)` — the better the hider, the shorter the
+    let skill = Skill::Hiding;
+    // `min((100 - value)/2 + 8, 18)` — the better the hider, the shorter the
     // distance at which a fight still gives them away.
-    let skill = crate::skill_value(state, actor, id).min(1000) / 10;
-    let range = u32::from((100 - skill) / 2 + 8).min(18);
+    let value = crate::skill_value(state, actor, skill).min(1000) / 10;
+    let range = u32::from((100 - value) / 2 + 8).min(18);
     if somebody_is_fighting(state, actor, range) {
         state.break_cover(actor);
         state.localized_message(actor, CANNOT_HIDE_NOW, "");
         return;
     }
-    if roll_skill_band(state, actor, id, 0, 1000) {
+    if roll_skill_band(state, actor, skill, 0, 1000) {
         // Hiding drops war mode: ServUO's `Hidden = true` setter clears it, and a
         // hider still visibly squared up would be a contradiction on every screen.
         state.registry.remove::<Combat>(actor);
@@ -85,7 +85,7 @@ pub(super) fn hiding(state: &mut WorldState, actor: EntityId) {
 /// `WorldState::step_while_hidden`. Everything here is a gate on being allowed to
 /// start: you must be hidden, hidden *well* (80.0 Hiding), and not in armour.
 pub(super) fn stealth(state: &mut WorldState, actor: EntityId) {
-    let id = Skill::Stealth.id();
+    let skill = Skill::Stealth;
     if !state.registry.has::<Hidden>(actor) {
         state.localized_message(actor, HIDE_FIRST, "");
         return;
@@ -93,7 +93,7 @@ pub(super) fn stealth(state: &mut WorldState, actor: EntityId) {
     let hiding = state
         .registry
         .get::<openshard_state::Skills>(actor)
-        .map_or(0, |s| s.get(Skill::Hiding.id()));
+        .map_or(0, |s| s.get(Skill::Hiding));
     if hiding < STEALTH_NEEDS_HIDING {
         state.break_cover(actor);
         state.localized_message(actor, NOT_HIDDEN_ENOUGH, "");
@@ -110,8 +110,8 @@ pub(super) fn stealth(state: &mut WorldState, actor: EntityId) {
     }
     // `-20 + ar*2 .. 80 + ar*2`: armour makes the roll harder at both ends.
     let shift = i32::from(armour) * 20;
-    if roll_skill_band(state, actor, id, -200 + shift, 800 + shift) {
-        let steps = (crate::skill_value(state, actor, id) / SKILL_PER_STEALTH_STEP).max(1);
+    if roll_skill_band(state, actor, skill, -200 + shift, 800 + shift) {
+        let steps = (crate::skill_value(state, actor, skill) / SKILL_PER_STEALTH_STEP).max(1);
         state.registry.insert(actor, Stealthing { steps_left: steps });
         state.localized_message(actor, MOVING_QUIETLY, "");
     } else {
@@ -128,13 +128,13 @@ pub(super) fn stealth(state: &mut WorldState, actor: EntityId) {
 /// failing to search at all — the client has both, and they are the difference
 /// between "there is nobody here" and "you learned nothing".
 pub(super) fn detect_hidden(state: &mut WorldState, actor: EntityId) {
-    let id = Skill::DetectHidden.id();
-    let skill = crate::skill_value(state, actor, id);
-    if !roll_skill_band(state, actor, id, 0, 1000) {
+    let skill = Skill::DetectHidden;
+    let value = crate::skill_value(state, actor, skill);
+    if !roll_skill_band(state, actor, skill, 0, 1000) {
         state.localized_message(actor, DETECT_NOTHING, "");
         return;
     }
-    let range = 1 + u32::from(skill.min(1000) / 100);
+    let range = 1 + u32::from(value.min(1000) / 100);
     let Some(&Position(at)) = state.registry.get::<Position>(actor) else {
         return;
     };
@@ -154,8 +154,8 @@ pub(super) fn detect_hidden(state: &mut WorldState, actor: EntityId) {
     for target in hidden {
         // ServUO's contest: `srcSkill / 1.5` against the hider's Hiding. A
         // grandmaster searcher does not automatically strip a grandmaster hider.
-        let theirs = crate::skill_value(state, target, Skill::Hiding.id());
-        let chance = i32::from(skill) * 1000 / 1500 - i32::from(theirs);
+        let theirs = crate::skill_value(state, target, Skill::Hiding);
+        let chance = i32::from(value) * 1000 / 1500 - i32::from(theirs);
         if chance > i32::try_from(state.rng.below(1000)).unwrap_or(0) {
             state.break_cover(target);
             found = true;
@@ -196,7 +196,7 @@ pub(super) const STEAL_RANGE: u32 = 1;
 /// when you fail — the victim is *told*, by name, and you are a criminal. A thief
 /// who could try freely would simply try until it worked.
 pub(super) fn stealing(state: &mut WorldState, actor: EntityId, item: EntityId) -> Option<Stolen> {
-    let id = Skill::Stealing.id();
+    let skill = Skill::Stealing;
     // Only something in somebody else's pack can be stolen: the ground is a lift
     // and your own pack is not theft.
     let Some(&Contained { container, .. }) = state.registry.get::<Contained>(item) else {
@@ -212,7 +212,7 @@ pub(super) fn stealing(state: &mut WorldState, actor: EntityId, item: EntityId) 
         return None;
     }
     let weight = openshard_items::weight_of(state, item);
-    let allowed = STEAL_BASE_WEIGHT + crate::skill_value(state, actor, id) / STEAL_WEIGHT_PER_SKILL;
+    let allowed = STEAL_BASE_WEIGHT + crate::skill_value(state, actor, skill) / STEAL_WEIGHT_PER_SKILL;
     if weight > allowed {
         state.localized_message(actor, TOO_HEAVY, "");
         return None;
@@ -220,7 +220,7 @@ pub(super) fn stealing(state: &mut WorldState, actor: EntityId, item: EntityId) 
     // The chance is ServUO's: the item's weight sets the difficulty, so a purse of
     // gold is easy and a breastplate is not worth trying.
     let chance = 1000 - i32::from(weight) * 1000 / i32::from(allowed.max(1));
-    let took = roll_skill_chance(state, actor, id, chance.clamp(0, 1000) as u32);
+    let took = roll_skill_chance(state, actor, skill, chance.clamp(0, 1000) as u32);
     // Caught or not, the reach was made and it gives you away.
     state.break_cover(actor);
     if took {
@@ -326,11 +326,12 @@ pub fn snooping(state: &mut WorldState, actor: EntityId, container: EntityId) ->
     if state.registry.has::<openshard_state::components::Ghost>(owner) {
         return false;
     }
-    let id = Skill::Snooping.id();
+    let skill = Skill::Snooping;
     // The *noticing* is a separate roll from the success, and it comes first:
     // ServUO compares the raw skill against a d100, so a clumsy snoop is spotted
     // even when the peek itself then works.
-    if i32::from(crate::skill_value(state, actor, id) / 10) < i32::try_from(state.rng.below(100)).unwrap_or(0)
+    if i32::from(crate::skill_value(state, actor, skill) / 10)
+        < i32::try_from(state.rng.below(100)).unwrap_or(0)
     {
         let name = state
             .registry
@@ -339,5 +340,5 @@ pub fn snooping(state: &mut WorldState, actor: EntityId, container: EntityId) ->
         state.system_message(owner, &format!("You notice {name} peeking into your belongings!"));
     }
     openshard_state::title::award_karma(state, actor, SNOOP_KARMA);
-    roll_skill_band(state, actor, id, 0, 1000)
+    roll_skill_band(state, actor, skill, 0, 1000)
 }

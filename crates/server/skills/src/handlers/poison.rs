@@ -86,7 +86,7 @@ pub(super) fn chose_potion(state: &mut WorldState, actor: EntityId, potion: Enti
     state.raise_target(
         actor,
         TargetPurpose::SkillSecond {
-            skill: Skill::Poisoning.id(),
+            skill: Skill::Poisoning,
             first: potion,
         },
     );
@@ -112,9 +112,9 @@ pub(super) fn apply_to(state: &mut WorldState, actor: EntityId, potion: EntityId
     spend_potion(state, potion);
     state.play_sound(actor, APPLY_SOUND);
 
-    let id = Skill::Poisoning.id();
+    let skill = Skill::Poisoning;
     let (min, max) = POISON_BANDS[usize::from(level.min(4))];
-    if roll_skill_band(state, actor, id, min, max) {
+    if roll_skill_band(state, actor, skill, min, max) {
         state.registry.insert(
             target,
             PoisonCharges {
@@ -132,7 +132,7 @@ pub(super) fn apply_to(state: &mut WorldState, actor: EntityId, potion: EntityId
     let trained = state
         .registry
         .get::<openshard_state::Skills>(actor)
-        .map_or(0, |s| s.get(id));
+        .map_or(0, |s| s.get(skill));
     if trained < FUMBLE_BELOW && state.rng.below(FUMBLE_ONE_IN) == 0 {
         state.localized_message(actor, GRAVE_MISTAKE, "");
         if let Some(serial) = state.registry.serial_of(actor) {
@@ -169,8 +169,8 @@ pub(super) fn taste_id(state: &mut WorldState, actor: EntityId, target: EntityId
         state.localized_message(actor, INAPPROPRIATE, "");
         return;
     }
-    let id = Skill::TasteId.id();
-    if !roll_skill_band(state, actor, id, 0, 1000) {
+    let skill = Skill::TasteId;
+    if !roll_skill_band(state, actor, skill, 0, 1000) {
         state.private_overhead_cliloc(actor, target, CANNOT_DISCERN, "");
         return;
     }

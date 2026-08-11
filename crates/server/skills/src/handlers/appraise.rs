@@ -66,7 +66,7 @@ pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityI
         state.localized_message(actor, NEITHER, "");
         return;
     };
-    let id = Skill::ArmsLore.id();
+    let skill = Skill::ArmsLore;
     let era = state.gameplay.combat_era;
 
     if let Some(weapon) = weapon_data(graphic) {
@@ -97,7 +97,7 @@ pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityI
             // Axe, polearm and staff share ServUO's catch-all block.
             _ => ARMS_OTHER + hand + band * ARMS_DAMAGE_STRIDE,
         };
-        if roll_skill_band(state, actor, id, 0, 1000) {
+        if roll_skill_band(state, actor, skill, 0, 1000) {
             state.localized_message(actor, ClilocId(line), "");
             // And whether somebody has been at it with a bottle.
             if state.registry.has::<PoisonCharges>(target) {
@@ -112,7 +112,7 @@ pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityI
     if let Some(armor) = armor_data(graphic) {
         // Eight lines over a rating capped at thirty-five, in bands of five.
         let band = u32::from(armor.rating).min(35).div_ceil(5);
-        if roll_skill_band(state, actor, id, 0, 1000) {
+        if roll_skill_band(state, actor, skill, 0, 1000) {
             state.localized_message(actor, ClilocId(ARMS_ARMOR + band), "");
         } else {
             state.localized_message(actor, NOT_CERTAIN, "");
@@ -134,8 +134,8 @@ pub(super) fn arms_lore(state: &mut WorldState, actor: EntityId, target: EntityI
 /// item in the game; here the core knows what a shopkeeper charges and nothing
 /// more, and guessing a number for a rock would be worse than saying nothing.
 pub(super) fn item_id(state: &mut WorldState, actor: EntityId, target: EntityId) {
-    let id = Skill::ItemId.id();
-    if !roll_skill_band(state, actor, id, 0, 1000) {
+    let skill = Skill::ItemId;
+    if !roll_skill_band(state, actor, skill, 0, 1000) {
         state.private_overhead_cliloc(actor, actor, ITEM_ID_FAILED, "");
         return;
     }

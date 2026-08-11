@@ -13,8 +13,9 @@
 use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{ClilocId, RawSkillId};
+use openshard_state::WorldState;
 use openshard_state::components::{Casting, Ghost, SkillCooldown};
-use openshard_state::{WorldState, skill};
+use openshard_state::skill::Skill;
 
 /// "That skill cannot be used directly." — the client's own line for a skill with
 /// no button behaviour.
@@ -37,8 +38,8 @@ pub struct SkillRequested {
     pub entity: EntityId,
     /// Their wire identity.
     pub serial: Serial,
-    /// Which skill, by id.
-    pub skill: u8,
+    /// Which skill.
+    pub skill: Skill,
 }
 
 /// How long a use of a skill with no handler of its own holds the button, in
@@ -59,10 +60,10 @@ pub fn use_skill_button(state: &mut WorldState, entity: EntityId, id: RawSkillId
     if state.registry.has::<Ghost>(entity) {
         return false;
     }
-    let Some(info) = skill::info(id.0) else {
+    let Some(skill) = Skill::from_id(id.0) else {
         return false; // an id past the table: a client sending noise
     };
-    let id = id.0; // checked: every use below already has a table entry behind it
+    let info = skill.info();
     let now = state.ticks;
     let waiting = state
         .registry
@@ -93,12 +94,12 @@ pub fn use_skill_button(state: &mut WorldState, entity: EntityId, id: RawSkillId
     state.bus.send(SkillRequested {
         entity,
         serial,
-        skill: id,
+        skill,
     });
     // Then the core's own behaviour. The pack has already seen the event, so this
     // is the default and not a competitor: a skill the core has no opinion on
     // simply does nothing here, having announced itself.
-    crate::handlers::start(state, entity, id);
+    crate::handlers::start(state, entity, skill);
     true
 }
 

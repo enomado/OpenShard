@@ -3326,7 +3326,7 @@ fn a_skilled_swing_lands_and_trains_its_weapon_skill() {
     let connection = enter(&mut world, now);
     let player_entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(player_entity).unwrap();
-    openshard_skills::set_skill(&mut world.state, serial, SWORDS_SKILL, 300);
+    openshard_skills::set_skill(&mut world.state, serial, SWORDS_SKILL.id(), 300);
     items::equip_worn_item(
         &mut world.state,
         serial,
@@ -3370,7 +3370,7 @@ fn an_even_unskilled_duel_sometimes_misses() {
     let connection = enter(&mut world, now);
     let player_entity = world.state.players[&connection];
     let serial = world.state.registry.serial_of(player_entity).unwrap();
-    openshard_skills::set_skill(&mut world.state, serial, SWORDS_SKILL, 200);
+    openshard_skills::set_skill(&mut world.state, serial, SWORDS_SKILL.id(), 200);
     items::equip_worn_item(
         &mut world.state,
         serial,
@@ -3380,7 +3380,7 @@ fn an_even_unskilled_duel_sometimes_misses() {
     )
     .unwrap();
     let mob = spawn_mobile_at(&mut world, Point::new(START.0, START.1, 0), 2000, now);
-    openshard_skills::set_skill(&mut world.state, mob, WRESTLING_SKILL, 1000);
+    openshard_skills::set_skill(&mut world.state, mob, WRESTLING_SKILL.id(), 1000);
     engage(&mut world, connection, mob, now);
     let _ = packets_for(&mut world, connection);
 
@@ -3417,8 +3417,8 @@ fn tactics_scales_the_blow() {
         let connection = enter(&mut world, now);
         let player_entity = world.state.players[&connection];
         let serial = world.state.registry.serial_of(player_entity).unwrap();
-        openshard_skills::set_skill(&mut world.state, serial, SWORDS_SKILL, 1000);
-        openshard_skills::set_skill(&mut world.state, serial, TACTICS_SKILL, tactics);
+        openshard_skills::set_skill(&mut world.state, serial, SWORDS_SKILL.id(), 1000);
+        openshard_skills::set_skill(&mut world.state, serial, TACTICS_SKILL.id(), tactics);
         items::equip_worn_item(
             &mut world.state,
             serial,
@@ -3452,8 +3452,8 @@ fn lumberjacking_lends_an_axe_its_bite() {
         let connection = enter(&mut world, now);
         let player_entity = world.state.players[&connection];
         let serial = world.state.registry.serial_of(player_entity).unwrap();
-        openshard_skills::set_skill(&mut world.state, serial, SWORDS_SKILL, 1000);
-        openshard_skills::set_skill(&mut world.state, serial, LUMBERJACKING_SKILL, lumber);
+        openshard_skills::set_skill(&mut world.state, serial, SWORDS_SKILL.id(), 1000);
+        openshard_skills::set_skill(&mut world.state, serial, LUMBERJACKING_SKILL.id(), lumber);
         items::equip_worn_item(
             &mut world.state,
             serial,
@@ -3515,7 +3515,7 @@ fn a_creature_can_be_given_combat_skills() {
         banker: false,
         vendor: false,
         equipment: Vec::new(),
-        skills: vec![(WRESTLING_SKILL, 700), (TACTICS_SKILL, 500)],
+        skills: vec![(WRESTLING_SKILL.id(), 700), (TACTICS_SKILL.id(), 500)],
     });
     world.tick(now);
     let creature = world
@@ -4079,6 +4079,9 @@ fn killing_the_target_ends_the_attack() {
 
 /// A mobile's value in a skill, in tenths.
 fn skill_value(world: &World, entity: EntityId, skill: u8) -> u16 {
+    let Some(skill) = Skill::from_id(skill) else {
+        return 0;
+    };
     world
         .state
         .registry
@@ -4155,7 +4158,7 @@ fn a_skill_lock_arrow_is_stored() {
         world
             .registry()
             .get::<Skills>(entity)
-            .map_or(SkillLock::Up, |s| s.lock(45)),
+            .map_or(SkillLock::Up, |s| s.lock(Skill::Mining)),
         SkillLock::Down,
         "the down arrow was stored"
     );
@@ -4265,7 +4268,11 @@ fn a_characters_stats_and_skills_survive_a_relogin() {
     );
     assert_eq!(skill_value(&world, player, 25), 501, "the skill came back");
     assert_eq!(
-        world.registry().get::<Skills>(player).unwrap().lock(25),
+        world
+            .registry()
+            .get::<Skills>(player)
+            .unwrap()
+            .lock(Skill::Magery),
         SkillLock::Down,
         "and its lock arrow"
     );
@@ -5895,7 +5902,7 @@ fn using_a_skill_announces_the_outcome() {
 
     let events: Vec<SkillUsed> = world.bus().read(&mut used).copied().collect();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].skill, 1);
+    assert_eq!(events[0].skill, Skill::Anatomy);
     assert!(events[0].success, "a sure thing succeeds");
 }
 
@@ -6274,7 +6281,7 @@ fn a_usable_skills_button_announces_it_and_holds_the_button() {
 
     let events: Vec<_> = world.bus().read(&mut asked).copied().collect();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].skill, Skill::Hiding.id());
+    assert_eq!(events[0].skill, Skill::Hiding);
     assert!(world.state.registry.has::<openshard_state::SkillCooldown>(entity));
 
     // A second press inside the cooldown is refused out loud, and announces
@@ -6498,12 +6505,12 @@ fn stats_lend_a_skill_its_effective_value_before_aos() {
     // 100 strength at 7.5 plus 100 dexterity at 2.5 is ten skill points, and the
     // row's ceiling is exactly that, so an untrained parry is worth 10.0.
     assert_eq!(
-        openshard_skills::skill_value(&world.state, entity, Skill::Parry.id()),
+        openshard_skills::skill_value(&world.state, entity, Skill::Parry),
         100
     );
     // A skill with no stat scales at all is worth exactly what is trained.
     assert_eq!(
-        openshard_skills::skill_value(&world.state, entity, Skill::Hiding.id()),
+        openshard_skills::skill_value(&world.state, entity, Skill::Hiding),
         0
     );
 }
@@ -6533,7 +6540,7 @@ fn the_stat_bonus_is_gone_from_aos_on() {
     });
     world.tick(now);
     assert_eq!(
-        openshard_skills::skill_value(&world.state, entity, Skill::Parry.id()),
+        openshard_skills::skill_value(&world.state, entity, Skill::Parry),
         0,
         "no stat lends to a skill from AoS on"
     );

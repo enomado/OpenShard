@@ -30,7 +30,7 @@ use openshard_state::components::{
 };
 use openshard_state::sectors::in_range;
 use openshard_state::weapon::{LAYER_ONE_HANDED, LAYER_TWO_HANDED};
-use openshard_state::{Action, WorldState};
+use openshard_state::{Action, Skill, WorldState};
 
 pub mod armor;
 pub mod weapons;
@@ -1029,7 +1029,7 @@ pub fn melee_blow(state: &mut WorldState, attacker: EntityId) -> u16 {
 }
 
 /// A mobile's value in a skill, in tenths (0 for untrained or no sheet).
-fn skill_value(state: &WorldState, mobile: EntityId, skill: u8) -> u16 {
+fn skill_value(state: &WorldState, mobile: EntityId, skill: Skill) -> u16 {
     state
         .registry
         .get::<Skills>(mobile)

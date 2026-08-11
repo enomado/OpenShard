@@ -34,6 +34,7 @@ use openshard_entities::EntityId;
 use openshard_protocol::serial::Serial;
 use openshard_state::WorldState;
 use openshard_state::components::{Hitpoints, Mana, Skills, Stamina, Stats};
+use openshard_state::skill::Skill;
 
 /// A mobile's skill moved.
 ///
@@ -48,8 +49,8 @@ pub struct SkillChanged {
     pub entity: EntityId,
     /// Its wire identity.
     pub serial: Serial,
-    /// Which skill, by id.
-    pub skill: u8,
+    /// Which skill.
+    pub skill: Skill,
     /// The skill's value now, in tenths.
     pub value: u16,
 }
@@ -65,8 +66,8 @@ pub struct SkillUsed {
     pub entity: EntityId,
     /// Its wire identity.
     pub serial: Serial,
-    /// Which skill, by id.
-    pub skill: u8,
+    /// Which skill.
+    pub skill: Skill,
     /// Whether the check succeeded.
     pub success: bool,
     /// The skill's value now, in tenths, after any gain.
@@ -133,8 +134,16 @@ pub fn apply_stats(
 }
 
 /// Set a mobile's skill value, in tenths, clamped to that skill's cap.
+///
+/// `skill` crossed the command queue unchecked (N3's "the queue is a
+/// delivery, not a checkpoint"); this is the seam that owns the skill list,
+/// so this is where an id past the table is refused — the same shape
+/// `set_skill_lock` (`world/src/tick/skills_wire.rs`) already uses.
 pub fn set_skill(state: &mut WorldState, serial: Serial, skill: u8, value: u16) {
     let Some(entity) = state.registry.entity_of(serial) else {
+        return;
+    };
+    let Some(skill) = Skill::from_id(skill) else {
         return;
     };
     let mut skills = state.registry.get::<Skills>(entity).cloned().unwrap_or_default();
@@ -144,9 +153,12 @@ pub fn set_skill(state: &mut WorldState, serial: Serial, skill: u8, value: u16) 
 }
 
 /// Set the ceiling on one of a mobile's skills, in tenths, dragging the value
-/// down under it if it now sits above.
+/// down under it if it now sits above. Same unchecked-queue seam as `set_skill`.
 pub fn set_skill_cap(state: &mut WorldState, serial: Serial, skill: u8, cap: u16) {
     let Some(entity) = state.registry.entity_of(serial) else {
+        return;
+    };
+    let Some(skill) = Skill::from_id(skill) else {
         return;
     };
     let mut skills = state.registry.get::<Skills>(entity).cloned().unwrap_or_default();
@@ -161,9 +173,13 @@ pub fn set_skill_cap(state: &mut WorldState, serial: Serial, skill: u8, cap: u16
 /// Use a skill against a difficulty band: roll it, teach from it, announce it.
 ///
 /// The band is ServUO's — under `min_skill` the attempt is beyond the mobile,
-/// at `max_skill` it is no challenge — and both are in tenths.
+/// at `max_skill` it is no challenge — and both are in tenths. Same
+/// unchecked-queue seam as `set_skill`.
 pub fn use_skill(state: &mut WorldState, serial: Serial, skill: u8, min_skill: i32, max_skill: i32) {
     let Some(entity) = state.registry.entity_of(serial) else {
+        return;
+    };
+    let Some(skill) = Skill::from_id(skill) else {
         return;
     };
     let success = roll_skill_band(state, entity, skill, min_skill, max_skill);

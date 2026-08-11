@@ -24,28 +24,28 @@ use openshard_state::{Skill, WorldState};
 /// eight were **wrong** while they were hand-written constants. See
 /// [`WeaponSkill::skill_id`] for the whole story; these are the four the damage
 /// scaling reads directly rather than through a weapon row.
-pub const ANATOMY_SKILL: u8 = Skill::Anatomy.id();
+pub const ANATOMY_SKILL: Skill = Skill::Anatomy;
 /// Fencing.
-pub const FENCING_SKILL: u8 = Skill::Fencing.id();
+pub const FENCING_SKILL: Skill = Skill::Fencing;
 /// Mace fighting.
-pub const MACING_SKILL: u8 = Skill::Macing.id();
+pub const MACING_SKILL: Skill = Skill::Macing;
 /// Tactics — the damage-scaling skill both eras read.
-pub const TACTICS_SKILL: u8 = Skill::Tactics.id();
+pub const TACTICS_SKILL: Skill = Skill::Tactics;
 /// Archery.
-pub const ARCHERY_SKILL: u8 = Skill::Archery.id();
+pub const ARCHERY_SKILL: Skill = Skill::Archery;
 /// Wrestling — the bare-hands weapon skill, and the defender's fallback.
-pub const WRESTLING_SKILL: u8 = Skill::Wrestling.id();
+pub const WRESTLING_SKILL: Skill = Skill::Wrestling;
 /// Swordsmanship.
-pub const SWORDS_SKILL: u8 = Skill::Swords.id();
+pub const SWORDS_SKILL: Skill = Skill::Swords;
 /// Lumberjacking — lends an axe a damage bonus.
-pub const LUMBERJACKING_SKILL: u8 = Skill::Lumberjacking.id();
+pub const LUMBERJACKING_SKILL: Skill = Skill::Lumberjacking;
 
 /// The weapon skill a mobile fights with: its wielded weapon's, or Wrestling for
-/// bare hands (or anything not in the table). The id the to-hit roll and the swing
-/// gain both key on.
+/// bare hands (or anything not in the table). The skill the to-hit roll and the
+/// swing gain both key on.
 #[must_use]
-pub fn combat_skill_id(state: &WorldState, mobile: EntityId) -> u8 {
-    equipped_weapon(state, mobile).map_or(WRESTLING_SKILL, |weapon| weapon.skill.skill_id())
+pub fn combat_skill_id(state: &WorldState, mobile: EntityId) -> Skill {
+    equipped_weapon(state, mobile).map_or(WRESTLING_SKILL, |weapon| weapon.skill.skill())
 }
 
 /// The weapon `mobile` wields, if any — the item on a weapon layer. Its stats are

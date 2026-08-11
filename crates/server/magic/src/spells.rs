@@ -553,7 +553,7 @@ pub fn info(spell: u16) -> Option<&'static SpellInfo> {
 /// One name for it, here with the spell table, because it was a private `const
 /// MAGERY_SKILL: u8 = 25` in *two* modules of `world` and a bare `get(25)` in a
 /// third — three copies of a number that belongs to whichever crate owns casting.
-pub const MAGERY_SKILL: u8 = Skill::Magery.id();
+pub const MAGERY_SKILL: Skill = Skill::Magery;
 
 /// The mana a spell costs, from its circle.
 #[must_use]

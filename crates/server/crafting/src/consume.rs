@@ -80,7 +80,7 @@ pub fn check(
     if let Some(axis) = system.sub_res {
         let entry = axis.entries.get(sub_res).or_else(|| axis.entries.first());
         if let Some(entry) = entry {
-            if i32::from(skill_value(state, crafter, system.skill.id())) < entry.req_skill {
+            if i32::from(skill_value(state, crafter, system.skill)) < entry.req_skill {
                 return Err(Refusal::CannotWork(entry.message));
             }
             res_hue = entry.hue;

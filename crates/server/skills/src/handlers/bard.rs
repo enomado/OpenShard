@@ -83,7 +83,7 @@ const MAX_DIFFICULTY: i32 = 1600;
 
 /// How far a bard's music carries for `skill` — ServUO's `GetBardRange`.
 #[must_use]
-pub fn bard_range(state: &WorldState, bard: EntityId, skill: u8) -> u32 {
+pub fn bard_range(state: &WorldState, bard: EntityId, skill: Skill) -> u32 {
     BARD_RANGE_BASE + u32::from(crate::skill_value(state, bard, skill) / BARD_RANGE_PER_TILE)
 }
 
@@ -174,27 +174,27 @@ pub struct InstrumentSpent {
 /// worth training on its own: a bard with a fine Provocation and no Musicianship
 /// simply plays poorly, and the second roll never happens.
 fn check_musicianship(state: &mut WorldState, bard: EntityId) -> bool {
-    let id = Skill::Musicianship.id();
-    let _ = roll_skill_band(state, bard, id, 0, 1200);
-    let value = u32::from(crate::skill_value(state, bard, id));
+    let skill = Skill::Musicianship;
+    let _ = roll_skill_band(state, bard, skill, 0, 1200);
+    let value = u32::from(crate::skill_value(state, bard, skill));
     value / 10 > state.rng.below(100)
 }
 
 /// Start a bard skill: find the instrument, then raise the cursor its target wants.
 ///
 /// Returns whether anything was started — the button's own answer.
-pub(super) fn start(state: &mut WorldState, bard: EntityId, id: u8) -> bool {
+pub(super) fn start(state: &mut WorldState, bard: EntityId, skill: Skill) -> bool {
     if instrument_in_pack(state, bard).is_none() {
         state.localized_message(bard, NEED_AN_INSTRUMENT, "");
         return true; // the skill *was* used; it simply had nothing to play
     }
-    let prompt = match Skill::from_id(id) {
-        Some(Skill::Peacemaking) => CALM_WHOM,
-        Some(Skill::Provocation) => INCITE_WHOM,
-        Some(Skill::Discordance) => ENTICE_WHOM,
+    let prompt = match skill {
+        Skill::Peacemaking => CALM_WHOM,
+        Skill::Provocation => INCITE_WHOM,
+        Skill::Discordance => ENTICE_WHOM,
         _ => return false,
     };
-    super::raise_cursor(state, bard, id, prompt)
+    super::raise_cursor(state, bard, skill, prompt)
 }
 
 /// Peacemaking's target: calm one creature, or — targeting yourself — everyone.
@@ -208,16 +208,16 @@ pub(super) fn peacemaking(state: &mut WorldState, bard: EntityId, target: Entity
         play(state, bard, item, false);
         return;
     }
-    let id = Skill::Peacemaking.id();
+    let skill = Skill::Peacemaking;
     if target == bard {
         // The area form: everyone within the bard's range stops fighting.
-        if !roll_skill_band(state, bard, id, 0, 1200) {
+        if !roll_skill_band(state, bard, skill, 0, 1200) {
             state.localized_message(bard, AREA_CALM_FAILED, "");
             play(state, bard, item, false);
             return;
         }
         play(state, bard, item, true);
-        let range = bard_range(state, bard, id);
+        let range = bard_range(state, bard, skill);
         let until = state.ticks + PACIFY_SECONDS * TICKS_PER_SECOND;
         for other in mobiles_near(state, bard, range) {
             if other == bard {
@@ -235,7 +235,7 @@ pub(super) fn peacemaking(state: &mut WorldState, bard: EntityId, target: Entity
         return;
     }
     let difficulty = base_difficulty(state, target);
-    if roll_skill_band(state, bard, id, difficulty - BARD_BAND, difficulty + BARD_BAND) {
+    if roll_skill_band(state, bard, skill, difficulty - BARD_BAND, difficulty + BARD_BAND) {
         play(state, bard, item, true);
         let until = state.ticks + PACIFY_SECONDS * TICKS_PER_SECOND;
         state.registry.insert(target, Pacified { until });
@@ -267,7 +267,7 @@ pub(super) fn provoke_first(state: &mut WorldState, bard: EntityId, target: Enti
     state.raise_target(
         bard,
         TargetPurpose::SkillSecond {
-            skill: Skill::Provocation.id(),
+            skill: Skill::Provocation,
             first: target,
         },
     );
@@ -294,8 +294,8 @@ pub(super) fn provoke_second(state: &mut WorldState, bard: EntityId, creature: E
     // The pair's difficulty, averaged and eased by five — ServUO's
     // `(diff(a) + diff(b)) * 0.5 - 5`.
     let difficulty = (base_difficulty(state, creature) + base_difficulty(state, victim)) / 2 - 50;
-    let id = Skill::Provocation.id();
-    if !roll_skill_band(state, bard, id, difficulty - BARD_BAND, difficulty + BARD_BAND) {
+    let skill = Skill::Provocation;
+    if !roll_skill_band(state, bard, skill, difficulty - BARD_BAND, difficulty + BARD_BAND) {
         state.localized_message(bard, NOT_ANGRY_ENOUGH, "");
         play(state, bard, item, false);
         return;
@@ -334,16 +334,16 @@ pub(super) fn discordance(state: &mut WorldState, bard: EntityId, target: Entity
         play(state, bard, item, false);
         return;
     }
-    let id = Skill::Discordance.id();
+    let skill = Skill::Discordance;
     let difficulty = base_difficulty(state, target);
-    if !roll_skill_band(state, bard, id, difficulty - BARD_BAND, difficulty + BARD_BAND) {
+    if !roll_skill_band(state, bard, skill, difficulty - BARD_BAND, difficulty + BARD_BAND) {
         state.localized_message(bard, DISCORD_FAILED, "");
         play(state, bard, item, false);
         return;
     }
     play(state, bard, item, true);
     // `max(-28, discord / -4)` as a positive penalty.
-    let penalty = (crate::skill_value(state, bard, id) / DISCORD_DIVISOR).min(DISCORD_MAX_PENALTY);
+    let penalty = (crate::skill_value(state, bard, skill) / DISCORD_DIVISOR).min(DISCORD_MAX_PENALTY);
     let until = state.ticks + DISCORD_SECONDS * TICKS_PER_SECOND;
     state.registry.insert(target, Discorded { penalty, until });
     state.localized_message(bard, SUPPRESSED, "");
