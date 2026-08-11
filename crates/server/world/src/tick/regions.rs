@@ -167,7 +167,7 @@ impl World {
         for (facet, mut regions) in by_facet {
             if !self.state.facets.contains_key(&facet) {
                 warn!(
-                    facet = facet.0,
+                    facet = %facet,
                     "saved regions for a facet this shard has not loaded"
                 );
                 continue;
@@ -177,7 +177,7 @@ impl World {
             regions.sort_by_key(|region| region.id);
             let count = regions.len();
             self.state.facet_state_mut(facet).regions.set(regions);
-            info!(facet = facet.0, count, "regions restored");
+            info!(facet = %facet, count, "regions restored");
         }
     }
 

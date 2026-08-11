@@ -392,18 +392,20 @@ handlers), `events.rs` 1 → 0. Call sites updated: `world/tick/travel_tests.rs`
 `items/src/drag.rs` (0 — both sides of `RunebookEntry { facet: mark.facet }`
 moved together, which is the pilot's shape at its purest).
 
-## Backlog: `Facet` has neither `Display` nor `tracing::Value`
+## `Facet` gained `Display` — done
 
-Found while doing the stage above, and the reason three `.0`s survive it that
-are not seams: `magic::describe`'s `format!`, and `restore_regions`'s two log
-lines, which had to become `facet = facet.0` because `warn!(facet, ..)` needs
-`tracing::Value` and the newtype has neither that nor `Display`. Every stage
-left ahead of this one has log lines of the same shape (`world::tick/
-regions.rs`, `gm.rs`, `spawner.rs` all log a facet), so the count only grows.
-`Display` is the smaller of the two and would settle both — `tracing` accepts
-a `Display` field through `%facet`. Not done here because it is a `protocol`
-change and this stage was already three crates wide; do it before `world`'s
-stage rather than after, so that stage's log lines are written once.
+Closed the backlog item found while doing the travel stage above: `Facet` had
+neither `Display` nor `tracing::Value`, which is why three `.0`s survived that
+were not seams — `magic::describe`'s `format!`, and `restore_regions`'s two
+log lines, written `facet = facet.0` because `warn!(facet, ..)` needs
+`tracing::Value` and the newtype had neither. `impl std::fmt::Display for
+Facet` (`crates/common/protocol/src/world.rs`, next to the type) settles both:
+`describe`'s `format!` now interpolates `facet` directly, and both
+`restore_regions` log lines take it through `%facet` — the syntax `tracing`
+accepts for any `Display` field. `gm.rs`/`spawner.rs`'s own `facet.0` log
+sites are `world`'s own stage, not touched here, same as every other bare
+`facet: u8` in those files. Done before `world`'s stage starts, per the
+backlog note's own reasoning: that stage's log lines get written once now.
 
 ## What's next
 

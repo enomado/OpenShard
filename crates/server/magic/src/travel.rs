@@ -119,9 +119,7 @@ pub fn destination_of(state: &WorldState, rune: EntityId) -> Option<(Facet, Poin
 #[must_use]
 pub fn describe(state: &WorldState, facet: Facet, at: Point) -> String {
     state.region_at(facet, at).map_or_else(
-        // `.0` at the display leaf: what a player reads is the number, and there
-        // is no `Display` on the domain type to borrow instead.
-        || format!("{}, {} (facet {})", at.x, at.y, facet.0),
+        || format!("{}, {} (facet {facet})", at.x, at.y),
         |region| region.name.clone(),
     )
 }

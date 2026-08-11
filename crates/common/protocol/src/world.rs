@@ -1147,6 +1147,12 @@ pub struct MapChange {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
 pub struct Facet(pub u8);
 
+impl std::fmt::Display for Facet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 impl EncodePacket for MapChange {
     const ID: u8 = 0xBF;
     const LENGTH: PacketLength = PacketLength::Fixed(6);
