@@ -61,14 +61,14 @@ impl World {
                 continue; // off the world edge
             }
             let pos = Point::new(x as u16, y as u16, target.z);
-            self.spawn_field_tile(graphic, pos, facet.0, field);
+            self.spawn_field_tile(graphic, pos, facet, field);
         }
     }
 
     /// Put one field tile on the ground — the drawn-item path (`Drawn`, `Position`,
     /// `Facet`, the sector grid, `reveal`), plus the [`Field`] and, for a wall, an
     /// obstruction. No `Decays`: a field owns its own lifetime.
-    fn spawn_field_tile(&mut self, graphic: Graphic, pos: Point, facet: u8, field: Field) {
+    fn spawn_field_tile(&mut self, graphic: Graphic, pos: Point, facet: Facet, field: Field) {
         let Ok((entity, _serial)) = self.state.registry.spawn_with_serial(SerialKind::Item) else {
             warn!("out of item serials; not laying a field tile");
             return;
@@ -81,14 +81,11 @@ impl World {
             },
         );
         self.state.registry.insert(entity, Position(pos));
-        self.state.registry.insert(entity, Facet(facet));
+        self.state.registry.insert(entity, facet);
         self.state.registry.insert(entity, field);
-        self.state
-            .facet_state_mut(Facet(facet))
-            .sectors
-            .insert(entity, pos);
+        self.state.facet_state_mut(facet).sectors.insert(entity, pos);
         if field.blocks {
-            self.state.facet_state_mut(Facet(facet)).obstructions.block(
+            self.state.facet_state_mut(facet).obstructions.block(
                 pos.x,
                 pos.y,
                 entity,

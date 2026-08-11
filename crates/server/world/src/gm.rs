@@ -90,7 +90,7 @@ fn make_key(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     };
     let facet = state.facet_of(actor);
     // ServUO's iron key, `0x100E`.
-    let Some(key) = items::spawn_item(state, Graphic(0x100E), Hue(0), 1, false, at, facet.0) else {
+    let Some(key) = items::spawn_item(state, Graphic(0x100E), Hue(0), 1, false, at, facet) else {
         notify(state, actor, "No room for a key.");
         return;
     };
@@ -122,7 +122,7 @@ fn make_poison(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     };
     let facet = state.facet_of(actor);
     let graphic = openshard_state::components::POISON_POTION_GRAPHIC;
-    let Some(potion) = items::spawn_item(state, graphic, Hue(0), 1, false, at, facet.0) else {
+    let Some(potion) = items::spawn_item(state, graphic, Hue(0), 1, false, at, facet) else {
         notify(state, actor, "No room for a potion.");
         return;
     };
@@ -256,7 +256,7 @@ fn where_am_i(state: &mut WorldState, actor: EntityId) {
     notify(
         state,
         actor,
-        &format!("You are at {}, {}, {} on facet {}.", at.x, at.y, at.z, facet.0),
+        &format!("You are at {}, {}, {} on facet {facet}.", at.x, at.y, at.z),
     );
 }
 
@@ -286,16 +286,12 @@ fn go_to(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     // facet with no map (development mode) keeps the actor's current height.
     let z = match args.get(2).and_then(parse_i8) {
         Some(z) => z,
-        None => ground_z(state, facet.0, x, y)
+        None => ground_z(state, facet, x, y)
             .or_else(|| state.registry.get::<Position>(actor).map(|p| p.0.z))
             .unwrap_or(0),
     };
     state.move_to(actor, facet, Point::new(x, y, z));
-    notify(
-        state,
-        actor,
-        &format!("Went to {x}, {y}, {z} on facet {}.", facet.0),
-    );
+    notify(state, actor, &format!("Went to {x}, {y}, {z} on facet {facet}."));
 }
 
 /// `.tele` — Sphere's cursor teleport: raise a targeting cursor, and jump to the
@@ -374,7 +370,7 @@ fn add_item(state: &mut WorldState, actor: EntityId, args: &[&str]) {
     // by decree here — the graphic decides that in real gameplay, but a spawned
     // pile the operator named is stackable so the count takes.
     let stackable = amount > 1;
-    if items::spawn_item(state, graphic, Hue(0), amount, stackable, at, facet.0).is_some() {
+    if items::spawn_item(state, graphic, Hue(0), amount, stackable, at, facet).is_some() {
         notify(
             state,
             actor,
@@ -422,9 +418,9 @@ pub(crate) fn notify(state: &mut WorldState, actor: EntityId, text: &str) {
 }
 
 /// The ground height at `(x, y)` on `facet`, if the facet has a map loaded.
-fn ground_z(state: &WorldState, facet: u8, x: u16, y: u16) -> Option<i8> {
+fn ground_z(state: &WorldState, facet: Facet, x: u16, y: u16) -> Option<i8> {
     state
-        .facet_state(Facet(facet))
+        .facet_state(facet)
         .terrain
         .as_ref()
         .and_then(|terrain| terrain.ground_z(Tile::new(x, y)))

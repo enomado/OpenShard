@@ -1100,7 +1100,7 @@ fn register_towns(world: &mut World, now: Instant) {
         light: None,
     };
     world.queue(Command::RegisterRegions {
-        facet: 0,
+        facet: Facet(0),
         regions: vec![here, away],
     });
     world.tick(now);

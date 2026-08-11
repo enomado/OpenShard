@@ -44,16 +44,16 @@ impl World {
     /// people standing in regions that no longer exist. Dropping it makes the
     /// next tick's pass treat everyone as freshly arrived, which is exactly what
     /// they are.
-    pub(super) fn register_regions(&mut self, facet: u8, regions: Vec<openshard_state::Region>) {
-        if !self.state.facets.contains_key(&Facet(facet)) {
-            warn!(facet, "regions for a facet this shard has not loaded");
+    pub(super) fn register_regions(&mut self, facet: Facet, regions: Vec<openshard_state::Region>) {
+        if !self.state.facets.contains_key(&facet) {
+            warn!(facet = %facet, "regions for a facet this shard has not loaded");
             return;
         }
         for region in &regions {
             if let Some(light) = region.light {
                 if light > 0x1F {
                     warn!(
-                        facet,
+                        facet = %facet,
                         region = %region.name,
                         light,
                         "region light above 0x1F; the client clamps it to pitch dark rather than complaining"
@@ -62,21 +62,15 @@ impl World {
             }
         }
         let count = regions.len();
-        self.state.facet_state_mut(Facet(facet)).regions.set(regions);
+        self.state.facet_state_mut(facet).regions.set(regions);
         self.forget_remembered_regions();
-        info!(facet, count, "regions registered");
+        info!(facet = %facet, count, "regions registered");
     }
 
     /// Forget a facet's regions.
-    ///
-    /// Bare `u8`, and [`register_regions`](Self::register_regions) with it: both
-    /// are handlers for a [`Command`](crate::tick::command::Command) variant
-    /// whose own field is still bare, so wrapping here would only move the `.0`
-    /// into the dispatch `match`. They convert with `Command`, not before —
-    /// `docs/facet_newtype.md`'s `world` stage.
-    pub(super) fn clear_regions(&mut self, facet: u8) {
-        if self.state.facets.contains_key(&Facet(facet)) {
-            self.state.facet_state_mut(Facet(facet)).regions.clear();
+    pub(super) fn clear_regions(&mut self, facet: Facet) {
+        if self.state.facets.contains_key(&facet) {
+            self.state.facet_state_mut(facet).regions.clear();
             self.forget_remembered_regions();
         }
     }

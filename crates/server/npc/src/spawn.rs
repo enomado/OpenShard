@@ -63,7 +63,7 @@ pub struct SpawnSpec {
     pub ranged_kind: u8,
     pub wander: bool,
     pub position: Point,
-    pub facet: u8,
+    pub facet: Facet,
     /// A name the client shows on single-click, if any. Overrides `title`.
     pub name: Option<String>,
     /// The trade this NPC plies, ServUO-style ("the blacksmith"). `None` for a
@@ -139,13 +139,10 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         equipment,
         skills,
     } = spec;
-    // Wrapped here and carried as a `Facet` from this line down: the spec's number
-    // came out of a pack, and the world's facet table is keyed by the component
-    // type rather than by a bare byte.
-    let facet = if state.facets.contains_key(&Facet(facet)) {
-        Facet(facet)
+    let facet = if state.facets.contains_key(&facet) {
+        facet
     } else {
-        warn!(facet, "unloaded facet; spawning the mobile on the default");
+        warn!(facet = %facet, "unloaded facet; spawning the mobile on the default");
         state.default_facet
     };
     // Drop the mobile onto the ground, the way a client's spawner does: the

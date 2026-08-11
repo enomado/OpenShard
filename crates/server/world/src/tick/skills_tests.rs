@@ -41,7 +41,7 @@ fn item_beside(world: &mut World, graphic: Graphic, now: Instant) -> Serial {
         amount: 1,
         stackable: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
     let (entity, _) = world
@@ -768,7 +768,7 @@ fn a_trapped_chest_goes_off_when_it_is_opened_and_remove_trap_takes_it_off() {
         gump: openshard_protocol::wire::Graphic(0x003C),
         hue: openshard_protocol::wire::Hue(0),
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
     let (chest, _) = world
@@ -1191,7 +1191,7 @@ fn a_lockpick_opens_a_lock_it_is_good_enough_for() {
         gump: openshard_protocol::wire::Graphic(0x003C),
         hue: openshard_protocol::wire::Hue(0),
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
     let (chest, _) = world
@@ -1353,7 +1353,7 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> S
         ranged_kind: 0,
         wander: false,
         position: at,
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,

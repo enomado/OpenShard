@@ -31,6 +31,8 @@
 
 mod engine;
 
+use openshard_protocol::world::Facet;
+
 pub use engine::DenoEngine;
 
 /// A wire serial: the identity every packet about a mobile already carries, and
@@ -313,7 +315,7 @@ pub enum Command {
         /// Where it lies.
         z: i8,
         /// Which facet.
-        facet: u8,
+        facet: Facet,
     },
     /// Put a container on the ground — an item others can be put inside.
     SpawnContainer {
@@ -330,7 +332,7 @@ pub enum Command {
         /// Where it lies.
         z: i8,
         /// Which facet.
-        facet: u8,
+        facet: Facet,
     },
     /// Put a mobile in the world — a creature to fight or an NPC to stand there.
     SpawnMobile {
@@ -368,7 +370,7 @@ pub enum Command {
         /// Where it stands.
         z: i8,
         /// Which facet.
-        facet: u8,
+        facet: Facet,
         /// A name the client shows on single-click, for a townsperson; empty for a
         /// nameless creature. Overrides `title` — a pack that knows the exact
         /// name to use says so.
@@ -564,7 +566,7 @@ pub enum Command {
         /// Height in tiles.
         height: u16,
         /// Which facet.
-        facet: u8,
+        facet: Facet,
         /// The most live creatures the region keeps.
         max_count: u16,
         /// Ticks to wait after a spawn before the next.
@@ -579,21 +581,21 @@ pub enum Command {
     /// entire and a half-registered map of the world is worse than none.
     RegisterRegions {
         /// Which facet.
-        facet: u8,
+        facet: Facet,
         /// Every area on it.
         regions: Vec<ScriptRegion>,
     },
     /// Forget a facet's regions.
     ClearRegions {
         /// Which facet.
-        facet: u8,
+        facet: Facet,
     },
     /// Place decoration: script-added statics — signs, furniture — the shard puts
     /// on top of the static art the client's map already draws. In a batch,
     /// because a city is many at once.
     Decorate {
         /// Which facet.
-        facet: u8,
+        facet: Facet,
         /// The plain statics to place.
         statics: Vec<DecorStatic>,
         /// The doors to place — decoration that opens on double-click.
@@ -607,7 +609,7 @@ pub enum Command {
     /// shop doors a building's static art only implies.
     GenerateDoors {
         /// Which facet.
-        facet: u8,
+        facet: Facet,
         /// The region's north-west corner and size, in tiles.
         x: u16,
         /// North-west corner y.

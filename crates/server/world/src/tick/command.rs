@@ -438,14 +438,14 @@ pub enum Command {
     /// an old set behind. See [`openshard_state::Region`].
     RegisterRegions {
         /// Which facet the areas belong to.
-        facet: u8,
+        facet: Facet,
         /// The whole set.
         regions: Vec<openshard_state::Region>,
     },
     /// Forget a facet's regions — the admin menu's "Clear regions".
     ClearRegions {
         /// Which facet.
-        facet: u8,
+        facet: Facet,
     },
     /// Place a batch of decoration: script-added statics — signs, furniture — on
     /// top of the static art the map already draws, plus the interactive kinds:
@@ -453,7 +453,7 @@ pub enum Command {
     /// [`Decoration`], [`Door`] and [`Container`].
     Decorate {
         /// Which facet.
-        facet: u8,
+        facet: Facet,
         /// The plain statics to place, as `(graphic, hue, position)`.
         statics: Vec<(Graphic, Hue, Point)>,
         /// The doors to place.
@@ -467,7 +467,7 @@ pub enum Command {
     /// shop doors a building's art only implies. See [`crate::doorgen`].
     GenerateDoors {
         /// Which facet.
-        facet: u8,
+        facet: Facet,
         /// The region's north-west corner and size, in tiles.
         x: u16,
         /// North-west corner y.
@@ -511,7 +511,7 @@ pub enum Command {
         /// Where it lies.
         position: Point,
         /// Which facet.
-        facet: u8,
+        facet: Facet,
     },
     /// The server puts a container on the ground — a script decree, like
     /// [`SpawnItem`](Self::SpawnItem) but the thing can hold others.
@@ -525,7 +525,7 @@ pub enum Command {
         /// Where it lies.
         position: Point,
         /// Which facet.
-        facet: u8,
+        facet: Facet,
     },
     /// The server puts a mobile in the world — a script decree. A creature to
     /// fight, a shopkeeper to stand there: an entity with a body and hit points
@@ -561,7 +561,7 @@ pub enum Command {
         /// Where it stands.
         position: Point,
         /// Which facet.
-        facet: u8,
+        facet: Facet,
         /// A name shown on single-click, if any — a townsperson has one. Overrides
         /// `title`.
         name: Option<String>,

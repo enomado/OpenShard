@@ -209,7 +209,7 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
             ranged_kind: 0,
             wander: false,
             position: at,
-            facet: facet.0,
+            facet,
             name: Some(name),
             // A guard is not a townsperson: it appears, speaks its one line, deals
             // its blow and is gone. No trade, so no generated dress (its body

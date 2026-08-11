@@ -369,7 +369,7 @@ fn pay_out(
     ) else {
         return false;
     };
-    openshard_items::spawn_item(state, resource.graphic, resource.hue, amount, true, at, facet.0).is_some()
+    openshard_items::spawn_item(state, resource.graphic, resource.hue, amount, true, at, facet).is_some()
 }
 
 /// Spend a swing off the tool, and say so if it broke.

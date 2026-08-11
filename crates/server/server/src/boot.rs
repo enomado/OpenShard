@@ -538,7 +538,10 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
             statics = map.static_count(),
             "facet loaded"
         );
-        world = world.with_facet(facet, MapTerrain::new(map, tiles.clone()));
+        world = world.with_facet(
+            openshard_protocol::world::Facet(facet),
+            MapTerrain::new(map, tiles.clone()),
+        );
     }
     info!(
         facets = config.world.facets.len(),

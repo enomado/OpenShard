@@ -94,7 +94,7 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
                 ranged_kind: 0,
                 wander: false,
                 position: Point::new(START.0 + gx * 2, START.1 + gy * 2, 0),
-                facet: 0,
+                facet: Facet(0),
                 name: None,
                 title: Some(trades[placed as usize % trades.len()].to_owned()),
                 shoe: 1,
@@ -119,7 +119,7 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
         statics.push((Graphic(0x0B4F), Hue(0), Point::new(START.0 + gx, START.1 + gy, 0)));
     }
     world.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics,
         doors: Vec::new(),
         containers: Vec::new(),

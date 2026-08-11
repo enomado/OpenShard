@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use deno_core::{JsRuntime, OpState, RuntimeOptions, extension, op2, v8};
+use openshard_protocol::world::Facet;
 
 use crate::{Command, Event, ScriptEngine, ScriptError, Serial};
 
@@ -466,7 +467,7 @@ mod tests {
                 x: 42,
                 y: 100,
                 z: 0,
-                facet: 0,
+                facet: Facet(0),
             }]
         );
     }
@@ -500,7 +501,7 @@ mod tests {
                 y: 1455,
                 width: 40,
                 height: 40,
-                facet: 0,
+                facet: Facet(0),
                 max_count: 4,
                 respawn_delay: 60,
                 creatures: vec![crate::SpawnCreature {
@@ -572,7 +573,7 @@ mod tests {
         assert_eq!(
             engine.take_commands(),
             vec![Command::Decorate {
-                facet: 0,
+                facet: Facet(0),
                 statics: vec![
                     crate::DecorStatic {
                         graphic: 0x07C1,
@@ -620,7 +621,7 @@ mod tests {
         assert_eq!(
             engine.take_commands(),
             vec![Command::Decorate {
-                facet: 0,
+                facet: Facet(0),
                 statics: vec![],
                 doors: vec![crate::DecorDoor {
                     key_value: 0,

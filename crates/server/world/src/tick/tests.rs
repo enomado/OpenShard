@@ -463,7 +463,7 @@ fn spawn_item_at(world: &mut World, point: Point, now: Instant) {
         amount: 1,
         stackable: false,
         position: point,
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
 }
@@ -476,7 +476,7 @@ fn spawn_gold(world: &mut World, point: Point, amount: u16, now: Instant) -> Ser
         amount,
         stackable: true,
         position: point,
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
     // The newest ground item, by serial.
@@ -568,7 +568,7 @@ fn a_stacked_item_keeps_its_amount_when_drawn() {
         amount: 500,
         stackable: false,
         position: Point::new(START.0, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
 
@@ -760,7 +760,7 @@ fn spawn_container_at(world: &mut World, point: Point, now: Instant) -> Serial {
         gump: BACKPACK_GUMP,
         hue: openshard_protocol::wire::Hue(0),
         position: point,
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
     // The ground container just spawned — not a worn backpack, which is also a
@@ -820,7 +820,7 @@ fn spawn_plain_item_at(world: &mut World, point: Point, now: Instant) -> Serial 
         amount: 1,
         stackable: false,
         position: point,
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
     world
@@ -1256,7 +1256,7 @@ fn dropping_into_something_that_is_not_a_container_bounces() {
         amount: 1,
         stackable: false,
         position: here,
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
     // The held one is whichever loose item is not the target — not the worn
@@ -1981,7 +1981,7 @@ fn gameplay_config_reaches_the_systems() {
         amount: 1,
         stackable: false,
         position: Point::new(START.0, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
     });
     world.tick(now);
 
@@ -2356,7 +2356,7 @@ fn spawn_mobile_full(
         ranged_kind: 0,
         wander: false,
         position: point,
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -2864,7 +2864,7 @@ fn a_creature_dies_with_its_own_voice() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -3505,7 +3505,7 @@ fn a_creature_can_be_given_combat_skills() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -6904,7 +6904,7 @@ fn spawn_creature(world: &mut World, point: Point, sight: u8, wander: bool, now:
         ranged_kind: 0,
         wander,
         position: point,
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -7428,7 +7428,7 @@ fn decorate_places_statics_and_clear_removes_them() {
     let _gm = enter_gm(&mut world, now);
 
     world.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics: vec![
             (
                 openshard_protocol::wire::Graphic(0x07C1),
@@ -7470,7 +7470,7 @@ fn decoration_cannot_be_picked_up() {
     let mut world = world();
     let gm = enter_gm(&mut world, now);
     world.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics: vec![(
             openshard_protocol::wire::Graphic(0x07C1),
             openshard_protocol::wire::Hue(0),
@@ -7509,7 +7509,7 @@ fn a_door_opens_and_closes_on_double_click() {
     // A metal door one tile from the GM, well within reach.
     let at = Point::new(START.0 + 1, START.1, 0);
     world.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics: Vec::new(),
         doors: vec![DecorDoor {
             key_value: 0,
@@ -7571,7 +7571,7 @@ fn an_open_door_swings_shut_on_its_own() {
     let gm = enter_gm(&mut world, now);
     let at = Point::new(START.0 + 1, START.1, 0);
     world.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics: Vec::new(),
         doors: vec![DecorDoor {
             key_value: 0,
@@ -7629,7 +7629,7 @@ impl Terrain for FrameTerrain {
 
 fn generate_britain_doors(world: &mut World, now: Instant) {
     world.queue(Command::GenerateDoors {
-        facet: 0,
+        facet: Facet(0),
         x: 100,
         y: 100,
         width: 3,
@@ -7695,7 +7695,7 @@ fn a_decoration_container_opens_on_double_click() {
     let mut world = world();
     let gm = enter_gm(&mut world, now);
     world.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics: Vec::new(),
         doors: Vec::new(),
         containers: vec![DecorContainer {
@@ -7851,7 +7851,7 @@ fn a_spawner_fills_to_its_ceiling_and_clear_empties_it() {
         y: START.1,
         width: 3,
         height: 3,
-        facet: 0,
+        facet: Facet(0),
     };
     world.queue(Command::RegisterSpawner {
         spawner: Spawner::new(0, area, vec![creature], 3, 0),
@@ -7903,7 +7903,7 @@ fn clear_also_removes_placed_npcs_and_their_gear_but_not_players() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
@@ -8401,7 +8401,7 @@ fn a_spawner_respawn_timer_survives_a_restart() {
         y: START.1,
         width: 1,
         height: 1,
-        facet: 0,
+        facet: Facet(0),
     };
     // A 100-second respawn region.
     home.register_spawner(Spawner::new(0, area, vec![], 1, 100 * TICKS_PER_SECOND));
@@ -8438,7 +8438,7 @@ fn re_registering_a_region_keeps_the_first_and_its_timer() {
         y: 100,
         width: 5,
         height: 5,
-        facet: 0,
+        facet: Facet(0),
     };
     world.register_spawner(Spawner::new(0, area, vec![], 3, 40));
     // Give the standing region a timer with time still to wait, as a restore from
@@ -8483,7 +8483,7 @@ fn a_vendor_and_its_priced_stock_survive_a_restart() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
@@ -8617,7 +8617,7 @@ fn a_wounded_spawner_creature_survives_a_restart_and_is_counted() {
         y: START.1,
         width: 2,
         height: 2,
-        facet: 0,
+        facet: Facet(0),
     };
     home.queue(Command::RegisterSpawner {
         spawner: Spawner::new(0, area, vec![creature], 1, 1000),
@@ -8689,7 +8689,7 @@ fn decoration_and_door_state_survive_a_restart() {
     let shut_at = Point::new(START.0 + 2, START.1, 0);
     let open_at = Point::new(START.0 + 4, START.1, 0);
     home.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics: vec![(
             openshard_protocol::wire::Graphic(0x07C1),
             openshard_protocol::wire::Hue(0),
@@ -8814,7 +8814,7 @@ fn a_snapshot_saves_an_idle_online_character_and_the_ground() {
         1,
         false,
         Point::new(1365, 1600, 0),
-        0,
+        Facet(0),
     );
 
     // Tick once to settle, draining any snapshots the enter produced, then force
@@ -8861,7 +8861,7 @@ fn spawn_banker(world: &mut World, at: Point, now: Instant) {
         ranged_kind: 0,
         wander: false,
         position: at,
-        facet: 0,
+        facet: Facet(0),
         name: Some("the banker".to_owned()),
         title: None,
         shoe: 0,
@@ -8961,7 +8961,7 @@ pub(super) fn spawn_townsperson(world: &mut World, trade: &str, at: Point, now: 
         ranged_kind: 0,
         wander: false,
         position: at,
-        facet: 0,
+        facet: Facet(0),
         // No name and no equipment: the core dresses it and names it, which is the
         // path the pack takes.
         name: None,
@@ -9040,7 +9040,7 @@ fn a_townsperson_is_dressed_and_named_by_the_core() {
 /// Place a door at `at`, locked to `key_value` (0 for unlocked), and return it.
 fn place_lockable_door(world: &mut World, at: Point, key_value: u32, now: Instant) -> EntityId {
     world.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics: Vec::new(),
         doors: vec![DecorDoor {
             key_value,
@@ -9132,7 +9132,7 @@ fn spawn_creature_with_standing(world: &mut World, fame: i32, karma: i32, now: I
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1 + 1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -9302,7 +9302,7 @@ fn a_key_turns_only_the_lock_it_fits() {
         1,
         false,
         player_at,
-        0,
+        Facet(0),
     )
     .expect("a key");
     world
@@ -9323,7 +9323,7 @@ fn a_key_turns_only_the_lock_it_fits() {
         1,
         false,
         player_at,
-        0,
+        Facet(0),
     )
     .expect("a key");
     world
@@ -9399,7 +9399,7 @@ fn a_non_human_townsperson_keeps_its_own_body() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 7, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: Some("the frightened dryad".to_owned()),
         shoe: 1,
@@ -9657,7 +9657,7 @@ fn a_criminal_is_refused_at_every_door_into_a_shop() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: Some("the provisioner".to_owned()),
         shoe: 1,
@@ -9746,7 +9746,7 @@ fn spawn_shopkeeper(world: &mut World, now: Instant) -> (EntityId, Serial) {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: Some("the provisioner".to_owned()),
         shoe: 1,
@@ -9961,7 +9961,7 @@ fn a_townsperson_walks_home_at_night_when_the_shard_asks_for_it() {
         ranged_kind: 0,
         wander: false,
         position: post,
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: Some("the peasant".to_owned()),
         shoe: 1,
@@ -10271,7 +10271,7 @@ fn a_spawn_stands_on_the_floor_not_under_it() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: Some("the tailor".to_owned()),
         title: None,
         shoe: 0,
@@ -10319,7 +10319,7 @@ fn an_unnamed_creature_takes_its_body_default_name() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -10499,7 +10499,7 @@ pub(super) fn spawn_stocked_vendor(world: &mut World, point: Point, now: Instant
         ranged_kind: 0,
         wander: false,
         position: point,
-        facet: 0,
+        facet: Facet(0),
         name: Some("the tailor".to_owned()),
         title: None,
         shoe: 0,
@@ -10805,15 +10805,15 @@ fn a_saved_character_remembers_whose_it_is() {
 
 /// Register a mapless facet, so a test can populate more than one without
 /// client files. Its interest grid is the same no-map size facet 0 uses.
-pub(super) fn add_empty_facet(world: &mut World, facet: u8) {
+pub(super) fn add_empty_facet(world: &mut World, facet: Facet) {
     add_empty_facet_sized(world, facet, FACET_WITHOUT_A_MAP.0, FACET_WITHOUT_A_MAP.1);
 }
 
 /// The same, at a size of the test's choosing — the facets are not all the
 /// shape of Britannia, and what the client is told about that is a rule.
-pub(super) fn add_empty_facet_sized(world: &mut World, facet: u8, width: u32, height: u32) {
+pub(super) fn add_empty_facet_sized(world: &mut World, facet: Facet, width: u32, height: u32) {
     world.state.facets.insert(
-        Facet(facet),
+        facet,
         FacetState {
             terrain: None,
             width,
@@ -10826,14 +10826,14 @@ pub(super) fn add_empty_facet_sized(world: &mut World, facet: u8, width: u32, he
     );
 }
 
-pub(super) fn enter_on_facet(world: &mut World, connection: ConnectionId, facet: u8, now: Instant) {
+pub(super) fn enter_on_facet(world: &mut World, connection: ConnectionId, facet: Facet, now: Instant) {
     world.queue(Command::Enter(Entering {
         connection,
         version: ClientVersion::TOL,
         account: AccountName("admin".to_owned()),
         name: CharacterName("P".to_owned()),
         access: AccessLevel::Player,
-        character: Character::fresh(Facet(facet)),
+        character: Character::fresh(facet),
     }));
     world.tick(now);
 }
@@ -10844,12 +10844,12 @@ fn two_facets_do_not_see_each_other() {
     // the very same coordinates, one on Felucca and one on Trammel, share no
     // screen. If this ever fails, someone reached for a single global grid.
     let mut world = world();
-    add_empty_facet(&mut world, 1);
+    add_empty_facet(&mut world, Facet(1));
     let now = Instant::now();
     let here = ConnectionId::from_raw(1);
     let there = ConnectionId::from_raw(2);
-    enter_on_facet(&mut world, here, 0, now);
-    enter_on_facet(&mut world, there, 1, now);
+    enter_on_facet(&mut world, here, Facet(0), now);
+    enter_on_facet(&mut world, there, Facet(1), now);
 
     let a = world.state.players[&here];
     let b = world.state.players[&there];
@@ -10868,8 +10868,8 @@ fn one_facet_at_the_same_spot_does_see() {
     let now = Instant::now();
     let here = ConnectionId::from_raw(1);
     let there = ConnectionId::from_raw(2);
-    enter_on_facet(&mut world, here, 0, now);
-    enter_on_facet(&mut world, there, 0, now);
+    enter_on_facet(&mut world, here, Facet(0), now);
+    enter_on_facet(&mut world, there, Facet(0), now);
 
     let a = world.state.players[&here];
     let b = world.state.players[&there];
@@ -11337,7 +11337,7 @@ fn the_tick_interval_is_not_a_protocol_constant() {
 /// `at` closed, and its open leaf swings a tile aside like the metal doors do.
 fn place_door(world: &mut World, at: Point, now: Instant) -> (EntityId, Serial) {
     world.queue(Command::Decorate {
-        facet: 0,
+        facet: Facet(0),
         statics: Vec::new(),
         doors: vec![DecorDoor {
             key_value: 0,
@@ -11482,7 +11482,7 @@ fn a_creature_does_not_notice_prey_through_a_shut_door() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0, START.1 + 2, 0),
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -11550,7 +11550,7 @@ fn spawn_brained(world: &mut World, body: u16, at: Point, sight: u8, now: Instan
         ranged_kind: 0,
         wander: false,
         position: at,
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -11736,7 +11736,7 @@ fn spawn_postured(world: &mut World, at: Point, sight: u8, aggression: u8, now: 
         ranged_kind: 0,
         wander: false,
         position: at,
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -11903,7 +11903,7 @@ fn spawn_horse(world: &mut World, at: Point, now: Instant) -> (EntityId, Serial)
         ranged_kind: 0,
         wander: true,
         position: at,
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -12240,7 +12240,7 @@ fn a_shop_sells_goods_and_buys_them_back() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
@@ -12406,7 +12406,7 @@ fn a_shop_keyword_needs_the_vendor_named_and_an_empty_sell_answers_overhead() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
@@ -12527,7 +12527,7 @@ fn a_bought_out_shelf_refills_when_its_hour_is_up() {
         ranged_kind: 0,
         wander: false,
         position: Point::new(START.0 + 1, START.1, 0),
-        facet: 0,
+        facet: Facet(0),
         name: Some("Mirabel".to_owned()),
         title: None,
         shoe: 0,
@@ -12646,7 +12646,7 @@ fn spawn_archer_bodied(world: &mut World, body: u16, at: Point, now: Instant) ->
         ranged_kind: 4,
         wander: false,
         position: at,
-        facet: 0,
+        facet: Facet(0),
         name: None,
         title: None,
         shoe: 0,
@@ -12995,7 +12995,7 @@ fn lod_a_spawner_with_no_player_near_stays_dormant_then_wakes() {
         y: START.1 + 300,
         width: 2,
         height: 2,
-        facet: 0,
+        facet: Facet(0),
     };
     world.queue(Command::RegisterSpawner {
         spawner: Spawner::new(0, area, vec![creature], 3, 40),

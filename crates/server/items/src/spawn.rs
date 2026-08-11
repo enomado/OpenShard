@@ -54,15 +54,12 @@ pub fn spawn_item(
     amount: u16,
     stackable: bool,
     position: Point,
-    facet: u8,
+    facet: Facet,
 ) -> Option<EntityId> {
-    // Wrapped here and carried as a `Facet` from this line down: the caller's
-    // number came off a command, and the world's facet table is keyed by the
-    // component type rather than by a bare byte.
-    let facet = if state.facets.contains_key(&Facet(facet)) {
-        Facet(facet)
+    let facet = if state.facets.contains_key(&facet) {
+        facet
     } else {
-        warn!(facet, "unloaded facet; spawning the item on the default");
+        warn!(facet = %facet, "unloaded facet; spawning the item on the default");
         state.default_facet
     };
     let (entity, serial) = match state.registry.spawn_with_serial(SerialKind::Item) {
@@ -106,7 +103,7 @@ pub fn spawn_container(
     gump: Graphic,
     hue: Hue,
     position: Point,
-    facet: u8,
+    facet: Facet,
 ) {
     if let Some(entity) = spawn_item(state, graphic, hue, 1, false, position, facet) {
         state.registry.insert(entity, Container { gump });

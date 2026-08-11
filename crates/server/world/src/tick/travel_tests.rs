@@ -38,7 +38,7 @@ fn a_traveller_leaves_the_old_facets_sector_grid() {
     // handing this entity back to every `nearby` query on it forever.
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet(&mut world, 1);
+    add_empty_facet(&mut world, Facet(1));
     let connection = enter(&mut world, now);
     let traveller = world.state.players[&connection];
 
@@ -72,7 +72,7 @@ fn a_watcher_on_the_old_facet_is_told_to_forget_the_traveller() {
     // holding the traveller would hold it until one of them logged out.
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet(&mut world, 1);
+    add_empty_facet(&mut world, Facet(1));
     let watcher_connection = enter(&mut world, now);
     let traveller_connection = enter_as(&mut world, ConnectionId::from_raw(2), now);
     let traveller = world.state.players[&traveller_connection];
@@ -104,7 +104,7 @@ fn a_traveller_forgets_everything_on_the_old_facets_screen() {
     // a world it has left, and their serials go on meaning something.
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet(&mut world, 1);
+    add_empty_facet(&mut world, Facet(1));
     let traveller_connection = enter(&mut world, now);
     let stayer_connection = enter_as(&mut world, ConnectionId::from_raw(2), now);
     let traveller = world.state.players[&traveller_connection];
@@ -136,7 +136,7 @@ fn a_facet_change_sends_the_new_facets_map_dimensions() {
     // the wrong place.
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet_sized(&mut world, 1, ILSHENAR.0, ILSHENAR.1);
+    add_empty_facet_sized(&mut world, Facet(1), ILSHENAR.0, ILSHENAR.1);
     let connection = enter(&mut world, now);
     let traveller = world.state.players[&connection];
     let _ = packets_for(&mut world, connection);
@@ -179,9 +179,9 @@ fn login_sends_the_dimensions_of_the_facet_the_character_is_on() {
     // facet, so a character saved in Ilshenar woke to a map three times too big.
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet_sized(&mut world, 1, ILSHENAR.0, ILSHENAR.1);
+    add_empty_facet_sized(&mut world, Facet(1), ILSHENAR.0, ILSHENAR.1);
     let connection = ConnectionId::from_raw(77);
-    enter_on_facet(&mut world, connection, 1, now);
+    enter_on_facet(&mut world, connection, Facet(1), now);
 
     let start = packets_for(&mut world, connection)
         .into_iter()
@@ -204,7 +204,7 @@ fn login_sends_the_dimensions_of_the_facet_the_character_is_on() {
 fn a_pre_wide_map_client_is_told_felucca_is_the_old_width() {
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet_sized(&mut world, 0, 7168, 4096);
+    add_empty_facet_sized(&mut world, Facet(0), 7168, 4096);
     let connection = ConnectionId::from_raw(78);
     world.queue(Command::Enter(Entering {
         connection,
@@ -239,7 +239,7 @@ fn a_pre_wide_map_client_is_told_felucca_is_the_old_width() {
 fn a_pre_wide_map_client_moving_onto_trammel_is_told_the_old_width() {
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet_sized(&mut world, 1, 7168, 4096);
+    add_empty_facet_sized(&mut world, Facet(1), 7168, 4096);
     let connection = ConnectionId::from_raw(79);
     world.queue(Command::Enter(Entering {
         connection,
@@ -280,7 +280,7 @@ fn the_same_region_id_on_two_facets_is_still_a_crossing() {
     // `RegionChanged`, no music, and no guards.
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet(&mut world, 1);
+    add_empty_facet(&mut world, Facet(1));
     let named = |name: &str| Region {
         id: 0,
         name: name.to_owned(),
@@ -292,7 +292,7 @@ fn the_same_region_id_on_two_facets_is_still_a_crossing() {
     };
     for (facet, name) in [(0, "Britain"), (1, "Compassion")] {
         world.queue(Command::RegisterRegions {
-            facet,
+            facet: Facet(facet),
             regions: vec![named(name)],
         });
     }
@@ -341,7 +341,7 @@ fn a_facet_change_resets_the_walk_sequence() {
     // and the two ends spend the rest of the session out of phase.
     let now = Instant::now();
     let mut world = world();
-    add_empty_facet(&mut world, 1);
+    add_empty_facet(&mut world, Facet(1));
     let connection = enter(&mut world, now);
     let traveller = world.state.players[&connection];
 
@@ -411,7 +411,7 @@ fn caster_with_rune(now: Instant) -> (World, ConnectionId, EntityId, Serial) {
         cast_style: openshard_state::CastStyle::Walk,
         ..Default::default()
     });
-    add_empty_facet(&mut world, 1);
+    add_empty_facet(&mut world, Facet(1));
     let connection = enter(&mut world, now);
     let caster = world.state.players[&connection];
     let serial = serial_of(&world, connection);
@@ -572,7 +572,7 @@ fn a_no_recall_region_bars_arriving_and_marking_but_not_leaving() {
     let (mut world, connection, caster, rune_serial) = caster_with_rune(now);
     let inside = Point::new(START.0 + 3, START.1 + 3, 0);
     world.queue(Command::RegisterRegions {
-        facet: 0,
+        facet: Facet(0),
         regions: vec![Region {
             id: 0,
             name: "Wrong".to_owned(),

@@ -12,6 +12,7 @@
 //! so a replay repopulates identically.
 
 use openshard_protocol::wire::{Graphic, Hue};
+use openshard_protocol::world::Facet;
 
 /// One creature a spawn region may put down. The fields a spawn needs beyond the
 /// where — mirrors [`crate::tick::Command::SpawnMobile`] minus the position, which
@@ -65,7 +66,7 @@ pub struct SpawnArea {
     /// Height in tiles.
     pub height: u16,
     /// Which facet.
-    pub facet: u8,
+    pub facet: Facet,
 }
 
 /// A region the tick keeps populated.
@@ -119,7 +120,7 @@ mod tests {
             y: 2,
             width: 3,
             height: 3,
-            facet: 0,
+            facet: Facet(0),
         };
         let spawner = Spawner::new(1, area, Vec::new(), 5, 40);
         assert_eq!(spawner.next_spawn, 0, "ready from tick zero");

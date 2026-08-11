@@ -21,6 +21,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
 use crate::error::{DecodeError, WrongPacket};
@@ -1144,11 +1146,12 @@ pub struct MapChange {
 /// they used to be two (`world::MapId` here, `state::components::Facet`
 /// separately), converted at every seam; see "Two types for one facet byte" in
 /// `docs/protocol_newtypes.md`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default, Deserialize, Serialize)]
+#[serde(transparent)]
 pub struct Facet(pub u8);
 
-impl std::fmt::Display for Facet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Facet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }

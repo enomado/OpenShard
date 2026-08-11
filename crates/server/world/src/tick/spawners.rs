@@ -49,7 +49,7 @@ impl World {
                     0,
                 );
                 let reach = lod_radius + u32::from(area.width.max(area.height));
-                if !self.state.any_player_near(centre, reach, Facet(area.facet)) {
+                if !self.state.any_player_near(centre, reach, area.facet) {
                     continue;
                 }
             }
@@ -69,7 +69,7 @@ impl World {
             // where there is no map.
             let z = self
                 .state
-                .facet_state(Facet(facet))
+                .facet_state(facet)
                 .terrain
                 .as_ref()
                 .and_then(|terrain| terrain.ground_z(Tile::new(x, y)))
@@ -157,7 +157,7 @@ impl World {
             .iter()
             .map(|s| openshard_persistence::SpawnerRecord {
                 id: s.id,
-                facet: s.area.facet,
+                facet: s.area.facet.0,
                 x: s.area.x,
                 y: s.area.y,
                 width: s.area.width,
@@ -204,7 +204,7 @@ impl World {
                 y: record.y,
                 width: record.width,
                 height: record.height,
-                facet: record.facet,
+                facet: Facet(record.facet),
             };
             let creatures = record
                 .creatures

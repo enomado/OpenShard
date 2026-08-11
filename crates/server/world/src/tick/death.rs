@@ -122,7 +122,7 @@ impl World {
                 killer,
                 ..Corpse::default()
             };
-            if let Some(corpse) = self.spawn_corpse(at, facet.0, body, name, story) {
+            if let Some(corpse) = self.spawn_corpse(at, facet, body, name, story) {
                 // A ghost keeps its backpack and bank box — worn containers, not
                 // loot — and its mount saddle, which the `Riding` link still points
                 // at (sweeping it into the corpse would strand the ridden creature
@@ -359,7 +359,7 @@ impl World {
             ..Corpse::default()
         };
 
-        let Some(corpse) = self.spawn_corpse(at, facet.0, body, name, story) else {
+        let Some(corpse) = self.spawn_corpse(at, facet, body, name, story) else {
             self.despawn_creature(entity, serial);
             return;
         };
@@ -391,7 +391,7 @@ impl World {
     fn spawn_corpse(
         &mut self,
         at: Point,
-        facet: u8,
+        facet: Facet,
         body: Option<Body>,
         name: String,
         story: Corpse,
@@ -410,7 +410,7 @@ impl World {
             self.state.registry.insert(entity, Amount(body.id.0));
         }
         self.state.registry.insert(entity, Position(at));
-        self.state.registry.insert(entity, Facet(facet));
+        self.state.registry.insert(entity, facet);
         self.state
             .registry
             .insert(entity, Container { gump: CORPSE_GUMP });
@@ -427,10 +427,7 @@ impl World {
                 at_tick: self.state.ticks + CORPSE_DECAY_TICKS,
             },
         );
-        self.state
-            .facet_state_mut(Facet(facet))
-            .sectors
-            .insert(entity, at);
+        self.state.facet_state_mut(facet).sectors.insert(entity, at);
         self.state.reveal(entity);
         Some(serial)
     }

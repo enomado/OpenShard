@@ -365,17 +365,17 @@ impl World {
     /// Give the default facet a map.
     pub fn with_terrain(self, terrain: MapTerrain) -> Self {
         let facet = self.state.default_facet;
-        self.with_facet(facet.0, terrain)
+        self.with_facet(facet, terrain)
     }
 
     /// Load `terrain` as facet `facet`, its interest grid sized to the map.
-    pub fn with_facet(mut self, facet: u8, terrain: MapTerrain) -> Self {
+    pub fn with_facet(mut self, facet: Facet, terrain: MapTerrain) -> Self {
         let (width, height) = (terrain.map().width(), terrain.map().height());
         let sectors = Sectors::new(width, height);
         // Boxed as `dyn Terrain`: the state crate holds the abstraction, and the
         // world supplies the concrete map here.
         self.state.facets.insert(
-            Facet(facet),
+            facet,
             FacetState {
                 terrain: Some(Box::new(terrain) as Box<dyn Terrain + Send + Sync>),
                 width,

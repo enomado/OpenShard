@@ -33,7 +33,10 @@ fn town(name: &str, flags: RegionFlags) -> Region {
 
 /// Register `regions` on the default facet, as the pack's op would.
 fn register(world: &mut World, regions: Vec<Region>, now: Instant) {
-    world.queue(Command::RegisterRegions { facet: 0, regions });
+    world.queue(Command::RegisterRegions {
+        facet: Facet(0),
+        regions,
+    });
     world.tick(now);
 }
 

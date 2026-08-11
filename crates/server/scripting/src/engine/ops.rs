@@ -44,7 +44,7 @@ struct SpawnSpec {
     #[serde(default)]
     z: i8,
     #[serde(default)]
-    facet: u8,
+    facet: Facet,
 }
 
 /// The serde default for a spec's `aggression`: aggressive, the old behaviour.
@@ -92,7 +92,7 @@ struct ContainerSpec {
     #[serde(default)]
     z: i8,
     #[serde(default)]
-    facet: u8,
+    facet: Facet,
 }
 
 /// Put a container on the ground.
@@ -142,7 +142,7 @@ struct MobileSpec {
     #[serde(default)]
     z: i8,
     #[serde(default)]
-    facet: u8,
+    facet: Facet,
     #[serde(default)]
     name: String,
     /// The trade, ServUO-style ("the blacksmith"). The key its dress, its name and
@@ -731,7 +731,7 @@ struct SpawnerSpec {
     width: u16,
     height: u16,
     #[serde(default)]
-    facet: u8,
+    facet: Facet,
     max_count: u16,
     respawn_delay: u64,
     creatures: Vec<CreatureSpec>,
@@ -828,7 +828,7 @@ struct RegionSpec {
 #[derive(serde::Deserialize)]
 struct RegionsSpec {
     #[serde(default)]
-    facet: u8,
+    facet: Facet,
     regions: Vec<RegionSpec>,
 }
 
@@ -867,7 +867,7 @@ fn op_clear_regions(state: &mut OpState, facet: u8) {
     state
         .borrow_mut::<Host>()
         .outbox
-        .push(Command::ClearRegions { facet });
+        .push(Command::ClearRegions { facet: Facet(facet) });
 }
 
 /// One placed decoration in a [`DecorSpec`].
@@ -921,7 +921,7 @@ struct DecorContainerSpec {
 #[derive(serde::Deserialize)]
 struct DecorSpec {
     #[serde(default)]
-    facet: u8,
+    facet: Facet,
     #[serde(default)]
     statics: Vec<DecorStaticSpec>,
     #[serde(default)]
@@ -991,7 +991,7 @@ fn op_clear_decorations(state: &mut OpState) {
 #[derive(serde::Deserialize)]
 struct DoorRegionSpec {
     #[serde(default)]
-    facet: u8,
+    facet: Facet,
     x: u16,
     y: u16,
     width: u16,

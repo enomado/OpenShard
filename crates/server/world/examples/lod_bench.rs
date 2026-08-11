@@ -109,7 +109,7 @@ fn populate(gameplay: Gameplay, creatures: u32, players: u32) -> (World, u32) {
                 ranged_kind: 0,
                 wander: true,
                 position: Point::new(x, y, 0),
-                facet: 0,
+                facet: Facet(0),
                 name: None,
                 title: None,
                 shoe: 0,

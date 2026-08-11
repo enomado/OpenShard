@@ -39,17 +39,17 @@ described the starting position is a count nobody can act on.
 
 | crate | files | occurrences | status |
 |---|---|---|---|
-| `world` | `tick.rs`, `tick/{command,gates,decor,regions,travel,fields,death,tests}.rs`, `gm.rs`, `spawner.rs`, `events.rs` | ~38 | `travel`, `gates`, `events` done; `regions` all but its two `Command` handlers; the rest open |
-| `scripting` | `lib.rs`, `engine/ops.rs` | ~16 | open; F4 answered, stage not started |
+| `world` | `tick.rs`, `tick/{command,gates,decor,regions,travel,fields,death,tests}.rs`, `gm.rs`, `spawner.rs`, `events.rs` | ~38 | done |
+| `scripting` | `lib.rs`, `engine/ops.rs` | ~16 | done — `op_clear_regions`'s one parameter allowlisted, F4 |
 | `persistence` | `record.rs`, `sqlite.rs`, `pg.rs` | ~10 | **not in scope — see Decisions** |
 | `ai` | `lib.rs` | 7 | done (pilot) |
 | `magic` | `travel.rs` | 5 | done |
-| `npc` | `guards.rs`, `live.rs`, `spawn.rs` | 5 | `guards`/`live` done; `spawn.rs`'s `SpawnSpec` blocked on `Command` |
-| `items` | `spawn.rs` | 4 | half done; `spawn_item`/`spawn_container` blocked on `Command` |
+| `npc` | `guards.rs`, `live.rs`, `spawn.rs` | 5 | done |
+| `items` | `spawn.rs` | 4 | done |
 | `state` | `harvest.rs` | 2 | done — but the crate's real stage was four `components.rs` fields the survey missed, also done |
 | `skills` | `handlers/harvest.rs` | 1 | done |
 | `uofiles` | `map.rs` | 1 | **not in scope — see Decisions** |
-| examples (`render`, `uofiles`) | | 2 | follow their crate's fix |
+| examples (`render`, `uofiles`) | | 2 | follow their crate's fix, allowlisted |
 
 Every occurrence outside the two carve-outs below is the same shape checked
 by hand while scoping this plan: `ai::lib.rs`'s `foe_in_sight`, `probe`,
@@ -419,22 +419,76 @@ sites are `world`'s own stage, not touched here, same as every other bare
 `facet: u8` in those files. Done before `world`'s stage starts, per the
 backlog note's own reasoning: that stage's log lines get written once now.
 
+## `scripting` and the rest of `world` — done, together, as predicted
+
+Landed in one stage, because the dependency the previous section named held
+exactly as expected: `scripting`'s `Command` fields and `world::tick/
+command.rs`'s own `Command` enum feed each other through the `into_world`
+bridge (`server/src/scripting.rs`), so converting one side without the other
+would only have moved the `.0`, not removed it.
+
+- **`Facet` gained `#[serde(transparent)]` `Deserialize`/`Serialize`** — the
+  F4 answer applied. `scripting::lib.rs`'s `Command` enum (8 fields),
+  `engine/ops.rs`'s seven `*Spec` structs (`SpawnSpec`, `ContainerSpec`,
+  `MobileSpec`, `SpawnerSpec`, `RegionsSpec`, `DecorSpec`, `DoorRegionSpec`)
+  and `server/src/scripting.rs`'s `into_world` bridge all took `Facet`
+  directly; the `spec.facet` forward sites collapsed to plain field-shorthand,
+  no `Facet(spec.facet)` wrap left anywhere. `op_clear_regions` stays the one
+  bare `facet: u8` — the F4 exception, wrapped at its own push site
+  (`Facet(facet)`) rather than upstream.
+- **`world::tick/command.rs`'s `Command` enum**: all seven remaining variants
+  (`SpawnItem`, `SpawnContainer`, `SpawnMobile`, `RegisterSpawner`,
+  `RegisterRegions`, `ClearRegions`, `Decorate`, `GenerateDoors` — eight
+  counting `GenerateDoors` separately) → `Facet`. `tick.rs`'s dispatch `match`
+  needed no changes at all beyond the type flowing through: every arm already
+  destructured `facet` by shorthand and passed it straight to a handler.
+- **Every handler `Command`'s fields fed, unblocked in the same commit**:
+  `World::register_regions`, `clear_regions` (its explanatory "bare on
+  purpose" comment removed — it is no longer true), `decorate`,
+  `generate_doors`, `place_decoration`, `spawn_field_tile`, `spawn_corpse`,
+  `with_facet` (public API, `server/src/boot.rs`'s one call site wraps the
+  config-read `u8` at the boundary) → `Facet`. `items::spawn_item` and
+  `spawn_container` (`npc`/`items`'s SpawnSpec.facet` was blocked on exactly
+  these) → `Facet`, unblocking `npc::SpawnSpec.facet` and
+  `items::spawn.rs`'s remaining two signatures the same session.
+  `spawner::SpawnArea.facet` → `Facet` too, found the same way `state`'s four
+  component fields were: not in the original survey because it is a struct
+  field a signature grep does not see. `SpawnerRecord.facet` (the disk
+  record) stays `u8`, per F2 — `tick/spawners.rs`'s save/restore pair wraps
+  and unwraps at exactly that seam.
+- **Every caller updated**: `gm.rs`'s six admin-command call sites,
+  `skills::handlers::harvest.rs`'s one, `npc::guards.rs`'s `make_guard`
+  (dropped its `facet: facet.0`), and three `pub(super)` test helpers in
+  `world/tick/tests.rs` (`add_empty_facet`, `add_empty_facet_sized`,
+  `enter_on_facet`) whose ~20 call sites across `tests.rs`/`travel_tests.rs`/
+  `region_tests.rs` all took the wrap at the literal.
+
+Counts: `scripting/lib.rs` 8 → 0, `engine/ops.rs` 8 → 1 (`op_clear_regions`,
+allowlisted), `world/tick/command.rs` 7 → 0, `spawner.rs` 1 → 0 (plus
+`SpawnerRecord.facet` in `persistence`, unchanged, F2), `tick/{decor,fields,
+death}.rs` and `tick.rs::with_facet` all 0 bare signatures remaining.
+
+## The gate — added
+
+`crates/common/protocol/tests/facet_bare_fields.rs`, per F6 and "The gate"
+above: a fixed allowlist of `(file, occurrence count, reason)`, checked
+against a workspace-wide text walk. Seven files remain on it, all F2/F4
+carve-outs or their "follows its crate's fix" examples — `persistence::
+{record,sqlite,pg}.rs` (the disk seam), `uofiles::map.rs` and its
+`examples/tile_probe.rs` (the raw-index/filename argument), `client/render/
+examples/shard/mod.rs` (a standalone diagnostic tool with no `protocol`
+dependency, reading a SQL column the same way `record.rs` does), and
+`scripting::engine/ops.rs`'s one `op_clear_regions` (F4). Every other
+`facet: u8` in the workspace is gone. The sweep this plan opened is closed;
+future stages are whatever the allowlist's reasons stop being true for.
+
 ## What's next
 
-`world` is the remainder and is still the big one: `tick.rs`, `gm.rs`,
-`spawner.rs`, `tick/{command,decor,death,fields}.rs` and the two region
-handlers above. Its centre is `tick/command.rs`'s `Command` enum — seven
-variants carrying `facet: u8`, each read by `tick.rs`'s own dispatch `match`
-and each written by a `scripting::engine::ops.rs` `op_*` function. F4 is now
-answered (above), so the stage is unblocked on that question — but `Command`'s
-fields and `scripting`'s `*Spec`/`Event` fields feed each other (an `op_*`
-function builds a `Command` from a deserialized spec), so converting one side
-without the other just moves the `.0` rather than removing it; the two stages
-should land together or `world` immediately after `scripting`, not
-independently. Converting `Command`'s fields is what unblocks, in one move,
-`npc`/`items`/`scripting`'s `SpawnSpec.facet`, `items::spawn_item`,
-`items::spawn_container` and the two region handlers: everything this sweep
-has deliberately left bare is waiting on that one enum. `scripting` closes the
-sweep; the gate (above) lands once both are done. Amendment 3 (pilot) remains
-a standing reminder for every stage: grep a function's callers workspace-wide,
-not just within the crate F3 assigned it to.
+Nothing scheduled. The workspace-wide sweep is done: every `facet: u8` this
+plan's survey found, and every one later stages turned up that the survey
+missed (`state::components.rs`'s four fields, `magic::travel.rs`,
+`spawner::SpawnArea`, three test helpers), is either `Facet` or on the gate's
+allowlist for a reason recorded there. Should a new bare `facet: u8` appear —
+a new packet field, a new `Command` variant, a new spec struct — the gate
+catches it on the next `cargo test`; F1–F6 above are the decisions that tell
+whoever fixes it where it belongs.
