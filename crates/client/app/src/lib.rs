@@ -164,6 +164,7 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::anim::{Anim, is_ghost};
 use openshard_uofiles::animdata::AnimData;
 use openshard_uofiles::art::Art;
+use openshard_uofiles::cliloc::Cliloc;
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::font::AsciiFonts;
 use openshard_uofiles::gumpart::Gumps;
@@ -543,6 +544,18 @@ pub fn run<D: Dial + Send + 'static>(
             None
         }
     };
+    // The dialog text nothing sent — a `Cliloc.enu`-numbered line, not a wire
+    // one. Absent the same way `gumps` is: a shard's quest and craft windows
+    // (and this one's `Element::Localized` lines generally) draw those rows
+    // blank rather than the client refusing to start over a table that is
+    // only ever asked for, never required.
+    let cliloc = match Cliloc::load(dir.join("Cliloc.enu")) {
+        Ok(cliloc) => Some(cliloc),
+        Err(error) => {
+            eprintln!("opening Cliloc.enu: {error} — dialogs will draw no cliloc text");
+            None
+        }
+    };
     // Read and parsed once, only when asked for: a shard that never sets
     // `ttf_font` has no reason to hold a second face in memory beside
     // `fonts.mul`'s, and one that does is naming a file on this operator's
@@ -677,6 +690,7 @@ pub fn run<D: Dial + Send + 'static>(
         font_atlas,
         gumps,
         gump_atlas: GumpAtlas::empty(),
+        cliloc,
         ttf_font,
         anim,
         equip_conv,
@@ -691,8 +705,8 @@ pub fn run<D: Dial + Send + 'static>(
         // nobody is walking stands.
         player: Mobile {
             at: start,
-            body: 400,
-            group: openshard_uofiles::anim::BodyKind::of(400).standing(),
+            body: Graphic(400),
+            group: openshard_uofiles::anim::BodyKind::of(Graphic(400)).standing(),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
@@ -909,7 +923,7 @@ struct Wanted {
     /// server has dropped on top of it.
     statics: BTreeSet<Graphic>,
     /// Body, group and stored direction for everyone on screen.
-    animations: BTreeSet<(u16, u8, u8)>,
+    animations: BTreeSet<(Graphic, u8, u8)>,
 }
 
 impl Atlases {
@@ -1102,6 +1116,19 @@ struct Screen {
     /// The pass that washes that silhouette, and the ground under it, after the
     /// blit — see `openshard_client_render::select`.
     select: Select,
+    /// The held selection's own ring silhouette — a mobile or an item a click
+    /// named, drawn in [`Ring::SELECTED`] rather than [`Ring::SOFT`].
+    ///
+    /// Not [`Screen::outline_mask`]: that one is overwritten every frame by
+    /// whatever the cursor is over *this* frame, hover or nothing, so a
+    /// selection sharing it would vanish the moment the cursor left the thing
+    /// — which is the bug this field exists to not have. Not
+    /// [`Screen::select_mask`] either — that one drives the static's wash, and
+    /// a mobile or item has no wash of its own to conflict with, but the two
+    /// masks are kept apart for the same reason `select_mask` is kept apart
+    /// from `outline_mask`: one texture, one question. Recreated with
+    /// [`Screen::world`], like its neighbours.
+    held_mask: wgpu::Texture,
     /// The pass that draws the lighting's occlusion grid as solids over the
     /// finished picture — `openshard_client_render::solids`, and step 23.0.
     ///
@@ -1400,6 +1427,23 @@ impl SelectedIdentity {
     fn as_static(self) -> Option<PickedStatic> {
         match self {
             SelectedIdentity::Static(picked) => Some(picked),
+            _ => None,
+        }
+    }
+
+    /// The mobile half alone, for the held-selection ring — see
+    /// [`Screen::held_mask`].
+    fn as_mobile(self) -> Option<Who> {
+        match self {
+            SelectedIdentity::Mobile(who) => Some(who),
+            _ => None,
+        }
+    }
+
+    /// The item half alone, for the held-selection ring.
+    fn as_item(self) -> Option<Serial> {
+        match self {
+            SelectedIdentity::Item(serial) => Some(serial),
             _ => None,
         }
     }
@@ -2832,7 +2876,7 @@ impl App {
         self.player = self.crowd.see(
             None,
             Point::new(x, y, ground),
-            Graphic(self.player.body),
+            self.player.body,
             facing,
             self.player.hue,
             // At peace, and not a placeholder for an unknown: this is the
@@ -3770,9 +3814,20 @@ impl App {
         match subject {
             WindowSubject::Container(serial) => {
                 view.container_closed(serial);
+                // The shard thread's own `WorldView` — not this copy — is
+                // what every future snapshot is cloned whole from. Left
+                // untold, the next packet that changes anything at all
+                // resends this window's stale, still-open entry and undoes
+                // the close the moment it lands. See `link::Command::CloseWindow`.
+                if let Some(link) = self.link.as_ref() {
+                    link.close_window(link::CloseTarget::Container(serial));
+                }
             }
             WindowSubject::Paperdoll(serial) => {
                 view.paperdoll_closed(serial);
+                if let Some(link) = self.link.as_ref() {
+                    link.close_window(link::CloseTarget::Paperdoll(serial));
+                }
             }
             // Nothing in the view to tell: the skills stay where they are, the
             // way a paperdoll's equipment does. What closing takes away is the
@@ -3818,6 +3873,11 @@ impl App {
         let gump_id = openshard_protocol::gump::GumpId(reply.gump_id.0);
         if let Some(link) = self.link.as_ref() {
             link.answer_gump(reply);
+            // The reply itself leaves on the wire, but nothing about it tells
+            // the shard thread's own `WorldView` — which every future
+            // snapshot is cloned whole from — that this window is done; see
+            // `link::Command::CloseWindow`.
+            link.close_window(link::CloseTarget::Gump(gump_id));
         }
         if let Some(view) = self.view.as_mut() {
             view.gump_closed(gump_id);
@@ -3925,7 +3985,7 @@ impl App {
             // that strolled to the start of a scenario would be measured on the
             // way there, and an eye that eased across a facet is a second
             // motion on top of the one being looked at.
-            let (body, hue) = (Graphic(self.player.body), self.player.hue);
+            let (body, hue) = (self.player.body, self.player.hue);
             let equipment = std::mem::take(&mut self.player.equipment);
             let war = self.view.as_ref().is_some_and(|view| view.player.war);
             self.player = self.crowd.snap(
@@ -3957,7 +4017,7 @@ impl App {
         let moves = replay.advance(elapsed);
         let finished = replay.finished();
         for step in moves {
-            let (body, hue) = (Graphic(self.player.body), self.player.hue);
+            let (body, hue) = (self.player.body, self.player.hue);
             let equipment = std::mem::take(&mut self.player.equipment);
             // The stance the session is actually in: a replay walks this body
             // through a recorded route, and what it is wearing or holding is
@@ -4190,7 +4250,7 @@ impl App {
                     mobile.body,
                     mobile.facing,
                     mobile.hue,
-                    mobile.war() && !is_ghost(mobile.body.0),
+                    mobile.war() && !is_ghost(mobile.body),
                 );
                 drawn.equipment = crowd::worn(&mobile.equipment, &self.tiledata);
                 (who, drawn)
@@ -4484,7 +4544,7 @@ impl App {
                                 Some(serial) => Some(serial),
                                 None => self.view.as_ref().map(|view| view.player.serial),
                             },
-                            body: Graphic(mobile.body),
+                            body: mobile.body,
                             hue: mobile.hue,
                             at: mobile.at,
                             order,
@@ -4552,7 +4612,9 @@ impl App {
     /// being read live from the shell rather than from `self.desk`, which is
     /// only ever the value at load or at exit.
     fn chat_style(&self) -> desk::Chat {
-        self.shell.as_ref().map_or_else(desk::Chat::default, shell::Shell::chat)
+        self.shell
+            .as_ref()
+            .map_or_else(desk::Chat::default, shell::Shell::chat)
     }
 
     /// What `common/movement` makes of the ground on screen — the HUD's terrain
@@ -5289,6 +5351,13 @@ impl App {
             self.control.camera().render_width(),
             self.control.camera().render_height(),
         );
+        // The held selection's ring silhouette, kept apart from both of the
+        // above for `Screen::held_mask`'s own reason.
+        let held_mask = outline::mask_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
         let gbuffer = Gbuffer::new(
             &device,
             self.control.camera().render_width(),
@@ -5351,6 +5420,7 @@ impl App {
             outline,
             select_mask,
             select,
+            held_mask,
             solids,
             gump_pass,
             gump_text_pass,
@@ -5664,6 +5734,35 @@ impl App {
         let lit_mobile = on_mobile.filter(|_| self.highlight != shell::HighlightTarget::Tiles);
         let lit_item = on_item.filter(|_| self.highlight != shell::HighlightTarget::Tiles);
 
+        // What a click is *holding*, turned from identity back into this
+        // frame's index — the reverse of `self.on_mobile`/`self.on_item` just
+        // above. This is the held ring's own pick, asked once here rather than
+        // at every reader, for the reason `lit_item`'s doc gives for asking
+        // `on_item` once: two lookups are two chances to disagree about which
+        // creature a `Who` still names.
+        //
+        // Valid only while the crowd is actually drawn: `drawn` below is
+        // emptied whole when `self.drawing.mobiles` is off, and an index into
+        // `drawn_mobiles` would then point at a `Vec` the held ring never
+        // sees.
+        let held_mobile = self
+            .selected
+            .and_then(SelectedIdentity::as_mobile)
+            .filter(|_| self.drawing.mobiles)
+            .and_then(|who| {
+                drawn_mobiles
+                    .as_ref()
+                    .and_then(|drawn| drawn.iter().position(|(candidate, _)| *candidate == who))
+            });
+        let held_item = self
+            .selected
+            .and_then(SelectedIdentity::as_item)
+            .and_then(|serial| {
+                self.item_serials
+                    .iter()
+                    .position(|candidate| *candidate == serial)
+            });
+
         // # Step three: present. Nothing below this line writes the world.
         //
         // The UI first, because it is what the surface is composited from
@@ -5911,6 +6010,7 @@ impl App {
             // one size.
             window.outline_mask = outline::mask_texture(&window.device, render_width, render_height);
             window.select_mask = outline::mask_texture(&window.device, render_width, render_height);
+            window.held_mask = outline::mask_texture(&window.device, render_width, render_height);
             // And the G-buffer, whose planes are attachments of those same
             // passes and are read texel for texel against that image.
             window.gbuffer = Gbuffer::new(&window.device, render_width, render_height);
@@ -5960,6 +6060,15 @@ impl App {
         // handed an empty list.
         let hued = self.highlight_style.hues().then_some(lit_item).flatten();
         let ringed = self.highlight_style.rings().then_some(lit_item).flatten();
+
+        // Where the player's own picture will land, asked before the statics
+        // are collected rather than after: `frame::assemble` places a tree's
+        // canopy against this rectangle, so a leaf that would be drawn over
+        // the body is cut instead of hung over it — see
+        // `cutaway::hides_foliage_over`. `None` only for the one frame the
+        // atlas has not yet grown a frame for this body and group, same as
+        // `mobiles::head_anchor`'s own gap.
+        let player_rect = mobiles::screen_rect(&self.player, &camera, &window.atlases.mobiles);
 
         // **One assembly, and the client is a caller of it like any other** —
         // `docs/parity.md`, decision D1. This sequence used to be written out by
@@ -6029,6 +6138,7 @@ impl App {
             // client is, not for the offline placeholder — which has no view
             // and so is never a ghost.
             dead: self.view.as_ref().is_some_and(|view| view.player.dead),
+            player_rect,
         };
         // **What the frame was asked for**, kept beside the pictures the dump
         // below writes. A picture on its own cannot be reproduced: two frames
@@ -6071,6 +6181,20 @@ impl App {
             &cutaway,
             ringed,
         );
+        // The held item's own silhouette, through the same function and for
+        // the same reason — a second call rather than folding `held_item` into
+        // `ringed` above, because the two are drawn with different [`Ring`]s
+        // into different masks: this is what a click named, not what the
+        // cursor is over.
+        let held_item_outline = items::outlined(
+            &self.items,
+            &camera,
+            &self.tiledata,
+            &self.tile_animations,
+            &window.atlases.statics,
+            &cutaway,
+            held_item,
+        );
         // A corner static's two faces get their own id past this point — see
         // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
         let static_instances = split_corners(static_quads);
@@ -6087,6 +6211,16 @@ impl App {
             &cutaway,
             &self.equip_conv,
             mobile_ringed,
+        );
+        // The held mobile's own silhouette — see `held_item_outline` above for
+        // why this is a second call and not `mobile_ringed` itself.
+        let held_mobile_outline = mobiles::outlined(
+            &drawn,
+            &camera,
+            &window.atlases.mobiles,
+            &cutaway,
+            &self.equip_conv,
+            held_mobile,
         );
         let mobile_quads = mobiles::collect(
             &drawn,
@@ -6306,6 +6440,40 @@ impl App {
             );
             profile::end(window.gpu.as_ref(), &mut encoder, timed);
         }
+        // And the held mobile or item's own ring silhouette, into
+        // `Screen::held_mask` — the same two-pass shape as the hover ring
+        // above (items first, unconditionally, so an empty frame still clears
+        // the mask; the mobile pass gated because it clears the mask too).
+        // Not folded into the hover mask above: a click's ring must survive
+        // the cursor moving off the thing, and that mask is overwritten fresh
+        // every frame from whatever the cursor is over *this* frame alone.
+        let held_view = window
+            .held_mask
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let held_item_rings: Vec<&[SpriteQuad]> =
+            held_item_outline.iter().map(std::slice::from_ref).collect();
+        let timed = profile::begin(window.gpu.as_ref(), "held mask: items", &mut encoder);
+        window.statics.render_mask(
+            &window.device,
+            &window.queue,
+            &mut encoder,
+            target,
+            &held_view,
+            &held_item_rings,
+        );
+        profile::end(window.gpu.as_ref(), &mut encoder, timed);
+        if !held_mobile_outline.is_empty() {
+            let timed = profile::begin(window.gpu.as_ref(), "held mask: mobiles", &mut encoder);
+            window.mobile_pass.render_mask(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                target,
+                &held_view,
+                &[&held_mobile_outline],
+            );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
+        }
         // Always `text_pass`, `fonts.mul`'s own: `text_quads` is empty
         // whenever `App::ttf_font` is set, since a TrueType face's speech
         // draws after the blit instead — see `screen_speech`'s own comment
@@ -6459,6 +6627,28 @@ impl App {
         // creature draws its mask into a texture no pass ever reads and the
         // highlight is simply absent — which is what an item-only test of this
         // condition looked like from the outside.
+        // The held ring, drawn first of the two so the live hover ring stays
+        // on top and readable when the cursor is over the very thing that is
+        // selected — the same ordering the wash and the hover ring keep,
+        // and for the same reason. `Ring::SELECTED`'s own pipeline call: one
+        // [`Ring`] per `Outline::render`, so the held ring's colour cannot be
+        // the hover ring's even for one frame.
+        if !held_item_outline.is_empty() || !held_mobile_outline.is_empty() {
+            let timed = profile::begin(window.gpu.as_ref(), "held ring", &mut encoder);
+            window.outline.render(
+                &window.device,
+                &window.queue,
+                &mut encoder,
+                outline::Frame {
+                    target: &view,
+                    mask: &held_view,
+                    mask_size: (render_width, render_height),
+                    rect: viewport,
+                },
+                Ring::SELECTED.for_zoom(camera.zoom()),
+            );
+            profile::end(window.gpu.as_ref(), &mut encoder, timed);
+        }
         if !outline_quads.is_empty() || !mobile_outline.is_empty() {
             let timed = profile::begin(window.gpu.as_ref(), "outline ring", &mut encoder);
             window.outline.render(
@@ -6622,11 +6812,11 @@ impl App {
                             // closed.
                             let own = view.player.serial == serial;
                             let body = match own {
-                                true => Some((view.player.body.0, view.player.hue)),
+                                true => Some((view.player.body, view.player.hue)),
                                 // A paperdoll of a mobile this client has never
                                 // been told the body of: the frame is drawn and
                                 // the doll is not, until the `0x77` arrives.
-                                false => view.mobiles.get(&serial).map(|m| (m.body.0, m.hue)),
+                                false => view.mobiles.get(&serial).map(|m| (m.body, m.hue)),
                             };
                             // The `0x88` carries no equipment — see
                             // `WorldView::paperdolls` — so it is read off the
@@ -6768,7 +6958,12 @@ impl App {
                             .as_ref()
                             .and_then(|view| view.gumps.iter().find(|gump| gump.gump_id == *gump_id))
                         {
-                            labels.extend(self.dialogs.lines(gump, laid_out, &self.font_atlas));
+                            labels.extend(self.dialogs.lines(
+                                gump,
+                                laid_out,
+                                &self.font_atlas,
+                                self.cliloc.as_ref(),
+                            ));
                         }
                     }
                     (WindowSubject::Paperdoll(serial), Drawn::Paperdoll(_)) => {
@@ -7007,7 +7202,11 @@ impl App {
                         clip: None,
                     });
                 }
-                text_quads.extend(scaled_gump_quads(&labels, &self.font_atlas, chat_style.scale.raw()));
+                text_quads.extend(scaled_gump_quads(
+                    &labels,
+                    &self.font_atlas,
+                    chat_style.scale.raw(),
+                ));
             }
             // The one call, with the windows' lines already in front of the
             // chat's: painter's order inside a single pass, and the only order
@@ -7505,7 +7704,7 @@ mod tests {
         let wanted = mobiles::needed_animations(&mobiles, &EquipConv::default());
         let (direction, _) = openshard_uofiles::anim::facing(mobiles[0].facing);
         assert!(
-            wanted.contains(&(PLAYER, standing, direction)),
+            wanted.contains(&(Graphic(PLAYER), standing, direction)),
             "the standing group has to be packed to be drawn: {wanted:?}"
         );
     }

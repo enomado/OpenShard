@@ -898,6 +898,7 @@ fn main() {
         // Not a fact this tool has an opinion on: it builds a place, not a
         // character standing in it.
         dead: false,
+        player_rect: None,
     };
     // **What this frame was asked for**, printed and written beside the picture.
     // The client's F12 dump writes the same block from the same function, so two

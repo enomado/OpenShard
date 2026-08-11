@@ -37,11 +37,13 @@ use std::path::{Path, PathBuf};
 
 use openshard_protocol::wire::{Graphic, Hue};
 
+use crate::tiledata::AnimId;
+
 /// What one `(body, item graphic)` pair resolves to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EquipConvEntry {
     /// The body-animation-space graphic to draw in place of the item's own.
-    pub graphic: Graphic,
+    pub graphic: AnimId,
     /// The *paperdoll* picture, which is a different index space again and a
     /// different override: [`graphic`](Self::graphic) answers "what does this
     /// draw as on a walking body", this answers "what does it draw as on a
@@ -157,7 +159,7 @@ impl EquipConv {
             entries.insert(
                 (body, graphic),
                 EquipConvEntry {
-                    graphic: Graphic(new_graphic),
+                    graphic: AnimId(new_graphic),
                     gump: Graphic(gump),
                     color: Hue(color),
                 },
@@ -170,8 +172,8 @@ impl EquipConv {
     /// as instead of that `AnimID` — or `None` if the pair is not in the
     /// table, which is the ordinary case and means "the `AnimID` itself is
     /// already right for this body", not "draw nothing".
-    pub fn resolve(&self, body: u16, item_anim_id: u16) -> Option<EquipConvEntry> {
-        self.entries.get(&(body, item_anim_id)).copied()
+    pub fn resolve(&self, body: Graphic, item_anim_id: AnimId) -> Option<EquipConvEntry> {
+        self.entries.get(&(body.0, item_anim_id.0)).copied()
     }
 
     /// How many pairs the table holds.
@@ -192,8 +194,10 @@ mod tests {
     #[test]
     fn parses_a_well_formed_entry() {
         let table = EquipConv::parse("400\t7017\t7005\t0\t0\n");
-        let entry = table.resolve(400, 7017).expect("the pair above should resolve");
-        assert_eq!(entry.graphic, Graphic(7005));
+        let entry = table
+            .resolve(Graphic(400), AnimId(7017))
+            .expect("the pair above should resolve");
+        assert_eq!(entry.graphic, AnimId(7005));
         assert_eq!(entry.color, Hue(0));
     }
 
@@ -204,8 +208,14 @@ mod tests {
     #[test]
     fn a_zero_gump_column_means_the_items_own_graphic() {
         let table = EquipConv::parse("400\t7017\t7005\t0\t0\n400\t7018\t7006\t-1\t0\n");
-        assert_eq!(table.resolve(400, 7017).unwrap().gump, Graphic(7017));
-        assert_eq!(table.resolve(400, 7018).unwrap().gump, Graphic(7006));
+        assert_eq!(
+            table.resolve(Graphic(400), AnimId(7017)).unwrap().gump,
+            Graphic(7017)
+        );
+        assert_eq!(
+            table.resolve(Graphic(400), AnimId(7018)).unwrap().gump,
+            Graphic(7006)
+        );
     }
 
     /// A gump id that does not fit the index space takes its row with it: the
@@ -224,8 +234,10 @@ mod tests {
     #[test]
     fn the_fourth_column_is_a_paperdoll_override_of_its_own() {
         let table = EquipConv::parse("605\t9\t11\t50000\t0\n");
-        let entry = table.resolve(605, 9).expect("the pair above should resolve");
-        assert_eq!(entry.graphic, Graphic(11), "the animation goes one way");
+        let entry = table
+            .resolve(Graphic(605), AnimId(9))
+            .expect("the pair above should resolve");
+        assert_eq!(entry.graphic, AnimId(11), "the animation goes one way");
         assert_eq!(entry.gump, Graphic(50000), "the paperdoll another");
     }
 
@@ -245,13 +257,13 @@ mod tests {
     fn a_short_line_is_skipped_not_refused() {
         let table = EquipConv::parse("400\t7017\t7005\n401\t7018\t7006\t0\t0\n");
         assert_eq!(table.len(), 1, "only the five-column line should parse");
-        assert!(table.resolve(401, 7018).is_some());
+        assert!(table.resolve(Graphic(401), AnimId(7018)).is_some());
     }
 
     #[test]
     fn an_unlisted_pair_resolves_to_nothing() {
         let table = EquipConv::parse("400\t7017\t7005\t0\t0\n");
-        assert!(table.resolve(400, 9999).is_none());
-        assert!(table.resolve(401, 7017).is_none());
+        assert!(table.resolve(Graphic(400), AnimId(9999)).is_none());
+        assert!(table.resolve(Graphic(401), AnimId(7017)).is_none());
     }
 }

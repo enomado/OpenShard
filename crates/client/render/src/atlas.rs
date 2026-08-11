@@ -1215,7 +1215,7 @@ struct Packed {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct FrameKey {
     /// The body id.
-    pub body: u16,
+    pub body: Graphic,
     /// Which animation group — standing, walking, attacking.
     pub group: u8,
     /// The stored direction, 0 to 4.
@@ -1263,7 +1263,7 @@ pub struct AnimAtlas {
     /// caller asks for and what the file answers in one read. Most of the index
     /// is empty, so without this a creature whose group the client ships no
     /// animation for would seek `anim.mul` once a frame for ever.
-    asked: BTreeSet<(u16, u8, u8)>,
+    asked: BTreeSet<(Graphic, u8, u8)>,
     /// Where the next frame goes, kept between growths.
     shelf: Shelf,
     /// `ATLAS_SIDE * ATLAS_SIDE` RGBA8 pixels, row-major.
@@ -1293,7 +1293,7 @@ impl AnimAtlas {
     /// ordinary case rather than a failure.
     pub fn build(
         anim: &mut Anim,
-        wanted: impl IntoIterator<Item = (u16, u8, u8)>,
+        wanted: impl IntoIterator<Item = (Graphic, u8, u8)>,
     ) -> Result<Self, AtlasError> {
         let mut atlas = Self::empty();
         atlas.add(anim, wanted)?;
@@ -1323,13 +1323,13 @@ impl AnimAtlas {
     pub fn add(
         &mut self,
         anim: &mut Anim,
-        wanted: impl IntoIterator<Item = (u16, u8, u8)>,
+        wanted: impl IntoIterator<Item = (Graphic, u8, u8)>,
     ) -> Result<(), AtlasError> {
         // Sorted and deduplicated, so the same request always packs the same
         // atlas — the frame tests depend on it, and so does not re-reading a
         // body twice because the caller listed it twice.
-        let wanted: BTreeSet<(u16, u8, u8)> = wanted.into_iter().collect();
-        let fresh: Vec<(u16, u8, u8)> = wanted
+        let wanted: BTreeSet<(Graphic, u8, u8)> = wanted.into_iter().collect();
+        let fresh: Vec<(Graphic, u8, u8)> = wanted
             .into_iter()
             .filter(|triple| !self.asked.contains(triple))
             .collect();
@@ -1418,7 +1418,7 @@ impl AnimAtlas {
                 return Err(AtlasError::Oversized {
                     // Reported as the body, which is the only part of the key
                     // a `Graphic` can carry and the part worth naming.
-                    graphic: Graphic(key.body),
+                    graphic: key.body,
                     width,
                     height,
                 });
@@ -1509,7 +1509,7 @@ impl AnimAtlas {
     /// What a caller needs to advance one: the count is the animation's, not a
     /// constant, and asking the atlas rather than remembering it is what keeps
     /// "frame 7 of a 6-frame walk" from being expressible.
-    pub fn frame_count(&self, body: u16, group: u8, direction: u8) -> u16 {
+    pub fn frame_count(&self, body: Graphic, group: u8, direction: u8) -> u16 {
         let first = FrameKey {
             body,
             group,

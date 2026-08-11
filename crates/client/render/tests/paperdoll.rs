@@ -16,7 +16,7 @@ use openshard_client_render::paperdoll::{self, FEMALE_GUMP_OFFSET, MALE_GUMP_OFF
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::gumpart::Gumps;
-use openshard_uofiles::tiledata::TileData;
+use openshard_uofiles::tiledata::{AnimId, TileData};
 
 /// The three files a paperdoll needs, or `None` where no client is installed.
 fn client() -> Option<(Gumps, EquipConv, TileData)> {
@@ -35,7 +35,7 @@ fn client() -> Option<(Gumps, EquipConv, TileData)> {
 const MALE: u16 = 0x0190;
 const FEMALE: u16 = 0x0191;
 
-fn worn(layer: Layer, graphic: u16) -> EquipmentLayer {
+fn worn(layer: Layer, graphic: AnimId) -> EquipmentLayer {
     EquipmentLayer {
         graphic,
         hue: Hue::NONE,
@@ -45,7 +45,7 @@ fn worn(layer: Layer, graphic: u16) -> EquipmentLayer {
 
 /// The `AnimID` of a shipped item, which is what a worn layer carries: the wire
 /// graphic is `tiledata`'s key and never reaches a paperdoll.
-fn anim_id(tiledata: &TileData, graphic: u16) -> u16 {
+fn anim_id(tiledata: &TileData, graphic: u16) -> AnimId {
     tiledata.static_tile(graphic).anim_id
 }
 
@@ -84,7 +84,7 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
         worn(Layer::BACKPACK, anim_id(&tiledata, 0x0E75)),
     ];
     let wearer = Wearer {
-        body: MALE,
+        body: Graphic(MALE),
         hue: Hue::NONE,
         equipment: &equipment,
     };
@@ -122,7 +122,13 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
             graphic.0
         );
     }
-    let backpack = paperdoll::gump_of(MALE, anim_id(&tiledata, 0x0E75), false, &equip_conv, &gumps);
+    let backpack = paperdoll::gump_of(
+        Graphic(MALE),
+        anim_id(&tiledata, 0x0E75),
+        false,
+        &equip_conv,
+        &gumps,
+    );
     assert_eq!(
         stack[3].graphic,
         GumpArt::Gump(backpack),
@@ -232,9 +238,9 @@ fn a_layer_with_no_anim_id_draws_nothing() {
     let Some((gumps, equip_conv, _)) = client() else {
         return;
     };
-    let equipment = [worn(Layer::RING, 0)];
+    let equipment = [worn(Layer::RING, AnimId(0))];
     let wearer = Wearer {
-        body: MALE,
+        body: Graphic(MALE),
         hue: Hue::NONE,
         equipment: &equipment,
     };
@@ -310,7 +316,7 @@ fn a_female_gump_falls_back_to_the_male_one_where_the_file_has_none() {
     let (mut own, mut fell_back, mut checked) = (0usize, 0usize, 0usize);
     for graphic in 0..u16::MAX {
         let anim = anim_id(&tiledata, graphic);
-        if anim == 0 {
+        if anim == AnimId(0) {
             continue;
         }
         // A pair the table has an opinion about is a different claim — the
@@ -319,24 +325,32 @@ fn a_female_gump_falls_back_to_the_male_one_where_the_file_has_none() {
         // contents rather than the fallback. `Equipconv.def` really does carry
         // such rows for a female body (anim 0x02A8 among them, which is how
         // this line came to exist).
-        if equip_conv.resolve(FEMALE, anim).is_some() {
+        if equip_conv.resolve(Graphic(FEMALE), anim).is_some() {
             continue;
         }
-        let male = Graphic(anim.wrapping_add(MALE_GUMP_OFFSET));
+        let male = Graphic(anim.0.wrapping_add(MALE_GUMP_OFFSET));
         if !gumps.has(male).expect("the container reads") {
             continue;
         }
         checked += 1;
-        let female = Graphic(anim.wrapping_add(FEMALE_GUMP_OFFSET));
-        let drawn = paperdoll::gump_of(FEMALE, anim, true, &equip_conv, &gumps);
+        let female = Graphic(anim.0.wrapping_add(FEMALE_GUMP_OFFSET));
+        let drawn = paperdoll::gump_of(Graphic(FEMALE), anim, true, &equip_conv, &gumps);
         match gumps.has(female).expect("the container reads") {
             true => {
                 own += 1;
-                assert_eq!(drawn, female, "anim 0x{anim:04X} has a female picture of its own");
+                assert_eq!(
+                    drawn, female,
+                    "anim 0x{:04X} has a female picture of its own",
+                    anim.0
+                );
             }
             false => {
                 fell_back += 1;
-                assert_eq!(drawn, male, "anim 0x{anim:04X} has none, and takes the male one");
+                assert_eq!(
+                    drawn, male,
+                    "anim 0x{:04X} has none, and takes the male one",
+                    anim.0
+                );
             }
         }
     }

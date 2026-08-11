@@ -2571,7 +2571,7 @@ fn a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going() {
     };
     let atlas = AnimAtlas::pack([(
         FrameKey {
-            body: BODY,
+            body: Graphic(BODY),
             group: 4,
             direction: 0,
             frame: 0,
@@ -2593,7 +2593,7 @@ fn a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going() {
             .back_towards(openshard_client_render::follow::Gaze::on(from), left);
         let mobile = Mobile {
             at: to,
-            body: BODY,
+            body: Graphic(BODY),
             group: 4,
             // `SouthEast` is the one facing stored unmirrored at direction
             // `0` (`anim::facing`), which keeps the anchor at `center_x`
@@ -4354,7 +4354,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
     };
     let atlas = AnimAtlas::pack([(
         FrameKey {
-            body: BODY,
+            body: Graphic(BODY),
             group: 4,
             direction: 1,
             frame: 0,
@@ -4400,7 +4400,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
         let quads = mobiles::collect(
             &[Mobile {
                 at: centre,
-                body: BODY,
+                body: Graphic(BODY),
                 group: 4,
                 facing,
                 frame: 0,
@@ -4763,6 +4763,7 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
         &static_atlas,
         &Cutaway::OPEN,
         &openshard_client_render::occlusion::Occlusion::EMPTY,
+        None,
     )
     .quads;
     assert!(
@@ -4856,6 +4857,7 @@ fn dump_a_frame_of_britain() {
         &static_atlas,
         &Cutaway::OPEN,
         &openshard_client_render::occlusion::Occlusion::EMPTY,
+        None,
     )
     .quads;
 
@@ -4879,7 +4881,7 @@ fn dump_a_frame_of_britain() {
             let ground = Point::new(x, y, map.average_land_z(x, y).expect("inside the facet"));
             Mobile {
                 at: ground,
-                body: 400,
+                body: Graphic(400),
                 group: 4,
                 facing: *facing,
                 frame: 0,

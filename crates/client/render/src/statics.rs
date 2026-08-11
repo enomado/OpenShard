@@ -215,6 +215,7 @@ impl StaticGeometry {
 /// the static it draws ([`crate::occlusion::Occlusion::owner_at`]), which is the
 /// join `docs/lighting_height.md` phase 3 pays for. A frame that collected its
 /// statics first would be stamping numbers from the frame before it.
+#[allow(clippy::too_many_arguments)]
 pub fn collect(
     map: &Map,
     camera: &Camera,
@@ -248,6 +249,7 @@ pub fn collect(
             animations,
             atlas,
             cutaway,
+            player_rect,
         ) else {
             return;
         };
@@ -442,6 +444,7 @@ pub(crate) struct Placed {
 /// and the tiledata lookup: a fire's frames are different art of the same size
 /// standing in the same place, and ordering by whichever one is showing would let
 /// a stack reshuffle itself every hundred milliseconds.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn place(
     at: Point,
     graphic: Graphic,
@@ -450,6 +453,7 @@ pub(crate) fn place(
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
+    player_rect: Option<Rect>,
 ) -> Option<Placed> {
     let tile = tiledata.static_tile(graphic.0);
     if !cutaway::shows(cutaway, at.z, tile) {
@@ -457,6 +461,21 @@ pub(crate) fn place(
     }
     let showing = animations.showing(graphic);
     let sprite = atlas.sprite(showing)?;
+    let screen_at = stand_on(camera, at, &sprite);
+    // A tree's own leaves, cut so the body under them stays in view — see
+    // `cutaway::hides_foliage_over`'s doc for why this is a hard cut and not
+    // the reference's fade.
+    if let (true, Some(player_rect)) = (tile.flags.is_foliage(), player_rect) {
+        let screen_rect = Rect {
+            x: screen_at.x,
+            y: screen_at.y,
+            width: f32::from(sprite.width),
+            height: f32::from(sprite.height),
+        };
+        if cutaway::hides_foliage_over(player_rect, screen_rect) {
+            return None;
+        }
+    }
     Some(Placed {
         order: depth::Order {
             tile: i32::from(at.x) + i32::from(at.y),
@@ -464,7 +483,7 @@ pub(crate) fn place(
         },
         // The cell's centre, height folded in: `to_screen` already lifts `z` by
         // four pixels a unit, which is the same lift the ground gets.
-        at: stand_on(camera, at, &sprite),
+        at: screen_at,
         sprite,
         showing,
         // A floor's pixels are spread across its tile, a wall's run along the one
@@ -550,7 +569,10 @@ pub fn pick(
     for_each_static_in(map, camera.visible_tiles(), |item| {
         let at = Point::new(item.x, item.y, item.z);
         let graphic = Graphic(item.tile);
-        let Some(placed) = place(at, graphic, camera, tiledata, animations, atlas, cutaway) else {
+        // Never hides a foliage tile from a click: it is still there to point
+        // at, matching what the reference does with a faded rather than
+        // vanished tile.
+        let Some(placed) = place(at, graphic, camera, tiledata, animations, atlas, cutaway, None) else {
             return;
         };
         // Into the sprite's own pixels. Negative is above or left of it, and
@@ -597,6 +619,8 @@ pub fn selected(
     let base = depth::base_for(eye_x, eye_y);
     selection
         .and_then(|picked| {
+            // Never hides a foliage tile that is already the selection: the
+            // player asked for this one specifically.
             let placed = place(
                 picked.at,
                 picked.graphic,
@@ -605,6 +629,7 @@ pub fn selected(
                 animations,
                 atlas,
                 cutaway,
+                None,
             )?;
             match on_screen(camera, placed.at, &placed.sprite) {
                 true => Some(quad_of(
@@ -694,6 +719,106 @@ mod tests {
             ),
         )])
         .expect("one sprite fits")
+    }
+
+    /// A tree over the player's head is cut so the body under it stays in
+    /// view, and only when the two pictures actually share a pixel — a
+    /// player's own rectangle standing well clear of the canopy still sees
+    /// it, and a non-foliage static of the same size and position is never
+    /// cut at all. The simplified hard cut this workspace chose over
+    /// `ApplyFoliageTransparency`'s fade — see `cutaway::hides_foliage_over`.
+    #[test]
+    fn foliage_over_the_player_is_cut_and_nothing_else_is() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0D45);
+        let atlas = atlas(graphic, 44, 88);
+        let animations = StaticAnimations::default();
+        let mut tiledata = TileData::empty();
+        tiledata.set_static_tile(
+            graphic.0,
+            openshard_uofiles::tiledata::StaticTile {
+                flags: openshard_uofiles::tiledata::TileFlags::new(
+                    openshard_uofiles::tiledata::TileFlags::FOLIAGE,
+                ),
+                ..Default::default()
+            },
+        );
+        let at = Point::new(100, 100, 0);
+        let cutaway = Cutaway::OPEN;
+        let sprite = atlas.sprite(graphic).expect("packed");
+        let screen_at = stand_on(&camera, at, &sprite);
+        let over = Rect {
+            x: screen_at.x,
+            y: screen_at.y,
+            width: 44.0,
+            height: 88.0,
+        };
+        let elsewhere = Rect {
+            x: screen_at.x + 1000.0,
+            y: screen_at.y + 1000.0,
+            width: 44.0,
+            height: 88.0,
+        };
+
+        assert!(
+            super::place(
+                at,
+                graphic,
+                &camera,
+                &tiledata,
+                &animations,
+                &atlas,
+                &cutaway,
+                None
+            )
+            .is_some(),
+            "no player rectangle at all draws it, same as today"
+        );
+        assert!(
+            super::place(
+                at,
+                graphic,
+                &camera,
+                &tiledata,
+                &animations,
+                &atlas,
+                &cutaway,
+                Some(elsewhere)
+            )
+            .is_some(),
+            "a player standing well clear of the canopy still sees it"
+        );
+        assert!(
+            super::place(
+                at,
+                graphic,
+                &camera,
+                &tiledata,
+                &animations,
+                &atlas,
+                &cutaway,
+                Some(over)
+            )
+            .is_none(),
+            "the player's own rectangle is under the canopy: cut"
+        );
+
+        let mut not_foliage = TileData::empty();
+        not_foliage.set_static_tile(graphic.0, openshard_uofiles::tiledata::StaticTile::default());
+        assert!(
+            super::place(
+                at,
+                graphic,
+                &camera,
+                &not_foliage,
+                &animations,
+                &atlas,
+                &cutaway,
+                Some(over),
+            )
+            .is_some(),
+            "the same overlap draws a non-foliage static: only foliage is cut"
+        );
     }
 
     /// Art with a hole in it: the left half transparent, the right half drawn.
@@ -951,6 +1076,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         )
         .quads;
         assert_eq!(drawn.len(), 1);
@@ -1090,6 +1216,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         )
         .quads
         .len();
@@ -1104,6 +1231,7 @@ mod tests {
                 &atlas,
                 &Cutaway::OPEN,
                 &crate::occlusion::Occlusion::EMPTY,
+                None,
             )
             .quads
             .len();
@@ -1183,6 +1311,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         )
         .quads
         .len();
@@ -1206,6 +1335,7 @@ mod tests {
             &atlas,
             &indoors,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         )
         .quads
         .len();
@@ -1252,6 +1382,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         )
         .quads;
         assert!(quads.len() > 500, "only {} statics on screen", quads.len());

@@ -42,7 +42,12 @@ impl World {
     /// the same as a click on the wrong NPC (the guildmaster standing beside
     /// it, say) or on empty ground.
     pub(super) fn click_healer(&mut self, player: EntityId, target: EntityId) {
-        if !self.state.registry.has::<Healer>(target) || !self.state.registry.has::<Ghost>(player) {
+        if !self.state.registry.has::<Healer>(target) {
+            debug!(?target, "click_healer: target has no Healer component");
+            return;
+        }
+        if !self.state.registry.has::<Ghost>(player) {
+            debug!(?player, "click_healer: clicker is not a ghost");
             return;
         }
         if self.healer_in_range(player, target) {
@@ -75,10 +80,17 @@ impl World {
                 return;
             }
         }
+        let total_healers = self.state.registry.query::<Healer>().count();
         let nearest = self.state.registry.query::<Healer>().find_map(|(healer, _)| {
             let &Position(there) = self.state.registry.get::<Position>(healer)?;
             (self.state.facet_of(healer) == facet && in_range(at, there, HEALER_RANGE)).then_some(healer)
         });
+        debug!(
+            ?ghost,
+            total_healers,
+            found = nearest.is_some(),
+            "offer_resurrection_nearby"
+        );
         match nearest {
             Some(healer) => self.open_healer_gump(ghost, healer),
             None if pending.is_some() => {
@@ -119,11 +131,14 @@ impl World {
     /// moongate list already uses for exactly this reason.
     fn open_healer_gump(&mut self, ghost: EntityId, healer: EntityId) {
         let Some(&Client { connection, .. }) = self.state.registry.get::<Client>(ghost) else {
+            debug!(?ghost, "open_healer_gump: ghost has no Client component");
             return;
         };
         let Some(serial) = self.state.registry.serial_of(ghost) else {
+            debug!(?ghost, "open_healer_gump: ghost has no serial");
             return;
         };
+        debug!(?ghost, ?healer, "open_healer_gump: sending resurrect gump");
 
         let mut layout = GumpLayout::new();
         layout.page(0);
@@ -182,6 +197,7 @@ impl World {
             return false;
         }
         let Some(&ghost) = self.state.players.get(&connection) else {
+            debug!(%connection, "handle_healer_gump: no player for connection");
             return true;
         };
         // Taken, not borrowed: a reply to a window this side never drew finds
@@ -191,9 +207,11 @@ impl World {
             .row_of_mut(ghost)
             .and_then(|row| row.healer_gump.take())
         else {
+            debug!(?ghost, "handle_healer_gump: no pending healer offer");
             return true;
         };
         if response.button.interpret() != GumpAnswer::Pressed(HEALER_CONTINUE) {
+            debug!(?ghost, "handle_healer_gump: cancelled");
             return true; // CANCEL, or the close box
         }
         // Still a ghost, still near the healer it asked: the window can sit on
@@ -201,7 +219,14 @@ impl World {
         // meantime, and a reach checked only when it opened is not checked at
         // all.
         if self.state.registry.has::<Ghost>(ghost) && self.healer_in_range(ghost, healer) {
+            debug!(?ghost, ?healer, "handle_healer_gump: resurrecting");
             self.resurrect(ghost, true);
+        } else {
+            debug!(
+                ?ghost,
+                ?healer,
+                "handle_healer_gump: confirmed but no longer a ghost or out of range"
+            );
         }
         true
     }

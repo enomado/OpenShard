@@ -247,6 +247,9 @@ fn place(
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
 ) -> Option<Placed> {
+    // A dropped item is never a tree: foliage stands in the map's own
+    // statics, not in what a player or a shard puts on the ground, so this
+    // list never asks `statics::place` to cut one over the player.
     crate::statics::place(
         item.at,
         item.graphic,
@@ -255,6 +258,7 @@ fn place(
         animations,
         atlas,
         cutaway,
+        None,
     )
 }
 

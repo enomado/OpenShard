@@ -51,7 +51,11 @@ impl fmt::Display for ClilocError {
         match self {
             Self::Read { path, source } => write!(f, "cannot read {}: {source}", path.display()),
             Self::Compressed { path } => {
-                write!(f, "{} is BWT-compressed, which this reader does not decode", path.display())
+                write!(
+                    f,
+                    "{} is BWT-compressed, which this reader does not decode",
+                    path.display()
+                )
             }
         }
     }
@@ -74,7 +78,9 @@ pub struct Cliloc {
 
 impl fmt::Debug for Cliloc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Cliloc").field("entries", &self.entries.len()).finish()
+        f.debug_struct("Cliloc")
+            .field("entries", &self.entries.len())
+            .finish()
     }
 }
 
@@ -87,7 +93,9 @@ impl Cliloc {
             source,
         })?;
         if bytes.get(3) == Some(&0x8E) {
-            return Err(ClilocError::Compressed { path: path.to_owned() });
+            return Err(ClilocError::Compressed {
+                path: path.to_owned(),
+            });
         }
         Ok(Self::parse(&bytes))
     }
@@ -156,7 +164,11 @@ mod tests {
         assert_eq!(table.count(), 2);
         assert_eq!(table.get(1_011_022), Some("Resurrection"));
         assert_eq!(table.get(1_011_011), Some("CONTINUE"));
-        assert_eq!(table.get(1), None, "a number never written is absent, not a panic");
+        assert_eq!(
+            table.get(1),
+            None,
+            "a number never written is absent, not a panic"
+        );
     }
 
     #[test]
@@ -165,7 +177,11 @@ mod tests {
         bytes.extend(record(1, "whole"));
         bytes.extend_from_slice(&[9, 0, 0, 0, 0, 20, 0]); // a length claiming 20 bytes it does not have
         let table = Cliloc::parse(&bytes);
-        assert_eq!(table.get(1), Some("whole"), "the good record before the cut still reads");
+        assert_eq!(
+            table.get(1),
+            Some("whole"),
+            "the good record before the cut still reads"
+        );
         assert_eq!(table.count(), 1);
     }
 

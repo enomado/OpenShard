@@ -36,6 +36,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use openshard_protocol::direction::Direction;
+use openshard_protocol::wire::Graphic;
 
 use crate::color::Color16;
 use crate::image::Image;
@@ -131,10 +132,10 @@ pub enum BodyKind {
 
 impl BodyKind {
     /// Which kind a body id is.
-    pub const fn of(body: u16) -> Self {
-        if body < 200 {
+    pub const fn of(body: Graphic) -> Self {
+        if body.0 < 200 {
             Self::Monster
-        } else if body < 400 {
+        } else if body.0 < 400 {
             Self::Animal
         } else {
             Self::Human
@@ -277,8 +278,8 @@ impl BodyKind {
 /// differently — translucent, and with neither hair nor beard on it. Here rather
 /// than at the renderer that asks, because it is a fact about the client's body
 /// ids and the pair must not be written down twice.
-pub const fn is_ghost(body: u16) -> bool {
-    matches!(body, 0x0192 | 0x0193)
+pub const fn is_ghost(body: Graphic) -> bool {
+    matches!(body.0, 0x0192 | 0x0193)
 }
 
 /// Whether a body is a female one.
@@ -292,8 +293,8 @@ pub const fn is_ghost(body: u16) -> bool {
 /// Here rather than in the renderer that asks, for [`is_ghost`]'s reason: it is
 /// a fact about the client's body ids, and a body id table written down twice
 /// is a body id table that disagrees with itself.
-pub const fn is_female(body: u16) -> bool {
-    matches!(body, 0x0191 | 0x0193 | 0x025E | 0x029B)
+pub const fn is_female(body: Graphic) -> bool {
+    matches!(body.0, 0x0191 | 0x0193 | 0x025E | 0x029B)
 }
 
 /// Whether a body is a gargoyle one, living or dead.
@@ -303,21 +304,21 @@ pub const fn is_female(body: u16) -> bool {
 /// (`PaperDollInteractable.IsGargoyleBody`) — and it is the four ids rather
 /// than the two, because `0x02B6`/`0x02B7` are the dead pair of `0x029A`/
 /// `0x029B` and a corpse is drawn on a paperdoll like anything else.
-pub const fn is_gargoyle(body: u16) -> bool {
-    matches!(body, 0x029A | 0x029B | 0x02B6 | 0x02B7)
+pub const fn is_gargoyle(body: Graphic) -> bool {
+    matches!(body.0, 0x029A | 0x029B | 0x02B6 | 0x02B7)
 }
 
-pub const fn animation_body(body: u16) -> u16 {
-    match body {
+pub const fn animation_body(body: Graphic) -> Graphic {
+    Graphic(match body.0 {
         // The ghosts, drawn from the living body of the same sex.
-        0x0192 | 0x0193 => body - 2,
+        0x0192 | 0x0193 => body.0 - 2,
         // The other two the client remaps, kept because the reason is the same
         // — an id with no block of its own — and because leaving half a port
         // behind is how the next one gets re-derived.
         0x02B6 => 667,
         0x02B7 => 666,
-        _ => body,
-    }
+        _ => body.0,
+    })
 }
 
 /// The stored direction a facing is drawn from, and whether it is mirrored.
@@ -448,7 +449,7 @@ impl Anim {
     /// Cheap — it reads the index only — and worth having separately: most of
     /// the index is empty, and "does this body exist" is a question a caller
     /// asks far more often than it asks for pixels.
-    pub fn has_frames(&self, body: u16, group: u8, direction: u8) -> bool {
+    pub fn has_frames(&self, body: Graphic, group: u8, direction: u8) -> bool {
         self.entry(body, group, direction)
             .is_some_and(IdxEntry::is_present)
     }
@@ -465,7 +466,7 @@ impl Anim {
     /// nothing uses.
     pub fn frames(
         &mut self,
-        body: u16,
+        body: Graphic,
         group: u8,
         direction: u8,
     ) -> Result<Option<Vec<AnimFrame>>, AnimError> {
@@ -490,16 +491,16 @@ impl Anim {
                 source,
             })?;
 
-        decode_body(body, group, direction, &raw).map(Some)
+        decode_body(body.0, group, direction, &raw).map(Some)
     }
 
     /// The index entry for a body, group and stored direction.
-    fn entry(&self, body: u16, group: u8, direction: u8) -> Option<IdxEntry> {
+    fn entry(&self, body: Graphic, group: u8, direction: u8) -> Option<IdxEntry> {
         let kind = BodyKind::of(body);
         if group >= kind.groups() || direction >= DIRECTIONS {
             return None;
         }
-        let block = kind.base(body) + usize::from(group) * usize::from(DIRECTIONS) + usize::from(direction);
+        let block = kind.base(body.0) + usize::from(group) * usize::from(DIRECTIONS) + usize::from(direction);
         self.entries.get(block).copied()
     }
 }
@@ -642,11 +643,11 @@ mod tests {
     /// creature's frames, which decode perfectly.
     #[test]
     fn a_bodys_index_block_is_its_kinds_arithmetic() {
-        assert_eq!(BodyKind::of(0), BodyKind::Monster);
-        assert_eq!(BodyKind::of(199), BodyKind::Monster);
-        assert_eq!(BodyKind::of(200), BodyKind::Animal);
-        assert_eq!(BodyKind::of(399), BodyKind::Animal);
-        assert_eq!(BodyKind::of(400), BodyKind::Human);
+        assert_eq!(BodyKind::of(Graphic(0)), BodyKind::Monster);
+        assert_eq!(BodyKind::of(Graphic(199)), BodyKind::Monster);
+        assert_eq!(BodyKind::of(Graphic(200)), BodyKind::Animal);
+        assert_eq!(BodyKind::of(Graphic(399)), BodyKind::Animal);
+        assert_eq!(BodyKind::of(Graphic(400)), BodyKind::Human);
 
         assert_eq!(BodyKind::Monster.base(0), 0);
         assert_eq!(BodyKind::Monster.base(1), 110);
@@ -741,14 +742,22 @@ mod tests {
     /// and female alike.
     #[test]
     fn a_ghost_is_drawn_from_the_living_body_two_below_it() {
-        assert_eq!(animation_body(0x0192), 0x0190, "the male ghost");
-        assert_eq!(animation_body(0x0193), 0x0191, "the female ghost");
-        for living in [0x0190u16, 0x0191] {
+        assert_eq!(animation_body(Graphic(0x0192)), Graphic(0x0190), "the male ghost");
+        assert_eq!(
+            animation_body(Graphic(0x0193)),
+            Graphic(0x0191),
+            "the female ghost"
+        );
+        for living in [Graphic(0x0190), Graphic(0x0191)] {
             assert_eq!(animation_body(living), living, "a living body is itself");
-            assert_eq!(animation_body(living + 2), living, "and its ghost is it");
+            assert_eq!(
+                animation_body(Graphic(living.0 + 2)),
+                living,
+                "and its ghost is it"
+            );
         }
-        assert_eq!(animation_body(0x02B6), 667);
-        assert_eq!(animation_body(0x02B7), 666);
+        assert_eq!(animation_body(Graphic(0x02B6)), Graphic(667));
+        assert_eq!(animation_body(Graphic(0x02B7)), Graphic(666));
     }
 
     /// And the half of that the file has to agree with: the ghost ids have no
@@ -768,17 +777,18 @@ mod tests {
         let mut anim = Anim::open(&dir).expect("anim.idx and anim.mul");
         for ghost in [0x0192u16, 0x0193] {
             assert!(
-                anim.frames(ghost, BodyKind::Human.standing(), 0)
+                anim.frames(Graphic(ghost), BodyKind::Human.standing(), 0)
                     .expect("reading the index")
                     .is_none(),
                 "body {ghost:#06x} has frames after all, and the remap is hiding them",
             );
-            let drawn = animation_body(ghost);
+            let drawn = animation_body(Graphic(ghost));
             assert!(
                 anim.frames(drawn, BodyKind::Human.standing(), 0)
                     .expect("reading the index")
                     .is_some_and(|frames| !frames.is_empty()),
-                "body {drawn:#06x} is what a ghost is drawn from and has no frames either",
+                "body {:#06x} is what a ghost is drawn from and has no frames either",
+                drawn.0,
             );
         }
     }

@@ -258,7 +258,7 @@ struct Tracked {
     /// Which body it was last seen as. Kept because a walk that ends has to
     /// know what "standing" means, and a horse and a player stop into different
     /// group numbers — see [`BodyKind::standing`].
-    body: u16,
+    body: Graphic,
     /// Whether it stands in war mode.
     ///
     /// Kept for exactly [`Tracked::body`]'s reason, and it is the same sentence:
@@ -426,13 +426,13 @@ impl Crowd {
     /// knows how many frames there are, and it is not built yet when this is
     /// called; [`Crowd::frame_for`] fills it in once it is.
     pub fn see(&mut self, who: Who, at: Point, body: Graphic, facing: Facing, hue: Hue, war: bool) -> Mobile {
-        let kind = BodyKind::of(body.0);
+        let kind = BodyKind::of(body);
         let now = self.now;
         let commanded = self.commanded == who;
         let tracked = self.tracked.entry(who).or_insert(Tracked {
             at,
             facing: facing.direction,
-            body: body.0,
+            body,
             war,
             // A body first heard of is standing: it may well be mid-stride, but
             // the only thing that could say so is a previous packet and there
@@ -522,7 +522,7 @@ impl Crowd {
             tracked.stepped_at = Some(now);
         }
         tracked.facing = facing.direction;
-        tracked.body = body.0;
+        tracked.body = body;
         // The stance, for the body that is *not* stepping: drawing a sword is a
         // packet with the same position in it as the one before, so a stance
         // that only reached the group through the walk above would not be seen
@@ -548,7 +548,7 @@ impl Crowd {
 
         Mobile {
             at,
-            body: body.0,
+            body,
             group: tracked.group,
             facing: facing.direction,
             frame: 0,
@@ -582,11 +582,11 @@ impl Crowd {
         hue: Hue,
         war: bool,
     ) -> Mobile {
-        let kind = BodyKind::of(body.0);
+        let kind = BodyKind::of(body);
         let tracked = self.tracked.entry(who).or_insert(Tracked {
             at,
             facing: facing.direction,
-            body: body.0,
+            body,
             war,
             group: match war {
                 true => kind.standing_at_war().unwrap_or(kind.standing()),
@@ -603,7 +603,7 @@ impl Crowd {
         });
         tracked.at = at;
         tracked.facing = facing.direction;
-        tracked.body = body.0;
+        tracked.body = body;
         // The stance is restated here as it is in `see`, and the animation is
         // still deliberately left alone: whatever group is playing keeps
         // playing, and the walk-to-standing check below picks the new stance up
@@ -634,7 +634,7 @@ impl Crowd {
 
         Mobile {
             at,
-            body: body.0,
+            body,
             group: tracked.group,
             facing: facing.direction,
             frame: 0,
@@ -1187,7 +1187,7 @@ mod tests {
         }
         assert_eq!(
             crowd.tracked.get(&None).expect("still tracked").group,
-            BodyKind::of(PLAYER).standing(),
+            BodyKind::of(Graphic(PLAYER)).standing(),
             "stopped walking once nothing was left to hold it there"
         );
     }
@@ -1229,7 +1229,7 @@ mod tests {
         );
         assert_eq!(
             crowd.group_for(None),
-            Some(BodyKind::of(PLAYER).standing()),
+            Some(BodyKind::of(Graphic(PLAYER)).standing()),
             "but the crowd, asked again, has moved on"
         );
     }
@@ -2128,7 +2128,7 @@ mod tests {
         // Nothing steps again. The walk it was mid-stride of still has to give
         // up eventually, the same way it would have had the step gone through.
         crowd.advance(WALK_HOLD * 2);
-        let standing = BodyKind::of(PLAYER).standing();
+        let standing = BodyKind::of(Graphic(PLAYER)).standing();
         assert_eq!(
             crowd.tracked.get(&serial(1)).expect("still tracked").group,
             standing,

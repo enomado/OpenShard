@@ -222,11 +222,14 @@ impl World {
     /// there is walking to a healer in town, not the fight itself.
     pub(super) fn resurrect(&mut self, entity: EntityId, full: bool) {
         let Some(&Ghost { body: living }) = self.state.registry.get::<Ghost>(entity) else {
+            debug!(?entity, "resurrect: not a ghost");
             return;
         };
         let Some(serial) = self.state.registry.serial_of(entity) else {
+            debug!(?entity, "resurrect: no serial");
             return;
         };
+        debug!(?entity, full, "resurrect: bringing back to life");
         self.state.registry.remove::<Ghost>(entity);
         self.state.registry.insert(entity, living);
         self.strip_death_shroud(serial);

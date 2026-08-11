@@ -1151,7 +1151,11 @@ fn chat_panel(ui: &mut egui::Ui, chat: &mut crate::desk::Chat) {
 
     ui.separator();
     ui.label("Colour");
-    ui.add(egui::DragValue::new(&mut chat.hue).range(0..=u16::MAX).prefix("hue "));
+    ui.add(
+        egui::DragValue::new(&mut chat.hue)
+            .range(0..=u16::MAX)
+            .prefix("hue "),
+    );
     ui.label(
         egui::RichText::new(
             "Tints the player's own compose line and its caret. 0 is the \

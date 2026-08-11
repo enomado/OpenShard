@@ -165,7 +165,7 @@ fn paperdolls(client: &Client, out: &Path) {
         ),
     ] {
         let wearer = Wearer {
-            body,
+            body: Graphic(body),
             hue: Hue::NONE,
             equipment: &equipment,
         };
@@ -242,12 +242,17 @@ fn dialog(client: &Client, out: &Path) {
         .captions
         .iter()
         .map(|caption| {
+            let text = match caption.source {
+                gump::CaptionSource::Line(line) => lines[line].as_str(),
+                // This synthetic layout only ever uses `label`/`cropped_label`.
+                gump::CaptionSource::Cliloc(_) => unreachable!("no cliloc element in this layout"),
+            };
             (
                 GumpLabel {
                     at: caption.at,
                     hue: caption.hue,
                     clip: caption.clip,
-                    text: lines[caption.line].as_str(),
+                    text,
                     font: gump::CAPTION_FONT,
                 },
                 None,

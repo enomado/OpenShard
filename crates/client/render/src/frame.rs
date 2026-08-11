@@ -471,7 +471,14 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     // different world, lit differently, and the summary would not say so.
     let mut geometry = match draw.statics {
         true => crate::statics::collect(
-            map, camera, tiledata, animations, statics, cutaway, met, player_rect,
+            map,
+            camera,
+            tiledata,
+            animations,
+            statics,
+            cutaway,
+            met,
+            player_rect,
         ),
         false => StaticGeometry::default(),
     };

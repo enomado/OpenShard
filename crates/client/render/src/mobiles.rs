@@ -37,9 +37,10 @@
 //! argument for the ease living on the body rather than on the eye.
 
 use openshard_protocol::direction::Direction;
-use openshard_protocol::wire::{Hue, Layer};
+use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_protocol::world::Point;
 use openshard_uofiles::equipconv::EquipConv;
+use openshard_uofiles::tiledata::AnimId;
 
 use crate::atlas::{AnimAtlas, FrameKey};
 use crate::camera::{Camera, RealPixel, ViewPixel, ViewPoint, WorldPoint};
@@ -66,7 +67,7 @@ pub struct Mobile {
     /// by a fraction.
     pub at: Point,
     /// Its body id.
-    pub body: u16,
+    pub body: Graphic,
     /// Which animation group is playing.
     pub group: u8,
     /// Which way it is looking.
@@ -126,7 +127,7 @@ pub struct EquipmentLayer {
     /// [`EquipConv`] has nothing to say about it — its own tiledata `AnimID`,
     /// not its wire graphic. [`EquipConv::resolve`] is keyed on this same
     /// number, not on the wire graphic either.
-    pub graphic: u16,
+    pub graphic: AnimId,
     /// Its hue, or [`Hue::NONE`] for none.
     pub hue: Hue,
     /// Which slot it is worn on.
@@ -237,8 +238,8 @@ pub fn walked_offset(mobile: &Mobile) -> Vec2 {
 /// Also yields every equipment layer's *resolved* body-anim triple, so the
 /// atlas has what a worn item needs before [`collect`] asks for it — its own
 /// `AnimID` ordinarily, or [`EquipConv`]'s override where this body has one.
-pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(u16, u8, u8)> {
-    let mut wanted: Vec<(u16, u8, u8)> = Vec::new();
+pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(Graphic, u8, u8)> {
+    let mut wanted: Vec<(Graphic, u8, u8)> = Vec::new();
     for mobile in mobiles {
         let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
         // The body the *file* holds, which for a ghost is the living body it is
@@ -313,8 +314,8 @@ fn drawn_layers(mobile: &Mobile) -> Vec<EquipmentLayer> {
 /// every part of this — which layers exist and which graphic each one is under.
 /// A layer packed and not drawn is waste; a layer drawn and not packed is a
 /// hole.
-fn worn_graphic(mobile: &Mobile, layer: EquipmentLayer, equip_conv: &EquipConv) -> Option<(u16, Hue)> {
-    if layer.graphic == 0 {
+fn worn_graphic(mobile: &Mobile, layer: EquipmentLayer, equip_conv: &EquipConv) -> Option<(Graphic, Hue)> {
+    if layer.graphic == AnimId(0) {
         return None;
     }
     if openshard_uofiles::anim::is_ghost(mobile.body)
@@ -327,7 +328,7 @@ fn worn_graphic(mobile: &Mobile, layer: EquipmentLayer, equip_conv: &EquipConv) 
     // reference too, and it is a table about what a *kind of creature* wears,
     // not about which file the frames come from.
     let entry = equip_conv.resolve(mobile.body, layer.graphic);
-    let graphic = entry.map_or(layer.graphic, |entry| entry.graphic.0);
+    let graphic = Graphic(entry.map_or(layer.graphic.0, |entry| entry.graphic.0));
     // The table's own colour, but only where the item does not carry one: a
     // dyed item keeps its dye.
     let hue = match (layer.hue == Hue::NONE, entry) {
@@ -367,7 +368,7 @@ struct Placement {
 /// files hold no animation for is read under the one they do:
 /// `openshard_uofiles::anim::animation_body`, which is what draws a ghost. Every
 /// caller passes the key it packed with, so this never re-derives either.
-fn place(mobile: &Mobile, body: u16, camera: &Camera, atlas: &AnimAtlas) -> Option<Placement> {
+fn place(mobile: &Mobile, body: Graphic, camera: &Camera, atlas: &AnimAtlas) -> Option<Placement> {
     let (direction, mirrored) = openshard_uofiles::anim::facing(mobile.facing);
     let key = FrameKey {
         body,
@@ -718,7 +719,7 @@ mod tests {
     fn atlas(body: u16, direction: u8, width: u16, height: u16, center: (i16, i16)) -> AnimAtlas {
         AnimAtlas::pack([(
             FrameKey {
-                body,
+                body: Graphic(body),
                 group: 4,
                 direction,
                 frame: 0,
@@ -747,7 +748,7 @@ mod tests {
     /// The slot is only ever asked about for hair and a beard (see
     /// [`worn_graphic`]), so everything else stands for "a piece of clothing"
     /// and the tests below say so once, here, rather than choosing a number each.
-    fn worn_on_torso(graphic: u16, hue: Hue) -> EquipmentLayer {
+    fn worn_on_torso(graphic: AnimId, hue: Hue) -> EquipmentLayer {
         EquipmentLayer {
             graphic,
             hue,
@@ -759,7 +760,7 @@ mod tests {
     fn body_at(x: u16, facing: Direction) -> Mobile {
         Mobile {
             at: Point::new(x, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing,
             frame: 0,
@@ -807,7 +808,7 @@ mod tests {
         }
         AnimAtlas::pack([(
             FrameKey {
-                body,
+                body: Graphic(body),
                 group: 4,
                 direction,
                 frame: 0,
@@ -888,7 +889,7 @@ mod tests {
         atlas
             .pack_more([(
                 FrameKey {
-                    body: 7005,
+                    body: Graphic(7005),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -901,7 +902,7 @@ mod tests {
             )])
             .expect("both frames fit");
         let mobile = Mobile {
-            equipment: vec![worn_on_torso(7005, Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(7005), Hue::NONE)],
             ..body_at(100, Direction::SouthEast)
         };
         let at = placed(&mobile, &camera, &atlas);
@@ -956,7 +957,7 @@ mod tests {
         atlas
             .pack_more([(
                 FrameKey {
-                    body: 7005,
+                    body: Graphic(7005),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -971,7 +972,7 @@ mod tests {
         // Their own hues, so the assertion is "replaced" and not "set".
         let dressed = |x: u16| Mobile {
             hue: Hue(0x03B2),
-            equipment: vec![worn_on_torso(7005, Hue(0x0455))],
+            equipment: vec![worn_on_torso(AnimId(7005), Hue(0x0455))],
             ..body_at(x, Direction::SouthEast)
         };
         let quads = collect(
@@ -1033,7 +1034,7 @@ mod tests {
         let quads = collect(
             &[Mobile {
                 at: Point::new(100, 100, 0),
-                body: 400,
+                body: Graphic(400),
                 group: 4,
                 facing: Direction::SouthEast,
                 frame: 0,
@@ -1067,7 +1068,7 @@ mod tests {
             collect(
                 &[Mobile {
                     at: Point::new(100, 100, 0),
-                    body: 400,
+                    body: Graphic(400),
                     group: 4,
                     facing,
                     frame: 0,
@@ -1108,7 +1109,7 @@ mod tests {
         let atlas = atlas(400, 0, 40, 60, (12, -3));
         let missing = Mobile {
             at: Point::new(100, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             // One past the only frame packed.
@@ -1166,7 +1167,7 @@ mod tests {
             at: Point::new(100, 100, 0),
             // 0x0192, the male ghost: a body the client's files have no
             // animation for.
-            body: 402,
+            body: Graphic(402),
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
@@ -1177,7 +1178,7 @@ mod tests {
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&ghost), &no_equip()),
-            vec![(400, 4, 0)],
+            vec![(Graphic(400), 4, 0)],
             "the atlas is asked for the living body",
         );
         // And an atlas holding exactly that draws it.
@@ -1217,7 +1218,7 @@ mod tests {
         let atlas = atlas(400, 0, 40, 60, (12, -3));
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
@@ -1247,7 +1248,7 @@ mod tests {
         let atlas = atlas(400, 0, 40, 60, (12, -3));
         let missing = Mobile {
             at: Point::new(100, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             frame: 1,
@@ -1272,7 +1273,7 @@ mod tests {
         let atlas = atlas(400, 0, 40, 60, (12, -3));
         let on_its_tile = Mobile {
             at: Point::new(101, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
@@ -1338,7 +1339,7 @@ mod tests {
 
         let walking_north = Mobile {
             at: Point::new(100, 99, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::North,
             frame: 0,
@@ -1387,7 +1388,7 @@ mod tests {
     fn the_needed_animations_are_deduplicated_by_stored_direction() {
         let mobile = |facing: Direction| Mobile {
             at: Point::new(0, 0, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing,
             frame: 0,
@@ -1405,7 +1406,7 @@ mod tests {
             ],
             &no_equip(),
         );
-        assert_eq!(wanted, vec![(400, 4, 0), (400, 4, 1)]);
+        assert_eq!(wanted, vec![(Graphic(400), 4, 0), (Graphic(400), 4, 1)]);
     }
 
     /// An equipment layer draws over the body, resolved through
@@ -1417,7 +1418,7 @@ mod tests {
         let frame = |body: u16| {
             (
                 FrameKey {
-                    body,
+                    body: Graphic(body),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -1436,14 +1437,14 @@ mod tests {
         let equip_conv = EquipConv::parse("400\t7017\t7005\t0\t0\n");
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![worn_on_torso(7017, Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)],
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &equip_conv, None);
         assert_eq!(quads.len(), 2, "the body and its one worn item");
@@ -1466,7 +1467,7 @@ mod tests {
         let frame = |body: u16| {
             (
                 FrameKey {
-                    body,
+                    body: Graphic(body),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -1483,7 +1484,7 @@ mod tests {
         let tunic = Hue(22);
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
@@ -1492,12 +1493,12 @@ mod tests {
             drawn: Gaze::on(Point::new(100, 100, 0)),
             equipment: vec![
                 EquipmentLayer {
-                    graphic: 7017,
+                    graphic: AnimId(7017),
                     hue: tunic,
                     layer: Layer::TUNIC,
                 },
                 EquipmentLayer {
-                    graphic: 7018,
+                    graphic: AnimId(7018),
                     hue: cloak,
                     layer: Layer::CLOAK,
                 },
@@ -1531,7 +1532,7 @@ mod tests {
         let atlas = AnimAtlas::pack([
             (
                 FrameKey {
-                    body: 400,
+                    body: Graphic(400),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -1544,7 +1545,7 @@ mod tests {
             ),
             (
                 FrameKey {
-                    body: 0,
+                    body: Graphic(0),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -1559,18 +1560,18 @@ mod tests {
         .expect("both frames fit");
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![worn_on_torso(0, Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(0), Hue::NONE)],
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&mobile), &no_equip()),
-            vec![(400, 4, 0)],
+            vec![(Graphic(400), 4, 0)],
             "the body alone; body 0 is not an animation anybody asked for",
         );
         assert_eq!(
@@ -1596,7 +1597,7 @@ mod tests {
         let atlas = AnimAtlas::pack([
             (
                 FrameKey {
-                    body: 0x0190,
+                    body: Graphic(0x0190),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -1609,7 +1610,7 @@ mod tests {
             ),
             (
                 FrameKey {
-                    body: 7005,
+                    body: Graphic(7005),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -1622,12 +1623,12 @@ mod tests {
             ),
         ])
         .expect("both frames fit");
-        let dressed = |body: u16| Mobile {
+        let dressed = |body: Graphic| Mobile {
             body,
             equipment: vec![
-                worn_on_torso(7005, Hue::NONE),
+                worn_on_torso(AnimId(7005), Hue::NONE),
                 EquipmentLayer {
-                    graphic: 7005,
+                    graphic: AnimId(7005),
                     hue: Hue::NONE,
                     layer: Layer::HAIR,
                 },
@@ -1635,17 +1636,17 @@ mod tests {
             ..body_at(100, Direction::SouthEast)
         };
 
-        let living = dressed(0x0190);
+        let living = dressed(Graphic(0x0190));
         assert_eq!(
             collect(&[living], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None).len(),
             3,
             "a living body wears both of them: the body, the shirt and the hair",
         );
 
-        let ghost = dressed(0x0192);
+        let ghost = dressed(Graphic(0x0192));
         assert_eq!(
             needed_animations(std::slice::from_ref(&ghost), &no_equip()),
-            vec![(0x0190, 4, 0), (7005, 4, 0)],
+            vec![(Graphic(0x0190), 4, 0), (Graphic(7005), 4, 0)],
             "the hair is not packed either — the pack and the draw must agree",
         );
         assert_eq!(
@@ -1664,7 +1665,7 @@ mod tests {
         let frame = |body: u16| {
             (
                 FrameKey {
-                    body,
+                    body: Graphic(body),
                     group: 4,
                     direction: 0,
                     frame: 0,
@@ -1681,14 +1682,14 @@ mod tests {
         let atlas = AnimAtlas::pack([frame(400), frame(7017)]).expect("both frames fit");
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![worn_on_torso(7017, Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)],
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(
@@ -1707,14 +1708,14 @@ mod tests {
         let atlas = atlas(400, 0, 40, 60, (12, -3));
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
-            body: 400,
+            body: Graphic(400),
             group: 4,
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![worn_on_torso(7017, Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)],
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(

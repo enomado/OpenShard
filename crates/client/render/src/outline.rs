@@ -187,6 +187,20 @@ impl Ring {
         ..Self::DEFAULT
     };
 
+    /// What a click is *holding* — a persistent ring, so it does not answer
+    /// the same question the hover ring does and cannot be confused with it.
+    /// Orange rather than white: the hover ring already owns white, and the
+    /// two are drawn in the same frame whenever the cursor is over something
+    /// other than what was clicked.
+    pub const SELECTED: Self = Self {
+        color: [1.0, 0.6, 0.0, 1.0],
+        width: 1,
+        glow: Some(Glow {
+            radius: 6,
+            color: [1.0, 0.6, 0.0, 0.45],
+        }),
+    };
+
     /// The same ring, thickened enough to survive being minified.
     ///
     /// The mask is the world image and the composite reads it at the surface's

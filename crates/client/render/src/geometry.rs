@@ -67,3 +67,44 @@ impl Rect {
             && other.y < self.y + self.height
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> Rect {
+        Rect { x, y, width, height }
+    }
+
+    #[test]
+    fn overlapping_rectangles_intersect() {
+        let a = rect(0.0, 0.0, 10.0, 10.0);
+        let b = rect(5.0, 5.0, 10.0, 10.0);
+        assert!(a.intersects(&b));
+        assert!(b.intersects(&a), "the test is symmetric in its own arguments");
+    }
+
+    #[test]
+    fn disjoint_rectangles_do_not_intersect() {
+        let a = rect(0.0, 0.0, 10.0, 10.0);
+        let b = rect(20.0, 20.0, 10.0, 10.0);
+        assert!(!a.intersects(&b));
+    }
+
+    /// A shared edge is not a shared pixel — the half-open convention this
+    /// crate's other pixel-space tests already use (`statics::on_screen`).
+    #[test]
+    fn touching_edges_do_not_intersect() {
+        let a = rect(0.0, 0.0, 10.0, 10.0);
+        let b = rect(10.0, 0.0, 10.0, 10.0);
+        assert!(!a.intersects(&b));
+    }
+
+    #[test]
+    fn one_rectangle_inside_another_intersects() {
+        let outer = rect(0.0, 0.0, 100.0, 100.0);
+        let inner = rect(40.0, 40.0, 5.0, 5.0);
+        assert!(outer.intersects(&inner));
+        assert!(inner.intersects(&outer));
+    }
+}

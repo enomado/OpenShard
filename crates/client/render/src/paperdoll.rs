@@ -58,6 +58,7 @@ use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::gumpart::Gumps;
+use openshard_uofiles::tiledata::AnimId;
 
 use crate::gump::{GumpArt, GumpPixel, Picture};
 use crate::mobiles::EquipmentLayer;
@@ -284,7 +285,7 @@ pub const FEMALE_GUMP_OFFSET: u16 = 60_000;
 #[derive(Clone, Copy, Debug)]
 pub struct Wearer<'a> {
     /// Its body id, as the shard named it.
-    pub body: u16,
+    pub body: Graphic,
     /// Its hue, or [`Hue::NONE`] — the body picture's, not the equipment's.
     pub hue: Hue,
     /// What it is wearing: `AnimID`s and layers, exactly as
@@ -403,7 +404,7 @@ fn by_layer(equipment: &[EquipmentLayer]) -> [u16; LAYERS] {
     for item in equipment {
         let index = usize::from(item.layer.0);
         if index < LAYERS {
-            graphics[index] = item.graphic;
+            graphics[index] = item.graphic.0;
         }
     }
     graphics
@@ -638,8 +639,8 @@ fn slide(order: &mut [Layer; LAYERS], from: usize, to: usize) {
 /// A body this does not know is drawn male, which is what the reference falls
 /// through to — a paperdoll of a creature is a rough thing, and no paperdoll at
 /// all would be worse.
-pub fn body_gump(body: u16, hue: Hue) -> (Graphic, Hue) {
-    match body {
+pub fn body_gump(body: Graphic, hue: Hue) -> (Graphic, Hue) {
+    match body.0 {
         0x0191 | 0x0193 => (Graphic(0x000D), hue),
         0x025D => (Graphic(0x000E), hue),
         0x025E => (Graphic(0x000F), hue),
@@ -676,10 +677,16 @@ pub fn body_gump(body: u16, hue: Hue) -> (Graphic, Hue) {
 /// read — the same gap `crate::mobiles`'s resolver has) and the `tileart.uop`
 /// appearance table, which is a modern-client file nothing here opens. Both
 /// answer the same question for bodies this engine does not send yet.
-pub fn gump_of(body: u16, anim_id: u16, female: bool, equip_conv: &EquipConv, gumps: &Gumps) -> Graphic {
+pub fn gump_of(
+    body: Graphic,
+    anim_id: AnimId,
+    female: bool,
+    equip_conv: &EquipConv,
+    gumps: &Gumps,
+) -> Graphic {
     // The dead gargoyle's shroud.
-    let anim_id = match anim_id == 0x03CA && matches!(body, 0x02B6 | 0x02B7) {
-        true => 0x0223,
+    let anim_id = match anim_id == AnimId(0x03CA) && matches!(body.0, 0x02B6 | 0x02B7) {
+        true => AnimId(0x0223),
         false => anim_id,
     };
     let anim_id = match equip_conv.resolve(body, anim_id) {
@@ -688,7 +695,7 @@ pub fn gump_of(body: u16, anim_id: u16, female: bool, equip_conv: &EquipConv, gu
             false => entry.gump.0 - MALE_GUMP_OFFSET,
         },
         Some(entry) => entry.gump.0,
-        None => anim_id,
+        None => anim_id.0,
     };
 
     let wanted = match female {
@@ -777,7 +784,7 @@ pub fn window(
         wearer
             .equipment
             .iter()
-            .find(|item| item.layer == layer && item.graphic != 0)
+            .find(|item| item.layer == layer && item.graphic != AnimId(0))
     };
     let draw = |pictures: &mut Vec<Picture>, item: &EquipmentLayer| {
         let graphic = gump_of(wearer.body, item.graphic, female, equip_conv, gumps);
@@ -876,7 +883,7 @@ mod tests {
     /// One worn item.
     fn worn(layer: Layer, graphic: u16) -> EquipmentLayer {
         EquipmentLayer {
-            graphic,
+            graphic: AnimId(graphic),
             hue: Hue::NONE,
             layer,
         }
@@ -1079,15 +1086,15 @@ mod tests {
     /// carries a hue that is not its own.
     #[test]
     fn the_body_picture_is_the_body_id_and_one_of_them_brings_a_hue() {
-        assert_eq!(body_gump(0x0190, Hue(7)), (Graphic(0x000C), Hue(7)));
-        assert_eq!(body_gump(0x0191, Hue(7)), (Graphic(0x000D), Hue(7)));
+        assert_eq!(body_gump(Graphic(0x0190), Hue(7)), (Graphic(0x000C), Hue(7)));
+        assert_eq!(body_gump(Graphic(0x0191), Hue(7)), (Graphic(0x000D), Hue(7)));
         assert_eq!(
-            body_gump(0x03DB, Hue(7)),
+            body_gump(Graphic(0x03DB), Hue(7)),
             (Graphic(0x000C), Hue(0x03EA)),
             "the one body drawn in a hue of the client's choosing"
         );
         assert_eq!(
-            body_gump(0x0031, Hue(7)),
+            body_gump(Graphic(0x0031), Hue(7)),
             (Graphic(0x000C), Hue(7)),
             "a body nobody has a doll for is drawn male, not skipped"
         );
@@ -1100,8 +1107,8 @@ mod tests {
     #[test]
     fn the_equipconv_gump_column_overrides_the_anim_id_a_paperdoll_draws() {
         let table = EquipConv::parse("400\t100\t200\t300\t0\n");
-        let entry = table.resolve(400, 100).expect("the row above");
-        assert_eq!(entry.graphic, Graphic(200), "the animation's override");
+        let entry = table.resolve(Graphic(400), AnimId(100)).expect("the row above");
+        assert_eq!(entry.graphic, AnimId(200), "the animation's override");
         assert_eq!(entry.gump, Graphic(300), "the paperdoll's, and they differ");
     }
 }

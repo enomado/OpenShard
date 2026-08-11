@@ -25,7 +25,7 @@ use openshard_client_net::transport::{Dial, enter_world_with};
 use openshard_client_net::view::WorldView;
 use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
-use openshard_protocol::gump::{RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
+use openshard_protocol::gump::{GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
 use openshard_protocol::version::ClientVersion;
@@ -143,6 +143,35 @@ pub enum Command {
     SkillLock { skill: RawSkillId, lock: SkillLock },
     /// A skill's use button was pressed.
     UseSkill(RawSkillId),
+    /// A container, paperdoll or dialog was closed on this end.
+    ///
+    /// Nothing goes out on the wire for this either — a close is a fact the
+    /// window already acted on, the same as every other variant here that
+    /// answers a button press rather than a keystroke — but this thread's own
+    /// [`WorldView`] has to hear it too. [`snapshot`] clones that view whole,
+    /// and clones it again on the next packet that changes anything at all,
+    /// which for a paperdoll is as soon as some nearby mobile takes a step: a
+    /// close only the window's own copy knows about is undone the moment that
+    /// snapshot lands, and the window the player just shut reopens itself.
+    CloseWindow(CloseTarget),
+}
+
+/// Which of a locally-closed window's state [`Command::CloseWindow`] drops
+/// from this thread's [`WorldView`].
+///
+/// One variant per kind [`WorldView`] itself distinguishes a close for — see
+/// [`WorldView::paperdoll_closed`], [`WorldView::container_closed`] and
+/// [`WorldView::gump_closed`]. Not [`WindowSubject`][crate::WindowSubject]:
+/// that type also names a skills tree, which is this client's own state and
+/// has nothing in the view to forget.
+#[derive(Clone, Copy, Debug)]
+pub enum CloseTarget {
+    /// A paperdoll, named by the mobile it draws.
+    Paperdoll(Serial),
+    /// A container, named by its own serial.
+    Container(Serial),
+    /// A dialog, named by the gump id the shard opened it under.
+    Gump(GumpId),
 }
 
 /// A dialog answered: which window, which button, and what was set on it.
@@ -196,6 +225,12 @@ impl Link {
     /// Use an object — the double-click.
     pub fn use_object(&self, serial: Serial) {
         let _ = self.commands.send(Command::Use(serial));
+    }
+
+    /// Tell the shard thread a window closed, so its own view forgets it too.
+    /// See [`Command::CloseWindow`].
+    pub fn close_window(&self, target: CloseTarget) {
+        let _ = self.commands.send(Command::CloseWindow(target));
     }
 
     /// Ask for a stance. See [`Command::WarMode`].
@@ -472,6 +507,24 @@ async fn play<D: Dial>(
                         reply.switches,
                         reply.text_entries,
                     ),
+                    // Nothing crosses the wire for a close — see
+                    // `Command::CloseWindow` — so this thread's own view is
+                    // the whole of what there is to do, and there are no
+                    // bytes to send after it.
+                    Command::CloseWindow(target) => {
+                        match target {
+                            CloseTarget::Paperdoll(serial) => {
+                                view.paperdoll_closed(serial);
+                            }
+                            CloseTarget::Container(serial) => {
+                                view.container_closed(serial);
+                            }
+                            CloseTarget::Gump(gump_id) => {
+                                view.gump_closed(gump_id);
+                            }
+                        }
+                        continue;
+                    }
                 };
                 if let Err(error) = socket.send(&bytes).await {
                     return error.to_string();

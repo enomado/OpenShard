@@ -314,10 +314,17 @@ pub struct StaticTile {
     /// (a race or gender variant); an ordinary shirt has no such entry and
     /// draws from this field directly. Read past for most of this reader's
     /// life, the same way `layer` was, because nothing asked for it either.
-    pub anim_id: u16,
+    pub anim_id: AnimId,
     /// Its name.
     pub name: String,
 }
+
+/// A worn item's picture, in the body-animation index space `anim.mul` reads —
+/// [`StaticTile::anim_id`]'s own space, and unrelated to that tile's art
+/// graphic. See [`crate::equipconv::EquipConv`] for the table that overrides
+/// it per body.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct AnimId(pub u16);
 
 /// `tiledata.mul` could not be read.
 #[derive(Debug)]
@@ -539,7 +546,7 @@ impl TileData {
             flags,
             weight: raw[fixed],
             layer: raw[fixed + 1],
-            anim_id: u16::from_le_bytes([raw[fixed + 6], raw[fixed + 7]]),
+            anim_id: AnimId(u16::from_le_bytes([raw[fixed + 6], raw[fixed + 7]])),
             height: raw[fixed + 12],
             name: read_name(&raw[fixed + 13..]),
         })
@@ -729,7 +736,11 @@ mod tests {
         // Between the unknown u32 and the hue, on Sphere's own layout — a
         // worn item's *default* drawn graphic, and a different index space
         // from this tile's own art.
-        assert_eq!(wall.anim_id, 0xABCD, "anim id at 14, after the unknown u32");
+        assert_eq!(
+            wall.anim_id,
+            AnimId(0xABCD),
+            "anim id at 14, after the unknown u32"
+        );
         assert!(wall.flags.is_blocking());
     }
 

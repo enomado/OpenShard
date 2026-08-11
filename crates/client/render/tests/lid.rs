@@ -208,6 +208,7 @@ fn draw(
         draw: frame::Draw::EVERYTHING,
         view: View::Lit,
         dead: false,
+        player_rect: None,
     };
 
     let frame::Frame {

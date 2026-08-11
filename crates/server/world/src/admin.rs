@@ -12,7 +12,8 @@
 use openshard_entities::EntityId;
 use openshard_gateway::ConnectionId;
 use openshard_protocol::gump::{
-    ButtonId, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint, GumpResponse,
+    ButtonId, CloseGump, GumpAnswer, GumpButton, GumpDisplay, GumpId, GumpKey, GumpLayout, GumpPoint,
+    GumpResponse,
 };
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_state::WorldState;
@@ -130,6 +131,17 @@ pub fn open_menu(state: &mut WorldState, actor: EntityId) {
         .registry
         .serial_of(actor)
         .map_or(GumpKey::STANDALONE, GumpKey::on);
+    // Close then draw, the pattern every other gump follows (see
+    // `healer.rs`'s `open_healer_gump`): a client told to draw twice for the
+    // same id draws two windows, and a right-click only ever takes the
+    // topmost off screen.
+    state.send_packet(
+        connection,
+        &ServerPacket::CloseGump(CloseGump {
+            gump_id: ADMIN_GUMP,
+            button: ButtonId::CLOSE_BOX,
+        }),
+    );
     let packet = ServerPacket::GumpDisplay(GumpDisplay {
         serial,
         gump_id: ADMIN_GUMP,

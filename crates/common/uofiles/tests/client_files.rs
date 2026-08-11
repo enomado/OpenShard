@@ -706,7 +706,7 @@ fn a_humans_standing_animation_is_where_the_index_says() {
     // 400 is the male human body, and 4 is `PeopleAnimationGroup.Stand`.
     for direction in 0..DIRECTIONS {
         let frames = anim
-            .frames(400, 4, direction)
+            .frames(Graphic(400), 4, direction)
             .expect("a well-formed entry")
             .unwrap_or_else(|| panic!("body 400 has no standing animation facing {direction}"));
         assert!(
@@ -760,12 +760,12 @@ fn the_animation_index_is_sparse_but_the_bodies_that_exist_are_dense() {
     // Standing, facing 0, for every body the file could hold.
     let present = (0..1000u16)
         .filter(|body| {
-            let group = match BodyKind::of(*body) {
+            let group = match BodyKind::of(Graphic(*body)) {
                 BodyKind::Monster => 1,
                 BodyKind::Animal => 2,
                 BodyKind::Human => 4,
             };
-            anim.has_frames(*body, group, 0)
+            anim.has_frames(Graphic(*body), group, 0)
         })
         .count();
     assert!(

@@ -265,6 +265,7 @@ fn assemble_and_draw(
         draw: frame::Draw::EVERYTHING,
         view: View::Lit,
         dead: false,
+        player_rect: None,
     };
 
     let summary = inputs.summary();

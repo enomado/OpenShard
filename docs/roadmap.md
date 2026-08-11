@@ -2695,19 +2695,41 @@ riding along with this one.
   static graphic "are different index spaces, which is a mistake a positional
   argument list would accept in silence" — and then takes the mistake three
   thousand lines later.
-- **`Wanted::animations: BTreeSet<(u16, u8, u8)>`** (lib.rs:792) — body, group
-  and stored direction, sitting directly under the doc comment quoted above,
-  in the one field of that struct that is not a `BTreeSet<Graphic>`. `Graphic`
-  and `openshard_protocol::direction::Direction` cover two of the three; the
-  animation group has no named type yet and is the same missing type
-  `crowd::Tracked::group` names below. Blocked in part on `render`:
-  `render::mobiles::Mobile::body` is a `u16`, so `app` converts `Graphic` →
-  `u16` writing it and `u16` → `Graphic` reading it back (lib.rs:2692, 2718).
-  The round trip is the tell, and its far end is on the other side of this
-  sweep's boundary.
-- **`app::crowd::Tracked`** — `body: u16` could become `Graphic` (the type
-  `net::view::Mobile::body` already uses); `group: u8` is an animation group
-  with no named type yet.
+- ~~**`render::mobiles::Mobile::body` / `app::crowd::Tracked::body` were
+  `u16`.**~~ Fixed: both are `Graphic` now, and the `Graphic` → `u16` → `Graphic`
+  round trip through `crowd::Crowd::see`/`snap` is gone — `app` carries
+  `Graphic` straight through. Also fixed as part of the same pass:
+  `EquipConv::resolve(body: u16, item_anim_id: u16)` — the exact
+  same-width-adjacent-params shape `docs/style.md`'s newtype section uses as
+  its worked example — now takes `Graphic` and a new `AnimId` (below);
+  `mobiles::EquipmentLayer::graphic` and `paperdoll::{Wearer::body,
+  gump_of, body_gump}` followed the same body/anim-id split.
+  `Wanted::animations: BTreeSet<(u16, u8, u8)>` (lib.rs:792) is **not**
+  fixed — `group: u8` still has no named type (see below), so the tuple
+  stays raw rather than becoming a struct with one untyped field; revisit
+  once `group` is named.
+- **`app::crowd::Tracked::group: u8`** — an animation group with no named
+  type yet. `BodyKind::{standing, walking, running, ...}` all return bare
+  `u8` from the same three-numbering table `docs/style.md`'s "three
+  enumerations, same number means three different actions" comment already
+  warns about — a `Group` newtype here would be a `BodyKind`-scoped one, not
+  a global animation-group id.
+- ~~**`openshard_uofiles::tiledata::AnimId(pub u16)`** — new, this pass: the
+  worn-item picture in the body-animation index space
+  (`StaticTile::anim_id`, `EquipConvEntry::graphic`,
+  `EquipmentLayer::graphic`), split out from `Graphic` because
+  `paperdoll.rs`'s own module doc already named it a third, unrelated index
+  space that `Graphic` was being reused for.~~ Fixed, and followed all the
+  way into the atlas: `FrameKey::body`, `AnimAtlas`'s `asked` set and
+  `build`/`add`'s `wanted` iterator, `AnimAtlas::frame_count`, and
+  `Anim::{frames, has_frames}` (`common/uofiles`) all take `Graphic` now
+  too, and `Wanted::animations` (lib.rs:926) followed since it feeds the
+  same atlas. `animation_body` no longer opens back to `u16` at any of its
+  call sites — `mobiles::place`, `needed_animations` and
+  `App::advance_groups`'s `frame_count` lookup all carry `Graphic` straight
+  through. What is left raw on purpose: `FrameKey::{group, direction,
+  frame}` and `Anim::{frames, has_frames, entry}`'s `group`/`direction` —
+  the untyped-`u8`-group gap the next backlog item names, not this one's.
 - **`app::desk`** — `Frame`'s `x`/`y`/`width`/`height` are physical window
   pixels, `Panel`'s are logical egui points; same shape, different unit, no
   type keeps them apart. Low priority — it's window-chrome geometry, not game
@@ -2929,6 +2951,17 @@ avoid (see `scaled_gump_quads`'s doc). A real size knob for the TTF path would
 have to grow the atlas's own rasterization height instead of the finished
 quad — a second, differently-shaped feature, not built here because nobody
 has asked for a bigger *TrueType* chat yet, only a bigger classic one.
+
+### Fixed, but the shape is a patch — see `client_window_state.md`
+
+A locally-closed container, paperdoll or dialog reopened itself a beat
+later (2026-08-11): `App`'s own copy of `WorldView` learned of the close,
+the shard thread's copy did not, and the next packet that changed anything
+nearby cloned the still-open copy over it. Patched with
+`link::Command::CloseWindow` — the shard thread's copy is now told too — but
+that is two mutable copies of "what is open" kept in step by remembering to
+write both, not by construction. [`client_window_state.md`](client_window_state.md)
+is the living plan for the honest fix.
 
 ### The route a Ctrl-drag draws, and what is left around it
 

@@ -355,6 +355,7 @@ fn what_the_lighting_pass_costs_at_the_widest_zoom() {
         &static_atlas,
         &Cutaway::OPEN,
         &met_grid,
+        None,
     );
     let static_quads = static_geometry.quads;
     // `docs/gbuffer.md` step 2: the id width has to be sized against a real
