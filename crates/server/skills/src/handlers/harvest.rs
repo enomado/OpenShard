@@ -413,7 +413,7 @@ fn with_bank<T>(
         .get_mut(&facet)
         .expect("an entity's facet is always loaded")
         .banks;
-    act(banks.get(def, at.x, at.y, facet.0, now, rng), rng)
+    act(banks.get(def, at.x, at.y, facet, now, rng), rng)
 }
 
 /// Which vein the bank under a spot holds.
@@ -543,11 +543,11 @@ fn bad_target_line(state: &WorldState, tool: EntityId) -> ClilocId {
 #[must_use]
 pub fn resolve_harvest_target(
     state: &WorldState,
-    facet: u8,
+    facet: Facet,
     at: Point,
     graphic: u16,
 ) -> Option<HarvestTarget> {
-    let terrain = state.facets.get(&Facet(facet))?.live_terrain();
+    let terrain = state.facets.get(&facet)?.live_terrain();
     if graphic == 0 {
         return Some(HarvestTarget {
             at,

@@ -289,13 +289,53 @@ converting the three ready callers and leaving `tick.rs` as a lone `.0`
 holdout. Count: `items/spawn.rs` 2 of 4 signatures converted (`spawn_item`/
 `spawn_container` stay bare, blocked); `drag.rs` 3→0, `trade.rs` 1→0.
 
+## `state::harvest` + `skills::handlers::harvest` — done
+
+Both halves went together, as F3 scheduled them, and both were the pilot's
+shape with no blocker:
+
+- `state::harvest::Banks::get` and its private `default_vein` →
+  `facet: Facet`. `default_vein` keeps one `.0`, at the arithmetic leaf where
+  ServUO's seed wants the *number* (`u64::from(facet.0) * 3`) — the same
+  reading as F2's `uofiles::map` carve-out, except here the domain type is
+  carried all the way to the expression that consumes it rather than being
+  dropped at the signature. That is the distinction worth keeping: a `.0` on
+  the last line of a computation is not the same defect as a `.0` on a
+  parameter.
+- `skills::handlers::harvest.rs`'s `resolve_harvest_target` → `facet: Facet`,
+  dropping its `state.facets.get(&Facet(facet))` rewrap, and the `banks.get`
+  call site's `facet.0`. Its one non-test caller,
+  `world::tick/staff.rs`'s `TargetPurpose::Harvest` arm, already held a
+  `Facet` from `self.state.facet_of(actor)` — found by the workspace-wide
+  caller grep pilot amendment 3 asks for, in a crate (`world`) whose own
+  stage has not started; the one-line call site went with this stage for the
+  same reason `quests` went with the pilot.
+- As predicted above, `spawn_item`'s call site in the same file stays
+  `facet.0` — that function is blocked on `world`'s `Command::SpawnItem`.
+
+Counts: `state/harvest.rs` 2 signatures → 0 bare (plus 14 test call sites),
+`skills/handlers/harvest.rs` 1 → 0, `world/tick/staff.rs` one `.0` dropped,
+`world/tick/harvest_tests.rs` 6 call sites wrapped.
+
+## Amendment: `state`'s real stage is four component structs, not `harvest.rs`
+
+The F3 table counted `state` as "`harvest.rs`, 2". With those converted, the
+crate's remaining bare `facet: u8` is four **component** fields —
+`components.rs`'s `RuneMark`, `RunebookEntry`, `Moongate`, `InRegion` — none
+of which the original survey saw (it grepped signatures, and these are
+struct fields on saved components). `RuneMark` was already known from the
+`magic` amendment below; the other three are new here. All four are read by
+`world::tick/{travel,gates,regions}.rs` and written by
+`persistence::{record,sqlite}.rs`, so they are *both* the `world` stage's
+dependency and an F2 disk-seam question: whether the record structs keep the
+`u8` (they should, per F2) while the live component carries `Facet`.
+**`state`'s stage is therefore not done — it is merged into `world`'s**,
+because none of the four can convert without their `world` readers in the
+same commit (F5). Do not treat "`state::harvest` done" as "`state` done".
+
 ## What's next
 
-`state::harvest.rs` + `skills::handlers::harvest.rs` — check each function
-for the same `Command`/`SpawnSpec`-shaped blocker before converting; already
-know `skills::handlers::harvest.rs`'s `spawn_item` call site itself will stay
-`facet.0` regardless (see above), so this stage is about whichever of its own
-signatures are self-contained. `magic` moves after `state`/`world` clear
+`magic` moves after `state`/`world` clear
 `RuneMark` and `travel_to`, not in F3's original position — see the amendment
 above. `world` remains the big one, and is now also where `Command::
 SpawnMobile`/`SpawnItem`/`SpawnContainer`/`RegisterRegions` need to convert

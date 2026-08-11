@@ -223,12 +223,14 @@ fn a_pickaxe_swung_at_a_mountain_yields_ore_and_empties_the_vein() {
         "no ore in the pack"
     );
     // Felucca pays double, so the vein is two down, not one.
-    let bank_left =
-        world
-            .state
-            .facet_state_mut(Facet(0))
-            .banks
-            .get(before, START.0 + 1, START.1, 0, 0, &mut Rng::new(1));
+    let bank_left = world.state.facet_state_mut(Facet(0)).banks.get(
+        before,
+        START.0 + 1,
+        START.1,
+        Facet(0),
+        0,
+        &mut Rng::new(1),
+    );
     assert_eq!(
         bank_left.current,
         bank_left.maximum - before.consumed_felucca,
@@ -285,7 +287,7 @@ fn a_vein_runs_dry_and_says_so() {
         let def = definition(HarvestKind::Ore, true);
         let mut rng = Rng::new(1);
         let banks = &mut world.state.facet_state_mut(Facet(0)).banks;
-        let bank = banks.get(def, START.0 + 1, START.1, 0, 0, &mut rng);
+        let bank = banks.get(def, START.0 + 1, START.1, Facet(0), 0, &mut rng);
         let all = bank.maximum;
         bank.consume(def, all, 0, &mut rng);
     }
@@ -431,19 +433,19 @@ fn a_client_cannot_name_a_static_that_is_not_there() {
     ground(&mut world, GRASS, None);
     let at = Point::new(START.0 + 1, START.1, 0);
     assert!(
-        skills::resolve_harvest_target(&world.state, 0, at, TREE).is_none(),
+        skills::resolve_harvest_target(&world.state, Facet(0), at, TREE).is_none(),
         "a tree the map does not have should resolve to nothing"
     );
     // With the tree really there, at the z the client claims, it resolves.
     ground(&mut world, GRASS, Some((TREE, 0)));
-    let resolved = skills::resolve_harvest_target(&world.state, 0, at, TREE).expect("a tree");
+    let resolved = skills::resolve_harvest_target(&world.state, Facet(0), at, TREE).expect("a tree");
     assert_eq!(resolved.source, TileSource::Static);
     assert_eq!(resolved.tile, TREE);
     // And a claim at the wrong height is refused too — ServUO matches id *and* z.
     let wrong_z = Point::new(START.0 + 1, START.1, 40);
-    assert!(skills::resolve_harvest_target(&world.state, 0, wrong_z, TREE).is_none());
+    assert!(skills::resolve_harvest_target(&world.state, Facet(0), wrong_z, TREE).is_none());
     // Bare ground reads its tile from the map, because the client sends none.
-    let land = skills::resolve_harvest_target(&world.state, 0, at, 0).expect("the ground");
+    let land = skills::resolve_harvest_target(&world.state, Facet(0), at, 0).expect("the ground");
     assert_eq!((land.source, land.tile), (TileSource::Land, GRASS));
 }
 

@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 
 use openshard_protocol::wire::{ClilocId, Graphic, Hue, SoundId};
+use openshard_protocol::world::Facet;
 
 use crate::rng::Rng;
 use crate::runtime::TICKS_PER_SECOND;
@@ -339,7 +340,15 @@ impl Banks {
     /// `facet` only seeds the positional vein, so two facets' banks over the same
     /// coordinates do not hold the same ore — they are already separate entries,
     /// since `Banks` is per-facet.
-    pub fn get(&mut self, def: &HarvestDef, x: u16, y: u16, facet: u8, now: u64, rng: &mut Rng) -> &mut Bank {
+    pub fn get(
+        &mut self,
+        def: &HarvestDef,
+        x: u16,
+        y: u16,
+        facet: Facet,
+        now: u64,
+        rng: &mut Rng,
+    ) -> &mut Bank {
         let key = (def.kind, x / def.bank_w, y / def.bank_h);
         let bank = self.banks.entry(key).or_insert_with(|| {
             let span = u32::from(def.max_total - def.min_total) + 1;
@@ -401,11 +410,14 @@ impl Bank {
 /// a vein rolled on the world's `Rng` would move at every restart, and a valorite
 /// vein that wanders is a different game. This is a small integer hash over the
 /// same three inputs, which has the property ServUO's arithmetic was there for.
-fn default_vein(def: &HarvestDef, bank_x: u16, bank_y: u16, facet: u8) -> VeinIdx {
+fn default_vein(def: &HarvestDef, bank_x: u16, bank_y: u16, facet: Facet) -> VeinIdx {
     if def.veins.len() == 1 {
         return VeinIdx(0);
     }
-    let mut h = u64::from(bank_x) * 17 + u64::from(bank_y) * 11 + u64::from(facet) * 3;
+    // `.0` at the arithmetic leaf: the seed wants the facet *number*, the way
+    // ServUO's `map * 3` term did. The domain type is carried to here and no
+    // further, which is the point — nothing downstream of this line is a facet.
+    let mut h = u64::from(bank_x) * 17 + u64::from(bank_y) * 11 + u64::from(facet.0) * 3;
     // A cheap avalanche (splitmix64's finaliser): the raw sum alone is smooth
     // enough that neighbouring blocks would share a vein in stripes.
     h = h.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -846,13 +858,14 @@ mod tests {
         let def = definition(HarvestKind::Ore, true);
         for (x, y) in [(0, 0), (37, 12), (600, 601), (5000, 4096)] {
             assert_eq!(
-                default_vein(def, x, y, 0),
-                default_vein(def, x, y, 0),
+                default_vein(def, x, y, Facet(0)),
+                default_vein(def, x, y, Facet(0)),
                 "the vein at ({x}, {y}) moved"
             );
         }
         // And two facets do not agree, or every dungeon would mirror Felucca.
-        let differ = (0..64u16).any(|n| default_vein(def, n, n, 0) != default_vein(def, n, n, 1));
+        let differ =
+            (0..64u16).any(|n| default_vein(def, n, n, Facet(0)) != default_vein(def, n, n, Facet(1)));
         assert!(differ, "the facet seed does nothing");
     }
 
@@ -867,7 +880,7 @@ mod tests {
         let mut seen = [0usize; 9];
         for x in 0..64u16 {
             for y in 0..64u16 {
-                seen[default_vein(def, x, y, 0).0] += 1;
+                seen[default_vein(def, x, y, Facet(0)).0] += 1;
             }
         }
         assert!(
@@ -886,19 +899,22 @@ mod tests {
         let mut rng = Rng::new(1);
         let mut banks = Banks::default();
         let full = {
-            let bank = banks.get(def, 10, 10, 0, 0, &mut rng);
+            let bank = banks.get(def, 10, 10, Facet(0), 0, &mut rng);
             bank.maximum
         };
         // Empty it a swing at a time, from tick zero.
         for _ in 0..full {
-            let bank = banks.get(def, 10, 10, 0, 0, &mut rng);
+            let bank = banks.get(def, 10, 10, Facet(0), 0, &mut rng);
             assert!(bank.current > 0);
             bank.consume(def, 1, 0, &mut rng);
         }
-        assert_eq!(banks.get(def, 10, 10, 0, 0, &mut rng).current, 0);
+        assert_eq!(banks.get(def, 10, 10, Facet(0), 0, &mut rng).current, 0);
         // Still empty a minute later; full again after the longest window.
-        assert_eq!(banks.get(def, 10, 10, 0, MINUTE, &mut rng).current, 0);
-        assert_eq!(banks.get(def, 10, 10, 0, 20 * MINUTE, &mut rng).current, full);
+        assert_eq!(banks.get(def, 10, 10, Facet(0), MINUTE, &mut rng).current, 0);
+        assert_eq!(
+            banks.get(def, 10, 10, Facet(0), 20 * MINUTE, &mut rng).current,
+            full
+        );
     }
 
     #[test]
@@ -909,14 +925,14 @@ mod tests {
         let mut rng = Rng::new(7);
         let mut banks = Banks::default();
         banks
-            .get(def, 16, 16, 0, 0, &mut rng)
+            .get(def, 16, 16, Facet(0), 0, &mut rng)
             .consume(def, 5, 0, &mut rng);
         assert_eq!(banks.len(), 1);
-        let neighbour = banks.get(def, 23, 23, 0, 0, &mut rng);
+        let neighbour = banks.get(def, 23, 23, Facet(0), 0, &mut rng);
         assert_eq!(neighbour.current, neighbour.maximum - 5);
         assert_eq!(banks.len(), 1);
         // And the next block along is its own.
-        banks.get(def, 24, 16, 0, 0, &mut rng);
+        banks.get(def, 24, 16, Facet(0), 0, &mut rng);
         assert_eq!(banks.len(), 2);
     }
 
