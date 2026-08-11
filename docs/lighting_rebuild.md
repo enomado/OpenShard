@@ -3811,7 +3811,17 @@ outlive the track and belong in this list, since this is the live one:
   doc carries the table. **What is left of this entry is the original defect**:
   the model's riser sits ~5 px from the drawn joint, which is a *placement*
   problem — where `boundary_columns` puts a crest — and neither the tie-break nor
-  the cap moves it.
+  the cap moves it. The move that would is using the found edge to **correct the
+  profile** rather than only to choose between axes: the same three calls that
+  measure a residual can solve for the tread heights that minimise it, at which
+  point `interiors_agree` stops being a tie-break and starts being the fit.
+  <br>
+  *Two smaller things the gate's own run turned up, neither closed.* The
+  tie-break picks with `max_by`, so **exactly equal** interior agreements are
+  still resolved by iteration order — rare now that the measure is continuous,
+  but nothing states a rule for it. And two-tread fits agree with their art at
+  5.76 px against the three-tread fits' 3.98, which is unexplained and may just
+  be that the two-tread population is mostly not stairs.
   <br>
   **Two earlier framings died on the way here and are worth the lines.** *The
   boxes disagree about the climb axis* — six graphics, four axes — is true and is
