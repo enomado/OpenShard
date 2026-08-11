@@ -388,6 +388,19 @@ handlers), `events.rs` 1 → 0. Call sites updated: `world/tick/travel_tests.rs`
 `items/src/drag.rs` (0 — both sides of `RunebookEntry { facet: mark.facet }`
 moved together, which is the pilot's shape at its purest).
 
+## Backlog: `Facet` has neither `Display` nor `tracing::Value`
+
+Found while doing the stage above, and the reason three `.0`s survive it that
+are not seams: `magic::describe`'s `format!`, and `restore_regions`'s two log
+lines, which had to become `facet = facet.0` because `warn!(facet, ..)` needs
+`tracing::Value` and the newtype has neither that nor `Display`. Every stage
+left ahead of this one has log lines of the same shape (`world::tick/
+regions.rs`, `gm.rs`, `spawner.rs` all log a facet), so the count only grows.
+`Display` is the smaller of the two and would settle both — `tracing` accepts
+a `Display` field through `%facet`. Not done here because it is a `protocol`
+change and this stage was already three crates wide; do it before `world`'s
+stage rather than after, so that stage's log lines are written once.
+
 ## What's next
 
 `world` is the remainder and is still the big one: `tick.rs`, `gm.rs`,
