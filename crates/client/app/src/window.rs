@@ -1,0 +1,819 @@
+//! The window and its GPU surface: what a run needs before it can draw a
+//! single frame, and nothing about what gets drawn on it.
+//!
+//! [`StartupError`] is why opening one can fail, [`Atlases`] and [`Wanted`]
+//! are the art a frame's atlases are grown from, and [`Screen`] is
+//! everything built once a window exists — the surface, the device, every
+//! render pass. [`App::create_window`] is the one place all of it comes
+//! together; [`App::wanted_now`], [`App::wanted_since`] and
+//! [`App::wanted_in`] are the questions [`Screen::atlases`] is grown to
+//! answer.
+
+use std::collections::BTreeSet;
+use std::fmt;
+use std::sync::Arc;
+
+use openshard_client_render::animate::StaticAnimations;
+use openshard_client_render::atlas::{AnimAtlas, AtlasError, LandAtlas, StaticAtlas, TexmapAtlas, TtfAtlas};
+use openshard_client_render::blit::{self, Blit};
+use openshard_client_render::camera::{Camera, TileBounds};
+use openshard_client_render::gbuffer::Gbuffer;
+use openshard_client_render::gump::GumpRenderer;
+use openshard_client_render::hue::HueRamp;
+use openshard_client_render::items::{self, GroundItem};
+use openshard_client_render::mobiles::{self, Mobile};
+use openshard_client_render::outline::{self, Outline};
+use openshard_client_render::renderer::{self, GroundRenderer, MeshFaceRenderer, SpriteRenderer};
+use openshard_client_render::select::Select;
+use openshard_client_render::solids::SolidsRenderer;
+use openshard_client_render::{ground, light, statics};
+use openshard_protocol::wire::Graphic;
+use openshard_uofiles::anim::Anim;
+use openshard_uofiles::art::Art;
+use openshard_uofiles::equipconv::EquipConv;
+use openshard_uofiles::map::Map;
+use openshard_uofiles::texmaps::TexMaps;
+use openshard_uofiles::tiledata::TileData;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::Window;
+
+use crate::app::App;
+use crate::{TTF_BASE_PIXEL_HEIGHT, desk, profile, shell};
+
+/// Why the client could not start.
+///
+/// A binary can afford to print and exit, but the reasons are still types: a
+/// `String` error loses which of these happened the moment it is formatted, and
+/// "no GPU" and "no client files" want different answers from whoever hits them.
+#[derive(Debug)]
+pub(crate) enum StartupError {
+    /// No window could be created.
+    Window(winit::error::OsError),
+    /// The window has no surface wgpu can draw to.
+    Surface(wgpu::CreateSurfaceError),
+    /// No adapter, or no device from it.
+    NoDevice(String),
+    /// The surface offers only sRGB formats, which would change the art's
+    /// colours on their way to the screen.
+    OnlySrgb,
+    /// The land art would not pack.
+    Atlas(openshard_client_render::atlas::AtlasError),
+}
+
+impl fmt::Display for StartupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Window(source) => write!(f, "creating a window: {source}"),
+            Self::Surface(source) => write!(f, "creating a surface: {source}"),
+            Self::NoDevice(detail) => write!(f, "no GPU to draw with: {detail}"),
+            Self::OnlySrgb => write!(
+                f,
+                "this surface offers only sRGB formats, which would alter the art's colours",
+            ),
+            Self::Atlas(source) => write!(f, "packing land art: {source}"),
+        }
+    }
+}
+
+/// Every picture a frame can sample, packed together.
+///
+/// One value rather than four fields because they are grown together and used
+/// together: a frame drawn from a land atlas of one camera and a static atlas
+/// of another is a frame with things standing on ground that is not there.
+///
+/// # They grow; they are not rebuilt
+///
+/// An atlas used to be thrown away and packed again the moment the camera asked
+/// for a graphic it did not hold, which is a full re-read of the art plus three
+/// new pipelines — during a scroll, every few tiles, because a scroll is exactly
+/// what keeps introducing graphics. Now [`Atlases::grow`] adds what is new to
+/// what is already there and [`Atlases::upload`] sends the rows that changed.
+///
+/// The rebuild survives as the answer to *full* — see [`Atlases::grow`]'s note —
+/// which is the one thing growing cannot do for itself.
+pub(crate) struct Atlases {
+    pub(crate) land: LandAtlas,
+    pub(crate) texmaps: TexmapAtlas,
+    pub(crate) statics: StaticAtlas,
+    pub(crate) mobiles: AnimAtlas,
+}
+
+/// What a frame wants packed, gathered before anything is read from disk.
+///
+/// Three sets rather than three arguments, because they travel together
+/// everywhere and two of them are keyed by numbers that look alike: a land
+/// graphic and a static graphic are both a `Graphic` and are different index
+/// spaces, which is a mistake a positional argument list would accept in
+/// silence.
+#[derive(Default)]
+pub(crate) struct Wanted {
+    /// Land graphics, which feed the land atlas and the texture atlas both.
+    pub(crate) land: BTreeSet<Graphic>,
+    /// Static graphics: what the map has standing on the ground, and what the
+    /// server has dropped on top of it.
+    pub(crate) statics: BTreeSet<Graphic>,
+    /// Body, group and stored direction for everyone on screen.
+    pub(crate) animations: BTreeSet<(Graphic, u8, u8)>,
+}
+
+impl Atlases {
+    /// Pack a set from nothing.
+    ///
+    /// The startup path, and the recovery path: an atlas that has filled up is
+    /// replaced by one built for what is on screen *now*, which is where the
+    /// eviction lives. Growing has no other way to reclaim a graphic the camera
+    /// walked away from ten minutes ago, and rebuilding used to do it by
+    /// accident on every miss.
+    pub(crate) fn build(
+        art: &Art,
+        surfaces: Option<&openshard_client_render::arttable::ArtTable>,
+        texmaps: &TexMaps,
+        tiledata: &TileData,
+        anim: &mut Anim,
+        wanted: &Wanted,
+    ) -> Result<Self, AtlasError> {
+        Ok(Self {
+            land: LandAtlas::build(art, wanted.land.iter().copied())?,
+            texmaps: TexmapAtlas::build(texmaps, tiledata, wanted.land.iter().copied())?,
+            // The table is cloned into the atlas rather than borrowed: an atlas
+            // outlives the frame it was built in and packs more art on every
+            // scroll, so it has to keep what it reads a graphic's surface out of.
+            statics: StaticAtlas::build_from(art, wanted.statics.iter().copied(), surfaces.cloned())?,
+            mobiles: AnimAtlas::build(anim, wanted.animations.iter().copied())?,
+        })
+    }
+
+    /// Add whatever of `wanted` is not packed yet, reading only that.
+    ///
+    /// A graphic already offered costs a lookup in a `BTreeSet` and no file
+    /// access at all — including one the client ships no art for, which is the
+    /// case that used to make "is the atlas stale" answer yes for ever.
+    ///
+    /// [`AtlasError::Full`] leaves the atlases holding whatever fitted, and the
+    /// caller is expected to throw them away and [`build`](Self::build) for the
+    /// current frame. That is not a lost cause: it is the eviction, and it is
+    /// the only thing that stops an atlas which only ever grows from filling up
+    /// and staying full.
+    pub(crate) fn grow(
+        &mut self,
+        art: &Art,
+        texmaps: &TexMaps,
+        tiledata: &TileData,
+        anim: &mut Anim,
+        wanted: &Wanted,
+    ) -> Result<(), AtlasError> {
+        // Both halves of a ground quad from the same set, in the same growth: a
+        // land graphic in one atlas and not the other draws a slope textured
+        // with the terrain next door.
+        self.land.add(art, wanted.land.iter().copied())?;
+        self.texmaps.add(texmaps, tiledata, wanted.land.iter().copied())?;
+        self.statics.add(art, wanted.statics.iter().copied())?;
+        self.mobiles.add(anim, wanted.animations.iter().copied())?;
+        Ok(())
+    }
+
+    /// Send whatever grew to the textures already bound.
+    ///
+    /// Nothing at all on the ordinary frame, and a band of rows on the frame a
+    /// camera crossed a tile — where this used to be three pipelines and 48MB.
+    pub(crate) fn upload(
+        &mut self,
+        queue: &wgpu::Queue,
+        ground: &GroundRenderer,
+        statics: &SpriteRenderer,
+        mobiles: &SpriteRenderer,
+    ) {
+        ground.upload_changes(queue, &mut self.land, &mut self.texmaps);
+        if let Some(rows) = self.statics.take_dirty() {
+            statics.upload_rows(queue, self.statics.pixels(), rows);
+        }
+        if let Some(rows) = self.mobiles.take_dirty() {
+            mobiles.upload_rows(queue, self.mobiles.pixels(), rows);
+        }
+    }
+}
+
+/// What a set of tile rectangles wants packed, gathered from field references.
+///
+/// Free rather than a method on `App` because the frame that needs it most is
+/// the one holding a `&mut` borrow of the window, where no `&self` method can be
+/// called — and threading the pieces explicitly is cheaper than splitting the
+/// struct to please the borrow checker.
+pub(crate) fn wanted_in(
+    map: &Map,
+    bands: impl IntoIterator<Item = TileBounds>,
+    items: &[GroundItem],
+    drawn: &[Mobile],
+    animations: &StaticAnimations,
+    equip_conv: &EquipConv,
+) -> Wanted {
+    let mut wanted = Wanted::default();
+    for band in bands {
+        ground::graphics_in(map, band, &mut wanted.land);
+        // Every graphic of every cycle, and not the frame on screen: an atlas
+        // grown for what a fire is showing this instant is an atlas grown again
+        // when it stops showing it. See `StaticAnimations::cycle`.
+        statics::graphics_in(map, band, animations, &mut wanted.statics);
+    }
+    wanted.statics.extend(items::needed_graphics(items, animations));
+    wanted
+        .animations
+        .extend(mobiles::needed_animations(drawn, equip_conv));
+    wanted
+}
+
+/// Everything a window needs, built once the window exists.
+pub(crate) struct Screen {
+    pub(crate) window: Arc<Window>,
+    pub(crate) surface: wgpu::Surface<'static>,
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    pub(crate) config: wgpu::SurfaceConfiguration,
+    pub(crate) renderer: GroundRenderer,
+    /// The pass that draws what stands on the ground.
+    pub(crate) statics: SpriteRenderer,
+    /// What the world is drawn into, at 1:1 and at the camera's render size —
+    /// which is the viewport only at zoom 1. [`Screen::blit`] puts it on the
+    /// surface.
+    pub(crate) world: wgpu::Texture,
+    /// The pass that does that, and the only place a zoom exists.
+    pub(crate) blit: Blit,
+    /// The depth buffer the three world passes share, which is what decides
+    /// whether a hillside covers the wall behind it. Recreated with
+    /// [`Screen::world`]: it has to be exactly the size of the image it is
+    /// tested against.
+    pub(crate) depth: wgpu::Texture,
+    /// What the same three passes wrote about each world pixel beside the
+    /// picture — which tile it came from, and where its fragment is — read by
+    /// the blit to light the frame in world coordinates. See
+    /// `openshard_client_render::gbuffer`. Recreated with [`Screen::world`] for
+    /// the reason [`Screen::depth`] is: these are attachments of the same passes
+    /// and must be exactly that image's size.
+    pub(crate) gbuffer: Gbuffer,
+    /// The pass that draws the mobiles, which is the statics pass again with
+    /// another atlas bound: a sprite is a sprite, and the two differ only in
+    /// where the quad goes.
+    pub(crate) mobile_pass: SpriteRenderer,
+    /// `docs/gbuffer.md` step 4c's mesh-face pass — depth and place only, for
+    /// a climbable static's honest per-face geometry. No atlas dependency, so
+    /// unlike `statics`/`mobile_pass` it is never rebuilt when the atlases
+    /// are.
+    pub(crate) mesh_pass: MeshFaceRenderer,
+    /// Everything currently packed, grown as the camera walks into ground it
+    /// has not seen. Beside the passes rather than inside them because the CPU
+    /// side of an atlas is what builds a quad and the texture is what draws it.
+    pub(crate) atlases: Atlases,
+    /// The pass that draws overhead speech, bound to `App::font_atlas` once:
+    /// unlike `statics` and `mobile_pass`, nothing ever rebuilds it — the
+    /// glyph atlas it is bound to is the whole of `fonts.mul` and does not go
+    /// stale the way a camera-scoped atlas does.
+    pub(crate) text_pass: SpriteRenderer,
+    /// The TrueType glyphs asked for so far, when `App::ttf_font` is set.
+    /// Grown a line at a time — see [`App::draw`] — the way [`Screen::atlases`]
+    /// grows as the camera walks, because a face with all of Unicode to answer
+    /// for has no "whole file" to pack up front the way `fonts.mul` does.
+    pub(crate) ttf_atlas: Option<TtfAtlas>,
+    /// The pass bound to [`Screen::ttf_atlas`]'s texture, rebuilt whenever that
+    /// atlas is (see `App::draw`'s handling of [`AtlasError::Full`] there).
+    /// Bound to the *surface's* format, [`gump_text_pass`](Screen::gump_text_pass)'s
+    /// own reason: overhead speech and the HUD's speech line and journal both
+    /// draw through this, after the blit, rather than through a `SpriteRenderer`
+    /// bound to [`blit::WORLD_FORMAT`] the way [`Screen::text_pass`] is — see
+    /// `openshard_client_render::text::ScreenLabel`'s doc for why a TrueType
+    /// face's glyphs cannot go through the world passes' own camera-zoom
+    /// scaling the way `text_pass`'s `fonts.mul` glyphs do. `None` exactly
+    /// when `ttf_atlas` is.
+    pub(crate) ttf_gump_pass: Option<GumpRenderer>,
+    /// Which outlined object each world pixel belongs to, or zero for none.
+    ///
+    /// Filled by the statics pass drawing silhouettes into it and read by
+    /// [`Screen::outline`] after the blit. Recreated with [`Screen::world`] for
+    /// the reason [`Screen::depth`] is: it is a colour attachment of a pass whose
+    /// depth attachment is that buffer, and the two must be the same size.
+    pub(crate) outline_mask: wgpu::Texture,
+    /// The pass that turns that mask into a ring on the surface — see
+    /// `openshard_client_render::outline`.
+    pub(crate) outline: Outline,
+    /// The same, for what a click is *holding*: the selected static's own
+    /// silhouette, in a texture of its own.
+    ///
+    /// Not [`Screen::outline_mask`], and the separation is the point: the ring
+    /// pass draws an edge round every id it finds, so a selection sharing that
+    /// mask would come out ringed as well as washed — and the hover ring would
+    /// then be two statements in one shape. Recreated with [`Screen::world`],
+    /// like its neighbour and for the same reason.
+    pub(crate) select_mask: wgpu::Texture,
+    /// The pass that washes that silhouette, and the ground under it, after the
+    /// blit — see `openshard_client_render::select`.
+    pub(crate) select: Select,
+    /// The held selection's own ring silhouette — a mobile or an item a click
+    /// named, drawn in [`Ring::SELECTED`] rather than [`Ring::SOFT`].
+    ///
+    /// Not [`Screen::outline_mask`]: that one is overwritten every frame by
+    /// whatever the cursor is over *this* frame, hover or nothing, so a
+    /// selection sharing it would vanish the moment the cursor left the thing
+    /// — which is the bug this field exists to not have. Not
+    /// [`Screen::select_mask`] either — that one drives the static's wash, and
+    /// a mobile or item has no wash of its own to conflict with, but the two
+    /// masks are kept apart for the same reason `select_mask` is kept apart
+    /// from `outline_mask`: one texture, one question. Recreated with
+    /// [`Screen::world`], like its neighbours.
+    pub(crate) held_mask: wgpu::Texture,
+    /// The pass that draws the lighting's occlusion grid as solids over the
+    /// finished picture — `openshard_client_render::solids`, and step 23.0.
+    ///
+    /// Always built and only ever *used* while the view is on: it is one
+    /// pipeline pair and an empty buffer, and the alternative — an `Option`
+    /// filled on the frame somebody ticks the box — puts a shader compile in the
+    /// middle of a frame a person is looking at.
+    pub(crate) solids: SolidsRenderer,
+    /// The interface's pass, bound to [`App::gump_atlas`]'s texture and to the
+    /// *surface's* format: it draws over the finished frame, not into the world
+    /// image. `None` exactly when `App::gumps` is.
+    pub(crate) gump_pass: Option<GumpRenderer>,
+    /// The interface's text, drawn the same way `gump_pass` draws its art —
+    /// bound to the surface's format, over the finished frame — but through
+    /// [`App::font_atlas`] instead of the gump atlas. Not an `Option`, and not
+    /// tied to `App::gumps` the way `gump_pass` is: `font_atlas` is built at
+    /// startup unconditionally (see `text_pass`, its world-space twin), so
+    /// there is nothing this has to wait for. A gump dialog's own captions are
+    /// its first caller; the speech line and the journal are too, except when
+    /// `App::ttf_font` is set — see `ttf_gump_pass`, its TrueType twin — per
+    /// `docs/client.md`'s "a third `GumpRenderer` bound to `App::font_atlas`".
+    pub(crate) gump_text_pass: GumpRenderer,
+    /// What the GPU spent on the last frame it finished, pass by pass — the one
+    /// half of a frame's cost that no clock on this thread can see, since
+    /// `queue.submit` returns without waiting. `None` when the adapter cannot
+    /// write timestamp queries, which is a fact the panel prints rather than a
+    /// reason to draw zeroes. See [`crate::profile`].
+    ///
+    /// Here and not on [`App`] for a borrow reason: `profile::Gpu::scope` takes
+    /// `&self`, so a scope can be open on this frame's encoder while the pass it
+    /// is timing takes `&mut` of a sibling field. On `App` it would be behind
+    /// the `self.window.as_mut()` that has already borrowed the whole of it.
+    pub(crate) gpu: Option<profile::Gpu>,
+}
+
+impl Screen {
+    /// Copy whatever [`Screen::ttf_atlas`] has newly packed this frame onto
+    /// [`Screen::ttf_gump_pass`]'s texture.
+    ///
+    /// The single place both of `App::draw`'s callers route through — overhead
+    /// speech's own `atlas.add` and the HUD's — rather than each calling
+    /// [`TtfAtlas::take_dirty`] on its own: that method hands back the rows
+    /// written since the *last* call and then forgets them (see its doc), so
+    /// a second independent caller the same frame would find nothing to
+    /// upload — not because the texture was already current, but because the
+    /// first caller's `take_dirty` already took the only answer there was.
+    /// No-op with nothing dirty, or with no `ttf_atlas` at all — the
+    /// offline-map-viewer and no-`--ttf-font` cases both take this path
+    /// harmlessly every frame.
+    pub(crate) fn upload_ttf_dirty(&mut self) {
+        let Some(atlas) = self.ttf_atlas.as_mut() else {
+            return;
+        };
+        let Some(rows) = atlas.take_dirty() else {
+            return;
+        };
+        if let Some(pass) = &self.ttf_gump_pass {
+            pass.upload_rows(&self.queue, atlas.pixels(), rows);
+        }
+    }
+
+    /// Recreate the three passes an atlas rebuild invalidates, and adopt the
+    /// new atlas: the shared body of the eviction branch of the ordinary
+    /// grow/evict cycle and of a forced rebuild the debug HUD asks for
+    /// directly — see `App::apply`'s `authored_prism`. Both need the same
+    /// thing for the same reason: the texture a bind group points at is the
+    /// one the old atlas was uploaded to, so a pass that keeps the old one
+    /// draws the old pixels under a bind group that now names a different
+    /// texture.
+    pub(crate) fn install_atlases(&mut self, atlases: Atlases, hue_ramp: &HueRamp) {
+        self.renderer = GroundRenderer::new(
+            &self.device,
+            &self.queue,
+            blit::WORLD_FORMAT,
+            &atlases.land,
+            &atlases.texmaps,
+        );
+        self.statics = SpriteRenderer::new(
+            &self.device,
+            &self.queue,
+            blit::WORLD_FORMAT,
+            atlases.statics.pixels(),
+            hue_ramp,
+        );
+        self.mobile_pass = SpriteRenderer::new(
+            &self.device,
+            &self.queue,
+            blit::WORLD_FORMAT,
+            atlases.mobiles.pixels(),
+            hue_ramp,
+        );
+        self.atlases = atlases;
+    }
+}
+
+impl App {
+    pub(crate) fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<Screen, StartupError> {
+        // Physical pixels, not logical: a `LogicalSize` here would ask for the
+        // same *point* size on every monitor and come out small on a dense
+        // one, exactly backwards from what "respect the density" means. Sized
+        // off the monitor rather than the `Camera` default (1024x768, meant as
+        // a viewport floor, not a window request) so the window opens large on
+        // whatever screen it is on.
+        let attributes = Window::default_attributes().with_title("OpenShard");
+        // Where the last run left it, when there was one and when it still names
+        // a screen that exists. The monitors are asked *now*, from the event
+        // loop, because a laptop undocked since the last run has a saved frame
+        // that opens the window on a monitor nobody has — offscreen, which looks
+        // exactly like a client that failed to start. See `Desk::fits`.
+        let monitors: Vec<_> = event_loop
+            .available_monitors()
+            .map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                (position.x, position.y, size.width, size.height)
+            })
+            .collect();
+        let restored = self
+            .desk
+            .window
+            .filter(|frame| desk::Desk::fits(frame, &monitors));
+        let attributes = match restored {
+            Some(frame) => attributes
+                .with_position(winit::dpi::PhysicalPosition::new(frame.x, frame.y))
+                .with_inner_size(winit::dpi::PhysicalSize::new(
+                    frame.width.max(1),
+                    frame.height.max(1),
+                ))
+                .with_maximized(frame.maximized),
+            // No saved frame: the first run, or one whose screen is gone.
+            None => match event_loop.primary_monitor().map(|monitor| monitor.size()) {
+                Some(size) if size.width > 0 && size.height > 0 => {
+                    attributes.with_inner_size(winit::dpi::PhysicalSize::new(
+                        (size.width as f32 * 0.9) as u32,
+                        (size.height as f32 * 0.9) as u32,
+                    ))
+                }
+                _ => attributes.with_inner_size(winit::dpi::LogicalSize::new(
+                    self.control.camera().width,
+                    self.control.camera().height,
+                )),
+            },
+        };
+        let window = Arc::new(
+            event_loop
+                .create_window(attributes)
+                .map_err(StartupError::Window)?,
+        );
+        // Without this, the compositor never starts an IME session for this
+        // window, and on Wayland that is what feeds `egui-winit` composed
+        // text: a layout that needs one (Cyrillic under a caps-lock layout
+        // switch, an East Asian input method) either loses every keystroke or
+        // the raw keysym instead of the composed character, silently, while a
+        // plain Latin layout still works because it needs no composition —
+        // the shell's "say" box looked fine to type in for exactly that
+        // reason and nothing else.
+        window.set_ime_allowed(true);
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let surface = instance
+            .create_surface(Arc::clone(&window))
+            .map_err(StartupError::Surface)?;
+
+        // Blocking here is fine on the desktop and would not be in a browser,
+        // where this whole function becomes an `async` one driven by the event
+        // loop. Nothing below cares which way it was awaited.
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        }))
+        .map_err(|error| StartupError::NoDevice(error.to_string()))?;
+        // The defaults, plus the one thing the renderer asks for above them: a
+        // G-buffer's planes and the picture beside them are past WebGPU's
+        // guaranteed `maxColorAttachmentBytesPerSample`, and an adapter that
+        // reports only the floor cannot draw this frame. It surfaces here as
+        // `NoDevice` with wgpu's own message, which names the limit — see
+        // `openshard_client_render::gbuffer::required_limits` for why it is
+        // asked for and what brings it back down.
+        //
+        // And the timestamp queries, when the adapter has them — the frames
+        // panel's GPU column, `profile::Gpu`. Asked for **both or neither**: a
+        // feature required that the adapter has not got fails the whole
+        // `request_device`, which would cost this client its window over a
+        // diagnostic, and half the pair measures nothing anyway (see
+        // `profile::Gpu::REQUIRED` for why it takes two).
+        let timers = match adapter.features().contains(profile::Gpu::REQUIRED) {
+            true => profile::Gpu::REQUIRED,
+            false => wgpu::Features::empty(),
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: timers,
+            required_limits: openshard_client_render::gbuffer::required_limits(),
+            ..Default::default()
+        }))
+        .map_err(|error| StartupError::NoDevice(error.to_string()))?;
+
+        let capabilities = surface.get_capabilities(&adapter);
+        // A non-sRGB format, deliberately: `client/render` writes the art's own
+        // bytes and an sRGB surface would gamma-correct them into something
+        // else. See that crate's docs.
+        let format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|format| !format.is_srgb())
+            .ok_or(StartupError::OnlySrgb)?;
+
+        let size = window.inner_size();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            // `Auto` is the only value guaranteed for every format, and it means
+            // "whatever the format says" — which for a non-sRGB format is the
+            // pass-through this renderer needs.
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            // Named, and not `present_modes[0]`. This is the loop's pacer: a
+            // frame is drawn, `request_redraw` asks for the next one at once,
+            // and what makes that a rate rather than a spin is `get_current_texture`
+            // blocking here until the display has taken the last one. Whatever
+            // the adapter happened to offer first is `Mailbox` on some drivers
+            // and `Immediate` on others — neither of which blocks, so the same
+            // code is a 60Hz walk on one machine and a busy loop at a thousand
+            // frames a second on the next. `Fifo` is the one mode `wgpu`
+            // guarantees on every backend, which is why it can be asked for
+            // outright rather than searched for.
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: capabilities.alpha_modes[0],
+            view_formats: vec![],
+        };
+        surface.configure(&device, &config);
+
+        // How far the zoom may be walked out. Asked once, because it is a
+        // property of the device and not of the frame.
+        self.control
+            .set_max_texture(device.limits().max_texture_dimension_2d);
+        self.control.resize(config.width, config.height);
+
+        let wanted = self.wanted_now();
+        let atlases = Atlases::build(
+            &self.resources.art,
+            self.resources.surfaces.as_ref(),
+            &self.resources.texmaps,
+            &self.resources.tiledata,
+            &mut self.resources.anim,
+            &wanted,
+        )
+        .map_err(StartupError::Atlas)?;
+        // What the atlases were built for, which is what the band walk in
+        // `draw` subtracts from on the next frame.
+        self.graphics.covered = Some(light::lit_tiles(self.control.camera(), &self.tuning()));
+        // The world passes draw into the world texture, so they take *its*
+        // format and not the surface's — the two differ on an HDR display,
+        // where the first non-sRGB surface format is `Rgba16Float`.
+        let renderer = GroundRenderer::new(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            &atlases.land,
+            &atlases.texmaps,
+        );
+        let statics = SpriteRenderer::new(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            atlases.statics.pixels(),
+            &self.resources.hue_ramp,
+        );
+        let mobile_pass = SpriteRenderer::new(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            atlases.mobiles.pixels(),
+            &self.resources.hue_ramp,
+        );
+        // No atlas and no format: this pass writes only place and the shared
+        // depth buffer, so it does not need rebuilding here on every atlas
+        // repack the way `statics`/`mobile_pass` do.
+        let mesh_pass = MeshFaceRenderer::new(&device);
+        // Built once, unlike `statics` and `mobile_pass`: `font_atlas` is never
+        // rebuilt, so neither is what draws it.
+        let text_pass = SpriteRenderer::new(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            self.resources.font_atlas.pixels(),
+            &self.resources.hue_ramp,
+        );
+        // Scaled by the window's own density: a `TtfAtlas` bakes one pixel
+        // size into every glyph it packs (see its doc), so the size has to be
+        // picked once, here, where a real `Window` first exists to ask —
+        // `run` cannot ask before one does, and rebuilding a size already
+        // packed at is exactly the "ten faces" cost `ttf_font`'s doc explains
+        // this engine does not pay.
+        let (ttf_atlas, ttf_gump_pass) = match &self.resources.ttf_font {
+            Some(_) => {
+                let atlas = TtfAtlas::empty(TTF_BASE_PIXEL_HEIGHT * window.scale_factor() as f32);
+                // The surface's format, `gump_text_pass`'s own reason: overhead
+                // speech and the HUD's speech line and journal both draw over
+                // the finished frame, not into the world image — see
+                // `Screen::ttf_gump_pass`'s doc.
+                let gump_pass =
+                    GumpRenderer::new(&device, &queue, format, atlas.pixels(), &self.resources.hue_ramp);
+                (Some(atlas), Some(gump_pass))
+            }
+            None => (None, None),
+        };
+        // The world is drawn at 1:1 into a texture of the camera's render size,
+        // which is the viewport only at zoom 1 — see `client/render`'s `blit`.
+        let world = blit::world_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        let depth = renderer::depth_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        let outline_mask = outline::mask_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        // The selection's own, at the same size and in the same format: it is a
+        // colour attachment of the same silhouette pass, sharing the same depth
+        // buffer, so it can be neither larger nor smaller than the world image.
+        let select_mask = outline::mask_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        // The held selection's ring silhouette, kept apart from both of the
+        // above for `Screen::held_mask`'s own reason.
+        let held_mask = outline::mask_texture(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        let gbuffer = Gbuffer::new(
+            &device,
+            self.control.camera().render_width(),
+            self.control.camera().render_height(),
+        );
+        let blit = Blit::new(&device, format);
+        // The surface's format and not the world's: the ring is drawn over the
+        // blit's output, so that a highlight is not dimmed by the night the way
+        // the picture under it is.
+        let outline = Outline::new(&device, format);
+        // And the selection's wash, over the same finished picture and for the
+        // same reason: what is held must stay legible after dark.
+        let select = Select::new(&device, format);
+        // The occlusion grid as solids — `docs/lighting.md` step 23.0. Over the
+        // lit picture for the third time and for the third statement of the same
+        // reason: a diagnostic that dimmed at night would stop working exactly
+        // when the picture is hardest to read.
+        let solids = SolidsRenderer::new(&device, format);
+        // And the interface's, bound to the surface's format for the same
+        // reason: a gump is drawn on the finished picture, and the night that
+        // dimmed the world has already been applied to it.
+        let gump_pass = self.resources.gumps.as_ref().map(|_| {
+            GumpRenderer::new(
+                &device,
+                &queue,
+                format,
+                self.resources.gump_atlas.pixels(),
+                &self.resources.hue_ramp,
+            )
+        });
+        // The interface's text, built once and unconditionally for the same
+        // reason `text_pass` is: `font_atlas` is the whole of `fonts.mul`,
+        // packed at startup, and never goes stale.
+        let gump_text_pass = GumpRenderer::new(
+            &device,
+            &queue,
+            format,
+            self.resources.font_atlas.pixels(),
+            &self.resources.hue_ramp,
+        );
+        // The HUD, with the surface's own format: egui picks its fragment entry
+        // point from whether that format is sRGB, and this one deliberately is
+        // not.
+        self.shell = Some(shell::Shell::new(&device, format, &window, self.desk.clone()));
+
+        // Before `device` is moved into the screen below, and the only reason
+        // this line is here rather than beside the passes: it reads the device's
+        // features, not any of them.
+        let gpu = profile::Gpu::new(&device);
+
+        Ok(Screen {
+            window,
+            surface,
+            device,
+            queue,
+            config,
+            renderer,
+            statics,
+            world,
+            blit,
+            depth,
+            gbuffer,
+            mobile_pass,
+            mesh_pass,
+            atlases,
+            text_pass,
+            ttf_atlas,
+            ttf_gump_pass,
+            outline_mask,
+            outline,
+            select_mask,
+            select,
+            held_mask,
+            solids,
+            gump_pass,
+            gump_text_pass,
+            gpu,
+        })
+    }
+
+    /// Everything on screen right now, whatever the atlases already hold.
+    ///
+    /// The whole-viewport walk, which is what a rebuild needs and what an
+    /// ordinary frame must not do: [`App::wanted_since`] is the frame's version
+    /// of the same question and walks only the band the camera crossed.
+    ///
+    /// [`light::lit_tiles`], not `camera.visible_tiles`: the occlusion grid
+    /// `light::collect` builds is grown by the widest flame's own reach, and
+    /// reads this same static atlas for an occluder's facing. A wall standing
+    /// only in the margin between the two bounds fell back to the whole-tile
+    /// shape whenever nothing else had put its graphic in the atlas first —
+    /// see `docs/parity.md`'s backlog.
+    pub(crate) fn wanted_now(&self) -> Wanted {
+        self.wanted_in([light::lit_tiles(self.control.camera(), &self.tuning())])
+    }
+
+    /// What the camera has walked onto since `covered` was the lit rectangle,
+    /// plus everything that is not a question about the map at all.
+    ///
+    /// The saving this whole arrangement is for. A frame used to walk the
+    /// visible rectangle twice — once for the land graphics and once for the
+    /// statics — purely to ask whether the atlases were still good for it, which
+    /// is ~9,800 cells at 1080p against a camera that had moved one tile. The
+    /// bands [`TileBounds::difference`] hands back are that tile's worth of
+    /// cells.
+    ///
+    /// The invariant it rests on: every cell inside `covered` has already been
+    /// offered to the atlases, and an atlas never forgets what it was offered —
+    /// not even a graphic the client ships no art for. So a graphic can only be
+    /// new outside `covered`, and anything that *does* make an atlas forget has
+    /// to set `covered` back to `None` in the same breath.
+    ///
+    /// `camera` is the frame's snapshot — see [`App::hud`]. What the atlases are
+    /// grown for has to be what the passes below then draw, or a band is packed
+    /// for one rectangle and sampled for another — which is why `bounds` is
+    /// [`light::lit_tiles`] and not `camera.visible_tiles`: `light::collect`
+    /// reads this atlas over the wider bound, and `covered` has to name
+    /// whichever rectangle was actually packed.
+    pub(crate) fn wanted_since(
+        &self,
+        camera: Camera,
+        tuning: &light::Tuning,
+        covered: Option<TileBounds>,
+    ) -> Wanted {
+        let bounds = light::lit_tiles(&camera, tuning);
+        let bands = match covered {
+            Some(covered) => bounds.difference(covered),
+            None => [Some(bounds), None, None, None],
+        };
+        self.wanted_in(bands.into_iter().flatten())
+    }
+
+    /// The graphics on some set of tiles, and everything that is on screen
+    /// regardless of where the camera is.
+    ///
+    /// Items the server has dropped and the bodies walking about are short lists
+    /// held in memory, so they are asked in full however small the bands are —
+    /// an item that arrives while the camera stands still is on no band at all.
+    /// They go into the *static* set deliberately: one atlas serves the map's
+    /// statics and the server's items, because a floor tile packed twice is a
+    /// floor tile twice.
+    pub(crate) fn wanted_in(&self, bands: impl IntoIterator<Item = TileBounds>) -> Wanted {
+        let drawn: Vec<Mobile> = self
+            .drawn_mobiles()
+            .into_iter()
+            .map(|(_, mobile)| mobile)
+            .collect();
+        wanted_in(
+            &self.resources.map,
+            bands,
+            &self.world.items,
+            &drawn,
+            &self.world.tile_animations,
+            &self.resources.equip_conv,
+        )
+    }
+}
