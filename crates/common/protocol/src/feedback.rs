@@ -85,7 +85,7 @@ pub struct Animation {
     /// Which action, in the numbering for this mobile's body.
     pub action: u16,
     /// How many frames the action runs for.
-    pub frame_count: u16,
+    pub frame_count: AnimationFrameCount,
     /// How many times to repeat it.
     pub repeat_count: u16,
     /// Play the frames in order. Written inverted on the wire, where the field is
@@ -105,7 +105,7 @@ impl EncodePacket for Animation {
     fn encode_body(&self, out: &mut PacketWriter, _version: ClientVersion) {
         out.u32(self.serial.raw());
         out.u16(self.action);
-        out.u16(self.frame_count);
+        out.u16(self.frame_count.0);
         out.u16(self.repeat_count);
         out.bool(!self.forward); // the wire field is "reverse"
         out.bool(self.repeat);
@@ -126,7 +126,7 @@ impl DecodePacket for Animation {
                 value: 0,
             })?,
             action: reader.u16()?,
-            frame_count: reader.u16()?,
+            frame_count: AnimationFrameCount(reader.u16()?),
             repeat_count: reader.u16()?,
             forward: !reader.bool()?,
             repeat: reader.bool()?,
@@ -154,6 +154,28 @@ pub struct NewAnimation {
     pub action: u16,
     /// Frame delay.
     pub delay: u8,
+}
+
+/// Number of frames in a body-specific mobile animation.
+///
+/// Zero means that the client has no frames to show and therefore keeps the
+/// mobile on frame zero. The wrapper keeps this count distinct from an
+/// animation frame's position.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct AnimationFrameCount(pub u16);
+
+impl AnimationFrameCount {
+    /// A frame count from a wire or table value.
+    #[must_use]
+    pub const fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    /// The number of frames.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
 }
 
 impl EncodePacket for NewAnimation {
@@ -304,7 +326,7 @@ mod tests {
             &Animation {
                 serial: mobile(0x0000_1234),
                 action: 0x000A,
-                frame_count: 0x0007,
+                frame_count: AnimationFrameCount(0x0007),
                 repeat_count: 0x0001,
                 forward: true,
                 repeat: false,

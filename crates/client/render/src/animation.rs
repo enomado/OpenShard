@@ -15,6 +15,8 @@
 
 use std::time::Duration;
 
+use openshard_protocol::feedback::AnimationFrameCount;
+
 /// How long one frame of a mobile's body animation is shown.
 ///
 /// `Constants.CHARACTER_ANIMATION_DELAY` in the client. Fixed: nothing here
@@ -44,12 +46,12 @@ impl AnimationClock {
     ///
     /// `0` when `frame_count` is `0`, so a caller with no packed frames gets a
     /// number rather than a division by nothing.
-    pub fn frame(&self, frame_count: u16) -> u16 {
-        if frame_count == 0 {
+    pub fn frame(&self, frame_count: AnimationFrameCount) -> u16 {
+        if frame_count.0 == 0 {
             return 0;
         }
         let ticks = self.elapsed.as_millis() / FRAME_DELAY.as_millis();
-        (ticks % u128::from(frame_count)) as u16
+        (ticks % u128::from(frame_count.0)) as u16
     }
 }
 
@@ -60,16 +62,16 @@ mod tests {
     #[test]
     fn a_fresh_clock_shows_the_first_frame() {
         let clock = AnimationClock::default();
-        assert_eq!(clock.frame(6), 0);
+        assert_eq!(clock.frame(AnimationFrameCount(6)), 0);
     }
 
     #[test]
     fn the_frame_advances_one_step_per_delay() {
         let mut clock = AnimationClock::default();
         clock.advance(FRAME_DELAY);
-        assert_eq!(clock.frame(6), 1);
+        assert_eq!(clock.frame(AnimationFrameCount(6)), 1);
         clock.advance(FRAME_DELAY);
-        assert_eq!(clock.frame(6), 2);
+        assert_eq!(clock.frame(AnimationFrameCount(6)), 2);
     }
 
     /// Sub-delay time is not enough to move the frame — the clock steps, it
@@ -78,7 +80,7 @@ mod tests {
     fn less_than_a_delay_does_not_advance_the_frame() {
         let mut clock = AnimationClock::default();
         clock.advance(FRAME_DELAY / 2);
-        assert_eq!(clock.frame(6), 0);
+        assert_eq!(clock.frame(AnimationFrameCount(6)), 0);
     }
 
     /// A six-frame walk loops back to its first frame rather than running off
@@ -87,9 +89,9 @@ mod tests {
     fn the_frame_loops_over_the_animations_own_length() {
         let mut clock = AnimationClock::default();
         clock.advance(FRAME_DELAY * 6);
-        assert_eq!(clock.frame(6), 0);
+        assert_eq!(clock.frame(AnimationFrameCount(6)), 0);
         clock.advance(FRAME_DELAY);
-        assert_eq!(clock.frame(6), 1);
+        assert_eq!(clock.frame(AnimationFrameCount(6)), 1);
     }
 
     /// An animation with nothing packed answers `0` rather than dividing by a
@@ -98,6 +100,6 @@ mod tests {
     fn no_frames_packed_is_frame_zero() {
         let mut clock = AnimationClock::default();
         clock.advance(FRAME_DELAY * 3);
-        assert_eq!(clock.frame(0), 0);
+        assert_eq!(clock.frame(AnimationFrameCount(0)), 0);
     }
 }

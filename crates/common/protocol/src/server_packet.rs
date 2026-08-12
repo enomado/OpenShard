@@ -788,7 +788,7 @@ mod tests {
             ServerPacket::Animation(Animation {
                 serial,
                 action: 1,
-                frame_count: 5,
+                frame_count: crate::feedback::AnimationFrameCount(5),
                 repeat_count: 1,
                 forward: true,
                 repeat: false,

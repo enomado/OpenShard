@@ -1142,7 +1142,7 @@ impl WorldState {
         let old_packet = ServerPacket::Animation(Animation {
             serial,
             action: old_action,
-            frame_count: frames,
+            frame_count: openshard_protocol::feedback::AnimationFrameCount(frames),
             repeat_count: 1,
             forward: true,
             repeat: false,

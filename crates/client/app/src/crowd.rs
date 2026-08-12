@@ -42,7 +42,7 @@ use openshard_client_render::follow::Gaze;
 use openshard_client_render::mobiles::{EquipmentLayer, Mobile};
 use openshard_movement::{RUN_HOLD, WALK_HOLD};
 use openshard_protocol::direction::{Direction, Facing};
-use openshard_protocol::feedback::Animation;
+use openshard_protocol::feedback::{Animation, AnimationFrameCount};
 use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
@@ -303,7 +303,7 @@ struct Tracked {
 
 #[derive(Clone, Copy, Debug)]
 struct ActionAnimation {
-    frames: u16,
+    frames: AnimationFrameCount,
     repeats: u16,
     forward: bool,
     repeat: bool,
@@ -412,7 +412,7 @@ impl Crowd {
                 action.elapsed += dt;
                 let ticks = action.elapsed.as_millis() / action.delay.as_millis().max(1);
                 !action.repeat
-                    && ticks >= u128::from(action.frames.max(1)) * u128::from(action.repeats.max(1))
+                    && ticks >= u128::from(action.frames.0.max(1)) * u128::from(action.repeats.max(1))
             } else {
                 false
             };
@@ -680,15 +680,15 @@ impl Crowd {
     /// Asked after the atlas is built, for the reason the frame is not filled in
     /// by [`Crowd::see`]: the count belongs to the atlas and the atlas belongs
     /// to the frame being drawn.
-    pub fn frame_for(&self, who: Who, frame_count: u16) -> u16 {
+    pub fn frame_for(&self, who: Who, frame_count: AnimationFrameCount) -> u16 {
         self.tracked.get(&who).map_or(0, |tracked| match tracked.action {
             Some(action) => {
                 let ticks = action.elapsed.as_millis() / action.delay.as_millis().max(1);
-                let frame = (ticks % u128::from(action.frames.max(1))) as u16;
+                let frame = (ticks % u128::from(action.frames.0.max(1))) as u16;
                 if action.forward {
                     frame
                 } else {
-                    action.frames.saturating_sub(1).saturating_sub(frame)
+                    action.frames.0.saturating_sub(1).saturating_sub(frame)
                 }
             }
             None => tracked.clock.frame(frame_count),
@@ -1391,11 +1391,15 @@ mod tests {
         stand(&mut crowd, 1);
         crowd.advance(Duration::from_millis(80 * 3));
         stand(&mut crowd, 2);
-        assert_eq!(crowd.frame_for(serial(1), 6), 3);
-        assert_eq!(crowd.frame_for(serial(2), 6), 0, "the newcomer starts at zero");
+        assert_eq!(crowd.frame_for(serial(1), AnimationFrameCount(6)), 3);
+        assert_eq!(
+            crowd.frame_for(serial(2), AnimationFrameCount(6)),
+            0,
+            "the newcomer starts at zero"
+        );
         // And a serial nobody is tracking answers with a frame rather than
         // nothing: the atlas may hold a body the crowd has forgotten.
-        assert_eq!(crowd.frame_for(serial(3), 6), 0);
+        assert_eq!(crowd.frame_for(serial(3), AnimationFrameCount(6)), 0);
     }
 
     /// A group change restarts the clock, so a walk begins at its first frame
@@ -1412,7 +1416,7 @@ mod tests {
             false,
         );
         crowd.advance(Duration::from_millis(80 * 5));
-        assert_eq!(crowd.frame_for(serial(1), 6), 5);
+        assert_eq!(crowd.frame_for(serial(1), AnimationFrameCount(6)), 5);
         crowd.see(
             serial(1),
             Point::new(11, 10, 0),
@@ -1421,7 +1425,11 @@ mod tests {
             Hue::NONE,
             false,
         );
-        assert_eq!(crowd.frame_for(serial(1), 6), 0, "the walk starts at its start");
+        assert_eq!(
+            crowd.frame_for(serial(1), AnimationFrameCount(6)),
+            0,
+            "the walk starts at its start"
+        );
     }
 
     /// A step is walked across, not jumped: the body leaves the tile it was
@@ -1603,7 +1611,7 @@ mod tests {
 
         // The crossing: the frame moves, because the body is covering ground.
         crowd.advance(WALK_HOLD);
-        let arrived = crowd.frame_for(serial(1), 6);
+        let arrived = crowd.frame_for(serial(1), AnimationFrameCount(6));
         assert!(arrived > 0, "the walk played while it walked");
         assert_eq!(
             crowd.drawn_for(serial(1)),
@@ -1619,7 +1627,7 @@ mod tests {
         for _ in 0..3 {
             crowd.advance(WALK_HOLD / 8);
             assert_eq!(
-                crowd.frame_for(serial(1), 6),
+                crowd.frame_for(serial(1), AnimationFrameCount(6)),
                 arrived,
                 "the stride played on after the walking stopped",
             );
@@ -1632,7 +1640,7 @@ mod tests {
         // And then it stands, which is a different group and its own clock.
         crowd.advance(WALK_HOLD / 2);
         assert_eq!(step(&mut crowd, 11).group, 4);
-        assert_eq!(crowd.frame_for(serial(1), 6), 0);
+        assert_eq!(crowd.frame_for(serial(1), AnimationFrameCount(6)), 0);
     }
 
     /// The companion, and it is the whole of what makes the test above an
@@ -1660,7 +1668,7 @@ mod tests {
             step(&mut crowd, x);
             for _ in 0..5 {
                 crowd.advance(WALK_HOLD / 5);
-                frames.insert(crowd.frame_for(serial(1), 6));
+                frames.insert(crowd.frame_for(serial(1), AnimationFrameCount(6)));
             }
         }
         assert!(
@@ -1692,11 +1700,19 @@ mod tests {
         step(&mut crowd, 10);
         step(&mut crowd, 11);
         crowd.advance(WALK_HOLD + WALK_HOLD / 4);
-        let frozen = crowd.frame_for(serial(1), 6);
+        let frozen = crowd.frame_for(serial(1), AnimationFrameCount(6));
         step(&mut crowd, 12);
-        assert_eq!(crowd.frame_for(serial(1), 6), frozen, "no hesitation");
+        assert_eq!(
+            crowd.frame_for(serial(1), AnimationFrameCount(6)),
+            frozen,
+            "no hesitation"
+        );
         crowd.advance(Duration::from_millis(80));
-        assert_ne!(crowd.frame_for(serial(1), 6), frozen, "and it walks on");
+        assert_ne!(
+            crowd.frame_for(serial(1), AnimationFrameCount(6)),
+            frozen,
+            "and it walks on"
+        );
     }
 
     /// The offline placeholder's steps are ours from the first frame, without
@@ -2147,12 +2163,12 @@ mod tests {
         crowd.advance(WALK_HOLD / 4);
         crowd.snap(serial(1), at, Graphic(PLAYER), facing, Hue::NONE, false);
 
-        let frame_just_after_the_snap = crowd.frame_for(serial(1), 6);
+        let frame_just_after_the_snap = crowd.frame_for(serial(1), AnimationFrameCount(6));
         for _ in 0..20 {
             crowd.advance(Duration::from_millis(20));
             assert!(!crowd.anyone_gliding(), "snapped back, never left the tile");
             assert_eq!(
-                crowd.frame_for(serial(1), 6),
+                crowd.frame_for(serial(1), AnimationFrameCount(6)),
                 frame_just_after_the_snap,
                 "held on the spot, not walking in place"
             );
@@ -2299,8 +2315,8 @@ mod tests {
         assert_eq!(crowd.tracked.len(), 1);
         // And the one that came back is new: its clock starts again rather than
         // resuming a walk nobody watched.
-        assert_eq!(crowd.frame_for(serial(1), 6), 0);
-        assert_eq!(crowd.frame_for(serial(2), 6), 1);
+        assert_eq!(crowd.frame_for(serial(1), AnimationFrameCount(6)), 0);
+        assert_eq!(crowd.frame_for(serial(2), AnimationFrameCount(6)), 1);
     }
 
     /// A line is there the instant it is heard, and gone once the hold runs

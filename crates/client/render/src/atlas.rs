@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use openshard_protocol::feedback::AnimationFrameCount;
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::anim::{Anim, AnimError, AnimFrame, AnimationFrameIndex};
@@ -1507,10 +1508,10 @@ impl AnimAtlas {
     /// What a caller needs to advance one: the count is the animation's, not a
     /// constant, and asking the atlas rather than remembering it is what keeps
     /// "frame 7 of a 6-frame walk" from being expressible.
-    pub fn frame_count(&self, animation: AnimationKey) -> u16 {
+    pub fn frame_count(&self, animation: AnimationKey) -> AnimationFrameCount {
         let first = FrameKey::new(animation, AnimationFrameIndex(0));
         let last = FrameKey::new(animation, AnimationFrameIndex(u16::MAX));
-        self.frames.range(first..=last).count() as u16
+        AnimationFrameCount(self.frames.range(first..=last).count() as u16)
     }
 }
 

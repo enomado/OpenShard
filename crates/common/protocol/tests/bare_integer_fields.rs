@@ -131,11 +131,6 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
         "action",
         "Animation: body-specific index; openshard_state::Action lives above protocol",
     ),
-    (
-        "feedback.rs",
-        "frame_count",
-        "Animation: a quantity, a per-effect literal at every call site",
-    ),
     ("feedback.rs", "repeat_count", "Animation: same"),
     ("feedback.rs", "delay", "Animation: same"),
     (

@@ -22,7 +22,7 @@ file in the same commit that changes the code.
 | `speech.rs` | 22 | `context.rs` | 6 |
 | `items.rs` | 16 | `version.rs` | 4 |
 | `vendor.rs` | 14 | `spellbook.rs` | 3 |
-| `feedback.rs` | 10 | `properties.rs`, `encoded.rs`, `combat.rs` | 2 each |
+| `feedback.rs` | 9 | `properties.rs`, `encoded.rs`, `combat.rs` | 2 each |
 | `gump.rs` | 9 | `casting.rs`, `seed.rs` | 1 each |
 | `containers.rs` | 9 | | |
 
@@ -170,7 +170,7 @@ and the two are kept in step by hand.
 | `vendor::{Purchase, Sale, SellLine}::amount` | the same stack size, inbound and out — [N5 amendment 1](#amendments-forced-by-n5-vendorrs) |
 | `login::ShardEntry::{percent_full, timezone}` | quantities, by the `MobileStatus` argument — [N6 amendment 8](#amendments-forced-by-n6-loginrs-seedrs-versionrs) |
 | `version::ClientVersion::{major, minor, revision, patch}` | components of one version, and not a packet struct — [N6 amendment 7](#amendments-forced-by-n6-loginrs-seedrs-versionrs) |
-| `feedback::Animation::{action, frame_count, repeat_count, delay}` | a body-specific animation index whose domain (`openshard_state::Action`) lives above `protocol`, plus quantities — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
+| `feedback::Animation::{action, repeat_count, delay}` | a body-specific animation index whose domain (`openshard_state::Action`) lives above `protocol`, plus quantities — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
 | `feedback::NewAnimation::{animation_type, action, delay}` | same, the `0xE2` numbering — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
 | `feedback::GraphicalEffect::{speed, duration}` | quantities, a per-effect literal at every call site — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
 | `feedback::HuedEffect::render_mode` | no non-test code constructs one, so there is no caller to classify against — [N7 amendment 1](#amendments-forced-by-n7-feedbackrs-skillrs-combatrs-propertiesrs-spellbookrs-encodedrs-castingrs) |
@@ -1013,12 +1013,15 @@ computes and only the *client* reads back, and a third instance of the
 decoder-destroys-the-byte finding — plus the collection blind spot N6's own
 backlog had already named.
 
-1. **`feedback.rs` needed no code change**, `version.rs`'s outcome again: its
-   own module doc already argued `action`/`animation_type`/the frame counts
-   stay bare, and the reason generalises past this file — the domain type
-   (`openshard_state::Action`) lives in a server crate above `protocol` and
-   cannot be held here. `speed`/`duration` are quantities (every caller passes
-   a per-effect literal, nothing branches on either), and `HuedEffect::
+1. **`feedback.rs` originally needed no code change**, `version.rs`'s outcome
+   again: its own module doc argued `action`/`animation_type` and the effect
+   quantities stay bare. A later animation pass closed the stronger case:
+   `Animation::frame_count` now carries `AnimationFrameCount`, shared by the
+   client atlas and animation clock; the wire still writes the same `u16`.
+   The remaining domain type (`openshard_state::Action`) lives in a server
+   crate above `protocol` and cannot be held here. `speed`/`duration` are
+   quantities (every caller passes a per-effect literal, nothing branches on
+   either), and `HuedEffect::
    render_mode` is untouched for a third reason: no non-test code in this
    workspace constructs a `HuedEffect`, so there is no caller to classify
    against. All three reasons are recorded in the module doc rather than only
@@ -1099,8 +1102,9 @@ backlog had already named.
     a connection, `docs/protocol_newtypes.md`'s N4 containers amendment 2
     licence again. Whether the resulting number names a spell in the table is
     unchanged: `magic::info`'s job, downstream, fallible.
-11. **Bare-integer field count: `feedback.rs` 10 before, 10 after** (all
-    allowlisted, amendment 1); **`skill.rs` 6 before, 4 after** (`SkillEntry`'s
+11. **Bare-integer field count: `feedback.rs` 10 before, 9 after** (the later
+    `AnimationFrameCount` follow-up removes one from amendment 1);
+    **`skill.rs` 6 before, 4 after** (`SkillEntry`'s
     `id`/`value`/`base`/`cap`, allowlisted for the same two reasons as
     `feedback.rs` — domain above `protocol`, and quantities); **`combat.rs`** 2
     before, 0 after (folded into `Vitals`, itself already on the allowlist);
@@ -1640,7 +1644,7 @@ place its behaviour can be pinned.
 | N4 | done — `containers.rs` 9 → 3, `items.rs` 16 → 3, all allowlisted | |
 | N5 | done — `vendor.rs` 14 → 5 allowlisted, `context.rs` 6 → 0, `gump.rs` 9 → 0 | |
 | N6 | done — `login.rs` 8 → 2 allowlisted, `seed.rs` 1 → 0, `version.rs` 4 → 4 allowlisted | |
-| N7 | done — `feedback.rs` 10 → 10 allowlisted, `skill.rs` 6 → 4 allowlisted, `combat.rs` 2 → 0, `properties.rs` 2 → 1 allowlisted, `spellbook.rs` 3 → 1 allowlisted, `encoded.rs` 2 → 0, `casting.rs` 1 → 0 | |
+| N7 | done — `feedback.rs` 10 → 9 (one later `AnimationFrameCount` follow-up), `skill.rs` 6 → 4 allowlisted, `combat.rs` 2 → 0, `properties.rs` 2 → 1 allowlisted, `spellbook.rs` 3 → 1 allowlisted, `encoded.rs` 2 → 0, `casting.rs` 1 → 0 | |
 | N8 | done — `login.rs`'s `StartLocation::position` tuple became `Point`; the repo-level coverage check landed with a full allowlist; `docs/style.md` gained a short section | |
 | N-tables | done — the cliloc and `SoundId` content tables: `protocol` took `serde`, and `State`'s four doors take the types | `a78ee4c`, `4d9561d` |
 | N-components | done — `Drawn`, `Container.gump`, `Contained.{position, grid}`, and the graphic-keyed tables under them | `6c01d6e` |
