@@ -32,6 +32,7 @@
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::time::Instant;
 
 use openshard_client_net::transport::Dial;
 use openshard_config::Config;
@@ -76,6 +77,8 @@ const PIPE: usize = 64 * 1024;
 /// back is closed before the caller sees it. `Gate::serve` is what makes that
 /// deliberate rather than a race between the stop and the runtime going away.
 pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (InProcess, Running) {
+    let started = Instant::now();
+    eprintln!("in-process shard: starting");
     let (ready, opened) = std::sync::mpsc::channel();
 
     // Outside the thread, because it is half of what is handed back. See
@@ -88,6 +91,10 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (InP
             .enable_all()
             .build()
             .expect("a runtime for the shard");
+        eprintln!(
+            "in-process shard +{:.3}s: Tokio runtime created",
+            started.elapsed().as_secs_f64()
+        );
 
         runtime.block_on(async move {
             // Built inside the runtime on purpose: a `Gate` captures the handle
@@ -99,15 +106,28 @@ pub fn spawn(config: impl FnOnce(SocketAddr) -> Config + Send + 'static) -> (InP
             // there is no listener to close and the pipes are the whole of what
             // is open.
             let (gate, events) = Gate::new(served.clone());
+            eprintln!(
+                "in-process shard +{:.3}s: connection gate created",
+                started.elapsed().as_secs_f64()
+            );
 
             // A local, for the same reason as in `crate::spawn`: `run_shard`
             // borrows the config for as long as it runs, and that is this block.
             let config = config(NOMINAL);
             let config = &config;
+            eprintln!(
+                "in-process shard +{:.3}s: configuration assembled; loading world",
+                started.elapsed().as_secs_f64()
+            );
             let world = openshard_server::boot::load_world(config).expect("a world");
+            eprintln!(
+                "in-process shard +{:.3}s: world loaded; opening persistence",
+                started.elapsed().as_secs_f64()
+            );
             let store = openshard_server::boot::open_store(config).await.expect("a store");
 
             ready.send(gate).expect("the caller is still waiting");
+            eprintln!("in-process shard +{:.3}s: ready", started.elapsed().as_secs_f64());
             // The tally inside the reins goes unread, as in `crate::spawn` —
             // see there.
             let reins = openshard_server::shard::Reins::over(served);

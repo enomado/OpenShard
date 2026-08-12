@@ -6,6 +6,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::time::Instant;
 
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
@@ -14,23 +15,23 @@ use crate::{Terrain, Tile, find_path, step_allowed};
 
 const WIDE_PORTAL: usize = 6;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct NavigationGraph {
-    width: u32,
-    height: u32,
-    regions: Vec<Region>,
-    at: Vec<Option<RegionId>>,
-    nodes: Vec<Node>,
-    region_nodes: Vec<Vec<NodeId>>,
-    edges: Vec<Vec<Edge>>,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) regions: Vec<Region>,
+    pub(crate) at: Vec<Option<RegionId>>,
+    pub(crate) nodes: Vec<Node>,
+    pub(crate) region_nodes: Vec<Vec<NodeId>>,
+    pub(crate) edges: Vec<Vec<Edge>>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Region {
-    left: u16,
-    top: u16,
-    width: u16,
-    height: u16,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Region {
+    pub(crate) left: u16,
+    pub(crate) top: u16,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
 }
 
 impl Region {
@@ -45,21 +46,21 @@ impl Region {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RegionId(usize);
+pub(crate) struct RegionId(pub(crate) usize);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct NodeId(usize);
+pub(crate) struct NodeId(pub(crate) usize);
 
-#[derive(Clone, Copy, Debug)]
-struct Node {
-    point: Point,
-    region: RegionId,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Node {
+    pub(crate) point: Point,
+    pub(crate) region: RegionId,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Edge {
-    to: NodeId,
-    cost: u32,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Edge {
+    pub(crate) to: NodeId,
+    pub(crate) cost: u32,
 }
 
 struct InRegion<'a> {
@@ -84,6 +85,8 @@ impl NavigationGraph {
         if width == 0 || height == 0 || width >= limit || height >= limit {
             return None;
         }
+        let started = Instant::now();
+        eprintln!("navigation graph: sampling {width}x{height} terrain");
         let cells = width as usize * height as usize;
         let mut points = vec![None; cells];
         for y in 0..height as u16 {
@@ -94,6 +97,10 @@ impl NavigationGraph {
                 points[usize::from(y) * width as usize + usize::from(x)] = terrain.can_step(point, point);
             }
         }
+        eprintln!(
+            "navigation graph +{:.3}s: terrain sampled",
+            started.elapsed().as_secs_f64()
+        );
 
         let mut graph = Self {
             width,
@@ -105,18 +112,44 @@ impl NavigationGraph {
             edges: Vec::new(),
         };
         graph.partition(&points);
+        eprintln!(
+            "navigation graph +{:.3}s: partitioned into {} regions",
+            started.elapsed().as_secs_f64(),
+            graph.regions.len()
+        );
         graph.portals(terrain, &points);
+        eprintln!(
+            "navigation graph +{:.3}s: {} portal nodes found; calculating intra-region routes",
+            started.elapsed().as_secs_f64(),
+            graph.nodes.len()
+        );
         graph.intra_edges(terrain);
         for edges in &mut graph.edges {
             edges.sort_unstable_by_key(|edge| (edge.to, edge.cost));
             edges.dedup_by_key(|edge| edge.to);
         }
+        eprintln!(
+            "navigation graph +{:.3}s: ready ({} nodes, {} edges)",
+            started.elapsed().as_secs_f64(),
+            graph.nodes.len(),
+            graph.edges.iter().map(Vec::len).sum::<usize>()
+        );
         Some(graph)
     }
 
     #[must_use]
     pub const fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Counts useful to an offline builder and its progress report.
+    #[must_use]
+    pub fn counts(&self) -> (usize, usize, usize) {
+        (
+            self.regions.len(),
+            self.nodes.len(),
+            self.edges.iter().map(Vec::len).sum(),
+        )
     }
 
     fn index(&self, x: u16, y: u16) -> usize {

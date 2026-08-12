@@ -513,11 +513,48 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
     let started = Instant::now();
     // One tile table, shared by every facet: `tiledata.mul` describes tiles, not
     // a map, so it is read once and each facet's terrain gets a copy.
+    eprintln!("world load: reading tiledata.mul from {}", dir.display());
     let tiles = TileData::load(dir.join("tiledata.mul"))?;
+    eprintln!(
+        "world load +{:.3}s: tile data ready; loading {} facet(s)",
+        started.elapsed().as_secs_f64(),
+        config.world.facets.len()
+    );
 
     let mut world = configured_world(config);
     for &facet in &config.world.facets {
+        let stamp = openshard_movement::bake::stamp_of(dir, facet)?;
+        let navigation_path = openshard_movement::bake::artifact_path(dir, facet);
+        let coarse = openshard_movement::bake::load(&navigation_path, &stamp).map_err(|error| {
+            format!(
+                "{error}\ncreate it with: OPENSHARD_CLIENT={:?} cargo run --release -p \
+                 openshard-movement --bin openshard-navigation-bake -- --facet {facet}",
+                dir
+            )
+        })?;
+        eprintln!(
+            "world load +{:.3}s: navigation for facet {facet} loaded; reading map",
+            started.elapsed().as_secs_f64()
+        );
         let map = Map::load_facet(dir, facet)?;
+        if coarse.dimensions() != (map.width(), map.height()) {
+            return Err(format!(
+                "navigation artifact {} has dimensions {}x{}, but facet {facet} is {}x{}\n\
+                 recreate it with: OPENSHARD_CLIENT={:?} cargo run --release -p openshard-movement \
+                 --bin openshard-navigation-bake -- --facet {facet}",
+                navigation_path.display(),
+                coarse.dimensions().0,
+                coarse.dimensions().1,
+                map.width(),
+                map.height(),
+                dir,
+            )
+            .into());
+        }
+        eprintln!(
+            "world load +{:.3}s: facet {facet} ready",
+            started.elapsed().as_secs_f64()
+        );
         // The start is only checked against facet 0, where new characters spawn.
         // A start off the map, or in the sea, is worth saying out loud: the shard
         // still runs and every player spawns somewhere useless.
@@ -541,6 +578,7 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
         world = world.with_facet(
             openshard_protocol::world::Facet(facet),
             MapTerrain::new(map, tiles.clone()),
+            Some(coarse),
         );
     }
     info!(

@@ -66,6 +66,19 @@ client install is not anyone else's. Then the command above is just
 cargo run -p openshard-playground
 ```
 
+The art table and navigation graph are separate, explicit preparation steps.
+Run both after installing or updating the client files; normal shard and client
+startup never rebuilds the navigation graph:
+
+```sh
+cargo run --release -p openshard-client-artscan
+cargo run --release -p openshard-movement --bin openshard-navigation-bake -- --facet 0
+```
+
+`OPENSHARD_ART_TABLE` and `OPENSHARD_NAVIGATION` move the outputs when the
+client install is read-only. The bake command also accepts `--out FILE` (for a
+single facet), repeatable `--facet N`, and `--dry-run`.
+
 The two ends are joined by a pair of in-memory pipes. Everything above the
 transport is the code that runs against ClassicUO — the transport itself is a
 parameter on both sides, `transport::Dial` for the client and any stream for

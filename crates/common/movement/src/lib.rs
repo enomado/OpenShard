@@ -48,6 +48,7 @@
 //! hacks, was broken almost immediately, and Sphere stopped reading it. The
 //! defence that works is server-side: see [`WalkPace`].
 
+pub mod bake;
 mod detour;
 mod navigation;
 mod pace;

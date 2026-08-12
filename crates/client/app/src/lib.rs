@@ -428,6 +428,21 @@ pub fn run<D: Dial + Send + 'static>(
     ttf_font: Option<PathBuf>,
     opening: Opening,
 ) -> ExitCode {
+    // Startup is deliberately synchronous: a usable first frame is better than
+    // discovering a missing client file halfway through one.  Keep a small,
+    // always-on progress trace here so a slow install can be identified from
+    // the terminal instead of looking like a hung window.
+    let startup = Instant::now();
+    let mut stage = std::time::Duration::ZERO;
+    let mut checkpoint = |phase: &str| {
+        eprintln!(
+            "startup +{:>7.3}s ({:>7.3}s): {phase}",
+            startup.elapsed().as_secs_f64(),
+            startup.elapsed().saturating_sub(stage).as_secs_f64(),
+        );
+        stage = startup.elapsed();
+    };
+    eprintln!("startup: loading client resources from {}", dir.display());
     let Opening {
         at,
         solids,
@@ -443,6 +458,7 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    checkpoint("facet loaded");
     let art = match Art::open(dir) {
         Ok(art) => art,
         Err(error) => {
@@ -450,6 +466,7 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    checkpoint("art archive opened");
     // What was measured off that art before this run: which edge of its tile
     // each wall stands on, and the hole in each window.
     // `docs/lighting.md`'s decision 31: the measurement is a tool's, and this is
@@ -477,6 +494,7 @@ pub fn run<D: Dial + Send + 'static>(
             None
         }
     };
+    checkpoint("art table loaded");
     // The two files a slope needs: the square textures, and the table that says
     // which of them a land graphic uses.
     let texmaps = match TexMaps::open(dir) {
@@ -486,6 +504,7 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    checkpoint("terrain textures opened");
     let tiledata = match TileData::load(dir.join("tiledata.mul")) {
         Ok(tiledata) => tiledata,
         Err(error) => {
@@ -493,6 +512,7 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    checkpoint("tile data loaded");
     // What the animated statics cycle through. Read here and folded into
     // `tile_animations` below, because it takes both files to know which
     // graphics animate: the flag is `tiledata.mul`'s and the cycle is this one's.
@@ -505,6 +525,7 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    checkpoint("animation metadata loaded");
     let hues = match Hues::load(dir.join("hues.mul")) {
         Ok(hues) => hues,
         Err(error) => {
@@ -515,6 +536,7 @@ pub fn run<D: Dial + Send + 'static>(
     // Built once: `hues.mul` does not change while the camera walks, unlike
     // the sprite atlases it is bound alongside.
     let hue_ramp = HueRamp::build(&hues);
+    checkpoint("hues loaded and ramp packed");
     // The table itself is not kept past this point. It used to be, so that
     // `gump.rs` could pick one solid `egui::Color32` per hue for a `{ text }`
     // element; a caption is drawn through the gump pass now and is tinted the
@@ -537,6 +559,7 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    checkpoint("fonts loaded and atlas packed");
     // The interface's own pictures. Absent is not fatal and not even unusual:
     // a client directory without `gumpartLegacyMUL.uop` is a map viewer, and
     // the windows a shard opens are worth losing before the world is. What is
@@ -560,6 +583,7 @@ pub fn run<D: Dial + Send + 'static>(
             None
         }
     };
+    checkpoint("interface resources opened");
     // Read and parsed once, only when asked for: a shard that never sets
     // `ttf_font` has no reason to hold a second face in memory beside
     // `fonts.mul`'s, and one that does is naming a file on this operator's
@@ -592,6 +616,7 @@ pub fn run<D: Dial + Send + 'static>(
         }
     };
     event_loop.set_control_flow(ControlFlow::Wait);
+    checkpoint("window event loop created");
 
     let anim = match Anim::open(dir) {
         Ok(anim) => anim,
@@ -629,6 +654,7 @@ pub fn run<D: Dial + Send + 'static>(
             return ExitCode::FAILURE;
         }
     };
+    checkpoint("animation and skill resources opened");
 
     // Where the character stands at boot: the camera's tile, at the height the
     // ground there actually is.
@@ -675,20 +701,37 @@ pub fn run<D: Dial + Send + 'static>(
         )
     });
 
-    // The map-only reading is exactly the permanently-open base the coarse
-    // graph needs: doors and every other dynamic thing live in `Clutter`, not
-    // in these two client files. Keep the graph separate from the two Arcs so
-    // it stores only connectivity, not another copy of a 100 MB facet.
-    let coarse = openshard_movement::NavigationGraph::build(
-        &openshard_movement::MapTerrain::new(map.as_ref(), tiledata.as_ref()),
-        map.width(),
-        map.height(),
-    );
-    if coarse.is_none() {
-        eprintln!(
-            "the client map is outside movement's coordinate space; long-distance routing is unavailable"
-        );
-    }
+    // Live `MapTerrain` still authorizes every refined step. Without this cache
+    // the viewer remains useful, but long routes are disabled.
+    let navigation_path = openshard_movement::bake::artifact_path(dir, FACET);
+    let coarse = openshard_movement::bake::stamp_of(dir, FACET)
+        .and_then(|stamp| openshard_movement::bake::load(&navigation_path, &stamp))
+        .and_then(|graph| {
+            if graph.dimensions() == (map.width(), map.height()) {
+                Ok(graph)
+            } else {
+                Err(openshard_movement::bake::Error::Incompatible {
+                    path: navigation_path.clone(),
+                    reason: format!(
+                        "dimensions {}x{}, expected {}x{}",
+                        graph.dimensions().0,
+                        graph.dimensions().1,
+                        map.width(),
+                        map.height()
+                    ),
+                })
+            }
+        })
+        .map_err(|error| {
+            eprintln!(
+                "{error}; long-distance routing disabled\ncreate it with: \
+                 OPENSHARD_CLIENT={:?} cargo run --release -p openshard-movement --bin \
+                 openshard-navigation-bake -- --facet {FACET}",
+                dir
+            );
+        })
+        .ok();
+    checkpoint("navigation graph loaded");
 
     let mut app = App {
         // Built before `resources` moves `tiledata` and `map` into it: this

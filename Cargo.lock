@@ -3126,6 +3126,7 @@ version = "0.0.1"
 name = "openshard-movement"
 version = "0.0.1"
 dependencies = [
+ "clap",
  "openshard-protocol",
  "openshard-uofiles",
  "proptest",
@@ -3220,6 +3221,7 @@ dependencies = [
  "openshard-events",
  "openshard-gateway",
  "openshard-login",
+ "openshard-movement",
  "openshard-persistence",
  "openshard-protocol",
  "openshard-quests",

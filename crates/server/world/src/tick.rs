@@ -367,13 +367,22 @@ impl World {
     /// Give the default facet a map.
     pub fn with_terrain(self, terrain: MapTerrain) -> Self {
         let facet = self.state.default_facet;
-        self.with_facet(facet, terrain)
+        self.with_facet(facet, terrain, None)
     }
 
-    /// Load `terrain` as facet `facet`, its interest grid sized to the map.
-    pub fn with_facet(mut self, facet: Facet, terrain: MapTerrain) -> Self {
+    /// Load `terrain` and its already-baked coarse router as facet `facet`.
+    pub fn with_facet(
+        mut self,
+        facet: Facet,
+        terrain: MapTerrain,
+        coarse: Option<openshard_movement::NavigationGraph>,
+    ) -> Self {
         let (width, height) = (terrain.map().width(), terrain.map().height());
-        let coarse = openshard_movement::NavigationGraph::build(&terrain, width, height);
+        debug_assert!(
+            coarse
+                .as_ref()
+                .is_none_or(|graph| graph.dimensions() == (width, height))
+        );
         let sectors = Sectors::new(width, height);
         // Boxed as `dyn Terrain`: the state crate holds the abstraction, and the
         // world supplies the concrete map here.

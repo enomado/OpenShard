@@ -12,6 +12,7 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+clap.workspace = true
 openshard-protocol.workspace = true
 openshard-uofiles.workspace = true
 
