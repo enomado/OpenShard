@@ -703,8 +703,9 @@ pub fn run<D: Dial + Send + 'static>(
 
     // Live `MapTerrain` still authorizes every refined step. Without this cache
     // the viewer remains useful, but long routes are disabled.
-    let navigation_path = openshard_movement::bake::artifact_path(dir, FACET);
-    let coarse = openshard_movement::bake::stamp_of(dir, FACET)
+    let facet = openshard_protocol::world::Facet(FACET);
+    let navigation_path = openshard_movement::bake::artifact_path(dir, facet);
+    let coarse = openshard_movement::bake::stamp_of(dir, facet)
         .and_then(|stamp| openshard_movement::bake::load(&navigation_path, &stamp))
         .and_then(|graph| {
             if graph.dimensions() == (map.width(), map.height()) {

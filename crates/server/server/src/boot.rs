@@ -523,6 +523,7 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
 
     let mut world = configured_world(config);
     for &facet in &config.world.facets {
+        let facet = openshard_protocol::world::Facet(facet);
         let stamp = openshard_movement::bake::stamp_of(dir, facet)?;
         let navigation_path = openshard_movement::bake::artifact_path(dir, facet);
         let coarse = openshard_movement::bake::load(&navigation_path, &stamp).map_err(|error| {
@@ -536,7 +537,7 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
             "world load +{:.3}s: navigation for facet {facet} loaded; reading map",
             started.elapsed().as_secs_f64()
         );
-        let map = Map::load_facet(dir, facet)?;
+        let map = Map::load_facet(dir, facet.0)?;
         if coarse.dimensions() != (map.width(), map.height()) {
             return Err(format!(
                 "navigation artifact {} has dimensions {}x{}, but facet {facet} is {}x{}\n\
@@ -558,7 +559,7 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
         // The start is only checked against facet 0, where new characters spawn.
         // A start off the map, or in the sea, is worth saying out loud: the shard
         // still runs and every player spawns somewhere useless.
-        if facet == 0 {
+        if facet.0 == 0 {
             match map.land(start.0, start.1) {
                 Some(cell) => info!(x = start.0, y = start.1, z = cell.z, "start position"),
                 None => warn!(
@@ -569,17 +570,13 @@ pub fn load_world(config: &Config) -> Result<World, Box<dyn std::error::Error>> 
             }
         }
         info!(
-            facet,
+            facet = facet.0,
             name = map.facet_name(),
             size = format!("{}x{}", map.width(), map.height()),
             statics = map.static_count(),
             "facet loaded"
         );
-        world = world.with_facet(
-            openshard_protocol::world::Facet(facet),
-            MapTerrain::new(map, tiles.clone()),
-            Some(coarse),
-        );
+        world = world.with_facet(facet, MapTerrain::new(map, tiles.clone()), Some(coarse));
     }
     info!(
         facets = config.world.facets.len(),

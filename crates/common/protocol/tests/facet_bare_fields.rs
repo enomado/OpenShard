@@ -54,6 +54,11 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "a standalone diagnostic tool reading a SQL column directly, the record.rs shape, in a crate with no protocol dependency",
     ),
     (
+        "crates/client/render/tests/shard.rs",
+        1,
+        "the shard reader's SQL fixture row mirrors a database column and is intentionally raw at that test boundary",
+    ),
+    (
         "crates/server/scripting/src/engine/ops.rs",
         1,
         "F4: op_clear_regions binds facet as a direct #[op2(fast)] argument, which cannot take a tuple struct — the Serial precedent",

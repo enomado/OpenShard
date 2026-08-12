@@ -6,7 +6,7 @@ use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use openshard_protocol::world::Point;
+use openshard_protocol::world::{Facet, Point};
 
 use crate::NavigationGraph;
 use crate::navigation::{Edge, Node, NodeId, Region, RegionId};
@@ -28,7 +28,7 @@ pub struct InputStamp {
 /// Everything cheap to inspect that identifies graph-producing inputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stamp {
-    pub facet: u8,
+    pub facet: Facet,
     pub routing_version: u32,
     pub inputs: Vec<InputStamp>,
 }
@@ -74,24 +74,24 @@ impl std::error::Error for Error {
 }
 
 /// Default destination, overridable for read-only installs.
-pub fn artifact_path(client_dir: &Path, facet: u8) -> PathBuf {
+pub fn artifact_path(client_dir: &Path, facet: Facet) -> PathBuf {
     std::env::var_os("OPENSHARD_NAVIGATION")
         .map(PathBuf::from)
-        .unwrap_or_else(|| client_dir.join(format!("openshard-navigation-{facet}.bin")))
+        .unwrap_or_else(|| client_dir.join(format!("openshard-navigation-{}.bin", facet.0)))
 }
 
 /// Inspect exactly the files `Map::load_facet` selects, plus tile data.
-pub fn stamp_of(client_dir: &Path, facet: u8) -> Result<Stamp, Error> {
-    let uop_name = format!("map{facet}LegacyMUL.uop");
+pub fn stamp_of(client_dir: &Path, facet: Facet) -> Result<Stamp, Error> {
+    let uop_name = format!("map{}LegacyMUL.uop", facet.0);
     let map_name = if client_dir.join(&uop_name).exists() {
         uop_name
     } else {
-        format!("map{facet}.mul")
+        format!("map{}.mul", facet.0)
     };
     let names = [
         map_name,
-        format!("staidx{facet}.mul"),
-        format!("statics{facet}.mul"),
+        format!("staidx{}.mul", facet.0),
+        format!("statics{}.mul", facet.0),
         "tiledata.mul".into(),
     ];
     let mut inputs = Vec::with_capacity(names.len());
@@ -235,7 +235,7 @@ fn encode(mut w: impl Write, g: &NavigationGraph, stamp: &Stamp) -> io::Result<(
     w.write_all(MAGIC)?;
     put_u32(&mut w, FORMAT_VERSION)?;
     put_u32(&mut w, ROUTING_VERSION)?;
-    w.write_all(&[stamp.facet, 0, 0, 0])?;
+    w.write_all(&[stamp.facet.0, 0, 0, 0])?;
     put_u32(&mut w, g.width)?;
     put_u32(&mut w, g.height)?;
     put_u64(&mut w, stamp.inputs.len() as u64)?;
@@ -300,13 +300,13 @@ fn decode(path: &Path, bytes: &[u8], expected: &Stamp) -> Result<NavigationGraph
             format!("routing version {routing}, expected {ROUTING_VERSION}"),
         ));
     }
-    let facet = r.take(4)?[0];
+    let facet = Facet(r.take(4)?[0]);
     let width = r.u32()?;
     let height = r.u32()?;
     if facet != expected.facet {
         return Err(incompatible(
             path,
-            format!("facet {facet}, expected {}", expected.facet),
+            format!("facet {}, expected {}", facet.0, expected.facet.0),
         ));
     }
     if width == 0 || height == 0 || width > u16::MAX as u32 || height > u16::MAX as u32 {
@@ -554,7 +554,7 @@ mod tests {
 
     fn stamp() -> Stamp {
         Stamp {
-            facet: 0,
+            facet: Facet(0),
             routing_version: ROUTING_VERSION,
             inputs: vec![InputStamp {
                 name: "map0.mul".into(),

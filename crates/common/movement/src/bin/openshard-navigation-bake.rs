@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use openshard_movement::{MapTerrain, NavigationGraph, bake};
+use openshard_protocol::world::Facet;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 
@@ -46,14 +47,14 @@ fn run(mut cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     );
     let tiles = TileData::load(cli.client.join("tiledata.mul"))?;
     for facet in cli.facet {
-        bake_one(&cli.client, facet, &tiles, cli.out.as_deref(), cli.dry_run)?;
+        bake_one(&cli.client, Facet(facet), &tiles, cli.out.as_deref(), cli.dry_run)?;
     }
     Ok(())
 }
 
 fn bake_one(
     client: &Path,
-    facet: u8,
+    facet: Facet,
     tiles: &TileData,
     out: Option<&Path>,
     dry_run: bool,
@@ -61,7 +62,7 @@ fn bake_one(
     let started = Instant::now();
     eprintln!("navigation bake: loading facet {facet}");
     let stamp = bake::stamp_of(client, facet)?;
-    let map = Map::load_facet(client, facet)?;
+    let map = Map::load_facet(client, facet.0)?;
     eprintln!(
         "navigation bake +{:.3}s: building facet {facet} ({}x{})",
         started.elapsed().as_secs_f64(),
