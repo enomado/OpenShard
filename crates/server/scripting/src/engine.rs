@@ -303,7 +303,7 @@ impl ScriptEngine for DenoEngine {
         let isolate = self.runtime.v8_isolate();
         v8::scope_with_context!(scope, isolate, context);
         v8::tc_scope!(let tc, scope);
-        let arg = v8::Integer::new_from_unsigned(tc, entity).into();
+        let arg = v8::Integer::new_from_unsigned(tc, entity.raw()).into();
         let f = v8::Local::new(tc, &func);
         let recv = v8::undefined(tc).into();
         if f.call(tc, recv, &[arg]).is_none() {
@@ -336,7 +336,7 @@ mod tests {
         // about events, or only be a stub during development.
         let mut engine = DenoEngine::new();
         engine.load("const answer = 42;").unwrap();
-        engine.tick(1).unwrap();
+        engine.tick(1.into()).unwrap();
         assert!(engine.take_commands().is_empty());
     }
 
@@ -356,18 +356,18 @@ mod tests {
 
         engine
             .deliver(&Event::PlayerEntered {
-                serial: 7,
+                serial: 7.into(),
                 x: 100,
                 y: 200,
                 z: 0,
             })
             .unwrap();
-        engine.tick(7).unwrap();
+        engine.tick(7.into()).unwrap();
 
         assert_eq!(
             engine.take_commands(),
             vec![Command::Move {
-                serial: 7,
+                serial: 7.into(),
                 direction: 2
             }]
         );
@@ -390,7 +390,7 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::PlayerEntered {
-                serial: 1,
+                serial: 1.into(),
                 x: 0,
                 y: 0,
                 z: 0,
@@ -398,18 +398,18 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::MobileMoved {
-                serial: 1,
+                serial: 1.into(),
                 x: 5,
                 y: 0,
                 z: 0,
                 facing: 1,
             })
             .unwrap();
-        engine.tick(1).unwrap();
+        engine.tick(1.into()).unwrap();
         assert_eq!(
             engine.take_commands(),
             vec![Command::Move {
-                serial: 1,
+                serial: 1.into(),
                 direction: 5
             }]
         );
@@ -427,14 +427,14 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::PlayerEntered {
-                serial: 3,
+                serial: 3.into(),
                 x: 1,
                 y: 1,
                 z: 0,
             })
             .unwrap();
-        engine.deliver(&Event::PlayerLeft { serial: 3 }).unwrap();
-        engine.tick(3).unwrap();
+        engine.deliver(&Event::PlayerLeft { serial: 3.into() }).unwrap();
+        engine.tick(3.into()).unwrap();
         // Gone, so the hook saw `null` and reacted.
         assert_eq!(engine.take_commands().len(), 1);
     }
@@ -455,7 +455,7 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::PlayerEntered {
-                serial: 42,
+                serial: 42.into(),
                 x: 0,
                 y: 0,
                 z: 0,
@@ -494,7 +494,7 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::AdminAction {
-                serial: Some(1),
+                serial: Some(1.into()),
                 action: "populate:cemetery".to_owned(),
             })
             .unwrap();
@@ -546,7 +546,7 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::AdminAction {
-                serial: Some(1),
+                serial: Some(1.into()),
                 action: "clear".to_owned(),
             })
             .unwrap();
@@ -570,7 +570,7 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::AdminAction {
-                serial: Some(1),
+                serial: Some(1.into()),
                 action: "decorate:britain".to_owned(),
             })
             .unwrap();
@@ -618,7 +618,7 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::AdminAction {
-                serial: Some(1),
+                serial: Some(1.into()),
                 action: "decorate:britain".to_owned(),
             })
             .unwrap();
@@ -666,7 +666,7 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::PlayerEntered {
-                serial: 7,
+                serial: 7.into(),
                 x: 0,
                 y: 0,
                 z: 0,
@@ -675,7 +675,7 @@ mod tests {
         assert_eq!(
             engine.take_commands(),
             vec![Command::SetStats {
-                serial: 7,
+                serial: 7.into(),
                 strength: 60,
                 dexterity: 80,
                 intelligence: 40,
@@ -695,12 +695,15 @@ mod tests {
             )
             .unwrap();
         engine
-            .deliver(&Event::StepRefused { serial: 9, reason: 2 })
+            .deliver(&Event::StepRefused {
+                serial: 9.into(),
+                reason: 2,
+            })
             .unwrap();
         assert_eq!(
             engine.take_commands(),
             vec![Command::Move {
-                serial: 9,
+                serial: 9.into(),
                 direction: 4
             }]
         );
@@ -722,15 +725,15 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::ItemUsed {
-                item: 0x4000_0007,
+                item: 0x4000_0007.into(),
                 graphic: 3854,
-                by: 42,
+                by: 42.into(),
             })
             .unwrap();
         assert_eq!(
             engine.take_commands(),
             vec![Command::Speak {
-                serial: 42,
+                serial: 42.into(),
                 hue: 0,
                 text: format!("drink {}", 0x4000_0007u32),
             }]
@@ -754,7 +757,7 @@ mod tests {
             .unwrap();
         engine
             .deliver(&Event::CorpseCreated {
-                corpse: 0x4000_0009,
+                corpse: 0x4000_0009.into(),
                 body: 400,
             })
             .unwrap();
@@ -778,11 +781,11 @@ mod tests {
         engine
             .load("function onTick(s) { Deno.core.ops.op_move(s, 1); }")
             .unwrap();
-        engine.tick(1).unwrap();
+        engine.tick(1.into()).unwrap();
         assert_eq!(
             engine.take_commands()[0],
             Command::Move {
-                serial: 1,
+                serial: 1.into(),
                 direction: 1
             }
         );
@@ -790,11 +793,11 @@ mod tests {
         engine
             .load("function onTick(s) { Deno.core.ops.op_move(s, 6); }")
             .unwrap();
-        engine.tick(1).unwrap();
+        engine.tick(1.into()).unwrap();
         assert_eq!(
             engine.take_commands()[0],
             Command::Move {
-                serial: 1,
+                serial: 1.into(),
                 direction: 6
             }
         );
@@ -808,7 +811,7 @@ mod tests {
             .load("function onTick(s) { Deno.core.ops.op_move(s, 1); }")
             .unwrap();
         engine.load("const x = 1;").unwrap();
-        engine.tick(1).unwrap();
+        engine.tick(1.into()).unwrap();
         assert!(engine.take_commands().is_empty());
     }
 
@@ -819,7 +822,7 @@ mod tests {
         engine
             .load("function onTick() { throw new Error(\"boom\"); }")
             .unwrap();
-        let err = engine.tick(1).unwrap_err();
+        let err = engine.tick(1.into()).unwrap_err();
         assert!(matches!(err, ScriptError::Hook { hook: "onTick", .. }));
     }
 
@@ -838,7 +841,7 @@ mod tests {
 
         let mut engine = DenoEngine::new();
         engine.load_file(&path).unwrap().unwrap();
-        engine.tick(1).unwrap();
+        engine.tick(1.into()).unwrap();
         assert_eq!(engine.take_commands()[0].direction(), 1);
 
         // No change yet: nothing reloads.
@@ -852,7 +855,7 @@ mod tests {
         f.sync_all().unwrap();
 
         assert!(engine.reload_if_changed().unwrap().unwrap());
-        engine.tick(1).unwrap();
+        engine.tick(1.into()).unwrap();
         assert_eq!(engine.take_commands()[0].direction(), 7);
 
         let _ = std::fs::remove_file(&path);
@@ -882,7 +885,7 @@ mod tests {
         engine.load_file(&dir).unwrap().unwrap();
         engine
             .deliver(&Event::AdminAction {
-                serial: Some(1),
+                serial: Some(1.into()),
                 action: "go".to_owned(),
             })
             .unwrap();

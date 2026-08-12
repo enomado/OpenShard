@@ -124,7 +124,7 @@ impl Scripts {
             let bus = world.bus();
             for e in bus.read(&mut self.entered) {
                 events.push(ScriptEvent::PlayerEntered {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     x: e.position.x,
                     y: e.position.y,
                     z: e.position.z,
@@ -132,7 +132,7 @@ impl Scripts {
             }
             for e in bus.read(&mut self.spawned) {
                 events.push(ScriptEvent::MobileSpawned {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     x: e.position.x,
                     y: e.position.y,
                     z: e.position.z,
@@ -140,7 +140,7 @@ impl Scripts {
             }
             for e in bus.read(&mut self.restored) {
                 events.push(ScriptEvent::MobileRestored {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     body: e.body.0,
                     // `home`, not `at`: a pack binds by the tile an NPC was placed
                     // on, and a townsperson with a routine is not standing on it
@@ -152,7 +152,7 @@ impl Scripts {
             }
             for e in bus.read(&mut self.cast_requested) {
                 events.push(ScriptEvent::SpellRequested {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     // The script bridge is a serialization seam; the typed id
                     // becomes the JSON number a pack API exposes here.
                     spell: e.spell.0,
@@ -160,7 +160,7 @@ impl Scripts {
             }
             for e in bus.read(&mut self.moved) {
                 events.push(ScriptEvent::MobileMoved {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     x: e.to.x,
                     y: e.to.y,
                     z: e.to.z,
@@ -169,25 +169,25 @@ impl Scripts {
             }
             for e in bus.read(&mut self.refused) {
                 events.push(ScriptEvent::StepRefused {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     reason: e.reason as u8,
                 });
             }
             for e in bus.read(&mut self.left) {
                 events.push(ScriptEvent::PlayerLeft {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                 });
             }
             for e in bus.read(&mut self.died) {
                 events.push(ScriptEvent::MobileDied {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     body: e.body.0,
-                    killer: e.killer.map_or(0, |k| k.raw()),
+                    killer: e.killer.map_or(0u32, |k| k.raw()).into(),
                 });
             }
             for e in bus.read(&mut self.used) {
                 events.push(ScriptEvent::SkillUsed {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     skill: e.skill.id(),
                     success: e.success,
                     value: e.value,
@@ -195,13 +195,13 @@ impl Scripts {
             }
             for e in bus.read(&mut self.requested) {
                 events.push(ScriptEvent::SkillRequested {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     skill: e.skill.id(),
                 });
             }
             for e in bus.read(&mut self.cast) {
                 events.push(ScriptEvent::SpellCast {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     spell: e.spell.0,
                     // Out through the same serialization seam the commands come
                     // in by: a spell with no mark is the script's `0`.
@@ -211,48 +211,48 @@ impl Scripts {
             }
             for e in bus.read(&mut self.spoke) {
                 events.push(ScriptEvent::MobileSpoke {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     text: e.text.clone(),
                 });
             }
             for e in bus.read(&mut self.item_used) {
                 events.push(ScriptEvent::ItemUsed {
-                    item: e.item.raw(),
+                    item: e.item.raw().into(),
                     graphic: e.graphic.0,
-                    by: e.by.raw(),
+                    by: e.by.raw().into(),
                 });
             }
             for e in bus.read(&mut self.mobile_used) {
                 events.push(ScriptEvent::MobileUsed {
-                    mobile: e.mobile.raw(),
+                    mobile: e.mobile.raw().into(),
                     body: e.body.0,
-                    by: e.by.raw(),
+                    by: e.by.raw().into(),
                 });
             }
             for e in bus.read(&mut self.items_taken) {
                 events.push(ScriptEvent::ItemsTaken {
-                    player: e.player.raw(),
+                    player: e.player.raw().into(),
                     graphic: e.graphic.0,
                     taken: e.taken,
                 });
             }
             for e in bus.read(&mut self.corpse) {
                 events.push(ScriptEvent::CorpseCreated {
-                    corpse: e.corpse.raw(),
+                    corpse: e.corpse.raw().into(),
                     body: e.body.0,
                 });
             }
             for e in bus.read(&mut self.admin) {
                 events.push(ScriptEvent::AdminAction {
-                    serial: e.serial.map(Serial::raw),
+                    serial: e.serial.map(|serial| serial.raw().into()),
                     action: e.action.clone(),
                 });
             }
             for e in bus.read(&mut self.quest_done) {
                 events.push(ScriptEvent::QuestCompleted {
-                    serial: e.player.raw(),
+                    serial: e.player.raw().into(),
                     key: e.key.clone(),
-                    giver: e.giver.map_or(0, |g| g.raw()),
+                    giver: e.giver.map_or(0u32, |g| g.raw()).into(),
                 });
             }
             for e in bus.read(&mut self.gump) {
@@ -260,7 +260,7 @@ impl Scripts {
                 // the pack's own ids stop being types and become JSON numbers —
                 // the same unwrapping a SQL bind or the wire itself does.
                 events.push(ScriptEvent::GumpAnswered {
-                    serial: e.serial.raw(),
+                    serial: e.serial.raw().into(),
                     gump_id: e.gump_id.0,
                     button: e.button.0,
                     switches: e.switches.iter().map(|switch| switch.0).collect(),
@@ -280,7 +280,7 @@ impl Scripts {
         // above. This is the hook the scripting benchmark sized — one call per
         // controlled mobile per tick.
         for serial in world.scripted() {
-            if let Err(error) = self.engine.tick(serial.raw()) {
+            if let Err(error) = self.engine.tick(serial.raw().into()) {
                 warn!(%error, serial = serial.raw(), "gameplay script onTick threw");
             }
         }
@@ -316,11 +316,12 @@ impl Scripts {
 /// travelled to the tick as a bare `u32`, was refused there by the same
 /// `Serial::new`, and the command did nothing with nothing said — a pack bug
 /// that looked exactly like a mobile that had logged out.
-fn script_serial(serial: u32) -> Option<Serial> {
-    let made = Serial::new(serial);
+fn script_serial(serial: impl Into<u32>) -> Option<Serial> {
+    let raw = serial.into();
+    let made = Serial::new(raw);
     if made.is_none() {
         warn!(
-            serial = format!("0x{serial:08X}"),
+            serial = format!("0x{raw:08X}"),
             "gameplay script named a serial nothing can have; command dropped"
         );
     }

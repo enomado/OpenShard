@@ -80,7 +80,7 @@ fn bench(label: &str, hook: &str) {
     for serial in 1..=max {
         engine
             .deliver(&Event::PlayerEntered {
-                serial,
+                serial: serial.into(),
                 x: (serial % 6144) as u16,
                 y: (serial % 4096) as u16,
                 z: 0,
@@ -93,7 +93,7 @@ fn bench(label: &str, hook: &str) {
     // Warm up: let V8 tier the hook up to optimised code before timing.
     for _ in 0..3 {
         for serial in 1..=max {
-            engine.tick(serial).expect("tick");
+            engine.tick(serial.into()).expect("tick");
         }
         engine.take_commands();
     }
@@ -106,7 +106,7 @@ fn bench(label: &str, hook: &str) {
         let start = Instant::now();
         for _ in 0..rounds {
             for serial in 1..=count {
-                engine.tick(serial).expect("tick");
+                engine.tick(serial.into()).expect("tick");
             }
             engine.take_commands();
         }
