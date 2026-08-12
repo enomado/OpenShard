@@ -554,7 +554,7 @@ pub fn attack(state: &mut WorldState, connection: ConnectionId, target: Option<S
 /// in one beat.
 pub fn volleys(state: &mut WorldState) {
     let now = state.ticks;
-    let ready: Vec<(EntityId, Serial, u8, u8)> = state
+    let ready: Vec<(EntityId, Serial, u8, DamageType)> = state
         .registry
         .query::<Combat>()
         .filter_map(|(attacker, combat)| {
@@ -564,7 +564,7 @@ pub fn volleys(state: &mut WorldState) {
             let ranged = state.registry.get::<RangedAttack>(attacker)?;
             combat
                 .target
-                .map(|target| (attacker, target, ranged.range, ranged.kind))
+                .map(|target| (attacker, target, ranged.range.get(), ranged.kind))
         })
         .collect();
     for (attacker, target_serial, range, kind) in ready {
@@ -617,7 +617,7 @@ pub fn volleys(state: &mut WorldState) {
         if check_hit(state, attacker, target) {
             let amount = scaled_blow(state, attacker, target);
             if let Some(hit) = state.registry.serial_of(target) {
-                damage(state, hit, amount, DamageType::from_u8(kind), by);
+                damage(state, hit, amount, kind, by);
             }
         }
     }

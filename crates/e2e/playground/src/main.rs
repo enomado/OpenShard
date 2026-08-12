@@ -4,6 +4,11 @@
 //! cargo run -p openshard-playground -- --client "/path/to/Ultima Online Classic"
 //! ```
 //!
+//! To exercise client mailbox backpressure with ordinary moving-mobile traffic,
+//! add `--mailbox-load --stall-app-ms 5000`. This is opt-in and replaces the
+//! playground's script only for that process; it does not alter a configured
+//! world's database.
+//!
 //! Every option is also an environment variable, so the install can be named
 //! once — exported, or written into a `.env` beside the workspace root, which
 //! this binary reads before it parses anything. `--help` lists both spellings.
@@ -52,6 +57,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
@@ -96,6 +102,21 @@ struct Cli {
     /// The `tracing` filter, in `RUST_LOG` syntax.
     #[arg(long, env = "RUST_LOG", default_value = "info", value_name = "FILTER")]
     log: String,
+
+    /// Pause the App event loop once immediately after it enters the world.
+    ///
+    /// A diagnostic only: the in-process shard keeps sending while the App is
+    /// paused, so the ordered-update mailbox can demonstrate its backpressure.
+    #[arg(long, env = "OPENSHARD_STALL_APP_MS", value_name = "MS")]
+    stall_app_ms: Option<u64>,
+
+    /// Populate a nearby moving crowd to exercise the App's staged mailbox.
+    ///
+    /// This diagnostic runs only when asked. It uses ordinary spawned-mobile
+    /// and movement updates, not resync snapshots, so it is representative of
+    /// a populated shard without changing a configured world or its database.
+    #[arg(long, env = "OPENSHARD_MAILBOX_LOAD")]
+    mailbox_load: bool,
 
     /// Draw overhead speech through this TrueType or OpenType face instead of
     /// `fonts.mul`. See `openshard_client_app`'s own flag of the same name.
@@ -144,6 +165,7 @@ fn main() -> ExitCode {
     // Overridden whichever config this is, because the window is the one naming
     // the install and an operator's config may name none.
     let files = dir.to_string_lossy().into_owned();
+    let mailbox_load = cli.mailbox_load;
     let (dial, shard) = openshard_e2e_shard::in_process::spawn(move |stated| {
         let mut config = operator.unwrap_or_else(|| openshard_e2e_shard::stock_config(stated));
         // Both addresses, whichever config this is: nothing binds a port here,
@@ -154,6 +176,9 @@ fn main() -> ExitCode {
         config.server.listen = stated;
         config.server.advertise = stated;
         config.world.client_files = files;
+        if mailbox_load {
+            config.scripting.main = concat!(env!("CARGO_MANIFEST_DIR"), "/mailbox_load.js").to_owned();
+        }
         config
     });
     eprintln!(
@@ -171,7 +196,10 @@ fn main() -> ExitCode {
         &dir,
         Some((dial, plan)),
         cli.ttf_font,
-        openshard_client_app::Opening::default(),
+        openshard_client_app::Opening {
+            stall_on_update: cli.stall_app_ms.map(Duration::from_millis),
+            ..Default::default()
+        },
     );
 
     // The window is gone, so the shard is asked to stop and waited for. The wait
@@ -182,4 +210,64 @@ fn main() -> ExitCode {
     // production.
     shard.stop();
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use openshard_scripting::{Command, DenoEngine, Event, ScriptEngine};
+
+    #[test]
+    fn the_mailbox_load_script_creates_and_drives_a_live_crowd() {
+        let mut engine = DenoEngine::new();
+        engine
+            .load(include_str!("../mailbox_load.js"))
+            .expect("the shipped diagnostic script loads");
+        let player = 0x0000_002A;
+        engine
+            .deliver(&Event::PlayerEntered {
+                serial: player,
+                x: 100,
+                y: 200,
+                z: 7,
+            })
+            .expect("the player-entry hook runs");
+
+        let spawns = engine.take_commands();
+        assert_eq!(
+            spawns.len(),
+            64,
+            "an eight by eight crowd is enough to fill the mailbox"
+        );
+        assert!(spawns.iter().all(|command| {
+            matches!(
+                command,
+                Command::SpawnMobile {
+                    body: 0x0190,
+                    x: 102..=109,
+                    y: 202..=209,
+                    z: 7,
+                    name,
+                    ..
+                } if name == "mailbox walker"
+            )
+        }));
+
+        let walker = 0x0000_0101;
+        engine
+            .deliver(&Event::MobileSpawned {
+                serial: walker,
+                x: 102,
+                y: 202,
+                z: 7,
+            })
+            .expect("the mobile-spawn hook runs");
+        assert!(
+            matches!(engine.take_commands().as_slice(), [Command::Control { serial }] if *serial == walker)
+        );
+
+        engine.tick(walker).expect("the controlled NPC ticks");
+        assert!(
+            matches!(engine.take_commands().as_slice(), [Command::Move { serial, direction: 2 }] if *serial == walker)
+        );
+    }
 }

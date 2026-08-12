@@ -260,6 +260,11 @@ impl App {
         // Whole, for the HUD's world window: the three projections above are
         // what the renderer wants, and none of them keeps a serial.
         self.world.authoritative.view = Some(Box::new(view));
+        // The offline placeholder exists so a map-only window has a body to
+        // inspect. A connected client must never reveal it while login packets
+        // are still in flight: this snapshot is the first world picture the
+        // shard has actually authorised us to draw.
+        self.world.render_ready = true;
         // The camera follows the body, which is what `0x20` is for — unless it
         // has been unlocked, in which case the eye is the mouse's and the body
         // is free to walk off the screen. `Home` puts it back. After the view is

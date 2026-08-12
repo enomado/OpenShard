@@ -11,8 +11,9 @@
 //! pick of tile both draw on the world's seeded [`Rng`](openshard_state::rng::Rng),
 //! so a replay repopulates identically.
 
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue};
-use openshard_protocol::world::Facet;
+use openshard_protocol::world::{Aggression, DamageType, Facet, RangedRange, Sight};
 
 /// One creature a spawn region may put down. The fields a spawn needs beyond the
 /// where — mirrors [`crate::tick::Command::SpawnMobile`] minus the position, which
@@ -26,7 +27,7 @@ pub struct CreatureTemplate {
     /// Starting and maximum hit points.
     pub hits: u16,
     /// Health-bar colour: the [`openshard_protocol::Notoriety`] wire value.
-    pub notoriety: u8,
+    pub notoriety: Notoriety,
     /// Melee damage before the target's resistance.
     pub damage: u16,
     /// Physical resistance, a percentage.
@@ -38,15 +39,15 @@ pub struct CreatureTemplate {
     /// Swing cadence in ticks; `0` derives it from dexterity.
     pub swing: u64,
     /// How far it notices a target; `0` for a placid animal.
-    pub sight: u8,
+    pub sight: Sight,
     /// Whether it starts fights (2), answers them (1), or only runs (0).
-    pub aggression: u8,
+    pub aggression: Aggression,
     /// Ticks between its beats while hunting; 0 takes the shard default.
     pub beat: u64,
-    /// How far its ranged attack reaches, in tiles; 0 fights hand to hand.
-    pub ranged: u8,
-    /// The ranged attack's damage type wire value.
-    pub ranged_kind: u8,
+    /// Its optional ranged attack reach.
+    pub ranged: Option<RangedRange>,
+    /// The ranged attack's damage type.
+    pub ranged_kind: DamageType,
     /// Whether it drifts when idle.
     pub wander: bool,
     /// Trained combat skills, `(skill id, value in tenths)` — what makes a

@@ -27,7 +27,8 @@ use openshard_uofiles::map::Map;
 use crate::app::App;
 use crate::crowd::Who;
 use crate::diagnostics::{
-    Height, PickedItem, PickedMobile, PickedTile, PriorityZ, Route, Selection, TerrainOverlay, TileDepth,
+    HealthBar, Height, PickedItem, PickedMobile, PickedTile, PriorityZ, Route, Selection, TerrainOverlay,
+    TileDepth,
 };
 use crate::picking::{Pick, SelectedIdentity};
 use crate::world::{cluttered, cluttered_with_doors_open, terrain};
@@ -703,7 +704,7 @@ impl App {
         }
     }
 
-    fn health_bars(&self, camera: Camera, drawn_mobiles: Option<&[(Who, Mobile)]>) -> Vec<shell::HealthBar> {
+    fn health_bars(&self, camera: Camera, drawn_mobiles: Option<&[(Who, Mobile)]>) -> Vec<HealthBar> {
         let Some(view) = self.world.authoritative.view.as_ref() else {
             return Vec::new();
         };
@@ -730,11 +731,11 @@ impl App {
                 };
                 let hits = hits?;
                 let anchor = mobiles::head_anchor(drawn, &camera, &window.atlases.mobiles)?;
-                Some(shell::HealthBar {
+                Some(HealthBar {
                     anchor,
                     current: hits.current,
                     max: hits.max,
-                    colour: health_colour(notoriety),
+                    notoriety,
                     targeted,
                 })
             })
@@ -772,17 +773,5 @@ impl App {
             // nobody asked for sooner.
             pacing: self.pacing(),
         }
-    }
-}
-
-fn health_colour(notoriety: Notoriety) -> egui::Color32 {
-    match notoriety {
-        Notoriety::Innocent => egui::Color32::from_rgb(70, 150, 255),
-        Notoriety::Friend => egui::Color32::from_rgb(70, 210, 110),
-        Notoriety::Neutral | Notoriety::Criminal => egui::Color32::from_rgb(170, 170, 170),
-        Notoriety::Enemy => egui::Color32::from_rgb(230, 145, 55),
-        Notoriety::Murderer => egui::Color32::from_rgb(220, 55, 45),
-        Notoriety::Invulnerable => egui::Color32::from_rgb(240, 220, 70),
-        _ => egui::Color32::from_rgb(170, 170, 170),
     }
 }

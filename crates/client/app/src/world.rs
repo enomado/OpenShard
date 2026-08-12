@@ -38,6 +38,11 @@ pub struct WorldState {
     /// The renderer-facing projection rebuilt from authoritative state and
     /// prediction before a frame is drawn.
     pub presentation: PresentationWorld,
+    /// Whether a world picture is safe to show. The offline viewer starts
+    /// ready; a connected client becomes ready only when the shard has sent its
+    /// first complete [`WorldView`]. Until then the presentation's placeholder
+    /// is state for startup mechanics, not a picture for the player.
+    pub render_ready: bool,
     /// What the connection is doing, for the status strip.
     pub connection: String,
     /// The shard, if this run logged in to one.

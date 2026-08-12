@@ -6,12 +6,12 @@ use openshard_persistence::{
 use openshard_protocol::containers::GridSlot;
 use openshard_protocol::identity::CharacterName;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
+use openshard_protocol::world::Aggression;
 use openshard_state::components::{
-    Aggression, Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy, DoneQuest, Escortable, Field,
-    Frozen, Healer, Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price, Quality,
-    QuestGiver, QuestLog, QuestState, RangedAttack, Restock, RuneMark, Runebook, RunebookEntry, Skills,
-    Spellbook, StatMod, StatMods, StockRecord, SwingSpeed, Title, TradeWindow, Trap, TrapKind, Vendor,
-    body_opens_doors, effect,
+    Banker, BehaviourBuff, BehaviourBuffs, Corpse, CraftedBy, DoneQuest, Escortable, Field, Frozen, Healer,
+    Moongate, NightHome, Npc, Pet, PetOrder, PoisonCharges, Poisoned, Price, Quality, QuestGiver, QuestLog,
+    QuestState, RangedAttack, Restock, RuneMark, Runebook, RunebookEntry, Skills, Spellbook, StatMod,
+    StatMods, StockRecord, SwingSpeed, Title, TradeWindow, Trap, TrapKind, Vendor, body_opens_doors, effect,
 };
 
 /// The serials [`World::restore_characters`] reserved, and the proof it ran.
@@ -528,18 +528,16 @@ impl World {
                 .copied()
                 .unwrap_or(Hitpoints { current: 1, max: 1 });
             // No brain reads back as the values `spawn` builds no brain from.
-            let (sight, aggression, beat, wander) =
-                registry.get::<Brain>(entity).map_or((0, 2, 0, false), |brain| {
-                    (
-                        brain.sight,
-                        brain.aggression.to_bits(),
-                        brain.beat_ticks,
-                        brain.wander,
-                    )
+            let (sight, aggression, beat, wander) = registry
+                .get::<Brain>(entity)
+                .map_or((Sight(0), Aggression::Aggressive, 0, false), |brain| {
+                    (brain.sight, brain.aggression, brain.beat_ticks, brain.wander)
                 });
             let (ranged, ranged_kind) = registry
                 .get::<RangedAttack>(entity)
-                .map_or((0, 0), |ranged| (ranged.range, ranged.kind));
+                .map_or((None, DamageType::Physical), |ranged| {
+                    (Some(ranged.range), ranged.kind)
+                });
             let npc = registry.get::<Npc>(entity).copied();
             records.push(MobileRecord {
                 serial,
@@ -558,8 +556,7 @@ impl World {
                 notoriety: registry
                     .get::<Notoriety>(entity)
                     .copied()
-                    .unwrap_or(Notoriety::Neutral)
-                    .to_bits(),
+                    .unwrap_or(Notoriety::Neutral),
                 damage: registry.get::<MeleeDamage>(entity).map_or(0, |d| d.amount),
                 resistance: registry.get::<Resistance>(entity).map_or(0, |r| r.physical),
                 swing: registry.get::<SwingSpeed>(entity).map_or(0, |s| s.ticks),
@@ -1302,7 +1299,7 @@ impl World {
                     max: record.hits_max.max(1),
                 },
             );
-            registry.insert(entity, Notoriety::from_bits(record.notoriety));
+            registry.insert(entity, record.notoriety);
             registry.insert(
                 entity,
                 MeleeDamage {
@@ -1319,19 +1316,19 @@ impl World {
             if record.swing != 0 {
                 registry.insert(entity, SwingSpeed { ticks: record.swing });
             }
-            if record.ranged > 0 {
+            if let Some(range) = record.ranged {
                 registry.insert(
                     entity,
                     RangedAttack {
-                        range: record.ranged,
+                        range,
                         kind: record.ranged_kind,
                     },
                 );
             }
             // The same brain rule `spawn` applies: anything that hunts, drifts,
             // or must answer or flee a blow.
-            let aggression = Aggression::from_bits(record.aggression);
-            if record.sight > 0 || record.wander || aggression != Aggression::Aggressive {
+            let aggression = record.aggression;
+            if record.sight.0 > 0 || record.wander || aggression != Aggression::Aggressive {
                 registry.insert(
                     entity,
                     Brain {

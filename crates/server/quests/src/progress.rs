@@ -20,6 +20,7 @@
 use openshard_combat::MobileDied;
 use openshard_entities::EntityId;
 use openshard_items::Contents;
+use openshard_protocol::direction::Direction;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::{Font, TalkMode};
 use openshard_protocol::wire::Hue;
@@ -123,7 +124,7 @@ pub fn refresh_obtain(state: &mut WorldState, contents: &Contents) {
 /// The arrival test is a point query — which region is this NPC standing in — and
 /// not an event, which is what lets this crate stay below the one that owns
 /// regions. An escortable whose leader has been out of sight too long gives up.
-pub fn advance_escorts(state: &mut WorldState) -> Vec<(Serial, u8)> {
+pub fn advance_escorts(state: &mut WorldState) -> Vec<(Serial, Direction)> {
     let escorting: Vec<(EntityId, Escortable)> = state
         .registry
         .query::<Escortable>()

@@ -1,7 +1,8 @@
 use super::*;
 use openshard_movement::{Terrain, Walker, step_from};
 use openshard_protocol::mobile::Notoriety;
-use openshard_state::components::{Aggression, Brain, Heading, Hitpoints, Movement};
+use openshard_protocol::world::{Aggression, Sight};
+use openshard_state::components::{Brain, Heading, Hitpoints, Movement};
 
 /// The layer a mount item rides on — the client draws whoever wears one as
 /// mounted. `0x19`, the classic mount layer.
@@ -16,7 +17,7 @@ const DEFAULT_MOUNT_HITS: u16 = 50;
 
 /// How far a dismounted, save-rebuilt mount notices the world — enough to flee a
 /// blow (passive animals run when struck), not enough to go looking for one.
-const MOUNT_SIGHT: u8 = 8;
+const MOUNT_SIGHT: Sight = Sight(8);
 
 /// Try to mount `target`: it must be a rideable body, riderless, no one's
 /// client, and within arm's reach — and the player must be on foot. Returns

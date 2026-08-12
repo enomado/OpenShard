@@ -2846,19 +2846,19 @@ Still open, ranked by how strong the case is:
   `Command`/`ScriptEvent` boundary, same shape as N3's "the queue is a
   delivery, not a checkpoint" — asserted by
   `crates/server/state/tests/skill_bare_fields.rs`.
-- **`Direction` (`protocol::direction`, with `from_bits`/`to_bits`) is
-  unwrapped through `ai`'s pathing core.** `ai::{step_toward, think_one,
-  kite_step}` return `Option<u8>`; `state::components::ChasePath::steps:
-  Vec<u8>` stores a route the same way. Every caller re-derives the enum on
-  the far side.
-- **`Notoriety` (`protocol::mobile`) is unwrapped in `npc::spawn::SpawnSpec`.**
-  `notoriety: u8`, restored with `Notoriety::from_bits` some 150 lines later
-  in the same file — the wrap belongs on the field.
-- **`DamageType` (`state::components`) is unwrapped in the component that
-  names it.** `RangedAttack::kind: u8` — the field's own doc comment says
-  "the damage type's wire value (see `DamageType::from_u8`)", i.e. names the
-  gap it leaves open. Feeds `npc::spawn::SpawnSpec::ranged_kind: u8` and
-  `persistence::record`'s mirror of the same byte.
+- ~~**`Direction` (`protocol::direction`, with `from_bits`/`to_bits`) is
+  unwrapped through `ai`'s pathing core.**~~ Fixed: `step_toward`, creature
+  and pet beats, NPC routines, escort progress, `World::step`, and
+  `ChasePath::steps` now carry `Direction`; only the external `Command::Step`
+  boundary promotes its wire byte.
+- ~~**`Notoriety` (`protocol::mobile`) is unwrapped in `npc::spawn::SpawnSpec`.**~~
+  Fixed: the spawn, scripting, persistence and component paths carry
+  `Notoriety` to their protocol or JSON boundaries.
+- ~~**`DamageType` (`state::components`) is unwrapped in the component that
+  names it.**~~ Fixed: `DamageType` lives in `protocol::world`, and ranged
+  spawns, attacks, scripting and persistence carry it directly. A ranged
+  reach is likewise `Option<RangedRange>`, preserving saved numeric `0` as no
+  ranged attack.
 - **No `SpellId` exists anywhere in the codebase.** `magic::spells::info`
   indexes its table with a bare `spell: u16`, and the same untyped `u16`
   names a spell on `SpellCast`, `Cast`, `Command::RequestCast` and

@@ -31,7 +31,8 @@
 
 mod engine;
 
-use openshard_protocol::world::Facet;
+use openshard_protocol::mobile::Notoriety;
+use openshard_protocol::world::{Aggression, DamageType, Facet, RangedRange, Sight};
 
 pub use engine::DenoEngine;
 
@@ -344,7 +345,7 @@ pub enum Command {
         hits: u16,
         /// Its standing (health-bar colour) as a wire byte: 1 innocent, 5 enemy,
         /// 7 invulnerable.
-        notoriety: u8,
+        notoriety: Notoriety,
         /// How hard it hits in melee, before the target's armour.
         damage: u16,
         /// Its physical resistance, 0–100.
@@ -352,15 +353,15 @@ pub enum Command {
         /// Ticks between its swings; 0 takes the default.
         swing: u64,
         /// How far it notices a foe, in tiles; 0 is passive.
-        sight: u8,
+        sight: Sight,
         /// Whether it starts fights (2), answers them (1), or only runs (0).
-        aggression: u8,
+        aggression: Aggression,
         /// Ticks between its beats while hunting; 0 takes the shard default.
         beat: u64,
-        /// How far its ranged attack reaches, in tiles; 0 fights hand to hand.
-        ranged: u8,
-        /// The ranged attack's damage type wire value.
-        ranged_kind: u8,
+        /// Its optional ranged attack reach.
+        ranged: Option<RangedRange>,
+        /// The ranged attack's damage type.
+        ranged_kind: DamageType,
         /// Whether it wanders when idle.
         wander: bool,
         /// Where it stands.
@@ -949,7 +950,7 @@ pub struct SpawnCreature {
     /// Starting and maximum hit points.
     pub hits: u16,
     /// Health-bar colour, as a wire byte.
-    pub notoriety: u8,
+    pub notoriety: Notoriety,
     /// Melee damage before the target's resistance.
     pub damage: u16,
     /// Physical resistance, 0–100.
@@ -961,15 +962,15 @@ pub struct SpawnCreature {
     /// Ticks between swings; 0 takes the default.
     pub swing: u64,
     /// How far it notices a foe; 0 is passive.
-    pub sight: u8,
+    pub sight: Sight,
     /// Whether it starts fights (2), answers them (1), or only runs (0).
-    pub aggression: u8,
+    pub aggression: Aggression,
     /// Ticks between its beats while hunting; 0 takes the shard default.
     pub beat: u64,
-    /// How far its ranged attack reaches, in tiles; 0 fights hand to hand.
-    pub ranged: u8,
-    /// The ranged attack's damage type wire value.
-    pub ranged_kind: u8,
+    /// Its optional ranged attack reach.
+    pub ranged: Option<RangedRange>,
+    /// The ranged attack's damage type.
+    pub ranged_kind: DamageType,
     /// Whether it wanders when idle.
     pub wander: bool,
     /// Trained combat skills, `(skill id, value in tenths)`.

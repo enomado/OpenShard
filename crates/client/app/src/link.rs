@@ -129,6 +129,10 @@ struct PendingUpdates {
     notified: bool,
     /// Every update whose order must be retained, across all mutation stages.
     ordered: usize,
+    /// Whether this mailbox has already reported that it reached the
+    /// ordered-update limit. One line establishes backpressure without making
+    /// a sustained busy connection drown its normal log in identical warnings.
+    backpressure_reported: bool,
     stages: VecDeque<UpdateStage>,
 }
 
@@ -175,6 +179,13 @@ impl Updates {
                 // of allowing an unfocused or GPU-blocked window to consume
                 // unbounded memory while it falls behind.
                 while pending.ordered == self.mailbox.capacity {
+                    if !pending.backpressure_reported {
+                        tracing::warn!(
+                            capacity = self.mailbox.capacity,
+                            "ordered update mailbox is full; applying socket backpressure"
+                        );
+                        pending.backpressure_reported = true;
+                    }
                     pending = self
                         .mailbox
                         .space
@@ -209,6 +220,10 @@ impl Updates {
             .expect("the update mailbox is not poisoned");
         pending.notified = false;
         pending.ordered = 0;
+        // A drain ends this backpressure episode. If the App falls behind
+        // again later, report that distinct condition once too; keeping this
+        // latched for the process lifetime would hide a renewed stall.
+        pending.backpressure_reported = false;
         let stages = std::mem::take(&mut pending.stages);
         self.mailbox.space.notify_all();
         stages
@@ -728,6 +743,60 @@ mod tests {
         assert!(
             received.recv_timeout(std::time::Duration::from_secs(1)).is_ok(),
             "draining must release the shard thread"
+        );
+        worker.join().expect("the shard-side publisher exits");
+    }
+
+    #[test]
+    fn draining_rearms_backpressure_reporting_for_a_later_stall() {
+        let updates = Updates::with_capacity(1);
+        updates.publish(Update::Lost("first".to_owned()));
+        let producer = updates.clone();
+        let (started_by_producer, started) = std::sync::mpsc::channel();
+        let (finished_by_producer, finished) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_by_producer
+                .send(())
+                .expect("the test waits for the network publisher");
+            finished_by_producer
+                .send(producer.publish(Update::Lost("second".to_owned())))
+                .expect("the test waits for the network publisher");
+        });
+
+        started
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the network publisher starts");
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err(),
+            "the second ordered update is blocked at the mailbox limit"
+        );
+        assert!(
+            updates
+                .mailbox
+                .pending
+                .lock()
+                .expect("the update mailbox is not poisoned")
+                .backpressure_reported,
+            "a full mailbox records that this stall has been reported"
+        );
+
+        updates.take();
+        assert!(
+            !updates
+                .mailbox
+                .pending
+                .lock()
+                .expect("the update mailbox is not poisoned")
+                .backpressure_reported,
+            "draining ends the reporting episode"
+        );
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("draining releases the network publisher"),
+            "the newly non-idle mailbox asks for a platform wake-up"
         );
         worker.join().expect("the shard-side publisher exits");
     }

@@ -27,6 +27,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use deno_core::{JsRuntime, OpState, RuntimeOptions, extension, op2, v8};
+#[cfg(test)]
+use openshard_protocol::world::DamageType;
 use openshard_protocol::world::Facet;
 
 use crate::{Command, Event, ScriptEngine, ScriptError, Serial};
@@ -325,6 +327,8 @@ impl ScriptEngine for DenoEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openshard_protocol::world::Aggression;
+    use openshard_protocol::world::Sight;
 
     #[test]
     fn a_script_with_no_hooks_loads_and_ticks_to_nothing() {
@@ -510,15 +514,15 @@ mod tests {
                     body: 0x0032,
                     hue: 0,
                     hits: 34,
-                    notoriety: 6,
+                    notoriety: openshard_protocol::mobile::Notoriety::Murderer,
                     damage: 0,
                     resistance: 0,
                     swing: 0,
-                    sight: 8,
-                    aggression: 2,
+                    sight: Sight(8),
+                    aggression: Aggression::from_bits(2),
                     beat: 0,
-                    ranged: 0,
-                    ranged_kind: 0,
+                    ranged: None,
+                    ranged_kind: DamageType::Physical,
                     wander: false,
                     skills: Vec::new(),
                 }],

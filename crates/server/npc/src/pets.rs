@@ -58,15 +58,15 @@ pub fn tame(state: &mut WorldState, creature: EntityId, tamer: EntityId, slots: 
         .get::<openshard_state::components::Brain>(creature)
         .copied()
         .unwrap_or(openshard_state::components::Brain {
-            sight: 0,
+            sight: openshard_protocol::world::Sight(0),
             wander: false,
             next_think: state.ticks,
             guard_until: 0,
             opens_doors: false,
-            aggression: openshard_state::components::Aggression::Defensive,
+            aggression: openshard_protocol::world::Aggression::Defensive,
             beat_ticks: 0,
         });
-    brain.aggression = openshard_state::components::Aggression::Defensive;
+    brain.aggression = openshard_protocol::world::Aggression::Defensive;
     brain.wander = false;
     state.registry.insert(creature, brain);
     state.broadcast_move(creature);

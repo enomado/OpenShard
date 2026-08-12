@@ -7,7 +7,7 @@ use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::{Serial, SerialKind};
 use openshard_protocol::wire::{Graphic, Hue, Layer};
-use openshard_protocol::world::{Facet, Point};
+use openshard_protocol::world::{DamageType, Facet, Point, RangedRange, Sight};
 use openshard_state::WorldState;
 use openshard_state::components::{
     Aggression, Banker, Body, Brain, Fame, Heading, Healer, Hitpoints, Karma, MeleeDamage, Movement, Name,
@@ -49,19 +49,19 @@ pub struct SpawnSpec {
     pub body: Graphic,
     pub hue: Hue,
     pub hits: u16,
-    pub notoriety: u8,
+    pub notoriety: Notoriety,
     pub damage: u16,
     pub resistance: u8,
     pub swing: u64,
-    pub sight: u8,
+    pub sight: Sight,
     /// Whether it starts fights (2), answers them (1), or only runs (0).
-    pub aggression: u8,
+    pub aggression: Aggression,
     /// Ticks between its beats while hunting; 0 takes the shard default.
     pub beat: u64,
-    /// How far its ranged attack reaches, in tiles; 0 fights hand to hand.
-    pub ranged: u8,
-    /// The ranged attack's damage type wire value.
-    pub ranged_kind: u8,
+    /// Its optional ranged attack reach.
+    pub ranged: Option<RangedRange>,
+    /// The ranged attack's damage type.
+    pub ranged_kind: DamageType,
     pub wander: bool,
     pub position: Point,
     pub facet: Facet,
@@ -207,7 +207,7 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
             max: hits,
         },
     );
-    state.registry.insert(entity, Notoriety::from_bits(notoriety));
+    state.registry.insert(entity, notoriety);
     state.registry.insert(entity, MeleeDamage { amount: damage });
     // Standing, only when it has any: a rat gives up nothing and a dragon a great deal,
     // and an absent component is the same as zero everywhere that reads it.
@@ -242,11 +242,11 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
         state.registry.insert(entity, SwingSpeed { ticks: swing });
     }
     // A reach makes it an archer/mage/breather: it kites and volleys.
-    if ranged > 0 {
+    if let Some(range) = ranged {
         state.registry.insert(
             entity,
             RangedAttack {
-                range: ranged,
+                range,
                 kind: ranged_kind,
             },
         );
@@ -254,11 +254,10 @@ pub fn spawn(state: &mut WorldState, spec: SpawnSpec) -> Option<EntityId> {
     // A brain only for a creature that needs one — something that hunts or
     // wanders. A pure prop (a shopkeeper standing still) gets none and never
     // enters `think`. `Combat` it earns when it first picks a fight.
-    let aggression = Aggression::from_bits(aggression);
     // A brain for anything that hunts, drifts, or must answer or flee a blow —
     // which is everything but the aggressive-but-blind prop (sight 0), the old
     // meaning of "no brain".
-    if sight > 0 || wander || aggression != Aggression::Aggressive {
+    if sight.0 > 0 || wander || aggression != Aggression::Aggressive {
         // Jittered like the townsfolk beat below, and for the same reason: a
         // spawner that fills a region hands every creature in it the same timer,
         // and a pack of wolves that decides, turns and lunges on one tick reads

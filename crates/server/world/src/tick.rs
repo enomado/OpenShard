@@ -47,7 +47,7 @@ use openshard_protocol::speech::{Font, RawFont, RawTalkMode, SpokenMessage, Talk
 use openshard_protocol::wire::{Graphic, Hue, Layer, RawHue, RawLayer};
 use openshard_protocol::world::{
     DeathStatus, Facet, Light, LightLevel, LoginComplete, LogoutAck, MapChange, MapSize, PlayerStart,
-    PlayerUpdate, Point, RawStepSequence, SeasonChange, WalkAck, WalkReject, WalkRequest,
+    PlayerUpdate, Point, RawStepSequence, SeasonChange, Sight, WalkAck, WalkReject, WalkRequest,
 };
 use openshard_protocol::{
     access::AccessLevel,
@@ -802,7 +802,7 @@ impl World {
                 height,
             } => self.generate_doors(facet, x, y, width, height),
             Command::ClearDecorations => self.clear_decorations(),
-            Command::Step { serial, direction } => self.step(serial, direction),
+            Command::Step { serial, direction } => self.step(serial, Direction::from_bits(direction)),
             Command::SpawnItem {
                 graphic,
                 hue,

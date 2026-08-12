@@ -14,8 +14,12 @@
 //! script speaks — is the price of that decoupling, and it is cheap.
 
 use openshard_events::Cursor;
+#[cfg(test)]
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{Graphic, Hue};
+#[cfg(test)]
+use openshard_protocol::world::{Aggression, DamageType};
 use openshard_scripting::{Command as ScriptCommand, DenoEngine, Event as ScriptEvent, ScriptEngine};
 use openshard_world::events::{
     AdminMenuAction, CorpseCreated, GumpAnswered, MobileMoved, MobileSpawned, PlayerEntered, PlayerLeft,
@@ -888,6 +892,7 @@ mod tests {
     use openshard_protocol::speech::{RawFont, RawTalkMode};
     use openshard_protocol::wire::RawHue;
     use openshard_protocol::world::Facet;
+    use openshard_protocol::world::Sight;
     use openshard_protocol::{access::AccessLevel, version::ClientVersion};
     use openshard_world::{Character, Entering, Position};
     use std::time::Instant;
@@ -1082,15 +1087,15 @@ mod tests {
             body: Graphic(0x0190),
             hue: Hue(0),
             hits: 5,
-            notoriety: 5,
+            notoriety: Notoriety::from_bits(5),
             damage: 5,
             resistance: 0,
             swing: 0,
-            sight: 0,
-            aggression: 2,
+            sight: Sight(0),
+            aggression: Aggression::from_bits(2),
             beat: 0,
-            ranged: 0,
-            ranged_kind: 0,
+            ranged: None,
+            ranged_kind: DamageType::Physical,
             wander: false,
             position: openshard_protocol::world::Point::new(1363, 1600, 0),
             facet: Facet(0),
@@ -1157,15 +1162,15 @@ mod tests {
             body: Graphic(0x0190),
             hue: Hue(0),
             hits: 5,
-            notoriety: 5,
+            notoriety: Notoriety::from_bits(5),
             damage: 0,
             resistance: 0,
             swing: 0,
-            sight: 0,
-            aggression: 2,
+            sight: Sight(0),
+            aggression: Aggression::from_bits(2),
             beat: 0,
-            ranged: 0,
-            ranged_kind: 0,
+            ranged: None,
+            ranged_kind: DamageType::Physical,
             wander: false,
             position: openshard_protocol::world::Point::new(1363, 1600, 0),
             facet: Facet(0),

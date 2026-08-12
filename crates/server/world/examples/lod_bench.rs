@@ -23,8 +23,9 @@ use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
 use openshard_protocol::identity::{AccountName, CharacterName};
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue};
-use openshard_protocol::world::{Facet, Point};
+use openshard_protocol::world::{Aggression, DamageType, Facet, Point, Sight};
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
 use openshard_world::{Brain, Character, Command, Entering, FreshCharacter, Gameplay, TICK_INTERVAL, World};
 
@@ -98,15 +99,15 @@ fn populate(gameplay: Gameplay, creatures: u32, players: u32) -> (World, u32) {
                 body: Graphic(0x00D1), // a wandering creature that does not work door handles
                 hue: Hue(0),
                 hits: 50,
-                notoriety: 5,
+                notoriety: Notoriety::from_bits(5),
                 damage: 5,
                 resistance: 0,
                 swing: 0,
-                sight: 10,
-                aggression: 2,
+                sight: Sight(10),
+                aggression: Aggression::from_bits(2),
                 beat: 0,
-                ranged: 0,
-                ranged_kind: 0,
+                ranged: None,
+                ranged_kind: DamageType::Physical,
                 wander: true,
                 position: Point::new(x, y, 0),
                 facet: Facet(0),

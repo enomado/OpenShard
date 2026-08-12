@@ -18,7 +18,9 @@
 //! internal shape to the on-disk format forever.
 
 use openshard_protocol::identity::{AccountName, CharacterName};
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
+use openshard_protocol::world::{Aggression, DamageType, RangedRange, Sight};
 use serde::{Deserialize, Serialize};
 
 /// The persisted state of a container trap.
@@ -711,10 +713,6 @@ pub struct CorpseData {
 /// the world's creature template, kept here so the on-disk shape does not move
 /// every time the simulation's does.
 /// The serde default for [`CreatureData::aggression`]: aggressive.
-fn aggressive() -> u8 {
-    2
-}
-
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct CreatureData {
     /// The body graphic.
@@ -724,7 +722,7 @@ pub struct CreatureData {
     /// Starting and maximum hit points.
     pub hits: u16,
     /// Health-bar colour, the notoriety wire value.
-    pub notoriety: u8,
+    pub notoriety: Notoriety,
     /// Melee damage before resistance.
     pub damage: u16,
     /// Physical resistance, a percentage.
@@ -739,20 +737,20 @@ pub struct CreatureData {
     /// Swing cadence in ticks; `0` derives it from dexterity.
     pub swing: u64,
     /// How far it notices a target.
-    pub sight: u8,
+    pub sight: Sight,
     /// Whether it starts fights (2), answers them (1), or only runs (0).
     /// Defaults to aggressive, the only behaviour that existed before it.
-    #[serde(default = "aggressive")]
-    pub aggression: u8,
+    #[serde(default)]
+    pub aggression: Aggression,
     /// Ticks between its beats while hunting; 0 takes the shard default.
     #[serde(default)]
     pub beat: u64,
-    /// How far its ranged attack reaches, in tiles; 0 fights hand to hand.
+    /// Its optional ranged attack reach. JSON `0` means no ranged attack.
+    #[serde(default, with = "openshard_protocol::world::ranged")]
+    pub ranged: Option<RangedRange>,
+    /// The ranged attack's damage type.
     #[serde(default)]
-    pub ranged: u8,
-    /// The ranged attack's damage type wire value.
-    #[serde(default)]
-    pub ranged_kind: u8,
+    pub ranged_kind: DamageType,
     /// Whether it drifts when idle.
     pub wander: bool,
     /// Trained combat skills, `(skill id, value in tenths)`. Defaulted so an older
@@ -830,7 +828,7 @@ pub struct MobileRecord {
     /// Maximum hit points.
     pub hits_max: u16,
     /// Health-bar colour, the notoriety wire value.
-    pub notoriety: u8,
+    pub notoriety: Notoriety,
     /// Melee damage before resistance.
     pub damage: u16,
     /// Physical resistance, a percentage.
@@ -838,15 +836,16 @@ pub struct MobileRecord {
     /// Swing cadence in ticks; `0` derives it from dexterity.
     pub swing: u64,
     /// How far it notices a target; `0` never picks a fight (and no brain).
-    pub sight: u8,
+    pub sight: Sight,
     /// Whether it starts fights (2), answers them (1), or only runs (0).
-    pub aggression: u8,
+    pub aggression: Aggression,
     /// Ticks between its beats while hunting; 0 takes the shard default.
     pub beat: u64,
-    /// How far its ranged attack reaches, in tiles; 0 fights hand to hand.
-    pub ranged: u8,
-    /// The ranged attack's damage type wire value.
-    pub ranged_kind: u8,
+    /// Its optional ranged attack reach. JSON `0` means no ranged attack.
+    #[serde(with = "openshard_protocol::world::ranged")]
+    pub ranged: Option<RangedRange>,
+    /// The ranged attack's damage type.
+    pub ranged_kind: DamageType,
     /// Whether it drifts when idle.
     pub wander: bool,
     /// Whether it offers banking.
@@ -1060,6 +1059,82 @@ pub struct Inventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sight_keeps_its_numeric_saved_representation() {
+        let json = serde_json::to_string(&Sight(8)).expect("sight serialises");
+        assert_eq!(json, "8", "a named sight value must not change saved JSON");
+        assert_eq!(
+            serde_json::from_str::<Sight>(&json).expect("sight deserialises"),
+            Sight(8)
+        );
+    }
+
+    #[test]
+    fn notoriety_keeps_its_numeric_saved_representation() {
+        let json = serde_json::to_string(&Notoriety::Enemy).expect("notoriety serialises");
+        assert_eq!(json, "5", "a named notoriety value must not change saved JSON");
+        assert_eq!(
+            serde_json::from_str::<Notoriety>("0").expect("an unset notoriety deserialises"),
+            Notoriety::Innocent,
+            "the persisted seam retains the protocol's safe default for unknown bytes"
+        );
+    }
+
+    #[test]
+    fn aggression_keeps_its_numeric_saved_representation() {
+        let json = serde_json::to_string(&Aggression::Defensive).expect("aggression serialises");
+        assert_eq!(json, "1", "a named aggression value must not change saved JSON");
+        assert_eq!(
+            serde_json::from_str::<Aggression>("255").expect("an unknown aggression deserialises"),
+            Aggression::Aggressive,
+            "the persisted seam retains the longstanding aggressive fallback"
+        );
+    }
+
+    #[test]
+    fn damage_type_keeps_its_numeric_saved_representation() {
+        let json = serde_json::to_string(&DamageType::Energy).expect("damage type serialises");
+        assert_eq!(json, "4", "a named damage type must not change saved JSON");
+        assert_eq!(
+            serde_json::from_str::<DamageType>("255").expect("an unknown damage type deserialises"),
+            DamageType::Physical,
+            "the persisted seam retains the longstanding physical fallback"
+        );
+    }
+
+    #[test]
+    fn ranged_reach_keeps_its_numeric_saved_representation() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct RangedSeam {
+            #[serde(with = "openshard_protocol::world::ranged")]
+            ranged: Option<RangedRange>,
+        }
+
+        let melee = serde_json::to_string(&RangedSeam { ranged: None }).expect("melee range serialises");
+        assert_eq!(melee, r#"{"ranged":0}"#, "no range must remain the legacy zero");
+
+        let archer = RangedSeam {
+            ranged: RangedRange::new(8),
+        };
+        let json = serde_json::to_string(&archer).expect("ranged reach serialises");
+        assert_eq!(
+            json, r#"{"ranged":8}"#,
+            "a range must remain its numeric saved value"
+        );
+        assert_eq!(
+            serde_json::from_str::<RangedSeam>(&melee)
+                .expect("the legacy zero deserialises")
+                .ranged,
+            None
+        );
+        assert_eq!(
+            serde_json::from_str::<RangedSeam>(&json)
+                .expect("a numeric range deserialises")
+                .ranged,
+            RangedRange::new(8)
+        );
+    }
 
     #[test]
     fn an_item_record_round_trips_through_json() {

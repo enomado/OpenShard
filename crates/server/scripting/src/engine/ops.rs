@@ -1,4 +1,6 @@
 use super::*;
+use openshard_protocol::mobile::Notoriety;
+use openshard_protocol::world::{Aggression, DamageType, RangedRange, Sight};
 
 /// serial the engine has never been told about.
 ///
@@ -48,10 +50,6 @@ struct SpawnSpec {
 }
 
 /// The serde default for a spec's `aggression`: aggressive, the old behaviour.
-fn aggressive() -> u8 {
-    2
-}
-
 /// The default stack size: a single item.
 fn one() -> u16 {
     1
@@ -118,7 +116,7 @@ struct MobileSpec {
     #[serde(default = "one")]
     hits: u16,
     #[serde(default)]
-    notoriety: u8,
+    notoriety: Notoriety,
     #[serde(default)]
     damage: u16,
     #[serde(default)]
@@ -126,15 +124,15 @@ struct MobileSpec {
     #[serde(default)]
     swing: u64,
     #[serde(default)]
-    sight: u8,
-    #[serde(default = "aggressive")]
-    aggression: u8,
+    sight: Sight,
+    #[serde(default)]
+    aggression: Aggression,
     #[serde(default)]
     beat: u64,
+    #[serde(default, with = "openshard_protocol::world::ranged")]
+    ranged: Option<RangedRange>,
     #[serde(default)]
-    ranged: u8,
-    #[serde(default)]
-    ranged_kind: u8,
+    ranged_kind: DamageType,
     #[serde(default)]
     wander: bool,
     x: u16,
@@ -697,7 +695,7 @@ struct CreatureSpec {
     #[serde(default = "one")]
     hits: u16,
     #[serde(default)]
-    notoriety: u8,
+    notoriety: Notoriety,
     #[serde(default)]
     damage: u16,
     #[serde(default)]
@@ -709,15 +707,15 @@ struct CreatureSpec {
     #[serde(default)]
     swing: u64,
     #[serde(default)]
-    sight: u8,
-    #[serde(default = "aggressive")]
-    aggression: u8,
+    sight: Sight,
+    #[serde(default)]
+    aggression: Aggression,
     #[serde(default)]
     beat: u64,
+    #[serde(default, with = "openshard_protocol::world::ranged")]
+    ranged: Option<RangedRange>,
     #[serde(default)]
-    ranged: u8,
-    #[serde(default)]
-    ranged_kind: u8,
+    ranged_kind: DamageType,
     #[serde(default)]
     wander: bool,
     #[serde(default)]

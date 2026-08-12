@@ -136,6 +136,7 @@ fn main() -> ExitCode {
     let opening = openshard_client_app::Opening {
         at: cli.at,
         solids: cli.solids,
+        ..Default::default()
     };
     openshard_client_app::run(&cli.client, shard, cli.ttf_font, opening)
 }

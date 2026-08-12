@@ -45,16 +45,17 @@ use std::time::Duration;
 
 use openshard_client_render::bench::Reading;
 use openshard_client_render::blit::ViewportRect;
-use openshard_client_render::camera::{Camera, ViewPixel};
+use openshard_client_render::camera::Camera;
 use openshard_client_render::facing::{Face, Prism};
 use openshard_client_render::follow::Rig;
 use openshard_client_render::light;
 use openshard_client_render::solid::Cut;
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue};
 use winit::window::Window;
 
 use crate::desk::{Desk, Tab};
-use crate::diagnostics::{Height, PickedTile, PriorityZ, Route, Selection, TerrainOverlay};
+use crate::diagnostics::{HealthBar, Height, PickedTile, PriorityZ, Route, Selection, TerrainOverlay};
 use crate::picking::Pick;
 use crate::world::WorldState;
 
@@ -162,20 +163,6 @@ pub struct Hud {
     /// the shard then refuses to walk to looks exactly like a click that was
     /// never registered, and this is what tells the two apart.
     pub goal: Option<PickedTile>,
-}
-
-/// One overhead health line, already anchored in world-viewport pixels.
-pub struct HealthBar {
-    /// Top-centre of the body sprite, in the world's viewport.
-    pub anchor: ViewPixel,
-    /// Current hit points in the same scale as [`max`](Self::max).
-    pub current: u16,
-    /// Maximum hit points in the scale the shard chose for this body.
-    pub max: u16,
-    /// The bar colour, already resolved from notoriety.
-    pub colour: egui::Color32,
-    /// Whether this body is the attack target the shard settled on.
-    pub targeted: bool,
 }
 
 /// What the panels asked for this frame.
@@ -1477,12 +1464,24 @@ fn draw_health_bars(painter: &egui::Painter, bars: &[HealthBar], viewport_origin
             1.0,
             egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
         );
-        painter.rect_filled(fill, 1.0, bar.colour);
+        painter.rect_filled(fill, 1.0, health_colour(bar.notoriety));
         let stroke = match bar.targeted {
             true => egui::Stroke::new(1.2, egui::Color32::from_rgb(255, 230, 80)),
             false => egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220)),
         };
         painter.rect_stroke(rect, 1.0, stroke, egui::StrokeKind::Middle);
+    }
+}
+
+fn health_colour(notoriety: Notoriety) -> egui::Color32 {
+    match notoriety {
+        Notoriety::Innocent => egui::Color32::from_rgb(70, 150, 255),
+        Notoriety::Friend => egui::Color32::from_rgb(70, 210, 110),
+        Notoriety::Neutral | Notoriety::Criminal => egui::Color32::from_rgb(170, 170, 170),
+        Notoriety::Enemy => egui::Color32::from_rgb(230, 145, 55),
+        Notoriety::Murderer => egui::Color32::from_rgb(220, 55, 45),
+        Notoriety::Invulnerable => egui::Color32::from_rgb(240, 220, 70),
+        _ => egui::Color32::from_rgb(170, 170, 170),
     }
 }
 
@@ -2702,5 +2701,20 @@ mod tests {
             literal(&never),
             "Rig { plane_tau: 0.0, lift_tau: 0.0, lift_cut: f32::INFINITY }",
         );
+    }
+
+    #[test]
+    fn health_bars_keep_the_notoriety_palette_after_their_facts_leave_the_shell() {
+        for (notoriety, colour) in [
+            (Notoriety::Innocent, egui::Color32::from_rgb(70, 150, 255)),
+            (Notoriety::Friend, egui::Color32::from_rgb(70, 210, 110)),
+            (Notoriety::Neutral, egui::Color32::from_rgb(170, 170, 170)),
+            (Notoriety::Criminal, egui::Color32::from_rgb(170, 170, 170)),
+            (Notoriety::Enemy, egui::Color32::from_rgb(230, 145, 55)),
+            (Notoriety::Murderer, egui::Color32::from_rgb(220, 55, 45)),
+            (Notoriety::Invulnerable, egui::Color32::from_rgb(240, 220, 70)),
+        ] {
+            assert_eq!(health_colour(notoriety), colour, "{notoriety:?}");
+        }
     }
 }

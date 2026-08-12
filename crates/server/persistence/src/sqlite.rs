@@ -23,6 +23,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::serial::Serial;
+#[cfg(test)]
+use openshard_protocol::world::{Aggression, DamageType};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::journal::Snapshot;
@@ -989,6 +991,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openshard_protocol::world::Sight;
 
     fn character(serial: u32, x: u16) -> CharacterRecord {
         CharacterRecord {
@@ -1271,15 +1274,15 @@ mod tests {
                 name: Some("Mirabel".into()),
                 hits_current: hits,
                 hits_max: 30,
-                notoriety: 3,
+                notoriety: openshard_protocol::mobile::Notoriety::Neutral,
                 damage: 3,
                 resistance: 0,
                 swing: 0,
-                sight: 8,
-                aggression: 0,
+                sight: Sight(8),
+                aggression: Aggression::from_bits(0),
                 beat: 0,
-                ranged: 0,
-                ranged_kind: 0,
+                ranged: None,
+                ranged_kind: DamageType::Physical,
                 wander: true,
                 banker: false,
                 vendor: true,

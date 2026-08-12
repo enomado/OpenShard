@@ -40,6 +40,16 @@ impl ApplicationHandler<()> for App {
                 return;
             }
             changed = true;
+            // The initial world snapshot is the earliest point at which the
+            // shard can send the live view. Stalling any earlier only freezes
+            // the login conversation, leaving no world stream to exercise the
+            // ordered mailbox against.
+            if self.world.authoritative.view.is_some() {
+                if let Some(stall) = self.stall_on_update.take() {
+                    tracing::warn!(?stall, "stalling the App event loop after entering the world");
+                    std::thread::sleep(stall);
+                }
+            }
         }
         if changed {
             if let Some(window) = self.window.as_ref() {

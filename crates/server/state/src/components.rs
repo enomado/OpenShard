@@ -25,8 +25,12 @@ use openshard_protocol::skill::SkillLock;
 use openshard_protocol::wire::{Graphic, Hue, Layer, SoundId};
 
 use crate::skill::Skill;
-use openshard_protocol::world::{Facet, Point};
-use openshard_protocol::{access::AccessLevel, direction::Facing};
+pub use openshard_protocol::world::{Aggression, DamageType, RangedRange};
+use openshard_protocol::world::{Facet, Point, Sight};
+use openshard_protocol::{
+    access::AccessLevel,
+    direction::{Direction, Facing},
+};
 
 /// Where a mobile or item is.
 ///
@@ -1198,7 +1202,7 @@ pub struct Casting {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Brain {
     /// How far, in tiles, it notices a foe. Zero never picks a fight.
-    pub sight: u8,
+    pub sight: Sight,
     /// Whether it drifts around when it has nothing to fight.
     pub wander: bool,
     /// The tick it next gets to act — brains think in beats, not every tick.
@@ -1215,43 +1219,6 @@ pub struct Brain {
     /// Ticks between its beats while hunting; `0` takes the shard's default
     /// (`Gameplay::creature_step_ticks`). Idle, it ambles at twice this.
     pub beat_ticks: u64,
-}
-
-/// How a creature relates to the people around it — ServUO's `FightMode`,
-/// folded to the three postures that matter: fauna that never fights, the
-/// guard-dog that answers force with force, and the monster that starts it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub enum Aggression {
-    /// Never fights; runs from whoever hurts it. A deer.
-    Passive,
-    /// Fights only whoever attacked it first. A guard dog.
-    Defensive,
-    /// Attacks what it sees first. A monster — and the default, because every
-    /// spawn before this knob existed behaved this way.
-    #[default]
-    Aggressive,
-}
-
-impl Aggression {
-    /// The wire/config byte: 0 passive, 1 defensive, anything else aggressive.
-    #[must_use]
-    pub const fn from_bits(bits: u8) -> Self {
-        match bits {
-            0 => Self::Passive,
-            1 => Self::Defensive,
-            _ => Self::Aggressive,
-        }
-    }
-
-    /// The byte [`from_bits`](Self::from_bits) reads — what a save writes.
-    #[must_use]
-    pub const fn to_bits(self) -> u8 {
-        match self {
-            Self::Passive => 0,
-            Self::Defensive => 1,
-            Self::Aggressive => 2,
-        }
-    }
 }
 
 /// A Magery spellbook's contents: a bit per spell, bit `n` set when the book
@@ -1560,9 +1527,9 @@ pub const fn body_is_female(body: Graphic) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct RangedAttack {
     /// How far the attack reaches, in tiles.
-    pub range: u8,
-    /// The damage type's wire value (see [`DamageType::from_u8`]).
-    pub kind: u8,
+    pub range: RangedRange,
+    /// The kind of damage the attack deals.
+    pub kind: DamageType,
 }
 
 /// Marks a townsperson as a shopkeeper: it answers double-click with a buy
@@ -1601,8 +1568,8 @@ pub struct Riding {
 /// passed (the references' repath cadence) — and replanned then.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChasePath {
-    /// The remaining route, as wire directions (0–7).
-    pub steps: Vec<u8>,
+    /// The remaining route.
+    pub steps: Vec<Direction>,
     /// The next step to take.
     pub next: usize,
     /// Where the route was aimed; a quarry that strays invalidates it.
@@ -1815,36 +1782,6 @@ pub struct Armor {
 pub struct SwingSpeed {
     /// Ticks between blows.
     pub ticks: u64,
-}
-
-/// What kind of harm a blow does. Melee is [`Physical`](Self::Physical); a spell
-/// picks its element.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub enum DamageType {
-    /// A weapon or a fist.
-    #[default]
-    Physical,
-    /// Fire.
-    Fire,
-    /// Cold.
-    Cold,
-    /// Poison.
-    Poison,
-    /// Energy.
-    Energy,
-}
-
-impl DamageType {
-    /// Read a damage type from a wire byte; anything unknown is physical.
-    pub const fn from_u8(byte: u8) -> Self {
-        match byte {
-            1 => Self::Fire,
-            2 => Self::Cold,
-            3 => Self::Poison,
-            4 => Self::Energy,
-            _ => Self::Physical,
-        }
-    }
 }
 
 /// A mobile's armour: how much of each kind of blow it shrugs off, as a

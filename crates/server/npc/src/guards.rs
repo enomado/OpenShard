@@ -25,7 +25,7 @@ use openshard_protocol::feedback::{EffectKind, GraphicalEffect, PlaySound};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::wire::{Graphic, Hue, Layer, SoundId};
-use openshard_protocol::world::{Facet, Point};
+use openshard_protocol::world::{Facet, Point, Sight};
 use openshard_state::WorldState;
 use openshard_state::components::{
     Aggression, Client, CriminalUntil, DamageType, Ghost, Guard, Hitpoints, Murders, Position, Staff,
@@ -43,7 +43,7 @@ use crate::spawn::{SpawnSpec, spawn};
 const CALL_RANGE: u32 = 14;
 /// How far a guard looks for trouble it can already see, before deciding a call
 /// found nobody. Kept below [`CALL_RANGE`] so the call is the wider net.
-const GUARD_SIGHT: u8 = 8;
+const GUARD_SIGHT: Sight = Sight(8);
 /// How many murders make a mobile guard-worthy on sight — combat's own
 /// threshold, so "red" means the same thing to the guards as to the health bar.
 const MURDER_THRESHOLD: u16 = 5;
@@ -198,15 +198,15 @@ fn make_guard(state: &mut WorldState, target: EntityId) {
             // Not invulnerable, but not meant to be fought either: it is gone
             // before a fight could start.
             hits: 1000,
-            notoriety: Notoriety::Innocent as u8,
+            notoriety: Notoriety::Innocent,
             damage: 0,
             resistance: 0,
             swing: 0,
             sight: GUARD_SIGHT,
-            aggression: Aggression::Defensive.to_bits(),
+            aggression: Aggression::Defensive,
             beat: 0,
-            ranged: 0,
-            ranged_kind: 0,
+            ranged: None,
+            ranged_kind: DamageType::Physical,
             wander: false,
             position: at,
             facet,

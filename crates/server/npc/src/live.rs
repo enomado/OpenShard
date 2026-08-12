@@ -122,7 +122,7 @@ pub fn first_beat(rng: &mut Rng, now: u64, interval: u64) -> u64 {
 /// by `world/tick/ambient.rs`); it is only read when `gameplay.npc_schedule` is
 /// on.
 #[must_use]
-pub fn live(state: &mut WorldState) -> Vec<(Serial, u8)> {
+pub fn live(state: &mut WorldState) -> Vec<(Serial, Direction)> {
     let now = state.ticks;
     let due: Vec<EntityId> = state
         .registry
@@ -238,7 +238,7 @@ fn bark(state: &mut WorldState, npc: EntityId, now: u64) {
 /// `None` means stand still this beat. The tile is not checked here — the tick's
 /// `step` validates it against the terrain, and a step into a wall simply turns
 /// the NPC.
-fn wander_step(state: &mut WorldState, npc: EntityId, at: Point) -> Option<u8> {
+fn wander_step(state: &mut WorldState, npc: EntityId, at: Point) -> Option<Direction> {
     let Npc { home, wander, .. } = *state.registry.get::<Npc>(npc)?;
     if wander == 0 {
         return None;
@@ -258,22 +258,22 @@ fn wander_step(state: &mut WorldState, npc: EntityId, at: Point) -> Option<u8> {
         return None;
     }
     if state.rng.below(2) == 0 {
-        return Some(state.rng.below(8) as u8);
+        return Some(Direction::from_bits(state.rng.below(8) as u8));
     }
     state
         .registry
         .get::<Heading>(npc)
-        .map(|h| h.0.direction.to_bits())
-        .or_else(|| Some(state.rng.below(8) as u8))
+        .map(|h| h.0.direction)
+        .or_else(|| Some(Direction::from_bits(state.rng.below(8) as u8)))
 }
 
 /// A step back toward the post — pathed around the counter, not into it. A
 /// townsperson is human: a shut door on the way is opened, not an obstacle (the
 /// auto-close swings it shut again behind them).
-fn walk_home(state: &mut WorldState, npc: EntityId, at: Point, post: Point) -> Option<u8> {
+fn walk_home(state: &mut WorldState, npc: EntityId, at: Point, post: Point) -> Option<Direction> {
     let facet = state.facet_of(npc);
     let dir = openshard_ai::step_toward(state, facet, at, post, true)?;
-    if let Some(tile) = openshard_movement::step_from(at, Direction::from_bits(dir)) {
+    if let Some(tile) = openshard_movement::step_from(at, dir) {
         let door = state
             .facet_state(facet)
             .live_terrain()

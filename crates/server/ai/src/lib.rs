@@ -17,7 +17,7 @@ use openshard_items as items;
 use openshard_movement::{Terrain, direction_toward, find_path, step_from};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::world::{Facet, Point};
+use openshard_protocol::world::{Facet, Point, Sight};
 use openshard_state::WorldState;
 use openshard_state::components::{
     Aggression, Brain, ChasePath, Client, Combat, Heading, Hitpoints, Pet, PetOrder, Position, RangedAttack,
@@ -72,25 +72,25 @@ pub fn step_toward(
     from: Point,
     to: Point,
     through_doors: bool,
-) -> Option<u8> {
+) -> Option<Direction> {
     // The live terrain, not the bare map: a route must not thread a placed
     // crate the step would then refuse. A door-opener plans through doors and
     // opens them on arrival.
     let planner = state.facet_state(facet).planning_terrain(through_doors);
     if let Some(path) = find_path(&planner, from, to, PATH_BUDGET) {
-        return path.first().map(|d| d.to_bits());
+        return path.first().copied();
     }
-    direction_toward(from, to).map(Direction::to_bits)
+    direction_toward(from, to)
 }
 
 /// One creature's beat: chase and fight what it has, pick a fight if it sees one,
 /// or drift.
 ///
-/// Returns the direction (0–7) the creature wants to step this beat — chasing a
+/// Returns the direction the creature wants to step this beat — chasing a
 /// foe or wandering — or `None` if it stood its ground (in reach of its target,
 /// newly engaged, or idle). Engaging is done here, by giving the creature a
 /// [`Combat`]; stepping is the caller's to apply, since the world owns movement.
-pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
+pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<Direction> {
     let &Position(pos) = state.registry.get::<Position>(creature)?;
     let brain = *state.registry.get::<Brain>(creature)?;
     let Brain { sight, wander, .. } = brain;
@@ -133,7 +133,7 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
                     .facet_state(facet)
                     .live_terrain()
                     .sight_clear(pos, target_pos);
-                if gap <= u32::from(range) && clear {
+                if gap <= u32::from(range.get()) && clear {
                     return None; // in reach, sight line clear: stand and loose
                 }
             }
@@ -150,7 +150,7 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
 
     // Nothing to fight: look for prey — only a creature that starts fights
     // hunts; the defensive and the passive wait to be wronged — or wander.
-    if sight > 0 && brain.aggression == Aggression::Aggressive {
+    if sight.0 > 0 && brain.aggression == Aggression::Aggressive {
         if let Some(prey) = nearest_player_in_sight(state, creature, pos, facet, sight) {
             let next_swing = state.ticks + combat::swing_speed(state, creature);
             state.registry.insert(
@@ -184,15 +184,15 @@ pub fn think_one(state: &mut WorldState, creature: EntityId) -> Option<u8> {
         } else {
             facing
         };
-        return Some(dir.to_bits());
+        return Some(dir);
     }
     None
 }
 
 /// How far a chase follows before it is abandoned — wider than the sight that
 /// started it, so a quarry backing off does not flicker in and out of the fight.
-fn chase_limit(sight: u8) -> u32 {
-    (u32::from(sight) * CHASE_RANGE_FACTOR).max(CHASE_RANGE_MIN)
+fn chase_limit(sight: Sight) -> u32 {
+    (u32::from(sight.0) * CHASE_RANGE_FACTOR).max(CHASE_RANGE_MIN)
 }
 
 /// The position of `target` if it is still a live foe within `range` of `from`
@@ -246,7 +246,7 @@ fn chase_step(
     from: Point,
     to: Point,
     brain: Brain,
-) -> Option<u8> {
+) -> Option<Direction> {
     // A cached route first: planned once, followed a step per beat.
     if let Some(path) = state.registry.get::<ChasePath>(creature).cloned() {
         let stale = state.ticks.saturating_sub(path.planned_at) >= REPATH_TICKS
@@ -255,7 +255,7 @@ fn chase_step(
         if stale {
             state.registry.remove::<ChasePath>(creature);
         } else {
-            let dir = Direction::from_bits(path.steps[path.next]);
+            let dir = path.steps[path.next];
             let (open, door) = probe(state, facet, from, dir);
             if open {
                 if will_move(state, creature, dir) {
@@ -263,7 +263,7 @@ fn chase_step(
                     advanced.next += 1;
                     state.registry.insert(creature, advanced);
                 }
-                return Some(dir.to_bits());
+                return Some(dir);
             }
             if let Some(door) = door {
                 if brain.opens_doors {
@@ -283,7 +283,7 @@ fn chase_step(
     let dir = direction_toward(from, to)?;
     let (open, door) = probe(state, facet, from, dir);
     if open {
-        return Some(dir.to_bits());
+        return Some(dir);
     }
     if let Some(door) = door {
         if brain.opens_doors {
@@ -300,8 +300,7 @@ fn chase_step(
     };
     match planned {
         Some(steps) if !steps.is_empty() => {
-            let bits: Vec<u8> = steps.iter().map(|d| d.to_bits()).collect();
-            let first = Direction::from_bits(bits[0]);
+            let first = steps[0];
             let (open, door) = probe(state, facet, from, first);
             if !open {
                 if let Some(door) = door {
@@ -310,7 +309,7 @@ fn chase_step(
                         state.registry.insert(
                             creature,
                             ChasePath {
-                                steps: bits,
+                                steps,
                                 next: 0,
                                 goal: to,
                                 planned_at: state.ticks,
@@ -327,13 +326,13 @@ fn chase_step(
             state.registry.insert(
                 creature,
                 ChasePath {
-                    steps: bits.clone(),
+                    steps,
                     next,
                     goal: to,
                     planned_at: state.ticks,
                 },
             );
-            Some(bits[0])
+            Some(first)
         }
         _ => give_up(state, creature),
     }
@@ -342,7 +341,7 @@ fn chase_step(
 /// No way to the quarry: drop it, stand watch a while, then go back to living.
 /// The alternative — shuffling into the fence forever — is the bug this exists
 /// to end.
-fn give_up(state: &mut WorldState, creature: EntityId) -> Option<u8> {
+fn give_up(state: &mut WorldState, creature: EntityId) -> Option<Direction> {
     combat::clear_target(state, creature);
     state.registry.remove::<ChasePath>(creature);
     let until = state.ticks + GUARD_TICKS;
@@ -358,17 +357,17 @@ fn nearest_player_in_sight(
     creature: EntityId,
     from: Point,
     facet: Facet,
-    sight: u8,
+    sight: Sight,
 ) -> Option<Serial> {
     let facet_state = state.facet_state(facet);
     let live = facet_state.live_terrain();
     let sectors = &facet_state.sectors;
     let mut best: Option<(u32, Serial)> = None;
-    for (id, pos) in sectors.nearby(from, u32::from(sight)) {
+    for (id, pos) in sectors.nearby(from, u32::from(sight.0)) {
         if id == creature || !state.registry.has::<Client>(id) {
             continue;
         }
-        if !in_range(from, pos, u32::from(sight)) {
+        if !in_range(from, pos, u32::from(sight.0)) {
             continue;
         }
         // Noticing needs a sight line — both reference emulators gate the
@@ -413,7 +412,7 @@ fn flee_step(
     facet: Facet,
     from: Point,
     threat: Point,
-) -> Option<u8> {
+) -> Option<Direction> {
     // A runner does not also swing; drop the guard while running.
     if let Some(combat) = state.registry.get_mut::<Combat>(creature) {
         combat.warmode = false;
@@ -423,7 +422,7 @@ fn flee_step(
         let dir = Direction::from_bits((away.to_bits() + turn) & 7);
         let (open, _) = probe(state, facet, from, dir);
         if open {
-            return Some(dir.to_bits());
+            return Some(dir);
         }
     }
     None
@@ -431,13 +430,13 @@ fn flee_step(
 
 /// A step that opens distance without dropping the fight — the kiting half of
 /// a ranged brain. Same search as fleeing, warmode kept.
-fn kite_step(state: &mut WorldState, facet: Facet, from: Point, threat: Point) -> Option<u8> {
+fn kite_step(state: &mut WorldState, facet: Facet, from: Point, threat: Point) -> Option<Direction> {
     let away = direction_toward(threat, from).unwrap_or(Direction::South);
     for turn in [0u8, 1, 7, 2, 6] {
         let dir = Direction::from_bits((away.to_bits() + turn) & 7);
         let (open, _) = probe(state, facet, from, dir);
         if open {
-            return Some(dir.to_bits());
+            return Some(dir);
         }
     }
     None
@@ -500,7 +499,7 @@ const PET_LEASH: u32 = 15;
 /// return — a direction for the tick to step — so a pet moves through the same
 /// `step` a wild creature and a townsperson use.
 #[must_use]
-pub fn pet_beat(state: &mut WorldState, pet: EntityId) -> Option<u8> {
+pub fn pet_beat(state: &mut WorldState, pet: EntityId) -> Option<Direction> {
     let order = *state.registry.get::<Pet>(pet)?;
     let &Position(at) = state.registry.get::<Position>(pet)?;
     let facet = state.facet_of(pet);

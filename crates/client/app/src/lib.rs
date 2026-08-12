@@ -198,6 +198,10 @@ pub struct Opening {
     /// `docs/lighting.md` step 23.0, F5 in the window, and the checkbox in the
     /// dev panel.
     pub solids: bool,
+    /// Pause the App update callback immediately after it enters the world.
+    /// This is an opt-in diagnostic for exercising backpressure; it is never a
+    /// gameplay setting and defaults to no pause.
+    pub stall_on_update: Option<std::time::Duration>,
 }
 
 /// The facet to open. Felucca: `0x1B` carries the facet's *size* and not its
@@ -424,7 +428,11 @@ pub fn run<D: Dial + Send + 'static>(
     ttf_font: Option<PathBuf>,
     opening: Opening,
 ) -> ExitCode {
-    let Opening { at, solids } = opening;
+    let Opening {
+        at,
+        solids,
+        stall_on_update,
+    } = opening;
     // Reading the whole facet takes a moment and a few hundred megabytes. That
     // is the shape `uofiles` has today — see the backlog in docs/client.md — and
     // it is honest to do it up front rather than to stall on the first frame.
@@ -640,14 +648,16 @@ pub fn run<D: Dial + Send + 'static>(
     );
 
     // The connection, if this run was asked for one. Started before the window
-    // exists: the login is several round trips, and there is a map to draw
-    // while it happens.
+    // exists: the login is several round trips. A connected window remains
+    // blank until its first complete world view arrives, rather than showing
+    // the offline placeholder at `START` while those round trips happen.
     // Shared with the shard thread, which predicts the height of every step
     // from it: plain data, read by both and written by neither.
     let map = Arc::new(map);
     let tiledata = Arc::new(tiledata);
     let update_proxy = event_loop.create_proxy();
     let updates = link::Updates::new();
+    let connected = shard.is_some();
     let link = shard.map(|(dial, plan)| {
         eprintln!("logging in as {}", plan.account.0);
         let reports = updates.clone();
@@ -706,10 +716,12 @@ pub fn run<D: Dial + Send + 'static>(
                     crowd
                 },
             },
+            render_ready: !connected,
             connection: String::from("offline"),
             link,
         },
         updates,
+        stall_on_update,
         resources: resources::Resources {
             map,
             art,

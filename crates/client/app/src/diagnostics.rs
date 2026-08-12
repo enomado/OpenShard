@@ -4,7 +4,9 @@
 //! not depend on egui: a panel, a frame dump, or a future remote inspector can
 //! all consume the same answer without the query layer depending on its view.
 
+use openshard_client_render::camera::ViewPixel;
 use openshard_client_render::facing::Prism;
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{Graphic, Hue};
 
@@ -92,4 +94,21 @@ pub struct TerrainOverlay {
 pub struct Route {
     pub open: Vec<openshard_protocol::world::Point>,
     pub barred: Vec<openshard_protocol::world::Point>,
+}
+
+/// One overhead health line, anchored in world-viewport pixels.
+///
+/// Its colour remains a presentation decision: the query returns the wire's
+/// notoriety, and an adapter such as egui resolves that fact for its palette.
+pub struct HealthBar {
+    /// Top-centre of the body sprite, in the world's viewport.
+    pub anchor: ViewPixel,
+    /// Current hit points in the same scale as [`max`](Self::max).
+    pub current: u16,
+    /// Maximum hit points in the scale the shard chose for this body.
+    pub max: u16,
+    /// The wire fact the presentation uses to choose the bar colour.
+    pub notoriety: Notoriety,
+    /// Whether this body is the attack target the shard settled on.
+    pub targeted: bool,
 }

@@ -176,7 +176,7 @@ impl World {
     /// mobile that walked itself. What it does not share is the client half:
     /// there is no `0x22`/`0x21` ack, because there may be no client, and the
     /// mobile might be an NPC nobody is driving.
-    pub(super) fn step(&mut self, serial: Serial, direction: u8) {
+    pub(super) fn step(&mut self, serial: Serial, direction: Direction) {
         let Some(entity) = self.state.registry.entity_of(serial) else {
             return;
         };
@@ -192,7 +192,6 @@ impl World {
         let Some(Movement(mut walker)) = self.state.registry.get::<Movement>(entity).copied() else {
             return;
         };
-        let direction = Direction::from_bits(direction);
         let facet = self.state.facet_of(entity);
         let was = walker.position;
 

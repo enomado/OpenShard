@@ -13,6 +13,20 @@ The current implementation checkpoint is:
 The status-window and `own_windows` module changes described below are working
 tree changes on top of this checkpoint; no new checkpoint commit has been made.
 
+The checkpoint's working tree also contains the following uncommitted client
+track work:
+
+- an online window waits for its first complete `WorldView` before presenting;
+- staged-mailbox backpressure is reported once per stall episode and re-armed
+  when the App drains it;
+- health-bar facts moved from the egui shell into `diagnostics.rs`;
+- `openshard-playground --mailbox-load --stall-app-ms 5000` provides an opt-in
+  live moving-crowd exercise, with a unit test for its script.
+
+Preserve unrelated concurrent changes, especially the server and protocol
+work visible in `git status`. `AGENTS.md` is also untracked user guidance, not
+part of this client-track change.
+
 Relevant earlier checkpoints:
 
 ```text
@@ -39,8 +53,11 @@ cargo test -p openshard-client-net --lib
 cargo test -p openshard-client-render --lib
 ```
 
-Result: 171 app tests passed, 2 ignored; 77 net tests passed; 483 render
-tests passed, 1 ignored. `cargo fmt --check` and `git diff --check` also pass.
+Result: 173 app tests passed, 2 ignored; 77 net tests passed; 483 render
+tests passed, 1 ignored. `git diff --check` also passes. The touched Rust files
+pass `rustfmt --check`; a workspace-wide `cargo fmt --check` is currently
+affected by unrelated worktree formatting changes and must not be used as
+evidence for this client track.
 
 ## Architecture agreed with the owner
 
@@ -84,9 +101,10 @@ tests passed, 1 ignored. `cargo fmt --check` and `git diff --check` also pass.
 ## Follow-on: UI, frame, and outgoing-wire boundaries
 
 - `app/src/diagnostics.rs` owns read-only inspection DTOs: `PickedTile`,
-  selection results, terrain overlay, and route. `picking.rs` and
+  selection results, terrain overlay, route, and health bars. `picking.rs` and
   `picking_query.rs` now depend on that module instead of `shell`, so a future
-  non-egui inspector can use the same answers.
+  non-egui inspector can use the same answers. The egui adapter alone resolves
+  notoriety to its health-bar colour.
 - `presentation.rs` names the staged snapshot as `PreparedFrame`. It freezes
   the camera and `FrameFacts`; `publish_frame_picks` is the one explicit bridge
   that records the current picture's identities for the next input event.
@@ -111,12 +129,22 @@ tests passed, 1 ignored. `cargo fmt --check` and `git diff --check` also pass.
 - The mailbox has a deterministic stalled-window regression exercise: after
   256 ordered updates and 10,000 predictions, the next ordered update remains
   blocked until the frame drains, and that frame receives every ordered update
-  plus only the latest prediction. This proves the boundary locally; a live
-  stalled-window/shard run is still needed before tuning its capacity.
+  plus only the latest prediction. `openshard-playground --mailbox-load
+  --stall-app-ms 5000` starts an opt-in moving crowd after entry, so an
+  in-process run can exercise the live path through ordinary `MobileIncoming`
+  and `MobileUpdate` traffic without replaying whole-region resync snapshots.
+  A 2026-08-12 stock in-process run reached the 256-update limit during the
+  five-second App stall and logged socket backpressure before resuming; the
+  subsequent refilled batch logged one new line, confirming that drain re-arms
+  reporting for a later stall. It is still a controlled workload, not a
+  production capacity number.
+- A connected client now leaves its surface untouched until it has received
+  the first complete `WorldView`. The offline viewer still draws its diagnostic
+  placeholder at `START`; an online client never briefly shows that placeholder
+  while login packets are in flight, then switches directly to the server's
+  position on entry.
 - A 2026-08-12 local `openshard-playground` smoke run loaded the configured
-  client files and logged into its in-process shard successfully. It did not
-  intentionally stall only the App/event-loop thread or measure mailbox
-  pressure, so it is not capacity evidence. An earlier run emitted repeated
+  client files and logged into its in-process shard successfully. An earlier run emitted repeated
   Vulkan `vkAcquireNextImageKHR` fence-validation errors. This was the
   non-Windows acquire-fence defect fixed upstream in wgpu #9918, so the
   workspace temporarily pins `e904d2eac` through `[patch.crates-io]`; the
@@ -139,13 +167,24 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
 
 ## Next work items
 
-1. If the dev HUD grows again, move its remaining read-only snapshot types out
+1. Fix the presentation-clock handoff in `App::on_update` before doing further
+   mailbox capacity work. It currently advances only `Crowd` and writes
+   `last_advance`; the next `App::advance` then sees almost no elapsed time, so
+   `tile_animations` and `flame_clock` can lose the interval that arrived with
+   a network update (most visibly after a stalled mailbox drains). Extract one
+   helper that advances all presentation clocks for the measured interval and
+   call it from both update delivery and frame advancement. Add a regression
+   test that proves the static/flame clocks retain an update-time interval.
+2. If the dev HUD grows again, move its remaining read-only snapshot types out
    of `shell.rs`; keep `Shell` as the egui adapter that returns `Request`, not
    an owner of world-query types.
-2. Exercise the staged mailbox against a real stalled-window/network workload
-   and tune its ordered-update capacity if needed. The headless regression
-   test covers its backpressure and coalescing contract, not live timing.
-3. Keep the three state boundaries explicit as new fields are added:
+3. Exercise the staged mailbox against sustained production-like stalled-window
+   traffic before tuning its ordered-update capacity. Start from the
+   reproducible `openshard-playground --mailbox-load --stall-app-ms 5000`
+   diagnostic, then collect a real externally observed traffic profile. The
+   controlled in-process run and headless regression establish the mechanism,
+   not a production capacity number.
+4. Keep the three state boundaries explicit as new fields are added:
 
    ```text
    authoritative world state
@@ -153,7 +192,7 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
    presentation projection
    ```
 
-4. Keep commits small and run the client app check/tests after each stage.
+5. Keep commits small and run the client app check/tests after each stage.
 
 ## Important caution
 

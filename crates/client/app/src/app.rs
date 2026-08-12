@@ -16,7 +16,7 @@
 //! The split here is *where the code that touches a field lives*, not *which
 //! struct the field is on*.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::bench::{Scope, Script};
@@ -43,6 +43,9 @@ pub(crate) struct App {
     /// The shard thread's staged delivery into this event-loop-owned model.
     /// Mutations are drained in order; superseded frame predictions are not.
     pub(crate) updates: crate::link::Updates,
+    /// One opt-in pause after entering the world, used only by a diagnostic
+    /// harness to make mailbox backpressure observable.
+    pub(crate) stall_on_update: Option<Duration>,
     /// The camera, who is allowed to move it, and what a drag has not yet spent.
     ///
     /// All of it arithmetic, and all of it in `client/render` where it can be

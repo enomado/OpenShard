@@ -1,7 +1,9 @@
 use super::*;
 use openshard_protocol::identity::RawCharacterName;
 use openshard_protocol::items::DropDestination;
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue, RawCharacterSlot};
+use openshard_protocol::world::{Aggression, DamageType, RangedRange, Sight};
 
 /// How a character looks: its body graphic and hue. Chosen on the creation
 /// screen, or restored from the save.
@@ -539,7 +541,7 @@ pub enum Command {
         hits: u16,
         /// Its standing — the health-bar colour — as a wire byte (1 innocent, 5
         /// enemy, 7 invulnerable). Zero, or anything unknown, is innocent.
-        notoriety: u8,
+        notoriety: Notoriety,
         /// How hard it hits in melee, before the target's armour.
         damage: u16,
         /// Its physical resistance, 0–100.
@@ -547,15 +549,15 @@ pub enum Command {
         /// Ticks between its swings; 0 takes the default.
         swing: u64,
         /// How far it notices a foe, in tiles; 0 hunts nothing.
-        sight: u8,
+        sight: Sight,
         /// Whether it starts fights (2), answers them (1), or only runs (0).
-        aggression: u8,
+        aggression: Aggression,
         /// Ticks between its beats while hunting; 0 takes the shard default.
         beat: u64,
-        /// How far its ranged attack reaches, in tiles; 0 fights hand to hand.
-        ranged: u8,
-        /// The ranged attack's damage type (see `DamageType::from_u8`).
-        ranged_kind: u8,
+        /// Its optional ranged attack reach.
+        ranged: Option<RangedRange>,
+        /// The ranged attack's damage type.
+        ranged_kind: DamageType,
         /// Whether it wanders when idle.
         wander: bool,
         /// Where it stands.

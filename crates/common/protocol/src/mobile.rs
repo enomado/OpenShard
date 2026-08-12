@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::codec::{PacketReader, PacketWriter};
 use crate::direction::Facing;
 use crate::error::DecodeError;
@@ -84,10 +86,11 @@ impl StatusFlags {
 /// How the client colours a mobile's health bar.
 ///
 /// The client renders these; the meanings are its, not ours.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 #[non_exhaustive]
 pub enum Notoriety {
     /// Blue.
+    #[default]
     Innocent,
     /// Green.
     Friend,
@@ -157,6 +160,18 @@ impl Notoriety {
             Self::Murderer => Hue(0x0022),
             Self::Invulnerable => Hue(0x0035),
         }
+    }
+}
+
+impl Serialize for Notoriety {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(self.to_bits())
+    }
+}
+
+impl<'de> Deserialize<'de> for Notoriety {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::from_bits(u8::deserialize(deserializer)?))
     }
 }
 

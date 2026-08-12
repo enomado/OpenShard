@@ -169,6 +169,14 @@ impl App {
     }
 
     pub(crate) fn draw(&mut self) {
+        // The assets and GPU must exist for the login conversation, but a shard
+        // has not yet named a world while that conversation is under way. Keep
+        // the surface untouched until its first complete view: the startup
+        // placeholder at `START` is for offline inspection, not a temporary
+        // online character position.
+        if !self.world.render_ready {
+            return;
+        }
         let started = Instant::now();
         // The frame boundary the flamegraph is cut on, put at the same place
         // `started` is sampled so that a frame in `puffin_viewer` and a frame in

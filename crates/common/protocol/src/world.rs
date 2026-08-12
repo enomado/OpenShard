@@ -19,7 +19,7 @@
 //!
 //! Layouts from SphereServer's `network/send.cpp` and `receive.cpp`.
 
-use std::fmt;
+use std::{fmt, num::NonZeroU8};
 
 use serde::{Deserialize, Serialize};
 
@@ -1159,6 +1159,168 @@ pub struct MapChange {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default, Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct Facet(pub u8);
+
+/// How far, in tiles, a creature notices a foe.
+///
+/// Zero means the creature never initiates a fight. This is game data rather
+/// than a client-packet field, but it crosses the scripting and persistence
+/// seams, so the shared protocol crate owns its unambiguous representation.
+/// The transparent serde form deliberately keeps existing script JSON and
+/// saved records as numbers.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Sight(pub u8);
+
+/// Whether a creature starts fights, only answers them, or runs from them.
+///
+/// The numeric representation is part of the script and saved-world contract:
+/// `0` is passive, `1` defensive, and any other value is aggressive. Like
+/// [`Sight`], this crosses the scripting and persistence seams while its serde
+/// form deliberately remains the original numeric value.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum Aggression {
+    /// Never fights; runs from whoever hurts it.
+    Passive,
+    /// Fights only whoever attacked it first.
+    Defensive,
+    /// Attacks what it sees first.
+    #[default]
+    Aggressive,
+}
+
+impl Aggression {
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        match bits {
+            0 => Self::Passive,
+            1 => Self::Defensive,
+            _ => Self::Aggressive,
+        }
+    }
+
+    #[must_use]
+    pub const fn to_bits(self) -> u8 {
+        match self {
+            Self::Passive => 0,
+            Self::Defensive => 1,
+            Self::Aggressive => 2,
+        }
+    }
+}
+
+impl Serialize for Aggression {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(self.to_bits())
+    }
+}
+
+impl<'de> Deserialize<'de> for Aggression {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::from_bits(u8::deserialize(deserializer)?))
+    }
+}
+
+/// What kind of harm a blow does. Melee is [`Physical`](Self::Physical); a
+/// spell, trap, or ranged creature picks its element.
+///
+/// Its numeric representation crosses the scripting and persistence seams:
+/// physical is `0`, fire `1`, cold `2`, poison `3`, and energy `4`. Unknown
+/// values retain the historic physical fallback.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum DamageType {
+    /// A weapon or a fist.
+    #[default]
+    Physical,
+    /// Fire.
+    Fire,
+    /// Cold.
+    Cold,
+    /// Poison.
+    Poison,
+    /// Energy.
+    Energy,
+}
+
+impl DamageType {
+    /// Read a damage type from a wire byte; anything unknown is physical.
+    #[must_use]
+    pub const fn from_u8(byte: u8) -> Self {
+        match byte {
+            1 => Self::Fire,
+            2 => Self::Cold,
+            3 => Self::Poison,
+            4 => Self::Energy,
+            _ => Self::Physical,
+        }
+    }
+
+    /// The persisted/script byte for this damage type.
+    #[must_use]
+    pub const fn to_u8(self) -> u8 {
+        match self {
+            Self::Physical => 0,
+            Self::Fire => 1,
+            Self::Cold => 2,
+            Self::Poison => 3,
+            Self::Energy => 4,
+        }
+    }
+}
+
+impl Serialize for DamageType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(self.to_u8())
+    }
+}
+
+impl<'de> Deserialize<'de> for DamageType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::from_u8(u8::deserialize(deserializer)?))
+    }
+}
+
+/// A non-zero ranged attack reach, in tiles.
+///
+/// A creature without a ranged attack is represented by `None` at scripting
+/// and persistence seams. The [`ranged`] serde helper preserves that existing
+/// numeric contract as `0`, while every present reach is non-zero by type.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct RangedRange(NonZeroU8);
+
+impl RangedRange {
+    /// Make a ranged reach. `0` means there is no ranged attack.
+    #[must_use]
+    pub const fn new(range: u8) -> Option<Self> {
+        match NonZeroU8::new(range) {
+            Some(range) => Some(Self(range)),
+            None => None,
+        }
+    }
+
+    /// The distance in tiles.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0.get()
+    }
+}
+
+/// Serde support for an optional [`RangedRange`] at script and save seams.
+///
+/// `None` stays the legacy numeric `0`, rather than becoming JSON `null`.
+pub mod ranged {
+    use super::RangedRange;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Write `None` as `0` and a ranged reach as its numeric tile count.
+    pub fn serialize<S: Serializer>(value: &Option<RangedRange>, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(value.map_or(0, RangedRange::get))
+    }
+
+    /// Read `0` as no ranged attack and every other byte as a reach.
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<RangedRange>, D::Error> {
+        Ok(RangedRange::new(u8::deserialize(deserializer)?))
+    }
+}
 
 impl fmt::Display for Facet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -15,6 +15,7 @@ use openshard_protocol::containers::GridSlot;
 use openshard_protocol::gump::GumpPoint;
 use openshard_protocol::serial::RawSerial;
 use openshard_protocol::wire::{Graphic, Hue, RawSkillId};
+use openshard_protocol::world::Aggression;
 use openshard_skills::DEFAULT_SKILL_DELAY_TICKS;
 use openshard_state::Skill;
 use openshard_state::components::{
@@ -1342,15 +1343,15 @@ fn spawn_mobile_body(world: &mut World, body: u16, at: Point, now: Instant) -> S
         body: openshard_protocol::wire::Graphic(body),
         hue: openshard_protocol::wire::Hue(0),
         hits: 50,
-        notoriety: 5,
+        notoriety: Notoriety::from_bits(5),
         damage: 5,
         resistance: 0,
         swing: 0,
-        sight: 0,
-        aggression: 0,
+        sight: Sight(0),
+        aggression: Aggression::from_bits(0),
         beat: 0,
-        ranged: 0,
-        ranged_kind: 0,
+        ranged: None,
+        ranged_kind: DamageType::Physical,
         wander: false,
         position: at,
         facet: Facet(0),

@@ -55,10 +55,10 @@ pub mod weapon;
 
 pub use components::{
     Access, Account, Amount, Banker, BehaviourBuff, BehaviourBuffs, Body, BodyType, Brain, Client, Combat,
-    Contained, Container, CriminalUntil, DEFAULT_SKILL_CAP, DamageType, Decays, Decoration, Discorded, Door,
-    Drawn, EMPTY_BOTTLE_GRAPHIC, Equipped, FIELD_HEIGHT, Fame, Field, FieldKind, Frozen, Ghost, Guard,
-    Harvesting, Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Instrument, Karma, KeyValue, LastStatGain,
-    Lock, MOONGATE_GRAPHIC, MOONGATE_REACH, Mana, Meditating, MeleeDamage, Moongate, Movement, MurderDecay,
+    Contained, Container, CriminalUntil, DEFAULT_SKILL_CAP, Decays, Decoration, Discorded, Door, Drawn,
+    EMPTY_BOTTLE_GRAPHIC, Equipped, FIELD_HEIGHT, Fame, Field, FieldKind, Frozen, Ghost, Guard, Harvesting,
+    Heading, HearsGhosts, Hidden, Hitpoints, InRegion, Instrument, Karma, KeyValue, LastStatGain, Lock,
+    MOONGATE_GRAPHIC, MOONGATE_REACH, Mana, Meditating, MeleeDamage, Moongate, Movement, MurderDecay,
     Murders, Name, NightHome, Npc, POISON_POTION_GRAPHIC, Pacified, PoisonCharges, Poisoned, Position,
     RECALL_RUNE_GRAPHIC, RUNEBOOK_ENTRIES, RUNEBOOK_GRAPHIC, Resistance, RuneMark, Runebook, RunebookEntry,
     Scripted, SkillCooldown, Skills, SpawnedBy, Stackable, Stamina, StatLock, StatLocks, StatMod, StatMods,
@@ -66,6 +66,7 @@ pub use components::{
 };
 pub use dialogue::{Dialogue, SpeechEntry, SpeechTable};
 pub use obstruct::{DOOR_HEIGHT, LiveTerrain, Obstacle, Obstructions};
+pub use openshard_protocol::world::{DamageType, RangedRange};
 pub use quest::{ObjectiveDef, ObjectiveKind, QuestDef, QuestDefs, RewardDef, RewardKind};
 pub use region::{Region, RegionFlags, RegionRect, Regions};
 pub use rng::Rng;

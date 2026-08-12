@@ -28,9 +28,10 @@ use std::time::{Duration, Instant};
 
 use openshard_gateway::ConnectionId;
 use openshard_protocol::identity::{AccountName, CharacterName};
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::{Graphic, Hue};
-use openshard_protocol::world::{Facet, Point};
+use openshard_protocol::world::{Aggression, DamageType, Facet, Point, Sight};
 use openshard_protocol::{access::AccessLevel, version::ClientVersion};
 use openshard_world::{Character, Command, Entering, FreshCharacter, Gameplay, TICK_INTERVAL, World};
 
@@ -83,15 +84,15 @@ fn populate(gameplay: Gameplay, folk: u32, decor: u32, players: u32) -> World {
                 body: Graphic(0x0190),
                 hue: Hue(0),
                 hits: 100,
-                notoriety: 7,
+                notoriety: Notoriety::from_bits(7),
                 damage: 0,
                 resistance: 0,
                 swing: 0,
-                sight: 0,
-                aggression: 2,
+                sight: Sight(0),
+                aggression: Aggression::from_bits(2),
                 beat: 0,
-                ranged: 0,
-                ranged_kind: 0,
+                ranged: None,
+                ranged_kind: DamageType::Physical,
                 wander: false,
                 position: Point::new(START.0 + gx * 2, START.1 + gy * 2, 0),
                 facet: Facet(0),
