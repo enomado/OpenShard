@@ -1433,8 +1433,11 @@ impl Part {
         Self(at as u8)
     }
 
-    /// Which one this is, for the join and for a report that prints it.
-    pub fn raw(self) -> u8 {
+    /// This solid's zero-based ordinal in its static's push order.
+    ///
+    /// This is for identities assembled from that order, such as the merge
+    /// key; it is not a raw representation to pass across a boundary.
+    pub fn ordinal(self) -> u8 {
         self.0
     }
 }
@@ -2219,7 +2222,7 @@ impl Occlusion {
             for value in [node.space.min.x, node.space.min.y, node.space.min.z] {
                 bytes.extend_from_slice(&(value as f32).to_le_bytes());
             }
-            bytes.extend_from_slice(&node.escape.raw().to_le_bytes());
+            bytes.extend_from_slice(&node.escape.depth_first_index().to_le_bytes());
             for value in [node.space.max.x, node.space.max.y, node.space.max.z] {
                 bytes.extend_from_slice(&(value as f32).to_le_bytes());
             }
@@ -2230,11 +2233,11 @@ impl Occlusion {
                     // fail-fast rather than a truncation: a run this far into the
                     // permutation would silently be read as a different run.
                     assert!(
-                        leaf.first.raw() < 1 << 29,
+                        leaf.first.position() < 1 << 29,
                         "a leaf starting at {} does not fit beside its own count",
-                        leaf.first.raw(),
+                        leaf.first.position(),
                     );
-                    leaf.first.raw() << 3 | u32::from(leaf.count)
+                    leaf.first.position() << 3 | u32::from(leaf.count)
                 }
             };
             bytes.extend_from_slice(&leaf.to_le_bytes());
@@ -4590,13 +4593,17 @@ mod tests {
         );
         for (at, node) in tree.nodes().iter().enumerate() {
             let base = at * NODE_BYTES;
-            assert_eq!(word(base + 12), node.escape.raw(), "node {at}'s escape");
+            assert_eq!(
+                word(base + 12),
+                node.escape.depth_first_index(),
+                "node {at}'s escape"
+            );
             let leaf = word(base + 28);
             match node.leaf {
                 None => assert_eq!(leaf & 7, 0, "node {at} is inner and names no primitives"),
                 Some(run) => assert_eq!(
                     (leaf >> 3, leaf & 7),
-                    (run.first.raw(), u32::from(run.count)),
+                    (run.first.position(), u32::from(run.count)),
                     "node {at}'s own run"
                 ),
             }

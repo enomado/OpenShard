@@ -181,8 +181,8 @@ pub const MAX_IN_FLIGHT: InFlightSteps = InFlightSteps::new(5);
 ///
 /// This is a tally of this client's pending walk queue, not a wire sequence,
 /// a movement pace, or a generic collection length. It crosses the public
-/// `Walk` API and the backpressure error as one quantity; `.raw()` is used only
-/// at the queue and presentation seams.
+/// `Walk` API and the backpressure error as one quantity; `.steps()` exposes
+/// its count at queue and presentation seams.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct InFlightSteps(usize);
 
@@ -191,8 +191,8 @@ impl InFlightSteps {
         Self(steps)
     }
 
-    /// The collection length this count came from.
-    pub const fn raw(self) -> usize {
+    /// Number of unanswered walk steps.
+    pub const fn steps(self) -> usize {
         self.0
     }
 }
@@ -229,7 +229,7 @@ impl std::fmt::Display for NotSent {
                 write!(
                     f,
                     "{} steps are unanswered: the shard has gone quiet",
-                    in_flight.raw()
+                    in_flight.steps()
                 )
             }
             Self::OutOfStep => f.write_str("the walk is out of step and waiting on a resync"),
@@ -950,7 +950,7 @@ mod tests {
     #[test]
     fn a_silent_shard_stops_the_walk_after_five_steps() {
         let mut walk = Walk::new(Point::new(100, 1000, 0), Facing::walking(Direction::North));
-        for step in 0..MAX_IN_FLIGHT.raw() {
+        for step in 0..MAX_IN_FLIGHT.steps() {
             walk.step(Facing::walking(Direction::North), |_, _| None)
                 .unwrap_or_else(|_| panic!("step {step} is within the cap"));
         }

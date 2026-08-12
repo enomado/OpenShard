@@ -3047,7 +3047,7 @@ fn candidates<'a>(
                         each(*id, occlusion.solid(*id));
                     }
                 }
-                crate::occlusion::bvh::NodeIdx::new(at.raw() + 1)
+                crate::occlusion::bvh::NodeIdx::new(at.depth_first_index() + 1)
             }
         };
         // **The loop's own bound, and there is no constant in it**: a

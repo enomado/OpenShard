@@ -75,8 +75,12 @@ impl NodeIdx {
         Self(at)
     }
 
-    /// Where it points, for the slice index and for the upload.
-    pub fn raw(self) -> u32 {
+    /// Its zero-based position in the tree's depth-first node layout.
+    ///
+    /// This is the index into [`Bvh::nodes`] and the number written to the
+    /// traversal's wire representation; it is never an index into the
+    /// primitive permutation.
+    pub fn depth_first_index(self) -> u32 {
         self.0
     }
 }
@@ -94,8 +98,11 @@ impl OrderIndex {
         Self(at)
     }
 
-    /// The position for slice indexing and the packed GPU representation.
-    pub fn raw(self) -> u32 {
+    /// Its zero-based position in [`Bvh::order`]'s primitive permutation.
+    ///
+    /// This indexes the leaf's contiguous run in that permutation; it is
+    /// neither a [`SolidId`] nor a position in the depth-first node layout.
+    pub fn position(self) -> u32 {
         self.0
     }
 }
@@ -214,7 +221,7 @@ impl Bvh {
     /// same tree, so a stale one is a caller mixing two frames rather than a
     /// value to defend against.
     pub fn node(&self, at: NodeIdx) -> &Node {
-        &self.nodes[at.raw() as usize]
+        &self.nodes[at.depth_first_index() as usize]
     }
 
     /// The permutation itself: every primitive of the frame exactly once, in the
@@ -230,7 +237,7 @@ impl Bvh {
 
     /// The primitives a leaf names, in the build's own permuted order.
     pub fn primitives(&self, leaf: Leaf) -> &[SolidId] {
-        let from = leaf.first.raw() as usize;
+        let from = leaf.first.position() as usize;
         &self.order[from..from + usize::from(leaf.count)]
     }
 
@@ -461,19 +468,19 @@ mod tests {
     fn a_nodes_escape_is_the_end_of_its_own_subtree() {
         let solids = row(29);
         let bvh = Bvh::of(&solids);
-        let end = bvh.past_the_end().raw();
+        let end = bvh.past_the_end().depth_first_index();
         assert_eq!(bvh.node(NodeIdx::ROOT).escape, bvh.past_the_end());
         for (at, node) in bvh.nodes().iter().enumerate() {
             let at = at as u32;
             assert!(
-                node.escape.raw() > at && node.escape.raw() <= end,
+                node.escape.depth_first_index() > at && node.escape.depth_first_index() <= end,
                 "node {at} escapes to {}",
-                node.escape.raw()
+                node.escape.depth_first_index()
             );
             match node.leaf {
                 // A leaf holds nothing under it, so the node after it is where a
                 // miss and a hit both continue.
-                Some(_) => assert_eq!(node.escape.raw(), at + 1),
+                Some(_) => assert_eq!(node.escape.depth_first_index(), at + 1),
                 None => {
                     // The first child is the next node and the second child ends
                     // where the parent does — the whole of the depth-first
@@ -499,7 +506,7 @@ mod tests {
             // The subtree is the run of nodes from this one to its escape, which
             // is the fact the test above pins; every leaf in that run is under
             // this node.
-            let subtree = at as u32..node.escape.raw();
+            let subtree = at as u32..node.escape.depth_first_index();
             for under in subtree.map(NodeIdx::new) {
                 let Some(leaf) = bvh.node(under).leaf else {
                     continue;

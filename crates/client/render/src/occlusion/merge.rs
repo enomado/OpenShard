@@ -237,7 +237,7 @@ fn surface(axis: Axis, solid: &Solid, space: &crate::solid::Solid) -> Surface {
         roof: solid.roof,
         z: solid.owner.z,
         graphic: solid.owner.graphic.0,
-        part: solid.part.raw(),
+        part: solid.part.ordinal(),
         across: across.map(f64::to_bits),
     }
 }
