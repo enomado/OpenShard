@@ -124,7 +124,7 @@ fn picture(scene: &Scene, lighting: &Lighting) -> String {
         scene.name,
         debug::diagram(
             lighting,
-            debug::around(openshard_movement::Tile::new(CENTRE.0, CENTRE.1), 6),
+            debug::around(openshard_movement::Tile::new(CENTRE.0.0, CENTRE.0.1), 6),
             0.0,
         )
     )
@@ -142,7 +142,7 @@ fn a_shut_room_keeps_its_light_inside() {
     let lighting = scene.lighting(STILL);
     let picture = picture(&scene, &lighting);
 
-    let lit_tile = (CENTRE.0 + 1, CENTRE.1);
+    let lit_tile = (CENTRE.0.0 + 1, CENTRE.0.1);
     let inside = at(&lighting, lit_tile, 0.0);
     assert!(
         brighter_by(inside, ambient(&lighting, lit_tile)) > 0.2,
@@ -153,10 +153,10 @@ fn a_shut_room_keeps_its_light_inside() {
     // not merely dimmer. "Stops" is a different claim from "falls off", and a
     // radius that happened to be short would pass the weaker one.
     for tile in [
-        (CENTRE.0 + scene::ROOM_HALF + 1, CENTRE.1),
-        (CENTRE.0 - scene::ROOM_HALF - 1, CENTRE.1),
-        (CENTRE.0, CENTRE.1 + scene::ROOM_HALF + 1),
-        (CENTRE.0, CENTRE.1 - scene::ROOM_HALF - 1),
+        (CENTRE.0.0 + scene::ROOM_HALF + 1, CENTRE.0.1),
+        (CENTRE.0.0 - scene::ROOM_HALF - 1, CENTRE.0.1),
+        (CENTRE.0.0, CENTRE.0.1 + scene::ROOM_HALF + 1),
+        (CENTRE.0.0, CENTRE.0.1 - scene::ROOM_HALF - 1),
     ] {
         let outside = at(&lighting, tile, 0.0);
         assert!(
@@ -209,9 +209,9 @@ fn the_edge_of_a_shadow_lands_where_the_geometry_puts_it() {
     // A line across the fan of light on the ground a tile and a half south of the
     // doorway, from well inside the shadow of one doorpost to well inside the
     // other's.
-    let y = f32::from(DOORWAY.1) + 1.5;
+    let y = f32::from(DOORWAY.0.1) + 1.5;
     let sweep: Vec<(f32, f32)> = (-100..=100)
-        .map(|step| f32::from(DOORWAY.0) + 0.5 + step as f32 / 100.0)
+        .map(|step| f32::from(DOORWAY.0.0) + 0.5 + step as f32 / 100.0)
         .map(|x| {
             let spot = Spot::at(Vec2::new(x, y), 0.0, (x.floor() as i32, y.floor() as i32));
             let through = light::sample(spot, &lighting)
@@ -239,7 +239,7 @@ fn the_edge_of_a_shadow_lands_where_the_geometry_puts_it() {
     // either. The bounds are wide because the number they hold is a consequence of
     // where the torch stands and what a flame's lift is; the reading is 0.08 of a
     // tile at each end and either end failing is the same defect.
-    let doorway = f32::from(DOORWAY.0);
+    let doorway = f32::from(DOORWAY.0.0);
     assert!(
         west < doorway && doorway - west < 0.5,
         "the spill's west edge is at {west}, not a fraction of a tile past {doorway}\n\
@@ -286,7 +286,7 @@ fn a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched() {
 
     // On the far side of the wall from the torch, a tile and a half out, climbing
     // past the top of it.
-    let at = Vec2::new(f32::from(CENTRE.0) + 0.5, f32::from(CENTRE.1) + 1.5);
+    let at = Vec2::new(f32::from(CENTRE.0.0) + 0.5, f32::from(CENTRE.0.1) + 1.5);
     let tile = (at.x.floor() as i32, at.y.floor() as i32);
     let sweep: Vec<(f32, f32)> = (0..=240)
         .map(|step| step as f32 / 8.0)
@@ -342,7 +342,7 @@ fn a_ray_grazing_the_top_of_a_wall_is_dimmed_rather_than_switched() {
 fn the_report_names_the_cell_that_stopped_the_ray() {
     let scene = scene::room();
     let lighting = scene.lighting(STILL);
-    let east = (CENTRE.0 + scene::ROOM_HALF + 1, CENTRE.1);
+    let east = (CENTRE.0.0 + scene::ROOM_HALF + 1, CENTRE.0.1);
     let sample = light::sample(spot(east, 0.0), &lighting);
 
     let reach = sample
@@ -352,7 +352,7 @@ fn the_report_names_the_cell_that_stopped_the_ray() {
         .unwrap_or_else(|| panic!("the torch does not even reach the tile:\n{sample}"));
     assert_eq!(
         reach.stopped_by.map(|stopper| stopper.cell),
-        Some((i32::from(CENTRE.0 + scene::ROOM_HALF), i32::from(CENTRE.1))),
+        Some((i32::from(CENTRE.0.0 + scene::ROOM_HALF), i32::from(CENTRE.0.1))),
         "stopped somewhere other than the east wall:\n{sample}",
     );
 }
@@ -373,12 +373,12 @@ fn opening_a_door_spills_light_onto_the_ground_outside() {
     // torch's six the pool has fallen to a twentieth, so any number chosen here
     // would be a number about the falloff, and what this test is about is
     // whether the ray got through at all.
-    let outside = (DOORWAY.0, DOORWAY.1 + 1);
+    let outside = (DOORWAY.0.0, DOORWAY.0.1 + 1);
     let shut_reach = light::sample(spot(outside, 0.0), &shut_light).reaches[0];
     let open_reach = light::sample(spot(outside, 0.0), &open_light).reaches[0];
     assert_eq!(
         shut_reach.stopped_by.map(|stopper| stopper.cell),
-        Some((i32::from(DOORWAY.0), i32::from(DOORWAY.1))),
+        Some((i32::from(DOORWAY.0.0), i32::from(DOORWAY.0.1))),
         "a shut door is not a wall{}",
         picture(&shut, &shut_light),
     );
@@ -399,7 +399,7 @@ fn opening_a_door_spills_light_onto_the_ground_outside() {
     // the tile diagonally out from the doorway is behind the wall beside it, and
     // stays dark. Without this the test would pass for a door that stopped
     // occluding the whole ring.
-    let beside = (DOORWAY.0 + 2, DOORWAY.1 + 1);
+    let beside = (DOORWAY.0.0 + 2, DOORWAY.0.1 + 1);
     let spill = at(&open_light, beside, 0.0);
     assert!(
         (spill - ambient(&open_light, beside)).abs() < 1e-6,
@@ -419,7 +419,7 @@ fn opening_a_door_spills_light_onto_the_ground_outside() {
 /// doorway are three different numbers and always in that order.
 #[test]
 fn a_pane_of_glass_dims_light_where_a_wall_stops_it() {
-    let outside = (DOORWAY.0, DOORWAY.1 + 1);
+    let outside = (DOORWAY.0.0, DOORWAY.0.1 + 1);
     let walled = scene::room();
     let glazed = scene::room_with_window();
     let opened = scene::room_with_open_door();
@@ -473,7 +473,7 @@ fn a_pane_of_glass_dims_light_where_a_wall_stops_it() {
 fn the_face_of_a_wall_is_lit_from_inside_the_room() {
     let scene = scene::room();
     let lighting = scene.lighting(STILL);
-    let wall = (CENTRE.0 + scene::ROOM_HALF, CENTRE.1);
+    let wall = (CENTRE.0.0 + scene::ROOM_HALF, CENTRE.0.1);
     // The foot of the wall, halfway up it, and the top: a sprite's pixels differ
     // in `z` and nothing else, and all three are inside the pool.
     for z in [
@@ -513,7 +513,7 @@ fn a_sconce_lights_the_street_and_not_the_room_behind_it() {
     let picture = picture(&scene, &lighting);
     // The wall stands on its tiles' south edge, so the street it faces is south
     // and the room is north.
-    let (street, room) = ((CENTRE.0, CENTRE.1 + 1), (CENTRE.0, CENTRE.1 - 1));
+    let (street, room) = ((CENTRE.0.0, CENTRE.0.1 + 1), (CENTRE.0.0, CENTRE.0.1 - 1));
     let lit = at(&lighting, street, 0.0);
     let dark = at(&lighting, room, 0.0);
     assert!(
@@ -548,7 +548,7 @@ fn a_carried_light_lights_the_way_it_is_pointed() {
     // East is the facing, so `+x` is ahead. Two tiles out on either side: the
     // same distance from the flame, so the falloff is the same for both and the
     // only difference between them is the direction.
-    let (ahead, behind) = ((CENTRE.0 + 2, CENTRE.1), (CENTRE.0 - 2, CENTRE.1));
+    let (ahead, behind) = ((CENTRE.0.0 + 2, CENTRE.0.1), (CENTRE.0.0 - 2, CENTRE.0.1));
     // Two domains, on purpose. The floor below is an absolute margin, authored
     // against a picture, and so it is read as a displayed value — `brighter_by`.
     // The ratio is a claim about *quantities* of light: "three times as much
@@ -575,8 +575,8 @@ fn a_carried_light_lights_the_way_it_is_pointed() {
     // ambient would look like a decal on the ground. The east face is what says
     // the light has hit something.
     let (front_wall, back_wall) = (
-        (CENTRE.0 + scene::ROOM_HALF, CENTRE.1),
-        (CENTRE.0 - scene::ROOM_HALF, CENTRE.1),
+        (CENTRE.0.0 + scene::ROOM_HALF, CENTRE.0.1),
+        (CENTRE.0.0 - scene::ROOM_HALF, CENTRE.0.1),
     );
     for z in [0.0, f32::from(scene::WALL_HEIGHT) / 2.0] {
         // Points **of** those walls, not points of the air inside their tiles —
@@ -654,17 +654,17 @@ fn the_edge_of_a_beam_is_a_gradient_of_the_stated_width() {
 fn a_cellar_does_not_light_the_street_above_it() {
     let scene = scene::cellar_under_street();
     let lighting = scene.lighting(STILL);
-    let street = at(&lighting, CENTRE, 0.0);
+    let street = at(&lighting, CENTRE.0, 0.0);
     assert!(
-        (street - ambient(&lighting, CENTRE)).abs() < 1e-6,
+        (street - ambient(&lighting, CENTRE.0)).abs() < 1e-6,
         "the cellar lights the street: {street}{}",
         picture(&scene, &lighting),
     );
     // And the flame is real: it lights its own floor. Without this the test
     // above would pass for a scene where the torch was never collected.
-    let cellar = at(&lighting, CENTRE, f32::from(scene::CELLAR_DEPTH));
+    let cellar = at(&lighting, CENTRE.0, f32::from(scene::CELLAR_DEPTH));
     assert!(
-        brighter_by(cellar, ambient(&lighting, CENTRE)) > 0.2,
+        brighter_by(cellar, ambient(&lighting, CENTRE.0)) > 0.2,
         "the cellar itself is dark: {cellar}"
     );
 }
@@ -703,8 +703,8 @@ fn a_torch_does_not_light_the_storey_above_it() {
     //
     // The last of the row is the upper storey's *wall*, which is what a player
     // actually sees lit, and the flat pixels beside it are the storey's floor.
-    for x in CENTRE.0 - scene::ROOM_HALF..=CENTRE.0 + scene::ROOM_HALF {
-        let tile = (x, CENTRE.1);
+    for x in CENTRE.0.0 - scene::ROOM_HALF..=CENTRE.0.0 + scene::ROOM_HALF {
+        let tile = (x, CENTRE.0.1);
         let upstairs = at(&lighting, tile, scene::STOREY_Z);
         assert!(
             (upstairs - ambient(&lighting, tile)).abs() < 1e-6,
@@ -718,9 +718,9 @@ fn a_torch_does_not_light_the_storey_above_it() {
     // a room away from the flame the pool is thinner than the tile-away margin
     // the other scenes assert — which is the point of reading it here rather than
     // beside the torch, where a floor that stopped nothing would still pass.
-    let downstairs = at(&lighting, scene::STOREY_SPOT, 0.0);
+    let downstairs = at(&lighting, scene::STOREY_SPOT.0, 0.0);
     assert!(
-        brighter_by(downstairs, ambient(&lighting, scene::STOREY_SPOT)) > 0.05,
+        brighter_by(downstairs, ambient(&lighting, scene::STOREY_SPOT.0)) > 0.05,
         "the ground floor itself is dark, so the scene proves nothing: \
          {downstairs}{picture}"
     );
@@ -747,18 +747,18 @@ fn a_hole_in_a_floor_lets_the_light_through() {
     let lighting = scene.lighting(STILL);
     let picture = picture(&scene, &lighting);
 
-    let through = at(&lighting, scene::STOREY_SPOT, scene::STOREY_Z);
+    let through = at(&lighting, scene::STOREY_SPOT.0, scene::STOREY_Z);
     assert!(
-        brighter_by(through, ambient(&lighting, scene::STOREY_SPOT)) > 0.04,
+        brighter_by(through, ambient(&lighting, scene::STOREY_SPOT.0)) > 0.04,
         "nothing comes up through the hole: {through} against the ambient's \
          {}{picture}",
-        ambient(&lighting, scene::STOREY_SPOT),
+        ambient(&lighting, scene::STOREY_SPOT.0),
     );
 
     // Either side of the gap, at the same height: the planks are still there and
     // the storey above them is not lit. Without this the assertion above would
     // pass for a rule that had stopped reading the grid at all.
-    for tile in [scene::FLOOR_HOLE, (CENTRE.0, CENTRE.1)] {
+    for tile in [scene::FLOOR_HOLE.0, CENTRE.0] {
         let beside = at(&lighting, tile, scene::STOREY_Z);
         assert!(
             (beside - ambient(&lighting, tile)).abs() < 1e-6,
@@ -803,7 +803,7 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
     let scene = scene::storey_over_a_lit_room();
     let lighting = scene.lighting(STILL);
     let picture = picture(&scene, &lighting);
-    let tile = scene::STOREY_WALL;
+    let tile = scene::STOREY_WALL.0;
     let ambient = ambient(&lighting, tile);
     // Which of the tile's two walls a pixel at this height is a point of: the
     // storey's from the floor line up, the room's below it. A real fragment
@@ -916,19 +916,19 @@ fn a_room_lights_its_own_wall_and_not_the_storey_over_it() {
 fn a_ray_does_not_slip_between_two_walls_that_touch_at_a_corner() {
     let scene = scene::diagonal_gap();
     let lighting = scene.lighting(STILL);
-    let behind = at(&lighting, CENTRE, 0.0);
+    let behind = at(&lighting, CENTRE.0, 0.0);
     assert!(
-        (behind - ambient(&lighting, CENTRE)).abs() < 1e-6,
+        (behind - ambient(&lighting, CENTRE.0)).abs() < 1e-6,
         "light slips through the corner where two walls touch: {behind} against \
          the ambient's {}{}",
-        ambient(&lighting, CENTRE),
+        ambient(&lighting, CENTRE.0),
         picture(&scene, &lighting),
     );
 
     // And the flame is real: a tile the walls do not stand between is lit. Without
     // this the assertion above would hold for a scene whose torch was never
     // collected at all.
-    let open = (CENTRE.0 + 2, CENTRE.1 + 1);
+    let open = (CENTRE.0.0 + 2, CENTRE.0.1 + 1);
     let lit = at(&lighting, open, 0.0);
     assert!(
         brighter_by(lit, ambient(&lighting, open)) > 0.1,
@@ -953,7 +953,7 @@ fn a_ray_does_not_slip_between_two_walls_that_touch_at_a_corner() {
 fn a_ray_near_a_corner_and_off_the_exact_diagonal_still_does_not_slip_through() {
     let scene = scene::diagonal_gap();
     let lighting = scene.lighting(STILL);
-    let off_diagonal_at = Vec2::new(f32::from(CENTRE.0) + 0.25, f32::from(CENTRE.1) + 0.5);
+    let off_diagonal_at = Vec2::new(f32::from(CENTRE.0.0) + 0.25, f32::from(CENTRE.0.1) + 0.5);
     let off_diagonal = Spot::at(
         off_diagonal_at,
         0.0,
@@ -994,7 +994,7 @@ fn a_lamp_outside_a_house_corner_does_not_light_the_room_behind_it() {
 
     // Inside the house, on the diagonal running back from the flame through the
     // corner: `(1439.5, 1691.17)` of Britain, in this scene's coordinates.
-    let inside_at = Vec2::new(f32::from(CENTRE.0) - 1.5, f32::from(CENTRE.1) - 0.83);
+    let inside_at = Vec2::new(f32::from(CENTRE.0.0) - 1.5, f32::from(CENTRE.0.1) - 0.83);
     let inside = Spot::at(
         inside_at,
         0.0,
@@ -1016,7 +1016,7 @@ fn a_lamp_outside_a_house_corner_does_not_light_the_room_behind_it() {
     // a scene whose torch was never collected — and it is the assertion that would
     // catch a fix that closed the leak by walling the corner off in every
     // direction, which is the failure the conservative direction invites.
-    let street_at = Vec2::new(f32::from(CENTRE.0) - 1.5, f32::from(CENTRE.1) + 1.5);
+    let street_at = Vec2::new(f32::from(CENTRE.0.0) - 1.5, f32::from(CENTRE.0.1) + 1.5);
     let street = Spot::at(
         street_at,
         0.0,
@@ -1067,14 +1067,14 @@ fn the_two_faces_of_a_corner_are_lit_from_the_side_each_looks_at() {
     let scene = scene::house_corner_named_by_its_art();
     let lighting = scene.lighting(STILL);
     let picture = picture(&scene, &lighting);
-    let (cx, cy) = (f32::from(CENTRE.0), f32::from(CENTRE.1));
+    let (cx, cy) = (f32::from(CENTRE.0.0), f32::from(CENTRE.0.1));
 
     // The south face lies on the `y1` line of the corner's tile, halfway along
     // it; the east face on the `x1` line. Both a step of the attachment's own
     // fraction inside the tile, which is where `statics.wgsl` writes them — see
     // `INSIDE`, and decision 16 for what a clean 1 would do to the walk.
     let inside = 1.0 - 1.0 / 127.0;
-    let corner = (CENTRE.0 as i32, CENTRE.1 as i32);
+    let corner = (CENTRE.0.0 as i32, CENTRE.0.1 as i32);
     // A corner is one static and **a panel per named side**, so which of the two
     // the sample is a point of is a fact the fixture has to state — the same fact a
     // real fragment carries out of `statics.wgsl`. Named by the panel's own edge
@@ -1140,8 +1140,8 @@ fn a_wall_throws_its_shadow_away_from_the_sun() {
     let sun = scene.sun.expect("the scene has a sun");
 
     // The sun is towards +x, so the shadow lies at lower `x`.
-    let shaded = (CENTRE.0 - 1, CENTRE.1);
-    let sunlit = (CENTRE.0 + 1, CENTRE.1);
+    let shaded = (CENTRE.0.0 - 1, CENTRE.0.1);
+    let sunlit = (CENTRE.0.0 + 1, CENTRE.0.1);
     let dark = light::sample(spot(shaded, 0.0), &lighting);
     let bright = light::sample(spot(sunlit, 0.0), &lighting);
 
@@ -1150,7 +1150,7 @@ fn a_wall_throws_its_shadow_away_from_the_sun() {
             .expect("a sunlit frame")
             .stopped_by
             .map(|stopper| stopper.cell),
-        Some((i32::from(CENTRE.0), i32::from(CENTRE.1))),
+        Some((i32::from(CENTRE.0.0), i32::from(CENTRE.0.1))),
         "the tile away from the sun is not shadowed by the wall:\n{dark}{}",
         picture(&scene, &lighting),
     );
@@ -1171,7 +1171,7 @@ fn a_wall_throws_its_shadow_away_from_the_sun() {
     // certainly is. The number is the *geometry*, which is what a slope buys —
     // a shadow that ignored the wall's height would run to the edge of the grid.
     assert_eq!(sun.rise_per_tile(), 1.0, "the scene's sun is no longer at 45°");
-    let past = light::sample(spot((CENTRE.0 - 3, CENTRE.1), 0.0), &lighting);
+    let past = light::sample(spot((CENTRE.0.0 - 3, CENTRE.0.1), 0.0), &lighting);
     assert_eq!(
         past.sun.expect("a sunlit frame").through,
         1.0,
@@ -1194,8 +1194,8 @@ fn the_sun_reaches_the_floor_through_a_window() {
     // The floor tile just inside the pane, and one three tiles further in. The
     // sun travels towards +x, so a ray leaving the first goes out through the
     // window and a ray leaving the second meets the roof.
-    let behind_pane = (scene::WINDOW_TILE.0 - 1, scene::WINDOW_TILE.1);
-    let behind_wall = (scene::WINDOW_TILE.0 - 3, scene::WINDOW_TILE.1);
+    let behind_pane = (scene::WINDOW_TILE.0.0 - 1, scene::WINDOW_TILE.0.1);
+    let behind_wall = (scene::WINDOW_TILE.0.0 - 3, scene::WINDOW_TILE.0.1);
     let lit = light::sample(spot(behind_pane, 0.0), &lighting);
     let dark = light::sample(spot(behind_wall, 0.0), &lighting);
     let sun_of = |sample: &light::Sample| sample.sun.expect("a sunlit frame");
@@ -1221,8 +1221,8 @@ fn the_sun_reaches_the_floor_through_a_window() {
     // inverted, and the reason a floor is swept here rather than two tiles named.
     let mut lit_rows = Vec::new();
     let mut swept = 0;
-    for x in CENTRE.0 - scene::ROOM_HALF + 1..CENTRE.0 + scene::ROOM_HALF {
-        for y in CENTRE.1 - scene::ROOM_HALF + 1..CENTRE.1 + scene::ROOM_HALF {
+    for x in CENTRE.0.0 - scene::ROOM_HALF + 1..CENTRE.0.0 + scene::ROOM_HALF {
+        for y in CENTRE.0.1 - scene::ROOM_HALF + 1..CENTRE.0.1 + scene::ROOM_HALF {
             if sun_of(&light::sample(spot((x, y), 0.0), &lighting)).through > 0.0 {
                 lit_rows.push((x, y));
             }
@@ -1232,7 +1232,7 @@ fn the_sun_reaches_the_floor_through_a_window() {
     let interior = (scene::ROOM_HALF * 2 - 1) as usize;
     assert_eq!(swept, interior * interior, "the sweep did not cover the floor");
     assert!(
-        lit_rows.iter().all(|(_, y)| *y == scene::WINDOW_TILE.1),
+        lit_rows.iter().all(|(_, y)| *y == scene::WINDOW_TILE.0.1),
         "the sun reaches floor the window is not opposite: {lit_rows:?}{}",
         picture(&scene, &lighting),
     );
@@ -1263,8 +1263,8 @@ fn a_shut_house_lets_no_sun_onto_any_tile_of_its_floor() {
     let lighting = house.lighting(STILL);
 
     let mut swept = 0;
-    for x in CENTRE.0 - scene::ROOM_HALF + 1..CENTRE.0 + scene::ROOM_HALF {
-        for y in CENTRE.1 - scene::ROOM_HALF + 1..CENTRE.1 + scene::ROOM_HALF {
+    for x in CENTRE.0.0 - scene::ROOM_HALF + 1..CENTRE.0.0 + scene::ROOM_HALF {
+        for y in CENTRE.0.1 - scene::ROOM_HALF + 1..CENTRE.0.1 + scene::ROOM_HALF {
             let sample = light::sample(spot((x, y), 0.0), &lighting);
             let sun = sample.sun.expect("a sunlit frame");
             assert_eq!(
@@ -1289,7 +1289,7 @@ fn a_shut_house_lets_no_sun_onto_any_tile_of_its_floor() {
 fn a_frame_without_a_sun_reports_none_rather_than_nothing() {
     let scene = scene::room();
     let lighting = scene.lighting(STILL);
-    assert!(light::sample(spot(CENTRE, 0.0), &lighting).sun.is_none());
+    assert!(light::sample(spot(CENTRE.0, 0.0), &lighting).sun.is_none());
 }
 
 /// How much of the sky a tile of a scene can see.
@@ -1302,7 +1302,7 @@ fn sky(scene: &Scene, tile: (u16, u16)) -> u8 {
 
 /// A tile well outside the house, for the "and the street is open" half of
 /// everything below.
-const STREET: (u16, u16) = (CENTRE.0, CENTRE.1 + scene::ROOM_HALF + 3);
+const STREET: (u16, u16) = (CENTRE.0.0, CENTRE.0.1 + scene::ROOM_HALF + 3);
 
 /// A room under a roof does not get the sky's light, and the street outside it
 /// does.
@@ -1315,7 +1315,7 @@ const STREET: (u16, u16) = (CENTRE.0, CENTRE.1 + scene::ROOM_HALF + 3);
 fn a_roof_takes_the_sky_from_the_room_under_it() {
     let house = scene::roofed_room();
     let street = sky(&house, STREET);
-    let room = sky(&house, CENTRE);
+    let room = sky(&house, CENTRE.0);
     assert_eq!(street, occlusion::SKY_OPEN, "the street is not open sky");
     assert_eq!(room, 0, "the middle of a roofed room still sees the sky");
 }
@@ -1335,7 +1335,7 @@ fn a_roof_makes_the_room_under_it_darker_than_the_street() {
     let house = scene::roofed_room();
     let lighting = house.lighting(STILL);
 
-    let room = ambient(&lighting, CENTRE);
+    let room = ambient(&lighting, CENTRE.0);
     let street = ambient(&lighting, STREET);
     assert!(
         brighter_by(street, room) > 0.1,
@@ -1355,7 +1355,7 @@ fn a_roof_makes_the_room_under_it_darker_than_the_street() {
     // what a person actually sees is the ambient plus whatever reaches the tile,
     // and nothing here would show up in a frame if the sun happened to make the
     // difference up.
-    let (room, street) = (at(&lighting, CENTRE, 0.0), at(&lighting, STREET, 0.0));
+    let (room, street) = (at(&lighting, CENTRE.0, 0.0), at(&lighting, STREET, 0.0));
     assert!(
         brighter_by(street, room) > 0.1,
         "lit, the room is as bright as the road: {room} against {street}{}",
@@ -1375,14 +1375,14 @@ fn a_doorway_is_a_threshold_and_not_a_step() {
     let open = scene::roofed_room_with_open_door();
     let shut = scene::roofed_room();
 
-    let threshold = sky(&open, DOORWAY);
+    let threshold = sky(&open, DOORWAY.0);
     assert!(
         threshold > 0 && threshold < occlusion::SKY_OPEN,
         "the doorway of {} reads {threshold}, which is the room or the street",
         open.name,
     );
     assert!(
-        threshold > sky(&shut, DOORWAY),
+        threshold > sky(&shut, DOORWAY.0),
         "an open door is worth no more sky than a shut one",
     );
     assert!(
@@ -1402,10 +1402,10 @@ fn a_doorway_is_a_threshold_and_not_a_step() {
 fn a_window_is_worth_more_sky_than_the_wall_it_replaces() {
     let glazed = scene::roofed_room_with_window();
     let solid = scene::roofed_room();
-    let inside = (scene::WINDOW_TILE.0 - 1, scene::WINDOW_TILE.1);
+    let inside = (scene::WINDOW_TILE.0.0 - 1, scene::WINDOW_TILE.0.1);
 
     assert!(
-        sky(&glazed, scene::WINDOW_TILE) > sky(&solid, scene::WINDOW_TILE),
+        sky(&glazed, scene::WINDOW_TILE.0) > sky(&solid, scene::WINDOW_TILE.0),
         "the pane itself is as dark as a wall",
     );
     assert!(
@@ -1427,7 +1427,7 @@ fn every_scene_prints_a_diagram_that_is_not_blank() {
         let lighting = scene.lighting(STILL);
         let drawn = debug::diagram(
             &lighting,
-            debug::around(openshard_movement::Tile::new(CENTRE.0, CENTRE.1), 6),
+            debug::around(openshard_movement::Tile::new(CENTRE.0.0, CENTRE.0.1), 6),
             0.0,
         );
         // A flame, an occluder, or lit ground: every scene has at least one of
@@ -1487,7 +1487,7 @@ fn every_scene_prints_a_diagram_that_is_not_blank() {
 #[test]
 fn light_runs_along_a_wall_and_stops_across_it() {
     let scene = scene::wall_with_a_torch_beside_it();
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     let through = |lighting: &Lighting, spot: Spot| {
         let sample = light::sample(spot, lighting);
         let reach = sample.reaches[0];
@@ -2148,7 +2148,7 @@ fn a_ray_over_a_hole_in_a_wall_is_stopped_by_the_wall_above_it() {
 fn a_hole_in_a_wall_throws_a_fan_of_light_onto_the_ground_behind_it() {
     let scene = scene::wall_with_a_hole_in_it();
     let lighting = scene.lighting(STILL);
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
 
     // Behind the holed tile, and behind the solid wall two tiles along it. Same
     // distance from the flame in `y`, so what differs is the hole and nothing.

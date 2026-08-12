@@ -77,7 +77,7 @@ fn directory() -> PathBuf {
 
 /// The rectangle a plan view covers, centred on the scenes' own centre.
 fn around() -> openshard_client_render::camera::TileBounds {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     openshard_client_render::camera::TileBounds {
         min_x: i32::from(cx) - TILES / 2,
         max_x: i32::from(cx) + TILES / 2,
@@ -194,7 +194,7 @@ fn a_lone_flame_on_open_ground_is_the_same_brightness_in_every_direction() {
     let scene = scene::torch_on_open_ground();
     let lighting = scene.lighting(STILL);
     let drawn = picture(&device, &queue, &slug(&scene), &lighting, View::Light);
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
 
     for distance in 1..=4u16 {
         let around = [
@@ -299,7 +299,7 @@ fn a_wall_lit_from_one_end_has_no_dark_stroke_at_its_seam() {
     let scene = scene::wall_run_lit_from_along_it();
     let lighting = scene.lighting(STILL);
     let wall = plan::Wall {
-        from: CENTRE,
+        from: CENTRE.0,
         face: openshard_client_render::facing::Face::South,
         tiles: u32::from(scene::RUN),
         top: i32::from(scene::WALL_HEIGHT),
@@ -384,7 +384,7 @@ fn a_wall_is_not_lit_from_behind_its_own_face() {
     let scene = scene::torch_before_a_wall();
     let lighting = scene.lighting(STILL);
     let wall = plan::Wall {
-        from: (CENTRE.0 - 4, CENTRE.1),
+        from: (CENTRE.0.0 - 4, CENTRE.0.1),
         face: openshard_client_render::facing::Face::South,
         tiles: 9,
         top: i32::from(scene::WALL_HEIGHT),
@@ -416,7 +416,7 @@ fn a_wall_is_not_lit_from_behind_its_own_face() {
         &lit.lighting(STILL),
         View::Flames,
         plan::Wall {
-            from: CENTRE,
+            from: CENTRE.0,
             face: openshard_client_render::facing::Face::South,
             tiles: u32::from(scene::RUN),
             top: i32::from(scene::WALL_HEIGHT),
@@ -446,7 +446,7 @@ fn a_wall_in_front_of_a_torch_darkens_the_ground_behind_it_and_not_beside_it() {
     let scene = scene::torch_before_a_wall();
     let lighting = scene.lighting(STILL);
     let drawn = picture(&device, &queue, &slug(&scene), &lighting, View::Light);
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
 
     // What the ambient alone comes out at in this picture, which is what a tile
     // nothing reaches must be. Read off a corner of the frame rather than

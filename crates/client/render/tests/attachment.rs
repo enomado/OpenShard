@@ -249,7 +249,7 @@ fn an_elevation_names_the_panel_it_is_a_picture_of() {
     let lighting = scene.lighting(STILL);
     let of = occlusion::Owner::new(0, scene::WALL);
     let wall = plan::Wall {
-        from: scene::CENTRE,
+        from: scene::CENTRE.0,
         face: Face::South,
         tiles: u32::from(scene::RUN),
         top: i32::from(scene::WALL_HEIGHT),
@@ -313,7 +313,7 @@ fn a_plan_view_is_all_ground_and_names_no_occluder() {
     };
     let scene = scene::torch_before_a_wall();
     let lighting = scene.lighting(STILL);
-    let (cx, cy) = scene::CENTRE;
+    let (cx, cy) = scene::CENTRE.0;
     let bounds = openshard_client_render::camera::TileBounds {
         min_x: i32::from(cx) - 6,
         max_x: i32::from(cx) + 6,

@@ -104,6 +104,28 @@ impl GumpPixel {
     }
 }
 
+/// A texel within one gump picture, before that picture is placed in a window.
+///
+/// Unlike [`GumpPixel`], this is not a coordinate in the window: it is the
+/// local pixel that [`GumpAtlas::opaque_at`] reads. Keeping the two separate
+/// makes the subtraction that turns a cursor position into an art position
+/// explicit, rather than allowing either pair of axes to be handed to the
+/// other API by accident.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct GumpArtPixel {
+    /// Columns from the picture's left edge.
+    pub x: u16,
+    /// Rows from the picture's top edge.
+    pub y: u16,
+}
+
+impl GumpArtPixel {
+    /// A picture-local texel at `(x, y)`.
+    pub const fn new(x: u16, y: u16) -> Self {
+        Self { x, y }
+    }
+}
+
 /// A box outside which nothing is drawn and nothing is picked.
 ///
 /// A scissor rectangle, applied on the processor rather than by the pass: a
@@ -455,17 +477,17 @@ impl GumpAtlas {
         self.packed.sprite(*self.slots.get(&art)?)
     }
 
-    /// Whether the pixel at `(x, y)` within a graphic's own picture is drawn
+    /// Whether `pixel` within a graphic's own picture is drawn
     /// rather than transparent.
     ///
     /// The interface's picking, and the same question
     /// [`StaticAtlas::opaque_at`] answers for the world: a gump window is not a
     /// rectangle — a paperdoll's frame has transparent corners, and a click in
     /// one belongs to whatever is behind it.
-    pub fn opaque_at(&self, art: GumpArt, x: u16, y: u16) -> bool {
+    pub fn opaque_at(&self, art: GumpArt, pixel: GumpArtPixel) -> bool {
         self.slots
             .get(&art)
-            .is_some_and(|slot| self.packed.opaque_at(*slot, x, y))
+            .is_some_and(|slot| self.packed.opaque_at(*slot, pixel.x, pixel.y))
     }
 
     /// How many pictures landed in it.
@@ -661,7 +683,10 @@ pub fn pick(pictures: &[Picture], cursor: GumpPixel, atlas: &GumpAtlas) -> Optio
             return None;
         }
         atlas
-            .opaque_at(picture.graphic, (x % art_width) as u16, (y % art_height) as u16)
+            .opaque_at(
+                picture.graphic,
+                GumpArtPixel::new((x % art_width) as u16, (y % art_height) as u16),
+            )
             .then_some(PictureIndex::new(index))
     })
 }

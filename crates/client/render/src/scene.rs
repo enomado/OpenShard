@@ -146,9 +146,18 @@ pub const ROOF_THICKNESS: u8 = 5;
 /// How tall the walls of these rooms are, in `z` units.
 pub const WALL_HEIGHT: u8 = 20;
 
+/// A tile position in one of this module's constructed scenes.
+///
+/// A scene coordinate is not an arbitrary pair of numbers: it is the location
+/// of something deliberately placed in this small, synthetic world. Keeping
+/// that distinction through the builders makes it impossible to accidentally
+/// hand a pixel pair or an atlas coordinate to a fixture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SceneTile(pub (u16, u16));
+
 /// Where the rooms are built. Far from the map's edge so that a camera's bounds
 /// are never clipped, and a round number so that a diagram is readable.
-pub const CENTRE: (u16, u16) = (100, 100);
+pub const CENTRE: SceneTile = SceneTile((100, 100));
 
 /// How far a room's wall is from its centre: a seven-by-seven house.
 ///
@@ -247,7 +256,7 @@ impl Scene {
     }
 
     /// The scene with `graphic` standing at `at`, on the ground.
-    fn with(self, at: (u16, u16), graphic: Graphic) -> Self {
+    fn with(self, at: SceneTile, graphic: Graphic) -> Self {
         self.with_at(at, 0, graphic)
     }
 
@@ -259,19 +268,19 @@ impl Scene {
     /// has that the sky can still reach. Decision 1 of `docs/lighting_world.md`
     /// is measured on the difference.
     fn roofed(mut self) -> Self {
-        let (cx, cy) = CENTRE;
+        let (cx, cy) = CENTRE.0;
         for x in cx - ROOM_HALF + 1..=cx + ROOM_HALF - 1 {
             for y in cy - ROOM_HALF + 1..=cy + ROOM_HALF - 1 {
-                self = self.with_at((x, y), ROOF_Z, ROOF);
+                self = self.with_at(SceneTile((x, y)), ROOF_Z, ROOF);
             }
         }
         self
     }
 
     /// And with it standing at a height — a roof, or a storey above one.
-    fn with_at(mut self, at: (u16, u16), z: i8, graphic: Graphic) -> Self {
+    fn with_at(mut self, at: SceneTile, z: i8, graphic: Graphic) -> Self {
         self.items.push(GroundItem {
-            at: Point::new(at.0, at.1, z),
+            at: Point::new(at.0.0, at.0.1, z),
             graphic,
             hue: Hue::NONE,
         });
@@ -343,7 +352,7 @@ pub fn empty(name: &'static str) -> Scene {
         map: ground(),
         tiledata: tiledata(),
         items: Vec::new(),
-        camera: Camera::new(Point::new(CENTRE.0, CENTRE.1, 0), 800, 600),
+        camera: Camera::new(Point::new(CENTRE.0.0, CENTRE.0.1, 0), 800, 600),
         cutaway: Cutaway::OPEN,
         sun: None,
         carried: None,
@@ -356,15 +365,15 @@ pub fn empty(name: &'static str) -> Scene {
 /// A ring and not four walls: decision 3's occluder is a whole tile, so the
 /// corners are tiles like any other and the ring closes by construction. That is
 /// the property the room is here to demonstrate.
-pub fn room_wall_tiles() -> Vec<(u16, u16)> {
-    let (cx, cy) = CENTRE;
+pub fn room_wall_tiles() -> Vec<SceneTile> {
+    let (cx, cy) = CENTRE.0;
     let mut tiles = Vec::new();
     for x in cx - ROOM_HALF..=cx + ROOM_HALF {
         for y in cy - ROOM_HALF..=cy + ROOM_HALF {
             let edge =
                 x == cx - ROOM_HALF || x == cx + ROOM_HALF || y == cy - ROOM_HALF || y == cy + ROOM_HALF;
             if edge {
-                tiles.push((x, y));
+                tiles.push(SceneTile((x, y)));
             }
         }
     }
@@ -372,7 +381,7 @@ pub fn room_wall_tiles() -> Vec<(u16, u16)> {
 }
 
 /// Where a room's door is: the middle of its south wall.
-pub const DOORWAY: (u16, u16) = (CENTRE.0, CENTRE.1 + ROOM_HALF);
+pub const DOORWAY: SceneTile = SceneTile((CENTRE.0.0, CENTRE.0.1 + ROOM_HALF));
 
 /// One torch on open ground, and nothing else in the world at all.
 ///
@@ -403,13 +412,13 @@ pub fn torch_on_open_ground() -> Scene {
 /// synthetic silhouette [`wall_with_a_torch_beside_it`] uses, for the same
 /// reason: without it nothing names an edge and every occluder is a whole tile.
 pub fn torch_before_a_wall() -> Scene {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     let mut scene = empty("a torch two tiles in front of a straight wall");
     for x in cx - 4..=cx + 4 {
-        scene = scene.with((x, cy), WALL);
+        scene = scene.with(SceneTile((x, cy)), WALL);
     }
     scene.art = Some(south_faced_wall());
-    scene.with((cx, cy - 2), TORCH)
+    scene.with(SceneTile((cx, cy - 2)), TORCH)
 }
 
 /// How many tiles of wall [`wall_run_lit_from_along_it`] has. Four, so that the
@@ -435,15 +444,15 @@ pub const RUN: u16 = 4;
 /// front of the wall draws none at all — which is exactly the difference the
 /// report described, and the reason this scene is not the perpendicular one.
 pub fn wall_run_lit_from_along_it() -> Scene {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     let mut scene = empty("a wall run with a lamp along it");
     for x in cx..cx + RUN {
-        scene = scene.with((x, cy), WALL);
+        scene = scene.with(SceneTile((x, cy)), WALL);
     }
     scene.art = Some(south_faced_wall());
     // In front of the wall by one tile — the flame lands half a tile out from the
     // face — and a tile past the far end of the run.
-    scene.with((cx + RUN, cy + 1), TORCH)
+    scene.with(SceneTile((cx + RUN, cy + 1)), TORCH)
 }
 
 /// The picture a scene hands the occlusion grid when it wants a wall that stands
@@ -587,24 +596,24 @@ pub fn house_corner_named_by_its_art() -> Scene {
 /// piece where they meet, and a lamp in the street outside it, `lamp` tiles off
 /// the corner.
 fn corner_house(name: &'static str, art: StaticAtlas, lamp: (i32, i32)) -> Scene {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     let mut scene = empty(name);
     // The south run, west of the corner: panels on the `y1` line, so the house is
     // north of them.
     for x in cx - CORNER_RUN..cx {
-        scene = scene.with((x, cy), WALL);
+        scene = scene.with(SceneTile((x, cy)), WALL);
     }
     // The east run, north of the corner: panels on the `x1` line, so the house is
     // west of them.
     for y in cy - CORNER_RUN..cy {
-        scene = scene.with((cx, y), WALL_EAST);
+        scene = scene.with(SceneTile((cx, y)), WALL_EAST);
     }
     scene = scene.with(CENTRE, CORNER);
     scene.art = Some(art);
     // Outside, in the street, off the corner. Signed, because the two scenes put
     // it in different quadrants and for a reason — see `house_corner_named_by_its_art`.
     let at = |tile: u16, by: i32| (i32::from(tile) + by) as u16;
-    scene.with((at(cx, lamp.0), at(cy, lamp.1)), TORCH)
+    scene.with(SceneTile((at(cx, lamp.0), at(cy, lamp.1))), TORCH)
 }
 
 /// A shut room with a torch in the middle of it.
@@ -675,16 +684,16 @@ pub fn room_with_open_door() -> Scene {
 /// built rather than loaded: a hand-drawn parallelogram is the projection and
 /// nothing else, so a failure prints a room rather than a coordinate.
 pub fn wall_with_a_torch_beside_it() -> Scene {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     let mut scene = empty("a straight wall with a torch at one end");
     for x in cx - 3..=cx + 3 {
-        scene = scene.with((x, cy), WALL);
+        scene = scene.with(SceneTile((x, cy)), WALL);
     }
     scene.art = Some(south_faced_wall());
     // On the wall's own row, at its east end: the sconce a house carries. Its own
     // tile is exempt from shadowing it, as every flame's is, so what this scene
     // is about is the *other six* tiles of the same wall.
-    scene.with((cx + 3, cy), TORCH)
+    scene.with(SceneTile((cx + 3, cy)), TORCH)
 }
 
 /// A straight wall with a **hole cut through its middle tile**, and a torch
@@ -703,10 +712,10 @@ pub fn wall_with_a_torch_beside_it() -> Scene {
 /// would be some other defect and a fan that failed to appear cannot be blamed on
 /// the wall being wrong.
 pub fn wall_with_a_hole_in_it() -> Scene {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     let mut scene = empty("a wall with a hole through its middle tile");
     for x in cx - 4..=cx + 4 {
-        scene = scene.with((x, cy), if x == cx { WALL_HOLED } else { WALL });
+        scene = scene.with(SceneTile((x, cy)), if x == cx { WALL_HOLED } else { WALL });
     }
     let mut art = south_faced_wall();
     art.pack_more([(
@@ -720,7 +729,7 @@ pub fn wall_with_a_hole_in_it() -> Scene {
     // stands in for.
     art.state_hole(WALL_HOLED, WALL_HOLE);
     scene.art = Some(art);
-    scene.with((cx, cy - 2), TORCH)
+    scene.with(SceneTile((cx, cy - 2)), TORCH)
 }
 
 /// A room with a pane of glass where its door would be.
@@ -752,10 +761,10 @@ pub fn room_with_window() -> Scene {
 /// edge, there is no plane to be outside of, and the sconce goes on lighting the
 /// room.
 pub fn sconce_on_wall() -> Scene {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     let mut scene = empty("a sconce on a straight wall");
     for x in cx - ROOM_HALF..=cx + ROOM_HALF {
-        scene = scene.with((x, cy), WALL);
+        scene = scene.with(SceneTile((x, cy)), WALL);
     }
     scene.art = Some(south_faced_wall());
     scene.with(CENTRE, TORCH)
@@ -776,7 +785,7 @@ pub const CELLAR_DEPTH: i8 = -(7 * 11);
 pub fn cellar_under_street() -> Scene {
     let mut scene = empty("a torch in a cellar under an empty street");
     scene.items.push(GroundItem {
-        at: Point::new(CENTRE.0, CENTRE.1, CELLAR_DEPTH),
+        at: Point::new(CENTRE.0.0, CENTRE.0.1, CELLAR_DEPTH),
         graphic: TORCH,
         hue: Hue::NONE,
     });
@@ -792,9 +801,9 @@ pub fn cellar_under_street() -> Scene {
 /// by the floor it stands on. Four tiles apart the crossing lands a whole tile
 /// away, on a lid that is nobody's own, which is the arrangement a house
 /// actually has: a torch on one side of a room and the storey above the other.
-pub const STOREY_TORCH: (u16, u16) = (CENTRE.0 - 2, CENTRE.1);
+pub const STOREY_TORCH: SceneTile = SceneTile((CENTRE.0.0 - 2, CENTRE.0.1));
 /// The far end, read at [`STOREY_Z`].
-pub const STOREY_SPOT: (u16, u16) = (CENTRE.0 + 2, CENTRE.1);
+pub const STOREY_SPOT: SceneTile = SceneTile((CENTRE.0.0 + 2, CENTRE.0.1));
 
 /// How high above the upper floor that scene is read: inside the upper room,
 /// clear of its own floor.
@@ -828,7 +837,7 @@ pub fn storey_over_a_torch() -> Scene {
 /// `(STOREY_Z - WALL_HEIGHT)` of the `z` it has to fall, over the four tiles it
 /// has to run — so this is the cell the crossing lands in, and the cells either
 /// side of it are the control.
-pub const FLOOR_HOLE: (u16, u16) = (CENTRE.0 + 1, CENTRE.1);
+pub const FLOOR_HOLE: SceneTile = SceneTile((CENTRE.0.0 + 1, CENTRE.0.1));
 
 /// The same house with **one plank missing**.
 ///
@@ -848,8 +857,8 @@ pub fn hole_in_a_floor() -> Scene {
 
 /// Both of those houses: the ring, a storey of ring on top of it, planks between
 /// the walls except at `hole`, and the torch on the ground floor.
-fn floored(name: &'static str, hole: Option<(u16, u16)>) -> Scene {
-    let (cx, cy) = CENTRE;
+fn floored(name: &'static str, hole: Option<SceneTile>) -> Scene {
+    let (cx, cy) = CENTRE.0;
     let mut scene = empty(name);
     for tile in room_wall_tiles() {
         scene = scene.with(tile, WALL).with_at(tile, WALL_HEIGHT as i8, WALL);
@@ -861,8 +870,8 @@ fn floored(name: &'static str, hole: Option<(u16, u16)>) -> Scene {
     // a lid that happened to be on the same tile.
     for x in cx - ROOM_HALF + 1..=cx + ROOM_HALF - 1 {
         for y in cy - ROOM_HALF + 1..=cy + ROOM_HALF - 1 {
-            if hole != Some((x, y)) {
-                scene = scene.with_at((x, y), WALL_HEIGHT as i8, FLOOR);
+            if hole != Some(SceneTile((x, y))) {
+                scene = scene.with_at(SceneTile((x, y)), WALL_HEIGHT as i8, FLOOR);
             }
         }
     }
@@ -878,7 +887,7 @@ fn floored(name: &'static str, hole: Option<(u16, u16)>) -> Scene {
 /// the middle of the tile is reading a point no frame ever draws, and the two
 /// answers differ: the middle has half a tile of its own cell to cross and the
 /// real pixel has eight thousandths.
-pub const STOREY_WALL: (u16, u16) = (CENTRE.0, CENTRE.1);
+pub const STOREY_WALL: SceneTile = SceneTile(CENTRE.0);
 
 /// How far across its tile a face pixel is, which is `statics.wgsl`'s `INSIDE`
 /// and the same number: `(SUB_TILE - 1) / SUB_TILE` over the seven bits the place
@@ -886,7 +895,7 @@ pub const STOREY_WALL: (u16, u16) = (CENTRE.0, CENTRE.1);
 pub const INSIDE: f32 = 126.0 / 127.0;
 
 /// Where that room's torch stands, and the tile of its floor that is read.
-pub const LIT_ROOM_TORCH: (u16, u16) = (CENTRE.0 + 2, CENTRE.1);
+pub const LIT_ROOM_TORCH: SceneTile = SceneTile((CENTRE.0.0 + 2, CENTRE.0.1));
 
 /// And how high it burns: a **sconce**, not a torch on the ground.
 ///
@@ -927,14 +936,16 @@ pub const LIT_ROOM_SCONCE: i8 = 10;
 /// floorboards. `light::stand_clear` is what closed it, and this scene is what
 /// says so.
 pub fn storey_over_a_lit_room() -> Scene {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     let mut scene = empty("a lit room with a second storey over it");
     for y in cy - ROOM_HALF..=cy + ROOM_HALF {
-        scene = scene
-            .with((cx, y), WALL_EAST)
-            .with_at((cx, y), WALL_HEIGHT as i8, WALL_EAST);
+        scene = scene.with(SceneTile((cx, y)), WALL_EAST).with_at(
+            SceneTile((cx, y)),
+            WALL_HEIGHT as i8,
+            WALL_EAST,
+        );
         for x in cx + 1..=cx + ROOM_HALF {
-            scene = scene.with_at((x, y), WALL_HEIGHT as i8, FLOOR);
+            scene = scene.with_at(SceneTile((x, y)), WALL_HEIGHT as i8, FLOOR);
         }
     }
     scene.art = Some(
@@ -955,11 +966,11 @@ pub fn storey_over_a_lit_room() -> Scene {
 /// a house — the scene is here so that the day it is fixed, something says the
 /// fix worked.
 pub fn diagonal_gap() -> Scene {
-    let (cx, cy) = CENTRE;
+    let (cx, cy) = CENTRE.0;
     empty("two walls touching at a corner")
-        .with((cx + 1, cy), WALL)
-        .with((cx, cy + 1), WALL)
-        .with((cx + 2, cy + 2), TORCH)
+        .with(SceneTile((cx + 1, cy)), WALL)
+        .with(SceneTile((cx, cy + 1)), WALL)
+        .with(SceneTile((cx + 2, cy + 2)), TORCH)
 }
 
 /// A character in the middle of a shut room, holding a light and facing east.
@@ -978,7 +989,7 @@ pub fn lantern_in_a_room() -> Scene {
     for tile in room_wall_tiles() {
         scene = scene.with(tile, WALL);
     }
-    scene.carried = Some((Point::new(CENTRE.0, CENTRE.1, 0), Direction::East));
+    scene.carried = Some((Point::new(CENTRE.0.0, CENTRE.0.1, 0), Direction::East));
     scene
 }
 
@@ -1010,7 +1021,7 @@ pub fn wall_in_the_sun() -> Scene {
 /// The east wall, because [`noon`] shines towards `+x` and a window in any other
 /// wall is a window the sun does not enter through — which is a true fact about
 /// windows and a useless scene.
-pub const WINDOW_TILE: (u16, u16) = (CENTRE.0 + ROOM_HALF, CENTRE.1);
+pub const WINDOW_TILE: SceneTile = SceneTile((CENTRE.0.0 + ROOM_HALF, CENTRE.0.1));
 
 /// A roofed room with a window in its sunward wall: the patch of light on the
 /// floor.
