@@ -99,11 +99,12 @@ fn volumes_of(
     let owner = occlusion::Owner::new(z, graphic);
     let mut out = Vec::new();
     occlusion::boxes_of(x, y, z, tile, shape, |part, edges, space| {
-        let space = match occlusion.id_of(x, y, owner, part) {
+        let named = occlusion.id_of(x, y, owner, part);
+        let space = match named {
             Some(id) => occlusion.solid(id).space,
             None => space,
         };
-        out.push(Volume::of(&space, edges, 0));
+        out.push(Volume::of(&space, edges, named));
     });
     out
 }
@@ -561,7 +562,7 @@ fn controls(at: (i32, i32)) -> Vec<(u8, u32, u32, u32, Steps)> {
             let own = Volume {
                 lo: WorldVec::new(at.0 as f32, at.1 as f32, 0.0),
                 hi: WorldVec::new(at.0 as f32 + 1.0, at.1 as f32 + 1.0, f32::from(top)),
-                solid: 0,
+                solid: None,
                 // A whole tile with a height is a body, and this walk reads
                 // geometry rather than facings — nothing here asks the mask.
                 edges: occlusion::Edges::ANY,
@@ -569,7 +570,7 @@ fn controls(at: (i32, i32)) -> Vec<(u8, u32, u32, u32, Steps)> {
             let elsewhere = Volume {
                 lo: WorldVec::new(own.lo.x + 100.0, own.lo.y + 100.0, own.lo.z),
                 hi: WorldVec::new(own.hi.x + 100.0, own.hi.y + 100.0, own.hi.z),
-                solid: 0,
+                solid: None,
                 edges: own.edges,
             };
             let (drawn, missed, steps) = overhang(&image, at, 0, std::slice::from_ref(&own));

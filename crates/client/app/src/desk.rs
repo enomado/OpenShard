@@ -323,6 +323,7 @@ impl<'de> Deserialize<'de> for ChatScale {
 /// `App::draw`'s chat block for where that split is made.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Chat {
     /// How big the classic face's glyphs draw — see [`ChatScale`].
     pub scale: ChatScale,
@@ -333,15 +334,6 @@ pub struct Chat {
     /// `0` is [`openshard_protocol::wire::Hue::NONE`] — the font's own ink,
     /// untinted.
     pub hue: u16,
-}
-
-impl Default for Chat {
-    fn default() -> Self {
-        Self {
-            scale: ChatScale::default(),
-            hue: 0,
-        }
-    }
 }
 
 /// Where the dev window sits inside the HUD, in egui's logical points.

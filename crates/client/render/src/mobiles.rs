@@ -310,7 +310,6 @@ fn drawn_layers<'a>(mobile: &'a Mobile) -> impl Iterator<Item = &'a EquipmentLay
     let alt_torso =
         openshard_uofiles::anim::is_female(mobile.body) || openshard_uofiles::anim::is_gargoyle(mobile.body);
     crate::paperdoll::world_ordered(&mobile.equipment, alt_torso, mobile.facing)
-        .into_iter()
         .filter_map(move |layer| mobile.equipment.iter().find(|item| item.layer == layer))
 }
 

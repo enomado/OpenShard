@@ -1925,7 +1925,7 @@ fn a_floor_spreads_across_its_tile_and_a_wall_stands_up_it() {
             occlusion::Edges::NONE,
         ),
         occlusion::Edges::NONE,
-        occlusion::SolidId::word(None),
+        None,
     )];
     let places = render_places(
         &device,
@@ -2223,7 +2223,7 @@ fn two_wall_tiles_in_a_row_name_one_continuous_surface() {
                 openshard_client_render::occlusion::Edges::SOUTH,
             ),
             openshard_client_render::occlusion::Edges::SOUTH,
-            occlusion::SolidId::word(None),
+            None,
         )
     };
     let boxes = [panel(300), panel(301)];
@@ -2370,7 +2370,7 @@ fn a_corner_s_pixel_carries_the_face_of_the_half_it_is_drawn_on() {
                 openshard_client_render::occlusion::edges_of(Some(Facing::One(face))),
             ),
             openshard_client_render::occlusion::edges_of(Some(Facing::One(face))),
-            occlusion::SolidId::word(None),
+            None,
         )
     });
     let places = render_places(
@@ -2766,13 +2766,13 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
         Volume {
             lo: WorldVec::new(300.0, 400.5, 0.0),
             hi: WorldVec::new(301.0, 401.0, 3.0),
-            solid: 7,
+            solid: Some(occlusion::SolidId::new(7)),
             edges: occlusion::Edges::ANY,
         },
         Volume {
             lo: WorldVec::new(300.0, 400.0, 0.0),
             hi: WorldVec::new(301.0, 400.5, 6.0),
-            solid: 11,
+            solid: Some(occlusion::SolidId::new(11)),
             edges: occlusion::Edges::ANY,
         },
         // And a lid, flat: `lo.z == hi.z`, which is what the grid stands for a
@@ -2785,7 +2785,7 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
         Volume {
             lo: WorldVec::new(300.0, 400.0, 9.0),
             hi: WorldVec::new(301.0, 401.0, 9.0),
-            solid: 13,
+            solid: Some(occlusion::SolidId::new(13)),
             edges: occlusion::Edges::NONE,
         },
     ];
@@ -2942,7 +2942,7 @@ fn a_sprite_pixel_meets_the_same_box_on_both_sides() {
             // normal above is held to.
             assert_eq!(
                 point[3],
-                gbuffer::pack_solid(volume.solid),
+                gbuffer::pack_solid(occlusion::SolidId::word(volume.solid)),
                 "({x}, {y}) is a point of box {which} and says it is a point of {}",
                 gbuffer::unpack_solid(point[3]),
             );
@@ -3041,13 +3041,13 @@ fn the_fringe_switch_draws_three_different_frames() {
         Volume {
             lo: WorldVec::new(300.0, 400.8, 0.0),
             hi: WorldVec::new(301.0, 401.0, 12.0),
-            solid: 7,
+            solid: Some(occlusion::SolidId::new(7)),
             edges: occlusion::Edges::SOUTH,
         },
         Volume {
             lo: WorldVec::new(300.0, 400.0, 0.0),
             hi: WorldVec::new(301.0, 401.0, 3.0),
-            solid: 11,
+            solid: Some(occlusion::SolidId::new(11)),
             edges: occlusion::Edges::ANY,
         },
     ];
@@ -3271,7 +3271,7 @@ fn a_sprite_fragment_is_a_point_of_the_primitive_it_names() {
                     Some(id) => grid.solid(id).space,
                     None => space,
                 };
-                boxes.push(Volume::of(&space, edges, SolidId::word(named)));
+                boxes.push(Volume::of(&space, edges, named));
             },
         );
         Range {

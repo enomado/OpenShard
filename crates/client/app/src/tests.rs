@@ -295,7 +295,11 @@ fn the_group_packed_is_the_group_the_crowd_is_playing() {
     let wanted = mobiles::needed_animations(&mobiles, &EquipConv::default());
     let (direction, _) = openshard_uofiles::anim::facing(mobiles[0].facing);
     assert!(
-        wanted.contains(&(Graphic(PLAYER), standing, direction)),
+        wanted.contains(&openshard_client_render::atlas::AnimationKey::new(
+            Graphic(PLAYER),
+            standing,
+            direction,
+        )),
         "the standing group has to be packed to be drawn: {wanted:?}"
     );
 }

@@ -10,7 +10,7 @@
 //! Ignored and gated on `OPENSHARD_CLIENT`: no client files live in this
 //! repository, ever.
 
-use openshard_client_render::gump::{GumpArt, GumpPixel};
+use openshard_client_render::gump::{GumpArt, GumpPixel, PictureIndex};
 use openshard_client_render::mobiles::EquipmentLayer;
 use openshard_client_render::paperdoll::{self, FEMALE_GUMP_OFFSET, MALE_GUMP_OFFSET, Wearer, Whose};
 use openshard_protocol::wire::{Graphic, Hue, Layer};
@@ -59,7 +59,7 @@ fn stack(doll: &paperdoll::Doll) -> Vec<openshard_client_render::gump::Picture> 
     doll.pictures
         .iter()
         .enumerate()
-        .filter(|(index, _)| *index != 0 && !doll.hits.contains_key(index))
+        .filter(|(index, _)| *index != 0 && !doll.hits.contains_key(&PictureIndex::new(*index)))
         .map(|(_, picture)| *picture)
         .collect()
 }
@@ -133,9 +133,9 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
         &equip_conv,
         &gumps,
     );
-    let last = doll.pictures.len() - 1;
+    let last = PictureIndex::new(doll.pictures.len() - 1);
     assert_eq!(
-        doll.pictures[last].graphic,
+        doll.pictures[last.raw()].graphic,
         GumpArt::Gump(backpack),
         "the backpack is drawn last, outside the order"
     );
@@ -168,7 +168,7 @@ fn every_button_on_a_frame_is_a_picture_the_client_ships() {
         let doll = paperdoll::window(None, whose, None, &equip_conv, &gumps, GumpPixel::new(0, 0));
         assert!(!doll.hits.is_empty(), "a frame has furniture on it: {whose:?}");
         for index in doll.hits.keys() {
-            let GumpArt::Gump(graphic) = doll.pictures[*index].graphic else {
+            let GumpArt::Gump(graphic) = doll.pictures[index.raw()].graphic else {
                 panic!("a paperdoll draws gump art and nothing else");
             };
             assert!(
@@ -189,7 +189,7 @@ fn every_button_on_a_frame_is_a_picture_the_client_ships() {
             GumpPixel::new(0, 0),
         );
         for index in pressed.hits.keys() {
-            let GumpArt::Gump(graphic) = pressed.pictures[*index].graphic else {
+            let GumpArt::Gump(graphic) = pressed.pictures[index.raw()].graphic else {
                 panic!("a paperdoll draws gump art and nothing else");
             };
             assert!(

@@ -91,8 +91,8 @@ fn main() {
         if footprint == facing::Footprint::WHOLE {
             whole += 1;
         }
-        across_x[usize::from(footprint.x.1 - footprint.x.0)] += 1;
-        across_y[usize::from(footprint.y.1 - footprint.y.0)] += 1;
+        across_x[usize::from(footprint.x.max - footprint.x.min)] += 1;
+        across_y[usize::from(footprint.y.max - footprint.y.min)] += 1;
     }
 
     let share = |part: u32, whole: u32| match whole {

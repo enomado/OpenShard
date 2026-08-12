@@ -42,6 +42,7 @@ use openshard_client_render::follow::Gaze;
 use openshard_client_render::mobiles::{EquipmentLayer, Mobile};
 use openshard_movement::{RUN_HOLD, WALK_HOLD};
 use openshard_protocol::direction::{Direction, Facing};
+use openshard_protocol::feedback::Animation;
 use openshard_protocol::mobile::Equipment;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
@@ -695,28 +696,25 @@ impl Crowd {
     }
 
     /// Play a server-selected classic body action until it finishes.
-    pub fn play(
-        &mut self,
-        who: Who,
-        group: u16,
-        frames: u16,
-        repeats: u16,
-        forward: bool,
-        repeat: bool,
-        delay: u8,
-    ) {
-        let Some(tracked) = self.tracked.get_mut(&who) else {
+    pub fn play(&mut self, animation: Animation) {
+        let Some(tracked) = self.tracked.get_mut(&Some(animation.serial)) else {
             return;
         };
-        let Ok(group) = u8::try_from(group) else { return };
+        let Ok(group) = u8::try_from(animation.action) else {
+            return;
+        };
         tracked.action = Some(ActionAnimation {
-            frames,
-            repeats,
-            forward,
-            repeat,
+            frames: animation.frame_count,
+            repeats: animation.repeat_count,
+            forward: animation.forward,
+            repeat: animation.repeat,
             // The classic packet uses zero for the client's normal mobile
             // animation cadence rather than for a one-millisecond interval.
-            delay: Duration::from_millis(if delay == 0 { 80 } else { u64::from(delay) }),
+            delay: Duration::from_millis(if animation.delay == 0 {
+                80
+            } else {
+                u64::from(animation.delay)
+            }),
             elapsed: Duration::ZERO,
         });
         tracked.change_to(group);

@@ -34,17 +34,7 @@ impl App {
             link::Update::World { view, body } => self.entered(*view, body, None),
             link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),
             link::Update::Prediction(body) => self.apply_prediction(body),
-            link::Update::Animation(animation) => {
-                self.world.presentation.crowd.play(
-                    Some(animation.serial),
-                    animation.action,
-                    animation.frame_count,
-                    animation.repeat_count,
-                    animation.forward,
-                    animation.repeat,
-                    animation.delay,
-                );
-            }
+            link::Update::Animation(animation) => self.world.presentation.crowd.play(animation),
             link::Update::Lost(reason) => {
                 eprintln!("disconnected: {reason}");
                 self.world.link = None;
