@@ -892,6 +892,9 @@ pub fn run<D: Dial + Send + 'static>(
             });
             steer
         },
+        route_cache: None,
+        terrain_cache: None,
+        occluder_cache: None,
         input: input::Input {
             aiming: false,
             ctrl_held: false,

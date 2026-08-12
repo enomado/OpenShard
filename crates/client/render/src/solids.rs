@@ -23,6 +23,11 @@
 //! 18 vertices and 18 outline points per solid — and it is measured rather than
 //! argued: see `tests/cost.rs`'s `solids` case.
 //!
+//! A stationary diagnostic view does not make the corners move.  Its assembled
+//! bytes therefore stay beside the renderer and are reused until the camera,
+//! viewport, visible solid list, or edge style changes.  The small uniform is
+//! still written each frame because the surface size can change independently.
+//!
 //! # Where it runs
 //!
 //! **After the blit**, on the surface, like [`Ring`](crate::outline::Ring) and
@@ -35,6 +40,7 @@
 use crate::blit::ViewportRect;
 use crate::camera::{Camera, RealPoint};
 use crate::solid::Solid;
+use std::sync::Arc;
 
 /// How much of the picture a face keeps under a solid.
 ///
@@ -143,6 +149,24 @@ pub struct SolidsRenderer {
     uniforms: wgpu::Buffer,
     vertices: wgpu::Buffer,
     capacity: u64,
+    /// CPU vertices last uploaded to [`Self::vertices`].
+    ///
+    /// The solids overlay often stays open over a stationary world while it is
+    /// inspected. Reprojecting thousands of corners and sending the same bytes
+    /// to the GPU every frame is then pure work, so the last complete answer is
+    /// retained until one of its inputs changes.
+    cached: Option<CachedVertices>,
+}
+
+#[derive(Debug)]
+struct CachedVertices {
+    camera: Camera,
+    rect: ViewportRect,
+    solids: Vec<(Solid, [f32; 3])>,
+    edges: bool,
+    bytes: Arc<[u8]>,
+    fill_bytes: usize,
+    drawn: usize,
 }
 
 impl SolidsRenderer {
@@ -264,6 +288,7 @@ impl SolidsRenderer {
             uniforms,
             vertices: new_vertex_buffer(device, INITIAL_VERTICES),
             capacity: INITIAL_VERTICES,
+            cached: None,
         }
     }
 
@@ -311,6 +336,30 @@ impl SolidsRenderer {
         solids: &[(Solid, [f32; 3])],
         style: Style,
     ) -> usize {
+        if let Some(cached) = self.cached.as_ref().filter(|cached| {
+            cached.camera == *camera
+                && cached.rect == frame.rect
+                && cached.solids == solids
+                && cached.edges == style.edges
+        }) {
+            let bytes = Arc::clone(&cached.bytes);
+            let fill_bytes = cached.fill_bytes;
+            let drawn = cached.drawn;
+            self.submit(
+                device,
+                queue,
+                encoder,
+                frame,
+                &bytes,
+                fill_bytes,
+                style.opaque,
+                false,
+            );
+            return drawn;
+        }
+        // Keep the caller's whole ordered list, not only the cropped subset:
+        // an off-screen solid becoming visible must invalidate the bytes too.
+        let source = solids.to_vec();
         // Off screen before a vertex is written. At the widest zoom most of the
         // grid is outside the viewport — the grid is grown by the widest pool's
         // reach, not cropped to the picture — and this is the difference between
@@ -354,8 +403,28 @@ impl SolidsRenderer {
                 }
             }
         }
-        self.submit(device, queue, encoder, frame, bytes, fill_bytes, style.opaque);
-        solids.len()
+        let drawn = solids.len();
+        let bytes: Arc<[u8]> = bytes.into();
+        self.cached = Some(CachedVertices {
+            camera: *camera,
+            rect: frame.rect,
+            solids: source,
+            edges: style.edges,
+            bytes: Arc::clone(&bytes),
+            fill_bytes,
+            drawn,
+        });
+        self.submit(
+            device,
+            queue,
+            encoder,
+            frame,
+            &bytes,
+            fill_bytes,
+            style.opaque,
+            true,
+        );
+        drawn
     }
 
     /// [`Self::render`], but with an explicit colour per *corner* of each face —
@@ -386,6 +455,9 @@ impl SolidsRenderer {
         solids: &[(Solid, [FaceColours; 3])],
         style: Style,
     ) -> usize {
+        // This path shares the vertex buffer but has a different vertex format
+        // payload, so the plain-colour cache cannot survive it.
+        self.cached = None;
         let showing: Vec<(Solid, [FaceColours; 3])> = solids
             .iter()
             .copied()
@@ -420,7 +492,16 @@ impl SolidsRenderer {
                 }
             }
         }
-        self.submit(device, queue, encoder, frame, bytes, fill_bytes, style.opaque);
+        self.submit(
+            device,
+            queue,
+            encoder,
+            frame,
+            &bytes,
+            fill_bytes,
+            style.opaque,
+            true,
+        );
         solids.len()
     }
 
@@ -435,21 +516,25 @@ impl SolidsRenderer {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         frame: Frame<'_>,
-        bytes: Vec<u8>,
+        bytes: &[u8],
         fill_bytes: usize,
         opaque: bool,
+        upload: bool,
     ) {
         if bytes.is_empty() {
             return;
         }
         let wanted = (bytes.len() / VERTEX_BYTES) as u64;
-        if wanted > self.capacity {
+        let resized = wanted > self.capacity;
+        if resized {
             // Doubling rather than the exact size: the camera moves every frame
             // and the count wobbles with it.
             self.capacity = wanted.next_power_of_two();
             self.vertices = new_vertex_buffer(device, self.capacity);
         }
-        queue.write_buffer(&self.vertices, 0, &bytes);
+        if upload || resized {
+            queue.write_buffer(&self.vertices, 0, bytes);
+        }
         let mut uniform_bytes = Vec::with_capacity(UNIFORM_BYTES as usize);
         for value in [frame.size.0 as f32, frame.size.1 as f32, 0.0, 0.0] {
             uniform_bytes.extend_from_slice(&value.to_le_bytes());

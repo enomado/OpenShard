@@ -23,12 +23,13 @@ use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
+use std::sync::Arc;
 
 use crate::app::App;
 use crate::crowd::Who;
 use crate::diagnostics::{
-    HealthBar, Height, Hud, Pick, PickedItem, PickedMobile, PickedTile, PriorityZ, Route, Selection,
-    TerrainOverlay, TileDepth,
+    HealthBar, Height, Hud, OccluderSurface, Pick, PickedItem, PickedMobile, PickedTile, PriorityZ, Route,
+    Selection, TerrainOverlay, TileDepth,
 };
 use crate::graphics::HighlightTarget;
 use crate::picking::SelectedIdentity;
@@ -423,6 +424,28 @@ impl App {
         TerrainOverlay { open, blocked }
     }
 
+    /// The terrain wash only changes when its view, the player's standing
+    /// height, or the world it is read from changes. Keep its points between
+    /// ordinary redraws: zoomed out, re-asking every tile is much dearer than
+    /// painting the already-known diamonds.
+    fn terrain_shown(&mut self, camera: Camera) -> Arc<TerrainOverlay> {
+        let from = self.world.presentation.player.at;
+        if let Some(cached) = self
+            .terrain_cache
+            .as_ref()
+            .filter(|cached| cached.camera == camera && cached.from == from)
+        {
+            return Arc::clone(&cached.overlay);
+        }
+        let overlay = Arc::new(self.terrain_overlay(camera));
+        self.terrain_cache = Some(crate::app::TerrainCache {
+            camera,
+            from,
+            overlay: Arc::clone(&overlay),
+        });
+        overlay
+    }
+
     /// The way to wherever the body was last told to go, as the two-coloured
     /// line the player is owed for a Ctrl-drag — or, with no destination and the
     /// terrain overlay switched on, the way that *would* be walked to the tile
@@ -435,24 +458,17 @@ impl App {
     /// written here for the drawing alone would be a second policy about the
     /// same question, which `docs/parity.md` is the standing argument against.
     ///
-    /// **One plan per frame, and only while there is something to draw.** The
-    /// walk plans on its own beat — at most once a step, by design, since a drag
-    /// restates the destination tens of times a second — so its stored route is
-    /// up to a step stale and is *cleared* the moment the destination moves.
-    /// Drawn from that, the line under a dragging cursor would blink out and
-    /// catch up a beat later, which is the opposite of what a preview is for.
-    /// The cost is one bounded [`find_path`] (two, where the way is barred)
-    /// while a destination is live, and nothing at all otherwise.
-    pub(crate) fn route_shown(&self, hover: Option<&PickedTile>) -> Option<Route> {
-        let guide = terrain(&self.resources);
-        let opened = cluttered_with_doors_open(&self.world, &self.resources);
-        let cluttered = cluttered(&self.world, &self.resources);
-        let ground = steer::Ground {
-            real: &cluttered,
-            through_doors: &opened,
-            guide: &guide,
-            coarse: self.resources.coarse.as_ref(),
-        };
+    /// **One plan per changed route, and only while there is something to
+    /// draw.** The walk plans on its own beat — at most once a step, by design,
+    /// since a drag restates the destination tens of times a second — so its
+    /// stored route is up to a step stale and is *cleared* the moment the
+    /// destination moves. Drawn from that, the line under a dragging cursor
+    /// would blink out and catch up a beat later, which is the opposite of what
+    /// a preview is for. The HUD therefore retains its last answer until its
+    /// start, destination, or world snapshot changes: a standing route costs
+    /// no A* searches per frame.
+    pub(crate) fn route_shown(&mut self, hover: Option<&PickedTile>) -> Option<Arc<Route>> {
+        let from = self.world.presentation.player.at;
         let goal = match self.steer.goal() {
             Some(tile) => tile,
             // No destination: the hover preview is the terrain overlay's own
@@ -463,39 +479,109 @@ impl App {
                 tile.at
             }
         };
-        let plan = steer::plan(ground, self.world.presentation.player.at, goal)?;
-        // Directions walked out into the tiles they land on. `step_allowed`
-        // because it is what corrects a step's `z` to the surface it lands on,
-        // which is the height the line is drawn at — and over each half's own
-        // ground, since the barred half is by construction made of steps the
-        // world as it stands refuses.
-        let walk_out = |terrain: &dyn openshard_movement::Terrain, from: Point, steps: Vec<Direction>| {
-            let mut at = from;
-            let mut tiles = Vec::with_capacity(steps.len());
-            for direction in steps {
-                let Some(next) = openshard_movement::step_allowed(terrain, at, direction) else {
-                    // The plan and the ground disagree, which is a thing worth
-                    // seeing rather than papering over: the line stops where
-                    // they parted company.
-                    break;
-                };
-                at = next;
-                tiles.push(at);
-            }
-            tiles
-        };
-        // The body's own tile leads the open half, so a route of one step is a
-        // line and not a dot. The barred half carries on from wherever the open
-        // one stopped — the body's tile when nothing at all is walkable, which
-        // is a body standing at the shut door.
-        let mut open = vec![self.world.presentation.player.at];
-        open.extend(walk_out(&cluttered, self.world.presentation.player.at, plan.open));
-        let from = *open.last().unwrap();
-        let mut barred = walk_out(&opened, from, plan.barred);
-        if !barred.is_empty() {
-            barred.insert(0, from);
+        if let Some(cached) = self
+            .route_cache
+            .as_ref()
+            .filter(|cached| cached.from == from && cached.goal == goal)
+        {
+            return cached.route.clone();
         }
-        Some(Route { open, barred })
+        let guide = terrain(&self.resources);
+        let opened = cluttered_with_doors_open(&self.world, &self.resources);
+        let cluttered = cluttered(&self.world, &self.resources);
+        let ground = steer::Ground {
+            real: &cluttered,
+            through_doors: &opened,
+            guide: &guide,
+            coarse: self.resources.coarse.as_ref(),
+        };
+        let route = steer::plan(ground, from, goal).map(|plan| {
+            // Directions walked out into the tiles they land on. `step_allowed`
+            // because it is what corrects a step's `z` to the surface it lands on,
+            // which is the height the line is drawn at — and over each half's own
+            // ground, since the barred half is by construction made of steps the
+            // world as it stands refuses.
+            let walk_out = |terrain: &dyn openshard_movement::Terrain, from: Point, steps: Vec<Direction>| {
+                let mut at = from;
+                let mut tiles = Vec::with_capacity(steps.len());
+                for direction in steps {
+                    let Some(next) = openshard_movement::step_allowed(terrain, at, direction) else {
+                        // The plan and the ground disagree, which is a thing worth
+                        // seeing rather than papering over: the line stops where
+                        // they parted company.
+                        break;
+                    };
+                    at = next;
+                    tiles.push(at);
+                }
+                tiles
+            };
+            // The body's own tile leads the open half, so a route of one step is a
+            // line and not a dot. The barred half carries on from wherever the open
+            // one stopped — the body's tile when nothing at all is walkable, which
+            // is a body standing at the shut door.
+            let mut open = vec![from];
+            open.extend(walk_out(&cluttered, from, plan.open));
+            let from = *open.last().unwrap();
+            let mut barred = walk_out(&opened, from, plan.barred);
+            if !barred.is_empty() {
+                barred.insert(0, from);
+            }
+            Arc::new(Route { open, barred })
+        });
+        self.route_cache = Some(crate::app::RouteCache {
+            from,
+            goal,
+            route: route.clone(),
+        });
+        route
+    }
+
+    /// The occluder wireframe is a second consumer of the frame's grid, but
+    /// egui needs its shapes before the renderer has assembled that frame. Its
+    /// source can still be retained while the grid's exact inputs are stable.
+    fn occluders_shown(&mut self, camera: Camera, cutaway: &Cutaway) -> Arc<[OccluderSurface]> {
+        let bounds = light::lit_tiles(&camera, &self.tuning());
+        let atlas_revision = self
+            .window
+            .as_ref()
+            .map(|window| window.atlases.statics.revision());
+        if let Some(cached) = self.occluder_cache.as_ref().filter(|cached| {
+            cached.bounds == bounds && cached.cutaway == *cutaway && cached.atlas_revision == atlas_revision
+        }) {
+            return Arc::clone(&cached.surfaces);
+        }
+        let occlusion = occlusion::collect(
+            &self.resources.map,
+            &self.world.presentation.items,
+            bounds,
+            &self.resources.tiledata,
+            cutaway,
+            self.window.as_ref().map(|window| &window.atlases.statics),
+        );
+        let bounds = occlusion.bounds();
+        let mut surfaces = Vec::new();
+        for y in bounds.min_y..=bounds.max_y {
+            for x in bounds.min_x..=bounds.max_x {
+                surfaces.extend(occlusion.solids_at(x, y).map(|solid| OccluderSurface {
+                    x,
+                    y,
+                    solid: *solid,
+                }));
+            }
+        }
+        // The painter has no depth buffer. Preserve the grid's own back-to-front
+        // order once with the cached surface list rather than sorting the same
+        // thousand boxes for every egui redraw.
+        surfaces.sort_by_key(|surface| (surface.x + surface.y, surface.solid.bottom(), surface.solid.top()));
+        let surfaces: Arc<[OccluderSurface]> = surfaces.into();
+        self.occluder_cache = Some(crate::app::OccluderCache {
+            bounds,
+            cutaway: *cutaway,
+            atlas_revision,
+            surfaces: Arc::clone(&surfaces),
+        });
+        surfaces
     }
 
     /// Do what the HUD asked for on the frame before this one.
@@ -623,7 +709,7 @@ impl App {
     /// and a grid built from a second cutaway would draw boxes for the storey
     /// this frame took away.
     pub(crate) fn hud(
-        &self,
+        &mut self,
         camera: Camera,
         pick: &Pick,
         cutaway: &Cutaway,
@@ -659,7 +745,7 @@ impl App {
             },
             highlight: self.graphics.highlight,
             highlight_style: self.graphics.highlight_style,
-            terrain: self.graphics.show_terrain.then(|| self.terrain_overlay(camera)),
+            terrain: self.graphics.show_terrain.then(|| self.terrain_shown(camera)),
             route: self.route_shown(pick.tile.as_ref()),
             show_occluders: self.graphics.show_occluders,
             show_solids: self.graphics.show_solids,
@@ -678,18 +764,10 @@ impl App {
             // by the widest pool's reach, and a box drawn over a rectangle the
             // shader did not walk would be a picture of this overlay's own
             // bounds rather than of the lighting's.
-            occluders: self.graphics.show_occluders.then(|| {
-                occlusion::collect(
-                    &self.resources.map,
-                    &self.world.presentation.items,
-                    light::lit_tiles(&camera, &self.tuning()),
-                    &self.resources.tiledata,
-                    cutaway,
-                    // The same atlas the frame's own grid is built from, or the
-                    // wireframe would draw boxes the shader does not have.
-                    self.window.as_ref().map(|window| &window.atlases.statics),
-                )
-            }),
+            occluders: self
+                .graphics
+                .show_occluders
+                .then(|| self.occluders_shown(camera, cutaway)),
             pick: pick.clone(),
             selected: self
                 .picking

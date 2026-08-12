@@ -4,6 +4,8 @@
 //! not depend on egui: a panel, a frame dump, or a future remote inspector can
 //! all consume the same answer without the query layer depending on its view.
 
+use std::sync::Arc;
+
 use openshard_client_render::camera::ViewPixel;
 use openshard_client_render::facing::Prism;
 use openshard_client_render::follow::Rig;
@@ -95,6 +97,14 @@ pub struct TerrainOverlay {
     pub blocked: Vec<openshard_protocol::world::Point>,
 }
 
+/// One occlusion surface in the painter order the wireframe needs.
+#[derive(Clone, Copy)]
+pub struct OccluderSurface {
+    pub x: i32,
+    pub y: i32,
+    pub solid: openshard_client_render::occlusion::Solid,
+}
+
 /// A planned route, split at the first obstacle the path cannot cross.
 pub struct Route {
     pub open: Vec<openshard_protocol::world::Point>,
@@ -153,14 +163,14 @@ pub struct Hud {
     pub health_bars: Vec<HealthBar>,
     pub draw: openshard_client_render::frame::Draw,
     pub show_terrain: bool,
-    pub terrain: Option<TerrainOverlay>,
-    pub route: Option<Route>,
+    pub terrain: Option<Arc<TerrainOverlay>>,
+    pub route: Option<Arc<Route>>,
     pub show_occluders: bool,
     pub show_solids: bool,
     pub solids_only: bool,
     pub solids_opaque: bool,
     pub solid_cut: Cut,
     pub solids: (usize, usize),
-    pub occluders: Option<openshard_client_render::occlusion::Occlusion>,
+    pub occluders: Option<Arc<[OccluderSurface]>>,
     pub goal: Option<PickedTile>,
 }

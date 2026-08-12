@@ -16,15 +16,21 @@
 //! The split here is *where the code that touches a field lives*, not *which
 //! struct the field is on*.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::bench::{Scope, Script};
+use openshard_client_render::camera::{Camera, TileBounds};
 use openshard_client_render::control::Control;
+use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::mobiles;
+use openshard_movement::Tile;
 use openshard_protocol::direction::Facing;
+use openshard_protocol::world::Point;
 
 use crate::chat::Chat;
+use crate::diagnostics::{OccluderSurface, Route, TerrainOverlay};
 use crate::window::Screen;
 use crate::{
     GLIDE_INTERVAL, desk, frames, graphics, input, picking, replay, resources, shell, steer, windows, world,
@@ -75,6 +81,17 @@ pub(crate) struct App {
     /// speedhack, and a mouse held over the ground reports a move a pixel. One
     /// clock paces all of them. See `steer.rs`.
     pub(crate) steer: steer::Steering,
+    /// The last route assembled for the development HUD.
+    ///
+    /// A path search is considerably more expensive than drawing its line,
+    /// especially when zooming out.  The cache is keyed by the two inputs that
+    /// change as the body walks, and is cleared whenever a fresh world view
+    /// changes the terrain it was planned over.
+    pub(crate) route_cache: Option<RouteCache>,
+    /// The terrain wash for an unchanged world and camera.
+    pub(crate) terrain_cache: Option<TerrainCache>,
+    /// The HUD's separate occlusion grid for an unchanged world/camera view.
+    pub(crate) occluder_cache: Option<OccluderCache>,
     /// What the window system and the mouse have last said — see
     /// [`input::Input`].
     pub(crate) input: input::Input,
@@ -154,6 +171,30 @@ pub(crate) struct App {
     pub(crate) scripts: Vec<Script>,
     /// The one being walked in the window, while it is.
     pub(crate) replay: Option<replay::Replay>,
+}
+
+/// A route snapshot and the world positions that make it valid.
+pub(crate) struct RouteCache {
+    pub(crate) from: Point,
+    pub(crate) goal: Tile,
+    pub(crate) route: Option<Arc<Route>>,
+}
+
+/// A terrain wash is independent of time; rebuilding it while the camera is
+/// still only repeats per-tile walkability queries.
+pub(crate) struct TerrainCache {
+    pub(crate) camera: Camera,
+    pub(crate) from: Point,
+    pub(crate) overlay: Arc<TerrainOverlay>,
+}
+
+/// The wireframe grid is only a different rendering of the same static
+/// occlusion data while its bounds, cutaway and atlas geometry stay unchanged.
+pub(crate) struct OccluderCache {
+    pub(crate) bounds: TileBounds,
+    pub(crate) cutaway: Cutaway,
+    pub(crate) atlas_revision: Option<u64>,
+    pub(crate) surfaces: Arc<[OccluderSurface]>,
 }
 
 impl App {

@@ -1,11 +1,11 @@
-//! A topology-derived, single-level navigation graph.
+//! A bounded, single-level navigation graph.
 //!
-//! Unlike a cluster hierarchy, this graph has no ruler imposed on the map.
-//! Its regions come from the static terrain's merged walkable row runs;
-//! walls and water create portals, an open field does not manufacture any.
+//! Static terrain is represented by 32×32 regions.  Obstacles inside a region
+//! stay local to live refinement; only crossings between region components
+//! become abstract choices.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::time::Instant;
 
 use openshard_protocol::direction::Direction;
@@ -18,6 +18,8 @@ const WIDE_PORTAL: usize = 6;
 /// whole facet has only a few thousand regions. Obstacles inside one are live
 /// terrain, not graph boundaries, so a forest does not emit a node per tree.
 const REGION_SIZE: u32 = 32;
+const NO_COMPONENT: u16 = 0;
+const NO_NEIGHBOR: u16 = u16::MAX;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct NavigationGraph {
@@ -132,7 +134,8 @@ impl NavigationGraph {
             started.elapsed().as_secs_f64(),
             graph.regions.len()
         );
-        graph.portals(terrain, &points);
+        let components = graph.component_labels(terrain, &points);
+        graph.portals(terrain, &points, &components);
         eprintln!(
             "navigation graph +{:.3}s: {} portal nodes found; calculating intra-region routes",
             started.elapsed().as_secs_f64(),
@@ -218,61 +221,175 @@ impl NavigationGraph {
         }
     }
 
-    fn portals(&mut self, terrain: &dyn Terrain, points: &[Option<Point>]) {
-        for x in 0..(self.width as u16).saturating_sub(1) {
-            let mut y = 0;
-            while y < self.height as u16 {
-                let Some(pair) = self.vertical_pair(terrain, points, x, y) else {
-                    y += 1;
-                    continue;
-                };
-                let first = self.region_at(pair.0).unwrap();
-                let second = self.region_at(pair.1).unwrap();
-                if first == second {
-                    y += 1;
-                    continue;
-                }
-                let mut run = vec![pair];
-                y += 1;
-                while y < self.height as u16 {
-                    let Some(next) = self.vertical_pair(terrain, points, x, y) else {
-                        break;
+    /// Mark strongly connected static components in each region.  These are
+    /// bake-time scratch data: `u16` is enough because a region has at most
+    /// 1,024 cells, and the labels never enter the artifact.
+    fn component_labels(&self, terrain: &dyn Terrain, points: &[Option<Point>]) -> Vec<u16> {
+        let mut labels = vec![NO_COMPONENT; points.len()];
+        for &region in &self.regions {
+            let width = usize::from(region.width);
+            let cells = width * usize::from(region.height);
+            let mut outgoing = vec![[NO_NEIGHBOR; Direction::ALL.len()]; cells];
+            let mut outgoing_len = vec![0_u8; cells];
+            let mut incoming = vec![[NO_NEIGHBOR; Direction::ALL.len()]; cells];
+            let mut incoming_len = vec![0_u8; cells];
+            let local_index =
+                |point: Point| usize::from(point.y - region.top) * width + usize::from(point.x - region.left);
+
+            for y in region.top..region.top + region.height {
+                for x in region.left..region.left + region.width {
+                    let Some(from) = points[self.index(x, y)] else {
+                        continue;
                     };
-                    if self.region_at(next.0) != Some(first) || self.region_at(next.1) != Some(second) {
-                        break;
+                    let from_index = local_index(from);
+                    for direction in Direction::ALL {
+                        let Some(next) = step_allowed(terrain, from, direction) else {
+                            continue;
+                        };
+                        if !region.contains(next) || points[self.index(next.x, next.y)].is_none() {
+                            continue;
+                        }
+                        let next_index = local_index(next);
+                        let out_at = usize::from(outgoing_len[from_index]);
+                        outgoing[from_index][out_at] = next_index as u16;
+                        outgoing_len[from_index] += 1;
+                        let in_at = usize::from(incoming_len[next_index]);
+                        incoming[next_index][in_at] = from_index as u16;
+                        incoming_len[next_index] += 1;
                     }
-                    run.push(next);
-                    y += 1;
                 }
-                self.add_portal(first, second, &run);
+            }
+
+            // Kosaraju's algorithm keeps directed height transitions honest.
+            let mut seen = vec![false; cells];
+            let mut finish = Vec::with_capacity(cells);
+            for root in 0..cells {
+                let point = Point::new(
+                    region.left + (root % width) as u16,
+                    region.top + (root / width) as u16,
+                    0,
+                );
+                if seen[root] || points[self.index(point.x, point.y)].is_none() {
+                    continue;
+                }
+                seen[root] = true;
+                let mut stack = vec![(root, 0_u8)];
+                while let Some((at, next)) = stack.last_mut() {
+                    if usize::from(*next) < usize::from(outgoing_len[*at]) {
+                        let neighbor = outgoing[*at][usize::from(*next)] as usize;
+                        *next += 1;
+                        if !seen[neighbor] {
+                            seen[neighbor] = true;
+                            stack.push((neighbor, 0));
+                        }
+                    } else {
+                        finish.push(*at);
+                        stack.pop();
+                    }
+                }
+            }
+
+            let mut component = NO_COMPONENT;
+            for root in finish.into_iter().rev() {
+                if labels[self.index(
+                    region.left + (root % width) as u16,
+                    region.top + (root / width) as u16,
+                )] != NO_COMPONENT
+                {
+                    continue;
+                }
+                component = component
+                    .checked_add(1)
+                    .expect("a region has at most 1,024 components");
+                let mut stack = vec![root];
+                while let Some(at) = stack.pop() {
+                    let x = region.left + (at % width) as u16;
+                    let y = region.top + (at / width) as u16;
+                    let label = &mut labels[self.index(x, y)];
+                    if *label != NO_COMPONENT {
+                        continue;
+                    }
+                    *label = component;
+                    for &neighbor in &incoming[at][..usize::from(incoming_len[at])] {
+                        let neighbor = usize::from(neighbor);
+                        let x = region.left + (neighbor % width) as u16;
+                        let y = region.top + (neighbor / width) as u16;
+                        if labels[self.index(x, y)] == NO_COMPONENT {
+                            stack.push(neighbor);
+                        }
+                    }
+                }
             }
         }
-        for y in 0..(self.height as u16).saturating_sub(1) {
-            let mut x = 0;
-            while x < self.width as u16 {
-                let Some(pair) = self.horizontal_pair(terrain, points, x, y) else {
-                    x += 1;
+        labels
+    }
+
+    /// Adjacent raw crossings share a logical entrance when they connect the
+    /// same strong components.  This lets an isolated tree on a border remain
+    /// a local obstacle instead of multiplying portal nodes.
+    fn portals(&mut self, terrain: &dyn Terrain, points: &[Option<Point>], components: &[u16]) {
+        for x in
+            ((REGION_SIZE - 1) as u16..(self.width as u16).saturating_sub(1)).step_by(REGION_SIZE as usize)
+        {
+            let mut entrances = BTreeMap::<(usize, u16, usize, u16), Vec<(Point, Point)>>::new();
+            for y in 0..self.height as u16 {
+                let Some(pair) = self.vertical_pair(terrain, points, x, y) else {
                     continue;
                 };
-                let first = self.region_at(pair.0).unwrap();
-                let second = self.region_at(pair.1).unwrap();
-                if first == second {
-                    x += 1;
+                let first = self
+                    .region_at(pair.0)
+                    .expect("a valid crossing starts in a region");
+                let second = self.region_at(pair.1).expect("a valid crossing ends in a region");
+                entrances
+                    .entry((
+                        first.0,
+                        components[self.index(pair.0.x, pair.0.y)],
+                        second.0,
+                        components[self.index(pair.1.x, pair.1.y)],
+                    ))
+                    .or_default()
+                    .push(pair);
+            }
+            for crossings in entrances.into_values() {
+                let first = self
+                    .region_at(crossings[0].0)
+                    .expect("a valid crossing starts in a region");
+                let second = self
+                    .region_at(crossings[0].1)
+                    .expect("a valid crossing ends in a region");
+                self.add_portal(first, second, &crossings);
+            }
+        }
+        for y in
+            ((REGION_SIZE - 1) as u16..(self.height as u16).saturating_sub(1)).step_by(REGION_SIZE as usize)
+        {
+            let mut entrances = BTreeMap::<(usize, u16, usize, u16), Vec<(Point, Point)>>::new();
+            for x in 0..self.width as u16 {
+                let Some(pair) = self.horizontal_pair(terrain, points, x, y) else {
                     continue;
-                }
-                let mut run = vec![pair];
-                x += 1;
-                while x < self.width as u16 {
-                    let Some(next) = self.horizontal_pair(terrain, points, x, y) else {
-                        break;
-                    };
-                    if self.region_at(next.0) != Some(first) || self.region_at(next.1) != Some(second) {
-                        break;
-                    }
-                    run.push(next);
-                    x += 1;
-                }
-                self.add_portal(first, second, &run);
+                };
+                let first = self
+                    .region_at(pair.0)
+                    .expect("a valid crossing starts in a region");
+                let second = self.region_at(pair.1).expect("a valid crossing ends in a region");
+                entrances
+                    .entry((
+                        first.0,
+                        components[self.index(pair.0.x, pair.0.y)],
+                        second.0,
+                        components[self.index(pair.1.x, pair.1.y)],
+                    ))
+                    .or_default()
+                    .push(pair);
+            }
+            for crossings in entrances.into_values() {
+                let first = self
+                    .region_at(crossings[0].0)
+                    .expect("a valid crossing starts in a region");
+                let second = self
+                    .region_at(crossings[0].1)
+                    .expect("a valid crossing ends in a region");
+                self.add_portal(first, second, &crossings);
             }
         }
     }
@@ -745,6 +862,62 @@ mod tests {
         let to = Point::new(126, 126, 0);
         let route = find_long_path(&terrain, &terrain, &graph, from, to, 600).unwrap();
         assert_eq!(end(&terrain, from, &route), to);
+    }
+
+    #[test]
+    fn border_trees_share_one_logical_entrance() {
+        let mut terrain = Grid::open(64, 32);
+        // Every remaining crossing is isolated by trees on both sides of the
+        // border, but the two region interiors are still each one component.
+        for y in (1..32).step_by(2) {
+            terrain.block(31, y);
+            terrain.block(32, y);
+        }
+        let graph = NavigationGraph::build(&terrain, 64, 32).unwrap();
+        // Two maximally separated representatives make four directed nodes;
+        // raw contiguous runs would have made 32.
+        assert_eq!(graph.nodes.len(), 4);
+        let from = Point::new(2, 2, 0);
+        let to = Point::new(61, 29, 0);
+        let route = find_long_path(&terrain, &terrain, &graph, from, to, 600).unwrap();
+        assert_eq!(end(&terrain, from, &route), to);
+    }
+
+    #[test]
+    fn component_pairs_keep_separate_gates() {
+        let mut terrain = Grid::open(64, 32);
+        // This wall divides only the left region.  Both halves have broad
+        // crossings to the single component in the right region, so they must
+        // remain two logical entrances rather than being merged by proximity.
+        for x in 0..32 {
+            terrain.block(x, 16);
+        }
+        let graph = NavigationGraph::build(&terrain, 64, 32).unwrap();
+        assert_eq!(graph.nodes.len(), 8);
+    }
+
+    #[derive(Clone)]
+    struct OneWayGrid(Grid);
+
+    impl Terrain for OneWayGrid {
+        fn can_step(&self, from: Point, to: Point) -> Option<Point> {
+            self.0.can_step(from, to).filter(|_| {
+                // The left region has a south-only height transition across
+                // this row.  It splits strong components without making the
+                // open region on the other side of the border one-way.
+                !(from.x < 32 && from.y >= 16 && to.y < 16)
+            })
+        }
+    }
+
+    #[test]
+    fn one_way_region_transitions_do_not_merge_component_pairs() {
+        let terrain = OneWayGrid(Grid::open(64, 32));
+        let graph = NavigationGraph::build(&terrain, 64, 32).unwrap();
+        // The top and bottom crossings touch different strong components in
+        // the left region, despite being connected when movement is treated
+        // as undirected.
+        assert_eq!(graph.nodes.len(), 8);
     }
 
     proptest! {

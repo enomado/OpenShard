@@ -907,9 +907,9 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Requ
         Some(occluders) => {
             let mut total = 0usize;
             let mut drawn = 0usize;
-            for (_, _, solid) in solids_of(occluders) {
+            for surface in occluders.iter() {
                 total += 1;
-                if hud.solid_cut.shows(solid) {
+                if hud.solid_cut.shows(&surface.solid) {
                     drawn += 1;
                 }
             }
@@ -2220,9 +2220,20 @@ fn draw_terrain(
     // are the weakest values the two are still tellable apart at.
     let open = washed(STANDABLE, 14);
     let blocked = washed(BLOCKED, 30);
+    let clip = painter.clip_rect();
     for (tiles, fill) in [(&terrain.open, open), (&terrain.blocked, blocked)] {
         for &point in tiles {
             let corners = tile_corners(painter, camera, point, viewport_origin);
+            let bounds = corners.iter().fold(egui::Rect::NOTHING, |rect, point| {
+                rect.union(egui::Rect::from_pos(*point))
+            });
+            // `visible_tiles` is deliberately an over-cover: it has no terrain
+            // height yet, so it includes a wide safety margin. Egui would clip
+            // these diamonds eventually, but avoiding the shape entirely saves
+            // an allocation and tessellation for every off-screen tile.
+            if !clip.intersects(bounds) {
+                continue;
+            }
             painter.add(egui::Shape::convex_polygon(corners, fill, egui::Stroke::NONE));
         }
     }
@@ -2279,16 +2290,6 @@ fn draw_route(painter: &egui::Painter, camera: &Camera, route: &Route, viewport_
 /// edge a panel stands on — the whole of decision 3 — was not in the picture at
 /// all. Every gap this view is opened to look for is a gap between two of those
 /// things, and the merge is exactly what closes them on screen.
-fn solids_of(
-    occluders: &openshard_client_render::occlusion::Occlusion,
-) -> impl Iterator<Item = (i32, i32, &openshard_client_render::occlusion::Solid)> + '_ {
-    let bounds = occluders.bounds();
-    (bounds.min_y..=bounds.max_y).flat_map(move |y| {
-        (bounds.min_x..=bounds.max_x)
-            .flat_map(move |x| occluders.solids_at(x, y).map(move |solid| (x, y, solid)))
-    })
-}
-
 /// The occlusion grid, drawn as the **solid** it is.
 ///
 /// `docs/lighting.md`, step 14, and it is an instrument rather than a picture:
@@ -2331,7 +2332,7 @@ fn solids_of(
 fn draw_occluders(
     painter: &egui::Painter,
     camera: &Camera,
-    occluders: &openshard_client_render::occlusion::Occlusion,
+    occluders: &[crate::diagnostics::OccluderSurface],
     cut: Cut,
     viewport_origin: egui::Pos2,
 ) {
@@ -2339,14 +2340,11 @@ fn draw_occluders(
     use openshard_client_render::solid::Side;
 
     let clip = painter.clip_rect();
-    // Back to front. Collected rather than drawn as they come, because a solid
-    // needs an order and `surfaces_of` walks the grid in rows: a row of wall
-    // drawn left to right paints its near end behind its far one.
-    let mut standing: Vec<(i32, i32, &openshard_client_render::occlusion::Solid)> =
-        solids_of(occluders).filter(|(_, _, s)| cut.shows(s)).collect();
-    standing.sort_by_key(|(x, y, solid)| (x + y, solid.bottom(), solid.top()));
-
-    for (x, y, solid) in standing {
+    // Already back-to-front from `App::occluders_shown`. The grid only changes
+    // when that cache is refreshed, so sorting again every redraw is work that
+    // cannot change this picture.
+    for surface in occluders.iter().filter(|surface| cut.shows(&surface.solid)) {
+        let (x, y, solid) = (surface.x, surface.y, &surface.solid);
         // The grid is grown past the map's own corner by the widest pool's
         // reach — see `light::lit_tiles` — so a tile of it can be off the map
         // entirely. Skipped rather than clamped, for `Occlusion::add`'s reason:

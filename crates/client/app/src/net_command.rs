@@ -149,6 +149,12 @@ impl App {
     /// patched: the view is the record of what arrived, and anything kept in
     /// step with it by hand would be a second record that could disagree.
     pub(crate) fn entered(&mut self, view: WorldView, body: link::Body, previous_latest: Option<Heard>) {
+        // The route HUD is a picture of this exact world snapshot.  A new
+        // view can move an obstacle without moving the player or its goal, so
+        // its cached answer must not outlive the terrain it was planned over.
+        self.route_cache = None;
+        self.terrain_cache = None;
+        self.occluder_cache = None;
         self.world.prediction.apply(body);
         // The facet is chosen at startup and `0x1B` names only its size, so a
         // shard serving a different one draws this client the wrong ground with
