@@ -622,9 +622,27 @@ pub fn pick(
     equip_conv: &EquipConv,
     cursor: RealPixel,
 ) -> Option<MobileIndex> {
+    pick_iter(mobiles.iter(), camera, atlas, cutaway, equip_conv, cursor)
+}
+
+/// Pick from borrowed mobile views without materialising a second owned list.
+///
+/// The application keeps `(Who, Mobile)` pairs so it can update animation
+/// clocks in place. Picking only reads the mobile, and cloning every equipment
+/// list just to adapt that pair list to [`pick`] was a needless frame-sized
+/// allocation.
+#[must_use]
+pub fn pick_iter<'a>(
+    mobiles: impl Iterator<Item = &'a Mobile>,
+    camera: &Camera,
+    atlas: &AnimAtlas,
+    cutaway: &Cutaway,
+    equip_conv: &EquipConv,
+    cursor: RealPixel,
+) -> Option<MobileIndex> {
     let in_view = camera.to_view(camera.pick(cursor));
     let mut hit: Option<(depth::Order, MobileIndex)> = None;
-    for (index, mobile) in mobiles.iter().enumerate() {
+    for (index, mobile) in mobiles.enumerate() {
         if !cutaway.shows_mobile(mobile.at.z) {
             continue;
         }

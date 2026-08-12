@@ -7,6 +7,8 @@
 //! keeps this file apart from `ui_command.rs`: everything here answers to a
 //! packet, and everything there answers to a key or a click.
 
+use std::time::Instant;
+
 use openshard_client_net::view::{Heard, WorldView};
 use openshard_client_render::control::Follow;
 use openshard_client_render::items::GroundItem;
@@ -20,6 +22,41 @@ use crate::world::cluttered;
 use crate::{clutter, crowd, link};
 
 impl App {
+    /// Reduce one cross-thread update at the event-loop boundary.
+    pub(crate) fn on_update(&mut self, update: link::Update) -> bool {
+        let now = Instant::now();
+        self.world
+            .crowd
+            .advance(now.saturating_duration_since(self.last_advance));
+        self.last_advance = now;
+        match update {
+            link::Update::World { view, body } => self.entered(*view, body, None),
+            link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),
+            link::Update::Prediction(body) => self.apply_prediction(body),
+            link::Update::Animation(animation) => {
+                self.world.crowd.play(
+                    Some(animation.serial),
+                    animation.action,
+                    animation.frame_count,
+                    animation.repeat_count,
+                    animation.forward,
+                    animation.repeat,
+                    animation.delay,
+                );
+            }
+            link::Update::Lost(reason) => {
+                eprintln!("disconnected: {reason}");
+                self.world.link = None;
+                return false;
+            }
+        }
+        let soon = now + crate::GLIDE_INTERVAL;
+        if self.world.crowd.anyone_gliding() && self.next_tick > soon {
+            self.next_tick = soon;
+        }
+        true
+    }
+
     /// Apply a local UI mutation on the same thread that owns `WorldView`.
     pub(crate) fn apply_close_window(&mut self, target: link::CloseTarget) {
         let Some(view) = self.world.view.as_mut() else {

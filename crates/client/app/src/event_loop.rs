@@ -19,7 +19,7 @@ use crate::app::App;
 use crate::picking::SelectedIdentity;
 use crate::presentation::frame_dump_root;
 use crate::world::{cluttered, cluttered_with_doors_open};
-use crate::{DOUBLE_CLICK, GLIDE_INTERVAL, PAGE_PIXELS, desk, keys, link, shell, steer};
+use crate::{DOUBLE_CLICK, PAGE_PIXELS, desk, keys, link, shell, steer};
 
 impl ApplicationHandler<link::Update> for App {
     /// The shard thread had something to say.
@@ -34,45 +34,8 @@ impl ApplicationHandler<link::Update> for App {
         // the crossing *length*: the walk oracle in `dst.rs` caught a tile after
         // a turn taking 416ms instead of 400, which is a body a frame behind
         // itself and then yanked forward.
-        let now = Instant::now();
-        self.world
-            .crowd
-            .advance(now.saturating_duration_since(self.last_advance));
-        self.last_advance = now;
-        match update {
-            link::Update::World { view, body } => self.entered(*view, body, None),
-            link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),
-            link::Update::Prediction(body) => self.apply_prediction(body),
-            link::Update::Animation(animation) => {
-                self.world.crowd.play(
-                    Some(animation.serial),
-                    animation.action,
-                    animation.frame_count,
-                    animation.repeat_count,
-                    animation.forward,
-                    animation.repeat,
-                    animation.delay,
-                );
-            }
-            // The window stays open: whatever is on screen is still the last
-            // thing the server said, and closing it would take the reason with
-            // it. The map viewer is what is left, which is a fair description
-            // of a client that has lost its shard.
-            link::Update::Lost(reason) => {
-                eprintln!("disconnected: {reason}");
-                self.world.link = None;
-                return;
-            }
-        }
-        // A step that arrives while nobody was moving finds the animation clock
-        // armed for the *standing* rate, up to a whole `FRAME_DELAY` away — so
-        // the first 80ms of the glide would be drawn frozen at its start, once
-        // per tile. Pulling the tick forward is what makes a walk continuous
-        // from its first frame; it is a `min` rather than an assignment because
-        // a clock already running at the glide rate is the earlier of the two.
-        let soon = now + GLIDE_INTERVAL;
-        if self.world.crowd.anyone_gliding() && self.next_tick > soon {
-            self.next_tick = soon;
+        if !self.on_update(update) {
+            return;
         }
         if let Some(window) = self.window.as_ref() {
             window.window.request_redraw();

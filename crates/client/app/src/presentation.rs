@@ -344,8 +344,8 @@ impl App {
             .as_ref()
             .map(|window| self.drawn_now(&window.atlases.mobiles));
         let on_mobile = match (owns_pointer, self.window.as_ref(), &drawn_mobiles) {
-            (true, Some(window), Some(drawn)) => mobiles::pick(
-                &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
+            (true, Some(window), Some(drawn)) => mobiles::pick_iter(
+                drawn.iter().map(|(_, mobile)| mobile),
                 &camera,
                 &window.atlases.mobiles,
                 &cutaway,

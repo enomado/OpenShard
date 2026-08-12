@@ -287,8 +287,8 @@ impl App {
         // shard (`DoubleClick::interpret`), which is why nothing here says
         // "paperdoll" on the way out.
         let drawn = self.drawn_now(&window.atlases.mobiles);
-        let on_mobile = mobiles::pick(
-            &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
+        let on_mobile = mobiles::pick_iter(
+            drawn.iter().map(|(_, mobile)| mobile),
             &camera,
             &window.atlases.mobiles,
             &cutaway,
