@@ -1,4 +1,5 @@
 use super::*;
+use openshard_protocol::gump::GumpId;
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::world::{
     Aggression, DamageType, PhysicalResistance, PoisonLevel, RangedRange, Sight,
@@ -414,7 +415,7 @@ fn op_control(state: &mut OpState, serial: u32) {
 #[serde(rename_all = "camelCase")]
 struct GumpSpec {
     serial: u32,
-    gump_id: u32,
+    gump_id: GumpId,
     #[serde(default)]
     x: u16,
     #[serde(default)]
@@ -669,10 +670,10 @@ fn op_close_gump(state: &mut OpState, serial: u32, gump_id: u32) {
     let Some(serial) = Serial::new(serial) else {
         return;
     };
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::CloseGump { serial, gump_id });
+    state.borrow_mut::<Host>().outbox.push(Command::CloseGump {
+        serial,
+        gump_id: GumpId(gump_id),
+    });
 }
 
 /// Send a player a private system line: `op_message(serial, text)`. The server

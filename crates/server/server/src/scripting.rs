@@ -260,7 +260,7 @@ impl Scripts {
                 // the same unwrapping a SQL bind or the wire itself does.
                 events.push(ScriptEvent::GumpAnswered {
                     serial: e.serial,
-                    gump_id: e.gump_id.0,
+                    gump_id: openshard_protocol::gump::GumpId(e.gump_id.0),
                     button: e.button.0,
                     switches: e.switches.iter().map(|switch| switch.0).collect(),
                     text: e.text_entries.clone(),
@@ -709,7 +709,7 @@ fn into_world(command: ScriptCommand) -> Option<Command> {
             lines,
         } => Command::ShowGump {
             serial: script_serial(serial)?,
-            gump_id: openshard_protocol::gump::GumpId(gump_id),
+            gump_id,
             at: openshard_protocol::gump::GumpPoint::new(i32::from(x), i32::from(y)),
             layout,
             lines,
@@ -736,7 +736,7 @@ fn into_world(command: ScriptCommand) -> Option<Command> {
         },
         ScriptCommand::CloseGump { serial, gump_id } => Command::CloseGump {
             serial: script_serial(serial)?,
-            gump_id: openshard_protocol::gump::GumpId(gump_id),
+            gump_id,
         },
         ScriptCommand::Message { serial, text } => Command::Message {
             serial: script_serial(serial)?,

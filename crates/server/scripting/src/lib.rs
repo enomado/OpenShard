@@ -31,6 +31,7 @@
 
 mod engine;
 
+use openshard_protocol::gump::GumpId;
 use openshard_protocol::mobile::Notoriety;
 pub use openshard_protocol::serial::Serial;
 use openshard_protocol::world::{
@@ -266,7 +267,7 @@ pub enum Event {
         /// Who answered, by wire identity.
         serial: Serial,
         /// Which dialog — the `gump_id` the pack sent.
-        gump_id: u32,
+        gump_id: GumpId,
         /// The button pressed; `0` is the close box.
         button: u32,
         /// The ids of the checkboxes and radio buttons left *on*.
@@ -630,7 +631,7 @@ pub enum Command {
         /// Who sees it.
         serial: Serial,
         /// The gump id the reply is keyed on — the pack picks it and matches it.
-        gump_id: u32,
+        gump_id: GumpId,
         /// Window x.
         x: u16,
         /// Window y.
@@ -688,7 +689,7 @@ pub enum Command {
         /// Whose client.
         serial: Serial,
         /// Which dialog, by the id it was opened under.
-        gump_id: u32,
+        gump_id: GumpId,
     },
     /// Send a player a private system line — the server talking to one person.
     ///

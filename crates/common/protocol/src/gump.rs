@@ -28,7 +28,8 @@ use crate::wire::{ClilocId, Graphic, Hue};
 /// Server-chosen in every direction — the client only ever repeats one — so a
 /// `GumpId` in hand means *this shard named this dialog*. What arrives off the
 /// wire is a [`RawGumpId`] until a handler says it is one of its own.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
 pub struct GumpId(pub u32);
 
 /// A dialog id exactly as a client's `0xB1` echoed it.

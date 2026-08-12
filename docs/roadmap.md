@@ -2821,6 +2821,11 @@ full `cargo check`/`test`/`clippy`/`fmt` of the crates touched:
   below.~~ Fixed: `LightIdx`. The sun's own `Reach` deliberately carries one
   past the end of `Lighting::lights`, which is exactly the kind of fact a
   bare integer does not say and a named type's doc comment does.
+- ~~**Scripting discarded `GumpId` at the JS seam.**~~ Fixed: the scripting
+  event, `ShowGump`/`CloseGump` commands and serde `GumpSpec` carry the
+  protocol `GumpId`; its transparent serde representation stays the same
+  JSON number, while the direct `op_close_gump` fast argument remains raw and
+  wraps at the operation boundary.
 
 Still open, ranked by how strong the case is:
 
