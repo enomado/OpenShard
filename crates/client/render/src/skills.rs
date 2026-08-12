@@ -42,7 +42,7 @@ use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::skillgrp::{GroupId, SkillGroups};
 use openshard_uofiles::skills::{Skill, SkillId, Skills};
 
-use crate::gump::{GumpArt, GumpPixel, Picture, Scissor};
+use crate::gump::{GumpArt, GumpPixel, Picture, PictureIndex, Scissor};
 use crate::text::GumpLabel;
 
 /// One line of a skill's standing, as much of it as this window draws.
@@ -223,7 +223,7 @@ pub struct Sheet {
     /// The art, in painter's order: the frame, then the rows, then the bar.
     pub pictures: Vec<Picture>,
     /// Which of those pictures means something, by its index.
-    pub hits: BTreeMap<usize, Hit>,
+    pub hits: BTreeMap<PictureIndex, Hit>,
     /// Everything written on it.
     pub lines: Vec<Line>,
     /// The box the rows are cut to.
@@ -618,7 +618,9 @@ fn heading(
     sheet
         .pictures
         .push(Picture::plain(GumpArt::Gump(arrow), corner).inside(sheet.viewport));
-    sheet.hits.insert(sheet.pictures.len() - 1, Hit::Heading(group));
+    sheet
+        .hits
+        .insert(PictureIndex::new(sheet.pictures.len() - 1), Hit::Heading(group));
     sheet.lines.push(Line {
         at: at.offset(GumpPixel::new(VIEWPORT_AT.x + HEADING_NAME_X, y)),
         text: name.to_owned(),
@@ -664,7 +666,9 @@ fn skill_row(
             )
             .inside(sheet.viewport),
         );
-        sheet.hits.insert(sheet.pictures.len() - 1, Hit::Use(id));
+        sheet
+            .hits
+            .insert(PictureIndex::new(sheet.pictures.len() - 1), Hit::Use(id));
     }
     sheet.lines.push(Line {
         at: at.offset(GumpPixel::new(VIEWPORT_AT.x + NAME_X, y)),
@@ -692,7 +696,9 @@ fn skill_row(
         )
         .inside(sheet.viewport),
     );
-    sheet.hits.insert(sheet.pictures.len() - 1, Hit::Lock(id));
+    sheet
+        .hits
+        .insert(PictureIndex::new(sheet.pictures.len() - 1), Hit::Lock(id));
 }
 
 /// The bar: two arrows, a track of three pieces, and the thumb on it.
@@ -725,15 +731,19 @@ fn scrollbar(sheet: &mut Sheet, at: GumpPixel, offset: i32, content: i32) {
     // mean the same thing. Inserted before the arrows and the thumb, which are
     // drawn over it and picked first.
     for index in sheet.pictures.len() - 3..sheet.pictures.len() {
-        sheet.hits.insert(index, Hit::Track);
+        sheet.hits.insert(PictureIndex::new(index), Hit::Track);
     }
     sheet.pictures.push(Picture::plain(GumpArt::Gump(BAR_UP), top));
-    sheet.hits.insert(sheet.pictures.len() - 1, Hit::Up);
+    sheet
+        .hits
+        .insert(PictureIndex::new(sheet.pictures.len() - 1), Hit::Up);
     sheet.pictures.push(Picture::plain(
         GumpArt::Gump(BAR_DOWN),
         top.offset(GumpPixel::new(0, VIEWPORT_HEIGHT - ARROW_HEIGHT)),
     ));
-    sheet.hits.insert(sheet.pictures.len() - 1, Hit::Down);
+    sheet
+        .hits
+        .insert(PictureIndex::new(sheet.pictures.len() - 1), Hit::Down);
     let hidden = content - VIEWPORT_HEIGHT;
     if hidden <= 0 {
         return;
@@ -747,7 +757,9 @@ fn scrollbar(sheet: &mut Sheet, at: GumpPixel, offset: i32, content: i32) {
             ARROW_HEIGHT + thumb,
         )),
     ));
-    sheet.hits.insert(sheet.pictures.len() - 1, Hit::Thumb);
+    sheet
+        .hits
+        .insert(PictureIndex::new(sheet.pictures.len() - 1), Hit::Thumb);
 }
 
 /// How far the thumb can travel: the bar less its two arrows and its own

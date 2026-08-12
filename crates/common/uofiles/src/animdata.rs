@@ -30,6 +30,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use openshard_protocol::wire::Graphic;
+
 /// How many bytes one graphic's entry takes.
 const ENTRY: usize = 68;
 
@@ -166,8 +168,8 @@ impl AnimData {
     /// this graphic, the entry is zeroed — which is 98% of them — or its count is
     /// past the 64 offsets an entry holds, which is a corrupt entry and not a
     /// cycle anybody can play. A caller draws the base graphic in all three.
-    pub fn sequence(&self, graphic: u16) -> Option<Sequence> {
-        let index = usize::from(graphic);
+    pub fn sequence(&self, graphic: Graphic) -> Option<Sequence> {
+        let index = usize::from(graphic.0);
         let at = index * ENTRY + HEADER * ((index / GROUP) + 1);
         let raw = self.bytes.get(at..at + ENTRY)?;
 
@@ -256,7 +258,7 @@ mod tests {
         assert_eq!(data.graphics(), 24);
         for graphic in 0..24u16 {
             let count = (usize::from(graphic) % 7) as u8;
-            match data.sequence(graphic) {
+            match data.sequence(Graphic(graphic)) {
                 None => assert_eq!(count, 0, "{graphic} has {count} offsets and was not read"),
                 Some(sequence) => {
                     assert_eq!(sequence.count(), count, "{graphic}");
@@ -276,12 +278,12 @@ mod tests {
     fn a_graphic_past_the_end_and_an_absent_file_both_animate_nothing() {
         let data = AnimData::parse(&synthetic(1));
         assert_eq!(data.graphics(), 8);
-        assert_eq!(data.sequence(8), None);
-        assert_eq!(data.sequence(u16::MAX), None);
+        assert_eq!(data.sequence(Graphic(8)), None);
+        assert_eq!(data.sequence(Graphic(u16::MAX)), None);
 
         let empty = AnimData::default();
         assert_eq!(empty.graphics(), 0);
-        assert_eq!(empty.sequence(0), None);
+        assert_eq!(empty.sequence(Graphic(0)), None);
     }
 
     /// A group that stops part way through is worth however many whole entries
@@ -294,7 +296,11 @@ mod tests {
         bytes.extend_from_slice(&[0u8; ENTRY * 2 + 3]);
         let data = AnimData::parse(&bytes);
         assert_eq!(data.graphics(), 18, "sixteen whole, then two of a third group");
-        assert_eq!(data.sequence(18), None, "and the one cut short is not read");
+        assert_eq!(
+            data.sequence(Graphic(18)),
+            None,
+            "and the one cut short is not read"
+        );
     }
 
     /// The real file, and the two things a fixture cannot say: that the entry
@@ -314,10 +320,10 @@ mod tests {
         let data = AnimData::load(&dir).expect("animdata.mul");
         assert!(data.graphics() > 0x4000, "only {} entries", data.graphics());
 
-        let fire = data.sequence(0x006D).expect("0x006D animates");
+        let fire = data.sequence(Graphic(0x006D)).expect("0x006D animates");
         assert_eq!(fire.count(), 6);
         assert_eq!(fire.offsets().collect::<Vec<_>>(), [-3, -2, -1, 0, 1, 2]);
-        let next = data.sequence(0x006E).expect("0x006E animates");
+        let next = data.sequence(Graphic(0x006E)).expect("0x006E animates");
         assert_eq!(next.offsets().collect::<Vec<_>>(), [-2, -1, 0, 1, -4, -3]);
 
         // Every graphic in every cycle is a graphic: an offset that took a
@@ -325,7 +331,7 @@ mod tests {
         // wrong place, and it would draw a fire as somebody's floor tile.
         let mut animated = 0;
         for graphic in 0..u16::MAX {
-            let Some(sequence) = data.sequence(graphic) else {
+            let Some(sequence) = data.sequence(Graphic(graphic)) else {
                 continue;
             };
             animated += 1;
@@ -375,7 +381,7 @@ mod tests {
         let tiledata = TileData::load(dir.join("tiledata.mul")).expect("tiledata.mul");
 
         let described: Vec<bool> = (0..=u16::MAX)
-            .map(|graphic| data.sequence(graphic).is_some())
+            .map(|graphic| data.sequence(Graphic(graphic)).is_some())
             .collect();
         let total = described.iter().filter(|yes| **yes).count();
         assert!(total > 1_000, "only {total} entries in animdata.mul");

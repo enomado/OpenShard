@@ -643,6 +643,7 @@ pub fn run<D: Dial + Send + 'static>(
     // from it: plain data, read by both and written by neither.
     let map = Arc::new(map);
     let tiledata = Arc::new(tiledata);
+    let update_proxy = event_loop.create_proxy();
     let link = shard.map(|(dial, plan)| {
         eprintln!("logging in as {}", plan.account.0);
         link::connect(
@@ -651,7 +652,9 @@ pub fn run<D: Dial + Send + 'static>(
             VERSION,
             Arc::clone(&map),
             Arc::clone(&tiledata),
-            event_loop.create_proxy(),
+            move |update| {
+                let _ = update_proxy.send_event(update);
+            },
         )
     });
 

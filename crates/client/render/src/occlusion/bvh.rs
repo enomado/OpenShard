@@ -81,6 +81,25 @@ impl NodeIdx {
     }
 }
 
+/// A position in [`Bvh::order`], never an identity of a primitive or a node.
+///
+/// The distinction matters because `order` is a permutation: its positions are
+/// rearranged while the [`SolidId`] values stored in it keep their meaning.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct OrderIndex(u32);
+
+impl OrderIndex {
+    /// The position at the start of a leaf's run.
+    pub fn new(at: u32) -> Self {
+        Self(at)
+    }
+
+    /// The position for slice indexing and the packed GPU representation.
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
+
 /// The primitives one leaf holds: a run of [`Bvh::order`], never empty.
 ///
 /// A run and not a list of indices because the build is free to permute the
@@ -89,7 +108,7 @@ impl NodeIdx {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Leaf {
     /// Where the run starts in [`Bvh::order`].
-    pub first: u32,
+    pub first: OrderIndex,
     /// How many primitives it holds — `1..=`[`LEAF_PRIMITIVES`].
     pub count: u8,
 }
@@ -211,7 +230,7 @@ impl Bvh {
 
     /// The primitives a leaf names, in the build's own permuted order.
     pub fn primitives(&self, leaf: Leaf) -> &[SolidId] {
-        let from = leaf.first as usize;
+        let from = leaf.first.raw() as usize;
         &self.order[from..from + usize::from(leaf.count)]
     }
 
@@ -296,7 +315,7 @@ fn split(nodes: &mut Vec<Node>, order: &mut [SolidId], range: std::ops::Range<us
     match range.len() <= LEAF_PRIMITIVES {
         true => {
             nodes[at].leaf = Some(Leaf {
-                first: range.start as u32,
+                first: OrderIndex::new(range.start as u32),
                 count: range.len() as u8,
             });
         }
@@ -385,7 +404,7 @@ mod tests {
         assert_eq!(
             root.leaf,
             Some(Leaf {
-                first: 0,
+                first: OrderIndex::new(0),
                 count: LEAF_PRIMITIVES as u8
             })
         );

@@ -43,6 +43,21 @@ use std::fmt;
 use openshard_protocol::gump::layout::Element;
 use openshard_protocol::gump::{GUMP_WHITE, GumpButton, RawButtonId, RawSwitchId};
 use openshard_protocol::speech::Font;
+
+/// A position in a gump's `pictures` list, never a button id or a list index
+/// from another window kind.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct PictureIndex(usize);
+
+impl PictureIndex {
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+}
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_uofiles::art::{Art, ArtError};
 use openshard_uofiles::gumpart::{GumpError, Gumps};
@@ -628,7 +643,7 @@ pub fn collect(pictures: &[Picture], atlas: &GumpAtlas) -> Vec<SpriteQuad> {
 /// (see [`collect`]), and picking something invisible is the one answer that is
 /// certainly wrong. A tiled picture is tested against the box it fills, with the
 /// texel taken modulo the art's own size, which is where the repetition puts it.
-pub fn pick(pictures: &[Picture], cursor: GumpPixel, atlas: &GumpAtlas) -> Option<usize> {
+pub fn pick(pictures: &[Picture], cursor: GumpPixel, atlas: &GumpAtlas) -> Option<PictureIndex> {
     pictures.iter().enumerate().rev().find_map(|(index, picture)| {
         // Outside the box that drew it is outside the picture, whatever its own
         // corner says: half a row is on the screen and the other half is not.
@@ -647,7 +662,7 @@ pub fn pick(pictures: &[Picture], cursor: GumpPixel, atlas: &GumpAtlas) -> Optio
         }
         atlas
             .opaque_at(picture.graphic, (x % art_width) as u16, (y % art_height) as u16)
-            .then_some(index)
+            .then_some(PictureIndex::new(index))
     })
 }
 
@@ -900,7 +915,7 @@ pub struct Window {
     /// test came from two different walks is exactly what
     /// [`crate::container::pick`]'s docs refuse. A background's nine pieces, a
     /// `{ gumppic }` and a caption are simply not in it.
-    pub hits: BTreeMap<usize, Hit>,
+    pub hits: BTreeMap<PictureIndex, Hit>,
     /// The boxes the player can type into, which are not pictures at all — see
     /// [`Field`].
     pub fields: Vec<Field>,
@@ -994,7 +1009,9 @@ pub fn window(
                 drawn
                     .pictures
                     .push(Picture::plain(art(face), at.offset(GumpPixel::new(*x, *y))));
-                drawn.hits.insert(drawn.pictures.len() - 1, hit);
+                drawn
+                    .hits
+                    .insert(PictureIndex::new(drawn.pictures.len() - 1), hit);
             }
             Element::Check(switch) | Element::Radio(switch) => {
                 let set = if on.contains(&switch.id) {
@@ -1010,7 +1027,9 @@ pub fn window(
                     Element::Radio(_) => Hit::Radio(switch.id),
                     _ => Hit::Check(switch.id),
                 };
-                drawn.hits.insert(drawn.pictures.len() - 1, hit);
+                drawn
+                    .hits
+                    .insert(PictureIndex::new(drawn.pictures.len() - 1), hit);
             }
             // A static from the world's art, laid on a window: an item in a
             // container, a reagent on a shopping list, the picture beside a
@@ -1571,7 +1590,7 @@ mod tests {
         let row = [Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(100, 140)).inside(scissor)];
         assert_eq!(
             pick(&row, GumpPixel::new(105, 145), &atlas),
-            Some(0),
+            Some(PictureIndex::new(0)),
             "the part inside the box is the row"
         );
         assert_eq!(
@@ -1638,10 +1657,13 @@ mod tests {
             Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(100, 100)),
             Picture::plain(GumpArt::Gump(Graphic(2)), GumpPixel::new(120, 120)),
         ];
-        assert_eq!(pick(&window, GumpPixel::new(125, 125), &atlas), Some(1));
+        assert_eq!(
+            pick(&window, GumpPixel::new(125, 125), &atlas),
+            Some(PictureIndex::new(1))
+        );
         assert_eq!(
             pick(&window, GumpPixel::new(105, 105), &atlas),
-            Some(0),
+            Some(PictureIndex::new(0)),
             "clear of the second picture, still inside the first"
         );
     }
@@ -1655,12 +1677,15 @@ mod tests {
         let atlas = atlas_of([(Graphic(1), framed(40, 10..30)), (Graphic(2), block(4, 4))]);
         let frame = Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 0));
         assert_eq!(pick(&[frame], GumpPixel::new(20, 20), &atlas), None);
-        assert_eq!(pick(&[frame], GumpPixel::new(5, 5), &atlas), Some(0));
+        assert_eq!(
+            pick(&[frame], GumpPixel::new(5, 5), &atlas),
+            Some(PictureIndex::new(0))
+        );
 
         let doll = Picture::plain(GumpArt::Gump(Graphic(2)), GumpPixel::new(18, 18));
         assert_eq!(
             pick(&[frame, doll], GumpPixel::new(20, 20), &atlas),
-            Some(1),
+            Some(PictureIndex::new(1)),
             "the picture drawn into the hole is what is there"
         );
     }
@@ -1680,7 +1705,10 @@ mod tests {
     fn a_tiled_picture_is_picked_across_its_whole_box() {
         let atlas = atlas_of([(Graphic(1), block(10, 10))]);
         let strip = [Picture::plain(GumpArt::Gump(Graphic(1)), GumpPixel::new(0, 0)).tiled(25, 10)];
-        assert_eq!(pick(&strip, GumpPixel::new(22, 5), &atlas), Some(0));
+        assert_eq!(
+            pick(&strip, GumpPixel::new(22, 5), &atlas),
+            Some(PictureIndex::new(0))
+        );
         assert_eq!(
             pick(&strip, GumpPixel::new(26, 5), &atlas),
             None,
@@ -1941,8 +1969,11 @@ mod tests {
             11,
             "a background's nine pieces and the two buttons"
         );
-        assert_eq!(showing.hits.get(&9), Some(&Hit::Reply(RawButtonId(13))));
-        assert_eq!(showing.hits.get(&10), Some(&Hit::Page(2)));
+        assert_eq!(
+            showing.hits.get(&PictureIndex::new(9)),
+            Some(&Hit::Reply(RawButtonId(13)))
+        );
+        assert_eq!(showing.hits.get(&PictureIndex::new(10)), Some(&Hit::Page(2)));
         assert_eq!(
             showing.hits.len(),
             2,
@@ -1966,8 +1997,14 @@ mod tests {
         };
         let elements = vec![Element::Check(switch(1)), Element::Radio(switch(2))];
         let showing = window(&elements, GumpPixel::default(), 0, &BTreeSet::new(), None, &atlas);
-        assert_eq!(showing.hits.get(&0), Some(&Hit::Check(RawSwitchId(1))));
-        assert_eq!(showing.hits.get(&1), Some(&Hit::Radio(RawSwitchId(2))));
+        assert_eq!(
+            showing.hits.get(&PictureIndex::new(0)),
+            Some(&Hit::Check(RawSwitchId(1)))
+        );
+        assert_eq!(
+            showing.hits.get(&PictureIndex::new(1)),
+            Some(&Hit::Radio(RawSwitchId(2)))
+        );
     }
 
     /// A layout's text hue is one *less* than the wire hue it means, and reading

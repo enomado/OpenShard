@@ -297,6 +297,17 @@ struct Tracked {
     /// and a clock carried across a group change starts the new animation
     /// wherever the old one happened to be.
     clock: AnimationClock,
+    action: Option<ActionAnimation>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActionAnimation {
+    frames: u16,
+    repeats: u16,
+    forward: bool,
+    repeat: bool,
+    delay: Duration,
+    elapsed: Duration,
 }
 
 /// Who a tracked body is.
@@ -396,6 +407,19 @@ impl Crowd {
         self.now += dt;
         let (now, ease) = (self.now, self.ease);
         for tracked in self.tracked.values_mut() {
+            let action_done = if let Some(action) = tracked.action.as_mut() {
+                action.elapsed += dt;
+                let ticks = action.elapsed.as_millis() / action.delay.as_millis().max(1);
+                !action.repeat
+                    && ticks >= u128::from(action.frames.max(1)) * u128::from(action.repeats.max(1))
+            } else {
+                false
+            };
+            if action_done {
+                tracked.action = None;
+                let standing = tracked.standing_group();
+                tracked.change_to(standing);
+            }
             // Only the part of the span the body was actually covering ground
             // in — see [`Tracked::mid_stride`]. Not a whole-span test against
             // either end: a frame that straddles the moment the crossing ended
@@ -451,6 +475,7 @@ impl Crowd {
             // in from off screen.
             drawn: Gaze::on(at),
             clock: AnimationClock::default(),
+            action: None,
         });
 
         // A step is a *position* change. A turn on the spot is not one — the
@@ -535,7 +560,7 @@ impl Crowd {
         // on the next step, rather than snapping to a stand with its feet still
         // moving.
         tracked.war = war;
-        if tracked.step.is_none() {
+        if tracked.step.is_none() && tracked.action.is_none() {
             let standing = tracked.standing_group();
             tracked.change_to(standing);
         }
@@ -600,6 +625,7 @@ impl Crowd {
             // in from off screen.
             drawn: Gaze::on(at),
             clock: AnimationClock::default(),
+            action: None,
         });
         tracked.at = at;
         tracked.facing = facing.direction;
@@ -654,9 +680,46 @@ impl Crowd {
     /// by [`Crowd::see`]: the count belongs to the atlas and the atlas belongs
     /// to the frame being drawn.
     pub fn frame_for(&self, who: Who, frame_count: u16) -> u16 {
-        self.tracked
-            .get(&who)
-            .map_or(0, |tracked| tracked.clock.frame(frame_count))
+        self.tracked.get(&who).map_or(0, |tracked| match tracked.action {
+            Some(action) => {
+                let ticks = action.elapsed.as_millis() / action.delay.as_millis().max(1);
+                let frame = (ticks % u128::from(action.frames.max(1))) as u16;
+                if action.forward {
+                    frame
+                } else {
+                    action.frames.saturating_sub(1).saturating_sub(frame)
+                }
+            }
+            None => tracked.clock.frame(frame_count),
+        })
+    }
+
+    /// Play a server-selected classic body action until it finishes.
+    pub fn play(
+        &mut self,
+        who: Who,
+        group: u16,
+        frames: u16,
+        repeats: u16,
+        forward: bool,
+        repeat: bool,
+        delay: u8,
+    ) {
+        let Some(tracked) = self.tracked.get_mut(&who) else {
+            return;
+        };
+        let Ok(group) = u8::try_from(group) else { return };
+        tracked.action = Some(ActionAnimation {
+            frames,
+            repeats,
+            forward,
+            repeat,
+            // The classic packet uses zero for the client's normal mobile
+            // animation cadence rather than for a one-millisecond interval.
+            delay: Duration::from_millis(if delay == 0 { 80 } else { u64::from(delay) }),
+            elapsed: Duration::ZERO,
+        });
+        tracked.change_to(group);
     }
 
     /// Where this body is drawn now, in the sub-pixel form the sprite and the

@@ -16,6 +16,23 @@
 use crate::rng::Stream;
 use crate::vector::Vec3;
 
+/// An index into the lights supplied to a render, never a pixel coordinate or
+/// an index into another per-frame buffer.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct LightIdx(usize);
+
+impl LightIdx {
+    /// Name an entry in the caller's light list.
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    /// The slice index used at the image-reading seam.
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+}
+
 /// The shape of the thing emitting.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Emitter {

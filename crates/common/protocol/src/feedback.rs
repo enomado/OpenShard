@@ -34,7 +34,7 @@
 //! would be a guess with no caller to check it against.
 
 use crate::codec::PacketWriter;
-use crate::packet::{EncodePacket, PacketLength};
+use crate::packet::{DecodePacket, EncodePacket, PacketLength};
 use crate::serial::{Serial, raw_or_none};
 use crate::version::ClientVersion;
 use crate::wire::{Graphic, Hue, SoundId};
@@ -110,6 +110,28 @@ impl EncodePacket for Animation {
         out.bool(!self.forward); // the wire field is "reverse"
         out.bool(self.repeat);
         out.u8(self.delay);
+    }
+}
+
+impl DecodePacket for Animation {
+    const ID: u8 = 0x6E;
+
+    fn decode_body(
+        reader: &mut crate::codec::PacketReader<'_>,
+        _version: ClientVersion,
+    ) -> Result<Self, crate::error::DecodeError> {
+        Ok(Self {
+            serial: Serial::new(reader.u32()?).ok_or(crate::error::DecodeError::UnknownValue {
+                field: "animation serial",
+                value: 0,
+            })?,
+            action: reader.u16()?,
+            frame_count: reader.u16()?,
+            repeat_count: reader.u16()?,
+            forward: !reader.bool()?,
+            repeat: reader.bool()?,
+            delay: reader.u8()?,
+        })
     }
 }
 

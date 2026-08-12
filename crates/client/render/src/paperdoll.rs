@@ -63,7 +63,7 @@ use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::gumpart::Gumps;
 use openshard_uofiles::tiledata::AnimId;
 
-use crate::gump::{GumpArt, GumpPixel, Picture};
+use crate::gump::{GumpArt, GumpPixel, Picture, PictureIndex};
 use crate::mobiles::EquipmentLayer;
 use crate::text::GumpLabel;
 
@@ -260,7 +260,7 @@ pub struct Doll {
     /// The art, in painter's order: the frame, its furniture, then the doll.
     pub pictures: Vec<Picture>,
     /// Which of those pictures is a button, by its index.
-    pub hits: BTreeMap<usize, DollButton>,
+    pub hits: BTreeMap<PictureIndex, DollButton>,
 }
 
 /// Where the body picture sits inside the frame.
@@ -814,7 +814,7 @@ pub fn window(
         backpack_index = Some(pictures.len() - 1);
     }
     if let Some(index) = backpack_index {
-        doll.hits.insert(index, DollButton::Backpack);
+        doll.hits.insert(PictureIndex::new(index), DollButton::Backpack);
     }
     doll
 }
@@ -842,7 +842,8 @@ fn furniture(doll: &mut Doll, whose: Whose, held: Option<DollButton>, at: GumpPi
             GumpArt::Gump(Graphic(face)),
             at.offset(GumpPixel::new(BUTTON_X, BUTTON_TOP + BUTTON_STEP * row)),
         ));
-        doll.hits.insert(doll.pictures.len() - 1, which);
+        doll.hits
+            .insert(PictureIndex::new(doll.pictures.len() - 1), which);
     };
 
     if let Whose::Own { war } = whose {
@@ -865,7 +866,8 @@ fn furniture(doll: &mut Doll, whose: Whose, held: Option<DollButton>, at: GumpPi
             GumpArt::Gump(SCROLL),
             at.offset(GumpPixel::new(x, SCROLL_AT.y)),
         ));
-        doll.hits.insert(doll.pictures.len() - 1, which);
+        doll.hits
+            .insert(PictureIndex::new(doll.pictures.len() - 1), which);
     };
     scroll(doll, DollButton::Profile, SCROLL_AT.x);
     if matches!(whose, Whose::Own { .. }) {
@@ -874,7 +876,8 @@ fn furniture(doll: &mut Doll, whose: Whose, held: Option<DollButton>, at: GumpPi
 
     doll.pictures
         .push(Picture::plain(GumpArt::Gump(VIRTUE), at.offset(VIRTUE_AT)));
-    doll.hits.insert(doll.pictures.len() - 1, DollButton::Virtue);
+    doll.hits
+        .insert(PictureIndex::new(doll.pictures.len() - 1), DollButton::Virtue);
 }
 
 /// Everything a paperdoll needs packed before it is drawn.

@@ -416,9 +416,12 @@ impl App {
             .and_then(SelectedIdentity::as_mobile)
             .filter(|_| self.graphics.drawing.mobiles)
             .and_then(|who| {
-                drawn_mobiles
-                    .as_ref()
-                    .and_then(|drawn| drawn.iter().position(|(candidate, _)| *candidate == who))
+                drawn_mobiles.as_ref().and_then(|drawn| {
+                    drawn
+                        .iter()
+                        .position(|(candidate, _)| *candidate == who)
+                        .map(openshard_client_render::mobiles::MobileIndex::new)
+                })
             });
         let held_item = self
             .picking
@@ -429,6 +432,7 @@ impl App {
                     .item_serials
                     .iter()
                     .position(|candidate| *candidate == serial)
+                    .map(openshard_client_render::items::ItemIndex::new)
             });
         FrameFacts {
             watched,
@@ -472,10 +476,10 @@ impl App {
             facts
                 .drawn_mobiles
                 .as_ref()
-                .and_then(|drawn| drawn.get(index))
+                .and_then(|drawn| drawn.get(index.raw()))
                 .map(|(who, _)| *who)
         });
-        self.picking.on_item = facts.on_item.map(|index| self.world.item_serials[index]);
+        self.picking.on_item = facts.on_item.map(|index| self.world.item_serials[index.raw()]);
         let FrameFacts {
             watched,
             cutaway,

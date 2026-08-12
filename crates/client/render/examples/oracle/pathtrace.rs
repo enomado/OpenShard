@@ -759,7 +759,7 @@ pub fn penumbra(
             continue;
         }
         let (x, y) = ((pixel as u32) % width, (pixel as u32) / width);
-        let visibility = traced.visibility(x, y, 0);
+        let visibility = traced.visibility(x, y, pt_light::LightIdx::new(0));
         if !visibility.within_reach {
             continue;
         }
@@ -780,7 +780,7 @@ pub fn penumbra(
         };
         let difference = f64::from(grey) / 255.0 - visibility.reached;
         let apart = difference.abs();
-        let own = (second.visibility(x, y, 0).reached - visibility.reached).abs();
+        let own = (second.visibility(x, y, pt_light::LightIdx::new(0)).reached - visibility.reached).abs();
         found.compared += 1;
         total += apart;
         signed += difference;
@@ -1189,7 +1189,7 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
         }
         let frame_lit = Shade::of([picture[pixel * 4], picture[pixel * 4 + 1], picture[pixel * 4 + 2]]).lit();
         let (x, y) = ((pixel as u32) % width, (pixel as u32) / width);
-        let visibility = engine_model.visibility(x, y, 0);
+        let visibility = engine_model.visibility(x, y, pt_light::LightIdx::new(0));
         let lit = |seen: pt_trace::Visibility| seen.within_reach && seen.reached > 0.5;
         if !visibility.faces_light {
             verdict.back_facing += 1;
@@ -1199,7 +1199,8 @@ pub fn compare(engine_model: &pt_trace::Image, physical: &pt_trace::Image, frame
         // decides exactly the pixels facing away" is the expectation, and an
         // expectation a detector only ever measures where it already holds is
         // not one the detector can report on.
-        verdict.model_decides += usize::from(lit(visibility) != lit(physical.visibility(x, y, 0)));
+        verdict.model_decides +=
+            usize::from(lit(visibility) != lit(physical.visibility(x, y, pt_light::LightIdx::new(0))));
         engine_lit[pixel] = Some(frame_lit);
         traced_lit[pixel] = Some(lit(visibility));
     }

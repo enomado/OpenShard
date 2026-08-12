@@ -129,7 +129,7 @@ pub struct Pick {
     /// `FrameFacts::on_mobile`, read back into [`Picking::on_mobile`]
     /// regardless of the mode: what a click selects is not a question about
     /// lighting.
-    pub mobile: Option<usize>,
+    pub mobile: Option<openshard_client_render::mobiles::MobileIndex>,
     /// The item under the cursor, filtered the same way.
-    pub item: Option<usize>,
+    pub item: Option<openshard_client_render::items::ItemIndex>,
 }

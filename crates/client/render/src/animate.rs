@@ -92,7 +92,7 @@ impl StaticAnimations {
             if !tiledata.static_tile(graphic).flags.is_animated() {
                 continue;
             }
-            if let Some(sequence) = animdata.sequence(graphic) {
+            if let Some(sequence) = animdata.sequence(Graphic(graphic)) {
                 cycles.insert(graphic, sequence);
             }
         }
@@ -195,7 +195,9 @@ mod tests {
         entry[65] = offsets.len() as u8;
         entry[66] = interval;
         bytes.extend_from_slice(&entry);
-        AnimData::parse(&bytes).sequence(0).expect("a whole entry")
+        AnimData::parse(&bytes)
+            .sequence(Graphic(0))
+            .expect("a whole entry")
     }
 
     /// The whole of what the clock does: one step per interval, wrapping at the

@@ -12,6 +12,7 @@ use openshard_client_render::control::Follow;
 use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles;
 use openshard_movement::Terrain;
+use openshard_protocol::server_packet::ServerPacket;
 use openshard_uofiles::anim::is_ghost;
 
 use crate::app::App;
@@ -19,6 +20,42 @@ use crate::world::cluttered;
 use crate::{clutter, crowd, link};
 
 impl App {
+    /// Apply a local UI mutation on the same thread that owns `WorldView`.
+    pub(crate) fn apply_close_window(&mut self, target: link::CloseTarget) {
+        let Some(view) = self.world.view.as_mut() else {
+            return;
+        };
+        match target {
+            link::CloseTarget::Paperdoll(serial) => view.paperdoll_closed(serial),
+            link::CloseTarget::Container(serial) => view.container_closed(serial),
+            link::CloseTarget::Gump(gump_id) => view.gump_closed(gump_id),
+        };
+    }
+
+    /// Apply one network mutation on the event-loop thread. This is the only
+    /// place after connection setup that mutates the client-owned view.
+    pub(crate) fn apply_mutation(&mut self, packet: &ServerPacket, body: link::Body) {
+        let Some(view) = self.world.view.as_mut() else {
+            return;
+        };
+        view.apply(packet);
+        view.player_stepped(body.predicted.position, body.predicted.facing);
+        let snapshot = view.clone();
+        self.entered(&snapshot, body);
+    }
+
+    /// Apply prediction without changing authoritative server state.
+    pub(crate) fn apply_prediction(&mut self, body: link::Body) {
+        self.world.player.at = body.predicted.position;
+        self.world.player.facing = body.predicted.facing.direction;
+        self.world.player.drawn = self
+            .world
+            .crowd
+            .drawn_for(self.world.me())
+            .unwrap_or_else(|| openshard_client_render::follow::Gaze::on(body.predicted.position));
+        self.follow_player(std::time::Duration::ZERO);
+    }
+
     /// Redraw from what the server has shown us.
     ///
     /// A projection of the whole [`WorldView`], rebuilt each time rather than

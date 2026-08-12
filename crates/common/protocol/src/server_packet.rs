@@ -173,7 +173,7 @@ impl ServerPacket {
             Self::AttackTarget(_) => <AttackTarget as EncodePacket>::ID,
             Self::Health(_) => <HealthBar as EncodePacket>::ID,
             Self::PlaySound(_) => PlaySound::ID,
-            Self::Animation(_) => Animation::ID,
+            Self::Animation(_) => <Animation as EncodePacket>::ID,
             Self::NewAnimation(_) => NewAnimation::ID,
             Self::Effect(_) => GraphicalEffect::ID,
             Self::HuedEffect(_) => HuedEffect::ID,
@@ -478,6 +478,9 @@ impl ServerPacket {
             <HealthBar as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::Health)
                 .map_err(ServerDecodeError::Health)?,
+            <Animation as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::Animation)
+                .map_err(ServerDecodeError::Animation)?,
             <DeathStatus as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::DeathStatus)
                 .map_err(ServerDecodeError::DeathStatus)?,
@@ -558,6 +561,8 @@ pub enum ServerDecodeError {
     AttackTarget(DecodeError),
     /// `0xA1` did not decode.
     Health(DecodeError),
+    /// `0x6E` did not decode.
+    Animation(DecodeError),
     /// `0x2C` did not decode.
     DeathStatus(DecodeError),
     /// `0xD1` did not decode.
@@ -596,6 +601,7 @@ impl fmt::Display for ServerDecodeError {
             Self::WarMode(error) => ("0x72 war mode", error),
             Self::AttackTarget(error) => ("0xAA attack target", error),
             Self::Health(error) => ("0xA1 health bar", error),
+            Self::Animation(error) => ("0x6E animation", error),
             Self::DeathStatus(error) => ("0x2C death status", error),
             Self::LogoutAck(error) => ("0xD1 logout ack", error),
             Self::Skills(error) => ("0x3A skills", error),

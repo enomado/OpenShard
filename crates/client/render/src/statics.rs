@@ -404,11 +404,7 @@ pub(crate) fn push_volumes(
         // rather than about the run, which is why it is answered off the
         // graphic's own `Shape` above and not off anything this closure is
         // handed.
-        out.push(crate::impostor::Volume::of(
-            &space,
-            named_edges,
-            crate::occlusion::SolidId::word(named),
-        ));
+        out.push(crate::impostor::Volume::of(&space, named_edges, named));
     });
     crate::impostor::Range {
         offset,
@@ -1508,7 +1504,7 @@ mod tests {
         // Every box is the space of the solid it names — the whole claim of the
         // function now that there is one shape rather than two.
         for volume in &boxes {
-            let solid = occlusion.solid(crate::occlusion::SolidId::new(volume.solid));
+            let solid = occlusion.solid(volume.solid.expect("fixture volume has a solid"));
             assert_eq!(volume.lo.x, solid.space.min.x as f32);
             assert_eq!(volume.lo.y, solid.space.min.y as f32);
             assert_eq!(volume.lo.z, solid.space.min.z as f32);
@@ -1657,7 +1653,7 @@ mod tests {
         for (volume, (id, solid)) in boxes.iter().zip(&grid) {
             assert_eq!(volume.lo.x, solid.space.min.x as f32);
             assert_eq!(volume.hi.z, solid.space.max.z as f32);
-            assert_eq!(volume.solid, crate::occlusion::SolidId::word(Some(*id)));
+            assert_eq!(volume.solid, Some(*id));
         }
     }
 
@@ -1709,8 +1705,7 @@ mod tests {
         // And it is a point of nothing, which is the honest name for a shape no
         // shadow ray will ever meet.
         assert_eq!(
-            boxes[0].solid,
-            crate::occlusion::SolidId::word(None),
+            boxes[0].solid, None,
             "a shape the grid refused cannot name a solid of it",
         );
     }

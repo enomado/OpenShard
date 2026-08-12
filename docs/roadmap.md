@@ -2886,30 +2886,33 @@ Still open, ranked by how strong the case is:
 - **`state::harvest`'s sibling gap, `items::trade`'s sibling gap and
   `quests`'s sibling gap all had one thing in common that a fourth case does
   not yet: `client_render`'s `Option<usize>` "index into `items`"**, repeated
-  identically across `frame.rs`, `items.rs` (twice) and `mobiles.rs` (twice),
-  and three separate `BTreeMap<usize, Hit/DollButton>` keyed "index into
-  `pictures`" in `gump.rs`, `paperdoll.rs` and `skills.rs` — `ItemIndex` and
-  `PictureIndex` respectively, one name each instead of five and three.
+  identically across `frame.rs`, `items.rs` (twice) and `mobiles.rs` (twice).
+  Fixed: `ItemIndex` and `MobileIndex` now travel through render and app APIs,
+  with `.raw()` only at list/serialisation boundaries. The separate
+  picture-index half is also fixed by `PictureIndex` across
+  gump/paperdoll/skills.
 - **`(u16, u16)` is `render`'s ad-hoc `Tile` in five places** —
   `debug::around`, `scene::{room_wall_tiles, DOORWAY}`, `select::{Selection,
   Selection::on}` — because `render` does not depend on `movement` today and
   so never reaches for the `Tile` type its sibling client crates already
   settled on (see the client sweep above, `app::clutter`).
-- **`occlusion::bvh::Leaf::first: u32`** indexes `Bvh::order`, right beside a
+- ~~**`occlusion::bvh::Leaf::first: u32`** indexes `Bvh::order`, right beside a
   `NodeIdx` whose own doc comment already argues "a place in the primitives
-  ... is a different list" from a node index — the argument was made and the
-  field it was made about is still bare.
-- **`pathtrace::Image::visibility(x: u32, y: u32, light: usize)`** — unchanged
-  from the client sweep above; `LightIdx` fixed the identical shape in
-  `render`'s own `light.rs` this pass, so the type to reuse now exists one
-  crate over.
-- Weaker, mentioned for completeness: `impostor::Volume::of(..., solid: u32)`
-  unwraps `SolidId` one call earlier than the GPU-byte boundary needs; three
+  ... is a different list" from a node index.~~ Fixed: `OrderIndex` names the
+  position in the permutation, and `.raw()` appears only at slice indexing and
+  the packed GPU seam.
+- ~~**`pathtrace::Image::visibility(x: u32, y: u32, light: usize)`**~~ Fixed:
+  `pathtrace::light::LightIdx` now names the light-list index, with `.raw()`
+  only at the image buffer seam. The pathtrace oracle and its render tests
+  carry the type instead of passing a bare zero.
+- ~~**`uofiles::animdata::sequence(graphic: u16)`**~~ Fixed: the parser now
+  accepts `Graphic`, matching the static animation API around it; `.0` is only
+  used for the file-table offset.
+- ~~**`impostor::Volume::of(..., solid: u32)`**~~ Fixed: `Volume::solid` stays
+  `Option<SolidId>` until the GPU-byte boundary; three
   `opaque_at(&self, ..., x: u16, y: u16)` picture-local pixel coordinates sit
   bare next to a crate that otherwise names every other pixel space
-  (`WorldPixel`, `ViewPixel`, `RealPixel`, `GumpPixel`); `uofiles::animdata::
-  sequence(graphic: u16)` is the one parser in its crate that does not take
-  `Graphic` where every sibling parser does.
+  (`WorldPixel`, `ViewPixel`, `RealPixel`, `GumpPixel`).
 
 ### Backlog: a gump dialog's own captions still can't draw Cyrillic
 

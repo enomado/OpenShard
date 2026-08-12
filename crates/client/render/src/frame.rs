@@ -42,7 +42,7 @@ use crate::cutaway::Cutaway;
 use crate::debug::View;
 use crate::geometry::Vec2;
 use crate::ground::GroundQuad;
-use crate::items::GroundItem;
+use crate::items::{GroundItem, ItemIndex};
 use crate::light::{self, Ambient, Lighting, Sun, Tuning};
 use crate::occlusion::Occlusion;
 use crate::occlusion::bake::Bake;
@@ -205,7 +205,7 @@ pub struct Inputs<'a> {
     /// The item the cursor is over, drawn in [`crate::items::HIGHLIGHT_HUE`]
     /// instead of its own. An index into `items`, and a fact about this frame
     /// rather than about the thing.
-    pub highlight: Option<usize>,
+    pub highlight: Option<ItemIndex>,
     /// Whether the statics are met against this frame's boxes — see
     /// [`Impostor`].
     pub impostor: Impostor,

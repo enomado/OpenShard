@@ -113,6 +113,19 @@ pub struct Mobile {
     pub equipment: Vec<EquipmentLayer>,
 }
 
+/// A position in the frame's mobile list.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct MobileIndex(usize);
+
+impl MobileIndex {
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+}
+
 /// One worn item, ready to place: an `AnimID`, not a picture.
 ///
 /// The order this list is in says nothing about the order they are drawn in:
@@ -446,7 +459,7 @@ pub fn collect(
     atlas: &AnimAtlas,
     cutaway: &Cutaway,
     equip_conv: &EquipConv,
-    highlight: Option<usize>,
+    highlight: Option<MobileIndex>,
 ) -> Vec<SpriteQuad> {
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
 
@@ -454,7 +467,7 @@ pub fn collect(
         // The highlight replaces the creature's own hue rather than combining
         // with it, exactly as an item's does — the shader has one hue per
         // sprite and a ramp *replaces* the art's colour.
-        let hue = match highlight == Some(index) {
+        let hue = match highlight == Some(MobileIndex::new(index)) {
             true => Some(crate::items::HIGHLIGHT_HUE),
             false => None,
         };
@@ -572,10 +585,10 @@ pub fn outlined(
     atlas: &AnimAtlas,
     cutaway: &Cutaway,
     equip_conv: &EquipConv,
-    highlight: Option<usize>,
+    highlight: Option<MobileIndex>,
 ) -> Vec<SpriteQuad> {
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
-    if let Some(mobile) = highlight.and_then(|index| mobiles.get(index)) {
+    if let Some(mobile) = highlight.and_then(|index| mobiles.get(index.raw())) {
         push_quads(mobile, camera, atlas, cutaway, equip_conv, None, &mut quads);
     }
     quads.into_iter().map(|(_, quad)| quad).collect()
@@ -608,9 +621,9 @@ pub fn pick(
     cutaway: &Cutaway,
     equip_conv: &EquipConv,
     cursor: RealPixel,
-) -> Option<usize> {
+) -> Option<MobileIndex> {
     let in_view = camera.to_view(camera.pick(cursor));
-    let mut hit: Option<(depth::Order, usize)> = None;
+    let mut hit: Option<(depth::Order, MobileIndex)> = None;
     for (index, mobile) in mobiles.iter().enumerate() {
         if !cutaway.shows_mobile(mobile.at.z) {
             continue;
@@ -637,7 +650,7 @@ pub fn pick(
         // `>=`, so a later mobile at the same order takes it: the tie-break is
         // the caller's order, and the one drawn last is the one on top.
         if hit.is_none_or(|(best, _)| order >= best) {
-            hit = Some((order, index));
+            hit = Some((order, MobileIndex::new(index)));
         }
     }
     hit.map(|(_, index)| index)
@@ -841,7 +854,11 @@ mod tests {
                 cursor_over(&camera, at, dx, dy),
             )
         };
-        assert_eq!(pick_at(30.0, 30.0), Some(0), "the drawn half was not hit");
+        assert_eq!(
+            pick_at(30.0, 30.0),
+            Some(MobileIndex::new(0)),
+            "the drawn half was not hit"
+        );
         assert_eq!(
             pick_at(5.0, 30.0),
             None,
@@ -874,7 +891,11 @@ mod tests {
             )
         };
         // The art's drawn half is its right; flipped, it is drawn on the left.
-        assert_eq!(pick_at(5.0), Some(0), "the flipped picture's drawn half");
+        assert_eq!(
+            pick_at(5.0),
+            Some(MobileIndex::new(0)),
+            "the flipped picture's drawn half"
+        );
         assert_eq!(pick_at(30.0), None, "the flipped picture's transparent half");
     }
 
@@ -915,7 +936,7 @@ mod tests {
                 &no_equip(),
                 cursor_over(&camera, at, 5.0, 30.0),
             ),
-            Some(0),
+            Some(MobileIndex::new(0)),
             "the robe's own pixels did not count as the creature",
         );
     }
@@ -942,7 +963,7 @@ mod tests {
                 // Inside the near sprite's top strip, over the far one's body.
                 cursor_over(&camera, near, 22.0, 10.0),
             ),
-            Some(1),
+            Some(MobileIndex::new(1)),
             "the creature behind was picked through the one in front",
         );
     }
@@ -981,7 +1002,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &no_equip(),
-            Some(1),
+            Some(MobileIndex::new(1)),
         );
         assert_eq!(quads.len(), 4, "two bodies and a robe each");
         // Back to front, so the nearer creature — index 1 — is the last pair.
@@ -1008,7 +1029,14 @@ mod tests {
             body_at(101, Direction::SouthEast),
         ];
         let drawn = collect(&mobiles, &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
-        let ringed = outlined(&mobiles, &camera, &atlas, &Cutaway::OPEN, &no_equip(), Some(0));
+        let ringed = outlined(
+            &mobiles,
+            &camera,
+            &atlas,
+            &Cutaway::OPEN,
+            &no_equip(),
+            Some(MobileIndex::new(0)),
+        );
         assert_eq!(ringed.len(), 1, "one creature, one silhouette");
         // Index 0 is the further creature, which the sort puts first.
         assert_eq!(ringed[0].rect, drawn[0].rect);

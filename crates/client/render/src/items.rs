@@ -50,6 +50,19 @@ pub struct GroundItem {
     pub hue: Hue,
 }
 
+/// A position in the frame's ground-item list.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct ItemIndex(usize);
+
+impl ItemIndex {
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+}
+
 /// The hue an item is drawn in while the cursor is over it.
 ///
 /// ClassicUO's `Constants.HIGHLIGHT_CURRENT_OBJECT_HUE`
@@ -116,7 +129,7 @@ pub fn collect(
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
-    highlight: Option<usize>,
+    highlight: Option<ItemIndex>,
     occlusion: &crate::occlusion::Occlusion,
 ) -> crate::statics::StaticGeometry {
     let (eye_x, eye_y) = camera.eye_tile();
@@ -140,7 +153,7 @@ pub fn collect(
         // it: one wire hue reaches the shader, and the reference does the same
         // — `ItemView.Draw` overwrites `hue` and clears `partial` when the
         // object is the selected one.
-        let hue = match highlight == Some(index) {
+        let hue = match highlight == Some(ItemIndex::new(index)) {
             true => u32::from(HIGHLIGHT_HUE.0),
             false => u32::from(item.hue.0),
         };
@@ -203,12 +216,12 @@ pub fn outlined(
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
-    highlight: Option<usize>,
+    highlight: Option<ItemIndex>,
 ) -> Vec<SpriteQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     highlight
-        .and_then(|index| Some((items.get(index)?, index)))
+        .and_then(|index| Some((items.get(index.raw())?, index)))
         .and_then(|(item, _)| {
             let placed = place(item, camera, tiledata, animations, atlas, cutaway)?;
             match on_screen(camera, placed.at, &placed.sprite) {
@@ -290,9 +303,9 @@ pub fn pick(
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
     cursor: RealPixel,
-) -> Option<usize> {
+) -> Option<ItemIndex> {
     let in_view = camera.to_view(camera.pick(cursor));
-    let mut hit: Option<(depth::Order, usize)> = None;
+    let mut hit: Option<(depth::Order, ItemIndex)> = None;
     for (index, item) in items.iter().enumerate() {
         let Some(placed) = place(item, camera, tiledata, animations, atlas, cutaway) else {
             continue;
@@ -311,7 +324,7 @@ pub fn pick(
         // `>=`, so a later item at the same order takes it: the tie-break is the
         // caller's order, and the one drawn last is the one on top.
         if hit.is_none_or(|(order, _)| placed.order >= order) {
-            hit = Some((placed.order, index));
+            hit = Some((placed.order, ItemIndex::new(index)));
         }
     }
     hit.map(|(_, index)| index)
@@ -525,7 +538,11 @@ mod tests {
                 cursor_over(&camera, at, dx, dy),
             )
         };
-        assert_eq!(pick_at(30.0, 30.0), Some(0), "the drawn half was not hit");
+        assert_eq!(
+            pick_at(30.0, 30.0),
+            Some(ItemIndex::new(0)),
+            "the drawn half was not hit"
+        );
         assert_eq!(
             pick_at(5.0, 30.0),
             None,
@@ -567,7 +584,7 @@ mod tests {
         );
         assert_eq!(
             found,
-            Some(1),
+            Some(ItemIndex::new(1)),
             "the door behind was picked through the one in front"
         );
     }
@@ -595,7 +612,7 @@ mod tests {
             &StaticAnimations::default(),
             &atlas,
             &Cutaway::OPEN,
-            Some(1),
+            Some(ItemIndex::new(1)),
             &crate::occlusion::Occlusion::EMPTY,
         );
         assert_eq!(quads.quads.len(), 2);

@@ -409,7 +409,7 @@ pub struct Volume {
     /// riser at `t = 0` and nowhere else, which is precisely what phase 5's
     /// origin-touch rule already excuses. Carrying a second id a box would be a
     /// second answer to a question one rule has already closed.
-    pub solid: u32,
+    pub solid: Option<crate::occlusion::SolidId>,
     /// Which sides of its tile the **art** named for this picture — the same
     /// four bits `blit.wesl` mirrors, and
     /// [`crate::occlusion::named_edges`]'s answer rather than
@@ -450,7 +450,11 @@ impl Volume {
     /// `space` because a `Solid` is corners alone — the mask is what the *art*
     /// said, and the box is where that has already been spent. See
     /// [`Volume::edges`].
-    pub fn of(space: &crate::solid::Solid, edges: crate::occlusion::Edges, solid: u32) -> Self {
+    pub fn of(
+        space: &crate::solid::Solid,
+        edges: crate::occlusion::Edges,
+        solid: Option<crate::occlusion::SolidId>,
+    ) -> Self {
         Self {
             lo: WorldVec::new(space.min.x as f32, space.min.y as f32, space.min.z as f32),
             hi: WorldVec::new(space.max.x as f32, space.max.y as f32, space.max.z as f32),
@@ -483,7 +487,7 @@ impl Volume {
         for value in self.hi.array() {
             out.extend_from_slice(&value.to_le_bytes());
         }
-        out.extend_from_slice(&self.solid.to_le_bytes());
+        out.extend_from_slice(&crate::occlusion::SolidId::word(self.solid).to_le_bytes());
     }
 }
 
@@ -837,7 +841,7 @@ mod tests {
         Volume {
             lo: WorldVec::new(100.0, 101.0, 3.0),
             hi: WorldVec::new(101.0, 102.0, 7.0),
-            solid: 9,
+            solid: Some(crate::occlusion::SolidId::new(9)),
             edges: crate::occlusion::Edges::EAST,
         }
         .write(&mut out);

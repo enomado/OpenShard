@@ -41,6 +41,20 @@ impl ApplicationHandler<link::Update> for App {
         self.last_advance = now;
         match update {
             link::Update::World { view, body } => self.entered(&view, body),
+            link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),
+            link::Update::Prediction(body) => self.apply_prediction(body),
+            link::Update::CloseWindow(target) => self.apply_close_window(target),
+            link::Update::Animation(animation) => {
+                self.world.crowd.play(
+                    Some(animation.serial),
+                    animation.action,
+                    animation.frame_count,
+                    animation.repeat_count,
+                    animation.forward,
+                    animation.repeat,
+                    animation.delay,
+                );
+            }
             // The window stays open: whatever is on screen is still the last
             // thing the server said, and closing it would take the reason with
             // it. The map viewer is what is left, which is a fair description

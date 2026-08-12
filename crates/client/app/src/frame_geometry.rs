@@ -74,10 +74,10 @@ pub(crate) fn assemble_geometry(
     camera: Camera,
     cutaway: &Cutaway,
     tuning: &light::Tuning,
-    lit_item: Option<usize>,
-    lit_mobile: Option<usize>,
-    held_item: Option<usize>,
-    held_mobile: Option<usize>,
+    lit_item: Option<openshard_client_render::items::ItemIndex>,
+    lit_mobile: Option<openshard_client_render::mobiles::MobileIndex>,
+    held_item: Option<openshard_client_render::items::ItemIndex>,
+    held_mobile: Option<openshard_client_render::mobiles::MobileIndex>,
     drawn: &[Mobile],
 ) -> FrameGeometry {
     // Three skies and not two: night, a daylight with a sun in it, and the
@@ -320,14 +320,14 @@ pub(crate) struct FrameFacts {
     /// unfiltered form of [`Pick::mobile`], kept here because
     /// `App::draw_from` reads it back into `self.picking` regardless of the
     /// highlight mode: what a click selects is not a question about lighting.
-    pub(crate) on_mobile: Option<usize>,
+    pub(crate) on_mobile: Option<openshard_client_render::mobiles::MobileIndex>,
     /// The item the cursor is over, indexing `self.world.items` — the
     /// unfiltered form of [`Pick::item`], for the same reason.
-    pub(crate) on_item: Option<usize>,
+    pub(crate) on_item: Option<openshard_client_render::items::ItemIndex>,
     /// What a click is holding, turned back into an index into
     /// `drawn_mobiles`.
-    pub(crate) held_mobile: Option<usize>,
+    pub(crate) held_mobile: Option<openshard_client_render::mobiles::MobileIndex>,
     /// What a click is holding, turned back into an index into
     /// `self.world.item_serials`.
-    pub(crate) held_item: Option<usize>,
+    pub(crate) held_item: Option<openshard_client_render::items::ItemIndex>,
 }

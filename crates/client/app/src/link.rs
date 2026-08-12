@@ -25,6 +25,7 @@ use openshard_client_net::transport::{Dial, enter_world_with};
 use openshard_client_net::view::WorldView;
 use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
+use openshard_protocol::feedback::Animation;
 use openshard_protocol::gump::{GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::skill::SkillLock;
@@ -33,7 +34,6 @@ use openshard_protocol::wire::RawSkillId;
 use openshard_protocol::world::ResyncRequest;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
-use winit::event_loop::EventLoopProxy;
 
 /// Where this client's own body is *drawn*, which is not where the
 /// [`WorldView`] says it is.
@@ -78,6 +78,18 @@ pub enum Update {
         /// Where our own body is drawn. See [`Body`].
         body: Body,
     },
+    /// A decoded server packet. The event-loop thread applies it to its sole
+    /// `WorldView` owner and then rebuilds the presentation projection.
+    Mutation {
+        packet: openshard_protocol::server_packet::ServerPacket,
+        body: Body,
+    },
+    /// A locally accepted walk, before the server acknowledges it.
+    Prediction(Body),
+    /// A local window was closed; the world owner applies this locally.
+    CloseWindow(CloseTarget),
+    /// The server asked one mobile to play a one-shot body animation.
+    Animation(Animation),
     /// The connection ended, and why. Nothing further will arrive.
     ///
     /// The window stays open on one of these: a client that vanished when a
@@ -298,18 +310,22 @@ impl Link {
 /// `dial` is how the connection is opened and the only thing here that knows
 /// what a socket is: `Tcp` for a shard on a network, and something else for one
 /// in this process. It is moved onto the thread, so it is `Send`.
-pub fn connect<D: Dial + Send + 'static>(
+pub fn connect<D, F>(
     dial: D,
     plan: Plan,
     version: ClientVersion,
     map: Arc<Map>,
     tiles: Arc<TileData>,
-    proxy: EventLoopProxy<Update>,
-) -> Link {
+    report: F,
+) -> Link
+where
+    D: Dial + Send + 'static,
+    F: Fn(Update) + Send + 'static,
+{
     let (sender, commands) = tokio::sync::mpsc::unbounded_channel();
     std::thread::Builder::new()
         .name("shard".to_owned())
-        .spawn(move || run(dial, plan, version, &map, &tiles, &proxy, commands))
+        .spawn(move || run(dial, plan, version, &map, &tiles, &report, commands))
         // The thread is the connection; a client that could not spawn it has
         // nothing to fall back to, and the OS refusing a thread at startup is
         // not a condition worth a variant in `Update`.
@@ -319,47 +335,48 @@ pub fn connect<D: Dial + Send + 'static>(
 
 /// The thread body: one runtime, one login, then packets and steps until either
 /// end stops.
-fn run<D: Dial>(
+fn run<D: Dial, F: Fn(Update) + Send>(
     dial: D,
     plan: Plan,
     version: ClientVersion,
     map: &Map,
     tiles: &TileData,
-    proxy: &EventLoopProxy<Update>,
+    report: &F,
     commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(error) => {
-            report(proxy, Update::Lost(format!("no runtime for the shard: {error}")));
+            report(Update::Lost(format!("no runtime for the shard: {error}")));
             return;
         }
     };
     runtime.block_on(async move {
-        let reason = play(dial, plan, version, map, tiles, proxy, commands).await;
-        report(proxy, Update::Lost(reason));
+        let reason = play(dial, plan, version, map, tiles, report, commands).await;
+        report(Update::Lost(reason));
     });
 }
 
 /// Everything after the runtime exists, up to the reason it ended.
-async fn play<D: Dial>(
+async fn play<D: Dial, F: Fn(Update) + Send>(
     dial: D,
     plan: Plan,
     version: ClientVersion,
     map: &Map,
     tiles: &TileData,
-    proxy: &EventLoopProxy<Update>,
+    report: &F,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
 ) -> String {
-    let (mut socket, mut view) = match enter_world_with(dial, plan, version).await {
+    let (mut socket, view) = match enter_world_with(dial, plan, version).await {
         Ok(entered) => entered,
         Err(error) => return error.to_string(),
     };
     // Where the server put us, which is where the next `0x02` is computed from.
     let mut walk = Walk::new(view.player.position, view.player.facing);
+    let player_serial = view.player.serial;
     // Entering the world is not a step, so the body is placed rather than walked
     // there — the same statement a rollback makes.
-    report(proxy, snapshot(&view, &walk, true));
+    report(snapshot(view, &walk, true));
 
     loop {
         tokio::select! {
@@ -386,7 +403,7 @@ async fn play<D: Dial>(
                 // for the same disagreement is the burst ClassicUO's
                 // `ResendPacketResync` guards against.
                 let was_out_of_step = walk.out_of_step();
-                let folded = match fold(&mut view, &mut walk, &packet) {
+                let folded = match fold(&mut walk, &packet) {
                     Ok(folded) => folded,
                     // The two ends have lost track of each other over the walk,
                     // and this end cannot repair it: the ack names a step it is
@@ -411,12 +428,19 @@ async fn play<D: Dial>(
                         continue;
                     }
                 };
+                if let openshard_protocol::server_packet::ServerPacket::Animation(animation) = packet {
+                    report(Update::Animation(animation));
+                }
                 // A correction is worth sending even when the view is unchanged:
                 // the view never held the prediction, so rolling one back moves
                 // the *drawn* body and nothing else.
-                if folded.changed || folded.corrected {
-                    report(proxy, snapshot(&view, &walk, folded.corrected));
-                }
+                report(Update::Mutation {
+                    packet,
+                    body: Body {
+                        predicted: walk.predicted(),
+                        corrected: folded.corrected,
+                    },
+                });
             }
             command = commands.recv() => {
                 // `None` is the window closing: the `Link` was dropped.
@@ -460,7 +484,10 @@ async fn play<D: Dial>(
                                 // when the `0x22` says it may. That is the whole
                                 // of the lag compensation: the ack changes
                                 // nothing on screen, and only a refusal does.
-                                report(proxy, snapshot(&view, &walk, false));
+                                report(Update::Prediction(Body {
+                                    predicted: walk.predicted(),
+                                    corrected: false,
+                                }));
                                 bytes
                             }
                             // A step this end refused on its own: the edge of the
@@ -491,10 +518,10 @@ async fn play<D: Dial>(
                     Command::Status(mobile) => openshard_client_net::doll::status(mobile),
                     Command::Skills(mobile) => openshard_client_net::doll::skills(mobile),
                     // Ours by definition — see `Command::QuestLog`.
-                    Command::QuestLog => openshard_client_net::doll::quest_log(view.player.serial),
-                    Command::GuildMenu => openshard_client_net::doll::guild_menu(view.player.serial),
+                    Command::QuestLog => openshard_client_net::doll::quest_log(player_serial),
+                    Command::GuildMenu => openshard_client_net::doll::guild_menu(player_serial),
                     Command::Virtue(mobile) => {
-                        openshard_client_net::doll::virtue(view.player.serial, mobile)
+                        openshard_client_net::doll::virtue(player_serial, mobile)
                     }
                     Command::SkillLock { skill, lock } => {
                         openshard_client_net::skill::set_lock(skill, lock)
@@ -511,18 +538,8 @@ async fn play<D: Dial>(
                     // `Command::CloseWindow` — so this thread's own view is
                     // the whole of what there is to do, and there are no
                     // bytes to send after it.
-                    Command::CloseWindow(target) => {
-                        match target {
-                            CloseTarget::Paperdoll(serial) => {
-                                view.paperdoll_closed(serial);
-                            }
-                            CloseTarget::Container(serial) => {
-                                view.container_closed(serial);
-                            }
-                            CloseTarget::Gump(gump_id) => {
-                                view.gump_closed(gump_id);
-                            }
-                        }
+                    Command::CloseWindow(_target) => {
+                        report(Update::CloseWindow(_target));
                         continue;
                     }
                 };
@@ -540,9 +557,9 @@ async fn play<D: Dial>(
 /// cloned and the prediction read in the same breath, which is what "the
 /// renderer never sees a half-applied packet" means once the body is drawn
 /// ahead of the view.
-fn snapshot(view: &WorldView, walk: &Walk, corrected: bool) -> Update {
+fn snapshot(view: WorldView, walk: &Walk, corrected: bool) -> Update {
     Update::World {
-        view: Box::new(view.clone()),
+        view: Box::new(view),
         body: Body {
             predicted: walk.predicted(),
             corrected,
@@ -557,8 +574,6 @@ fn snapshot(view: &WorldView, walk: &Walk, corrected: bool) -> Update {
 /// rolls the body back to where the *view* already had it changes nothing in the
 /// view and everything on screen.
 struct Folded {
-    /// Anything in the [`WorldView`] is different.
-    changed: bool,
     /// The server put the body somewhere: whatever was predicted is void.
     corrected: bool,
 }
@@ -574,28 +589,18 @@ struct Folded {
 /// only one of the two and the client's own body stands still while everyone
 /// else moves around it.
 fn fold(
-    view: &mut WorldView,
     walk: &mut Walk,
     packet: &openshard_protocol::server_packet::ServerPacket,
 ) -> Result<Folded, openshard_client_net::walk::UnexpectedAck> {
-    let mut changed = view.apply(packet);
     let mut corrected = false;
     match walk.on_packet(packet)? {
-        Moved::Stepped { position, facing, .. } => {
-            changed |= view.player_stepped(position, facing);
-        }
-        Moved::Snapped { position, facing } => {
-            changed |= view.player_stepped(position, facing);
+        Moved::Stepped { .. } => {}
+        Moved::Snapped { .. } => {
             corrected = true;
         }
         Moved::Idle => {}
     }
-    Ok(Folded { changed, corrected })
-}
-
-/// Wake the event loop with an update, unless it has already gone.
-fn report(proxy: &EventLoopProxy<Update>, update: Update) {
-    let _ = proxy.send_event(update);
+    Ok(Folded { corrected })
 }
 
 #[cfg(test)]
@@ -635,8 +640,9 @@ mod tests {
             sequence: StepSequence(0),
             notoriety: Notoriety::Innocent,
         });
-        let folded = fold(&mut view, &mut walk, &ack).unwrap();
-        assert!(folded.changed);
+        let folded = fold(&mut walk, &ack).unwrap();
+        view.apply(&ack);
+        view.player_stepped(walk.predicted().position, walk.predicted().facing);
         assert!(!folded.corrected, "an allowed step is not a rollback");
         assert_eq!(view.player.position, Point::new(100, 99, 0));
     }
@@ -653,16 +659,12 @@ mod tests {
             position: Point::new(100, 100, 0),
             facing: Facing::walking(Direction::North),
         });
-        let folded = fold(&mut view, &mut walk, &reject).unwrap();
-        assert!(!folded.changed, "the view never held the prediction");
+        let folded = fold(&mut walk, &reject).unwrap();
+        view.apply(&reject);
+        assert_eq!(view.player.position, Point::new(100, 100, 0));
         assert!(
             folded.corrected,
             "and the drawn body has to be told, or it stays a tile ahead for ever"
-        );
-        assert_eq!(
-            view.player.position,
-            Point::new(100, 100, 0),
-            "the refused step never happened"
         );
         assert_eq!(
             walk.predicted().position,
@@ -682,7 +684,7 @@ mod tests {
         let Update::World {
             view: published,
             body,
-        } = snapshot(&view, &walk, false)
+        } = snapshot(view.clone(), &walk, false)
         else {
             panic!("a snapshot is a world");
         };
@@ -708,6 +710,6 @@ mod tests {
             sequence: StepSequence(3),
             notoriety: Notoriety::Innocent,
         });
-        assert!(fold(&mut view, &mut walk, &ack).is_err());
+        assert!(fold(&mut walk, &ack).is_err());
     }
 }

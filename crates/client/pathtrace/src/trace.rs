@@ -12,7 +12,7 @@
 //! compared against the renderer would be the one nobody looks at.
 
 use crate::camera::Parallel;
-use crate::light::Light;
+use crate::light::{Light, LightIdx};
 use crate::rng::Stream;
 use crate::scene::{SURFACE_BIAS, Scene, Surface};
 use crate::vector::Vec3;
@@ -195,13 +195,18 @@ impl Image {
     ///
     /// On an out-of-range pixel or light index — both are programmer error in a
     /// caller that rendered the image it is now reading.
-    pub fn visibility(&self, x: u32, y: u32, light: usize) -> Visibility {
+    pub fn visibility(&self, x: u32, y: u32, light: LightIdx) -> Visibility {
         assert!(
             x < self.width && y < self.height,
             "pixel ({x}, {y}) is outside the frame"
         );
-        assert!(light < self.lights, "light {light} of {}", self.lights);
-        self.visibility[((y * self.width + x) as usize) * self.lights + light]
+        assert!(
+            light.raw() < self.lights,
+            "light {} of {}",
+            light.raw(),
+            self.lights
+        );
+        self.visibility[((y * self.width + x) as usize) * self.lights + light.raw()]
     }
 
     /// Whether this image is an exact answer rather than an estimate.
@@ -472,7 +477,7 @@ mod tests {
     use super::{Brdf, Settings, cosine_hemisphere, render};
     use crate::aabb::Aabb;
     use crate::camera::Parallel;
-    use crate::light::{Emitter, Falloff, Light};
+    use crate::light::{Emitter, Falloff, Light, LightIdx};
     use crate::rng::Stream;
     use crate::scene::{Body, Ground, Scene, Surface};
     use crate::vector::Vec3;
@@ -587,11 +592,11 @@ mod tests {
             FRAME,
             FRAME,
         );
-        let shadowed = image.visibility(SHADOWED.0, SHADOWED.1, 0);
+        let shadowed = image.visibility(SHADOWED.0, SHADOWED.1, LightIdx::new(0));
         assert_eq!(shadowed.reached, 0.0, "the box stands in the way");
         assert!(shadowed.within_reach, "and the torch does reach this far");
         assert_eq!(
-            image.visibility(LIT.0, LIT.1, 0).reached,
+            image.visibility(LIT.0, LIT.1, LightIdx::new(0)).reached,
             1.0,
             "nothing between it and the torch"
         );
@@ -630,7 +635,7 @@ mod tests {
             FRAME,
             FRAME,
         );
-        let out = image.visibility(0, 0, 0);
+        let out = image.visibility(0, 0, LightIdx::new(0));
         assert!(!out.within_reach, "the corner is nowhere near a four-unit torch");
         assert_eq!(out.reached, 0.0, "so nothing arrives");
     }
@@ -655,7 +660,7 @@ mod tests {
             FRAME,
             FRAME,
         );
-        let ground = image.visibility(LIT.0, LIT.1, 0);
+        let ground = image.visibility(LIT.0, LIT.1, LightIdx::new(0));
         assert!(!ground.faces_light, "the ground's own normal points away from it");
         assert!(ground.within_reach, "and it is well inside the torch's reach");
         assert_eq!(ground.reached, 0.0, "so nothing arrives, for that reason");
@@ -683,7 +688,7 @@ mod tests {
         let render_with =
             |settings| render(&one_box_scene(), &top_down(), &[cellar], &settings, FRAME, FRAME);
         let flat = render_with(like_the_engine());
-        let ground = flat.visibility(LIT.0, LIT.1, 0);
+        let ground = flat.visibility(LIT.0, LIT.1, LightIdx::new(0));
         assert!(
             !ground.faces_light,
             "the geometry has not changed: this surface still points away"
@@ -699,7 +704,7 @@ mod tests {
         );
         assert_eq!(
             render_with(Settings::degenerate())
-                .visibility(LIT.0, LIT.1, 0)
+                .visibility(LIT.0, LIT.1, LightIdx::new(0))
                 .reached,
             0.0,
             "and physics still says nothing arrives"
@@ -722,12 +727,12 @@ mod tests {
             FRAME,
         );
         assert_eq!(
-            image.visibility(SHADOWED.0, SHADOWED.1, 0).reached,
+            image.visibility(SHADOWED.0, SHADOWED.1, LightIdx::new(0)).reached,
             0.0,
             "the box is another body, and it still stands in the way"
         );
         assert_eq!(
-            image.visibility(LIT.0, LIT.1, 0).reached,
+            image.visibility(LIT.0, LIT.1, LightIdx::new(0)).reached,
             1.0,
             "and open ground is open"
         );
@@ -754,7 +759,11 @@ mod tests {
                 FRAME,
                 FRAME,
             );
-            assert_eq!(image.visibility(LIT.0, LIT.1, 0).reached, 1.0, "lit either way");
+            assert_eq!(
+                image.visibility(LIT.0, LIT.1, LightIdx::new(0)).reached,
+                1.0,
+                "lit either way"
+            );
             pixel_at(&image, LIT).radiance[0]
         };
         let (lambert, flat) = (under(Settings::degenerate()), under(like_the_engine()));
@@ -807,7 +816,7 @@ mod tests {
             (0..FRAME)
                 .flat_map(|y| (0..FRAME).map(move |x| (x, y)))
                 .filter(|(x, y)| {
-                    let seen = image.visibility(*x, *y, 0).reached;
+                    let seen = image.visibility(*x, *y, LightIdx::new(0)).reached;
                     seen > 0.02 && seen < 0.98
                 })
                 .count()
