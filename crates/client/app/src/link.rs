@@ -732,6 +732,65 @@ mod tests {
         worker.join().expect("the shard-side publisher exits");
     }
 
+    /// A slow or occluded window must not turn an active socket into an
+    /// unbounded queue. Packets retain their order, while the transient walk
+    /// picture is reduced to the one position the first redraw can actually
+    /// show once the window becomes available again.
+    #[test]
+    fn a_stalled_window_bounds_packets_and_collapses_walk_predictions() {
+        let updates = Updates::new();
+        for packet in 0..MAX_ORDERED_UPDATES {
+            updates.publish(Update::Lost(format!("packet {packet}")));
+        }
+        for position in 101..=10_100 {
+            updates.publish(prediction(position));
+        }
+
+        let producer = updates.clone();
+        let (started_by_producer, started) = std::sync::mpsc::channel();
+        let (finished_by_producer, finished) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_by_producer
+                .send(())
+                .expect("the test waits for the network publisher");
+            finished_by_producer
+                .send(producer.publish(Update::Lost("after stall".to_owned())))
+                .expect("the test waits for the network publisher");
+        });
+
+        started
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the network publisher starts");
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err(),
+            "a full ordered mailbox applies backpressure while the window is stalled"
+        );
+
+        let staged = updates.take();
+        assert_eq!(staged.len(), MAX_ORDERED_UPDATES + 1);
+        for (packet, update) in staged.iter().take(MAX_ORDERED_UPDATES).enumerate() {
+            assert!(matches!(update, Update::Lost(reason) if reason == &format!("packet {packet}")));
+        }
+        let Some(Update::Prediction(body)) = staged.last() else {
+            panic!("only the newest walk picture survives the stall");
+        };
+        assert_eq!(body.predicted.position, Point::new(10_100, 100, 0));
+
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("draining releases the socket reader"),
+            "the newly non-idle mailbox asks the event loop for one wake-up"
+        );
+        assert!(matches!(
+            updates.take().as_slice(),
+            [Update::Lost(reason)] if reason == "after stall"
+        ));
+        worker.join().expect("the shard-side publisher exits");
+    }
+
     #[test]
     fn command_delivery_has_a_fixed_bound() {
         let (commands, mut received) = tokio::sync::mpsc::channel(1);

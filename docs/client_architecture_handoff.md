@@ -35,7 +35,7 @@ cargo test -p openshard-client-net --lib
 cargo test -p openshard-client-render --lib
 ```
 
-Result: 169 app tests passed, 2 ignored; 76 net tests passed; 482 render
+Result: 170 app tests passed, 2 ignored; 76 net tests passed; 482 render
 tests passed, 1 ignored. `cargo fmt --check` and `git diff --check` also pass.
 
 ## Architecture agreed with the owner
@@ -96,6 +96,11 @@ tests passed, 1 ignored. `cargo fmt --check` and `git diff --check` also pass.
   `interact`) remain available for now. `Outgoing` is the single path used by
   the app, so their public surface can be reviewed separately rather than
   bundled into this boundary change.
+- The mailbox has a deterministic stalled-window regression exercise: after
+  256 ordered updates and 10,000 predictions, the next ordered update remains
+  blocked until the frame drains, and that frame receives every ordered update
+  plus only the latest prediction. This proves the boundary locally; a live
+  stalled-window/shard run is still needed before tuning its capacity.
 
 ## Frame ownership and allocation result
 
@@ -119,7 +124,8 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
    and skills only when making a feature change in one of those areas. Preserve
    local window mutation on the App thread.
 3. Exercise the staged mailbox against a real stalled-window/network workload
-   and tune its ordered-update capacity if needed.
+   and tune its ordered-update capacity if needed. The headless regression
+   test covers its backpressure and coalescing contract, not live timing.
 4. Keep the three state boundaries explicit as new fields are added:
 
    ```text
