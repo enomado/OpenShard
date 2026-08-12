@@ -187,7 +187,11 @@ pub(crate) fn assemble_geometry(
         // `docs/combat.md`'s D9: the screen greys for the character this
         // client is, not for the offline placeholder — which has no view
         // and so is never a ghost.
-        dead: world.view.as_ref().is_some_and(|view| view.player.dead),
+        dead: world
+            .authoritative
+            .view
+            .as_ref()
+            .is_some_and(|view| view.player.dead),
         player_rect,
     };
     // **What the frame was asked for**, kept beside the pictures the dump

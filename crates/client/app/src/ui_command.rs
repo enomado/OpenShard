@@ -342,7 +342,7 @@ impl App {
     /// always have been: what the player clicked is what they were shown they
     /// were pointing at.
     pub(crate) fn attack_under_cursor(&self) {
-        let Some(view) = self.world.view.as_ref() else {
+        let Some(view) = self.world.authoritative.view.as_ref() else {
             return;
         };
         if !view.player.war || view.player.dead {

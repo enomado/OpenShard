@@ -140,7 +140,7 @@ pub(crate) fn draw_chat_and_speech(
     // the caller's own chat, so both need somewhere to live for the length of
     // `collect_gump`'s borrow.
     let mut rows: Vec<(GumpPixel, Hue, Font, String)> = Vec::new();
-    if let Some(view) = world.view.as_ref() {
+    if let Some(view) = world.authoritative.view.as_ref() {
         for (row, line) in view.journal.iter().rev().take(CHAT_LINES).enumerate() {
             let at = GumpPixel::new(CHAT_MARGIN, input_at.y - line_height * (row as i32 + 1));
             let text = match line.name.is_empty() {

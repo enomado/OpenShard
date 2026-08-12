@@ -54,6 +54,7 @@ pub(crate) fn draw_gump_windows(
         // `gump::art_of` is that list, asked for on the frame the window is
         // drawn on because that is the frame that knows it is open at all.
         let open = world
+            .authoritative
             .view
             .as_ref()
             .map(|view| view.gumps.as_slice())
@@ -89,7 +90,7 @@ pub(crate) fn draw_gump_windows(
         // wrong window in the other. This list is what the pointer is
         // tested against next frame — see `windows::Windows::drawn_windows`.
         let mut drawn_windows: Vec<(WindowSubject, Drawn)> = Vec::new();
-        if let Some(view) = world.view.as_ref() {
+        if let Some(view) = world.authoritative.view.as_ref() {
             for open in &windows.own_windows {
                 match open.subject {
                     WindowSubject::Dialog(gump_id) => {

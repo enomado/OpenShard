@@ -26,6 +26,10 @@ use crate::{clutter, link, resources};
 /// What the connection has told this client the world looks like — see the
 /// module docs.
 pub struct WorldState {
+    /// The server's last complete word, and only that. It is owned and mutated
+    /// on the application thread; render data is rebuilt from it below rather
+    /// than sharing or mutating this record from another thread.
+    pub authoritative: AuthoritativeWorld,
     /// The statics that move on their own — fires, torches, water wheels — and
     /// how far into their cycles they are.
     ///
@@ -97,12 +101,6 @@ pub struct WorldState {
     /// one and the shard refuses the step this end thought was open. See
     /// `clutter.rs`.
     pub clutter: clutter::Clutter,
-    /// The last thing the server said, whole.
-    ///
-    /// Kept only for the HUD's world window, which lists what has been decoded
-    /// with the serials the three projections above drop. The renderer reads
-    /// those.
-    pub view: Option<Box<WorldView>>,
     /// What the connection is doing, for the status strip.
     pub connection: String,
     /// The shard, if this run logged in to one.
@@ -111,10 +109,6 @@ pub struct WorldState {
     /// is a `0x02` when there is somebody to send it to, and a camera move when
     /// there is not.
     pub link: Option<link::Link>,
-    /// Whether the shard's facet has been compared with the one loaded. See
-    /// `App::entered`: once, because it cannot change without a `0xBF 0x08`
-    /// nothing here reads yet.
-    pub facet_checked: bool,
     /// What everyone on screen was doing a moment ago: which animation each is
     /// playing, and how far into it.
     ///
@@ -124,13 +118,25 @@ pub struct WorldState {
     pub crowd: Crowd,
 }
 
+/// The one authoritative record the shard updates, kept apart from the
+/// presentation projection and local prediction state in [`WorldState`].
+pub struct AuthoritativeWorld {
+    /// The last thing the server said, whole. Kept for the HUD and as the sole
+    /// source from which this app rebuilds render projections.
+    pub view: Option<Box<WorldView>>,
+    /// Whether the shard's facet has been compared with the one loaded. See
+    /// `App::entered`: once, because it cannot change without a `0xBF 0x08`
+    /// nothing here reads yet.
+    pub facet_checked: bool,
+}
+
 impl WorldState {
     /// Who the crowd knows our own body as.
     ///
     /// Our serial once a shard has named us, and `None` for the offline
     /// placeholder — see [`Who`].
     pub fn me(&self) -> Who {
-        self.view.as_ref().map(|view| view.player.serial)
+        self.authoritative.view.as_ref().map(|view| view.player.serial)
     }
 
     /// Where the body is drawn this instant, wherever the glide has it —

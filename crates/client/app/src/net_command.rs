@@ -59,7 +59,7 @@ impl App {
 
     /// Apply a local UI mutation on the same thread that owns `WorldView`.
     pub(crate) fn apply_close_window(&mut self, target: link::CloseTarget) {
-        let Some(view) = self.world.view.as_mut() else {
+        let Some(view) = self.world.authoritative.view.as_mut() else {
             return;
         };
         match target {
@@ -72,7 +72,7 @@ impl App {
     /// Apply one network mutation on the event-loop thread. This is the only
     /// place after connection setup that mutates the client-owned view.
     pub(crate) fn apply_mutation(&mut self, packet: &ServerPacket, body: link::Body) {
-        let Some(mut view) = self.world.view.take() else {
+        let Some(mut view) = self.world.authoritative.view.take() else {
             return;
         };
         let previous_latest = view.journal.back().cloned();
@@ -103,8 +103,8 @@ impl App {
         // shard serving a different one draws this client the wrong ground with
         // no complaint from either end. Said once, because it is a
         // misconfiguration and not an event.
-        if !self.world.facet_checked {
-            self.world.facet_checked = true;
+        if !self.world.authoritative.facet_checked {
+            self.world.authoritative.facet_checked = true;
             if u32::from(view.map.width) != self.resources.map.width()
                 || u32::from(view.map.height) != self.resources.map.height()
             {
@@ -244,7 +244,7 @@ impl App {
         self.world.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
         // The newest line in the journal, heard once and hung over its
         // speaker's head for a while — compared against the old view, still
-        // in `self.world.view` at this point, so a redraw that changed nothing else
+        // in `self.world.authoritative.view` at this point, so a redraw that changed nothing else
         // does not restart the hold on the same sentence. A system line
         // (`serial: None`) has no mobile to hang over and is left for the
         // HUD's world window instead, which is not built yet.
@@ -260,7 +260,7 @@ impl App {
         }
         // Whole, for the HUD's world window: the three projections above are
         // what the renderer wants, and none of them keeps a serial.
-        self.world.view = Some(Box::new(view));
+        self.world.authoritative.view = Some(Box::new(view));
         // The camera follows the body, which is what `0x20` is for — unless it
         // has been unlocked, in which case the eye is the mouse's and the body
         // is free to walk off the screen. `Home` puts it back. After the view is

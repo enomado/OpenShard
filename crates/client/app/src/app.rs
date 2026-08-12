@@ -269,7 +269,12 @@ impl App {
             // motion on top of the one being looked at.
             let (body, hue) = (self.world.player.body, self.world.player.hue);
             let equipment = std::mem::take(&mut self.world.player.equipment);
-            let war = self.world.view.as_ref().is_some_and(|view| view.player.war);
+            let war = self
+                .world
+                .authoritative
+                .view
+                .as_ref()
+                .is_some_and(|view| view.player.war);
             self.world.player = self.world.crowd.snap(
                 self.world.me(),
                 start,
@@ -305,7 +310,12 @@ impl App {
             // through a recorded route, and what it is wearing or holding is
             // not part of the recording — so a scenario replayed while at war
             // is drawn at war, exactly as the same walk would be live.
-            let war = self.world.view.as_ref().is_some_and(|view| view.player.war);
+            let war = self
+                .world
+                .authoritative
+                .view
+                .as_ref()
+                .is_some_and(|view| view.player.war);
             self.world.player = match step.glided {
                 true => self
                     .world

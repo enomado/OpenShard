@@ -283,7 +283,12 @@ impl App {
                             you: drawn_who.is_none(),
                             serial: match drawn_who {
                                 Some(serial) => Some(serial),
-                                None => self.world.view.as_ref().map(|view| view.player.serial),
+                                None => self
+                                    .world
+                                    .authoritative
+                                    .view
+                                    .as_ref()
+                                    .map(|view| view.player.serial),
                             },
                             body: mobile.body,
                             hue: mobile.hue,
@@ -699,7 +704,7 @@ impl App {
     }
 
     fn health_bars(&self, camera: Camera, drawn_mobiles: Option<&[(Who, Mobile)]>) -> Vec<shell::HealthBar> {
-        let Some(view) = self.world.view.as_ref() else {
+        let Some(view) = self.world.authoritative.view.as_ref() else {
             return Vec::new();
         };
         let (Some(drawn_mobiles), Some(window)) = (drawn_mobiles, self.window.as_ref()) else {

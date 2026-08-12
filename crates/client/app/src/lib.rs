@@ -668,6 +668,10 @@ pub fn run<D: Dial + Send + 'static>(
         // Built before `resources` moves `tiledata` and `map` into it: this
         // borrows both.
         world: world::WorldState {
+            authoritative: world::AuthoritativeWorld {
+                view: None,
+                facet_checked: false,
+            },
             tile_animations: StaticAnimations::build(&animdata, &tiledata),
             flame_clock: std::time::Duration::ZERO,
             // 400 is the male human body. Its group and frame come from the
@@ -689,10 +693,8 @@ pub fn run<D: Dial + Send + 'static>(
             items: Vec::new(),
             item_serials: Vec::new(),
             clutter: clutter::Clutter::default(),
-            view: None,
             connection: String::from("offline"),
             link,
-            facet_checked: false,
             crowd: {
                 // The body's ease, which is not the camera's — see `STARTUP_EASE`.
                 let mut crowd = Crowd::default();

@@ -37,7 +37,7 @@ impl App {
     /// with it (see `WorldView::apply`'s `Remove` arm), and a window over
     /// nothing must not outlive it.
     pub(crate) fn sync_own_windows(&mut self) {
-        let Some(view) = self.world.view.as_ref() else {
+        let Some(view) = self.world.authoritative.view.as_ref() else {
             // No world, no windows: a map viewer has no shard to have opened
             // one, and anything left over is from a session that has ended.
             self.windows.own_windows.clear();
@@ -106,6 +106,7 @@ impl App {
     /// taken it away since.
     pub(crate) fn open_gump(&self, gump_id: GumpId) -> Option<&openshard_client_net::view::OpenGump> {
         self.world
+            .authoritative
             .view
             .as_ref()?
             .gumps
@@ -313,6 +314,7 @@ impl App {
             skills::Hit::Lock(id) => {
                 let shard = self
                     .world
+                    .authoritative
                     .view
                     .as_ref()
                     .and_then(|view| view.player.skills.get(&id.0))
@@ -472,7 +474,7 @@ impl App {
         // is this question and not a second field: only our own frame carries
         // the six buttons and the toggle, but a stranger's carries Status and
         // the profile scroll, and those name the body they were clicked on.
-        let Some(view) = self.world.view.as_ref() else {
+        let Some(view) = self.world.authoritative.view.as_ref() else {
             return;
         };
         let own = view.player.serial == mobile;
@@ -680,12 +682,12 @@ impl App {
             self.windows.dragging = None;
             return true;
         }
-        if self.world.view.is_none() {
+        if self.world.authoritative.view.is_none() {
             return false;
         }
         match subject {
             WindowSubject::Container(serial) => {
-                // The overlay, not `self.world.view`, is what says this is closed —
+                // The overlay, not `self.world.authoritative.view`, is what says this is closed —
                 // that copy is never authoritative, see D2 in
                 // `docs/client_window_state.md`. The shard thread's own
                 // `WorldView` is what every future snapshot is cloned whole
@@ -752,7 +754,7 @@ impl App {
             // `link::Command::CloseWindow`.
             self.apply_close_window(link::CloseTarget::Gump(gump_id));
         }
-        if self.world.view.is_some() {
+        if self.world.authoritative.view.is_some() {
             self.windows.locally_closed.insert(WindowSubject::Dialog(gump_id));
         }
     }

@@ -892,6 +892,7 @@ impl App {
                     (WindowSubject::Dialog(gump_id), Drawn::Dialog(laid_out)) => {
                         if let Some(gump) = self
                             .world
+                            .authoritative
                             .view
                             .as_ref()
                             .and_then(|view| view.gumps.iter().find(|gump| gump.gump_id == *gump_id))
@@ -919,6 +920,7 @@ impl App {
                         if let (Some(at), Some(doll)) = (
                             at,
                             self.world
+                                .authoritative
                                 .view
                                 .as_ref()
                                 .and_then(|view| view.paperdolls.get(serial)),
