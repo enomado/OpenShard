@@ -47,7 +47,7 @@ use openshard_client_render::statics;
 use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
-use openshard_uofiles::anim::{Anim, AnimFrame, AnimationFrameIndex, AnimationGroup};
+use openshard_uofiles::anim::{Anim, AnimFrame, AnimationDirection, AnimationFrameIndex, AnimationGroup};
 use openshard_uofiles::art::{Art, LAND_TILE_SIZE, land_row};
 use openshard_uofiles::color::{Color16, Rgb8};
 use openshard_uofiles::equipconv::EquipConv;
@@ -2841,7 +2841,7 @@ fn a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going() {
     };
     let atlas = AnimAtlas::pack([(
         FrameKey::new(
-            AnimationKey::new(Graphic(BODY), AnimationGroup(4), 0),
+            AnimationKey::new(Graphic(BODY), AnimationGroup(4), AnimationDirection(0)),
             AnimationFrameIndex(0),
         ),
         frame,
@@ -4636,7 +4636,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
     };
     let atlas = AnimAtlas::pack([(
         FrameKey::new(
-            AnimationKey::new(Graphic(BODY), AnimationGroup(4), 1),
+            AnimationKey::new(Graphic(BODY), AnimationGroup(4), AnimationDirection(1)),
             AnimationFrameIndex(0),
         ),
         frame,

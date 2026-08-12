@@ -67,12 +67,12 @@ pub struct AnimationKey {
     /// The body-specific action group.
     pub group: AnimationGroup,
     /// The stored direction, zero through four.
-    pub direction: u8,
+    pub direction: AnimationDirection,
 }
 
 impl AnimationKey {
     #[must_use]
-    pub const fn new(body: Graphic, group: AnimationGroup, direction: u8) -> Self {
+    pub const fn new(body: Graphic, group: AnimationGroup, direction: AnimationDirection) -> Self {
         Self {
             body,
             group,
@@ -109,6 +109,31 @@ impl PartialEq<u8> for AnimationGroup {
 }
 
 impl fmt::Display for AnimationGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// The stored, unmirrored direction index used by `anim.mul`.
+///
+/// This is deliberately not [`Direction`]: one is a five-entry file index,
+/// while the other is an eight-way world-facing value.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct AnimationDirection(pub u8);
+
+impl AnimationDirection {
+    #[must_use]
+    pub const fn new(raw: u8) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for AnimationDirection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
@@ -398,16 +423,16 @@ pub const fn animation_body(body: Graphic) -> Graphic {
 /// the four facings on the other side of it reuse 1, 2 and 3 flipped — which is
 /// why a flipped sprite is placed from `width - center_x` rather than from
 /// `center_x`.
-pub const fn facing(facing: Direction) -> (u8, bool) {
+pub const fn facing(facing: Direction) -> (AnimationDirection, bool) {
     match facing {
-        Direction::North => (3, true),
-        Direction::NorthEast => (2, true),
-        Direction::East => (1, true),
-        Direction::SouthEast => (0, false),
-        Direction::South => (1, false),
-        Direction::SouthWest => (2, false),
-        Direction::West => (3, false),
-        Direction::NorthWest => (4, false),
+        Direction::North => (AnimationDirection(3), true),
+        Direction::NorthEast => (AnimationDirection(2), true),
+        Direction::East => (AnimationDirection(1), true),
+        Direction::SouthEast => (AnimationDirection(0), false),
+        Direction::South => (AnimationDirection(1), false),
+        Direction::SouthWest => (AnimationDirection(2), false),
+        Direction::West => (AnimationDirection(3), false),
+        Direction::NorthWest => (AnimationDirection(4), false),
     }
 }
 
@@ -562,12 +587,12 @@ impl Anim {
     /// The index entry for one animation.
     fn entry(&self, key: AnimationKey) -> Option<IdxEntry> {
         let kind = BodyKind::of(key.body);
-        if key.group.raw() >= kind.groups() || key.direction >= DIRECTIONS {
+        if key.group.raw() >= kind.groups() || key.direction.raw() >= DIRECTIONS {
             return None;
         }
         let block = kind.base(key.body.0)
             + usize::from(key.group.raw()) * usize::from(DIRECTIONS)
-            + usize::from(key.direction);
+            + usize::from(key.direction.raw());
         self.entries.get(block).copied()
     }
 }
@@ -857,16 +882,24 @@ mod tests {
         let mut anim = Anim::open(&dir).expect("anim.idx and anim.mul");
         for ghost in [0x0192u16, 0x0193] {
             assert!(
-                anim.frames(AnimationKey::new(Graphic(ghost), BodyKind::Human.standing(), 0))
-                    .expect("reading the index")
-                    .is_none(),
+                anim.frames(AnimationKey::new(
+                    Graphic(ghost),
+                    BodyKind::Human.standing(),
+                    AnimationDirection(0),
+                ))
+                .expect("reading the index")
+                .is_none(),
                 "body {ghost:#06x} has frames after all, and the remap is hiding them",
             );
             let drawn = animation_body(Graphic(ghost));
             assert!(
-                anim.frames(AnimationKey::new(drawn, BodyKind::Human.standing(), 0))
-                    .expect("reading the index")
-                    .is_some_and(|frames| !frames.is_empty()),
+                anim.frames(AnimationKey::new(
+                    drawn,
+                    BodyKind::Human.standing(),
+                    AnimationDirection(0),
+                ))
+                .expect("reading the index")
+                .is_some_and(|frames| !frames.is_empty()),
                 "body {:#06x} is what a ghost is drawn from and has no frames either",
                 drawn.0,
             );
@@ -876,7 +909,7 @@ mod tests {
     /// Eight facings, five pictures, and the mirror is the whole difference.
     #[test]
     fn four_facings_are_mirrors_of_the_other_four() {
-        assert_eq!(facing(Direction::SouthEast), (0, false));
+        assert_eq!(facing(Direction::SouthEast), (AnimationDirection(0), false));
         for (left, right) in [
             (Direction::East, Direction::South),
             (Direction::NorthEast, Direction::SouthWest),
@@ -891,7 +924,7 @@ mod tests {
             assert!(mirror_left && !mirror_right, "{left:?} is the flipped one");
         }
         // The eighth facing is the only one with a picture of its own.
-        assert_eq!(facing(Direction::NorthWest), (4, false));
+        assert_eq!(facing(Direction::NorthWest), (AnimationDirection(4), false));
         assert_eq!(
             Direction::ALL.iter().filter(|d| facing(**d).1).count(),
             3,
@@ -946,8 +979,11 @@ mod tests {
         entry.extend_from_slice(&8u32.to_le_bytes());
         entry.extend_from_slice(&frame);
 
-        let frames = decode_body(AnimationKey::new(Graphic(400), AnimationGroup(4), 0), &entry)
-            .expect("a well-formed entry");
+        let frames = decode_body(
+            AnimationKey::new(Graphic(400), AnimationGroup(4), AnimationDirection(0)),
+            &entry,
+        )
+        .expect("a well-formed entry");
         assert_eq!(frames.len(), 1);
         let frame = &frames[0];
         assert_eq!((frame.center_x, frame.center_y), (2, -1));
@@ -977,7 +1013,10 @@ mod tests {
         entry.extend_from_slice(&END_OF_FRAME.to_le_bytes());
 
         assert!(matches!(
-            decode_body(AnimationKey::new(Graphic(400), AnimationGroup(4), 0), &entry),
+            decode_body(
+                AnimationKey::new(Graphic(400), AnimationGroup(4), AnimationDirection(0)),
+                &entry,
+            ),
             Err(AnimError::Malformed { .. })
         ));
     }

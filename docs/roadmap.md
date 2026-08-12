@@ -2728,9 +2728,9 @@ riding along with this one.
   same atlas. `animation_body` no longer opens back to `u16` at any of its
   call sites — `mobiles::place`, `needed_animations` and
   `App::advance_groups`'s `frame_count` lookup all carry `Graphic` straight
-  through. What is left raw on purpose: the stored direction and the
-  file-format group/direction bounds inside `Anim`; `FrameKey` and `Mobile`
-  now carry the named `AnimationGroup` and `AnimationFrameIndex` values.
+  through. What is left raw on purpose: the file-format bounds check inside
+  `Anim`; `AnimationKey` now carries named `AnimationGroup` and
+  `AnimationDirection` values, and `FrameKey` adds `AnimationFrameIndex`.
 - **`app::desk`** — `Frame`'s `x`/`y`/`width`/`height` are physical window
   pixels, `Panel`'s are logical egui points; same shape, different unit, no
   type keeps them apart. Low priority — it's window-chrome geometry, not game
