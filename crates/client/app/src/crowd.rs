@@ -48,7 +48,7 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
-use openshard_uofiles::anim::BodyKind;
+use openshard_uofiles::anim::{AnimationGroup, BodyKind};
 use openshard_uofiles::tiledata::TileData;
 
 /// The wire's list, as [`Mobile::equipment`] wants it.
@@ -270,7 +270,7 @@ struct Tracked {
     /// remembered from whenever the stance last changed.
     war: bool,
     /// Which animation group is playing.
-    group: u8,
+    group: AnimationGroup,
     /// The step it is in the middle of.
     ///
     /// `None` for a body that is standing. Not an "unknown": a standing body
@@ -717,7 +717,7 @@ impl Crowd {
             }),
             elapsed: Duration::ZERO,
         });
-        tracked.change_to(group);
+        tracked.change_to(AnimationGroup(group));
     }
 
     /// Where this body is drawn now, in the sub-pixel form the sprite and the
@@ -772,7 +772,7 @@ impl Crowd {
     /// sprite was the walk's because nothing ever asked the crowd again.
     ///
     /// `None` for a body this crowd is not tracking, same as [`Crowd::drawn_for`].
-    pub fn group_for(&self, who: Who) -> Option<u8> {
+    pub fn group_for(&self, who: Who) -> Option<AnimationGroup> {
         Some(self.tracked.get(&who)?.group)
     }
 
@@ -837,7 +837,7 @@ impl Crowd {
 
 impl Tracked {
     /// Start playing a group, restarting the clock if it is a different one.
-    fn change_to(&mut self, group: u8) {
+    fn change_to(&mut self, group: AnimationGroup) {
         if self.group != group {
             self.group = group;
             self.clock = AnimationClock::default();
@@ -853,7 +853,7 @@ impl Tracked {
     /// each of the three places a body is put back on its feet: they must not
     /// answer differently, and one of them used to be reached only by a walk
     /// timing out.
-    fn standing_group(&self) -> u8 {
+    fn standing_group(&self) -> AnimationGroup {
         let kind = BodyKind::of(self.body);
         match self.war {
             true => kind.standing_at_war().unwrap_or(kind.standing()),
@@ -867,7 +867,7 @@ impl Tracked {
     /// through to the ordinary run whenever the step is a run, because a body
     /// sprinting is a body not fighting. And a running monster walks — the high
     /// numbering has no run at all, which is `BodyKind::running`'s `None`.
-    fn moving_group(&self, running: bool) -> u8 {
+    fn moving_group(&self, running: bool) -> AnimationGroup {
         let kind = BodyKind::of(self.body);
         match (running, kind.running()) {
             (true, Some(running)) => running,
@@ -1132,7 +1132,7 @@ mod tests {
         crowd.advance(openshard_movement::WALK_HOLD * 2);
         assert_eq!(
             crowd.group_for(serial(1)),
-            Some(7),
+            Some(AnimationGroup(7)),
             "the walk times out into the stance it was walking in"
         );
     }

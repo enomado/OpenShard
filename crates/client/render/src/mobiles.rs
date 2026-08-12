@@ -39,6 +39,7 @@
 use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_protocol::world::Point;
+use openshard_uofiles::anim::AnimationGroup;
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::tiledata::AnimId;
 
@@ -71,7 +72,7 @@ pub struct Mobile {
     /// Its body id.
     pub body: Graphic,
     /// Which animation group is playing.
-    pub group: u8,
+    pub group: AnimationGroup,
     /// Which way it is looking.
     ///
     /// The facing, not the stored direction: turning one into the other is
@@ -868,7 +869,7 @@ mod tests {
     /// A frame packed at a known size, for placing.
     fn atlas(body: u16, direction: u8, width: u16, height: u16, center: (i16, i16)) -> AnimAtlas {
         AnimAtlas::pack([(
-            FrameKey::new(AnimationKey::new(Graphic(body), 4, direction), 0),
+            FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), direction), 0),
             AnimFrame {
                 center_x: center.0,
                 center_y: center.1,
@@ -906,7 +907,7 @@ mod tests {
         Mobile {
             at: Point::new(x, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing,
             frame: 0,
             from: None,
@@ -954,7 +955,7 @@ mod tests {
                 .collect(),
         );
         let atlas = AnimAtlas::pack([(
-            FrameKey::new(AnimationKey::new(Graphic(400), 4, 0), 0),
+            FrameKey::new(AnimationKey::new(Graphic(400), AnimationGroup(4), 0), 0),
             AnimFrame {
                 center_x: 2,
                 center_y: 0,
@@ -994,7 +995,7 @@ mod tests {
             }
         }
         AnimAtlas::pack([(
-            FrameKey::new(AnimationKey::new(Graphic(body), 4, direction), 0),
+            FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), direction), 0),
             AnimFrame {
                 center_x: 12,
                 center_y: -3,
@@ -1078,7 +1079,7 @@ mod tests {
         let mut atlas = holed(400, 0, 40, 60);
         atlas
             .pack_more([(
-                FrameKey::new(AnimationKey::new(Graphic(7005), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(7005), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1141,7 +1142,7 @@ mod tests {
         let mut atlas = atlas(400, 0, 40, 60, (12, -3));
         atlas
             .pack_more([(
-                FrameKey::new(AnimationKey::new(Graphic(7005), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(7005), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1222,7 +1223,7 @@ mod tests {
             &[Mobile {
                 at: Point::new(100, 100, 0),
                 body: Graphic(400),
-                group: 4,
+                group: AnimationGroup(4),
                 facing: Direction::SouthEast,
                 frame: 0,
                 from: None,
@@ -1256,7 +1257,7 @@ mod tests {
                 &[Mobile {
                     at: Point::new(100, 100, 0),
                     body: Graphic(400),
-                    group: 4,
+                    group: AnimationGroup(4),
                     facing,
                     frame: 0,
                     from: None,
@@ -1297,7 +1298,7 @@ mod tests {
         let missing = Mobile {
             at: Point::new(100, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             // One past the only frame packed.
             frame: 1,
@@ -1355,7 +1356,7 @@ mod tests {
             // 0x0192, the male ghost: a body the client's files have no
             // animation for.
             body: Graphic(402),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
@@ -1365,7 +1366,7 @@ mod tests {
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&ghost), &no_equip()),
-            vec![AnimationKey::new(Graphic(400), 4, 0)],
+            vec![AnimationKey::new(Graphic(400), AnimationGroup(4), 0)],
             "the atlas is asked for the living body",
         );
         // And an atlas holding exactly that draws it.
@@ -1406,7 +1407,7 @@ mod tests {
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
@@ -1436,7 +1437,7 @@ mod tests {
         let missing = Mobile {
             at: Point::new(100, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 1,
             from: None,
@@ -1461,7 +1462,7 @@ mod tests {
         let on_its_tile = Mobile {
             at: Point::new(101, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
@@ -1527,7 +1528,7 @@ mod tests {
         let walking_north = Mobile {
             at: Point::new(100, 99, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::North,
             frame: 0,
             from: Some(Point::new(100, 100, 0)),
@@ -1576,7 +1577,7 @@ mod tests {
         let mobile = |facing: Direction| Mobile {
             at: Point::new(0, 0, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing,
             frame: 0,
             from: None,
@@ -1596,8 +1597,8 @@ mod tests {
         assert_eq!(
             wanted,
             vec![
-                AnimationKey::new(Graphic(400), 4, 0),
-                AnimationKey::new(Graphic(400), 4, 1)
+                AnimationKey::new(Graphic(400), AnimationGroup(4), 0),
+                AnimationKey::new(Graphic(400), AnimationGroup(4), 1)
             ]
         );
     }
@@ -1610,7 +1611,7 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey::new(AnimationKey::new(Graphic(body), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1626,7 +1627,7 @@ mod tests {
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
@@ -1654,7 +1655,7 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey::new(AnimationKey::new(Graphic(body), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1668,7 +1669,7 @@ mod tests {
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
@@ -1715,7 +1716,7 @@ mod tests {
         // would have a frame to draw and the test would see it.
         let atlas = AnimAtlas::pack([
             (
-                FrameKey::new(AnimationKey::new(Graphic(400), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(400), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1723,7 +1724,7 @@ mod tests {
                 },
             ),
             (
-                FrameKey::new(AnimationKey::new(Graphic(0), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(0), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 4,
                     center_y: -1,
@@ -1735,7 +1736,7 @@ mod tests {
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
@@ -1745,7 +1746,7 @@ mod tests {
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&mobile), &no_equip()),
-            vec![AnimationKey::new(Graphic(400), 4, 0)],
+            vec![AnimationKey::new(Graphic(400), AnimationGroup(4), 0)],
             "the body alone; body 0 is not an animation anybody asked for",
         );
         assert_eq!(
@@ -1770,7 +1771,7 @@ mod tests {
         // the atlas is packed under — `anim::animation_body`.
         let atlas = AnimAtlas::pack([
             (
-                FrameKey::new(AnimationKey::new(Graphic(0x0190), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(0x0190), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 20,
                     center_y: -2,
@@ -1778,7 +1779,7 @@ mod tests {
                 },
             ),
             (
-                FrameKey::new(AnimationKey::new(Graphic(7005), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(7005), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 20,
                     center_y: -2,
@@ -1812,8 +1813,8 @@ mod tests {
         assert_eq!(
             needed_animations(std::slice::from_ref(&ghost), &no_equip()),
             vec![
-                AnimationKey::new(Graphic(0x0190), 4, 0),
-                AnimationKey::new(Graphic(7005), 4, 0),
+                AnimationKey::new(Graphic(0x0190), AnimationGroup(4), 0),
+                AnimationKey::new(Graphic(7005), AnimationGroup(4), 0),
             ],
             "the hair is not packed either — the pack and the draw must agree",
         );
@@ -1832,7 +1833,7 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey::new(AnimationKey::new(Graphic(body), 4, 0), 0),
+                FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), 0), 0),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1846,7 +1847,7 @@ mod tests {
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,
@@ -1872,7 +1873,7 @@ mod tests {
         let mobile = Mobile {
             at: Point::new(100, 100, 0),
             body: Graphic(400),
-            group: 4,
+            group: AnimationGroup(4),
             facing: Direction::SouthEast,
             frame: 0,
             from: None,

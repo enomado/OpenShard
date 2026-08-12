@@ -65,19 +65,44 @@ pub struct AnimationKey {
     /// The body graphic the file stores.
     pub body: Graphic,
     /// The body-specific action group.
-    pub group: u8,
+    pub group: AnimationGroup,
     /// The stored direction, zero through four.
     pub direction: u8,
 }
 
 impl AnimationKey {
     #[must_use]
-    pub const fn new(body: Graphic, group: u8, direction: u8) -> Self {
+    pub const fn new(body: Graphic, group: AnimationGroup, direction: u8) -> Self {
         Self {
             body,
             group,
             direction,
         }
+    }
+}
+
+/// A group in one body's animation numbering.
+///
+/// Monster, animal and human bodies each assign different meanings to the same
+/// byte, so this is intentionally a named value rather than a global enum.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct AnimationGroup(pub u8);
+
+impl AnimationGroup {
+    #[must_use]
+    pub const fn new(raw: u8) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for AnimationGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -183,11 +208,11 @@ impl BodyKind {
     /// (`HighAnimationGroup.Attack1`) and *feeds* a horse
     /// (`LowAnimationGroup.Unknown`, one past `Eat`). All three exist, so
     /// nothing fails; it just plays the wrong picture forever.
-    pub const fn standing(self) -> u8 {
+    pub const fn standing(self) -> AnimationGroup {
         match self {
-            Self::Monster => 1,
-            Self::Animal => 2,
-            Self::Human => 4,
+            Self::Monster => AnimationGroup(1),
+            Self::Animal => AnimationGroup(2),
+            Self::Human => AnimationGroup(4),
         }
     }
 
@@ -198,9 +223,9 @@ impl BodyKind {
     /// [`BodyKind::standing`] cannot conclude that the numbering is shared.
     /// A human's is `WalkUnarmed`; what a weapon does to it is M4's problem,
     /// since nothing here knows what anyone is holding.
-    pub const fn walking(self) -> u8 {
+    pub const fn walking(self) -> AnimationGroup {
         match self {
-            Self::Monster | Self::Animal | Self::Human => 0,
+            Self::Monster | Self::Animal | Self::Human => AnimationGroup(0),
         }
     }
 
@@ -210,11 +235,11 @@ impl BodyKind {
     /// `Walk`, `Stand`, `Die1` — so a running monster keeps walking, which is
     /// what the client draws too. An animal's is 1 and a human's is 2
     /// (`RunUnarmed`).
-    pub const fn running(self) -> Option<u8> {
+    pub const fn running(self) -> Option<AnimationGroup> {
         match self {
             Self::Monster => None,
-            Self::Animal => Some(1),
-            Self::Human => Some(2),
+            Self::Animal => Some(AnimationGroup(1)),
+            Self::Human => Some(AnimationGroup(2)),
         }
     }
 
@@ -240,10 +265,10 @@ impl BodyKind {
     /// graphic — which is what the reference branches on — is thrown away on the
     /// way (`crowd::worn` in the client). One missing field, and it is the same
     /// one `MobileView.IsCovered` wants; see `docs/combat.md` D2.
-    pub const fn standing_at_war(self) -> Option<u8> {
+    pub const fn standing_at_war(self) -> Option<AnimationGroup> {
         match self {
             Self::Monster | Self::Animal => None,
-            Self::Human => Some(7),
+            Self::Human => Some(AnimationGroup(7)),
         }
     }
 
@@ -258,10 +283,10 @@ impl BodyKind {
     /// straight through to the ordinary run for `isRun || !InWarMode ||
     /// IsDead` — a body sprinting is a body not fighting, whatever its stance
     /// says — so [`running`](Self::running) needs no companion here.
-    pub const fn walking_at_war(self) -> Option<u8> {
+    pub const fn walking_at_war(self) -> Option<AnimationGroup> {
         match self {
             Self::Monster | Self::Animal => None,
-            Self::Human => Some(15),
+            Self::Human => Some(AnimationGroup(15)),
         }
     }
 
@@ -513,11 +538,11 @@ impl Anim {
     /// The index entry for one animation.
     fn entry(&self, key: AnimationKey) -> Option<IdxEntry> {
         let kind = BodyKind::of(key.body);
-        if key.group >= kind.groups() || key.direction >= DIRECTIONS {
+        if key.group.raw() >= kind.groups() || key.direction >= DIRECTIONS {
             return None;
         }
         let block = kind.base(key.body.0)
-            + usize::from(key.group) * usize::from(DIRECTIONS)
+            + usize::from(key.group.raw()) * usize::from(DIRECTIONS)
             + usize::from(key.direction);
         self.entries.get(block).copied()
     }
@@ -695,19 +720,31 @@ mod tests {
     /// `AnimationsLoader.cs`.
     #[test]
     fn the_three_kinds_number_their_groups_differently() {
-        assert_eq!(BodyKind::Monster.standing(), 1, "HighAnimationGroup.Stand");
-        assert_eq!(BodyKind::Animal.standing(), 2, "LowAnimationGroup.Stand");
-        assert_eq!(BodyKind::Human.standing(), 4, "PeopleAnimationGroup.Stand");
+        assert_eq!(
+            BodyKind::Monster.standing(),
+            AnimationGroup(1),
+            "HighAnimationGroup.Stand"
+        );
+        assert_eq!(
+            BodyKind::Animal.standing(),
+            AnimationGroup(2),
+            "LowAnimationGroup.Stand"
+        );
+        assert_eq!(
+            BodyKind::Human.standing(),
+            AnimationGroup(4),
+            "PeopleAnimationGroup.Stand"
+        );
         // Walking is the coincidence, and the reason standing is not.
         for kind in [BodyKind::Monster, BodyKind::Animal, BodyKind::Human] {
-            assert_eq!(kind.walking(), 0);
+            assert_eq!(kind.walking(), AnimationGroup(0));
             // Whatever a kind names, it names inside its own table.
-            assert!(kind.standing() < kind.groups());
-            assert!(kind.running().is_none_or(|group| group < kind.groups()));
+            assert!(kind.standing().raw() < kind.groups());
+            assert!(kind.running().is_none_or(|group| group.raw() < kind.groups()));
         }
         assert_eq!(BodyKind::Monster.running(), None, "High has no run");
-        assert_eq!(BodyKind::Animal.running(), Some(1));
-        assert_eq!(BodyKind::Human.running(), Some(2), "RunUnarmed");
+        assert_eq!(BodyKind::Animal.running(), Some(AnimationGroup(1)));
+        assert_eq!(BodyKind::Human.running(), Some(AnimationGroup(2)), "RunUnarmed");
     }
 
     /// War changes a human's stance and nobody else's, and the two groups it
@@ -720,12 +757,12 @@ mod tests {
     fn only_a_human_has_a_war_stance() {
         assert_eq!(
             BodyKind::Human.standing_at_war(),
-            Some(7),
+            Some(AnimationGroup(7)),
             "PeopleAnimationGroup.StandOnehandedAttack"
         );
         assert_eq!(
             BodyKind::Human.walking_at_war(),
-            Some(15),
+            Some(AnimationGroup(15)),
             "PeopleAnimationGroup.WalkWarmode"
         );
         for kind in [BodyKind::Monster, BodyKind::Animal] {
@@ -736,8 +773,14 @@ mod tests {
         // names something *different* from the peacetime group, or the whole
         // pair would be a stance nobody can see.
         for kind in [BodyKind::Monster, BodyKind::Animal, BodyKind::Human] {
-            assert!(kind.standing_at_war().is_none_or(|group| group < kind.groups()));
-            assert!(kind.walking_at_war().is_none_or(|group| group < kind.groups()));
+            assert!(
+                kind.standing_at_war()
+                    .is_none_or(|group| group.raw() < kind.groups())
+            );
+            assert!(
+                kind.walking_at_war()
+                    .is_none_or(|group| group.raw() < kind.groups())
+            );
             assert!(
                 kind.standing_at_war()
                     .is_none_or(|group| group != kind.standing())
@@ -879,7 +922,8 @@ mod tests {
         entry.extend_from_slice(&8u32.to_le_bytes());
         entry.extend_from_slice(&frame);
 
-        let frames = decode_body(AnimationKey::new(Graphic(400), 4, 0), &entry).expect("a well-formed entry");
+        let frames = decode_body(AnimationKey::new(Graphic(400), AnimationGroup(4), 0), &entry)
+            .expect("a well-formed entry");
         assert_eq!(frames.len(), 1);
         let frame = &frames[0];
         assert_eq!((frame.center_x, frame.center_y), (2, -1));
@@ -909,7 +953,7 @@ mod tests {
         entry.extend_from_slice(&END_OF_FRAME.to_le_bytes());
 
         assert!(matches!(
-            decode_body(AnimationKey::new(Graphic(400), 4, 0), &entry),
+            decode_body(AnimationKey::new(Graphic(400), AnimationGroup(4), 0), &entry),
             Err(AnimError::Malformed { .. })
         ));
     }

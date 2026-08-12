@@ -2704,16 +2704,17 @@ riding along with this one.
   its worked example — now takes `Graphic` and a new `AnimId` (below);
   `mobiles::EquipmentLayer::graphic` and `paperdoll::{Wearer::body,
   gump_of, body_gump}` followed the same body/anim-id split.
-  `Wanted::animations: BTreeSet<(u16, u8, u8)>` (lib.rs:792) is **not**
-  fixed — `group: u8` still has no named type (see below), so the tuple
-  stays raw rather than becoming a struct with one untyped field; revisit
-  once `group` is named.
-- **`app::crowd::Tracked::group: u8`** — an animation group with no named
+  ~~`Wanted::animations: BTreeSet<(u16, u8, u8)>` (lib.rs:792)~~ Fixed:
+  animation requests now use the shared `AnimationKey`, whose body and group
+  are typed; only the stored direction remains a file-format byte.
+- ~~**`app::crowd::Tracked::group: u8`** — an animation group with no named
   type yet. `BodyKind::{standing, walking, running, ...}` all return bare
   `u8` from the same three-numbering table `docs/style.md`'s "three
   enumerations, same number means three different actions" comment already
   warns about — a `Group` newtype here would be a `BodyKind`-scoped one, not
-  a global animation-group id.
+  a global animation-group id.~~ Fixed: `AnimationGroup` now names the
+  body-specific value throughout `BodyKind`, `Crowd::Tracked`, `Mobile` and
+  `AnimationKey`; raw bytes remain only at protocol/file boundaries.
 - ~~**`openshard_uofiles::tiledata::AnimId(pub u16)`** — new, this pass: the
   worn-item picture in the body-animation index space
   (`StaticTile::anim_id`, `EquipConvEntry::graphic`,
