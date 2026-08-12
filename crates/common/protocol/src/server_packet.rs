@@ -170,8 +170,8 @@ impl ServerPacket {
         match self {
             Self::TargetCursor(_) => TargetCursor::ID,
             Self::WarMode(_) => <WarMode as EncodePacket>::ID,
-            Self::AttackTarget(_) => AttackTarget::ID,
-            Self::Health(_) => HealthBar::ID,
+            Self::AttackTarget(_) => <AttackTarget as EncodePacket>::ID,
+            Self::Health(_) => <HealthBar as EncodePacket>::ID,
             Self::PlaySound(_) => PlaySound::ID,
             Self::Animation(_) => Animation::ID,
             Self::NewAnimation(_) => NewAnimation::ID,
@@ -472,6 +472,12 @@ impl ServerPacket {
             <WarMode as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::WarMode)
                 .map_err(ServerDecodeError::WarMode)?,
+            <AttackTarget as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::AttackTarget)
+                .map_err(ServerDecodeError::AttackTarget)?,
+            <HealthBar as DecodePacket>::ID => decode_server(packet, version)
+                .map(Self::Health)
+                .map_err(ServerDecodeError::Health)?,
             <DeathStatus as DecodePacket>::ID => decode_server(packet, version)
                 .map(Self::DeathStatus)
                 .map_err(ServerDecodeError::DeathStatus)?,
@@ -548,6 +554,10 @@ pub enum ServerDecodeError {
     OpenPaperdoll(DecodeError),
     /// `0x72` did not decode.
     WarMode(DecodeError),
+    /// `0xAA` did not decode.
+    AttackTarget(DecodeError),
+    /// `0xA1` did not decode.
+    Health(DecodeError),
     /// `0x2C` did not decode.
     DeathStatus(DecodeError),
     /// `0xD1` did not decode.
@@ -584,6 +594,8 @@ impl fmt::Display for ServerDecodeError {
             Self::ContainerContents(error) => ("0x3C container contents", error),
             Self::OpenPaperdoll(error) => ("0x88 paperdoll", error),
             Self::WarMode(error) => ("0x72 war mode", error),
+            Self::AttackTarget(error) => ("0xAA attack target", error),
+            Self::Health(error) => ("0xA1 health bar", error),
             Self::DeathStatus(error) => ("0x2C death status", error),
             Self::LogoutAck(error) => ("0xD1 logout ack", error),
             Self::Skills(error) => ("0x3A skills", error),
@@ -1567,6 +1579,28 @@ mod tests {
                 Ok(Some(ServerPacket::DeathStatus(DeathStatus { dead })))
             );
         }
+    }
+
+    #[test]
+    fn combat_feedback_packets_are_decoded() {
+        let serial = Serial::new(0x2A).unwrap();
+        let target = ServerPacket::AttackTarget(AttackTarget { target: Some(serial) });
+        assert_eq!(
+            ServerPacket::decode(&target.encode(version()), version()),
+            Ok(Some(target))
+        );
+
+        let clear = ServerPacket::AttackTarget(AttackTarget { target: None });
+        assert_eq!(
+            ServerPacket::decode(&clear.encode(version()), version()),
+            Ok(Some(clear))
+        );
+
+        let health = ServerPacket::Health(HealthBar::scaled(serial, 120, 45));
+        assert_eq!(
+            ServerPacket::decode(&health.encode(version()), version()),
+            Ok(Some(health))
+        );
     }
 
     #[test]

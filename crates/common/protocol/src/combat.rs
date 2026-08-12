@@ -134,6 +134,16 @@ impl EncodePacket for AttackTarget {
     }
 }
 
+impl DecodePacket for AttackTarget {
+    const ID: u8 = 0xAA;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self {
+            target: Serial::new(reader.u32()?),
+        })
+    }
+}
+
 /// `0xA1` — a mobile's health bar. 9 bytes.
 ///
 /// # Two truths, by who is looking
@@ -191,6 +201,26 @@ impl EncodePacket for HealthBar {
         out.u32(self.serial.raw());
         out.u16(self.vitals.max);
         out.u16(self.vitals.current);
+    }
+}
+
+impl DecodePacket for HealthBar {
+    const ID: u8 = 0xA1;
+
+    fn decode_body(reader: &mut PacketReader<'_>, _version: ClientVersion) -> Result<Self, DecodeError> {
+        Ok(Self {
+            serial: {
+                let raw = reader.u32()?;
+                Serial::new(raw).ok_or(DecodeError::UnknownValue {
+                    field: "health bar serial",
+                    value: raw,
+                })?
+            },
+            vitals: Vitals {
+                max: reader.u16()?,
+                current: reader.u16()?,
+            },
+        })
     }
 }
 
@@ -322,6 +352,23 @@ mod tests {
             ),
             vec![0xAA, 0x00, 0x00, 0x00, 0x2A]
         );
+    }
+
+    #[test]
+    fn an_attack_target_decodes_as_the_servers_aim() {
+        let target: AttackTarget = decode_packet(&[0xAA, 0x00, 0x00, 0x00, 0x2A], version()).unwrap();
+        assert_eq!(target.target, Serial::new(0x2A));
+
+        let cleared: AttackTarget = decode_packet(&[0xAA, 0x00, 0x00, 0x00, 0x00], version()).unwrap();
+        assert_eq!(cleared.target, None);
+    }
+
+    #[test]
+    fn a_health_bar_decodes_the_pair_the_server_sent() {
+        let bar: HealthBar = decode_packet(&[0xA1, 0, 0, 0, 0x2A, 0, 100, 0, 37], version()).unwrap();
+        assert_eq!(bar.serial, mobile(0x2A));
+        assert_eq!(bar.vitals.max, 100);
+        assert_eq!(bar.vitals.current, 37);
     }
 
     #[test]

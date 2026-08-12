@@ -15,14 +15,17 @@ use openshard_client_render::camera::{self, Camera};
 use openshard_client_render::control::Follow;
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::depth;
+use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::{light, occlusion};
 use openshard_movement::Terrain;
 use openshard_protocol::direction::Direction;
+use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 
 use crate::app::App;
+use crate::crowd::Who;
 use crate::picking::{Pick, SelectedIdentity};
 use crate::world::{cluttered, cluttered_with_doors_open, terrain};
 use crate::{desk, frames, shell, steer};
@@ -615,7 +618,13 @@ impl App {
     /// occluder overlay draws the grid the frame's lighting is about to build,
     /// and a grid built from a second cutaway would draw boxes for the storey
     /// this frame took away.
-    pub(crate) fn hud(&self, camera: Camera, pick: &Pick, cutaway: &Cutaway) -> shell::Hud {
+    pub(crate) fn hud(
+        &self,
+        camera: Camera,
+        pick: &Pick,
+        cutaway: &Cutaway,
+        drawn_mobiles: Option<&[(Who, Mobile)]>,
+    ) -> shell::Hud {
         shell::Hud {
             locked: self.control.follow() == Follow::Body,
             rig: self.control.rig(),
@@ -682,8 +691,47 @@ impl App {
                 .picking
                 .selected
                 .map(|identity| self.resolve_selection(identity)),
+            health_bars: self.health_bars(camera, drawn_mobiles),
             goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
         }
+    }
+
+    fn health_bars(&self, camera: Camera, drawn_mobiles: Option<&[(Who, Mobile)]>) -> Vec<shell::HealthBar> {
+        let Some(view) = self.world.view.as_ref() else {
+            return Vec::new();
+        };
+        let (Some(drawn_mobiles), Some(window)) = (drawn_mobiles, self.window.as_ref()) else {
+            return Vec::new();
+        };
+
+        drawn_mobiles
+            .iter()
+            .filter_map(|(who, drawn)| {
+                let (hits, notoriety, targeted) = match who {
+                    Some(serial) if *serial == view.player.serial => {
+                        (view.player.hits, Notoriety::Innocent, false)
+                    }
+                    Some(serial) => {
+                        let mobile = view.mobiles.get(serial)?;
+                        (
+                            mobile.hits,
+                            mobile.notoriety,
+                            view.player.attacking == Some(*serial),
+                        )
+                    }
+                    None => return None,
+                };
+                let hits = hits?;
+                let anchor = mobiles::head_anchor(drawn, &camera, &window.atlases.mobiles)?;
+                Some(shell::HealthBar {
+                    anchor,
+                    current: hits.current,
+                    max: hits.max,
+                    colour: health_colour(notoriety),
+                    targeted,
+                })
+            })
+            .collect()
     }
 
     /// The perf snapshot the HUD panels read, gathered on its own because
@@ -717,5 +765,17 @@ impl App {
             // nobody asked for sooner.
             pacing: self.pacing(),
         }
+    }
+}
+
+fn health_colour(notoriety: Notoriety) -> egui::Color32 {
+    match notoriety {
+        Notoriety::Innocent => egui::Color32::from_rgb(70, 150, 255),
+        Notoriety::Friend => egui::Color32::from_rgb(70, 210, 110),
+        Notoriety::Neutral | Notoriety::Criminal => egui::Color32::from_rgb(170, 170, 170),
+        Notoriety::Enemy => egui::Color32::from_rgb(230, 145, 55),
+        Notoriety::Murderer => egui::Color32::from_rgb(220, 55, 45),
+        Notoriety::Invulnerable => egui::Color32::from_rgb(240, 220, 70),
+        _ => egui::Color32::from_rgb(170, 170, 170),
     }
 }

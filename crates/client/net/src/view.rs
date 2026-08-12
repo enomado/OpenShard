@@ -31,7 +31,7 @@ use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::layout::{Element, parse};
 use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
-use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags};
+use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags, Vitals};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::{SkillEntry, SkillLock};
@@ -87,6 +87,18 @@ pub struct Player {
     /// even with [`war`](Self::war) still set, the same
     /// `!InWarMode || IsDead` the reference draws by.
     pub dead: bool,
+    /// Whom the shard says this client is attacking.
+    ///
+    /// Not the hover and not the selection: the server answers an attack click
+    /// with `0xAA`, and this is that answer kept apart from every local
+    /// pointer fact.
+    pub attacking: Option<Serial>,
+    /// The hit-point pair the shard last stated for this character.
+    ///
+    /// `None` means "not said yet", not an empty bar. The server decides
+    /// whether the pair is exact or scaled; this client only draws
+    /// `current / max`.
+    pub hits: Option<Vitals>,
     /// Where it stands.
     pub position: Point,
     /// Which way it faces, and whether it is running.
@@ -173,6 +185,11 @@ pub struct Mobile {
     pub flags: StatusFlags,
     /// How to colour its health bar.
     pub notoriety: Notoriety,
+    /// The hit-point pair the shard last stated for this mobile.
+    ///
+    /// Stored as sent: for strangers this is usually a 0-100 percentage, and
+    /// no caller has to know that to draw a bar.
+    pub hits: Option<Vitals>,
     /// What it is wearing.
     ///
     /// Only `0x78` carries this; a `0x77` move leaves it as it was; see
@@ -445,6 +462,8 @@ impl WorldView {
                 // and a relogged ghost gets its own `0x2C` right behind it
                 // (`enter.rs`'s `enter_ghost_state`).
                 dead: false,
+                attacking: None,
+                hits: None,
                 position: start.position,
                 facing: start.facing,
                 equipment: Vec::new(),
@@ -638,6 +657,8 @@ impl WorldView {
                     // appearance, and death is neither — it has its own
                     // packet, `0x2C`.
                     dead: self.player.dead,
+                    attacking: self.player.attacking,
+                    hits: self.player.hits,
                     position: update.position,
                     facing: update.facing,
                     // `0x20` is a position and an appearance, never a paperdoll:
@@ -675,6 +696,7 @@ impl WorldView {
                     hue: step.hue,
                     flags: step.flags,
                     notoriety: step.notoriety,
+                    hits: self.mobiles.get(&step.serial).and_then(|mobile| mobile.hits),
                     equipment,
                 };
                 let changed = self.mobiles.get(&step.serial) != Some(&fresh);
@@ -697,6 +719,8 @@ impl WorldView {
                     // Kept, for the same reason: a `0x78` describes a body
                     // and its gear, and death is `0x2C`'s to say.
                     dead: self.player.dead,
+                    attacking: self.player.attacking,
+                    hits: self.player.hits,
                     position: incoming.position,
                     facing: incoming.facing,
                     equipment: incoming.equipment.clone(),
@@ -715,6 +739,7 @@ impl WorldView {
                     hue: incoming.hue,
                     flags: incoming.flags,
                     notoriety: incoming.notoriety,
+                    hits: self.mobiles.get(&incoming.serial).and_then(|mobile| mobile.hits),
                     equipment: incoming.equipment.clone(),
                 };
                 let changed = self.mobiles.get(&incoming.serial) != Some(&fresh);
@@ -817,6 +842,24 @@ impl WorldView {
                 self.player.war = mode.war;
                 changed
             }
+            ServerPacket::AttackTarget(target) => {
+                let changed = self.player.attacking != target.target;
+                self.player.attacking = target.target;
+                changed
+            }
+            ServerPacket::Health(bar) if bar.serial == self.player.serial => {
+                let changed = self.player.hits != Some(bar.vitals);
+                self.player.hits = Some(bar.vitals);
+                changed
+            }
+            ServerPacket::Health(bar) => match self.mobiles.get_mut(&bar.serial) {
+                Some(mobile) => {
+                    let changed = mobile.hits != Some(bar.vitals);
+                    mobile.hits = Some(bar.vitals);
+                    changed
+                }
+                None => false,
+            },
             // `0x2C`: this end just died, or came back. `docs/combat.md`'s
             // D9 — the one packet that greys the whole screen, gates an
             // attack off a ghost's own click, and drops the war stance even
@@ -1429,6 +1472,74 @@ mod tests {
 
         assert!(view.apply(&ServerPacket::DeathStatus(DeathStatus { dead: false })));
         assert!(!view.player.dead, "resurrection un-says it");
+    }
+
+    #[test]
+    fn attack_target_is_the_players_server_set_aim() {
+        let mut view = WorldView::entered(start());
+        assert_eq!(view.player.attacking, None);
+
+        assert!(view.apply(&ServerPacket::AttackTarget(
+            openshard_protocol::combat::AttackTarget {
+                target: Some(other())
+            }
+        )));
+        assert_eq!(view.player.attacking, Some(other()));
+        assert!(
+            !view.apply(&ServerPacket::AttackTarget(
+                openshard_protocol::combat::AttackTarget {
+                    target: Some(other())
+                }
+            )),
+            "the same aim twice settles"
+        );
+        assert!(view.apply(&ServerPacket::AttackTarget(
+            openshard_protocol::combat::AttackTarget { target: None }
+        )));
+        assert_eq!(view.player.attacking, None);
+    }
+
+    #[test]
+    fn health_bars_land_on_the_mobile_they_name() {
+        let mut view = WorldView::entered(start());
+        view.apply(&ServerPacket::MobileIncoming(MobileIncoming {
+            serial: other(),
+            body: Graphic(0x00D6),
+            position: Point::new(1476, 1770, 20),
+            facing: Facing::walking(Direction::South),
+            hue: Hue::NONE,
+            flags: StatusFlags::NONE,
+            notoriety: Notoriety::Neutral,
+            equipment: Vec::new(),
+        }));
+
+        assert!(view.apply(&ServerPacket::Health(
+            openshard_protocol::combat::HealthBar::exact(view.player.serial, 120, 45)
+        )));
+        assert_eq!(
+            view.player.hits,
+            Some(Vitals {
+                current: 45,
+                max: 120
+            })
+        );
+
+        assert!(view.apply(&ServerPacket::Health(
+            openshard_protocol::combat::HealthBar::scaled(other(), 80, 20)
+        )));
+        assert_eq!(
+            view.mobiles.get(&other()).and_then(|mobile| mobile.hits),
+            Some(Vitals {
+                current: 25,
+                max: 100
+            })
+        );
+        assert!(
+            !view.apply(&ServerPacket::Health(
+                openshard_protocol::combat::HealthBar::scaled(Serial::new(0x7A).unwrap(), 80, 20)
+            )),
+            "a bar for something not on screen creates no phantom mobile"
+        );
     }
 
     /// A stranger's `0x88` says whether *they* are at war, and this client is

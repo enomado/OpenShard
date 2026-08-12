@@ -480,7 +480,7 @@ impl App {
             watched,
             cutaway,
             pick,
-            drawn_mobiles: _,
+            drawn_mobiles,
             on_mobile: _,
             on_item: _,
             held_mobile,
@@ -502,7 +502,7 @@ impl App {
         // in it is a function of them. The one sampling of time that the frame is
         // built from is `started`, at the top.
         let ui_started = Instant::now();
-        let hud = self.hud(camera, &pick, &cutaway);
+        let hud = self.hud(camera, &pick, &cutaway, drawn_mobiles.as_deref());
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {

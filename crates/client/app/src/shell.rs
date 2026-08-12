@@ -45,7 +45,7 @@ use std::time::Duration;
 
 use openshard_client_render::bench::Reading;
 use openshard_client_render::blit::ViewportRect;
-use openshard_client_render::camera::Camera;
+use openshard_client_render::camera::{Camera, ViewPixel};
 use openshard_client_render::facing::{Face, Prism};
 use openshard_client_render::follow::Rig;
 use openshard_client_render::light;
@@ -105,6 +105,8 @@ pub struct Hud {
     /// than folded into a bag of optional fields that all read the same for a
     /// wall as for a body standing on it — see [`Selection`].
     pub selected: Option<Selection>,
+    /// Health bars anchored over bodies the shard has actually sent HP for.
+    pub health_bars: Vec<HealthBar>,
     /// Which producers the client is drawing, for the boxes that say so — see
     /// [`openshard_client_render::frame::Draw`].
     pub draw: openshard_client_render::frame::Draw,
@@ -160,6 +162,20 @@ pub struct Hud {
     /// the shard then refuses to walk to looks exactly like a click that was
     /// never registered, and this is what tells the two apart.
     pub goal: Option<PickedTile>,
+}
+
+/// One overhead health line, already anchored in world-viewport pixels.
+pub struct HealthBar {
+    /// Top-centre of the body sprite, in the world's viewport.
+    pub anchor: ViewPixel,
+    /// Current hit points in the same scale as [`max`](Self::max).
+    pub current: u16,
+    /// Maximum hit points in the scale the shard chose for this body.
+    pub max: u16,
+    /// The bar colour, already resolved from notoriety.
+    pub colour: egui::Color32,
+    /// Whether this body is the attack target the shard settled on.
+    pub targeted: bool,
 }
 
 /// A z-height, as everything about one tile reads it — the wire's own unit,
@@ -1601,6 +1617,7 @@ fn overlays(root: &mut egui::Ui, hud: &Hud, camera: Camera) {
     if let Some(route) = &hud.route {
         draw_route(&world, &camera, route, viewport.min);
     }
+    draw_health_bars(&world, &hud.health_bars, viewport.min);
     // The tile marker, and only when the tile is what is lit: an item under the
     // cursor takes the highlight, and a diamond drawn under its ring would be
     // the client answering "what would a click do here" twice.
@@ -1653,6 +1670,36 @@ fn overlays(root: &mut egui::Ui, hud: &Hud, camera: Camera) {
             egui::Color32::from_rgba_unmultiplied(0, 255, 120, 50),
             egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 255, 120)),
         );
+    }
+}
+
+fn draw_health_bars(painter: &egui::Painter, bars: &[HealthBar], viewport_origin: egui::Pos2) {
+    const WIDTH: f32 = 42.0;
+    const HEIGHT: f32 = 5.0;
+    const GAP: f32 = 8.0;
+
+    let scale = 1.0 / painter.ctx().pixels_per_point();
+    for bar in bars {
+        let ratio = if bar.max == 0 {
+            0.0
+        } else {
+            f32::from(bar.current).min(f32::from(bar.max)) / f32::from(bar.max)
+        };
+        let centre =
+            viewport_origin + egui::vec2(bar.anchor.x as f32 * scale, (bar.anchor.y as f32 - GAP) * scale);
+        let rect = egui::Rect::from_center_size(centre, egui::vec2(WIDTH, HEIGHT));
+        let fill = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * ratio, rect.height()));
+        painter.rect_filled(
+            rect.expand(1.0),
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+        );
+        painter.rect_filled(fill, 1.0, bar.colour);
+        let stroke = match bar.targeted {
+            true => egui::Stroke::new(1.2, egui::Color32::from_rgb(255, 230, 80)),
+            false => egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220)),
+        };
+        painter.rect_stroke(rect, 1.0, stroke, egui::StrokeKind::Middle);
     }
 }
 
