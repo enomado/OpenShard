@@ -4,15 +4,18 @@ This is a long-running refactor track for `crates/client`.
 
 ## Current checkpoint
 
-The working tree was clean after:
+The current implementation checkpoint is:
 
 ```text
-3e33a6c separate client presentation projection
+2ca72c5 borrow drawn equipment layers
 ```
 
 Relevant earlier checkpoints:
 
 ```text
+2ca72c5 borrow drawn equipment layers
+61a4356 update client architecture handoff
+3e33a6c separate client presentation projection
 e6e0c82 separate client prediction state
 cf06c8b isolate authoritative client world
 505e4ed stage client frame delivery
@@ -71,13 +74,13 @@ Result: 169 app tests passed, 2 ignored; 482 render tests passed, 1 ignored.
 - `WorldState` names its three state kinds directly: `authoritative`,
   `prediction` and `presentation`.
 
-## Remaining small copy cost
+## Remaining small allocation
 
 The frame-level equipment copy has been removed: a `Mobile` clone now only
-increments the single-threaded `Rc` handle. `drawn_layers` still builds a small
-ordered list of `EquipmentLayer` values for each renderer pass; that list is
-not a clone of the mobile's equipment allocation and is bounded by the worn
-slots.
+increments the single-threaded `Rc` handle. `drawn_layers` borrows matching
+`EquipmentLayer` values directly from that slice, so it neither allocates nor
+copies them. `paperdoll::world_order` still creates a small ordered `Vec<Layer>`
+to apply cloak placement; it is bounded by the worn slots.
 
 Other clones are either small/local or semantically required by protocol state
 updates (paperdoll, skills, container contents, login plan). Atlas rebuild
@@ -85,8 +88,8 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
 
 ## Next work items
 
-1. Decide whether the short-lived `drawn_layers` lists merit a borrowed ordered
-   iterator; measure first, because they are not a per-mobile equipment clone.
+1. Measure the residual `paperdoll::world_order` allocation before deciding
+   whether its small ordered layer list merits a fixed-size representation.
 2. Exercise the staged mailbox against a real stalled-window/network workload
    and tune its ordered-update capacity if needed.
 3. Keep the three state boundaries explicit as new fields are added:
