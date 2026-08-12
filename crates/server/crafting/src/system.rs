@@ -164,4 +164,32 @@ pub struct CraftSystemDef {
 /// Which of the systems in [`crate::defs`], by index.
 ///
 /// An index rather than a reference so it fits in a component and a save record.
-pub type SystemId = u8;
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct SystemId(pub u8);
+
+impl From<u8> for SystemId {
+    fn from(value: u8) -> Self {
+        Self(value)
+    }
+}
+
+impl From<SystemId> for u8 {
+    fn from(value: SystemId) -> Self {
+        value.0
+    }
+}
+
+impl From<SystemId> for usize {
+    fn from(value: SystemId) -> Self {
+        usize::from(value.0)
+    }
+}
+
+impl TryFrom<usize> for SystemId {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        u8::try_from(value).map(Self)
+    }
+}

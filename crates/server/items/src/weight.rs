@@ -76,14 +76,27 @@ const GOLD_WEIGHT_HUNDREDTHS: u32 = 2;
 /// — costs a full column scan *per bag*, and the status pass reads several bags
 /// for every online player twice a second. Built once, it is a scan per pass
 /// instead of a scan per bag per player.
-pub type Contents = HashMap<Serial, Vec<EntityId>>;
+///
+/// The map stays private: this is a read-only snapshot of a world's containment
+/// column, not an arbitrary collection callers should be able to alter while
+/// they are walking it.
+#[derive(Debug, Default)]
+pub struct Contents(HashMap<Serial, Vec<EntityId>>);
+
+impl Contents {
+    /// Every item directly held by `container`, in the registry's order.
+    #[must_use]
+    pub fn get(&self, container: &Serial) -> Option<&[EntityId]> {
+        self.0.get(container).map(Vec::as_slice)
+    }
+}
 
 /// Index every contained item by its container. See [`Contents`].
 #[must_use]
 pub fn contents_index(state: &WorldState) -> Contents {
-    let mut index: Contents = HashMap::new();
+    let mut index = Contents::default();
     for (entity, held) in state.registry.query::<Contained>() {
-        index.entry(held.container).or_default().push(entity);
+        index.0.entry(held.container).or_default().push(entity);
     }
     index
 }

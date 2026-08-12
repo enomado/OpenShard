@@ -187,7 +187,7 @@ pub fn begin(
     state.registry.insert(
         crafter,
         Crafting {
-            system: system_id,
+            system: system_id.into(),
             recipe: recipe_index,
             tool,
             sub_res,
@@ -214,7 +214,7 @@ pub fn advance_crafts(state: &mut WorldState) {
         if now < work.next_beat {
             continue;
         }
-        let Some(def) = system(work.system) else {
+        let Some(def) = system(SystemId::from(work.system)) else {
             state.registry.remove::<Crafting>(crafter);
             continue;
         };
@@ -330,7 +330,7 @@ fn complete(state: &mut WorldState, crafter: EntityId, work: &Crafting, def: &Cr
         hue,
         amount: made,
         exceptional: outcome.exceptional,
-        system: work.system,
+        system: SystemId::from(work.system),
     });
     wear_tool(state, crafter, work.tool);
 }

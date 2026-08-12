@@ -27,10 +27,21 @@ use openshard_protocol::world::Point;
 
 use crate::walk::{Terrain, Tile, step_allowed};
 
-/// One entry on the open list: `(f, h, manhattan, tile)`, ordered so
-/// [`BinaryHeap`] with [`Reverse`] pops the cheapest-and-straightest first. See
-/// the note where this is pushed for why `manhattan` is there at all.
-type OpenEntry = (u32, u32, u32, u16, u16);
+/// One entry on the open list, ordered so [`BinaryHeap`] with [`Reverse`] pops
+/// the cheapest-and-straightest first. See the note where this is pushed for
+/// why [`Self::manhattan`] is there at all.
+///
+/// Field order is intentional: the derived ordering ranks `f`, then `h`, then
+/// the Manhattan distance, followed by the tile only to make equal candidates
+/// deterministic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OpenEntry {
+    f: u32,
+    h: u32,
+    manhattan: u32,
+    x: u16,
+    y: u16,
+}
 
 /// Plan a walk from `from` to the tile of `to`, at most `budget` tiles explored.
 ///
@@ -136,7 +147,13 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Searc
     point_at.insert(start, from);
     cost.insert(start, 0);
     let h0 = heuristic(from, to);
-    open.push(Reverse((h0, h0, manhattan(from, to), start.x, start.y)));
+    open.push(Reverse(OpenEntry {
+        f: h0,
+        h: h0,
+        manhattan: manhattan(from, to),
+        x: start.x,
+        y: start.y,
+    }));
     // How close a finalised tile has come to the goal, and what it cost to get
     // there. Seeded with the start, so a tile takes the place only by being
     // *strictly* closer: walking to somewhere no nearer than here is not getting
@@ -144,7 +161,7 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Searc
     // wins, which is the same "do not wander" preference the tie-break above is.
     let mut closest = (h0, 0, start);
 
-    while let Some(Reverse((_f, h, _m, cx, cy))) = open.pop() {
+    while let Some(Reverse(OpenEntry { h, x: cx, y: cy, .. })) = open.pop() {
         let tile = Tile::new(cx, cy);
         // Skip a tile already finalised by a cheaper pop.
         if !closed.insert(tile) {
@@ -186,13 +203,13 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Searc
             point_at.insert(next, landing);
             came_from.insert(next, (tile, dir));
             let h = heuristic(landing, to);
-            open.push(Reverse((
-                next_cost + h,
+            open.push(Reverse(OpenEntry {
+                f: next_cost + h,
                 h,
-                manhattan(landing, to),
-                next.x,
-                next.y,
-            )));
+                manhattan: manhattan(landing, to),
+                x: next.x,
+                y: next.y,
+            }));
         }
     }
     // The goal was never popped: what there is to say is how far the way got.
