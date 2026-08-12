@@ -2896,11 +2896,11 @@ Still open, ranked by how strong the case is:
   with `.raw()` only at list/serialisation boundaries. The separate
   picture-index half is also fixed by `PictureIndex` across
   gump/paperdoll/skills.
-- **`(u16, u16)` is `render`'s ad-hoc `Tile` in five places** —
+- ~~**`(u16, u16)` was `render`'s ad-hoc `Tile` in five places** —
   `debug::around`, `scene::{room_wall_tiles, DOORWAY}`, `select::{Selection,
-  Selection::on}` — because `render` does not depend on `movement` today and
-  so never reaches for the `Tile` type its sibling client crates already
-  settled on (see the client sweep above, `app::clutter`).
+  Selection::on}`.~~ Fixed: render now uses the shared `movement::Tile` across
+  its scene and selection APIs; the old `SceneTile` wrapper and its tuple
+  constructors are gone.
 - ~~**`occlusion::bvh::Leaf::first: u32`** indexes `Bvh::order`, right beside a
   `NodeIdx` whose own doc comment already argues "a place in the primitives
   ... is a different list" from a node index.~~ Fixed: `OrderIndex` names the
