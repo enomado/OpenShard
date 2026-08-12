@@ -3807,7 +3807,7 @@ fn a_creature_can_be_given_combat_skills() {
         vendor: false,
         healer: false,
         equipment: Vec::new(),
-        skills: vec![(WRESTLING_SKILL.id(), 700), (TACTICS_SKILL.id(), 500)],
+        skills: vec![(WRESTLING_SKILL, 700), (TACTICS_SKILL, 500)],
     });
     world.tick(now);
     let creature = world

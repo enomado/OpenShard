@@ -5871,7 +5871,10 @@ const PARITY_TILE: u32 = 8;
 /// comes from a tile this function names rather than from a second copy of the
 /// camera's arithmetic.
 fn parity_place(px: u32, py: u32) -> (u16, u16, f32, f32) {
-    let (cx, cy) = openshard_client_render::scene::CENTRE.0;
+    let (cx, cy) = (
+        openshard_client_render::scene::CENTRE.x,
+        openshard_client_render::scene::CENTRE.y,
+    );
     let tile_x = cx - 4 + (px / PARITY_TILE) as u16;
     let tile_y = cy - 4 + (py / PARITY_TILE) as u16;
     // Sixteen hundred-and-twenty-sevenths of a tile a pixel. The grain is what
@@ -6276,7 +6279,10 @@ fn the_shader_reads_a_primitive_at_no_fraction_a_byte_could_name() {
     // off the byte grid across, half a step off the sixteen-bit grid up.
     let across = |units: f64| (units + 0.5) / 255.0;
     let up = |steps: f64| (steps + 0.5) / 256.0 - 128.0;
-    let (cx, cy) = openshard_client_render::scene::CENTRE.0;
+    let (cx, cy) = (
+        openshard_client_render::scene::CENTRE.x,
+        openshard_client_render::scene::CENTRE.y,
+    );
     // Thin across the sun's own run, which keeps the ray inside the box for a
     // fiftieth of a tile: nothing about this test depends on that, and it is
     // what makes the fixture readable as "a slab standing in the way" rather
@@ -6475,7 +6481,10 @@ fn the_shader_does_not_stop_a_vertical_ray_with_a_lid_it_is_not_under() {
     let prism =
         openshard_client_render::facing::Prism::new(openshard_client_render::facing::Face::North, &[1, 3, 5])
             .expect("three treads");
-    let (cx, cy) = openshard_client_render::scene::CENTRE.0;
+    let (cx, cy) = (
+        openshard_client_render::scene::CENTRE.x,
+        openshard_client_render::scene::CENTRE.y,
+    );
     let mut builder = Builder::new(TileBounds {
         min_x: i32::from(cx) - 10,
         max_x: i32::from(cx) + 10,
@@ -6611,7 +6620,10 @@ fn the_shader_stops_a_vertical_ray_with_the_panel_it_stands_inside() {
         return;
     };
 
-    let (cx, cy) = openshard_client_render::scene::CENTRE.0;
+    let (cx, cy) = (
+        openshard_client_render::scene::CENTRE.x,
+        openshard_client_render::scene::CENTRE.y,
+    );
     let bounds = TileBounds {
         min_x: i32::from(cx) - 10,
         max_x: i32::from(cx) + 10,
@@ -6738,7 +6750,10 @@ fn a_fragment_a_hair_inside_a_wall_is_shadowed_by_the_cell_it_drifted_into() {
         height: 20,
         ..openshard_uofiles::tiledata::StaticTile::default()
     };
-    let (cx, cy) = openshard_client_render::scene::CENTRE.0;
+    let (cx, cy) = (
+        openshard_client_render::scene::CENTRE.x,
+        openshard_client_render::scene::CENTRE.y,
+    );
     let mut builder = Builder::new(TileBounds {
         min_x: i32::from(cx) - 10,
         max_x: i32::from(cx) + 10,
@@ -7550,7 +7565,10 @@ fn the_shader_meets_what_stands_at_the_corner_two_leaves_meet_at() {
         return;
     };
 
-    let (cx, cy) = openshard_client_render::scene::CENTRE.0;
+    let (cx, cy) = (
+        openshard_client_render::scene::CENTRE.x,
+        openshard_client_render::scene::CENTRE.y,
+    );
     let bounds = TileBounds {
         min_x: i32::from(cx) - 10,
         max_x: i32::from(cx) + 10,

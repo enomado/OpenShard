@@ -423,15 +423,17 @@ fn run_profile(anchor: (u16, u16), lighting: &light::Lighting) {
             sample.brightness()
         );
         for reach in &sample.reaches {
-            if only_light.is_some_and(|want| want != reach.light.0) {
+            if only_light.is_some_and(|want| want != reach.light.position()) {
                 continue;
             }
             match (reach.within, reach.stopped_by) {
-                (false, _) => print!("  | light {}: outside radius", reach.light.0),
-                (true, Some(stopper)) => print!("  | light {}: stopped by {stopper}", reach.light.0),
+                (false, _) => print!("  | light {}: outside radius", reach.light.position()),
+                (true, Some(stopper)) => print!("  | light {}: stopped by {stopper}", reach.light.position()),
                 (true, None) => print!(
                     "  | light {}: visible {:.3} delivers {:.3}",
-                    reach.light.0, reach.through, reach.delivered
+                    reach.light.position(),
+                    reach.through,
+                    reach.delivered
                 ),
             }
         }

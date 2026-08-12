@@ -214,7 +214,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use openshard_scripting::{Command, DenoEngine, Event, ScriptEngine};
+    use openshard_scripting::{Command, DenoEngine, Event, ScriptEngine, Serial};
 
     #[test]
     fn the_mailbox_load_script_creates_and_drives_a_live_crowd() {
@@ -222,7 +222,7 @@ mod tests {
         engine
             .load(include_str!("../mailbox_load.js"))
             .expect("the shipped diagnostic script loads");
-        let player = 0x0000_002A;
+        let player = Serial::new(0x0000_002A).expect("the fixture uses a valid mobile serial");
         engine
             .deliver(&Event::PlayerEntered {
                 serial: player,
@@ -252,7 +252,7 @@ mod tests {
             )
         }));
 
-        let walker = 0x0000_0101;
+        let walker = Serial::new(0x0000_0101).expect("the fixture uses a valid mobile serial");
         engine
             .deliver(&Event::MobileSpawned {
                 serial: walker,
