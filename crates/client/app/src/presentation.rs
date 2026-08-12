@@ -46,6 +46,15 @@ use crate::window::ready_atlases;
 use crate::windows::{Drawn, WindowSubject};
 use crate::{profile, shell};
 
+/// The immutable boundary between advancing the client and presenting one
+/// frame. It contains the one camera and the read-only facts every pass,
+/// overlay and next-frame click must agree on.
+struct PreparedFrame {
+    started: Instant,
+    camera: Camera,
+    facts: FrameFacts,
+}
+
 impl App {
     /// Everyone to draw, each beside the serial their clock is keyed by.
     ///
@@ -454,6 +463,35 @@ impl App {
         }
     }
 
+    /// Freeze the values presentation may read this frame. Writers publish
+    /// their small, deliberate aftermath through [`Self::publish_frame_picks`]
+    /// before any pass is encoded; no pass reaches back into live input or a
+    /// newly moved camera.
+    fn prepare_frame(&self, started: Instant, camera: Camera) -> PreparedFrame {
+        PreparedFrame {
+            started,
+            camera,
+            facts: self.frame_facts(camera),
+        }
+    }
+
+    /// Publish the identities the next input event must read from a prepared
+    /// frame. The facts remain otherwise immutable: this is the only bridge
+    /// from the current picture to next-frame click handling.
+    fn publish_frame_picks(&mut self, facts: &FrameFacts) {
+        self.picking.on_static = facts.pick.static_;
+        self.picking.on_mobile = facts.on_mobile.and_then(|index| {
+            facts
+                .drawn_mobiles
+                .as_ref()
+                .and_then(|drawn| drawn.get(index.raw()))
+                .map(|(who, _)| *who)
+        });
+        self.picking.on_item = facts
+            .on_item
+            .map(|index| self.world.presentation.item_serials[index.raw()]);
+    }
+
     /// **Steps two and three**: the frame `Self::advance` staged for. Takes
     /// the camera as a parameter rather than reading `self.control` again —
     /// a `&Camera` handed to five collectors is five reads of a field that
@@ -472,18 +510,13 @@ impl App {
         // stays a function that only asks, and the one write this frame still
         // owes `self.picking` is named where it happens rather than folded into
         // the asking.
-        let facts = self.frame_facts(camera);
-        self.picking.on_static = facts.pick.static_;
-        self.picking.on_mobile = facts.on_mobile.and_then(|index| {
-            facts
-                .drawn_mobiles
-                .as_ref()
-                .and_then(|drawn| drawn.get(index.raw()))
-                .map(|(who, _)| *who)
-        });
-        self.picking.on_item = facts
-            .on_item
-            .map(|index| self.world.presentation.item_serials[index.raw()]);
+        let prepared = self.prepare_frame(started, camera);
+        self.publish_frame_picks(&prepared.facts);
+        let PreparedFrame {
+            started,
+            camera,
+            facts,
+        } = prepared;
         let FrameFacts {
             watched,
             cutaway,

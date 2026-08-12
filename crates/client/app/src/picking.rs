@@ -12,7 +12,7 @@ use openshard_client_render::statics::PickedStatic;
 use openshard_protocol::serial::Serial;
 
 use crate::crowd::Who;
-use crate::shell::PickedTile;
+use crate::diagnostics::PickedTile;
 
 /// What a left click named, kept as identity rather than as data — see
 /// [`Picking::selected`] for why. [`crate::App::resolve_selection`] is the

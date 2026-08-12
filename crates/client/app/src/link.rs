@@ -20,6 +20,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
+use openshard_client_net::action::Outgoing;
 use openshard_client_net::connection::Event;
 use openshard_client_net::session::Plan;
 use openshard_client_net::transport::{Dial, enter_world_with};
@@ -27,11 +28,9 @@ use openshard_client_net::view::WorldView;
 use openshard_client_net::walk::{Moved, Walk};
 use openshard_protocol::direction::Facing;
 use openshard_protocol::feedback::Animation;
-use openshard_protocol::gump::{GumpId, RawButtonId, RawGumpId, RawGumpKey, RawSwitchId};
+use openshard_protocol::gump::GumpId;
 use openshard_protocol::serial::Serial;
-use openshard_protocol::skill::SkillLock;
 use openshard_protocol::version::ClientVersion;
-use openshard_protocol::wire::RawSkillId;
 use openshard_protocol::world::ResyncRequest;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
@@ -228,6 +227,8 @@ impl Default for Updates {
     }
 }
 
+pub use openshard_client_net::action::GumpReply;
+
 /// What the window asks the shard thread to send.
 ///
 /// One variant per thing a player can do that leaves this process. Open rather
@@ -240,52 +241,8 @@ impl Default for Updates {
 pub enum Command {
     /// Take one step, or turn.
     Step(Facing),
-    /// Say something out loud. A `.`-prefixed line is a staff command on the
-    /// server and ordinary speech here — see [`openshard_client_net::talk`].
-    Say(String),
-    /// Answer an open dialog: press one of its buttons, or dismiss it.
-    AnswerGump(GumpReply),
-    /// Use an object: the double-click that opens a door, opens a container or
-    /// eats the food. What using it *means* is the shard's answer — see
-    /// [`openshard_client_net::interact`].
-    Use(Serial),
-    /// Ask to enter or leave war mode — the paperdoll's peace/war toggle.
-    ///
-    /// The stance asked for, not the one to draw: the server answers with the
-    /// one that settled and the picture follows *that*. See
-    /// [`openshard_client_net::doll::war_mode`].
-    WarMode(bool),
-    /// Attack a mobile — a click on a body while standing in war mode.
-    ///
-    /// An *aim* and nothing more: no swing is ever sent, the shard's own
-    /// `swings` strikes on its timer, and the answer is a `0xAA` naming the
-    /// target that settled. See [`openshard_client_net::combat`].
-    Attack(Serial),
-    /// "Log Out" was pressed. The connection stays up until the shard answers.
-    LogOut,
-    /// Ask for a mobile's status bar (`0x34`).
-    Status(Serial),
-    /// Ask for a mobile's skill list — the same packet, the other type byte.
-    Skills(Serial),
-    /// Ask for our own quest log (`0xD7`).
-    ///
-    /// No serial: the request names the asking player and the thread already
-    /// knows which one that is. Passing it from the window would be the same
-    /// number carried through two hands for a shard that ignores it anyway.
-    QuestLog,
-    /// Ask for our own guild menu — the `0xD7` beside the quest log's.
-    GuildMenu,
-    /// Double-clicking the virtue scroll on a doll: whose virtues.
-    Virtue(Serial),
-    /// A skill's lock arrow was clicked — the state asked for.
-    ///
-    /// Unanswered by design: see
-    /// [`openshard_client_net::skill::set_lock`]'s doc. The window has
-    /// already drawn this state by the time the command reaches here — see
-    /// `skills::Tree`'s lock override — so nothing waits on the wire for it.
-    SkillLock { skill: RawSkillId, lock: SkillLock },
-    /// A skill's use button was pressed.
-    UseSkill(RawSkillId),
+    /// An ordinary network action. Its packet mapping is owned by `client-net`.
+    Outgoing(Outgoing),
 }
 
 /// Which of a locally-closed window's state [`Command::CloseWindow`] drops
@@ -304,25 +261,6 @@ pub enum CloseTarget {
     Container(Serial),
     /// A dialog, named by the gump id the shard opened it under.
     Gump(GumpId),
-}
-
-/// A dialog answered: which window, which button, and what was set on it.
-///
-/// Every field is a `Raw*` because a reply is an echo — the server named all of
-/// them and this end only repeats them. See
-/// [`openshard_client_net::talk::answer_gump`], which is where it becomes bytes.
-#[derive(Clone, Debug)]
-pub struct GumpReply {
-    /// The key the window was opened under.
-    pub key: RawGumpKey,
-    /// Which dialog is being answered.
-    pub gump_id: RawGumpId,
-    /// The button pressed, or [`RawButtonId`]`(0)` for the close box.
-    pub button: RawButtonId,
-    /// The switches left on when the button was pressed.
-    pub switches: Vec<RawSwitchId>,
-    /// What was typed into the window's fields, if it had any.
-    pub text_entries: Vec<(u16, String)>,
 }
 
 /// The handle the window keeps: somewhere to send commands.
@@ -361,67 +299,71 @@ impl Link {
 
     /// Say a line out loud.
     pub fn say(&self, text: String) {
-        self.send(Command::Say(text));
+        self.send(Command::Outgoing(Outgoing::Say(text)));
     }
 
     /// Answer an open dialog.
     pub fn answer_gump(&self, reply: GumpReply) {
-        self.send(Command::AnswerGump(reply));
+        self.send(Command::Outgoing(Outgoing::AnswerGump(reply)));
     }
 
     /// Use an object — the double-click.
     pub fn use_object(&self, serial: Serial) {
-        self.send(Command::Use(serial));
+        self.send(Command::Outgoing(Outgoing::Use(serial)));
     }
 
-    /// Ask for a stance. See [`Command::WarMode`].
+    /// Ask for a stance. See [`Outgoing::WarMode`].
     pub fn war_mode(&self, war: bool) {
-        self.send(Command::WarMode(war));
+        self.send(Command::Outgoing(Outgoing::WarMode(war)));
     }
 
-    /// Aim at a mobile. See [`Command::Attack`].
+    /// Aim at a mobile. See [`Outgoing::Attack`].
     pub fn attack(&self, mobile: Serial) {
-        self.send(Command::Attack(mobile));
+        self.send(Command::Outgoing(Outgoing::Attack(mobile)));
     }
 
     /// Announce that the player is leaving.
     pub fn log_out(&self) {
-        self.send(Command::LogOut);
+        self.send(Command::Outgoing(Outgoing::LogOut));
     }
 
     /// Ask for a mobile's status bar.
     pub fn status(&self, mobile: Serial) {
-        self.send(Command::Status(mobile));
+        self.send(Command::Outgoing(Outgoing::Status(mobile)));
     }
 
     /// Ask for a mobile's skill list.
     pub fn skills(&self, mobile: Serial) {
-        self.send(Command::Skills(mobile));
+        self.send(Command::Outgoing(Outgoing::Skills(mobile)));
     }
 
     /// Ask for our own quest log.
     pub fn quest_log(&self) {
-        self.send(Command::QuestLog);
+        self.send(Command::Outgoing(Outgoing::QuestLog));
     }
 
     /// Ask for our own guild menu.
     pub fn guild_menu(&self) {
-        self.send(Command::GuildMenu);
+        self.send(Command::Outgoing(Outgoing::GuildMenu));
     }
 
     /// Ask about a mobile's virtues.
     pub fn virtue(&self, mobile: Serial) {
-        self.send(Command::Virtue(mobile));
+        self.send(Command::Outgoing(Outgoing::Virtue(mobile)));
     }
 
-    /// Ask to set a skill's lock. See [`Command::SkillLock`].
-    pub fn set_skill_lock(&self, skill: RawSkillId, lock: SkillLock) {
-        self.send(Command::SkillLock { skill, lock });
+    /// Ask to set a skill's lock. See [`Outgoing::SkillLock`].
+    pub fn set_skill_lock(
+        &self,
+        skill: openshard_protocol::wire::RawSkillId,
+        lock: openshard_protocol::skill::SkillLock,
+    ) {
+        self.send(Command::Outgoing(Outgoing::SkillLock { skill, lock }));
     }
 
     /// Ask to use a skill — its own button, not the lock arrow.
-    pub fn use_skill(&self, skill: RawSkillId) {
-        self.send(Command::UseSkill(skill));
+    pub fn use_skill(&self, skill: openshard_protocol::wire::RawSkillId) {
+        self.send(Command::Outgoing(Outgoing::UseSkill(skill)));
     }
 }
 
@@ -631,39 +573,7 @@ async fn play<D: Dial, F: Fn(Update) + Send>(
                             }
                         }
                     }
-                    Command::Say(text) => openshard_client_net::talk::say(&text),
-                    Command::Use(serial) => openshard_client_net::interact::use_object(serial),
-                    // The paperdoll's buttons. Nothing is done locally on the
-                    // way out for any of them — the toggle's picture, the quest
-                    // window and the logout all wait for the shard's answer,
-                    // for the reason the door does (`Command::Use`): a client
-                    // that acted on its own would show a state the server
-                    // refused.
-                    Command::WarMode(war) => openshard_client_net::doll::war_mode(war),
-                    // The same rule from the world rather than the frame: an
-                    // aim is asked for and the shard answers with a `0xAA`
-                    // saying who is actually being fought.
-                    Command::Attack(mobile) => openshard_client_net::combat::attack(mobile),
-                    Command::LogOut => openshard_client_net::doll::log_out(),
-                    Command::Status(mobile) => openshard_client_net::doll::status(mobile),
-                    Command::Skills(mobile) => openshard_client_net::doll::skills(mobile),
-                    // Ours by definition — see `Command::QuestLog`.
-                    Command::QuestLog => openshard_client_net::doll::quest_log(player_serial),
-                    Command::GuildMenu => openshard_client_net::doll::guild_menu(player_serial),
-                    Command::Virtue(mobile) => {
-                        openshard_client_net::doll::virtue(player_serial, mobile)
-                    }
-                    Command::SkillLock { skill, lock } => {
-                        openshard_client_net::skill::set_lock(skill, lock)
-                    }
-                    Command::UseSkill(skill) => openshard_client_net::skill::use_skill(skill),
-                    Command::AnswerGump(reply) => openshard_client_net::talk::answer_gump(
-                        reply.key,
-                        reply.gump_id,
-                        reply.button,
-                        reply.switches,
-                        reply.text_entries,
-                    ),
+                    Command::Outgoing(action) => action.encode(player_serial),
                 };
                 if let Err(error) = socket.send(&bytes).await {
                     return error.to_string();
@@ -829,7 +739,10 @@ mod tests {
         link.log_out();
         link.log_out();
 
-        assert!(matches!(received.try_recv(), Ok(Command::LogOut)));
+        assert!(matches!(
+            received.try_recv(),
+            Ok(Command::Outgoing(Outgoing::LogOut))
+        ));
         assert!(
             received.try_recv().is_err(),
             "the second command was not queued without limit"
@@ -914,7 +827,7 @@ mod tests {
     fn an_ack_for_a_step_nobody_took_is_an_error() {
         // The two ends have lost track of each other. Nothing local repairs
         // that, so the thread reports it rather than guessing.
-        let (mut view, mut walk) = entered();
+        let (_, mut walk) = entered();
         let ack = ServerPacket::WalkAck(WalkAck {
             sequence: StepSequence(3),
             notoriety: Notoriety::Innocent,

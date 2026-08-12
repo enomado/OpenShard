@@ -26,6 +26,9 @@ use openshard_uofiles::map::Map;
 
 use crate::app::App;
 use crate::crowd::Who;
+use crate::diagnostics::{
+    Height, PickedItem, PickedMobile, PickedTile, PriorityZ, Route, Selection, TerrainOverlay, TileDepth,
+};
 use crate::picking::{Pick, SelectedIdentity};
 use crate::world::{cluttered, cluttered_with_doors_open, terrain};
 use crate::{desk, frames, shell, steer};
@@ -44,7 +47,7 @@ impl App {
     /// Everything the Tile panel shows about one tile, read straight from the
     /// map. Shared by the live hover and a click's frozen selection, so the two
     /// can never disagree about what a tile contains.
-    pub(crate) fn tile_info(&self, tile: Tile) -> shell::PickedTile {
+    pub(crate) fn tile_info(&self, tile: Tile) -> PickedTile {
         let x = tile.x;
         let y = tile.y;
         let land = self.resources.map.land(x, y);
@@ -60,9 +63,9 @@ impl App {
                     depth::static_priority_z(item.z, self.resources.tiledata.static_tile(item.tile));
                 (
                     Graphic(item.tile),
-                    shell::Height(item.z),
+                    Height(item.z),
                     Hue(item.hue),
-                    shell::PriorityZ(priority_z),
+                    PriorityZ(priority_z),
                 )
             })
             .collect();
@@ -82,15 +85,10 @@ impl App {
             .map(|item| {
                 let priority_z =
                     depth::static_priority_z(item.at.z, self.resources.tiledata.static_tile(item.graphic.0));
-                (
-                    item.graphic,
-                    shell::Height(item.at.z),
-                    item.hue,
-                    shell::PriorityZ(priority_z),
-                )
+                (item.graphic, Height(item.at.z), item.hue, PriorityZ(priority_z))
             })
             .collect();
-        let tile_depth = shell::TileDepth(depth::base_for(i32::from(x), i32::from(y)));
+        let tile_depth = TileDepth(depth::base_for(i32::from(x), i32::from(y)));
         // Whichever drawn mobile — our own body included — is standing on this
         // exact tile right now, so its order can be read against the statics
         // above it: this is the comparison that tells "the coarse per-tile
@@ -151,7 +149,7 @@ impl App {
         // where a floor *is* is a fact about the facet, and only whether a body
         // fits on it depends on what has been put there since.
         let cluttered = cluttered(&self.world, &self.resources);
-        let mut levels: Vec<(shell::Height, bool)> = terrain
+        let mut levels: Vec<(Height, bool)> = terrain
             .surfaces(x, y)
             .into_iter()
             .map(|z| {
@@ -161,7 +159,7 @@ impl App {
                     z,
                     openshard_movement::PLAYER_HEIGHT,
                 );
-                (shell::Height(drawn_z(z)), fits)
+                (Height(drawn_z(z)), fits)
             })
             .collect();
         // Sorted so the diagram reads bottom to top, and deduplicated because a
@@ -169,14 +167,14 @@ impl App {
         // diamonds drawn on one line are one line drawn twice.
         levels.sort_unstable();
         levels.dedup();
-        shell::PickedTile {
+        PickedTile {
             at: tile,
             land: land.map(|cell| Graphic(cell.tile)),
-            land_z: shell::Height(land.map_or(0, |cell| cell.z)),
-            stand_z: shell::Height(stand_z),
-            corners: corners.map(shell::Height),
+            land_z: Height(land.map_or(0, |cell| cell.z)),
+            stand_z: Height(stand_z),
+            corners: corners.map(Height),
             levels,
-            ceiling: terrain.ceiling(x, y).map(drawn_z).map(shell::Height),
+            ceiling: terrain.ceiling(x, y).map(drawn_z).map(Height),
             statics,
             items,
             tile_depth,
@@ -201,7 +199,7 @@ impl App {
     /// Eight tiles and not a radius: each of these costs a `predict_z` and the
     /// statics list under it, per frame, and eight is what a slope needs to be
     /// legible. A wider ring is the terrain overlay's job, and it has one.
-    pub(crate) fn tile_ring(&self, centre: &shell::PickedTile) -> Vec<shell::PickedTile> {
+    pub(crate) fn tile_ring(&self, centre: &PickedTile) -> Vec<PickedTile> {
         let mut ring = Vec::with_capacity(8);
         for dy in [-1i32, 0, 1] {
             for dx in [-1i32, 0, 1] {
@@ -238,7 +236,7 @@ impl App {
     /// about the picture being drawn, and reading it from a camera that has
     /// moved since is how the highlight ends up a frame away from the ground
     /// under it.
-    pub(crate) fn pick_tile(&self, camera: Camera) -> Option<shell::PickedTile> {
+    pub(crate) fn pick_tile(&self, camera: Camera) -> Option<PickedTile> {
         let cursor = self.control.cursor();
         let world_px = camera.pick(cursor);
         let near = i32::from(self.world.presentation.player.at.z);
@@ -259,10 +257,10 @@ impl App {
     /// one. A moving mobile's row this way keeps up with it; a picked-up
     /// item's row goes away instead of the panel quietly lying about where it
     /// still is.
-    pub(crate) fn resolve_selection(&self, identity: SelectedIdentity) -> shell::Selection {
+    pub(crate) fn resolve_selection(&self, identity: SelectedIdentity) -> Selection {
         match identity {
-            SelectedIdentity::Tile { x, y } => shell::Selection::Tile(self.tile_info(Tile::new(x, y))),
-            SelectedIdentity::Static(picked) => shell::Selection::Static {
+            SelectedIdentity::Tile { x, y } => Selection::Tile(self.tile_info(Tile::new(x, y))),
+            SelectedIdentity::Static(picked) => Selection::Static {
                 static_: picked,
                 tile: self.tile_info(Tile::new(picked.at.x, picked.at.y)),
                 prism: self
@@ -271,7 +269,7 @@ impl App {
                     .as_ref()
                     .and_then(|surfaces| surfaces.shape(picked.graphic).prism),
             },
-            SelectedIdentity::Mobile(who) => shell::Selection::Mobile(
+            SelectedIdentity::Mobile(who) => Selection::Mobile(
                 self.drawn_mobiles()
                     .into_iter()
                     .find(|(drawn_who, _)| *drawn_who == who)
@@ -280,7 +278,7 @@ impl App {
                             tile: depth::mobile_tile(mobile.at, mobile.from),
                             priority_z: depth::mobile_priority_z(mobile.at.z),
                         };
-                        let picked = shell::PickedMobile {
+                        let picked = PickedMobile {
                             you: drawn_who.is_none(),
                             serial: match drawn_who {
                                 Some(serial) => Some(serial),
@@ -299,7 +297,7 @@ impl App {
                         (picked, self.tile_info(Tile::new(mobile.at.x, mobile.at.y)))
                     }),
             ),
-            SelectedIdentity::Item(serial) => shell::Selection::Item(
+            SelectedIdentity::Item(serial) => Selection::Item(
                 self.world
                     .presentation
                     .item_serials
@@ -307,11 +305,11 @@ impl App {
                     .position(|held| *held == serial)
                     .map(|index| {
                         let item = self.world.presentation.items[index];
-                        let priority_z = shell::PriorityZ(depth::static_priority_z(
+                        let priority_z = PriorityZ(depth::static_priority_z(
                             item.at.z,
                             self.resources.tiledata.static_tile(item.graphic.0),
                         ));
-                        let picked = shell::PickedItem {
+                        let picked = PickedItem {
                             serial,
                             graphic: item.graphic,
                             hue: item.hue,
@@ -386,7 +384,7 @@ impl App {
     /// The way *through* it is not here. A route is drawn whether this overlay
     /// is on or not, so that a Ctrl-drag shows where the body is about to go
     /// with no debugging switch thrown — see [`App::route_shown`].
-    pub(crate) fn terrain_overlay(&self, camera: Camera) -> shell::TerrainOverlay {
+    pub(crate) fn terrain_overlay(&self, camera: Camera) -> TerrainOverlay {
         use openshard_movement::{PLAYER_HEIGHT, Tile};
 
         let terrain = cluttered(&self.world, &self.resources);
@@ -428,7 +426,7 @@ impl App {
             }
         }
 
-        shell::TerrainOverlay { open, blocked }
+        TerrainOverlay { open, blocked }
     }
 
     /// The way to wherever the body was last told to go, as the two-coloured
@@ -451,7 +449,7 @@ impl App {
     /// catch up a beat later, which is the opposite of what a preview is for.
     /// The cost is one bounded [`find_path`] (two, where the way is barred)
     /// while a destination is live, and nothing at all otherwise.
-    pub(crate) fn route_shown(&self, hover: Option<&shell::PickedTile>) -> Option<shell::Route> {
+    pub(crate) fn route_shown(&self, hover: Option<&PickedTile>) -> Option<Route> {
         let opened = cluttered_with_doors_open(&self.world, &self.resources);
         let cluttered = cluttered(&self.world, &self.resources);
         let ground = steer::Ground {
@@ -500,7 +498,7 @@ impl App {
         if !barred.is_empty() {
             barred.insert(0, from);
         }
-        Some(shell::Route { open, barred })
+        Some(Route { open, barred })
     }
 
     /// Do what the HUD asked for on the frame before this one.

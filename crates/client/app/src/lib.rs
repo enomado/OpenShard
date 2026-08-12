@@ -58,6 +58,7 @@ mod chat;
 mod clutter;
 mod crowd;
 mod desk;
+mod diagnostics;
 /// The walk, held against an oracle. Tests only — see its module docs.
 #[cfg(test)]
 mod dst;
