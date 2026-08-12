@@ -95,7 +95,12 @@ impl AnimationGroup {
     }
 
     #[must_use]
-    pub const fn raw(self) -> u8 {
+    /// Its zero-based index in this body's animation-group table.
+    ///
+    /// The same index names a different action for each [`BodyKind`], but the
+    /// `anim.idx` layout uses it as the group coordinate within that body's
+    /// block.
+    pub const fn index(self) -> u8 {
         self.0
     }
 }
@@ -587,11 +592,11 @@ impl Anim {
     /// The index entry for one animation.
     fn entry(&self, key: AnimationKey) -> Option<IdxEntry> {
         let kind = BodyKind::of(key.body);
-        if key.group.raw() >= kind.groups() || key.direction.raw() >= DIRECTIONS {
+        if key.group.index() >= kind.groups() || key.direction.raw() >= DIRECTIONS {
             return None;
         }
         let block = kind.base(key.body.0)
-            + usize::from(key.group.raw()) * usize::from(DIRECTIONS)
+            + usize::from(key.group.index()) * usize::from(DIRECTIONS)
             + usize::from(key.direction.raw());
         self.entries.get(block).copied()
     }
@@ -788,8 +793,8 @@ mod tests {
         for kind in [BodyKind::Monster, BodyKind::Animal, BodyKind::Human] {
             assert_eq!(kind.walking(), AnimationGroup(0));
             // Whatever a kind names, it names inside its own table.
-            assert!(kind.standing().raw() < kind.groups());
-            assert!(kind.running().is_none_or(|group| group.raw() < kind.groups()));
+            assert!(kind.standing().index() < kind.groups());
+            assert!(kind.running().is_none_or(|group| group.index() < kind.groups()));
         }
         assert_eq!(BodyKind::Monster.running(), None, "High has no run");
         assert_eq!(BodyKind::Animal.running(), Some(AnimationGroup(1)));
@@ -824,11 +829,11 @@ mod tests {
         for kind in [BodyKind::Monster, BodyKind::Animal, BodyKind::Human] {
             assert!(
                 kind.standing_at_war()
-                    .is_none_or(|group| group.raw() < kind.groups())
+                    .is_none_or(|group| group.index() < kind.groups())
             );
             assert!(
                 kind.walking_at_war()
-                    .is_none_or(|group| group.raw() < kind.groups())
+                    .is_none_or(|group| group.index() < kind.groups())
             );
             assert!(
                 kind.standing_at_war()

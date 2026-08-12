@@ -130,7 +130,7 @@ pub(crate) fn draw_chat_and_speech(
     // glyphs it is spacing actually will.
     let line_height = match resources.ttf_font {
         Some(_) => CHAT_LINE_HEIGHT,
-        None => CHAT_LINE_HEIGHT * chat_style.scale.raw() as i32,
+        None => CHAT_LINE_HEIGHT * chat_style.scale.glyph_scale_factor() as i32,
     };
     let input_at = GumpPixel::new(CHAT_MARGIN, canvas.y - CHAT_MARGIN - line_height);
 
@@ -290,7 +290,7 @@ pub(crate) fn draw_chat_and_speech(
         text_quads.extend(scaled_gump_quads(
             &labels,
             &resources.font_atlas,
-            chat_style.scale.raw(),
+            chat_style.scale.glyph_scale_factor(),
         ));
     }
     // The one call, with the windows' lines already in front of the

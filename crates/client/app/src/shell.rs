@@ -177,7 +177,7 @@ impl Shell {
         let context = egui::Context::default();
         // On top of the monitor's own density, which `egui_winit::State` is given
         // below and which nothing here saves.
-        context.set_zoom_factor(desk.zoom.raw());
+        context.set_zoom_factor(desk.zoom.hud_scale_factor());
         let state = egui_winit::State::new(
             context.clone(),
             egui::ViewportId::ROOT,
@@ -682,7 +682,7 @@ fn chat_panel(ui: &mut egui::Ui, chat: &mut crate::desk::Chat) {
     use crate::desk::ChatScale;
 
     ui.label("Size");
-    let mut scale = chat.scale.raw();
+    let mut scale = chat.scale.glyph_scale_factor();
     if ui
         .add(egui::Slider::new(&mut scale, ChatScale::MIN..=ChatScale::MAX).text("scale"))
         .changed()

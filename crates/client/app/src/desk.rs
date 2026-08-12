@@ -230,8 +230,11 @@ impl Zoom {
         Self(factor.clamp(Self::MIN, Self::MAX))
     }
 
-    /// The factor, for `egui::Context::set_zoom_factor`.
-    pub fn raw(self) -> f32 {
+    /// The multiplier egui applies to every HUD point.
+    ///
+    /// This is egui's `zoom_factor`, not the operating system's monitor density;
+    /// pass it directly to [`egui::Context::set_zoom_factor`].
+    pub fn hud_scale_factor(self) -> f32 {
         self.0
     }
 }
@@ -285,8 +288,11 @@ impl ChatScale {
         Self(factor.clamp(Self::MIN, Self::MAX))
     }
 
-    /// The factor, as the quad math in `App::draw` wants it.
-    pub fn raw(self) -> u32 {
+    /// The multiplier applied to each classic glyph quad.
+    ///
+    /// Pass this to the bitmap chat layout and rendering paths; TrueType text
+    /// remains at its independently chosen pixel size.
+    pub fn glyph_scale_factor(self) -> u32 {
         self.0
     }
 }
@@ -595,11 +601,11 @@ mod tests {
     #[test]
     fn a_hand_edited_zoom_is_clamped_on_the_way_in() {
         let desk: Desk = toml::from_str("zoom = 400.0").unwrap();
-        assert_eq!(desk.zoom.raw(), Zoom::MAX);
+        assert_eq!(desk.zoom.hud_scale_factor(), Zoom::MAX);
         let desk: Desk = toml::from_str("zoom = 0.0").unwrap();
-        assert_eq!(desk.zoom.raw(), Zoom::MIN);
+        assert_eq!(desk.zoom.hud_scale_factor(), Zoom::MIN);
         let desk: Desk = toml::from_str("zoom = nan").unwrap();
-        assert_eq!(desk.zoom.raw(), 1.0);
+        assert_eq!(desk.zoom.hud_scale_factor(), 1.0);
     }
 
     /// [`ChatScale`]'s own version of the zoom clamp above: a hand-edited `0`
@@ -608,9 +614,9 @@ mod tests {
     #[test]
     fn a_hand_edited_chat_scale_is_clamped_on_the_way_in() {
         let desk: Desk = toml::from_str("[chat]\nscale = 400").unwrap();
-        assert_eq!(desk.chat.scale.raw(), ChatScale::MAX);
+        assert_eq!(desk.chat.scale.glyph_scale_factor(), ChatScale::MAX);
         let desk: Desk = toml::from_str("[chat]\nscale = 0").unwrap();
-        assert_eq!(desk.chat.scale.raw(), ChatScale::MIN);
+        assert_eq!(desk.chat.scale.glyph_scale_factor(), ChatScale::MIN);
     }
 
     /// A file written by a build that predates a field must not lose the rest of

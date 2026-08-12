@@ -17,7 +17,7 @@
 
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
-use openshard_uofiles::anim::{Anim, AnimationKey, BodyKind, DIRECTIONS};
+use openshard_uofiles::anim::{Anim, AnimationDirection, AnimationKey, BodyKind, DIRECTIONS};
 use openshard_uofiles::art::Art;
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::font::{AsciiFonts, CHARS_PER_FONT, FONT_COUNT, GLYPH_BASE};
@@ -703,10 +703,15 @@ fn a_humans_standing_animation_is_where_the_index_says() {
     };
     let mut anim = Anim::open(&dir).expect("a client ships anim.idx and anim.mul");
 
-    // 400 is the male human body, and 4 is `PeopleAnimationGroup.Stand`.
+    // 400 is the male human body, whose standing group is
+    // `PeopleAnimationGroup.Stand`.
     for direction in 0..DIRECTIONS {
         let frames = anim
-            .frames(AnimationKey::new(Graphic(400), 4, direction))
+            .frames(AnimationKey::new(
+                Graphic(400),
+                BodyKind::Human.standing(),
+                AnimationDirection::new(direction),
+            ))
             .expect("a well-formed entry")
             .unwrap_or_else(|| panic!("body 400 has no standing animation facing {direction}"));
         assert!(
@@ -760,12 +765,12 @@ fn the_animation_index_is_sparse_but_the_bodies_that_exist_are_dense() {
     // Standing, facing 0, for every body the file could hold.
     let present = (0..1000u16)
         .filter(|body| {
-            let group = match BodyKind::of(Graphic(*body)) {
-                BodyKind::Monster => 1,
-                BodyKind::Animal => 2,
-                BodyKind::Human => 4,
-            };
-            anim.has_frames(AnimationKey::new(Graphic(*body), group, 0))
+            let kind = BodyKind::of(Graphic(*body));
+            anim.has_frames(AnimationKey::new(
+                Graphic(*body),
+                kind.standing(),
+                AnimationDirection::new(0),
+            ))
         })
         .count();
     assert!(
