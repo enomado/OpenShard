@@ -99,7 +99,7 @@ pub(super) fn anatomy(state: &mut WorldState, actor: EntityId, target: EntityId)
         .map_or(100, |s| pool_percent(s.current, s.max));
     let stamina = fuzzed_index(state, stamina, margin);
 
-    if roll_skill_band(state, actor, skill, 0, 1000) {
+    if roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1000)) {
         state.private_overhead_cliloc(
             actor,
             target,
@@ -143,7 +143,7 @@ pub(super) fn eval_int(state: &mut WorldState, actor: EntityId, target: EntityId
         }
     });
 
-    if roll_skill_band(state, actor, skill, 0, 1200) {
+    if roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1200)) {
         state.private_overhead_cliloc(actor, target, ClilocId(EVAL_INT_RESULT + intelligence + body), "");
         if trained(state, actor, skill) >= EVAL_INT_MANA_AT {
             state.private_overhead_cliloc(actor, target, ClilocId(EVAL_INT_MANA + mana), "");

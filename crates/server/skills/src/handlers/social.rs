@@ -123,7 +123,7 @@ pub(super) fn begging(state: &mut WorldState, actor: EntityId, target: EntityId)
         return;
     }
     let skill = Skill::Begging;
-    if !roll_skill_band(state, actor, skill, 0, 1000) {
+    if !roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1000)) {
         state.localized_message(actor, UNWILLING, "");
         return;
     }
@@ -198,7 +198,12 @@ pub(super) fn remove_trap(state: &mut WorldState, actor: EntityId, target: Entit
     };
     let skill = Skill::RemoveTrap;
     let band = i32::from(power);
-    if roll_skill_band(state, actor, skill, band, band + TRAP_BAND_WIDTH) {
+    if roll_skill_band(
+        state,
+        actor,
+        skill,
+        crate::SkillBand::new(band, band + TRAP_BAND_WIDTH),
+    ) {
         state.registry.remove::<Trap>(target);
         state.localized_message(actor, TRAP_REMOVED, "");
     } else {

@@ -91,7 +91,7 @@ impl World {
                     &self.state,
                     facet,
                     response.location,
-                    response.graphic.map_or(0, |graphic| graphic.0),
+                    response.graphic.unwrap_or(Graphic(0)),
                 ) {
                     skills::begin_harvest(&mut self.state, actor, tool, target);
                 }

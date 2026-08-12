@@ -104,8 +104,7 @@ pub(crate) fn roll(
                 state,
                 crafter,
                 want.skill,
-                want.min - recipe.min_skill_offset,
-                want.max,
+                openshard_skills::SkillBand::new(want.min - recipe.min_skill_offset, want.max),
             );
         }
     }
@@ -130,8 +129,7 @@ pub(crate) fn train_per_item(state: &mut WorldState, crafter: EntityId, recipe: 
                 state,
                 crafter,
                 want.skill,
-                want.min - recipe.min_skill_offset,
-                want.max,
+                openshard_skills::SkillBand::new(want.min - recipe.min_skill_offset, want.max),
             );
         }
     }

@@ -538,7 +538,7 @@ pub struct Harvesting {
     pub kind: crate::harvest::HarvestKind,
     /// The tile id, as [`crate::harvest::tile_key`] matched it — kept so the beat
     /// can confirm the ground has not changed under the swing.
-    pub tile: u16,
+    pub tile: Graphic,
     /// Beats still to come. The last one delivers.
     pub beats_left: u16,
     /// The tick the next beat falls on.

@@ -115,7 +115,7 @@ pub(super) fn apply_to(state: &mut WorldState, actor: EntityId, potion: EntityId
 
     let skill = Skill::Poisoning;
     let (min, max) = POISON_BANDS[usize::from(level.get())];
-    if roll_skill_band(state, actor, skill, min, max) {
+    if roll_skill_band(state, actor, skill, crate::SkillBand::new(min, max)) {
         state.registry.insert(
             target,
             PoisonCharges {
@@ -171,7 +171,7 @@ pub(super) fn taste_id(state: &mut WorldState, actor: EntityId, target: EntityId
         return;
     }
     let skill = Skill::TasteId;
-    if !roll_skill_band(state, actor, skill, 0, 1000) {
+    if !roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1000)) {
         state.private_overhead_cliloc(actor, target, CANNOT_DISCERN, "");
         return;
     }

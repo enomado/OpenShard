@@ -63,8 +63,8 @@ const FELUCCA: u8 = 0;
 pub struct HarvestTarget {
     /// Where.
     pub at: Point,
-    /// The tile id, raw.
-    pub tile: u16,
+    /// The tile graphic, raw.
+    pub tile: Graphic,
     /// Whether it came from the land table or the static table, which decides how
     /// the id is matched.
     pub source: TileSource,
@@ -298,8 +298,7 @@ fn deliver(
             state,
             harvester,
             def.skill,
-            resource.min_skill,
-            resource.max_skill,
+            crate::SkillBand::new(resource.min_skill, resource.max_skill),
         );
 
     if !struck {
@@ -545,13 +544,13 @@ pub fn resolve_harvest_target(
     state: &WorldState,
     facet: Facet,
     at: Point,
-    graphic: u16,
+    graphic: Graphic,
 ) -> Option<HarvestTarget> {
     let terrain = state.facets.get(&facet)?.live_terrain();
-    if graphic == 0 {
+    if graphic.0 == 0 {
         return Some(HarvestTarget {
             at,
-            tile: terrain.land_tile(Tile::new(at.x, at.y))?.0,
+            tile: Graphic(terrain.land_tile(Tile::new(at.x, at.y))?.0),
             source: TileSource::Land,
         });
     }
@@ -559,7 +558,7 @@ pub fn resolve_harvest_target(
     terrain.statics_at(Tile::new(at.x, at.y), &mut statics);
     statics
         .iter()
-        .any(|&(id, z)| id == Graphic(graphic) && i32::from(z) == i32::from(at.z))
+        .any(|&(id, z)| id == graphic && i32::from(z) == i32::from(at.z))
         .then_some(HarvestTarget {
             at,
             tile: graphic,

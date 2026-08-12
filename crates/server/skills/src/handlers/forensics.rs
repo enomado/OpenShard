@@ -63,7 +63,12 @@ fn read_corpse(state: &mut WorldState, actor: EntityId, corpse: EntityId, value:
         return;
     }
     let skill = Skill::Forensics;
-    if !roll_skill_band(state, actor, skill, CORPSE_BAND.0, CORPSE_BAND.1) {
+    if !roll_skill_band(
+        state,
+        actor,
+        skill,
+        crate::SkillBand::new(CORPSE_BAND.0, CORPSE_BAND.1),
+    ) {
         state.localized_message(actor, NOTHING_USEFUL, "");
         return;
     }
@@ -111,7 +116,12 @@ fn read_the_living(state: &mut WorldState, actor: EntityId, value: u16) {
         return;
     }
     let skill = Skill::Forensics;
-    if roll_skill_band(state, actor, skill, LIVING_BAND.0, LIVING_BAND.1) {
+    if roll_skill_band(
+        state,
+        actor,
+        skill,
+        crate::SkillBand::new(LIVING_BAND.0, LIVING_BAND.1),
+    ) {
         state.localized_message(actor, NOTHING_UNUSUAL, "");
     } else {
         state.localized_message(actor, NOTHING_USEFUL, "");

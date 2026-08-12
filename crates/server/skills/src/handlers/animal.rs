@@ -85,10 +85,10 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
             state.localized_message(looker, ONLY_TAMEABLE, "");
             return;
         }
-        roll_skill_band(state, looker, skill, 800, 1200)
+        roll_skill_band(state, looker, skill, crate::SkillBand::new(800, 1200))
     } else {
         let floor = if tameable { 800 } else { 1000 };
-        roll_skill_band(state, looker, skill, floor, 1200)
+        roll_skill_band(state, looker, skill, crate::SkillBand::new(floor, 1200))
     };
     if !allowed {
         state.localized_message(looker, NOTHING_OFFHAND, "");
@@ -97,7 +97,7 @@ pub(super) fn animal_lore(state: &mut WorldState, looker: EntityId, target: Enti
     // A tamed creature read by its owner trains nothing extra; the roll above is
     // the only check, exactly as ServUO's `SendGump` calls `CheckTargetSkill` once.
     if controlled {
-        let _ = roll_skill_band(state, looker, skill, 0, 1200);
+        let _ = roll_skill_band(state, looker, skill, crate::SkillBand::new(0, 1200));
     }
     show_window(state, looker, target);
 }

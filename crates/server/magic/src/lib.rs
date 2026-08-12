@@ -15,6 +15,7 @@ use openshard_items::{count_in_container, take_from_container};
 use openshard_protocol::casting::SpellId;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::wire::Graphic;
+use openshard_skills::SkillBand;
 use openshard_state::components::{
     BehaviourBuff, BehaviourBuffs, Frozen, Hitpoints, Mana, Meditating, Stamina, StatMod, StatMods, Stats,
     stat_shift,
@@ -70,10 +71,8 @@ pub struct Cast<'a> {
     pub target: Option<Serial>,
     /// The mana it costs.
     pub mana: u16,
-    /// The lower edge of the skill band it is cast against, in tenths.
-    pub min_skill: i32,
-    /// The upper edge, in tenths — at or above it the cast cannot fail.
-    pub max_skill: i32,
+    /// The skill band it is cast against.
+    pub skill_band: SkillBand,
     /// The skill it rolls (Magery).
     pub skill: u8,
     /// The container reagents come out of, or `None` for a spell that needs none.
@@ -96,8 +95,7 @@ pub fn cast_spell(state: &mut WorldState, cast: Cast<'_>) {
         spell,
         target,
         mana,
-        min_skill,
-        max_skill,
+        skill_band,
         skill,
         pack,
         reagents,
@@ -143,7 +141,7 @@ pub fn cast_spell(state: &mut WorldState, cast: Cast<'_>) {
             },
         );
     }
-    let success = openshard_skills::roll_skill_band(state, caster, skill, min_skill, max_skill);
+    let success = openshard_skills::roll_skill_band(state, caster, skill, skill_band);
     state.bus.send(SpellCast {
         caster,
         serial,
@@ -172,8 +170,7 @@ pub fn pay_and_roll(
     state: &mut WorldState,
     caster: EntityId,
     mana: u16,
-    min_skill: i32,
-    max_skill: i32,
+    skill_band: SkillBand,
     skill: Skill,
     pack: Option<Serial>,
     reagents: &[(Graphic, u16)],
@@ -185,7 +182,7 @@ pub fn pay_and_roll(
         return None; // cannot cast — nothing is spent
     }
     // Roll before spending, so we know success in time to honour the loss flags.
-    let success = openshard_skills::roll_skill_band(state, caster, skill, min_skill, max_skill);
+    let success = openshard_skills::roll_skill_band(state, caster, skill, skill_band);
     if success || mana_loss_on_fail {
         if let Some(&Mana { current, max }) = state.registry.get::<Mana>(caster) {
             state.registry.insert(

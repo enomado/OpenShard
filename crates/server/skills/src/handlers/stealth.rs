@@ -67,7 +67,7 @@ pub(super) fn hiding(state: &mut WorldState, actor: EntityId) {
         state.localized_message(actor, CANNOT_HIDE_NOW, "");
         return;
     }
-    if roll_skill_band(state, actor, skill, 0, 1000) {
+    if roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1000)) {
         // Hiding drops war mode: ServUO's `Hidden = true` setter clears it, and a
         // hider still visibly squared up would be a contradiction on every screen.
         state.registry.remove::<Combat>(actor);
@@ -110,7 +110,12 @@ pub(super) fn stealth(state: &mut WorldState, actor: EntityId) {
     }
     // `-20 + ar*2 .. 80 + ar*2`: armour makes the roll harder at both ends.
     let shift = i32::from(armour) * 20;
-    if roll_skill_band(state, actor, skill, -200 + shift, 800 + shift) {
+    if roll_skill_band(
+        state,
+        actor,
+        skill,
+        crate::SkillBand::new(-200 + shift, 800 + shift),
+    ) {
         let steps = (crate::skill_value(state, actor, skill) / SKILL_PER_STEALTH_STEP).max(1);
         state.registry.insert(actor, Stealthing { steps_left: steps });
         state.localized_message(actor, MOVING_QUIETLY, "");
@@ -130,7 +135,7 @@ pub(super) fn stealth(state: &mut WorldState, actor: EntityId) {
 pub(super) fn detect_hidden(state: &mut WorldState, actor: EntityId) {
     let skill = Skill::DetectHidden;
     let value = crate::skill_value(state, actor, skill);
-    if !roll_skill_band(state, actor, skill, 0, 1000) {
+    if !roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1000)) {
         state.localized_message(actor, DETECT_NOTHING, "");
         return;
     }
@@ -340,5 +345,5 @@ pub fn snooping(state: &mut WorldState, actor: EntityId, container: EntityId) ->
         state.system_message(owner, &format!("You notice {name} peeking into your belongings!"));
     }
     openshard_state::title::award_karma(state, actor, SNOOP_KARMA);
-    roll_skill_band(state, actor, skill, 0, 1000)
+    roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1000))
 }

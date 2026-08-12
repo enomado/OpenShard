@@ -214,11 +214,11 @@ pub enum TileSource {
 /// written in those terms, so a mountain *wall* static and the mountain *ground*
 /// under it both hit the ore definition.
 #[must_use]
-pub fn tile_key(tile: u16, source: TileSource) -> u16 {
-    match source {
-        TileSource::Land => tile,
-        TileSource::Static => (tile & 0x3FFF) | 0x4000,
-    }
+pub fn tile_key(tile: Graphic, source: TileSource) -> Graphic {
+    Graphic(match source {
+        TileSource::Land => tile.0,
+        TileSource::Static => (tile.0 & 0x3FFF) | 0x4000,
+    })
 }
 
 /// The definition a tile belongs to, if any.
@@ -228,9 +228,9 @@ pub fn tile_key(tile: u16, source: TileSource) -> u16 {
 /// — so the whole lumber definition is chosen rather than its vein list patched,
 /// which keeps every caller downstream free of the question.
 #[must_use]
-pub fn definition_for(tile: u16, source: TileSource, ml: bool) -> Option<&'static HarvestDef> {
+pub fn definition_for(tile: Graphic, source: TileSource, ml: bool) -> Option<&'static HarvestDef> {
     let key = tile_key(tile, source);
-    definitions(ml).iter().find(|def| def.tiles.contains(key))
+    definitions(ml).iter().find(|def| def.tiles.contains(key.0))
 }
 
 /// The definition for a kind.
@@ -806,14 +806,14 @@ mod tests {
     fn a_tile_finds_its_definition() {
         // A mountain's land tile is ore; the same number read as a *static* is
         // not, because a static is matched with the 0x4000 bit set.
-        let ore = definition_for(220, TileSource::Land, true).expect("mountain land is minable");
+        let ore = definition_for(Graphic(220), TileSource::Land, true).expect("mountain land is minable");
         assert_eq!(ore.kind, HarvestKind::Ore);
-        assert!(definition_for(220, TileSource::Static, true).is_none());
+        assert!(definition_for(Graphic(220), TileSource::Static, true).is_none());
         // A tree is only ever a static, and 0x4CCA & 0x3FFF | 0x4000 is itself.
-        let tree = definition_for(0x4CCA, TileSource::Static, true).expect("a tree is choppable");
+        let tree = definition_for(Graphic(0x4CCA), TileSource::Static, true).expect("a tree is choppable");
         assert_eq!(tree.kind, HarvestKind::Lumber);
         // Ordinary grass is nothing.
-        assert!(definition_for(3, TileSource::Land, true).is_none());
+        assert!(definition_for(Graphic(3), TileSource::Land, true).is_none());
     }
 
     #[test]
@@ -824,7 +824,7 @@ mod tests {
         assert!(MOUNTAIN_AND_CAVE_TILES.contains(&286));
         assert!(SAND_TILES.contains(&286));
         assert_eq!(
-            definition_for(286, TileSource::Land, true).map(|d| d.kind),
+            definition_for(Graphic(286), TileSource::Land, true).map(|d| d.kind),
             Some(HarvestKind::Ore)
         );
     }

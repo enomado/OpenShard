@@ -20,7 +20,7 @@ mod handlers;
 mod stats;
 
 pub use button::{DEFAULT_SKILL_DELAY_TICKS, SkillRequested, set_skill_delay, use_skill_button};
-pub use check::{gain_chance, roll_skill_band, roll_skill_chance, skill_value};
+pub use check::{SkillBand, gain_chance, roll_skill_band, roll_skill_chance, skill_value};
 pub use handlers::{
     BANDAGE_GRAPHIC, BandageFinished, BandageStarted, Begged, HarvestTarget, Harvested, InstrumentSpent,
     LOCKPICK_GRAPHIC, LockpickBroke, MAX_FOLLOWERS, Outcome, PoisonedSelf, Stolen, Tamed, ToolWorn,
@@ -182,7 +182,7 @@ pub fn use_skill(state: &mut WorldState, serial: Serial, skill: u8, min_skill: i
     let Some(skill) = Skill::from_id(skill) else {
         return;
     };
-    let success = roll_skill_band(state, entity, skill, min_skill, max_skill);
+    let success = roll_skill_band(state, entity, skill, SkillBand::new(min_skill, max_skill));
     let value = state.registry.get::<Skills>(entity).map_or(0, |s| s.get(skill));
     state.bus.send(SkillUsed {
         entity,

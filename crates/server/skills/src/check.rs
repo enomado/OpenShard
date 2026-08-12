@@ -34,6 +34,22 @@ use openshard_state::components::{Client, Skills, Stats};
 use openshard_state::skill::Skill;
 
 use crate::SkillChanged;
+
+/// The lower and upper difficulty edges for a skill check, in tenths.
+///
+/// Bounds remain signed because some canonical checks start below zero.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SkillBand {
+    min: i32,
+    max: i32,
+}
+
+impl SkillBand {
+    /// Build a difficulty band from its inclusive lower and exclusive upper edge.
+    pub const fn new(min: i32, max: i32) -> Self {
+        Self { min, max }
+    }
+}
 use crate::stats::try_stat_gain;
 
 /// The floor ServUO clamps its gain chance to — 1%, so even a grandmaster with no
@@ -127,22 +143,16 @@ fn discorded(state: &WorldState, entity: EntityId, base: u16) -> u16 {
 /// Both bounds are in tenths, like the skill, and signed: several of ServUO's
 /// bands start below zero (Stealth in light armour, Cartography's first level), so
 /// that everyone succeeds and everyone still learns.
-pub fn roll_skill_band(
-    state: &mut WorldState,
-    entity: EntityId,
-    skill: Skill,
-    min_skill: i32,
-    max_skill: i32,
-) -> bool {
+pub fn roll_skill_band(state: &mut WorldState, entity: EntityId, skill: Skill, band: SkillBand) -> bool {
     let value = i32::from(skill_value(state, entity, skill));
-    if value < min_skill {
+    if value < band.min {
         return false; // too difficult
     }
-    if value >= max_skill {
+    if value >= band.max {
         return true; // no challenge
     }
-    // The band is non-empty here: `min_skill < value < max_skill`.
-    let chance = (value - min_skill) * 1000 / (max_skill - min_skill);
+    // The band is non-empty here: `band.min < value < band.max`.
+    let chance = (value - band.min) * 1000 / (band.max - band.min);
     check(state, entity, skill, chance.clamp(0, 1000) as u32)
 }
 

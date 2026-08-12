@@ -108,7 +108,7 @@ pub(super) fn meditation(state: &mut WorldState, actor: EntityId) {
     }
     // The trance took. The skill check here is for the *gain* alone; its result is
     // deliberately ignored, which is what ServUO does with it.
-    let _ = roll_skill_band(state, actor, skill, 0, 1000);
+    let _ = roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1000));
     state.registry.insert(actor, Meditating);
     state.localized_message(actor, TRANCE, "");
     state.play_sound(actor, TRANCE_SOUND);
@@ -124,7 +124,7 @@ pub(super) fn meditation(state: &mut WorldState, actor: EntityId) {
 pub(super) fn spirit_speak(state: &mut WorldState, actor: EntityId) {
     let skill = Skill::SpiritSpeak;
     crate::set_skill_delay(state, actor, SPIRIT_SPEAK_DELAY);
-    if !roll_skill_band(state, actor, skill, 0, 1000) {
+    if !roll_skill_band(state, actor, skill, crate::SkillBand::new(0, 1000)) {
         // A failed contact takes away any contact still standing, which is
         // ServUO's `CanHearGhosts = false` on the failure branch.
         state.registry.remove::<HearsGhosts>(actor);

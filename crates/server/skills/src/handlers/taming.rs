@@ -103,7 +103,7 @@ pub(super) fn taming(state: &mut WorldState, tamer: EntityId, target: EntityId) 
     // so an animal at the edge of your ability teaches most — the same band shape
     // every other roll in the engine uses.
     let min = i32::from(what.min_skill);
-    if !roll_skill_band(state, tamer, skill, min, min + 400) {
+    if !roll_skill_band(state, tamer, skill, crate::SkillBand::new(min, min + 400)) {
         state.private_overhead_cliloc(tamer, target, NO_CHANCE, "");
         return None;
     }

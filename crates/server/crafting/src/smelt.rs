@@ -99,8 +99,7 @@ pub fn smelt(state: &mut WorldState, smelter: EntityId, ore: EntityId) -> bool {
         state,
         smelter,
         Skill::Mining,
-        difficulty - BAND,
-        difficulty + BAND,
+        openshard_skills::SkillBand::new(difficulty - BAND, difficulty + BAND),
     ) {
         // A botched smelt burns half the pile away. ServUO swaps to a smaller ore
         // art when a single unit is left; this engine has one ore art (see

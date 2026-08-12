@@ -232,7 +232,7 @@ pub fn finish_bandages(state: &mut WorldState) -> Vec<BandageFinished> {
         // is `anatomy/5 + healing/5 + 3` to `anatomy/5 + healing/2 + 10` — pre-AoS,
         // so Anatomy is worth as much as Healing to a field surgeon.
         let chance = (i32::from(healing) + 100) / 10;
-        let took = roll_skill_band(state, healer, skill, 0, 1000)
+        let took = roll_skill_band(state, healer, skill, crate::SkillBand::new(0, 1000))
             && chance > i32::try_from(state.rng.below(1000)).unwrap_or(0);
         if !took {
             state.localized_message(healer, BARELY_HELP, "");
@@ -297,8 +297,7 @@ pub(super) fn pick_lock(
         state,
         picker,
         skill,
-        i32::from(required_skill),
-        i32::from(max_skill),
+        crate::SkillBand::new(i32::from(required_skill), i32::from(max_skill)),
     ) {
         state.registry.remove::<Lock>(target);
         state.localized_message(picker, LOCK_YIELDS, "");

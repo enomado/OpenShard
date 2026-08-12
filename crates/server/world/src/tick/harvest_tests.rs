@@ -433,20 +433,20 @@ fn a_client_cannot_name_a_static_that_is_not_there() {
     ground(&mut world, GRASS, None);
     let at = Point::new(START.0 + 1, START.1, 0);
     assert!(
-        skills::resolve_harvest_target(&world.state, Facet(0), at, TREE).is_none(),
+        skills::resolve_harvest_target(&world.state, Facet(0), at, Graphic(TREE)).is_none(),
         "a tree the map does not have should resolve to nothing"
     );
     // With the tree really there, at the z the client claims, it resolves.
     ground(&mut world, GRASS, Some((TREE, 0)));
-    let resolved = skills::resolve_harvest_target(&world.state, Facet(0), at, TREE).expect("a tree");
+    let resolved = skills::resolve_harvest_target(&world.state, Facet(0), at, Graphic(TREE)).expect("a tree");
     assert_eq!(resolved.source, TileSource::Static);
-    assert_eq!(resolved.tile, TREE);
+    assert_eq!(resolved.tile, Graphic(TREE));
     // And a claim at the wrong height is refused too — ServUO matches id *and* z.
     let wrong_z = Point::new(START.0 + 1, START.1, 40);
-    assert!(skills::resolve_harvest_target(&world.state, Facet(0), wrong_z, TREE).is_none());
+    assert!(skills::resolve_harvest_target(&world.state, Facet(0), wrong_z, Graphic(TREE)).is_none());
     // Bare ground reads its tile from the map, because the client sends none.
-    let land = skills::resolve_harvest_target(&world.state, Facet(0), at, 0).expect("the ground");
-    assert_eq!((land.source, land.tile), (TileSource::Land, GRASS));
+    let land = skills::resolve_harvest_target(&world.state, Facet(0), at, Graphic(0)).expect("the ground");
+    assert_eq!((land.source, land.tile), (TileSource::Land, Graphic(GRASS)));
 }
 
 #[test]

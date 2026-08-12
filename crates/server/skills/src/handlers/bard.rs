@@ -175,7 +175,7 @@ pub struct InstrumentSpent {
 /// simply plays poorly, and the second roll never happens.
 fn check_musicianship(state: &mut WorldState, bard: EntityId) -> bool {
     let skill = Skill::Musicianship;
-    let _ = roll_skill_band(state, bard, skill, 0, 1200);
+    let _ = roll_skill_band(state, bard, skill, crate::SkillBand::new(0, 1200));
     let value = u32::from(crate::skill_value(state, bard, skill));
     value / 10 > state.rng.below(100)
 }
@@ -211,7 +211,7 @@ pub(super) fn peacemaking(state: &mut WorldState, bard: EntityId, target: Entity
     let skill = Skill::Peacemaking;
     if target == bard {
         // The area form: everyone within the bard's range stops fighting.
-        if !roll_skill_band(state, bard, skill, 0, 1200) {
+        if !roll_skill_band(state, bard, skill, crate::SkillBand::new(0, 1200)) {
             state.localized_message(bard, AREA_CALM_FAILED, "");
             play(state, bard, item, false);
             return;
@@ -235,7 +235,12 @@ pub(super) fn peacemaking(state: &mut WorldState, bard: EntityId, target: Entity
         return;
     }
     let difficulty = base_difficulty(state, target);
-    if roll_skill_band(state, bard, skill, difficulty - BARD_BAND, difficulty + BARD_BAND) {
+    if roll_skill_band(
+        state,
+        bard,
+        skill,
+        crate::SkillBand::new(difficulty - BARD_BAND, difficulty + BARD_BAND),
+    ) {
         play(state, bard, item, true);
         let until = state.ticks + PACIFY_SECONDS * TICKS_PER_SECOND;
         state.registry.insert(target, Pacified { until });
@@ -295,7 +300,12 @@ pub(super) fn provoke_second(state: &mut WorldState, bard: EntityId, creature: E
     // `(diff(a) + diff(b)) * 0.5 - 5`.
     let difficulty = (base_difficulty(state, creature) + base_difficulty(state, victim)) / 2 - 50;
     let skill = Skill::Provocation;
-    if !roll_skill_band(state, bard, skill, difficulty - BARD_BAND, difficulty + BARD_BAND) {
+    if !roll_skill_band(
+        state,
+        bard,
+        skill,
+        crate::SkillBand::new(difficulty - BARD_BAND, difficulty + BARD_BAND),
+    ) {
         state.localized_message(bard, NOT_ANGRY_ENOUGH, "");
         play(state, bard, item, false);
         return;
@@ -336,7 +346,12 @@ pub(super) fn discordance(state: &mut WorldState, bard: EntityId, target: Entity
     }
     let skill = Skill::Discordance;
     let difficulty = base_difficulty(state, target);
-    if !roll_skill_band(state, bard, skill, difficulty - BARD_BAND, difficulty + BARD_BAND) {
+    if !roll_skill_band(
+        state,
+        bard,
+        skill,
+        crate::SkillBand::new(difficulty - BARD_BAND, difficulty + BARD_BAND),
+    ) {
         state.localized_message(bard, DISCORD_FAILED, "");
         play(state, bard, item, false);
         return;
