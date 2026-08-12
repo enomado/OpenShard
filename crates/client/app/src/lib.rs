@@ -154,7 +154,7 @@ use openshard_client_render::paperdoll;
 use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::text::{self, GumpLabel};
 use openshard_movement::{Leeway, Tile};
-use openshard_protocol::direction::Direction;
+use openshard_protocol::direction::{Direction, Facing};
 #[cfg(test)]
 use openshard_protocol::serial::Serial;
 use openshard_protocol::version::ClientVersion;
@@ -671,6 +671,10 @@ pub fn run<D: Dial + Send + 'static>(
             authoritative: world::AuthoritativeWorld {
                 view: None,
                 facet_checked: false,
+            },
+            prediction: world::PredictionState {
+                at: start,
+                facing: Facing::walking(Direction::SouthEast),
             },
             tile_animations: StaticAnimations::build(&animdata, &tiledata),
             flame_clock: std::time::Duration::ZERO,

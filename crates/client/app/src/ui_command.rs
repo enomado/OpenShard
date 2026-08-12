@@ -124,6 +124,9 @@ impl App {
             false,
         );
         self.world.player.equipment = equipment;
+        self.world
+            .prediction
+            .set(self.world.player.at, Facing::walking(self.world.player.facing));
         // Offline there is no shard to refuse a step, so nothing here is
         // speculative the way an online prediction is — trusted outright,
         // same as a correction is.

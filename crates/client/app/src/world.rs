@@ -15,6 +15,7 @@ use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::follow::Gaze;
 use openshard_client_render::items::GroundItem;
 use openshard_client_render::mobiles::Mobile;
+use openshard_protocol::direction::Facing;
 use openshard_protocol::serial::Serial;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
@@ -30,6 +31,10 @@ pub struct WorldState {
     /// on the application thread; render data is rebuilt from it below rather
     /// than sharing or mutating this record from another thread.
     pub authoritative: AuthoritativeWorld,
+    /// The local answer to where our own body should be before the shard has
+    /// confirmed it. Presentation projects this into [`WorldState::player`];
+    /// it never changes [`AuthoritativeWorld::view`].
+    pub prediction: PredictionState,
     /// The statics that move on their own — fires, torches, water wheels — and
     /// how far into their cycles they are.
     ///
@@ -46,13 +51,13 @@ pub struct WorldState {
     /// what keeps a torch's flicker on the same instant as the body walking
     /// past it.
     pub flame_clock: Duration,
-    /// This client's own body.
+    /// This client's own presentation body.
     ///
-    /// Connected, it is what the server says: `0x1B` puts it somewhere and
-    /// every ack, `0x20` and `0x21` moves it. Offline it is a placeholder
-    /// standing wherever the camera looks, which is enough to hold the
-    /// animation reader, the frame atlas and the placement against a real
-    /// install.
+    /// Connected, its position and facing are projected from
+    /// [`WorldState::prediction`], while its body, hue and equipment are the
+    /// shard's authoritative words. Offline it is a placeholder standing
+    /// wherever the camera looks, which is enough to hold the animation reader,
+    /// the frame atlas and the placement against a real install.
     pub player: Mobile,
     /// The tile roof-cutaway is computed from — see `App::draw`'s use of it with
     /// [`openshard_client_render::cutaway::Cutaway`].
@@ -130,6 +135,32 @@ pub struct AuthoritativeWorld {
     pub facet_checked: bool,
 }
 
+/// The local movement state that may be ahead of the server's last confirmed
+/// position. It is deliberately smaller than a render [`Mobile`]: no body,
+/// equipment or animation clock belongs to a prediction.
+#[derive(Clone, Copy, Debug)]
+pub struct PredictionState {
+    /// The tile the last accepted step expects us to reach.
+    pub at: Point,
+    /// The facing that step asked for, including its walking/running mode.
+    pub facing: Facing,
+}
+
+impl PredictionState {
+    /// Record the prediction the shard thread paired with an update.
+    pub fn apply(&mut self, body: link::Body) {
+        self.at = body.predicted.position;
+        self.facing = body.predicted.facing;
+    }
+
+    /// Record a movement made by the offline viewer or replay, which has no
+    /// shard handshake to produce a [`link::Body`].
+    pub fn set(&mut self, at: Point, facing: Facing) {
+        self.at = at;
+        self.facing = facing;
+    }
+}
+
 impl WorldState {
     /// Who the crowd knows our own body as.
     ///
@@ -190,4 +221,30 @@ pub(crate) fn cluttered_with_doors_open<'a>(
     world
         .clutter
         .over_with_doors_open(&resources.map, &resources.tiledata)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prediction_keeps_its_position_outside_the_authoritative_view() {
+        let mut prediction = PredictionState {
+            at: Point::new(100, 100, 0),
+            facing: Facing::walking(openshard_protocol::direction::Direction::North),
+        };
+        prediction.apply(link::Body {
+            predicted: openshard_client_net::walk::Predicted {
+                position: Point::new(101, 100, 7),
+                facing: Facing::running(openshard_protocol::direction::Direction::East),
+            },
+            corrected: false,
+        });
+
+        assert_eq!(prediction.at, Point::new(101, 100, 7));
+        assert_eq!(
+            prediction.facing,
+            Facing::running(openshard_protocol::direction::Direction::East)
+        );
+    }
 }

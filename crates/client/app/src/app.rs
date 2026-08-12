@@ -284,6 +284,9 @@ impl App {
                 war,
             );
             self.world.player.equipment = equipment;
+            self.world
+                .prediction
+                .set(self.world.player.at, Facing::walking(self.world.player.facing));
             self.world.cutaway_at = self.world.player.at;
             self.control.relock(mobiles::gaze(&self.world.player));
         }
@@ -327,6 +330,7 @@ impl App {
                     .snap(self.world.me(), step.to, body, step.facing, hue, war),
             };
             self.world.player.equipment = equipment;
+            self.world.prediction.set(self.world.player.at, step.facing);
             self.world.cutaway_at = self.world.player.at;
         }
         if finished {

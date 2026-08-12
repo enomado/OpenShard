@@ -83,8 +83,9 @@ impl App {
 
     /// Apply prediction without changing authoritative server state.
     pub(crate) fn apply_prediction(&mut self, body: link::Body) {
-        self.world.player.at = body.predicted.position;
-        self.world.player.facing = body.predicted.facing.direction;
+        self.world.prediction.apply(body);
+        self.world.player.at = self.world.prediction.at;
+        self.world.player.facing = self.world.prediction.facing.direction;
         self.world.player.drawn = self
             .world
             .crowd
@@ -99,6 +100,7 @@ impl App {
     /// patched: the view is the record of what arrived, and anything kept in
     /// step with it by hand would be a second record that could disagree.
     pub(crate) fn entered(&mut self, view: WorldView, body: link::Body, previous_latest: Option<Heard>) {
+        self.world.prediction.apply(body);
         // The facet is chosen at startup and `0x1B` names only its size, so a
         // shard serving a different one draws this client the wrong ground with
         // no complaint from either end. Said once, because it is a
@@ -144,9 +146,9 @@ impl App {
         self.world.player = match body.corrected {
             true => self.world.crowd.snap(
                 me,
-                body.predicted.position,
+                self.world.prediction.at,
                 view.player.body,
-                body.predicted.facing,
+                self.world.prediction.facing,
                 view.player.hue,
                 // A ghost stands with no sword drawn even if `war` is still
                 // set — D9's `!InWarMode || IsDead`.
@@ -154,9 +156,9 @@ impl App {
             ),
             false => self.world.crowd.see(
                 me,
-                body.predicted.position,
+                self.world.prediction.at,
                 view.player.body,
-                body.predicted.facing,
+                self.world.prediction.facing,
                 view.player.hue,
                 // Our own stance is the `0x72`'s and the `0x88`'s, not a bit of
                 // a `0x77` — no `0x77` ever describes this body. See
@@ -199,11 +201,11 @@ impl App {
         // `Steering::detour` is going to have offered into a wall this end
         // can already see — see the field's own doc for why.
         self.world.cutaway_at = match body.corrected {
-            true => body.predicted.position,
+            true => self.world.prediction.at,
             false => {
                 let terrain = cluttered(&self.world, &self.resources);
-                match terrain.can_step(self.world.cutaway_at, body.predicted.position) {
-                    Some(_) => body.predicted.position,
+                match terrain.can_step(self.world.cutaway_at, self.world.prediction.at) {
+                    Some(_) => self.world.prediction.at,
                     None => self.world.cutaway_at,
                 }
             }
