@@ -242,12 +242,12 @@ impl Image {
             at.y
         );
         assert!(
-            light.raw() < self.lights,
+            light.in_light_list() < self.lights,
             "light {} of {}",
-            light.raw(),
+            light.in_light_list(),
             self.lights
         );
-        self.visibility[((at.y * self.size.width + at.x) as usize) * self.lights + light.raw()]
+        self.visibility[((at.y * self.size.width + at.x) as usize) * self.lights + light.in_light_list()]
     }
 
     /// Whether this image is an exact answer rather than an estimate.

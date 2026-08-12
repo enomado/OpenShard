@@ -484,12 +484,12 @@ impl App {
             facts
                 .drawn_mobiles
                 .as_ref()
-                .and_then(|drawn| drawn.get(index.raw()))
+                .and_then(|drawn| drawn.get(index.position()))
                 .map(|(who, _)| *who)
         });
         self.picking.on_item = facts
             .on_item
-            .map(|index| self.world.presentation.item_serials[index.raw()]);
+            .map(|index| self.world.presentation.item_serials[index.position()]);
     }
 
     /// **Steps two and three**: the frame `Self::advance` staged for. Takes

@@ -135,7 +135,7 @@ fn a_dressed_body_draws_its_gump_first_and_its_backpack_last() {
     );
     let last = PictureIndex::new(doll.pictures.len() - 1);
     assert_eq!(
-        doll.pictures[last.raw()].graphic,
+        doll.pictures[last.position()].graphic,
         GumpArt::Gump(backpack),
         "the backpack is drawn last, outside the order"
     );
@@ -168,7 +168,7 @@ fn every_button_on_a_frame_is_a_picture_the_client_ships() {
         let doll = paperdoll::window(None, whose, None, &equip_conv, &gumps, GumpPixel::new(0, 0));
         assert!(!doll.hits.is_empty(), "a frame has furniture on it: {whose:?}");
         for index in doll.hits.keys() {
-            let GumpArt::Gump(graphic) = doll.pictures[index.raw()].graphic else {
+            let GumpArt::Gump(graphic) = doll.pictures[index.position()].graphic else {
                 panic!("a paperdoll draws gump art and nothing else");
             };
             assert!(
@@ -189,7 +189,7 @@ fn every_button_on_a_frame_is_a_picture_the_client_ships() {
             GumpPixel::new(0, 0),
         );
         for index in pressed.hits.keys() {
-            let GumpArt::Gump(graphic) = pressed.pictures[index.raw()].graphic else {
+            let GumpArt::Gump(graphic) = pressed.pictures[index.position()].graphic else {
                 panic!("a paperdoll draws gump art and nothing else");
             };
             assert!(

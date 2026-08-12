@@ -54,7 +54,8 @@ impl PictureIndex {
         Self(index)
     }
 
-    pub const fn raw(self) -> usize {
+    /// Its position in the gump picture list it was picked from.
+    pub const fn position(self) -> usize {
         self.0
     }
 }

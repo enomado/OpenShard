@@ -2320,7 +2320,17 @@ impl std::fmt::Display for Stopper {
 /// see the constructor at the bottom of [`sample_with`] — so this is never
 /// mistaken for any other index into a light-shaped list in this module.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct LightIdx(pub usize);
+pub struct LightIdx(usize);
+
+impl LightIdx {
+    /// The position in [`Lighting::lights`] this index names.
+    ///
+    /// The sun deliberately uses the one-past-the-end value, so callers that
+    /// use this to index `lights` must do so only for an ordinary flame reach.
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Reach {
@@ -2443,7 +2453,7 @@ impl std::fmt::Display for Sample {
             self.multiplier[2],
         )?;
         for reach in &self.reaches {
-            write!(f, "  light {}: {:.2} tiles", reach.light.0, reach.distance)?;
+            write!(f, "  light {}: {:.2} tiles", reach.light.raw(), reach.distance)?;
             // In the order the questions are asked: is it near enough, is
             // anything in between, and how much of the flame this surface was
             // turned towards in the end — see [`Reach::delivered`], which is the

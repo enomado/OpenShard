@@ -309,7 +309,7 @@ impl App {
             // A body with no serial is one this client is drawing without the
             // shard having named it — the offline viewer's placeholder — and
             // there is nothing to ask about.
-            if let (Some(serial), Some(link)) = (drawn[index.raw()].0, self.world.link.as_ref()) {
+            if let (Some(serial), Some(link)) = (drawn[index.position()].0, self.world.link.as_ref()) {
                 link.use_object(serial);
             }
             return;
@@ -325,7 +325,7 @@ impl App {
         ) else {
             return;
         };
-        let serial = self.world.presentation.item_serials[index.raw()];
+        let serial = self.world.presentation.item_serials[index.position()];
         match self.world.link.as_ref() {
             Some(link) => link.use_object(serial),
             None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),

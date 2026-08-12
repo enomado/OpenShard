@@ -1025,11 +1025,11 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Requ
     ui.label(format!(
         "under cursor — mobile {}, item {}, static {}",
         match hud.pick.mobile {
-            Some(index) => index.raw().to_string(),
+            Some(index) => index.position().to_string(),
             None => "—".to_string(),
         },
         match hud.pick.item {
-            Some(index) => index.raw().to_string(),
+            Some(index) => index.position().to_string(),
             None => "—".to_string(),
         },
         // The graphic and the tile it stands on, and *that tile* is the point of

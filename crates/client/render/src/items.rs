@@ -58,7 +58,8 @@ impl ItemIndex {
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
-    pub const fn raw(self) -> usize {
+    /// Its position in the ground-item list it was picked from.
+    pub const fn position(self) -> usize {
         self.0
     }
 }
@@ -310,7 +311,7 @@ pub fn outlined(
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     highlight
-        .and_then(|index| Some((items.get(index.raw())?, index)))
+        .and_then(|index| Some((items.get(index.position())?, index)))
         .and_then(|(item, _)| {
             let placed = place(item, camera, tiledata, animations, atlas, cutaway)?;
             match on_screen(camera, placed.at, &placed.sprite) {

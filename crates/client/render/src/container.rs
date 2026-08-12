@@ -102,7 +102,7 @@ pub fn pick(
     // Index zero is the background, and every one after it is `contents` in
     // order — the layout `window` built a picture at a time.
     let index = crate::gump::pick(&pictures, cursor, atlas)?;
-    contents.get(index.raw().checked_sub(1)?).copied()
+    contents.get(index.position().checked_sub(1)?).copied()
 }
 
 #[cfg(test)]

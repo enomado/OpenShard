@@ -27,8 +27,11 @@ impl LightIdx {
         Self(index)
     }
 
-    /// The slice index used at the image-reading seam.
-    pub const fn raw(self) -> usize {
+    /// Its position in the light list passed to the render.
+    ///
+    /// This is deliberately not a general-purpose raw number: it may index
+    /// only the lights whose visibility the rendered image records.
+    pub const fn in_light_list(self) -> usize {
         self.0
     }
 }

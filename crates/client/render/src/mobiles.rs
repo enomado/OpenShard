@@ -128,7 +128,8 @@ impl MobileIndex {
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
-    pub const fn raw(self) -> usize {
+    /// Its position in the mobile list it was picked from.
+    pub const fn position(self) -> usize {
         self.0
     }
 }
@@ -589,7 +590,7 @@ pub fn outlined(
     highlight: Option<MobileIndex>,
 ) -> Vec<SpriteQuad> {
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
-    if let Some(mobile) = highlight.and_then(|index| mobiles.get(index.raw())) {
+    if let Some(mobile) = highlight.and_then(|index| mobiles.get(index.position())) {
         push_quads(mobile, camera, atlas, cutaway, equip_conv, None, &mut quads);
     }
     quads.into_iter().map(|(_, quad)| quad).collect()
