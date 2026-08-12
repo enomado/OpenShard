@@ -7,12 +7,13 @@ This is a long-running refactor track for `crates/client`.
 The current implementation checkpoint is:
 
 ```text
-2ca72c5 borrow drawn equipment layers
+bcd0b68 separate client presentation boundaries
 ```
 
 Relevant earlier checkpoints:
 
 ```text
+e49f7e3 avoid allocating mobile layer order
 2ca72c5 borrow drawn equipment layers
 61a4356 update client architecture handoff
 3e33a6c separate client presentation projection
@@ -30,10 +31,12 @@ Validation currently passes:
 ```text
 cargo check -p openshard-client-app
 cargo test -p openshard-client-app --lib
+cargo test -p openshard-client-net --lib
 cargo test -p openshard-client-render --lib
 ```
 
-Result: 169 app tests passed, 2 ignored; 482 render tests passed, 1 ignored.
+Result: 169 app tests passed, 2 ignored; 76 net tests passed; 482 render
+tests passed, 1 ignored. `cargo fmt --check` and `git diff --check` also pass.
 
 ## Architecture agreed with the owner
 
@@ -74,13 +77,34 @@ Result: 169 app tests passed, 2 ignored; 482 render tests passed, 1 ignored.
 - `WorldState` names its three state kinds directly: `authoritative`,
   `prediction` and `presentation`.
 
-## Remaining small allocation
+## Follow-on: UI, frame, and outgoing-wire boundaries
+
+- `app/src/diagnostics.rs` owns read-only inspection DTOs: `PickedTile`,
+  selection results, terrain overlay, and route. `picking.rs` and
+  `picking_query.rs` now depend on that module instead of `shell`, so a future
+  non-egui inspector can use the same answers.
+- `presentation.rs` names the staged snapshot as `PreparedFrame`. It freezes
+  the camera and `FrameFacts`; `publish_frame_picks` is the one explicit bridge
+  that records the current picture's identities for the next input event.
+  Rendering still reads no live camera or input after that boundary.
+- `client/net/src/action.rs` owns `Outgoing` and `GumpReply`. Ordinary
+  post-login intentions are encoded there, with the session's player serial
+  supplied only at encoding time. `app/link.rs` retains the thread, mailbox,
+  and `Walk` branch; walking is deliberately not an `Outgoing` action because
+  its sequence and prediction state belong to `Walk`.
+- The old narrow packet encoder modules (`talk`, `doll`, `combat`, `skill`,
+  `interact`) remain available for now. `Outgoing` is the single path used by
+  the app, so their public surface can be reviewed separately rather than
+  bundled into this boundary change.
+
+## Frame ownership and allocation result
 
 The frame-level equipment copy has been removed: a `Mobile` clone now only
 increments the single-threaded `Rc` handle. `drawn_layers` borrows matching
-`EquipmentLayer` values directly from that slice, so it neither allocates nor
-copies them. `paperdoll::world_order` still creates a small ordered `Vec<Layer>`
-to apply cloak placement; it is bounded by the worn slots.
+`EquipmentLayer` values directly from that slice. Its internal
+`paperdoll::world_ordered` path keeps the bounded layer order in a fixed array,
+so the renderer neither allocates nor copies worn layers. `paperdoll::world_order`
+still returns a `Vec<Layer>` where the public paperdoll API requires ownership.
 
 Other clones are either small/local or semantically required by protocol state
 updates (paperdoll, skills, container contents, login plan). Atlas rebuild
@@ -88,11 +112,15 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
 
 ## Next work items
 
-1. Measure the residual `paperdoll::world_order` allocation before deciding
-   whether its small ordered layer list merits a fixed-size representation.
-2. Exercise the staged mailbox against a real stalled-window/network workload
+1. If the dev HUD grows again, move its remaining read-only snapshot types out
+   of `shell.rs`; keep `Shell` as the egui adapter that returns `Request`, not
+   an owner of world-query types.
+2. Split `own_windows.rs` by synchronization, generic interaction, paperdoll,
+   and skills only when making a feature change in one of those areas. Preserve
+   local window mutation on the App thread.
+3. Exercise the staged mailbox against a real stalled-window/network workload
    and tune its ordered-update capacity if needed.
-3. Keep the three state boundaries explicit as new fields are added:
+4. Keep the three state boundaries explicit as new fields are added:
 
    ```text
    authoritative world state
@@ -100,7 +128,7 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
    presentation projection
    ```
 
-4. Keep commits small and run the client app check/tests after each stage.
+5. Keep commits small and run the client app check/tests after each stage.
 
 ## Important caution
 
