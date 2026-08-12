@@ -18,7 +18,6 @@ use openshard_client_render::depth;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::{light, occlusion};
 use openshard_movement::{Terrain, Tile};
-use openshard_protocol::direction::Direction;
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
@@ -496,34 +495,14 @@ impl App {
             coarse: self.resources.coarse.as_ref(),
         };
         let route = self.steer.plan_for(ground, from, goal).map(|plan| {
-            // Directions walked out into the tiles they land on. `step_allowed`
-            // because it is what corrects a step's `z` to the surface it lands on,
-            // which is the height the line is drawn at — and over each half's own
-            // ground, since the barred half is by construction made of steps the
-            // world as it stands refuses.
-            let walk_out = |terrain: &dyn openshard_movement::Terrain, from: Point, steps: Vec<Direction>| {
-                let mut at = from;
-                let mut tiles = Vec::with_capacity(steps.len());
-                for direction in steps {
-                    let Some(next) = openshard_movement::step_allowed(terrain, at, direction) else {
-                        // The plan and the ground disagree, which is a thing worth
-                        // seeing rather than papering over: the line stops where
-                        // they parted company.
-                        break;
-                    };
-                    at = next;
-                    tiles.push(at);
-                }
-                tiles
-            };
             // The body's own tile leads the open half, so a route of one step is a
             // line and not a dot. The barred half carries on from wherever the open
             // one stopped — the body's tile when nothing at all is walkable, which
             // is a body standing at the shut door.
             let mut open = vec![from];
-            open.extend(walk_out(&cluttered, from, plan.open));
+            open.extend(plan.open_points);
             let from = *open.last().unwrap();
-            let mut barred = walk_out(&opened, from, plan.barred);
+            let mut barred = plan.barred_points;
             if !barred.is_empty() {
                 barred.insert(0, from);
             }

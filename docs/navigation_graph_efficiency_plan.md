@@ -22,23 +22,16 @@ retain their existing behaviour.
 
 Validation completed so far: on 2026-08-13 formatting passed, all 109 movement
 unit tests, four movement integration tests, and five movement doc-tests passed,
-and `openshard-client-app` passed `cargo check`. The full workspace test run is
+and `openshard-client-app` passed its library tests (179 passed, two diagnostic
+tests ignored) and `cargo check`. The full workspace test run is
 currently blocked by two existing client-render attachment tests on the
 available downlevel adapter: `Rgba32Float` cannot be used as a render attachment
 there. Workspace clippy with warnings denied remains blocked by the
 pre-existing `clippy::precedence` warning in unrelated
 `client-render/src/sprite.rs`. The client-app library test target also passed on
-this run: 178 tests passed and two diagnostic tests were ignored.
+this run: 179 tests passed and two diagnostic tests were ignored.
 
 ## Backlog
-
-- 🚩 **Review finding (2026-08-13): HUD replay still bypasses the transition
-  cache.** `Steering::plan_for` shares the plan within a frame, but
-  `picking_query::route_shown` turns its directions into points with fresh
-  `step_allowed` calls. Return a replayable plan result (or a cached replay)
-  and consume it for both movement and HUD; keep the real and doors-open
-  snapshots separate. Add a mutation test proving that a replay cannot outlive
-  the terrain snapshot.
 
 - 🚩 **Review finding (2026-08-13): cache invalidation is keyed only by the
   authoritative item set.** `net_command::entered` intentionally retains the
@@ -58,12 +51,10 @@ this run: 178 tests passed and two diagnostic tests were ignored.
   justified.** The implementation deliberately remains single-level. Measure
   the route set listed in Phase 3, including endpoint insertion and live
   refinement, and add level 2 only if the measured p95 improvement is material.
-- 🚩 **HUD route conversion is not yet part of the same transition-cache
-  instance.** Movement and HUD now share the plan produced earlier in the same
-  frame, but `picking_query::route_shown` converts the returned directions with
-  fresh `step_allowed` calls. Share the cached replay (or return a replayable
-  plan object) before claiming complete cache coverage for the HUD path;
-  preserve separate real and doors-open snapshots while doing so.
+- ✅ **HUD route conversion now reuses the plan replay.** Resolved on
+  2026-08-13: the plan stores immutable landing points produced by its separate
+  real and doors-open query caches, and the HUD consumes those points. A
+  mutation test proves the replay cannot observe a later terrain snapshot.
 - 🚩 **Runtime invalidation needs an integration measurement.** The client
   currently invalidates the plan cache when the authoritative item set changes
   and keeps it over mobile-only updates. Verify that every production change

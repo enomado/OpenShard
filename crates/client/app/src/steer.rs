@@ -382,6 +382,8 @@ pub struct Plan {
     /// the shard would refuse. It is a *reason*, and the thing to draw so a
     /// player can see where the way stopped and why.
     pub barred: Vec<Direction>,
+    pub(crate) open_points: Vec<Point>,
+    pub(crate) barred_points: Vec<Point>,
 }
 
 #[derive(Clone, Debug)]
@@ -1260,8 +1262,10 @@ pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
     let real = CachedTerrain::new(ground.real);
     if let Some(open) = ground.path(&real, from, goal) {
         let result = Some(Plan {
+            open_points: replay(&real, from, &open),
             open,
             barred: Vec::new(),
+            barred_points: Vec::new(),
         });
         debug_plan_cache(from, goal, started.elapsed(), &real, None, result.as_ref());
         return result;
@@ -1277,8 +1281,10 @@ pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
             return None;
         };
         let result = Some(Plan {
+            open_points: replay(&real, from, &open),
             open,
             barred: Vec::new(),
+            barred_points: Vec::new(),
         });
         debug_plan_cache(
             from,
@@ -1292,6 +1298,7 @@ pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
     };
     let mut open = Vec::new();
     let mut barred = Vec::new();
+    let mut open_points = Vec::new();
     // Walked over the ground as it really is until it refuses a step: `at` going
     // absent is the cut, and everything from there on belongs to the far side of
     // the door. `step_allowed` and not `can_step`, because the corner rule is
@@ -1302,6 +1309,7 @@ pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
             Some(next) => {
                 at = Some(next);
                 open.push(direction);
+                open_points.push(next);
             }
             None => {
                 at = None;
@@ -1309,7 +1317,21 @@ pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
             }
         }
     }
-    let result = Some(Plan { open, barred });
+    let mut barred_points = Vec::new();
+    let mut barred_at = open_points.last().copied().unwrap_or(from);
+    for &direction in &barred {
+        let Some(next) = step_allowed(&doors_open, barred_at, direction) else {
+            break;
+        };
+        barred_at = next;
+        barred_points.push(next);
+    }
+    let result = Some(Plan {
+        open,
+        barred,
+        open_points,
+        barred_points,
+    });
     debug_plan_cache(
         from,
         goal,
@@ -1319,6 +1341,20 @@ pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
         result.as_ref(),
     );
     result
+}
+
+/// Replay a direction list while the query-local cache still owns its terrain
+/// snapshot. The returned points are immutable plan output, not a live query.
+fn replay(terrain: &CachedTerrain<'_>, from: Point, directions: &[Direction]) -> Vec<Point> {
+    let mut at = from;
+    directions
+        .iter()
+        .filter_map(|&direction| {
+            let next = step_allowed(terrain, at, direction)?;
+            at = next;
+            Some(next)
+        })
+        .collect()
 }
 
 /// Emit one compact summary for the two query-local terrain snapshots.  This
@@ -1886,6 +1922,18 @@ mod tests {
         }
     }
 
+    struct MutableDoor {
+        shut: std::cell::Cell<bool>,
+    }
+
+    impl openshard_movement::Terrain for MutableDoor {
+        fn can_step(&self, from: Point, to: Point) -> Option<Point> {
+            (to.x != DOORWAY.x || !self.shut.get())
+                .then(|| OpenWorld.can_step(from, to))
+                .flatten()
+        }
+    }
+
     /// The same door contract at a distance that exceeds [`PLAN_BUDGET`]. The
     /// coarse graph is built from the open map; the `shut` reading is what must
     /// still keep the executable half from crossing the leaf.
@@ -2013,6 +2061,33 @@ mod tests {
             vec![Direction::East; 3],
             "and the rest of the way is what the shut leaf is in the way of"
         );
+    }
+
+    #[test]
+    fn plan_replay_is_snapshot_data_after_terrain_mutates() {
+        let terrain = MutableDoor {
+            shut: std::cell::Cell::new(true),
+        };
+        let plan = plan(
+            Ground {
+                real: &terrain,
+                through_doors: &OpenWorld,
+                guide: &OpenWorld,
+                coarse: None,
+            },
+            here(),
+            BEYOND,
+        )
+        .expect("the open snapshot provides a route");
+        assert_eq!(plan.open_points.len(), 2);
+        assert_eq!(plan.barred_points.len(), 3);
+        terrain.shut.set(false);
+        assert_eq!(
+            plan.open_points.len(),
+            2,
+            "replay does not query the new snapshot"
+        );
+        assert_eq!(plan.barred_points.len(), 3);
     }
 
     /// Something in the way with a route round it is a *longer walk*, never a
