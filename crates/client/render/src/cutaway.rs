@@ -36,10 +36,9 @@
 //! It also uses the player's screen rectangle to put an ordinary wall that
 //! actually covers the body in that layer.
 //!
-//! The temporal per-object alpha walk, foliage unions and profile-controlled
-//! transparency radii remain separate work. They need persistent state and a
-//! policy for one tree's several graphics; the pass here is the rendering
-//! primitive those policies use, not an excuse to conflate them.
+//! The temporal per-object alpha walk is owned by [`Fades`]. Foliage uses the
+//! same late primitive with a canopy-tile key, while profile-controlled
+//! transparency radii remain separate work.
 
 use std::collections::BTreeMap;
 
@@ -72,6 +71,11 @@ pub const ALPHA_STEP: u8 = 25;
 /// [`TRANSLUCENT_ALPHA`] in that same domain, rounded to the nearest byte.
 pub const TRANSLUCENT_ALPHA_U8: u8 = (TRANSLUCENT_ALPHA * 255.0).round() as u8;
 
+/// Opacity of a foliage canopy while the player's body is underneath it.
+pub const FOLIAGE_ALPHA: f32 = 0.4;
+/// [`FOLIAGE_ALPHA`] in the byte-alpha domain used by sprite instances.
+pub const FOLIAGE_ALPHA_U8: u8 = (FOLIAGE_ALPHA * 255.0).round() as u8;
+
 /// The stable world identity of an object whose opacity is changing.
 ///
 /// Map statics and server items can share a tile and a graphic, so the producer
@@ -82,15 +86,36 @@ pub struct FadeKey {
     at: (u16, u16, i8),
     graphic: u16,
     item: bool,
+    foliage: bool,
 }
 
 impl FadeKey {
     pub const fn static_(at: Point, graphic: Graphic) -> Self {
-        Self { at: (at.x, at.y, at.z), graphic: graphic.0, item: false }
+        Self {
+            at: (at.x, at.y, at.z),
+            graphic: graphic.0,
+            item: false,
+            foliage: false,
+        }
     }
 
     pub const fn item(at: Point, graphic: Graphic) -> Self {
-        Self { at: (at.x, at.y, at.z), graphic: graphic.0, item: true }
+        Self {
+            at: (at.x, at.y, at.z),
+            graphic: graphic.0,
+            item: true,
+            foliage: false,
+        }
+    }
+
+    /// A canopy identity is the placed world tile, not an animated frame.
+    pub const fn foliage(at: Point) -> Self {
+        Self {
+            at: (at.x, at.y, at.z),
+            graphic: 0,
+            item: false,
+            foliage: true,
+        }
     }
 }
 
@@ -774,5 +799,35 @@ mod tests {
         // test is `>=`. The client's, exactly, and it costs nothing: nothing
         // stands at the very top of the range.
         assert!(!Cutaway::OPEN.shows_mobile(127));
+    }
+
+    #[test]
+    fn fades_keep_identity_until_a_hidden_object_returns_to_opaque() {
+        let key = FadeKey::static_(Point::new(12, 34, 5), Graphic(0x1234));
+        let mut fades = Fades::default();
+
+        assert_eq!(fades.advance(key, 0), 230);
+        for _ in 0..9 {
+            fades.advance(key, 0);
+        }
+        assert_eq!(fades.advance(key, 0), 0, "zero is the removal endpoint");
+        assert_eq!(fades.advance(key, u8::MAX), 25, "returning art fades in");
+        for _ in 0..9 {
+            fades.advance(key, u8::MAX);
+        }
+        assert_eq!(fades.advance(key, u8::MAX), u8::MAX);
+    }
+
+    #[test]
+    fn foliage_members_share_the_canopys_fade_identity() {
+        let at = Point::new(12, 34, 5);
+        let key = FadeKey::foliage(at);
+        let mut fades = Fades::default();
+
+        assert_eq!(fades.advance(key, FOLIAGE_ALPHA_U8), 230);
+        // A second graphic from the same placed canopy sees the same ramp,
+        // rather than starting a second fade and producing stripes.
+        assert_eq!(fades.advance(key, FOLIAGE_ALPHA_U8), 205);
+        assert_eq!(fades.advance(key, u8::MAX), 230);
     }
 }

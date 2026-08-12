@@ -15,7 +15,7 @@
 //! position that is the cell's top-left corner — the same two numbers, said
 //! from the corner instead of the centre.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
@@ -270,7 +270,15 @@ pub fn collect(
     player_mask: Option<&crate::mobiles::OpaqueMask>,
 ) -> StaticGeometry {
     collect_with_fades(
-        map, camera, tiledata, animations, atlas, cutaway, occlusion, player_rect, player_mask,
+        map,
+        camera,
+        tiledata,
+        animations,
+        atlas,
+        cutaway,
+        occlusion,
+        player_rect,
+        player_mask,
         &mut crate::cutaway::Fades::default(),
     )
 }
@@ -293,6 +301,9 @@ pub fn collect_with_fades(
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
     let mut cutaway_quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
+    // A canopy may contribute several graphics. Advance its persistent state
+    // once per frame, then reuse that value for every member.
+    let mut foliage_alpha = BTreeMap::new();
     let mut cutaway_boxes = Vec::new();
     // Always empty since `docs/lighting_rebuild.md` phase 6d: a real static's
     // position and normal come from the impostor meeting `boxes` below, and
@@ -306,6 +317,7 @@ pub fn collect_with_fades(
 
     for_each_static_in(map, camera.visible_tiles(), |item| {
         let at = Point::new(item.x, item.y, item.z);
+        let is_foliage = tiledata.static_tile(item.tile.0).flags.is_foliage();
         let Some(placed) = place(
             at,
             item.tile,
@@ -314,7 +326,10 @@ pub fn collect_with_fades(
             animations,
             atlas,
             cutaway,
-            player_rect,
+            // Foliage uses the canopy rule below. Passing the body rectangle
+            // into `place` would hard-cut it before the shared fade can move
+            // all members of the canopy into the late layer.
+            player_rect.filter(|_| !is_foliage),
         ) else {
             // The normal placement deliberately rejects a roof or upper
             // storey the cutaway hides. Keep that policy for the opaque pass,
@@ -324,7 +339,16 @@ pub fn collect_with_fades(
                 return;
             };
             if on_screen(camera, placed.at, &placed.sprite) {
-                let alpha = fades.advance(crate::cutaway::FadeKey::static_(at, item.tile), 0);
+                let fade_key = match is_foliage {
+                    true => crate::cutaway::FadeKey::foliage(at),
+                    false => crate::cutaway::FadeKey::static_(at, item.tile),
+                };
+                let alpha = match is_foliage {
+                    true => *foliage_alpha
+                        .entry(fade_key)
+                        .or_insert_with(|| fades.advance(fade_key, 0)),
+                    false => fades.advance(fade_key, 0),
+                };
                 if alpha == 0 {
                     return;
                 }
@@ -354,14 +378,29 @@ pub fn collect_with_fades(
         // make an unrelated wall translucent. The private layer still tests
         // against opaque depth after mobiles, so a wall behind the body writes
         // nothing while one in front blends later.
-        let target = if player_mask.is_some_and(|body| {
+        let target = if is_foliage {
+            if player_rect.is_some_and(|body| cutaway::hides_foliage_over(body, placed_rect(&placed))) {
+                crate::cutaway::FOLIAGE_ALPHA_U8
+            } else {
+                u8::MAX
+            }
+        } else if player_mask.is_some_and(|body| {
             body.overlaps_opaque(placed_rect(&placed), |x, y| atlas.opaque_at(placed.showing, x, y))
         }) {
             crate::cutaway::TRANSLUCENT_ALPHA_U8
         } else {
             u8::MAX
         };
-        let alpha = fades.advance(crate::cutaway::FadeKey::static_(at, item.tile), target);
+        let fade_key = match is_foliage {
+            true => crate::cutaway::FadeKey::foliage(at),
+            false => crate::cutaway::FadeKey::static_(at, item.tile),
+        };
+        let alpha = match is_foliage {
+            true => *foliage_alpha
+                .entry(fade_key)
+                .or_insert_with(|| fades.advance(fade_key, target)),
+            false => fades.advance(fade_key, target),
+        };
         if alpha != u8::MAX {
             let key = crate::occlusion::Owner::new(at.z, item.tile);
             let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, item.tile);
@@ -578,7 +617,7 @@ pub(crate) fn place(
     animations: &StaticAnimations,
     atlas: &StaticAtlas,
     cutaway: &Cutaway,
-    player_rect: Option<Rect>,
+    _player_rect: Option<Rect>,
 ) -> Option<Placed> {
     let tile = tiledata.static_tile(graphic.0);
     if !cutaway::shows(cutaway, at.z, tile) {
@@ -587,22 +626,9 @@ pub(crate) fn place(
     let showing = animations.showing(graphic);
     let sprite = atlas.sprite(showing)?;
     let screen_at = stand_on(camera, at, &sprite);
-    // A tree's own leaves, cut so the body under them stays in view — see
-    // `cutaway::hides_foliage_over`'s doc for why this is a hard cut and not
-    // the reference's fade.
-    if let (true, Some(player_rect)) = (tile.flags.is_foliage(), player_rect) {
-        if cutaway::hides_foliage_over(
-            player_rect,
-            Rect {
-                x: screen_at.x,
-                y: screen_at.y,
-                width: f32::from(sprite.width),
-                height: f32::from(sprite.height),
-            },
-        ) {
-            return None;
-        }
-    }
+    // Foliage is classified by the collector, where all graphics of one
+    // canopy can share a fade key. Placement itself must remain available for
+    // that late row (and for picking), so it never hard-cuts foliage here.
     Some(Placed {
         order: depth::Order {
             tile: i32::from(at.x) + i32::from(at.y),
@@ -981,8 +1007,8 @@ mod tests {
                 &cutaway,
                 Some(over)
             )
-            .is_none(),
-            "the player's own rectangle is under the canopy: cut"
+            .is_some(),
+            "the late collector needs the placed canopy to apply its fade"
         );
 
         let mut not_foliage = TileData::empty();

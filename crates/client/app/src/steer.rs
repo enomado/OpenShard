@@ -179,7 +179,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_movement::{
-    Around, CoarseRouter, Detour, Heading, Lean, Leeway, RUN_HOLD, Step, Terrain, Tile, WALK_HOLD,
+    Around, Detour, Heading, Lean, Leeway, NavigationGraph, RUN_HOLD, Step, Terrain, Tile, WALK_HOLD,
     find_long_path, find_path, find_path_toward, step_allowed,
 };
 use openshard_protocol::direction::{Direction, Facing};
@@ -315,7 +315,7 @@ pub struct Ground<'a> {
     /// can reject a proposed corridor without rewriting its topology.
     pub guide: &'a dyn Terrain,
     /// The map-only connectivity cache, absent in mapless/test callers.
-    pub coarse: Option<&'a CoarseRouter>,
+    pub coarse: Option<&'a NavigationGraph>,
 }
 
 impl Ground<'_> {
@@ -1757,7 +1757,7 @@ mod tests {
     /// reaches for the graph rather than merely storing one at startup.
     #[test]
     fn a_far_destination_uses_the_coarse_route_after_the_ordinary_budget_ends() {
-        let router = CoarseRouter::build(&OpenWorld, 704, 32).expect("a representable map");
+        let router = NavigationGraph::build(&OpenWorld, 704, 32).expect("a representable map");
         let from = Point::new(1, 1, 0);
         let goal = Tile::new(702, 1);
         assert!(
@@ -1783,7 +1783,7 @@ mod tests {
     fn a_far_shut_door_is_still_a_cut_coarse_route_not_a_walk_through_it() {
         let open = LongDoor { shut: false, x: 400 };
         let shut = LongDoor { shut: true, x: 400 };
-        let router = CoarseRouter::build(&open, 704, 32).expect("a representable map");
+        let router = NavigationGraph::build(&open, 704, 32).expect("a representable map");
         let from = Point::new(1, 1, 0);
         let goal = Tile::new(702, 1);
         let plan = plan(

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use openshard_client_render::atlas::FontAtlas;
 use openshard_client_render::gump::GumpAtlas;
 use openshard_client_render::hue::HueRamp;
-use openshard_movement::CoarseRouter;
+use openshard_movement::NavigationGraph;
 use openshard_uofiles::anim::Anim;
 use openshard_uofiles::art::Art;
 use openshard_uofiles::cliloc::Cliloc;
@@ -37,7 +37,7 @@ pub struct Resources {
     /// Static long-distance connectivity over [`Resources::map`]. It is built
     /// once, before the event loop starts, and only proposes a corridor; the
     /// live route still reads the map with the shard's clutter laid over it.
-    pub coarse: Option<CoarseRouter>,
+    pub coarse: Option<NavigationGraph>,
     pub art: Art,
     /// What was measured off that art off the clock, or `None` for a run with no
     /// table beside the install — see `run`, which says which it is and carries

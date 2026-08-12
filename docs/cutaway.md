@@ -37,7 +37,8 @@ uses premultiplied source-over blending.
 | C2: one source of opacity | done | The product-facing alpha is supplied once to both the CPU/test contract and GPU; no Rust/WGSL magic-number pair remains. |
 | C3: exact selection policy | done | Architecture needs an overlapping opaque body/static texel; foliage deliberately uses its own screen-rectangle canopy rule. |
 | C4: dynamic-world policy | done | Dropped server items use the same exact opaque-pixel candidate rule and independently lit translucent layer as map architecture. |
-| C5: transition parity | pending | The reference-style temporal per-object alpha ramp is persistent across frames, including its removal semantics. |
+| C5: transition parity | done | Map architecture and dropped server items retain a reference-style per-object alpha ramp across frames, including zero-alpha removal and fade-in. |
+| C6: foliage union | done | Foliage graphics on one placed canopy tile share one stable fade decision and late-layer alpha, without changing picking or ordinary foliage visibility policy. |
 
 ## C1 implementation record
 
@@ -88,10 +89,50 @@ Completed 2026-08-12:
 
 ## Current hand-off
 
-Start at C5: map architecture and dropped server items now share the bounded
-opaque-pixel policy and late independently lit layer; foliage retains its
-separate hard-cut canopy rule. The remaining work is the reference-style,
-persistent per-object transition ramp.
+The map architecture and dropped server items now retain their own alpha across
+frames: each starts at 255, approaches the selected late-layer alpha or zero in
+25-point steps, is removed only at zero, and returns through the same layer
+until it reaches 255 again. Foliage deliberately remains its separate hard-cut
+canopy policy; its reference union rule is a distinct future policy rather than
+an accidental side effect of architectural state.
+
+## C5 implementation record
+
+Completed 2026-08-12:
+
+1. Keep alpha by stable producer, world position, and placed graphic in
+   presentation state; animated art keeps its placed graphic identity.
+2. Move any non-255 row into the independently lit cutaway layer. Its per-row
+   opacity travels in the existing instance word, so no opaque renderer changes
+   its layout.
+3. A cutaway-hidden object targets zero and is omitted only after it reaches
+   zero. When the cutaway no longer hides it, its remembered zero starts at 25
+   and returns through the late layer before it may rejoin opaque geometry.
+4. Body-overlapping architecture and server items target `TRANSLUCENT_ALPHA`;
+   their first frame fades from opaque rather than snapping to the final value.
+5. Unit coverage pins both endpoints and the fade-in after zero removal.
+
+## C6 implementation record
+
+Completed 2026-08-12:
+
+1. Keep foliage placement available to the collector instead of hard-cutting it
+   in the shared placement helper; picking and selected outlines therefore keep
+   their existing picture path.
+2. Key all foliage graphics at one placed world tile by `FadeKey::foliage`,
+   rather than by the animated frame, and advance that key at most once per
+   frame. Multiple graphics on one canopy consequently cannot fade in stripes.
+3. Apply the existing rectangle canopy predicate to foliage only, with its own
+   `FOLIAGE_ALPHA` contract; architecture continues to require an opaque pixel
+   overlap with the body mask.
+4. Send a faded foliage row through the same independently lit late layer as
+   architecture and items. Opaque foliage keeps the ordinary depth/G-buffer
+   path, and dropped server items remain governed by C4.
+
+CPU coverage pins the foliage rectangle policy, the shared canopy key, and the
+existing opaque-item highlight path. An isolated foliage graphic is a
+one-member union; dropped server items are not foliage and remain governed by
+C4.
 
 ## C4 implementation record
 

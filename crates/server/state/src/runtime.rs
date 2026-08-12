@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use openshard_entities::{EntityId, Registry};
 use openshard_events::EventBus;
 use openshard_gateway::ConnectionId;
-use openshard_movement::{CoarseRouter, Terrain, Tile};
+use openshard_movement::{NavigationGraph, Terrain, Tile};
 use openshard_protocol::casting::SpellId;
 use openshard_protocol::combat::HealthBar;
 use openshard_protocol::feedback::{Animation, NewAnimation, PlaySound};
@@ -367,7 +367,7 @@ pub struct FacetState {
     /// It deliberately has no live doors or placed items in it; a caller still
     /// refines every hop through [`FacetState::live_terrain`] or its
     /// doors-open sibling.
-    pub coarse: Option<CoarseRouter>,
+    pub coarse: Option<NavigationGraph>,
     /// How wide this facet's map is, in tiles.
     ///
     /// Kept here rather than asked of the terrain because the client has to be
@@ -399,7 +399,7 @@ impl FacetState {
     /// coordinate space. Kept as an accessor so no caller can mistake it for
     /// the live terrain that actually approves a step.
     #[must_use]
-    pub const fn coarse_router(&self) -> Option<&CoarseRouter> {
+    pub const fn coarse_router(&self) -> Option<&NavigationGraph> {
         self.coarse.as_ref()
     }
 

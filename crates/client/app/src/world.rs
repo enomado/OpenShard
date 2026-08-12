@@ -238,6 +238,7 @@ mod tests {
                 equipment: Vec::new().into(),
             },
             cutaway_at: at,
+            cutaway_fades: openshard_client_render::cutaway::Fades::default(),
             others: Vec::new(),
             items: Vec::new(),
             item_serials: Vec::new(),

@@ -142,7 +142,15 @@ pub fn collect(
     player_mask: Option<&crate::mobiles::OpaqueMask>,
 ) -> crate::statics::StaticGeometry {
     collect_with_fades(
-        items, camera, tiledata, animations, atlas, cutaway, highlight, occlusion, player_mask,
+        items,
+        camera,
+        tiledata,
+        animations,
+        atlas,
+        cutaway,
+        highlight,
+        occlusion,
+        player_mask,
         &mut crate::cutaway::Fades::default(),
     )
 }
@@ -181,7 +189,14 @@ pub fn collect_with_fades(
                 let overlaps_body = player_mask.is_some_and(|body| {
                     body.overlaps_opaque(placed_rect(&placed), |x, y| atlas.opaque_at(placed.showing, x, y))
                 });
-                (placed, if overlaps_body { crate::cutaway::TRANSLUCENT_ALPHA_U8 } else { u8::MAX })
+                (
+                    placed,
+                    if overlaps_body {
+                        crate::cutaway::TRANSLUCENT_ALPHA_U8
+                    } else {
+                        u8::MAX
+                    },
+                )
             }
             None => {
                 // A server decoration on the storey the cutaway removed gets

@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-use openshard_movement::{CoarseRouter, OpenWorld, find_long_path, find_path};
+use openshard_movement::{NavigationGraph, OpenWorld, find_long_path, find_path};
 use openshard_protocol::world::Point;
 
 const WIDTH: u16 = 1024;
@@ -20,7 +20,7 @@ const TO: Point = Point::new(WIDTH - 2, HEIGHT - 2, 0);
 
 fn main() {
     let built_at = Instant::now();
-    let router = CoarseRouter::build(&OpenWorld, u32::from(WIDTH), u32::from(HEIGHT))
+    let router = NavigationGraph::build(&OpenWorld, u32::from(WIDTH), u32::from(HEIGHT))
         .expect("the synthetic facet fits Point's coordinate space");
     let built = built_at.elapsed();
 

@@ -735,7 +735,7 @@ impl App {
         let geometry = assemble_geometry(
             &self.resources,
             &mut self.graphics,
-            &self.world,
+            &mut self.world,
             &self.picking,
             window,
             camera,

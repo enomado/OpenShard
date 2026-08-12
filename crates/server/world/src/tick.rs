@@ -373,7 +373,7 @@ impl World {
     /// Load `terrain` as facet `facet`, its interest grid sized to the map.
     pub fn with_facet(mut self, facet: Facet, terrain: MapTerrain) -> Self {
         let (width, height) = (terrain.map().width(), terrain.map().height());
-        let coarse = openshard_movement::CoarseRouter::build(&terrain, width, height);
+        let coarse = openshard_movement::NavigationGraph::build(&terrain, width, height);
         let sectors = Sectors::new(width, height);
         // Boxed as `dyn Terrain`: the state crate holds the abstraction, and the
         // world supplies the concrete map here.

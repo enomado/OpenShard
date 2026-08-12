@@ -152,7 +152,10 @@ impl SpriteQuad {
     /// kept as the backwards-compatible spelling of fully opaque, so every
     /// existing opaque producer remains unchanged.
     pub fn with_opacity(mut self, opacity: u8) -> Self {
-        self.hue = (self.hue & 0xffff) | (u32::from(opacity) << 16);
+        // Zero in the sideband means the historical opaque spelling. Keeping
+        // it for 255 also preserves the ordinary hue word for CPU readers
+        // and for every producer that is not in the late layer.
+        self.hue = (self.hue & 0xffff) | (u32::from(opacity != u8::MAX) * u32::from(opacity) << 16);
         self
     }
 

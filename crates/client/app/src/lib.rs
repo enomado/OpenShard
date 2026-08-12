@@ -679,7 +679,7 @@ pub fn run<D: Dial + Send + 'static>(
     // graph needs: doors and every other dynamic thing live in `Clutter`, not
     // in these two client files. Keep the graph separate from the two Arcs so
     // it stores only connectivity, not another copy of a 100 MB facet.
-    let coarse = openshard_movement::CoarseRouter::build(
+    let coarse = openshard_movement::NavigationGraph::build(
         &openshard_movement::MapTerrain::new(map.as_ref(), tiledata.as_ref()),
         map.width(),
         map.height(),

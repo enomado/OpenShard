@@ -367,12 +367,9 @@ fn op_say(state: &mut OpState, serial: u32, #[string] text: String, hue: u32) {
 /// brain. The world starts handing it to this script each tick.
 #[op2(fast)]
 fn op_control(state: &mut OpState, serial: u32) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::Control {
-            serial: Serial::from(serial),
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::Control {
+        serial: Serial::from(serial),
+    });
 }
 
 /// Show a gump (a dialog window) to a mobile's client:
@@ -603,13 +600,10 @@ fn op_register_quests(state: &mut OpState, #[serde] spec: QuestsSpec) {
 /// exactly what a binding held in script memory did not.
 #[op2]
 fn op_bind_quest_giver(state: &mut OpState, serial: u32, #[serde] keys: Vec<String>) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::BindQuestGiver {
-            serial: Serial::from(serial),
-            keys,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::BindQuestGiver {
+        serial: Serial::from(serial),
+        keys,
+    });
 }
 
 /// Make an NPC escortable: `op_make_escortable(serial, "Britain")`. An empty
@@ -617,13 +611,10 @@ fn op_bind_quest_giver(state: &mut OpState, serial: u32, #[serde] keys: Vec<Stri
 /// mobile.
 #[op2(fast)]
 fn op_make_escortable(state: &mut OpState, serial: u32, #[string] destination: String) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::MakeEscortable {
-            serial: Serial::from(serial),
-            destination,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::MakeEscortable {
+        serial: Serial::from(serial),
+        destination,
+    });
 }
 
 /// Close an open gump on a player's client: `op_close_gump(serial, gumpId)`.
@@ -631,13 +622,10 @@ fn op_make_escortable(state: &mut OpState, serial: u32, #[string] destination: S
 /// client stacks them.
 #[op2(fast)]
 fn op_close_gump(state: &mut OpState, serial: u32, gump_id: u32) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::CloseGump {
-            serial: Serial::from(serial),
-            gump_id,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::CloseGump {
+        serial: Serial::from(serial),
+        gump_id,
+    });
 }
 
 /// Send a player a private system line: `op_message(serial, text)`. The server
@@ -645,13 +633,10 @@ fn op_close_gump(state: &mut OpState, serial: u32, gump_id: u32) {
 /// for everyone in earshot.
 #[op2(fast)]
 fn op_message(state: &mut OpState, serial: u32, #[string] text: String) {
-    state
-        .borrow_mut::<Host>()
-        .outbox
-        .push(Command::Message {
-            serial: Serial::from(serial),
-            text,
-        });
+    state.borrow_mut::<Host>().outbox.push(Command::Message {
+        serial: Serial::from(serial),
+        text,
+    });
 }
 
 /// Play a sound for one player: `op_play_sound(serial, sound)` — feedback on
