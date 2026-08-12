@@ -554,8 +554,10 @@ impl App {
         // in it is a function of them. The one sampling of time that the frame is
         // built from is `started`, at the top.
         let ui_started = Instant::now();
-        let hud = self.hud(camera, &pick, &cutaway, drawn_mobiles.as_deref());
+        let (hud, hud_timings) = self.hud(camera, &pick, &cutaway, drawn_mobiles.as_deref());
+        let ui_hud_cost = ui_started.elapsed();
         let painting = self.window.as_ref().map(|screen| Arc::clone(&screen.window));
+        let ui_layout_started = Instant::now();
         let ui = match (self.shell.as_mut(), painting.as_ref()) {
             (Some(shell), Some(window)) => {
                 let (request, output) = shell.run(window, &hud, camera, &self.world);
@@ -564,7 +566,8 @@ impl App {
             }
             _ => None,
         };
-        let mut ui_cost = ui_started.elapsed();
+        let ui_layout_cost = ui_layout_started.elapsed();
+        let mut ui_cost = ui_hud_cost + ui_layout_cost;
         if let Some((request, _, _)) = &ui {
             self.pending = request.clone();
         }
@@ -1145,6 +1148,7 @@ impl App {
             profile::end(window.gpu.as_ref(), &mut encoder, timed);
             ui_cost += painting.elapsed();
         }
+        let ui_paint_cost = ui_cost.saturating_sub(ui_hud_cost).saturating_sub(ui_layout_cost);
         // Every query closed above, copied out of its set and into the buffer
         // the next frame will map — recorded into this encoder, so it has to
         // happen before the submit and after the last `profile::end`.
@@ -1300,6 +1304,14 @@ impl App {
             crate::jank::record(
                 frame,
                 crate::jank::CpuPasses {
+                    ui_hud: ui_hud_cost,
+                    ui_terrain: hud_timings.terrain,
+                    ui_route: hud_timings.route,
+                    ui_occluders: hud_timings.occluders,
+                    ui_picking: hud_timings.picking,
+                    ui_perf: hud_timings.perf,
+                    ui_layout: ui_layout_cost,
+                    ui_paint: ui_paint_cost,
                     facts: facts_cost,
                     atlases: atlases_cost,
                     targets: targets_cost,

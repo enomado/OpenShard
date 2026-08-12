@@ -1,5 +1,95 @@
 # Client jank: plan of work
 
+## Current handoff — 2026-08-13
+
+### What the current evidence says
+
+The latest playground log showed two separate jank sources:
+
+- The diagnostic Dev HUD can add about 118–123 ms to `ui_hud`. `ui_layout`
+  stays around 1.5–3.7 ms and `ui_paint` around 0.36–0.50 ms, so egui layout
+  and painting are not the source of that spike.
+- The detailed world path costs about 28–34 ms in the same scenario. Geometry
+  is about 14–17 ms, `static_walk` about 8.6–10.7 ms, ground about 4.7–5.0
+  ms, and instance encoding about 10–14 ms. These CPU phases overlap in the
+  assembly/encoding instrumentation and must not be summed as a frame total.
+- GPU timestamps are about 1.8–7 ms and did not exceed the 16 ms budget in the
+  observed run.
+- Atlas growth caused additional spikes, including roughly 114 ms while
+  uploading about 10 MB in an early frame and a later 5.12 MB upload. No
+  observed frame had `repacked=true`.
+
+### Completed since the baseline
+
+- Jank records now split UI preparation into `ui_hud`, `ui_layout` and
+  `ui_paint` in addition to the existing world phases.
+- `ui_hud` now records `ui_terrain`, `ui_route`, `ui_occluders`, `ui_picking`
+  and `ui_perf` sub-phases, so diagnostic overlay preparation can be measured
+  without attributing the whole HUD cost to terrain.
+- The terrain diagnostic overlay cache is keyed by visible tile bounds and
+  player position, rather than the full pixel-precise camera. Camera motion
+  within the same tile bounds therefore reuses the existing world-space
+  overlay. World item changes already invalidate this cache.
+- `cargo check -p openshard-client-app`, formatter checks, and the app unit
+  tests pass.
+
+### Remaining implementation order
+
+1. Re-run the playground with the terrain overlay enabled while moving and
+   compare `ui_hud` before/after the bounds-keyed cache. Keep the overlay
+   enabled for the measurement; disabling it is only a control run.
+2. Use the new HUD sub-phase records to identify which diagnostic path remains
+   dominant before changing the terrain implementation.
+3. Add a reusable static terrain surface index. For each map tile, retain the
+   land/platform surface candidates and static fit data needed by
+   `spawn_z`/`can_fit`; avoid allocating and rescanning map statics for every
+   overlay tile. Build it lazily or in bounded visible blocks rather than
+   eagerly materialising the whole facet.
+4. Make the overlay incremental. Keep cells keyed by tile and a terrain
+   revision; when the viewport moves, compute only entered rows/columns.
+   Invalidate affected cells when the player height, map/static revision or
+   dynamic blocker revision changes. Preserve world-space points so camera
+   subpixel motion never invalidates them.
+5. Collapse the remaining duplicate surface/fit work into one query over the
+   cached candidate list. The dynamic `Clutter` lookup should remain separate
+   and O(1)-by-tile, so moving server items invalidates only affected cells.
+6. Add a benchmark fixture for a fixed camera, a one-tile pan, and a moving
+   camera with the overlay on. Record overlay-cache hits/misses, cells rebuilt,
+   `ui_hud`, `static_walk`, `encode`, and total build time.
+7. Continue with the existing world bottlenecks: incremental static geometry,
+   persistent instance buffers/uploads, far-zoom composites, and bounded
+   atlas-page uploads. The current goals are below 2 ms for steady-state
+   `static_walk`, below 3 ms for `encode`, and no atlas-repack hitch above
+   50 ms.
+
+### Handoff notes
+
+- `target/openshard-playground-jank.log` is diagnostic output, not a checked-in
+  benchmark artifact. Start a fresh playground run before comparing numbers.
+- `ui_hud` includes `App::hud`, so it includes diagnostic data preparation as
+  well as the overlay objects later consumed by egui. The new sub-timers in
+  step 2 are required before attributing all of that cost to terrain.
+- The working tree contains pre-existing changes unrelated to this handoff;
+  preserve them when implementing the remaining items.
+
+### Backlog — findings to verify
+
+- The bounds-keyed terrain cache has not yet been measured in a fresh
+  playground run. Capture a control run with the overlay off, then compare
+  overlay-on movement before and after the cache; do not compare against the
+  stale `target/openshard-playground-jank.log`.
+- The new HUD records are sequential sub-phases inside `ui_hud`; they explain
+  where HUD preparation spends time, but must not be added to `ui_hud` or to
+  the frame total a second time.
+- `ui_picking` currently includes the remaining HUD snapshot work after the
+  named terrain, route and occluder queries, including selection resolution,
+  health bars and the goal tile. If it dominates, split those readers before
+  changing terrain caching.
+- The terrain query still constructs `Clutter` and repeats surface/fit work
+  across visible tiles on a cache miss. This keeps the static surface index,
+  incremental cells and one-query fit consolidation as the next implementation
+  backlog rather than treating the bounds cache as the final fix.
+
 ## Context and baseline
 
 The playground writes every frame over the 16 ms budget to

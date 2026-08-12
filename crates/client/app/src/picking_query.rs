@@ -11,7 +11,7 @@
 //! know".
 
 use openshard_client_render::bench::{self, Metrics};
-use openshard_client_render::camera::{self, Camera};
+use openshard_client_render::camera::{self, Camera, TileBounds};
 use openshard_client_render::control::Follow;
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::depth;
@@ -23,6 +23,7 @@ use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::app::App;
 use crate::crowd::Who;
@@ -34,6 +35,18 @@ use crate::graphics::HighlightTarget;
 use crate::picking::SelectedIdentity;
 use crate::world::{cluttered, cluttered_with_doors_open, terrain};
 use crate::{desk, frames, shell, steer};
+
+/// The expensive sub-queries performed while assembling the development HUD.
+/// These are diagnostic timings only; they deliberately do not change the HUD
+/// snapshot's shape or the order in which its readers see the world.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct HudTimings {
+    pub terrain: Duration,
+    pub route: Duration,
+    pub occluders: Duration,
+    pub picking: Duration,
+    pub perf: Duration,
+}
 
 impl App {
     /// Common code for the two lookups in [`App::pick_tile`]: `unproject` hands
@@ -378,7 +391,7 @@ impl App {
     /// The way *through* it is not here. A route is drawn whether this overlay
     /// is on or not, so that a Ctrl-drag shows where the body is about to go
     /// with no debugging switch thrown — see [`App::route_shown`].
-    pub(crate) fn terrain_overlay(&self, camera: Camera) -> TerrainOverlay {
+    pub(crate) fn terrain_overlay(&self, bounds: TileBounds) -> TerrainOverlay {
         use openshard_movement::{PLAYER_HEIGHT, Tile};
 
         let terrain = cluttered(&self.world, &self.resources);
@@ -387,10 +400,7 @@ impl App {
         let mut blocked = Vec::new();
         // The same clamp the ground pass uses, so the wash covers exactly the
         // tiles that were drawn and no strip of it hangs off the map.
-        if let Some((xs, ys)) = camera
-            .visible_tiles()
-            .clamp_to(self.resources.map.width(), self.resources.map.height())
-        {
+        if let Some((xs, ys)) = bounds.clamp_to(self.resources.map.width(), self.resources.map.height()) {
             for y in ys {
                 for x in xs.clone() {
                     let tile = Tile::new(x, y);
@@ -429,16 +439,17 @@ impl App {
     /// painting the already-known diamonds.
     fn terrain_shown(&mut self, camera: Camera) -> Arc<TerrainOverlay> {
         let from = self.world.presentation.player.at;
+        let bounds = camera.visible_tiles();
         if let Some(cached) = self
             .terrain_cache
             .as_ref()
-            .filter(|cached| cached.camera == camera && cached.from == from)
+            .filter(|cached| cached.bounds == bounds && cached.from == from)
         {
             return Arc::clone(&cached.overlay);
         }
-        let overlay = Arc::new(self.terrain_overlay(camera));
+        let overlay = Arc::new(self.terrain_overlay(bounds));
         self.terrain_cache = Some(crate::app::TerrainCache {
-            camera,
+            bounds,
             from,
             overlay: Arc::clone(&overlay),
         });
@@ -599,6 +610,9 @@ impl App {
         if let Some(disabled) = request.cutaway_disabled {
             self.graphics.cutaway_disabled = disabled;
         }
+        if let Some(disabled) = request.body_overlap_transparency_disabled {
+            self.graphics.body_overlap_transparency_disabled = disabled;
+        }
         if let Some(show) = request.show_terrain {
             self.graphics.show_terrain = show;
         }
@@ -698,11 +712,31 @@ impl App {
         pick: &Pick,
         cutaway: &Cutaway,
         drawn_mobiles: Option<&[(Who, Mobile)]>,
-    ) -> Hud {
-        Hud {
+    ) -> (Hud, HudTimings) {
+        let perf_started = Instant::now();
+        let perf = self.perf();
+        let perf = (perf, perf_started.elapsed());
+
+        let terrain_started = Instant::now();
+        let terrain = self.graphics.show_terrain.then(|| self.terrain_shown(camera));
+        let terrain_cost = terrain_started.elapsed();
+
+        let route_started = Instant::now();
+        let route = self.route_shown(pick.tile.as_ref());
+        let route_cost = route_started.elapsed();
+
+        let occluders_started = Instant::now();
+        let occluders = self
+            .graphics
+            .show_occluders
+            .then(|| self.occluders_shown(camera, cutaway));
+        let occluders_cost = occluders_started.elapsed();
+
+        let picking_started = Instant::now();
+        let hud = Hud {
             locked: self.control.follow() == Follow::Body,
             rig: self.control.rig(),
-            perf: self.perf(),
+            perf: perf.0,
             scripts: self.scripts.iter().map(|script| script.name).collect(),
             replay: self.replay.as_ref().map(|replay| {
                 let length = replay.length().as_secs_f32().max(0.001);
@@ -710,6 +744,7 @@ impl App {
             }),
             draw: self.graphics.drawing,
             cutaway_disabled: self.graphics.cutaway_disabled,
+            body_overlap_transparency_disabled: self.graphics.body_overlap_transparency_disabled,
             show_terrain: self.graphics.show_terrain,
             // The tile is lit when nothing else took the highlight. Under
             // `Items` nothing ever does, which is the mode's whole content; the
@@ -730,8 +765,8 @@ impl App {
             },
             highlight: self.graphics.highlight,
             highlight_style: self.graphics.highlight_style,
-            terrain: self.graphics.show_terrain.then(|| self.terrain_shown(camera)),
-            route: self.route_shown(pick.tile.as_ref()),
+            terrain,
+            route,
             show_occluders: self.graphics.show_occluders,
             show_solids: self.graphics.show_solids,
             solids_only: self.graphics.solids_only,
@@ -749,10 +784,7 @@ impl App {
             // by the widest pool's reach, and a box drawn over a rectangle the
             // shader did not walk would be a picture of this overlay's own
             // bounds rather than of the lighting's.
-            occluders: self
-                .graphics
-                .show_occluders
-                .then(|| self.occluders_shown(camera, cutaway)),
+            occluders,
             pick: pick.clone(),
             selected: self
                 .picking
@@ -760,7 +792,19 @@ impl App {
                 .map(|identity| self.resolve_selection(identity)),
             health_bars: self.health_bars(camera, drawn_mobiles),
             goal: self.steer.goal().map(|tile| self.tile_info(tile)),
-        }
+        };
+        let picking_cost = picking_started.elapsed();
+
+        (
+            hud,
+            HudTimings {
+                terrain: terrain_cost,
+                route: route_cost,
+                occluders: occluders_cost,
+                picking: picking_cost,
+                perf: perf.1,
+            },
+        )
     }
 
     fn health_bars(&self, camera: Camera, drawn_mobiles: Option<&[(Who, Mobile)]>) -> Vec<HealthBar> {

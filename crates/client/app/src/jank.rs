@@ -26,6 +26,14 @@ static LOG: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
 /// answer is needed.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CpuPasses {
+    pub ui_hud: Duration,
+    pub ui_terrain: Duration,
+    pub ui_route: Duration,
+    pub ui_occluders: Duration,
+    pub ui_picking: Duration,
+    pub ui_perf: Duration,
+    pub ui_layout: Duration,
+    pub ui_paint: Duration,
     pub facts: Duration,
     pub atlases: Duration,
     pub targets: Duration,
@@ -72,6 +80,14 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
         .map(|pass| (&pass.label, ms(pass.cost)))
         .collect();
     let cpu_passes = [
+        ("ui_hud", ms(cpu.ui_hud)),
+        ("ui_terrain", ms(cpu.ui_terrain)),
+        ("ui_route", ms(cpu.ui_route)),
+        ("ui_occluders", ms(cpu.ui_occluders)),
+        ("ui_picking", ms(cpu.ui_picking)),
+        ("ui_perf", ms(cpu.ui_perf)),
+        ("ui_layout", ms(cpu.ui_layout)),
+        ("ui_paint", ms(cpu.ui_paint)),
         ("facts", ms(cpu.facts)),
         ("atlases", ms(cpu.atlases)),
         ("targets", ms(cpu.targets)),
