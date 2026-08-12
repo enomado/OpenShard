@@ -23,6 +23,7 @@ use openshard_protocol::speech::Font;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::anim::{Anim, AnimError, AnimFrame};
 use openshard_uofiles::art::{Art, ArtError, LAND_TILE_SIZE, land_row};
+use openshard_uofiles::color::Rgb8;
 use openshard_uofiles::font::{AsciiFonts, FONT_COUNT};
 use openshard_uofiles::image::Image;
 use openshard_uofiles::texmaps::{TexMapError, TexMaps};
@@ -378,10 +379,10 @@ impl LandAtlas {
                     let color = image.pixel(x, y).unwrap();
                     let at =
                         ((origin_y + u32::from(y)) as usize * side + (origin_x + u32::from(x)) as usize) * 4;
-                    let (r, g, b) = color.rgb8();
-                    self.pixels[at] = r;
-                    self.pixels[at + 1] = g;
-                    self.pixels[at + 2] = b;
+                    let Rgb8 { red, green, blue } = color.rgb8();
+                    self.pixels[at] = red;
+                    self.pixels[at + 1] = green;
+                    self.pixels[at + 2] = blue;
                     self.pixels[at + 3] = u8::MAX;
                 }
             }
@@ -620,10 +621,10 @@ impl TexmapAtlas {
                     let color = image.pixel(x, y).expect("inside the image");
                     let at =
                         ((origin_y + u32::from(y)) as usize * side + (origin_x + u32::from(x)) as usize) * 4;
-                    let (r, g, b) = color.rgb8();
-                    self.pixels[at] = r;
-                    self.pixels[at + 1] = g;
-                    self.pixels[at + 2] = b;
+                    let Rgb8 { red, green, blue } = color.rgb8();
+                    self.pixels[at] = red;
+                    self.pixels[at + 1] = green;
+                    self.pixels[at + 2] = blue;
                     self.pixels[at + 3] = u8::MAX;
                 }
             }
@@ -1200,6 +1201,32 @@ struct Packed {
     origin: (u32, u32),
 }
 
+/// A whole animation in the file: body, action group and stored direction.
+///
+/// This is the key used to ask an [`AnimAtlas`] to pack an animation.  It is
+/// deliberately distinct from [`FrameKey`]: the atlas reads every frame of one
+/// animation at once, and giving the partial key a name keeps group and stored
+/// direction from being silently exchanged at that boundary.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct AnimationKey {
+    /// The body id.
+    pub body: Graphic,
+    /// Which animation group — standing, walking, attacking.
+    pub group: u8,
+    /// The stored direction, 0 to 4.
+    pub direction: u8,
+}
+
+impl AnimationKey {
+    pub const fn new(body: Graphic, group: u8, direction: u8) -> Self {
+        Self {
+            body,
+            group,
+            direction,
+        }
+    }
+}
+
 /// Which picture of an animation this is.
 ///
 /// A body alone is not a sprite: it is a body, an action, a facing and a moment
@@ -1263,7 +1290,7 @@ pub struct AnimAtlas {
     /// caller asks for and what the file answers in one read. Most of the index
     /// is empty, so without this a creature whose group the client ships no
     /// animation for would seek `anim.mul` once a frame for ever.
-    asked: BTreeSet<(Graphic, u8, u8)>,
+    asked: BTreeSet<AnimationKey>,
     /// Where the next frame goes, kept between growths.
     shelf: Shelf,
     /// `ATLAS_SIDE * ATLAS_SIDE` RGBA8 pixels, row-major.
@@ -1293,7 +1320,7 @@ impl AnimAtlas {
     /// ordinary case rather than a failure.
     pub fn build(
         anim: &mut Anim,
-        wanted: impl IntoIterator<Item = (Graphic, u8, u8)>,
+        wanted: impl IntoIterator<Item = AnimationKey>,
     ) -> Result<Self, AtlasError> {
         let mut atlas = Self::empty();
         atlas.add(anim, wanted)?;
@@ -1323,13 +1350,13 @@ impl AnimAtlas {
     pub fn add(
         &mut self,
         anim: &mut Anim,
-        wanted: impl IntoIterator<Item = (Graphic, u8, u8)>,
+        wanted: impl IntoIterator<Item = AnimationKey>,
     ) -> Result<(), AtlasError> {
         // Sorted and deduplicated, so the same request always packs the same
         // atlas — the frame tests depend on it, and so does not re-reading a
         // body twice because the caller listed it twice.
-        let wanted: BTreeSet<(Graphic, u8, u8)> = wanted.into_iter().collect();
-        let fresh: Vec<(Graphic, u8, u8)> = wanted
+        let wanted: BTreeSet<AnimationKey> = wanted.into_iter().collect();
+        let fresh: Vec<AnimationKey> = wanted
             .into_iter()
             .filter(|triple| !self.asked.contains(triple))
             .collect();
@@ -1337,7 +1364,12 @@ impl AnimAtlas {
             return Ok(());
         }
         let mut images = Vec::new();
-        for (body, group, direction) in fresh.iter().copied() {
+        for AnimationKey {
+            body,
+            group,
+            direction,
+        } in fresh.iter().copied()
+        {
             let Some(frames) = anim.frames(body, group, direction)? else {
                 continue;
             };
@@ -1378,9 +1410,11 @@ impl AnimAtlas {
     pub fn pack(frames: impl IntoIterator<Item = (FrameKey, AnimFrame)>) -> Result<Self, AtlasError> {
         let mut atlas = Self::empty();
         let frames: Vec<(FrameKey, AnimFrame)> = frames.into_iter().collect();
-        atlas
-            .asked
-            .extend(frames.iter().map(|(key, _)| (key.body, key.group, key.direction)));
+        atlas.asked.extend(frames.iter().map(|(key, _)| AnimationKey {
+            body: key.body,
+            group: key.group,
+            direction: key.direction,
+        }));
         atlas.insert(frames)?;
         atlas.dirty.take();
         Ok(atlas)
@@ -1393,8 +1427,11 @@ impl AnimAtlas {
         frames: impl IntoIterator<Item = (FrameKey, AnimFrame)>,
     ) -> Result<(), AtlasError> {
         let frames: Vec<(FrameKey, AnimFrame)> = frames.into_iter().collect();
-        self.asked
-            .extend(frames.iter().map(|(key, _)| (key.body, key.group, key.direction)));
+        self.asked.extend(frames.iter().map(|(key, _)| AnimationKey {
+            body: key.body,
+            group: key.group,
+            direction: key.direction,
+        }));
         self.insert(frames)
     }
 
@@ -1905,10 +1942,10 @@ fn copy_sprite(pixels: &mut [u8], image: &Image, origin_x: u32, origin_y: u32) {
         for x in 0..image.width() {
             let color = image.pixel(x, y).expect("inside the image");
             let at = ((origin_y + u32::from(y)) as usize * side + (origin_x + u32::from(x)) as usize) * 4;
-            let (r, g, b) = color.rgb8();
-            pixels[at] = r;
-            pixels[at + 1] = g;
-            pixels[at + 2] = b;
+            let Rgb8 { red, green, blue } = color.rgb8();
+            pixels[at] = red;
+            pixels[at + 1] = green;
+            pixels[at + 2] = blue;
             pixels[at + 3] = if color.is_transparent() { 0 } else { u8::MAX };
         }
     }
@@ -2264,7 +2301,9 @@ mod tests {
         // And a fourth that says this picture is a bookcase's own slab —
         // `docs/footprints.md`'s S3: the footprint travels by the same lookup
         // as the hole and the prism, none of it read off this east-facing wall.
-        let footprint = crate::facing::Footprint::new((0, 4), (3, 8)).expect("a narrower box");
+        let footprint =
+            crate::facing::Footprint::new(crate::facing::Span::new(0, 4), crate::facing::Span::new(3, 8))
+                .expect("a narrower box");
         table.author(
             Graphic(4),
             crate::occlusion::Shape {

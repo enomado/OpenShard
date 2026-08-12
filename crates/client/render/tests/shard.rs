@@ -57,9 +57,17 @@ fn scratch(tag: &str) -> PathBuf {
     path
 }
 
-/// One `items` row of the fixture: `(serial, graphic, hue, loc_kind, facet, x,
-/// y, z)`.
-type ItemRow = (i64, u16, u16, u8, u8, u16, u16, i8);
+/// One `items` row of the fixture.
+struct ItemRow {
+    serial: i64,
+    graphic: u16,
+    hue: u16,
+    loc_kind: u8,
+    facet: u8,
+    x: u16,
+    y: u16,
+    z: i8,
+}
 
 /// One `decorations` row: the same without `loc_kind`, which a decoration has
 /// no column for — it is always standing where it stands.
@@ -70,12 +78,21 @@ type DecorationRow = (i64, u16, u16, u8, u16, u16, i8);
 fn write(path: &Path, items: &[ItemRow], decorations: &[DecorationRow]) {
     let connection = rusqlite::Connection::open(path).expect("a scratch database");
     connection.execute_batch(SCHEMA).expect("the two tables");
-    for &(serial, graphic, hue, loc_kind, facet, x, y, z) in items {
+    for item in items {
         connection
             .execute(
                 "INSERT INTO items (serial, graphic, hue, loc_kind, facet, x, y, z) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![serial, graphic, hue, loc_kind, facet, x, y, z],
+                rusqlite::params![
+                    item.serial,
+                    item.graphic,
+                    item.hue,
+                    item.loc_kind,
+                    item.facet,
+                    item.x,
+                    item.y,
+                    item.z,
+                ],
             )
             .expect("an item row");
     }
@@ -112,21 +129,75 @@ fn reads_both_tables_and_keeps_out_what_the_window_does_not_hold() {
         &path,
         &[
             // Inside: a dropped item, which is what `loc_kind = 0` means.
-            (1, 0x0EED, 0, 0, 0, 1504, 1655, 27),
+            ItemRow {
+                serial: 1,
+                graphic: 0x0EED,
+                hue: 0,
+                loc_kind: 0,
+                facet: 0,
+                x: 1504,
+                y: 1655,
+                z: 27,
+            },
             // Inside the rectangle and inside a *container* — a barrel's
             // contents are not on the street, and a reader that dropped the
             // `loc_kind` filter would draw them there.
-            (2, 0x0EED, 0, 1, 0, 1504, 1655, 27),
+            ItemRow {
+                serial: 2,
+                graphic: 0x0EED,
+                hue: 0,
+                loc_kind: 1,
+                facet: 0,
+                x: 1504,
+                y: 1655,
+                z: 27,
+            },
             // Worn, likewise: on a body, not on the ground.
-            (3, 0x1F03, 0, 2, 0, 1504, 1655, 27),
+            ItemRow {
+                serial: 3,
+                graphic: 0x1F03,
+                hue: 0,
+                loc_kind: 2,
+                facet: 0,
+                x: 1504,
+                y: 1655,
+                z: 27,
+            },
             // Another facet, at the same coordinates. Trammel is Britain's twin
             // tile for tile, so a reader that forgot the facet would find a
             // plausible thing at a plausible place.
-            (4, 0x0EED, 0, 0, 1, 1504, 1655, 27),
+            ItemRow {
+                serial: 4,
+                graphic: 0x0EED,
+                hue: 0,
+                loc_kind: 0,
+                facet: 1,
+                x: 1504,
+                y: 1655,
+                z: 27,
+            },
             // One tile east of the window's edge.
-            (5, 0x0EED, 0, 0, 0, 1509, 1655, 27),
+            ItemRow {
+                serial: 5,
+                graphic: 0x0EED,
+                hue: 0,
+                loc_kind: 0,
+                facet: 0,
+                x: 1509,
+                y: 1655,
+                z: 27,
+            },
             // One tile north of it.
-            (6, 0x0EED, 0, 0, 0, 1504, 1650, 27),
+            ItemRow {
+                serial: 6,
+                graphic: 0x0EED,
+                hue: 0,
+                loc_kind: 0,
+                facet: 0,
+                x: 1504,
+                y: 1650,
+                z: 27,
+            },
         ],
         &[
             // The cabinet the whole entry is about, both halves.
@@ -192,7 +263,16 @@ fn a_basement_comes_back_below_the_ground() {
     let path = scratch("basement");
     write(
         &path,
-        &[(1, 0x0EED, 0, 0, 0, 1504, 1655, -60)],
+        &[ItemRow {
+            serial: 1,
+            graphic: 0x0EED,
+            hue: 0,
+            loc_kind: 0,
+            facet: 0,
+            x: 1504,
+            y: 1655,
+            z: -60,
+        }],
         &[(2, 0x0A97, 0, 0, 1505, 1656, -128)],
     );
     let mut read = shard::read(&path, WINDOW);

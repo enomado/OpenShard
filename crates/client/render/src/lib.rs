@@ -75,5 +75,6 @@ pub mod solid;
 pub mod solids;
 pub mod sprite;
 pub mod statics;
+pub mod status;
 pub mod text;
 pub mod tonemap;

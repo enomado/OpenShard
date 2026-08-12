@@ -25,7 +25,7 @@
 use std::fmt;
 
 use openshard_protocol::wire::Hue;
-use openshard_uofiles::color::Color16;
+use openshard_uofiles::color::{Color16, Rgb8};
 use openshard_uofiles::hues::{COLORS_PER_HUE, Hues};
 
 /// Every hue the client knows, packed as a `COLORS_PER_HUE`-wide,
@@ -81,10 +81,10 @@ impl HueRamp {
 
 fn write_pixel(pixels: &mut [u8], column: u32, row: u32, height: u32, color: Color16) {
     let at = ((row * COLORS_PER_HUE as u32 + column) * 4) as usize;
-    let (r, g, b) = color.rgb8();
-    pixels[at] = r;
-    pixels[at + 1] = g;
-    pixels[at + 2] = b;
+    let Rgb8 { red, green, blue } = color.rgb8();
+    pixels[at] = red;
+    pixels[at + 1] = green;
+    pixels[at + 2] = blue;
     pixels[at + 3] = u8::MAX;
     debug_assert!(row < height);
 }

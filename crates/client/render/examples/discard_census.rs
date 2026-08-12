@@ -54,7 +54,7 @@ use std::path::PathBuf;
 use openshard_client_render::atlas::StaticAtlas;
 use openshard_client_render::camera::TileBounds;
 use openshard_client_render::cutaway::Cutaway;
-use openshard_client_render::facing::{Block, Blocks, Footprint, blocks_silhouette};
+use openshard_client_render::facing::{Block, Blocks, Footprint, Span, blocks_silhouette};
 use openshard_client_render::impostor::{self, Volume};
 use openshard_client_render::light::WorldVec;
 use openshard_client_render::occlusion::{self, Shape};
@@ -555,7 +555,8 @@ fn controls(at: (i32, i32)) -> Vec<(u8, u32, u32, u32, Steps)> {
     [5u8, 10]
         .into_iter()
         .map(|top| {
-            let block = Block::new((0, 8), (0, 8), (0, top)).expect("a whole tile with a height");
+            let block = Block::new(Span::new(0, 8), Span::new(0, 8), Span::new(0, top))
+                .expect("a whole tile with a height");
             let image = blocks_silhouette(&Blocks::new(&[block]).expect("one block"));
             let own = Volume {
                 lo: WorldVec::new(at.0 as f32, at.1 as f32, 0.0),

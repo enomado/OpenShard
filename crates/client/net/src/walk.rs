@@ -547,11 +547,11 @@ mod tests {
         assert_eq!(walk.predicted().position, Point::new(102, 100, 25));
     }
 
-    /// The `0x02` a `step` produced, taken apart: direction bits, sequence.
-    fn sent(bytes: &[u8]) -> (u8, u8) {
+    /// The sequence byte in the `0x02` a `step` produced.
+    fn sent_sequence(bytes: &[u8]) -> u8 {
         assert_eq!(bytes.len(), 7, "0x02 is seven bytes");
         assert_eq!(bytes[0], 0x02);
-        (bytes[1], bytes[2])
+        bytes[2]
     }
 
     #[test]
@@ -560,9 +560,9 @@ mod tests {
         // connection opens at zero or the step is refused.
         let mut walk = walk();
         let bytes = walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
-        assert_eq!(sent(&bytes).1, 0);
+        assert_eq!(sent_sequence(&bytes), 0);
         assert_eq!(
-            sent(&walk.step(Facing::walking(Direction::North), |_, _| None).unwrap()).1,
+            sent_sequence(&walk.step(Facing::walking(Direction::North), |_, _| None).unwrap()),
             1
         );
     }
@@ -650,7 +650,7 @@ mod tests {
         assert_eq!(walk.predicted().position, Point::new(100, 100, 0));
 
         let bytes = walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
-        assert_eq!(sent(&bytes).1, 0, "both ends are fresh again");
+        assert_eq!(sent_sequence(&bytes), 0, "both ends are fresh again");
     }
 
     #[test]
@@ -678,7 +678,7 @@ mod tests {
             })
         );
         assert_eq!(
-            sent(&walk.step(Facing::walking(Direction::South), |_, _| None).unwrap()).1,
+            sent_sequence(&walk.step(Facing::walking(Direction::South), |_, _| None).unwrap()),
             0
         );
         assert_eq!(walk.predicted().position, Point::new(2000, 2001, -5));
@@ -756,7 +756,7 @@ mod tests {
         assert_eq!(walk.in_flight(), 0, "nothing was sent, so nothing is pending");
         assert_eq!(
             walk.step(Facing::walking(Direction::East), |_, _| None)
-                .map(|bytes| sent(&bytes).1),
+                .map(|bytes| sent_sequence(&bytes)),
             Ok(0),
             "and the sequence was not spent on it"
         );
@@ -899,7 +899,7 @@ mod tests {
         assert!(!walk.out_of_step(), "and the walk is free again");
         assert_eq!(
             walk.step(Facing::walking(Direction::North), |_, _| None)
-                .map(|bytes| sent(&bytes).1),
+                .map(|bytes| sent_sequence(&bytes)),
             Ok(0),
             "from a fresh sequence, which is what the server also went back to"
         );
@@ -951,7 +951,7 @@ mod tests {
         let mut walk = Walk::new(Point::new(100, 1000, 0), Facing::walking(Direction::North));
         for step in 0..260 {
             let bytes = walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
-            let sequence = sent(&bytes).1;
+            let sequence = sent_sequence(&bytes);
             assert!(step == 0 || sequence != 0, "step {step} sent a second zero");
             walk.on_packet(&ServerPacket::WalkAck(WalkAck {
                 sequence: StepSequence(sequence),

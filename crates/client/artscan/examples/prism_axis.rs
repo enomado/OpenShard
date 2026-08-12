@@ -486,8 +486,8 @@ fn debug_pictures(dir: &Path, out_dir: &Path, ids: &[u16]) {
                 if pixel.is_transparent() {
                     continue;
                 }
-                let (r, g, b) = pixel.rgb8();
-                stroke(&mut rgb, sw, sh, x as i32, y as i32, [r, g, b]);
+                let openshard_uofiles::color::Rgb8 { red, green, blue } = pixel.rgb8();
+                stroke(&mut rgb, sw, sh, x as i32, y as i32, [red, green, blue]);
             }
         }
 

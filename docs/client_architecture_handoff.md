@@ -7,12 +7,16 @@ This is a long-running refactor track for `crates/client`.
 The current implementation checkpoint is:
 
 ```text
-bcd0b68 separate client presentation boundaries
+7ebdac0 exercise staged update mailbox
 ```
+
+The status-window and `own_windows` module changes described below are working
+tree changes on top of this checkpoint; no new checkpoint commit has been made.
 
 Relevant earlier checkpoints:
 
 ```text
+bcd0b68 separate client presentation boundaries
 e49f7e3 avoid allocating mobile layer order
 2ca72c5 borrow drawn equipment layers
 61a4356 update client architecture handoff
@@ -35,7 +39,7 @@ cargo test -p openshard-client-net --lib
 cargo test -p openshard-client-render --lib
 ```
 
-Result: 170 app tests passed, 2 ignored; 76 net tests passed; 482 render
+Result: 171 app tests passed, 2 ignored; 77 net tests passed; 483 render
 tests passed, 1 ignored. `cargo fmt --check` and `git diff --check` also pass.
 
 ## Architecture agreed with the owner
@@ -96,11 +100,29 @@ tests passed, 1 ignored. `cargo fmt --check` and `git diff --check` also pass.
   `interact`) remain available for now. `Outgoing` is the single path used by
   the app, so their public surface can be reviewed separately rather than
   bundled into this boundary change.
+- `view::Status` holds the non-positional `0x11` facts for the player's own
+  character. Its hit points intentionally remain in `Player::hits`, the same
+  field the `0xA1` health-bar update refreshes, so the status window and the
+  overhead line cannot disagree. `WindowSubject::Status` is local UI state:
+  the Status button opens it and a reply only refreshes its authoritative
+  contents. The status frame lives in `client/render/src/status.rs`.
+  `own_windows/{sync,paperdoll,skills}.rs` now own their corresponding
+  behavior, leaving `own_windows.rs` with generic window interaction.
 - The mailbox has a deterministic stalled-window regression exercise: after
   256 ordered updates and 10,000 predictions, the next ordered update remains
   blocked until the frame drains, and that frame receives every ordered update
   plus only the latest prediction. This proves the boundary locally; a live
   stalled-window/shard run is still needed before tuning its capacity.
+- A 2026-08-12 local `openshard-playground` smoke run loaded the configured
+  client files and logged into its in-process shard successfully. It did not
+  intentionally stall only the App/event-loop thread or measure mailbox
+  pressure, so it is not capacity evidence. An earlier run emitted repeated
+  Vulkan `vkAcquireNextImageKHR` fence-validation errors. This was the
+  non-Windows acquire-fence defect fixed upstream in wgpu #9918, so the
+  workspace temporarily pins `e904d2eac` through `[patch.crates-io]`; the
+  post-patch smoke run entered the world without the validation error. Remove
+  that pin once the backport reaches crates.io. It remains separate from
+  mailbox-capacity tuning.
 
 ## Frame ownership and allocation result
 
@@ -120,13 +142,10 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
 1. If the dev HUD grows again, move its remaining read-only snapshot types out
    of `shell.rs`; keep `Shell` as the egui adapter that returns `Request`, not
    an owner of world-query types.
-2. Split `own_windows.rs` by synchronization, generic interaction, paperdoll,
-   and skills only when making a feature change in one of those areas. Preserve
-   local window mutation on the App thread.
-3. Exercise the staged mailbox against a real stalled-window/network workload
+2. Exercise the staged mailbox against a real stalled-window/network workload
    and tune its ordered-update capacity if needed. The headless regression
    test covers its backpressure and coalescing contract, not live timing.
-4. Keep the three state boundaries explicit as new fields are added:
+3. Keep the three state boundaries explicit as new fields are added:
 
    ```text
    authoritative world state
@@ -134,7 +153,7 @@ copies are on a rare eviction path. Do not reintroduce `Arc<WorldView>`.
    presentation projection
    ```
 
-5. Keep commits small and run the client app check/tests after each stage.
+4. Keep commits small and run the client app check/tests after each stage.
 
 ## Important caution
 

@@ -104,7 +104,7 @@ use std::fmt;
 
 use openshard_protocol::wire::Graphic;
 
-use crate::facing::{Block, Blocks, Face, Facing, Footprint, Hole, Prism};
+use crate::facing::{Block, Blocks, Face, Facing, Footprint, Hole, Prism, Span};
 use crate::occlusion::Shape;
 
 /// The version of this file format.
@@ -408,14 +408,14 @@ impl ArtTable {
             for block in row.shape.blocks.blocks() {
                 blocks.push_str(&format!(
                     " block {} {} {} {} {} {}",
-                    block.x.0, block.x.1, block.y.0, block.y.1, block.z.0, block.z.1
+                    block.x.min, block.x.max, block.y.min, block.y.max, block.z.min, block.z.max
                 ));
             }
             let footprint = match row.shape.footprint {
                 None => String::new(),
                 Some(footprint) => format!(
                     " footprint {} {} {} {}",
-                    footprint.x.0, footprint.x.1, footprint.y.0, footprint.y.1
+                    footprint.x.min, footprint.x.max, footprint.y.min, footprint.y.max
                 ),
             };
             let authored = if row.authored { " authored" } else { "" };
@@ -639,10 +639,12 @@ fn row(
         words.next();
         let mut span = || number::<u8>(words, at, "a block is `x0 x1 y0 y1 z0 z1`");
         let (x0, x1, y0, y1, z0, z1) = (span()?, span()?, span()?, span()?, span()?, span()?);
-        blocks.push(Block::new((x0, x1), (y0, y1), (z0, z1)).ok_or(TableError::Line {
-            at,
-            detail: "a block's spans must be non-empty and its x/y at most 8",
-        })?);
+        blocks.push(
+            Block::new(Span::new(x0, x1), Span::new(y0, y1), Span::new(z0, z1)).ok_or(TableError::Line {
+                at,
+                detail: "a block's spans must be non-empty and its x/y at most 8",
+            })?,
+        );
     }
     // `Blocks::new` is the one that knows the cap, the same discipline as the
     // prism's own: at most `facing::MAX_BLOCKS`.
@@ -669,10 +671,12 @@ fn row(
             }
             let mut span = || number::<u8>(words, at, "a footprint is `x0 x1 y0 y1`");
             let (x0, x1, y0, y1) = (span()?, span()?, span()?, span()?);
-            Some(Footprint::new((x0, x1), (y0, y1)).ok_or(TableError::Line {
-                at,
-                detail: "a footprint's spans must be non-empty and at most 8",
-            })?)
+            Some(
+                Footprint::new(Span::new(x0, x1), Span::new(y0, y1)).ok_or(TableError::Line {
+                    at,
+                    detail: "a footprint's spans must be non-empty and at most 8",
+                })?,
+            )
         }
         _ => None,
     };
@@ -1044,9 +1048,11 @@ mod tests {
     /// forces a choice between them.
     #[test]
     fn a_block_list_survives_the_round_trip_beside_a_prism() {
-        let post = |x: (u8, u8)| Block::new(x, (0, 8), (0, 20)).expect("a post, full depth");
-        let lintel = Block::new((0, 8), (0, 8), (15, 20)).expect("the beam over both posts");
-        let arch = Blocks::new(&[post((0, 2)), post((6, 8)), lintel]).expect("three of four");
+        let post = |x: Span| Block::new(x, Span::new(0, 8), Span::new(0, 20)).expect("a post, full depth");
+        let lintel = Block::new(Span::new(0, 8), Span::new(0, 8), Span::new(15, 20))
+            .expect("the beam over both posts");
+        let arch =
+            Blocks::new(&[post(Span::new(0, 2)), post(Span::new(6, 8)), lintel]).expect("three of four");
         let mut table = ArtTable::measured(stamp());
         table.author(Graphic(0x0736), Shape::pieced(arch));
         // And a graphic whose derived verdict is a plain wall, with a
@@ -1057,7 +1063,7 @@ mod tests {
         table.author(
             Graphic(0x0007),
             Shape {
-                blocks: Blocks::new(&[post((3, 5))]).expect("one block"),
+                blocks: Blocks::new(&[post(Span::new(3, 5))]).expect("one block"),
                 ..faced(Face::South)
             },
         );
@@ -1106,7 +1112,7 @@ mod tests {
     /// edge states written down beside the `none` verdict.
     #[test]
     fn a_footprint_survives_the_round_trip_on_a_none_verdict() {
-        let footprint = Footprint::new((0, 8), (3, 8)).expect("a box narrower on one axis");
+        let footprint = Footprint::new(Span::new(0, 8), Span::new(3, 8)).expect("a box narrower on one axis");
         let mut table = ArtTable::measured(stamp());
         table.derive(
             Graphic(0x0A97),
@@ -1148,7 +1154,7 @@ mod tests {
         let table = ArtTable::parse("table 5\n0x0A97 none footprint 0 8 3 8 authored\n").expect("a row");
         assert_eq!(
             table.shape(Graphic(0x0A97)).footprint,
-            Footprint::new((0, 8), (3, 8)),
+            Footprint::new(Span::new(0, 8), Span::new(3, 8)),
         );
         assert_eq!(table.authored(), 1, "the marker after the spans is still read");
     }

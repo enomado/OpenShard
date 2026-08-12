@@ -44,6 +44,8 @@ use openshard_uofiles::tiledata::AnimId;
 
 use std::rc::Rc;
 
+#[cfg(test)]
+use crate::atlas::AnimationKey;
 use crate::atlas::{AnimAtlas, FrameKey};
 use crate::camera::{Camera, RealPixel, ViewPixel, ViewPoint, WorldPoint};
 use crate::cutaway::Cutaway;
@@ -257,21 +259,25 @@ pub fn walked_offset(mobile: &Mobile) -> Vec2 {
 /// Also yields every equipment layer's *resolved* body-anim triple, so the
 /// atlas has what a worn item needs before [`collect`] asks for it — its own
 /// `AnimID` ordinarily, or [`EquipConv`]'s override where this body has one.
-pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(Graphic, u8, u8)> {
-    let mut wanted: Vec<(Graphic, u8, u8)> = Vec::new();
+pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<crate::atlas::AnimationKey> {
+    let mut wanted: Vec<crate::atlas::AnimationKey> = Vec::new();
     for mobile in mobiles {
         let (direction, _) = openshard_uofiles::anim::facing(mobile.facing);
         // The body the *file* holds, which for a ghost is the living body it is
         // drawn from — see `anim::animation_body`. Packed under that key, so
         // `place` below finds it under the same one.
-        wanted.push((
-            openshard_uofiles::anim::animation_body(mobile.body),
-            mobile.group,
+        wanted.push(crate::atlas::AnimationKey {
+            body: openshard_uofiles::anim::animation_body(mobile.body),
+            group: mobile.group,
             direction,
-        ));
+        });
         for layer in drawn_layers(mobile) {
             if let Some((graphic, _)) = worn_graphic(mobile, layer, equip_conv) {
-                wanted.push((graphic, mobile.group, direction));
+                wanted.push(crate::atlas::AnimationKey {
+                    body: graphic,
+                    group: mobile.group,
+                    direction,
+                });
             }
         }
     }
@@ -1229,7 +1235,7 @@ mod tests {
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&ghost), &no_equip()),
-            vec![(Graphic(400), 4, 0)],
+            vec![AnimationKey::new(Graphic(400), 4, 0)],
             "the atlas is asked for the living body",
         );
         // And an atlas holding exactly that draws it.
@@ -1457,7 +1463,13 @@ mod tests {
             ],
             &no_equip(),
         );
-        assert_eq!(wanted, vec![(Graphic(400), 4, 0), (Graphic(400), 4, 1)]);
+        assert_eq!(
+            wanted,
+            vec![
+                AnimationKey::new(Graphic(400), 4, 0),
+                AnimationKey::new(Graphic(400), 4, 1)
+            ]
+        );
     }
 
     /// An equipment layer draws over the body, resolved through
@@ -1623,7 +1635,7 @@ mod tests {
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&mobile), &no_equip()),
-            vec![(Graphic(400), 4, 0)],
+            vec![AnimationKey::new(Graphic(400), 4, 0)],
             "the body alone; body 0 is not an animation anybody asked for",
         );
         assert_eq!(
@@ -1699,7 +1711,10 @@ mod tests {
         let ghost = dressed(Graphic(0x0192));
         assert_eq!(
             needed_animations(std::slice::from_ref(&ghost), &no_equip()),
-            vec![(Graphic(0x0190), 4, 0), (Graphic(7005), 4, 0)],
+            vec![
+                AnimationKey::new(Graphic(0x0190), 4, 0),
+                AnimationKey::new(Graphic(7005), 4, 0),
+            ],
             "the hair is not packed either — the pack and the draw must agree",
         );
         assert_eq!(

@@ -19,6 +19,18 @@ use std::fmt;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Color16(pub u16);
 
+/// An opaque colour after widening the file format's five-bit channels.
+///
+/// The renderer uploads these components in RGB order.  It is named instead
+/// of returning three anonymous bytes so a caller cannot mistake the value for
+/// a coordinate or another byte triple.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Rgb8 {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
 impl Color16 {
     /// The absence of a pixel.
     ///
@@ -62,8 +74,12 @@ impl Color16 {
     /// own top end — a mistake that looks like a washed-out monitor rather than
     /// like a bug. Replicating the high bits down is the standard 5-to-8 widening
     /// and lands 31 exactly on 255.
-    pub const fn rgb8(self) -> (u8, u8, u8) {
-        (widen(self.red()), widen(self.green()), widen(self.blue()))
+    pub const fn rgb8(self) -> Rgb8 {
+        Rgb8 {
+            red: widen(self.red()),
+            green: widen(self.green()),
+            blue: widen(self.blue()),
+        }
     }
 }
 
@@ -75,8 +91,8 @@ const fn widen(channel: u8) -> u8 {
 
 impl fmt::Debug for Color16 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (r, g, b) = self.rgb8();
-        write!(f, "Color16(0x{:04X} #{r:02X}{g:02X}{b:02X})", self.0)
+        let Rgb8 { red, green, blue } = self.rgb8();
+        write!(f, "Color16(0x{:04X} #{red:02X}{green:02X}{blue:02X})", self.0)
     }
 }
 

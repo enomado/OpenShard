@@ -102,7 +102,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     let mut locally_closed = HashSet::new();
 
     // The window opens, same as any other frame's sync.
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
     assert!(
         own_windows.iter().any(|window| window.subject == subject),
         "the paperdoll opened"
@@ -118,7 +118,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     // enough — and is folded into a snapshot that is still, itself,
     // built from the link thread's pre-close copy: `view` here is
     // unchanged, standing in for exactly that clone.
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
     assert!(
         !own_windows.iter().any(|window| window.subject == subject),
         "the closed paperdoll must not reopen just because an unrelated \
@@ -132,7 +132,7 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
     // The link thread has now applied `CloseWindow` and a fresh snapshot
     // reflects it — the reconciliation this overlay is for.
     view.paperdolls.remove(&serial);
-    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false);
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
     assert!(
         !locally_closed.contains(&subject),
         "the overlay clears once the view it was ahead of agrees"
@@ -141,6 +141,29 @@ fn a_closed_paperdoll_does_not_reopen_on_an_unrelated_world_change() {
         !own_windows.iter().any(|window| window.subject == subject),
         "and the window stays closed, not reopened by the overlay clearing"
     );
+}
+
+#[test]
+fn a_status_window_is_opened_by_local_intent_not_by_the_status_reply() {
+    let view = bare_view();
+    let mut own_windows = Vec::new();
+    let mut locally_closed = HashSet::new();
+
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+    assert!(own_windows.is_empty(), "entry data alone opens no local window");
+
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, true);
+    assert_eq!(
+        own_windows
+            .iter()
+            .map(|window| window.subject)
+            .collect::<Vec<_>>(),
+        vec![WindowSubject::Status],
+        "the status button's local state opens exactly one window"
+    );
+
+    reconcile_own_windows(&view, &mut own_windows, &mut locally_closed, false, false);
+    assert!(own_windows.is_empty(), "closing is local too");
 }
 
 /// The three scrolls answer a double click, and this is what makes two

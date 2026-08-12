@@ -9,57 +9,18 @@
 //! whatever that fold last laid out — see [`windows::Windows::drawn_windows`]
 //! for why the picture a click is tested against is the *last frame's*.
 
-use std::time::Instant;
-
 use openshard_client_render::gump::{self as gump_art, GumpPixel};
-use openshard_client_render::{paperdoll, skills};
 use openshard_protocol::gump::GumpId;
-use openshard_protocol::mobile::Equipment;
-use openshard_protocol::skill::SkillLock;
-use openshard_protocol::wire::{Layer, RawSkillId};
 
 use crate::app::App;
-use crate::windows::{Drawn, WindowSubject, reconcile_own_windows};
-use crate::{gump, link, scroll_pairs};
+use crate::windows::{Drawn, WindowSubject};
+use crate::{gump, link};
+
+mod paperdoll;
+mod skills;
+mod sync;
 
 impl App {
-    /// Open a window for everything the shard has opened and this client has
-    /// not placed yet, and drop the windows whose subject is gone.
-    ///
-    /// Run once a frame rather than when the packet arrived, and idempotent for
-    /// that reason: the `0x24` and the `0x88` are folded into the [`WorldView`]
-    /// by `client/net`, which knows nothing about screens, so the window is
-    /// this end noticing that the view has grown something it has nowhere to
-    /// put.
-    ///
-    /// The drop is the other direction of the same idea: a container removed
-    /// from the world — or a mobile destroyed — takes its entry in the view
-    /// with it (see `WorldView::apply`'s `Remove` arm), and a window over
-    /// nothing must not outlive it.
-    pub(crate) fn sync_own_windows(&mut self) {
-        let Some(view) = self.world.authoritative.view.as_ref() else {
-            // No world, no windows: a map viewer has no shard to have opened
-            // one, and anything left over is from a session that has ended.
-            self.windows.own_windows.clear();
-            // Including the skill window, whose existence is this field: a tree
-            // left standing here would reopen the window at the next login with
-            // the last session's headings shut.
-            self.windows.skills = None;
-            self.windows.held_skill = None;
-            return;
-        };
-        // The state a dialog holds that no packet does, kept in step with the
-        // same list: a window the shard has taken away forgets its page, its
-        // switches and the finger on it — see `gump::Dialogs::sync`.
-        self.windows.dialogs.sync(&view.gumps);
-        reconcile_own_windows(
-            view,
-            &mut self.windows.own_windows,
-            &mut self.windows.locally_closed,
-            self.windows.skills.is_some(),
-        );
-    }
-
     /// Which window the cursor is over, topmost first, or `None`.
     ///
     /// Against **every picture the window drew**, and each against its own
@@ -223,167 +184,6 @@ impl App {
         true
     }
 
-    /// Which of a paperdoll's pictures the cursor is over is a button, if it is
-    /// over one at all.
-    ///
-    /// Against the list the last frame drew and the atlas it was drawn from —
-    /// [`windows::Windows::drawn_windows`]' rule — so this and the picture on the screen
-    /// cannot answer differently. `hits` is what turns an index into a meaning;
-    /// a picture that is not in it is the frame, the body or a garment, and a
-    /// press there is a press on the window.
-    pub(crate) fn doll_button_under_pointer(&self, subject: WindowSubject) -> Option<paperdoll::DollButton> {
-        let Some(Drawn::Paperdoll(doll)) = self.drawn(subject) else {
-            return None;
-        };
-        let index = gump_art::pick(
-            &doll.pictures,
-            self.input.pointer_gump,
-            &self.resources.gump_atlas,
-        )?;
-        doll.hits.get(&index).copied()
-    }
-
-    /// Which of the skill window's pictures the cursor is over means something,
-    /// if any of them does.
-    ///
-    /// [`App::doll_button_under_pointer`]'s twin, and the same rule: the list is
-    /// the one the last frame drew, so a row cut away by the viewport is not
-    /// pickable where it is not drawn — that box is on the pictures themselves,
-    /// which is why nothing here has to know about it.
-    pub(crate) fn skill_hit_under_pointer(&self) -> Option<skills::Hit> {
-        let Some(Drawn::Skills(sheet)) = self.drawn(WindowSubject::Skills) else {
-            return None;
-        };
-        sheet.hit(self.input.pointer_gump, &self.resources.gump_atlas)
-    }
-
-    /// How tall the list is right now — what every scroll is clamped against.
-    ///
-    /// Asked afresh rather than remembered: shutting a heading changes it, and a
-    /// clamp against a stale height either refuses a scroll that is now legal or
-    /// allows one that is not.
-    pub(crate) fn skill_content(&self) -> i32 {
-        match self.windows.skills.as_ref() {
-            Some(tree) => {
-                skills::content_height(&self.resources.skill_names, &self.resources.skill_groups, tree)
-            }
-            None => 0,
-        }
-    }
-
-    /// What a click on the skill window does.
-    ///
-    /// Four of the five hits; the thumb is the fifth and does its work on the
-    /// move rather than the release — see [`App::drag_thumb`].
-    pub(crate) fn skill_clicked(&mut self, hit: skills::Hit) {
-        let content = self.skill_content();
-        // The point the *track* was clicked, taken before the tree is borrowed
-        // mutably: it is read off the window the last frame drew, and that
-        // borrow and this one cannot both stand.
-        let jumped = match hit {
-            skills::Hit::Track => match self.drawn(WindowSubject::Skills) {
-                Some(Drawn::Skills(sheet)) => Some(sheet.offset_at(self.input.pointer_gump, content)),
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some(tree) = self.windows.skills.as_mut() else {
-            return;
-        };
-        match hit {
-            // Opening or shutting a heading leaves the scroll where it is,
-            // which can be past the end of a list that has just got shorter —
-            // so it is clamped against what the list is *now*.
-            skills::Hit::Heading(group) => {
-                tree.toggle(group);
-                let content =
-                    skills::content_height(&self.resources.skill_names, &self.resources.skill_groups, tree);
-                tree.scroll_to(tree.offset(), content);
-            }
-            skills::Hit::Up => tree.scroll_by(-skills::STEP, content),
-            skills::Hit::Down => tree.scroll_by(skills::STEP, content),
-            skills::Hit::Track => {
-                if let Some(offset) = jumped {
-                    tree.scroll_to(offset, content);
-                }
-            }
-            skills::Hit::Thumb => {}
-            // Drawn back immediately rather than left to a reply that never
-            // comes — see `skills::Tree::lock_of`'s doc for why the shard
-            // sends nothing here.
-            skills::Hit::Lock(id) => {
-                let shard = self
-                    .world
-                    .authoritative
-                    .view
-                    .as_ref()
-                    .and_then(|view| view.player.skills.get(&id.0))
-                    .map(|line| line.lock)
-                    .unwrap_or_default();
-                let next = match tree.lock_of(id, shard) {
-                    SkillLock::Up => SkillLock::Down,
-                    SkillLock::Down => SkillLock::Locked,
-                    SkillLock::Locked => SkillLock::Up,
-                };
-                tree.set_lock(id, next);
-                if let Some(link) = self.world.link.as_ref() {
-                    link.set_skill_lock(RawSkillId(id.0), next);
-                }
-            }
-            skills::Hit::Use(id) => {
-                if let Some(link) = self.world.link.as_ref() {
-                    link.use_skill(RawSkillId(id.0));
-                }
-            }
-        }
-    }
-
-    /// Follow the pointer with a thumb that is being dragged. Answers whether
-    /// the list moved.
-    ///
-    /// Driven from the mouse's own movement, like [`App::drag_own_window`] and
-    /// for the same reason: a drag is a gesture that is under way between a
-    /// press and a release, and the release only ends it.
-    pub(crate) fn drag_thumb(&mut self) -> bool {
-        if self.windows.held_skill != Some(skills::Hit::Thumb) {
-            return false;
-        }
-        let content = self.skill_content();
-        let Some(Drawn::Skills(sheet)) = self.drawn(WindowSubject::Skills) else {
-            return false;
-        };
-        let offset = sheet.offset_at(self.input.pointer_gump, content);
-        let Some(tree) = self.windows.skills.as_mut() else {
-            return false;
-        };
-        let before = tree.offset();
-        tree.scroll_to(offset, content);
-        tree.offset() != before
-    }
-
-    /// A wheel notch over the skill window scrolls it instead of zooming the
-    /// world. Answers whether the window took the notch.
-    ///
-    /// Taken whenever the pointer is over the window, even when the list is
-    /// already at its end: a wheel that fell through to the camera because the
-    /// list could not move would zoom the world from inside a window, which is
-    /// the one thing a player rolling a wheel over a list does not mean.
-    pub(crate) fn scroll_skills(&mut self, notches: f32) -> bool {
-        if self.window_under_pointer() != Some(WindowSubject::Skills) {
-            return false;
-        }
-        let content = self.skill_content();
-        if let Some(tree) = self.windows.skills.as_mut() {
-            // A notch is a row, and up the wheel is up the list.
-            let step = match notches > 0.0 {
-                true => -skills::STEP,
-                false => skills::STEP,
-            };
-            tree.scroll_by(step, content);
-        }
-        true
-    }
-
     /// The release that finishes a press on a dialog's button or a paperdoll's,
     /// and whatever it sent.
     ///
@@ -436,156 +236,6 @@ impl App {
                 .retain(|window| window.subject != subject);
         }
         true
-    }
-
-    /// One of a paperdoll's buttons was clicked: send what it means.
-    ///
-    /// **Every one of these is a request and nothing else.** Not a window this
-    /// client opens on its own, not a stance it flips locally: the shard answers
-    /// the toggle with a `0x72`, the Quest button with a dialog, the Skills
-    /// button with a `0x3A`, and what is drawn follows *those*. It is
-    /// [`App::use_under_cursor`]'s rule for the interface — a client that acted
-    /// on its own would show a state the server refused.
-    ///
-    /// # The three scrolls want a pair
-    ///
-    /// The seven buttons down the frame answer a single click (`Button` and
-    /// `OnButtonClick` in `PaperDollGump`); the profile scroll, the party
-    /// manifest and the virtue menu are `GumpPic`s with a
-    /// `MouseDoubleClick` handler, and a single click on one does nothing at
-    /// all. That difference is honoured here rather than in
-    /// [`paperdoll::DollButton`], which says which picture was hit and nothing
-    /// about what the mouse did to it.
-    ///
-    /// # What sends nothing, and why it is not a guess
-    ///
-    /// Help, Options and the party manifest have nowhere to go: `0x9B` and the
-    /// party's `0xBF 0x06` are not in `openshard_protocol` yet, and the options
-    /// window is a client's own and does not exist. Profile (`0xB8`) is the same
-    /// gap. They press, they come back up, and they are written down in
-    /// `docs/client.md` — a packet invented here so that a button "did
-    /// something" would be a shard logging an unknown id for a window that is
-    /// never going to open.
-    pub(crate) fn doll_clicked(&mut self, subject: WindowSubject, button: paperdoll::DollButton) {
-        let WindowSubject::Paperdoll(mobile) = subject else {
-            return;
-        };
-        // A doll is filed under the serial it is a picture of, so *whose* it is
-        // is this question and not a second field: only our own frame carries
-        // the six buttons and the toggle, but a stranger's carries Status and
-        // the profile scroll, and those name the body they were clicked on.
-        let Some(view) = self.world.authoritative.view.as_ref() else {
-            return;
-        };
-        let own = view.player.serial == mobile;
-        let war = view.player.war;
-        // The equipment list this doll's serial actually is: our own carries it
-        // on `Player`, everybody else on the `Mobile` the view filed them under.
-        // Neither `EquipmentLayer` nor `paperdoll::Doll` carries a serial at
-        // all — see the module doc on `paperdoll` — so the backpack's has to be
-        // read back off the same list the `0x88`/`0x78` filled in.
-        let equipment: &[Equipment] = match own {
-            true => &view.player.equipment,
-            false => view
-                .mobiles
-                .get(&mobile)
-                .map_or(&[] as &[Equipment], |mobile| mobile.equipment.as_slice()),
-        };
-        let backpack = equipment
-            .iter()
-            .find(|item| item.layer == Layer::BACKPACK)
-            .map(|item| item.serial);
-        // Before the link is borrowed, and for all four of these rather than
-        // only the ones with a packet: the pair is a fact about the gesture, and
-        // a scroll that recorded no first click would let a *later* click on
-        // another scroll pair with something older than it.
-        let paired = match button {
-            paperdoll::DollButton::Profile
-            | paperdoll::DollButton::Party
-            | paperdoll::DollButton::Virtue
-            | paperdoll::DollButton::Backpack => self.scroll_paired(subject, button),
-            _ => false,
-        };
-        let Some(link) = self.world.link.as_ref() else {
-            return;
-        };
-        // Set inside the match and acted on after it: the link is borrowed out
-        // of `self` for the length of it, and opening the window is a write.
-        let mut opened_skills = false;
-        match button {
-            // The one picture whose *state* is on the frame: what is asked for
-            // is the opposite of what the last packet about the stance said.
-            paperdoll::DollButton::WarMode => link.war_mode(!war),
-            paperdoll::DollButton::LogOut => link.log_out(),
-            paperdoll::DollButton::Quests => link.quest_log(),
-            paperdoll::DollButton::Guild => link.guild_menu(),
-            // The two windows this client cannot draw yet. The request still
-            // goes out: the shard answers a `0x34` with a `0x11` or a `0x3A`,
-            // and the day either window is built it will be built against a
-            // packet that is already arriving rather than against a guess.
-            //
-            // Only for our own doll, because that is all this shard answers:
-            // `RequestStatus` is keyed on the connection and ignores the serial
-            // in the packet (see `StatusQuery::serial`), so pressing Status on a
-            // stranger's frame would send our own status back and open nothing
-            // about them. A health bar over somebody else is a window of its
-            // own — backlog, `docs/client.md`.
-            paperdoll::DollButton::Status if own => link.status(mobile),
-            // The window opens *here*, on the press, and the packet only fills
-            // it: the shard sends the whole list at world entry as well, so a
-            // window that opened when a `0x3A` arrived would open itself at
-            // every login. Opened before the answer comes back, which is why a
-            // skill with no line yet is a row with an empty column rather than
-            // an empty window.
-            //
-            // Only for our own doll, `Status`'s reason: a `0x3A` has no serial
-            // in it and is always about the body at this end.
-            paperdoll::DollButton::Skills if own => {
-                link.skills(mobile);
-                opened_skills = true;
-            }
-            // The scrolls, which are a *double* click. `Virtue` is the only one
-            // of the three with a packet — the reference's `0xB1` under a gump
-            // id nobody opened, see `openshard_client_net::doll::virtue`.
-            paperdoll::DollButton::Virtue if paired => link.virtue(mobile),
-            // The backpack, the same double click again: `0x06` on its serial,
-            // exactly what a bag on the ground gets from
-            // [`App::use_under_cursor`]. Nothing is opened here — the `0x24`
-            // that answers it is what does, the same rule that keeps the door
-            // and the toggle from acting before the shard has.
-            paperdoll::DollButton::Backpack if paired => {
-                if let Some(serial) = backpack {
-                    link.use_object(serial);
-                }
-            }
-            // Everything else: a stranger's Status, the first click of a pair,
-            // and the four buttons with nothing to send.
-            _ => {}
-        }
-        if opened_skills {
-            // Pressing it again with the window already open leaves the tree
-            // alone — the headings the player shut stay shut — and asks the
-            // shard for the list once more, which is what the reference's own
-            // button does.
-            self.windows.skills.get_or_insert_with(skills::Tree::default);
-        }
-    }
-
-    /// Whether this click on a scroll is the second of a pair, on the same
-    /// scroll of the same window.
-    ///
-    /// [`input::Input::last_click`]'s rule, applied to a picture instead of the world:
-    /// cleared when a pair fires, so a third click starts a fresh one, and the
-    /// subject and the button are both compared — two clicks on two different
-    /// scrolls are two first clicks, not a double click on the second.
-    ///
-    /// Only ever asked about the three scrolls. The seven buttons act on the
-    /// first click and never reach here.
-    pub(crate) fn scroll_paired(&mut self, subject: WindowSubject, button: paperdoll::DollButton) -> bool {
-        let now = Instant::now();
-        let paired = scroll_pairs(self.windows.last_scroll, now, subject, button);
-        self.windows.last_scroll = (!paired).then_some((now, subject, button));
-        paired
     }
 
     /// Move the window being dragged so that the point the player grabbed stays
@@ -712,6 +362,7 @@ impl App {
                 self.windows.skills = None;
                 self.windows.held_skill = None;
             }
+            WindowSubject::Status => self.windows.status = false,
             WindowSubject::Dialog(_) => unreachable!("answered above"),
         }
         self.windows

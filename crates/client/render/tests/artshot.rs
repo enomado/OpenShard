@@ -30,7 +30,7 @@ use std::path::PathBuf;
 
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::art::Art;
-use openshard_uofiles::color::Color16;
+use openshard_uofiles::color::{Color16, Rgb8};
 use openshard_uofiles::image::Image;
 
 /// The graphics this was written for: the two stair statics standing at
@@ -125,8 +125,8 @@ fn write_png(path: &std::path::Path, image: &Image) {
                 .pixel((x / SCALE) as u16, (y / SCALE) as u16)
                 .unwrap_or(Color16::TRANSPARENT);
             if !pixel.is_transparent() {
-                let (r, g, b) = pixel.rgb8();
-                rgb[(y * sw + x) as usize] = [r, g, b];
+                let Rgb8 { red, green, blue } = pixel.rgb8();
+                rgb[(y * sw + x) as usize] = [red, green, blue];
             }
         }
     }

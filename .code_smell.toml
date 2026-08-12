@@ -1,0 +1,5 @@
+# Project policy for code_smell. This file belongs to OpenShard, not to the
+# repository that happened to build/install the binary.
+#
+# An empty policy deliberately means the complete Cargo workspace.  The tuple
+# check is a workspace-wide newtype gate, not a renderer-only convention.

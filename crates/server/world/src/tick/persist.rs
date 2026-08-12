@@ -392,7 +392,11 @@ impl World {
             // on the shard.
             trap: registry
                 .get::<Trap>(item)
-                .map(|trap| (trap_kind_code(trap.kind), trap.power, trap.level)),
+                .map(|trap| openshard_persistence::record::TrapRecord {
+                    kind: trap_kind_code(trap.kind),
+                    power: trap.power,
+                    level: trap.level,
+                }),
             // And how much is left in a thing that wears out — a tool's swings or
             // an instrument's tunes. One field for both, as they are one interface
             // in ServUO; without it a half-played lute comes back full.
@@ -1080,13 +1084,13 @@ impl World {
                 .registry
                 .insert(entity, PoisonCharges { level, charges });
         }
-        if let Some((kind, power, level)) = record.trap {
+        if let Some(trap) = record.trap {
             self.state.registry.insert(
                 entity,
                 Trap {
-                    kind: trap_kind_from(kind),
-                    power,
-                    level,
+                    kind: trap_kind_from(trap.kind),
+                    power: trap.power,
+                    level: trap.level,
                 },
             );
         }
@@ -1169,13 +1173,13 @@ impl World {
                     .registry
                     .insert(entity, PoisonCharges { level, charges });
             }
-            if let Some((kind, power, level)) = record.trap {
+            if let Some(trap) = record.trap {
                 self.state.registry.insert(
                     entity,
                     Trap {
-                        kind: trap_kind_from(kind),
-                        power,
-                        level,
+                        kind: trap_kind_from(trap.kind),
+                        power: trap.power,
+                        level: trap.level,
                     },
                 );
             }

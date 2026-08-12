@@ -14,7 +14,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use openshard_client_render::animate::StaticAnimations;
-use openshard_client_render::atlas::{AnimAtlas, AtlasError, LandAtlas, StaticAtlas, TexmapAtlas, TtfAtlas};
+use openshard_client_render::atlas::{
+    AnimAtlas, AnimationKey, AtlasError, LandAtlas, StaticAtlas, TexmapAtlas, TtfAtlas,
+};
 use openshard_client_render::blit::{self, Blit};
 use openshard_client_render::camera::{Camera, TileBounds};
 use openshard_client_render::gbuffer::Gbuffer;
@@ -114,7 +116,7 @@ pub(crate) struct Wanted {
     /// server has dropped on top of it.
     pub(crate) statics: BTreeSet<Graphic>,
     /// Body, group and stored direction for everyone on screen.
-    pub(crate) animations: BTreeSet<(Graphic, u8, u8)>,
+    pub(crate) animations: BTreeSet<AnimationKey>,
 }
 
 impl Atlases {

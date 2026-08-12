@@ -11,6 +11,10 @@ exclude = ["vendor"]
 # vendor/README.md for the exit condition.
 [patch.crates-io]
 egui-wgpu = { path = "vendor/egui-wgpu" }
+# `wgpu 30.0.0` reuses an in-flight Vulkan acquire fence on non-Windows
+# surfaces, causing validation errors on the second frame. Upstream fixed this
+# in #9918; keep the patch pinned until crates.io publishes the backport.
+wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "e904d2eac09a9494fb8a453b7e0278fb06e8693c" }
 
 [workspace.package]
 version = "0.0.1"

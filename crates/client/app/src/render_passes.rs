@@ -12,7 +12,7 @@ use openshard_client_render::outline::{self, Ring};
 use openshard_client_render::renderer::Target;
 use openshard_client_render::select::{self, Selection};
 use openshard_client_render::sprite::SpriteQuad;
-use openshard_client_render::{container, paperdoll, skills, solids};
+use openshard_client_render::{container, paperdoll, skills, solids, status};
 use openshard_protocol::containers::ContainedItem;
 
 use crate::frame_geometry::FrameGeometry;
@@ -147,6 +147,32 @@ pub(crate) fn draw_gump_windows(
                                         font,
                                         &resources.font_atlas,
                                     )
+                                },
+                                open.at,
+                            )),
+                        ));
+                    }
+                    WindowSubject::Status => {
+                        let (Some(status), Some(hits)) = (view.player.status.as_ref(), view.player.hits)
+                        else {
+                            continue;
+                        };
+                        drawn_windows.push((
+                            open.subject,
+                            Drawn::Status(status::window(
+                                status::Standing {
+                                    name: &status.name,
+                                    female: status.female,
+                                    strength: status.strength,
+                                    dexterity: status.dexterity,
+                                    intelligence: status.intelligence,
+                                    hits,
+                                    stamina: status.stamina,
+                                    mana: status.mana,
+                                    gold: status.gold,
+                                    armor: status.armor,
+                                    weight: status.weight,
+                                    max_weight: status.max_weight,
                                 },
                                 open.at,
                             )),

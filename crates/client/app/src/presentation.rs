@@ -991,6 +991,9 @@ impl App {
                             cut.extend(quads);
                         }
                     }
+                    (WindowSubject::Status, Drawn::Status(status)) => {
+                        labels.extend(status.lines.iter().map(|line| line.label()));
+                    }
                     _ => {}
                 }
             }

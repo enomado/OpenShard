@@ -9,10 +9,9 @@
 //! `0x1A` are decoded, so the player, every other mobile and every ground item
 //! this client has been shown are held here, and `0x1C` and `0xAE` are kept as
 //! one journal of what has been said to it — see [`Heard`], which is why they
-//! are one and not two. `0x11` (a mobile's paperdoll numbers) decodes too,
-//! but is not folded in below: it is status-bar data, not a position or an
-//! appearance, and belongs with whatever eventually models the status bar rather
-//! than with a record of what is on screen.
+//! are one and not two. `0x11` (the player's paperdoll numbers) is held in
+//! [`Player::status`], while its health value shares [`Player::hits`] with the
+//! `0xA1` health-bar update so the two displays cannot disagree.
 //!
 //! Containers are here too: `0x24` opens a window over one, `0x3C` lists what
 //! is inside and `0x25` adds to it. Which container a window is over and what
@@ -31,7 +30,7 @@ use openshard_protocol::containers::ContainedItem;
 use openshard_protocol::direction::Facing;
 use openshard_protocol::gump::layout::{Element, parse};
 use openshard_protocol::gump::{GumpId, GumpKey, GumpPoint};
-use openshard_protocol::mobile::{Equipment, Notoriety, PaperdollFlags, StatusFlags, Vitals};
+use openshard_protocol::mobile::{Equipment, MobileStatus, Notoriety, PaperdollFlags, StatusFlags, Vitals};
 use openshard_protocol::serial::Serial;
 use openshard_protocol::server_packet::ServerPacket;
 use openshard_protocol::skill::{SkillEntry, SkillLock};
@@ -99,6 +98,13 @@ pub struct Player {
     /// whether the pair is exact or scaled; this client only draws
     /// `current / max`.
     pub hits: Option<Vitals>,
+    /// The paperdoll numbers the shard last stated for this character.
+    ///
+    /// `0x11` is only ever about the connection's own character. Its hit
+    /// points deliberately stay in [`Player::hits`]: `0xA1` can refresh that
+    /// one fact between status replies, and keeping a second copy here would
+    /// make the health line and status window disagree.
+    pub status: Option<Status>,
     /// Where it stands.
     pub position: Point,
     /// Which way it faces, and whether it is running.
@@ -149,6 +155,65 @@ pub struct Skill {
     pub lock: SkillLock,
     /// This character's own ceiling for it.
     pub cap: u16,
+}
+
+/// The non-positional half of a `0x11` status reply.
+///
+/// The packet's serial is the connection's own player serial and has already
+/// decided where this belongs; carrying it again would make two identities for
+/// one status. Hits similarly live in [`Player::hits`], which is also updated
+/// by `0xA1`. Everything below has no other packet that can state it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Status {
+    /// The character name the status window displays.
+    pub name: String,
+    /// Whether the character is female.
+    pub female: bool,
+    /// Strength.
+    pub strength: u16,
+    /// Dexterity.
+    pub dexterity: u16,
+    /// Intelligence.
+    pub intelligence: u16,
+    /// Stamina, current and maximum.
+    pub stamina: Vitals,
+    /// Mana, current and maximum.
+    pub mana: Vitals,
+    /// Gold held in the pack.
+    pub gold: u32,
+    /// Physical resistance, or armour for the older packet shape.
+    pub armor: u16,
+    /// Carried weight.
+    pub weight: u16,
+    /// The weight the character can carry before becoming overloaded.
+    pub max_weight: u16,
+    /// The combined stat cap.
+    pub stat_cap: u16,
+    /// Pets currently following.
+    pub followers: u8,
+    /// The greatest number of pets that may follow.
+    pub followers_max: u8,
+}
+
+impl Status {
+    fn of(status: &MobileStatus) -> Self {
+        Self {
+            name: status.name.clone(),
+            female: status.female,
+            strength: status.strength,
+            dexterity: status.dexterity,
+            intelligence: status.intelligence,
+            stamina: status.stamina,
+            mana: status.mana,
+            gold: status.gold,
+            armor: status.armor,
+            weight: status.weight,
+            max_weight: status.max_weight,
+            stat_cap: status.stat_cap,
+            followers: status.followers,
+            followers_max: status.followers_max,
+        }
+    }
 }
 
 impl Skill {
@@ -464,6 +529,7 @@ impl WorldView {
                 dead: false,
                 attacking: None,
                 hits: None,
+                status: None,
                 position: start.position,
                 facing: start.facing,
                 equipment: Vec::new(),
@@ -659,6 +725,8 @@ impl WorldView {
                     dead: self.player.dead,
                     attacking: self.player.attacking,
                     hits: self.player.hits,
+                    // `0x20` says nothing about the paperdoll numbers.
+                    status: self.player.status.clone(),
                     position: update.position,
                     facing: update.facing,
                     // `0x20` is a position and an appearance, never a paperdoll:
@@ -721,6 +789,8 @@ impl WorldView {
                     dead: self.player.dead,
                     attacking: self.player.attacking,
                     hits: self.player.hits,
+                    // `0x78` dresses the player but does not restate status.
+                    status: self.player.status.clone(),
                     position: incoming.position,
                     facing: incoming.facing,
                     equipment: incoming.equipment.clone(),
@@ -860,6 +930,17 @@ impl WorldView {
                 }
                 None => false,
             },
+            // `0x11` is status-bar data, not a position or an appearance. It
+            // belongs on the one player the connection is about, and its hits
+            // join `0xA1` in Player::hits so the two pictures have one value.
+            ServerPacket::MobileStatus(status) if status.serial == self.player.serial => {
+                let fresh = Status::of(status);
+                let changed =
+                    self.player.status.as_ref() != Some(&fresh) || self.player.hits != Some(status.hits);
+                self.player.status = Some(fresh);
+                self.player.hits = Some(status.hits);
+                changed
+            }
             // `0x2C`: this end just died, or came back. `docs/combat.md`'s
             // D9 — the one packet that greys the whole screen, gates an
             // attack off a ghost's own click, and drops the war stance even
@@ -934,7 +1015,7 @@ mod tests {
     use openshard_protocol::containers::{AddToContainer, ContainerContents};
     use openshard_protocol::direction::Direction;
     use openshard_protocol::items::WorldItem;
-    use openshard_protocol::mobile::{MobileIncoming, MobileMove, Remove};
+    use openshard_protocol::mobile::{MobileIncoming, MobileMove, MobileStatus, Remove};
     use openshard_protocol::world::{DeathStatus, PlayerUpdate};
 
     use super::*;
@@ -959,6 +1040,30 @@ mod tests {
             graphic: Graphic(0x1517),
             layer: openshard_protocol::wire::Layer(0x05),
             hue: Hue(0x0021),
+        }
+    }
+
+    fn status_of(serial: Serial) -> MobileStatus {
+        MobileStatus {
+            serial,
+            name: "Lord British".to_owned(),
+            hits: Vitals {
+                current: 98,
+                max: 100,
+            },
+            female: false,
+            strength: 100,
+            dexterity: 50,
+            intelligence: 75,
+            stamina: Vitals { current: 49, max: 50 },
+            mana: Vitals { current: 72, max: 75 },
+            gold: 1_234,
+            armor: 42,
+            weight: 12,
+            max_weight: 450,
+            stat_cap: 225,
+            followers: 1,
+            followers_max: 5,
         }
     }
 
@@ -1539,6 +1644,40 @@ mod tests {
                 openshard_protocol::combat::HealthBar::scaled(Serial::new(0x7A).unwrap(), 80, 20)
             )),
             "a bar for something not on screen creates no phantom mobile"
+        );
+    }
+
+    #[test]
+    fn a_status_reply_fills_only_the_players_numbers_and_refreshes_its_hits() {
+        let mut view = WorldView::entered(start());
+        let status = status_of(view.player.serial);
+
+        assert!(view.apply(&ServerPacket::MobileStatus(status.clone())));
+        let held = view
+            .player
+            .status
+            .as_ref()
+            .expect("the status belongs to the player");
+        assert_eq!(held.name, "Lord British");
+        assert_eq!(held.stamina, Vitals { current: 49, max: 50 });
+        assert_eq!(held.max_weight, 450);
+        assert_eq!(
+            view.player.hits,
+            Some(status.hits),
+            "one home for health-bar hits"
+        );
+        assert!(
+            !view.apply(&ServerPacket::MobileStatus(status)),
+            "the same reply does not make a second world change"
+        );
+
+        assert!(
+            !view.apply(&ServerPacket::MobileStatus(status_of(other()))),
+            "a connection-only reply cannot create status for somebody else"
+        );
+        assert_eq!(
+            view.player.status.as_ref().map(|status| status.name.as_str()),
+            Some("Lord British")
         );
     }
 

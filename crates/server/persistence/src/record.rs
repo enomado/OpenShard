@@ -21,6 +21,83 @@ use openshard_protocol::identity::{AccountName, CharacterName};
 use openshard_protocol::serial::Serial;
 use serde::{Deserialize, Serialize};
 
+/// The persisted state of a container trap.
+///
+/// The database has three independently indexed columns and older JSON saves
+/// encode the same value as a three-element array.  A named Rust value makes
+/// those meanings impossible to exchange while `trap` below keeps that saved
+/// representation stable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TrapRecord {
+    pub kind: u8,
+    pub power: u16,
+    pub level: u8,
+}
+
+mod trap {
+    use serde::de::{Error, SeqAccess, Visitor};
+    use serde::ser::SerializeSeq;
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    use super::TrapRecord;
+
+    pub fn serialize<S: Serializer>(value: &Option<TrapRecord>, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            None => serializer.serialize_none(),
+            Some(trap) => {
+                let mut sequence = serializer.serialize_seq(Some(3))?;
+                sequence.serialize_element(&trap.kind)?;
+                sequence.serialize_element(&trap.power)?;
+                sequence.serialize_element(&trap.level)?;
+                sequence.end()
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<TrapRecord>, D::Error> {
+        struct TrapVisitor;
+
+        impl<'de> Visitor<'de> for TrapVisitor {
+            type Value = Option<TrapRecord>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a trap array `[kind, power, level]` or null")
+            }
+
+            fn visit_none<E: Error>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+                deserializer.deserialize_seq(self)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
+                let kind = sequence
+                    .next_element()?
+                    .ok_or_else(|| A::Error::invalid_length(0, &self))?;
+                let power = sequence
+                    .next_element()?
+                    .ok_or_else(|| A::Error::invalid_length(1, &self))?;
+                let level = sequence
+                    .next_element()?
+                    .ok_or_else(|| A::Error::invalid_length(2, &self))?;
+                if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(A::Error::invalid_length(4, &self));
+                }
+                Ok(Some(TrapRecord { kind, power, level }))
+            }
+        }
+
+        deserializer.deserialize_option(TrapVisitor)
+    }
+}
+
 /// (De)serialize an [`AccountName`] as the bare string, no wrapper object.
 ///
 /// `openshard-protocol` carries no dependencies, so `AccountName` stays
@@ -522,10 +599,10 @@ pub struct ItemRecord {
     /// pre-v18 save loads.
     #[serde(default)]
     pub poison: Option<(u8, u16)>,
-    /// The trap on it, if it is a trapped container — `(kind, power, level)`.
+    /// The trap on it, if it is a trapped container.
     /// `None` for everything else, and defaulted so a pre-v19 save loads.
-    #[serde(default)]
-    pub trap: Option<(u8, u16, u8)>,
+    #[serde(default, with = "trap")]
+    pub trap: Option<TrapRecord>,
     /// How many uses are left in it, if it is a thing that wears out — a
     /// harvesting tool's swings or an instrument's tunes. One field for both,
     /// because ServUO gives both the one `IUsesRemaining` interface, and the
@@ -1025,7 +1102,11 @@ mod tests {
                     looters: vec!["Vesper".into()],
                 }),
                 poison: Some((2, 14)),
-                trap: Some((3, 40, 2)),
+                trap: Some(TrapRecord {
+                    kind: 3,
+                    power: 40,
+                    level: 2,
+                }),
                 uses: Some(37),
                 crafted: Some((true, Some("Rowena".into()))),
                 rune: Some((0, 1495, 1629, -20)),
@@ -1044,6 +1125,10 @@ mod tests {
                 location,
             };
             let json = serde_json::to_string(&record).expect("an item must serialise");
+            assert!(
+                json.contains("\"trap\":[3,40,2]"),
+                "a named Rust trap keeps the pre-existing JSON array on disk"
+            );
             let back: ItemRecord = serde_json::from_str(&json).expect("and come back");
             assert_eq!(back, record);
         }

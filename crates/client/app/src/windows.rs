@@ -91,6 +91,9 @@ pub enum WindowSubject {
     /// one is open because the player pressed Skills, and
     /// [`Windows::skills`] is where that fact lives.
     Skills,
+    /// This character's status window. Like skills, its presence is local UI
+    /// state: `0x11` updates its values but does not ask the client to open it.
+    Status,
 }
 
 /// What the last frame drew for one window, and what it answers to.
@@ -111,6 +114,8 @@ pub enum Drawn {
     /// The skill window: the scroll, the rows inside its viewport, and the
     /// bar.
     Skills(skills::Sheet),
+    /// The status frame and the numbers written over it.
+    Status(openshard_client_render::status::Window),
 }
 
 impl Drawn {
@@ -122,6 +127,7 @@ impl Drawn {
             Self::Container(pictures) => pictures,
             Self::Paperdoll(doll) => &doll.pictures,
             Self::Skills(sheet) => &sheet.pictures,
+            Self::Status(status) => &status.pictures,
         }
     }
 }
@@ -208,6 +214,11 @@ pub struct Windows {
     /// to the same question, able to say the window is shut while its
     /// scroll position stands.
     pub skills: Option<skills::Tree>,
+    /// Whether the player's status window is open.
+    ///
+    /// A status reply refreshes numbers but does not open a window: the shard
+    /// sends one at world entry, so only the Status button may set this true.
+    pub status: bool,
     /// What the mouse went down on in the skill window, if anything.
     ///
     /// [`held_doll`](Windows::held_doll)'s twin, and keyed the same way — by
@@ -244,12 +255,14 @@ pub fn reconcile_own_windows(
     own_windows: &mut Vec<OwnWindow>,
     locally_closed: &mut HashSet<WindowSubject>,
     skills_open: bool,
+    status_open: bool,
 ) {
     locally_closed.retain(|subject| match *subject {
         WindowSubject::Container(serial) => view.containers.contains_key(&serial),
         WindowSubject::Paperdoll(serial) => view.paperdolls.contains_key(&serial),
         WindowSubject::Dialog(gump_id) => view.gumps.iter().any(|gump| gump.gump_id == gump_id),
         WindowSubject::Skills => false,
+        WindowSubject::Status => false,
     });
     own_windows.retain(|window| {
         if locally_closed.contains(&window.subject) {
@@ -263,6 +276,7 @@ pub fn reconcile_own_windows(
             // docs. Closing it is what empties `skills`, so this is that fact
             // read back rather than a second copy of it.
             WindowSubject::Skills => skills_open,
+            WindowSubject::Status => status_open,
         }
     });
     // Containers first and paperdolls after, and both in the view's own
@@ -310,6 +324,23 @@ pub fn reconcile_own_windows(
         let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
         own_windows.push(OwnWindow {
             subject: WindowSubject::Skills,
+            at: GumpPixel::new(
+                CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
+                CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,
+            ),
+        });
+    }
+    // The status window has the skills window's ownership shape: the values
+    // are authoritative, but the decision to look at them is local. A `0x11`
+    // is sent at entry, so opening on data would surprise every login.
+    if status_open
+        && !own_windows
+            .iter()
+            .any(|window| window.subject == WindowSubject::Status)
+    {
+        let step = own_windows.len() as i32 % CONTAINER_CASCADE_LENGTH;
+        own_windows.push(OwnWindow {
+            subject: WindowSubject::Status,
             at: GumpPixel::new(
                 CONTAINER_ORIGIN.x + CONTAINER_CASCADE.x * step,
                 CONTAINER_ORIGIN.y + CONTAINER_CASCADE.y * step,

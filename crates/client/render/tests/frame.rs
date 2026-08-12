@@ -48,7 +48,7 @@ use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
 use openshard_uofiles::anim::{Anim, AnimFrame};
 use openshard_uofiles::art::{Art, LAND_TILE_SIZE, land_row};
-use openshard_uofiles::color::Color16;
+use openshard_uofiles::color::{Color16, Rgb8};
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::hues::Hues;
 use openshard_uofiles::image::Image;
@@ -349,7 +349,11 @@ fn a_lone_sprite_matches_the_art_it_came_from() {
             // Inside the diamond every pixel is drawn, black ones included:
             // ground has no transparency, and a tile that loses its zero pixels
             // is a tile with pinholes in it.
-            let (r, g, b) = image.pixel(x as u16, y as u16).expect("inside the sprite").rgb8();
+            let Rgb8 {
+                red: r,
+                green: g,
+                blue: b,
+            } = image.pixel(x as u16, y as u16).expect("inside the sprite").rgb8();
             assert_eq!(
                 got,
                 [r, g, b, u8::MAX],
@@ -575,7 +579,11 @@ fn a_sloped_tile_is_drawn_from_its_texture_and_a_level_one_from_its_art() {
             // The left half is the level tile and the right half the slope, so
             // a colour on the wrong side is a tile drawn from the wrong atlas.
             let expected = if x < 128 { green } else { red };
-            let (r, g, b) = expected.rgb8();
+            let Rgb8 {
+                red: r,
+                green: g,
+                blue: b,
+            } = expected.rgb8();
             assert_eq!(
                 pixel,
                 [r, g, b, u8::MAX],
@@ -1459,7 +1467,11 @@ fn a_static_sprite_is_drawn_texel_for_texel_with_its_shape_intact() {
         Projection::one_to_one(128, 128),
     );
 
-    let (green_r, green_g, green_b) = Color16(0b0_00000_11111_00000).rgb8();
+    let Rgb8 {
+        red: green_r,
+        green: green_g,
+        blue: green_b,
+    } = Color16(0b0_00000_11111_00000).rgb8();
     let mut drawn = 0;
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -1562,9 +1574,21 @@ fn a_full_hue_replaces_the_pixel_by_its_red_channel_regardless_of_its_own_colour
         )
     };
 
-    let (blue_r, blue_g, blue_b) = Color16(0b0_00000_00000_11111).rgb8();
-    let (grey_r, grey_g, grey_b) = grey.rgb8();
-    let (coloured_r, coloured_g, coloured_b) = coloured.rgb8();
+    let Rgb8 {
+        red: blue_r,
+        green: blue_g,
+        blue: blue_b,
+    } = Color16(0b0_00000_00000_11111).rgb8();
+    let Rgb8 {
+        red: grey_r,
+        green: grey_g,
+        blue: grey_b,
+    } = grey.rgb8();
+    let Rgb8 {
+        red: coloured_r,
+        green: coloured_g,
+        blue: coloured_b,
+    } = coloured.rgb8();
 
     // Hue 1, no partial flag: both texels come back as the ramp's own colour,
     // not as anything blended with what was there.
@@ -4197,7 +4221,11 @@ fn ground_in_front_hides_a_static_behind_it() {
         Projection::one_to_one(128, 128),
     );
 
-    let (green_r, green_g, green_b) = green.rgb8();
+    let Rgb8 {
+        red: green_r,
+        green: green_g,
+        blue: green_b,
+    } = green.rgb8();
     let mut ground_pixels = 0;
     for y in 0..128u32 {
         for x in 0..128u32 {
@@ -4311,7 +4339,11 @@ fn at_one_depth_the_later_pass_wins() {
         Projection::one_to_one(128, 128),
     );
 
-    let (green_r, green_g, green_b) = green.rgb8();
+    let Rgb8 {
+        red: green_r,
+        green: green_g,
+        blue: green_b,
+    } = green.rgb8();
     let showing = (0..128u32)
         .flat_map(|y| (0..128u32).map(move |x| (x, y)))
         .filter(|&(x, y)| frame.pixel(x, y) == [green_r, green_g, green_b, u8::MAX])
@@ -4320,7 +4352,11 @@ fn at_one_depth_the_later_pass_wins() {
 
     // And the static really covered those pixels rather than the frame being
     // empty: the sprite's whole rectangle is its own colour.
-    let (red_r, red_g, red_b) = red.rgb8();
+    let Rgb8 {
+        red: red_r,
+        green: red_g,
+        blue: red_b,
+    } = red.rgb8();
     let covered = (0..128u32)
         .flat_map(|y| (0..128u32).map(move |x| (x, y)))
         .filter(|&(x, y)| frame.pixel(x, y) == [red_r, red_g, red_b, u8::MAX])
@@ -4435,8 +4471,16 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
         (frame.pixel(x, y), frame.pixel(x + 1, y))
     };
 
-    let (red_r, red_g, red_b) = red.rgb8();
-    let (green_r, green_g, green_b) = green.rgb8();
+    let Rgb8 {
+        red: red_r,
+        green: red_g,
+        blue: red_b,
+    } = red.rgb8();
+    let Rgb8 {
+        red: green_r,
+        green: green_g,
+        blue: green_b,
+    } = green.rgb8();
     // South is stored direction 1 unflipped, East is the same picture mirrored.
     assert_eq!(
         colours(Direction::South),
@@ -5030,7 +5074,11 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     queue.submit([encoder.finish()]);
     let frame = read_back(&device, &queue, &target);
 
-    let (r, g, b) = color.rgb8();
+    let Rgb8 {
+        red: r,
+        green: g,
+        blue: b,
+    } = color.rgb8();
     let mut drawn = 0;
     for y in 0..frame_height {
         for x in 0..frame_width {
@@ -5221,7 +5269,11 @@ fn a_ring_is_drawn_around_a_silhouette_and_not_over_it() {
         Ring::DEFAULT,
     );
 
-    let (green_r, green_g, green_b) = green.rgb8();
+    let Rgb8 {
+        red: green_r,
+        green: green_g,
+        blue: green_b,
+    } = green.rgb8();
     let white = [u8::MAX; 4];
     let (left, top) = (x as u32, y as u32);
     let (right, bottom) = (left + u32::from(SIDE), top + u32::from(SIDE));
@@ -5374,7 +5426,11 @@ fn a_glow_reaches_past_the_ring_and_fades_with_distance() {
         Ring::SOFT,
     );
 
-    let (green_r, green_g, green_b) = green.rgb8();
+    let Rgb8 {
+        red: green_r,
+        green: green_g,
+        blue: green_b,
+    } = green.rgb8();
     let right = x as u32 + u32::from(SIDE);
     let middle = y as u32 + u32::from(SIDE) / 2;
     // Just past the ring, and further out. Read on the red channel: the glow is

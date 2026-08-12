@@ -754,9 +754,9 @@ async fn insert_item(
                     .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                 &item.poison.map(|(level, _)| i32::from(level)),
                 &item.poison.map(|(_, charges)| i32::from(charges)),
-                &item.trap.map(|(kind, _, _)| i32::from(kind)),
-                &item.trap.map(|(_, power, _)| i32::from(power)),
-                &item.trap.map(|(_, _, level)| i32::from(level)),
+                &item.trap.map(|trap| i32::from(trap.kind)),
+                &item.trap.map(|trap| i32::from(trap.power)),
+                &item.trap.map(|trap| i32::from(trap.level)),
                 &item.uses.map(i32::from),
                 &item.crafted.as_ref().map(|(fine, _)| *fine),
                 &item.crafted.as_ref().and_then(|(_, maker)| maker.clone()),
@@ -853,11 +853,11 @@ fn item_from_row(row: &Row) -> Option<Result<ItemRecord, StoreError>> {
                 row.get::<_, Option<i32>>(22),
                 row.get::<_, Option<i32>>(23),
             ) {
-                (Some(kind), Some(power), Some(level)) => Some((
-                    u8::try_from(kind).unwrap_or(0),
-                    u16::try_from(power).unwrap_or(0),
-                    u8::try_from(level).unwrap_or(0),
-                )),
+                (Some(kind), Some(power), Some(level)) => Some(crate::record::TrapRecord {
+                    kind: u8::try_from(kind).unwrap_or(0),
+                    power: u16::try_from(power).unwrap_or(0),
+                    level: u8::try_from(level).unwrap_or(0),
+                }),
                 _ => None,
             },
             uses: row

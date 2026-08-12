@@ -46,7 +46,7 @@ use openshard_client_render::arttable::ArtTable;
 use openshard_client_render::facing;
 use openshard_protocol::wire::Graphic;
 use openshard_uofiles::art::Art;
-use openshard_uofiles::color::Color16;
+use openshard_uofiles::color::{Color16, Rgb8};
 use openshard_uofiles::image::Image;
 use openshard_uofiles::tiledata::TileData;
 
@@ -145,7 +145,7 @@ fn what_the_table_says_against_what_the_artist_drew() {
             for block in shape.blocks.blocks() {
                 println!(
                     "    x {}..{} y {}..{} z {}..{}",
-                    block.x.0, block.x.1, block.y.0, block.y.1, block.z.0, block.z.1
+                    block.x.min, block.x.max, block.y.min, block.y.max, block.z.min, block.z.max
                 );
             }
             candidates.push(("blocks", facing::blocks_silhouette(&shape.blocks)));
@@ -235,8 +235,8 @@ fn write_png(path: &std::path::Path, art: &Image, candidate: Option<&Image>) {
             });
             let colour = match (art_pixel, candidate_drawn) {
                 (Some(pixel), true) => {
-                    let (r, g, b) = pixel.rgb8();
-                    Some([r, g, b])
+                    let Rgb8 { red, green, blue } = pixel.rgb8();
+                    Some([red, green, blue])
                 }
                 // the art drew it, the row does not claim it
                 (Some(_), false) => Some([80, 200, 255]),

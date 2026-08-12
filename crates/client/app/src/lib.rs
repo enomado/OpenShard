@@ -848,6 +848,7 @@ pub fn run<D: Dial + Send + 'static>(
             // the shard sends the whole list at world entry, and a window
             // that opened on the packet would open itself at every login.
             skills: None,
+            status: false,
             held_skill: None,
             last_scroll: None,
             dialogs: gump::Dialogs::default(),

@@ -475,9 +475,9 @@ impl Store for SqliteStore {
                                 .unwrap_or_default(),
                             item.poison.map(|(level, _)| level),
                             item.poison.map(|(_, charges)| charges),
-                            item.trap.map(|(kind, _, _)| kind),
-                            item.trap.map(|(_, power, _)| power),
-                            item.trap.map(|(_, _, level)| level),
+                            item.trap.map(|trap| trap.kind),
+                            item.trap.map(|trap| trap.power),
+                            item.trap.map(|trap| trap.level),
                             item.uses,
                             item.crafted.as_ref().map(|(fine, _)| *fine),
                             item.crafted
@@ -726,7 +726,9 @@ impl Store for SqliteStore {
                                 row.get::<_, Option<u16>>(22)?,
                                 row.get::<_, Option<u8>>(23)?,
                             ) {
-                                (Some(kind), Some(power), Some(level)) => Some((kind, power, level)),
+                                (Some(kind), Some(power), Some(level)) => {
+                                    Some(crate::record::TrapRecord { kind, power, level })
+                                }
                                 _ => None,
                             },
                             uses: row.get(24)?,

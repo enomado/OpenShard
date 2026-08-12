@@ -3878,10 +3878,13 @@ that the ring reaches it. What was found on the way and left undone:
   id, a doll's by window and button — so this is an observation and not a
   design: a fourth would make the pattern worth extracting, and until then a
   shared "gesture" type would be an abstraction over two examples.
-- ~~**The status bar and the skill list are the next two windows.**~~ The skill
-  list is built — decision 9 — and it brought the scrollbar with it. What is
-  still missing is the **status bar**: the `0x34` goes out, the `0x11` comes
-  back, and `WorldView::apply` still has no arm for it.
+- ~~**The status bar and the skill list are the next two windows.**~~ Both are
+  built. The Status button sends `0x34`; `WorldView::apply` folds its `0x11`
+  into `view::Status` on the player, while the one `Player::hits` field remains
+  the shared answer for the status window and the overhead health line. A local
+  `WindowSubject::Status` opens only on the button press — never merely because
+  the login status reply arrived — and draws the classic `0x0802` frame with
+  the values the shard stated.
 
 ## Backlog, found while drawing the skill window
 

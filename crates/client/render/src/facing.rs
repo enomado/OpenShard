@@ -757,8 +757,8 @@ pub fn measure_footprint(image: &Image) -> Result<Footprint, Refusal> {
     let eighth_lo = |v: f32| (v * 8.0).floor().clamp(0.0, 8.0) as u8;
     let eighth_hi = |v: f32| (v * 8.0).ceil().clamp(0.0, 8.0) as u8;
     let footprint = Footprint::new(
-        (eighth_lo(near_x), eighth_hi(far_x)),
-        (eighth_lo(near_y), eighth_hi(far_y)),
+        Span::new(eighth_lo(near_x), eighth_hi(far_x)),
+        Span::new(eighth_lo(near_y), eighth_hi(far_y)),
     )
     .ok_or(Refusal::Sliver)?;
 
@@ -1927,6 +1927,28 @@ fn earliest_of_best_interior(candidates: Vec<(Prism, f32, f32)>) -> Option<(Pris
 /// posts and a lintel — with one spare.
 pub const MAX_BLOCKS: u16 = 4;
 
+/// One non-empty interval written in the authored shape language.
+///
+/// `Footprint` uses it for tile-local axes and [`Block`] also uses it for its
+/// vertical extent.  Keeping the bounds named prevents an `x0 x1` pair from
+/// being passed where a different axis belongs; the owning shape validates the
+/// axis-specific upper bound.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Span {
+    pub min: u8,
+    pub max: u8,
+}
+
+impl Span {
+    pub const fn new(min: u8, max: u8) -> Self {
+        Self { min, max }
+    }
+
+    const fn is_empty(self) -> bool {
+        self.min >= self.max
+    }
+}
+
 /// A static's **horizontal** extent, measured off its own art — the two spans
 /// [`footprint_of`] reads out of the base edge, in eighths of the tile like
 /// [`Block`].
@@ -1942,10 +1964,10 @@ pub const MAX_BLOCKS: u16 = 4;
 /// exists to keep answerable.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Footprint {
-    /// `(min, max)` along the map's `x`, both `0..=8`, `min < max`.
-    pub x: (u8, u8),
+    /// Both bounds along the map's `x`, in `0..=8`.
+    pub x: Span,
     /// And along `y`.
-    pub y: (u8, u8),
+    pub y: Span,
 }
 
 impl Footprint {
@@ -1953,12 +1975,15 @@ impl Footprint {
     /// nothing was measured off, and what a picture that genuinely fills its tile
     /// measures as. Named so the degenerate case can be *asserted* rather than
     /// spelled out at each reader.
-    pub const WHOLE: Self = Self { x: (0, 8), y: (0, 8) };
+    pub const WHOLE: Self = Self {
+        x: Span::new(0, 8),
+        y: Span::new(0, 8),
+    };
 
     /// `None` for an empty or an out-of-range span, the refusal [`Block::new`]
     /// makes for the same reason: a hand-written row is not an invariant.
-    pub fn new(x: (u8, u8), y: (u8, u8)) -> Option<Self> {
-        if x.0 >= x.1 || y.0 >= y.1 || x.1 > 8 || y.1 > 8 {
+    pub fn new(x: Span, y: Span) -> Option<Self> {
+        if x.is_empty() || y.is_empty() || x.max > 8 || y.max > 8 {
             return None;
         }
         Some(Self { x, y })
@@ -1969,10 +1994,10 @@ impl Footprint {
     /// absolute world units and a tile is one of them.
     pub fn spans(self) -> (f32, f32, f32, f32) {
         (
-            f32::from(self.x.0) / 8.0,
-            f32::from(self.x.1) / 8.0,
-            f32::from(self.y.0) / 8.0,
-            f32::from(self.y.1) / 8.0,
+            f32::from(self.x.min) / 8.0,
+            f32::from(self.x.max) / 8.0,
+            f32::from(self.y.min) / 8.0,
+            f32::from(self.y.max) / 8.0,
         )
     }
 }
@@ -1991,20 +2016,20 @@ impl Footprint {
 /// in: `z` above the static's own base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Block {
-    /// `(min, max)`, both `0..=8`, `min < max`.
-    pub x: (u8, u8),
-    /// `(min, max)`, both `0..=8`, `min < max`.
-    pub y: (u8, u8),
-    /// `(min, max)`, `min < max`, in `z`.
-    pub z: (u8, u8),
+    /// Both bounds on x, in `0..=8`.
+    pub x: Span,
+    /// Both bounds on y, in `0..=8`.
+    pub y: Span,
+    /// Both bounds on z.
+    pub z: Span,
 }
 
 impl Block {
     /// `None` for an empty or an out-of-range span — the invariant a
     /// hand-written row could otherwise break, the same refusal [`Prism::new`]
     /// makes for its own treads.
-    pub fn new(x: (u8, u8), y: (u8, u8), z: (u8, u8)) -> Option<Self> {
-        if x.0 >= x.1 || y.0 >= y.1 || z.0 >= z.1 || x.1 > 8 || y.1 > 8 {
+    pub fn new(x: Span, y: Span, z: Span) -> Option<Self> {
+        if x.is_empty() || y.is_empty() || z.is_empty() || x.max > 8 || y.max > 8 {
             return None;
         }
         Some(Self { x, y, z })
@@ -2013,10 +2038,10 @@ impl Block {
     /// The footprint as fractions of the tile, `0.0..=1.0` on each axis.
     fn footprint(self) -> (f32, f32, f32, f32) {
         (
-            f32::from(self.x.0) / 8.0,
-            f32::from(self.x.1) / 8.0,
-            f32::from(self.y.0) / 8.0,
-            f32::from(self.y.1) / 8.0,
+            f32::from(self.x.min) / 8.0,
+            f32::from(self.x.max) / 8.0,
+            f32::from(self.y.min) / 8.0,
+            f32::from(self.y.max) / 8.0,
         )
     }
 }
@@ -2034,9 +2059,9 @@ impl Blocks {
     /// No blocks — every graphic's state before a person authors one.
     pub const EMPTY: Self = Self {
         list: [Block {
-            x: (0, 0),
-            y: (0, 0),
-            z: (0, 0),
+            x: Span::new(0, 0),
+            y: Span::new(0, 0),
+            z: Span::new(0, 0),
         }; MAX_BLOCKS as usize],
         count: 0,
     };
@@ -2084,7 +2109,7 @@ pub fn blocks_silhouette(blocks: &Blocks) -> Image {
     use openshard_uofiles::color::Color16;
 
     let width = 44u16;
-    let top = blocks.blocks().iter().map(|block| block.z.1).max().unwrap_or(0);
+    let top = blocks.blocks().iter().map(|block| block.z.max).max().unwrap_or(0);
     let rows = 45 + u16::from(top) * Z_STEP as u16;
     let mut pixels = vec![Color16::TRANSPARENT; usize::from(width) * usize::from(rows)];
     let bottom = f32::from(rows) - 1.0;
@@ -2105,8 +2130,8 @@ pub fn blocks_silhouette(blocks: &Blocks) -> Image {
                 if u < min_x || u > max_x || v < min_y || v > max_y {
                     continue;
                 }
-                let head = foot - f32::from(block.z.1) * Z_STEP;
-                let base = foot - f32::from(block.z.0) * Z_STEP;
+                let head = foot - f32::from(block.z.max) * Z_STEP;
+                let base = foot - f32::from(block.z.min) * Z_STEP;
                 for row in head.max(0.0).round() as u16..=base.max(0.0).round() as u16 {
                     if row >= rows {
                         continue;
@@ -2366,8 +2391,8 @@ fn luma(image: &Image, x: i32, y: i32) -> Option<i32> {
     if pixel.is_transparent() {
         return None;
     }
-    let (r, g, b) = pixel.rgb8();
-    Some(i32::from(r) + i32::from(g) + i32::from(b))
+    let openshard_uofiles::color::Rgb8 { red, green, blue } = pixel.rgb8();
+    Some(i32::from(red) + i32::from(green) + i32::from(blue))
 }
 
 /// The row nearest `near` in column `x` of `image` where its own brightness
@@ -3101,7 +3126,8 @@ mod tests {
     #[test]
     fn one_full_tile_block_is_the_box_a_prism_draws() {
         let height = 12u8;
-        let block = Block::new((0, 8), (0, 8), (0, height)).expect("the whole tile");
+        let block =
+            Block::new(Span::new(0, 8), Span::new(0, 8), Span::new(0, height)).expect("the whole tile");
         let blocks = Blocks::new(&[block]).expect("one block");
         assert_eq!(
             blocks_silhouette(&blocks),
@@ -3115,7 +3141,8 @@ mod tests {
     #[test]
     fn a_partial_footprint_draws_a_subset_of_the_full_boxs_silhouette() {
         let height = 12u8;
-        let corner = Block::new((0, 4), (0, 4), (0, height)).expect("one quarter of the tile");
+        let corner = Block::new(Span::new(0, 4), Span::new(0, 4), Span::new(0, height))
+            .expect("one quarter of the tile");
         let blocks = Blocks::new(&[corner]).expect("one block");
         let drawn = blocks_silhouette(&blocks);
         let full = prism_silhouette(&Prism::box_of(height));
@@ -3142,15 +3169,16 @@ mod tests {
     /// independently: nowhere does one block's presence hide another's.
     #[test]
     fn a_lintel_floats_over_the_gap_between_two_posts() {
-        let post = |x: (u8, u8)| Block::new(x, (0, 8), (0, 20)).expect("a post");
-        let lintel = Block::new((0, 8), (0, 8), (15, 20)).expect("the beam");
-        let arch = Blocks::new(&[post((0, 2)), post((6, 8)), lintel]).expect("three blocks");
+        let post = |x: Span| Block::new(x, Span::new(0, 8), Span::new(0, 20)).expect("a post");
+        let lintel = Block::new(Span::new(0, 8), Span::new(0, 8), Span::new(15, 20)).expect("the beam");
+        let arch =
+            Blocks::new(&[post(Span::new(0, 2)), post(Span::new(6, 8)), lintel]).expect("three blocks");
         let drawn = blocks_silhouette(&arch);
         assert!(drawn_count(&drawn) > 0, "an arch draws something");
         // Each post alone, and each post plus the lintel, both drawn as their own
         // silhouette — the union property, checked rather than assumed: every
         // pixel either alone draws is drawn in the arch, and nothing else is.
-        let posts_alone = Blocks::new(&[post((0, 2)), post((6, 8))]).expect("two blocks");
+        let posts_alone = Blocks::new(&[post(Span::new(0, 2)), post(Span::new(6, 8))]).expect("two blocks");
         let drawn_posts = blocks_silhouette(&posts_alone);
         let drawn_lintel = blocks_silhouette(&Blocks::new(&[lintel]).expect("one block"));
         for column in 0..44u16 {
@@ -3204,8 +3232,8 @@ mod tests {
     /// exists for: the same foot on its own measures exactly what it is.
     #[test]
     fn a_box_that_cannot_reach_its_own_picture_is_refused_and_a_narrow_one_is_not() {
-        let foot = Block::new((3, 5), (3, 5), (0, 6)).expect("a foot");
-        let top = Block::new((0, 8), (0, 8), (6, 7)).expect("a tile-wide slab");
+        let foot = Block::new(Span::new(3, 5), Span::new(3, 5), Span::new(0, 6)).expect("a foot");
+        let top = Block::new(Span::new(0, 8), Span::new(0, 8), Span::new(6, 7)).expect("a tile-wide slab");
 
         let alone = blocks_silhouette(&Blocks::new(&[foot]).expect("one block"));
         let read = measure_footprint(&alone).expect("a foot on its own is a box");
@@ -3267,7 +3295,7 @@ mod tests {
         // counters, three tables, and the handful of roof pieces whose base
         // reads as a clean V.
         let filled = blocks_silhouette(&Blocks::new(&[top]).expect("one block"));
-        let narrow = Footprint::new((0, 5), (0, 5)).expect("five eighths");
+        let narrow = Footprint::new(Span::new(0, 5), Span::new(0, 5)).expect("five eighths");
         assert!(
             off_band(&filled, narrow) > OFF_BAND,
             "a five-eighths box cannot reach the shoulders of a full-width picture, it left {} outside",
@@ -3316,20 +3344,20 @@ mod tests {
     #[test]
     fn a_footprint_measures_the_block_that_drew_it() {
         for (x, y, z) in [
-            ((0, 8), (0, 8), (0, 10)),
-            ((0, 8), (1, 4), (0, 12)),
-            ((2, 6), (2, 6), (0, 8)),
-            ((0, 4), (4, 8), (0, 6)),
-            ((3, 8), (0, 3), (0, 20)),
+            (Span::new(0, 8), Span::new(0, 8), Span::new(0, 10)),
+            (Span::new(0, 8), Span::new(1, 4), Span::new(0, 12)),
+            (Span::new(2, 6), Span::new(2, 6), Span::new(0, 8)),
+            (Span::new(0, 4), Span::new(4, 8), Span::new(0, 6)),
+            (Span::new(3, 8), Span::new(0, 3), Span::new(0, 20)),
         ] {
             let block = Block::new(x, y, z).expect("a legal span");
             let blocks = Blocks::new(&[block]).expect("one block");
             let read = footprint_of(&blocks_silhouette(&blocks))
                 .unwrap_or_else(|| panic!("the block x {x:?} y {y:?} z {z:?} is a box"));
             for (axis, drawn, measured) in [("x", x, read.x), ("y", y, read.y)] {
-                let slack = (drawn.0 - measured.0, measured.1 - drawn.1);
+                let slack = (drawn.min - measured.min, measured.max - drawn.max);
                 assert!(
-                    measured.0 <= drawn.0 && measured.1 >= drawn.1,
+                    measured.min <= drawn.min && measured.max >= drawn.max,
                     "{axis} of x {x:?} y {y:?} z {z:?}: {measured:?} does not contain {drawn:?}",
                 );
                 assert!(
@@ -3348,8 +3376,8 @@ mod tests {
     /// The same fixture the arch test above uses, asked the other question.
     #[test]
     fn two_posts_are_not_one_footprint() {
-        let post = |x: (u8, u8)| Block::new(x, (0, 8), (0, 10)).expect("a legal post");
-        let posts = Blocks::new(&[post((0, 2)), post((6, 8))]).expect("two blocks");
+        let post = |x: Span| Block::new(x, Span::new(0, 8), Span::new(0, 10)).expect("a legal post");
+        let posts = Blocks::new(&[post(Span::new(0, 2)), post(Span::new(6, 8))]).expect("two blocks");
         assert_eq!(footprint_of(&blocks_silhouette(&posts)), None);
     }
 

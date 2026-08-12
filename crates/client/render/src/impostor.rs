@@ -1386,10 +1386,11 @@ mod tests {
     /// client's real art; this is it over art nobody had to ship.
     #[test]
     fn every_pixel_of_a_blocks_picture_meets_that_blocks_own_box() {
-        use crate::facing::{Block, Blocks, blocks_silhouette};
+        use crate::facing::{Block, Blocks, Span, blocks_silhouette};
 
         for top in [5u8, 10] {
-            let block = Block::new((0, 8), (0, 8), (0, top)).expect("a whole tile with a height");
+            let block = Block::new(Span::new(0, 8), Span::new(0, 8), Span::new(0, top))
+                .expect("a whole tile with a height");
             let image = blocks_silhouette(&Blocks::new(&[block]).expect("one block"));
             let (width, height) = (image.width(), image.height());
             let middle = f32::from(width) / 2.0;

@@ -2995,7 +2995,8 @@ mod tests {
         let wall = tile(TileFlags::NO_SHOOT, 20);
         // A body a quarter the width on `x`, the full tile on `y` — a shape
         // `Footprint::WHOLE` could not be mistaken for.
-        let footprint = Footprint::new((0, 2), (0, 8)).expect("a quarter-tile span");
+        let footprint = Footprint::new(crate::facing::Span::new(0, 2), crate::facing::Span::new(0, 8))
+            .expect("a quarter-tile span");
         let narrow = Shape {
             footprint: Some(footprint),
             ..Shape::UNREAD
