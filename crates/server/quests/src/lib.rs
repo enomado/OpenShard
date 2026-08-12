@@ -49,7 +49,8 @@ mod reply;
 mod turnin;
 
 pub use events::{
-    QuestAccepted, QuestCompleted, QuestFailed, QuestObjectiveUpdated, QuestRefused, QuestResigned,
+    ObjectiveIndex, ObjectiveProgress, QuestAccepted, QuestCompleted, QuestFailed, QuestObjectiveUpdated,
+    QuestRefused, QuestResigned,
 };
 pub use gump::{QUEST_GUMP, QUEST_RESIGN_GUMP};
 pub use log::{

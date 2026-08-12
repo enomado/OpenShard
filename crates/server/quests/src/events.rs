@@ -8,6 +8,29 @@ use openshard_protocol::serial::Serial;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ObjectiveIndex(pub usize);
 
+/// The current and required amounts for one objective.
+///
+/// These values always travel together: a progress update without its goal is
+/// not useful to either the client or a script, and two positional `u16`s made
+/// it easy to reverse them while relaying an update through the quest systems.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ObjectiveProgress {
+    /// How much credit the player has now.
+    pub current: u16,
+    /// How much credit completes this objective.
+    pub goal: u16,
+}
+
+impl ObjectiveProgress {
+    pub const fn new(current: u16, goal: u16) -> Self {
+        Self { current, goal }
+    }
+
+    pub const fn is_complete(self) -> bool {
+        self.current >= self.goal
+    }
+}
+
 /// A player accepted a quest.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct QuestAccepted {
@@ -44,10 +67,8 @@ pub struct QuestObjectiveUpdated {
     pub key: String,
     /// Which objective, by its index in the definition.
     pub objective: ObjectiveIndex,
-    /// How far it has got now.
-    pub progress: u16,
-    /// How far it needs to get.
-    pub goal: u16,
+    /// Its current and required amounts.
+    pub progress: ObjectiveProgress,
 }
 
 /// A timed quest ran out of time.
@@ -73,4 +94,16 @@ pub struct QuestCompleted {
     pub key: String,
     /// Who it was turned in to, if the giver is still around.
     pub giver: Option<Serial>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ObjectiveProgress;
+
+    #[test]
+    fn completion_includes_progress_past_the_goal() {
+        assert!(!ObjectiveProgress::new(4, 5).is_complete());
+        assert!(ObjectiveProgress::new(5, 5).is_complete());
+        assert!(ObjectiveProgress::new(6, 5).is_complete());
+    }
 }

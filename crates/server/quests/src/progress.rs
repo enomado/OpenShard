@@ -28,7 +28,7 @@ use openshard_state::components::{Escortable, QuestLog};
 use openshard_state::quest::ObjectiveKind;
 use openshard_state::{QuestSection, TICKS_PER_SECOND, WorldState};
 
-use crate::events::{ObjectiveIndex, QuestFailed, QuestObjectiveUpdated};
+use crate::events::{ObjectiveIndex, ObjectiveProgress, QuestFailed, QuestObjectiveUpdated};
 use crate::gump::{self, sound};
 
 /// How often the obtain pass looks, in ticks. Twice a second, the status bar's
@@ -84,7 +84,7 @@ pub fn refresh_obtain(state: &mut WorldState, contents: &Contents) {
             continue;
         };
         let mut changed = false;
-        let mut updates: Vec<(String, ObjectiveIndex, u16, u16)> = Vec::new();
+        let mut updates: Vec<(String, ObjectiveIndex, ObjectiveProgress)> = Vec::new();
         let mut log = log;
         for quest in &mut log.active {
             let Some(def) = state.quests.get(&quest.key) else {
@@ -106,14 +106,18 @@ pub fn refresh_obtain(state: &mut WorldState, contents: &Contents) {
                 *slot = held;
                 changed = true;
                 if rising {
-                    updates.push((quest.key.clone(), ObjectiveIndex(index), held, objective.count));
+                    updates.push((
+                        quest.key.clone(),
+                        ObjectiveIndex(index),
+                        ObjectiveProgress::new(held, objective.count),
+                    ));
                 }
             }
         }
         if changed {
             state.registry.insert(player, log);
-            for (key, index, progress, goal) in updates {
-                announce(state, player, serial, &key, index, progress, goal);
+            for (key, index, progress) in updates {
+                announce(state, player, serial, &key, index, progress);
             }
         }
     }
@@ -273,7 +277,7 @@ pub(crate) fn advance(state: &mut WorldState, player: EntityId, matches: impl Fn
     let Some(serial) = state.registry.serial_of(player) else {
         return;
     };
-    let mut updates: Vec<(String, ObjectiveIndex, u16, u16)> = Vec::new();
+    let mut updates: Vec<(String, ObjectiveIndex, ObjectiveProgress)> = Vec::new();
     for quest in &mut log.active {
         if quest.failed {
             continue;
@@ -292,15 +296,19 @@ pub(crate) fn advance(state: &mut WorldState, player: EntityId, matches: impl Fn
                 continue;
             }
             *slot += 1;
-            updates.push((quest.key.clone(), ObjectiveIndex(index), *slot, objective.count));
+            updates.push((
+                quest.key.clone(),
+                ObjectiveIndex(index),
+                ObjectiveProgress::new(*slot, objective.count),
+            ));
         }
     }
     if updates.is_empty() {
         return;
     }
     state.registry.insert(player, log);
-    for (key, index, progress, goal) in updates {
-        announce(state, player, serial, &key, index, progress, goal);
+    for (key, index, progress) in updates {
+        announce(state, player, serial, &key, index, progress);
     }
 }
 
@@ -311,18 +319,16 @@ fn announce(
     serial: Serial,
     key: &str,
     objective: ObjectiveIndex,
-    progress: u16,
-    goal: u16,
+    progress: ObjectiveProgress,
 ) {
     state.bus.send(QuestObjectiveUpdated {
         player: serial,
         key: key.to_owned(),
         objective,
         progress,
-        goal,
     });
     gump::play(state, player, sound::UPDATE);
-    if progress >= goal && crate::turnin::is_complete(state, player, key) {
+    if progress.is_complete() && crate::turnin::is_complete(state, player, key) {
         gump::play(state, player, sound::COMPLETE);
         state.system_message(
             player,
@@ -417,7 +423,7 @@ pub fn deliver_to(state: &mut WorldState, player: EntityId, destination: EntityI
     let Some(serial) = state.registry.serial_of(player) else {
         return false;
     };
-    let mut updates: Vec<(String, ObjectiveIndex, u16, u16)> = Vec::new();
+    let mut updates: Vec<(String, ObjectiveIndex, ObjectiveProgress)> = Vec::new();
     for quest in &mut log.active {
         if quest.failed {
             continue;
@@ -449,8 +455,7 @@ pub fn deliver_to(state: &mut WorldState, player: EntityId, destination: EntityI
             updates.push((
                 quest.key.clone(),
                 ObjectiveIndex(index),
-                objective.count,
-                objective.count,
+                ObjectiveProgress::new(objective.count, objective.count),
             ));
         }
     }
@@ -458,8 +463,8 @@ pub fn deliver_to(state: &mut WorldState, player: EntityId, destination: EntityI
         return false;
     }
     state.registry.insert(player, log);
-    for (key, index, progress, goal) in updates {
-        announce(state, player, serial, &key, index, progress, goal);
+    for (key, index, progress) in updates {
+        announce(state, player, serial, &key, index, progress);
     }
     true
 }
