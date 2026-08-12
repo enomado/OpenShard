@@ -490,6 +490,12 @@ pub(crate) fn encode_world_passes(
             source,
         );
     }
+    // Composite entries are potentially eight RGBA-sized planes each.  Keep a
+    // bounded LRU tail, but protect one block outside the current viewport so
+    // a small pan cannot turn into an upload/pan-back loop.  This maintenance
+    // never builds pixels and therefore cannot add a synchronous camera-frame
+    // composition cost.
+    let _evicted_composites = window.composites.evict_lru_outside_viewport(composite_visible);
     // Server items intentionally run after immutable map statics.  The shared
     // depth buffer preserves their historical interleaving, while keeping this
     // buffer free of map rows is what lets a cached map composite keep a stable

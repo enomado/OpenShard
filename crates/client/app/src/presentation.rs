@@ -597,7 +597,7 @@ impl App {
         // changes whenever new art/shape facts become available.  Cache keys
         // carry that revision so a newly packed sprite cannot be stretched
         // through an old block capture.
-        let composite_revision = self
+        let mut composite_revision = self
             .window
             .as_ref()
             .map(|window| ImmutableRevision(window.atlases.statics.revision()))
@@ -635,6 +635,40 @@ impl App {
             &wanted,
             &drawn,
         );
+        // A composite is map-only, but it still samples static art and omits
+        // whatever this frame's cutaway omits.  Do not flush the whole cache
+        // for a local player move: only blocks currently affected by that
+        // cutaway need a fresh capture.  Atlas additions likewise only make
+        // the current visible representation stale; older entries carry their
+        // old revision and age out through the bounded cache tail.
+        let atlas_revision = window.atlases.statics.revision();
+        if window.composite_output_format != blit::WORLD_FORMAT {
+            window.composites.clear();
+            self.composite_work.clear();
+            window.composite_output_format = blit::WORLD_FORMAT;
+        }
+        if window.composite_atlas_revision != atlas_revision {
+            if let Some(blocks) = composite_visible {
+                window.composites.invalidate_blocks(blocks);
+            }
+            // An in-flight prefetch may cover a block just outside this frame
+            // whose statics also used newly available art.  It has no safe
+            // per-graphic dependency list yet, so cancel the tiny bounded
+            // queue rather than admitting a late old-revision capture.
+            self.composite_work.clear();
+            window.composite_atlas_revision = atlas_revision;
+        }
+        if window.composite_cutaway != cutaway {
+            if let Some(blocks) = composite_visible {
+                window.composites.invalidate_blocks(blocks);
+                self.composite_work.invalidate_blocks(blocks);
+            }
+            window.composite_cutaway = cutaway;
+        }
+        // `ready_atlases` may have packed a graphic just exposed at the edge
+        // this frame.  Captures made after it must advertise that new immutable
+        // revision, while previously dispatched jobs were cancelled above.
+        composite_revision = ImmutableRevision(atlas_revision);
 
         // Three time-varying halves of a mobile, filled in per frame rather
         // than per packet: the crowd is the only thing that knows what a

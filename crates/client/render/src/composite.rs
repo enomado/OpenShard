@@ -13,6 +13,7 @@
 //! asynchronously and a visible block can be drawn without rebuilding its
 //! constituent ground/static quads.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use openshard_uofiles::map::BLOCK_SIZE;
@@ -104,6 +105,20 @@ impl MapBlockBounds {
 
     fn contains(self, block: MapBlock) -> bool {
         (self.min_x..=self.max_x).contains(&block.x) && (self.min_y..=self.max_y).contains(&block.y)
+    }
+
+    /// The rectangle protected from cache eviction while `self` is visible.
+    ///
+    /// This is deliberately expressed in map blocks rather than pixels.  A
+    /// small pan must not immediately discard a just-left composite only to
+    /// queue and upload it again on the next pan back.
+    pub fn expanded_by(self, margin: u16) -> Self {
+        Self {
+            min_x: self.min_x.saturating_sub(margin),
+            max_x: self.max_x.saturating_add(margin),
+            min_y: self.min_y.saturating_sub(margin),
+            max_y: self.max_y.saturating_add(margin),
+        }
     }
 
     /// One viewport-sized rectangle immediately in the direction from `was`.
@@ -356,6 +371,9 @@ pub struct CompositeTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     deferred: Option<DeferredTextures>,
+    /// Monotonic cache-local use stamp.  It uses interior mutability so the
+    /// hot rendering lookup can remain `&self` and still feed the LRU policy.
+    last_used: Cell<u64>,
 }
 
 /// GPU planes for a completed deferred composite.  Keeping the owning textures
@@ -421,6 +439,7 @@ impl CompositeTexture {
             texture,
             view,
             deferred,
+            last_used: Cell::new(0),
         }
     }
 
@@ -452,6 +471,7 @@ impl CompositeTexture {
             texture,
             view,
             deferred: Some(DeferredTextures::capture(device, size)),
+            last_used: Cell::new(0),
         }
     }
 
@@ -511,6 +531,14 @@ impl CompositeTexture {
     pub fn gpu_bytes(&self) -> u64 {
         let rgba = self.size.rgba_bytes().unwrap_or(0) as u64;
         rgba + self.deferred.as_ref().map_or(0, |_| rgba * 7)
+    }
+
+    fn mark_used(&self, stamp: u64) {
+        self.last_used.set(stamp);
+    }
+
+    fn last_used(&self) -> u64 {
+        self.last_used.get()
     }
 }
 
@@ -636,14 +664,93 @@ impl DeferredTextures {
     }
 }
 
-/// A cache of immutable block pictures.  It has no eviction policy: Work 5
-/// adds the viewport-margin LRU, while Work 3 chooses rebuild order.
-#[derive(Debug, Default)]
+/// The hard cache retention policy.
+///
+/// The default is 128 MiB for the colour and deferred planes together.  It is
+/// independent of the static atlas's 128 MiB page limit: a deferred composite
+/// has eight RGBA-sized planes, so conflating the two would silently retain
+/// much more GPU memory than its number suggests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompositeCacheLimits {
+    /// Maximum bytes retained for entries outside the protected viewport
+    /// margin.  Visible and near-visible entries are never evicted merely to
+    /// satisfy this limit; they are the working set, not the cache tail.
+    pub max_gpu_bytes: u64,
+    /// Number of map blocks kept on every side of the visible rectangle.
+    pub viewport_margin_blocks: u16,
+}
+
+impl CompositeCacheLimits {
+    /// The shipped 128 MiB tail budget and one-block pan hysteresis margin.
+    pub const DEFAULT_MAX_GPU_BYTES: u64 = 128 * 1024 * 1024;
+    pub const DEFAULT_VIEWPORT_MARGIN_BLOCKS: u16 = 1;
+
+    /// A non-zero tail budget and its viewport hysteresis margin.
+    pub const fn new(max_gpu_bytes: u64, viewport_margin_blocks: u16) -> Option<Self> {
+        if max_gpu_bytes == 0 {
+            None
+        } else {
+            Some(Self {
+                max_gpu_bytes,
+                viewport_margin_blocks,
+            })
+        }
+    }
+}
+
+impl Default for CompositeCacheLimits {
+    fn default() -> Self {
+        Self {
+            max_gpu_bytes: Self::DEFAULT_MAX_GPU_BYTES,
+            viewport_margin_blocks: Self::DEFAULT_VIEWPORT_MARGIN_BLOCKS,
+        }
+    }
+}
+
+/// What one cache-maintenance pass discarded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompositeEviction {
+    /// Entries discarded from the least-recently-used tail.
+    pub entries: usize,
+    /// GPU bytes released by those entries.
+    pub freed_gpu_bytes: u64,
+    /// Bytes still retained after the pass.
+    pub retained_gpu_bytes: u64,
+    /// Bytes above the configured tail budget that are protected by the
+    /// visible viewport margin.  This is reported rather than evicting a
+    /// near-visible image and defeating the hysteresis guarantee.
+    pub protected_over_budget_bytes: u64,
+}
+
+/// A cache of immutable block pictures with a bounded LRU tail.
+#[derive(Debug)]
 pub struct CompositeCache {
     entries: BTreeMap<CompositeKey, CompositeTexture>,
+    limits: CompositeCacheLimits,
+    use_clock: Cell<u64>,
+}
+
+impl Default for CompositeCache {
+    fn default() -> Self {
+        Self::with_limits(CompositeCacheLimits::default())
+    }
 }
 
 impl CompositeCache {
+    /// Create a cache with an explicit GPU-tail budget.
+    pub fn with_limits(limits: CompositeCacheLimits) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            limits,
+            use_clock: Cell::new(0),
+        }
+    }
+
+    /// The configured cache retention policy.
+    pub const fn limits(&self) -> CompositeCacheLimits {
+        self.limits
+    }
+
     /// Number of ready textures.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -656,7 +763,11 @@ impl CompositeCache {
 
     /// A ready composite for the exact immutable revision.
     pub fn get(&self, key: CompositeKey) -> Option<&CompositeTexture> {
-        self.entries.get(&key)
+        let entry = self.entries.get(&key)?;
+        let stamp = self.use_clock.get().wrapping_add(1);
+        self.use_clock.set(stamp);
+        entry.mark_used(stamp);
+        Some(entry)
     }
 
     /// The selected cached representation, or its immediate detailed fallback.
@@ -703,17 +814,16 @@ impl CompositeCache {
     ) -> &CompositeTexture {
         let composite = CompositeTexture::new(device, queue, key, pixels);
         self.entries.insert(key, composite);
-        self.entries
-            .get(&key)
-            .expect("the cache has just inserted this key")
+        self.get(key).expect("the cache has just inserted this key")
     }
 
-    /// Begin a GPU-only capture of one already-drawn map-only rectangle.
+    /// Allocate a GPU-only capture of one already-drawn map-only rectangle.
     ///
     /// `source` belongs to the current frame and the entry becomes visible to
     /// the next one.  No caller can hand in dynamic attachment textures: the
     /// source is the world target at the exact point before server items and
-    /// mobiles are rendered.
+    /// mobiles are rendered. [`CompositeRenderer`] fills the returned planes
+    /// with a GPU resample in the same command encoder.
     fn capture(
         &mut self,
         device: &wgpu::Device,
@@ -728,15 +838,93 @@ impl CompositeCache {
         .expect("a non-empty capture rectangle has a non-empty tier");
         let composite = CompositeTexture::capture(device, key, size, source.depth_base);
         self.entries.insert(key, composite);
-        self.entries
-            .get(&key)
-            .expect("the captured entry was just inserted")
+        self.get(key).expect("the captured entry was just inserted")
     }
 
     /// Forget one exact entry.  This is intentionally narrow: mutation code
     /// can invalidate affected block/tier pairs without a global cache clear.
     pub fn remove(&mut self, key: CompositeKey) -> Option<CompositeTexture> {
         self.entries.remove(&key)
+    }
+
+    /// Forget every cached resolution and revision of one changed map block.
+    ///
+    /// A map/static mutation changes the source pixels for both cached LODs;
+    /// keeping another revision around would make it too easy for a fallback
+    /// lookup to show stale map state.
+    pub fn invalidate_block(&mut self, block: MapBlock) -> usize {
+        self.invalidate_matching(|key| key.block == block)
+    }
+
+    /// Forget selected cached tiers of one changed map block.
+    pub fn invalidate_block_tiers(&mut self, block: MapBlock, tiers: &[CompositeTier]) -> usize {
+        self.invalidate_matching(|key| key.block == block && tiers.contains(&key.tier))
+    }
+
+    /// Forget every cached resolution/revision in an affected block rectangle.
+    pub fn invalidate_blocks(&mut self, blocks: MapBlockBounds) -> usize {
+        self.invalidate_matching(|key| blocks.contains(key.block))
+    }
+
+    /// Forget selected cached tiers in an affected block rectangle.
+    pub fn invalidate_block_tiers_in(&mut self, blocks: MapBlockBounds, tiers: &[CompositeTier]) -> usize {
+        self.invalidate_matching(|key| blocks.contains(key.block) && tiers.contains(&key.tier))
+    }
+
+    /// Forget every entry whose immutable input changed globally, such as a
+    /// world-output format change.  Callers should use the block variants for
+    /// ordinary map/static or newly packed-art changes.
+    pub fn clear(&mut self) -> usize {
+        let removed = self.entries.len();
+        self.entries.clear();
+        removed
+    }
+
+    fn invalidate_matching(&mut self, mut stale: impl FnMut(&CompositeKey) -> bool) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|key, _| !stale(key));
+        before - self.entries.len()
+    }
+
+    /// Enforce the configured GPU-tail budget by evicting LRU entries outside
+    /// the viewport's hysteresis margin.  Call once per rendered frame after
+    /// the cache's completed captures have been accepted.
+    pub fn evict_lru_outside_viewport(&mut self, visible: Option<MapBlockBounds>) -> CompositeEviction {
+        let protected = visible.map(|bounds| bounds.expanded_by(self.limits.viewport_margin_blocks));
+        let mut retained = self.gpu_bytes();
+        let mut result = CompositeEviction {
+            retained_gpu_bytes: retained,
+            ..CompositeEviction::default()
+        };
+        if retained <= self.limits.max_gpu_bytes {
+            return result;
+        }
+
+        let mut candidates: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|(key, entry)| {
+                (!protected.is_some_and(|bounds| bounds.contains(key.block)))
+                    .then_some((entry.last_used(), *key))
+            })
+            .collect();
+        candidates.sort_unstable();
+        for (_, key) in candidates {
+            if retained <= self.limits.max_gpu_bytes {
+                break;
+            }
+            let removed = self
+                .entries
+                .remove(&key)
+                .expect("LRU candidate still belongs to the cache");
+            let bytes = removed.gpu_bytes();
+            retained = retained.saturating_sub(bytes);
+            result.entries += 1;
+            result.freed_gpu_bytes += bytes;
+        }
+        result.retained_gpu_bytes = retained;
+        result.protected_over_budget_bytes = retained.saturating_sub(self.limits.max_gpu_bytes);
+        result
     }
 
     /// Total retained RGBA8 texture bytes.
@@ -952,6 +1140,48 @@ impl CompositeWorkQueue {
         self.in_flight.remove(&key);
     }
 
+    /// Cancel all pending and dispatched work for one changed map block.
+    ///
+    /// Removing an in-flight key is intentional: a producer that completes
+    /// after the mutation reaches [`finish_into_cache`](Self::finish_into_cache)
+    /// or [`finish_capture`](Self::finish_capture), sees that its reservation
+    /// is gone, and discards its stale result instead of reviving old pixels.
+    pub fn invalidate_block(&mut self, block: MapBlock) -> usize {
+        self.invalidate_matching(|key| key.block == block)
+    }
+
+    /// Cancel selected cached LOD jobs for one changed map block.
+    pub fn invalidate_block_tiers(&mut self, block: MapBlock, tiers: &[CompositeTier]) -> usize {
+        self.invalidate_matching(|key| key.block == block && tiers.contains(&key.tier))
+    }
+
+    /// Cancel all work in an affected map-block rectangle.
+    pub fn invalidate_blocks(&mut self, blocks: MapBlockBounds) -> usize {
+        self.invalidate_matching(|key| blocks.contains(key.block))
+    }
+
+    /// Cancel selected LOD work in an affected map-block rectangle.
+    pub fn invalidate_block_tiers_in(&mut self, blocks: MapBlockBounds, tiers: &[CompositeTier]) -> usize {
+        self.invalidate_matching(|key| blocks.contains(key.block) && tiers.contains(&key.tier))
+    }
+
+    /// Cancel every queued and dispatched job, for a global source change such
+    /// as a world-output-format reconfiguration.
+    pub fn clear(&mut self) -> usize {
+        let removed = self.pending.len() + self.in_flight.len();
+        self.pending.clear();
+        self.in_flight.clear();
+        removed
+    }
+
+    fn invalidate_matching(&mut self, mut stale: impl FnMut(&CompositeKey) -> bool) -> usize {
+        let pending_before = self.pending.len();
+        let flight_before = self.in_flight.len();
+        self.pending.retain(|key, _| !stale(key));
+        self.in_flight.retain(|key| !stale(key));
+        pending_before - self.pending.len() + flight_before - self.in_flight.len()
+    }
+
     /// Accept a completed asynchronous image into the cache and release its
     /// queue slot.
     ///
@@ -1031,6 +1261,26 @@ pub struct CompositeRenderer {
     sampler: wgpu::Sampler,
 }
 
+fn write_capture_uniform(
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    size: CompositeSize,
+    source: crate::blit::ViewportRect,
+) {
+    let values = [
+        size.width as f32,
+        size.height as f32,
+        source.x as f32,
+        source.y as f32,
+        source.width as f32,
+        source.height as f32,
+        0.0,
+        0.0,
+    ];
+    let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
+    queue.write_buffer(buffer, 0, &bytes);
+}
+
 impl CompositeRenderer {
     /// Create the colour-only cached-composite pass.
     pub fn new(device: &wgpu::Device) -> Self {
@@ -1045,7 +1295,7 @@ impl CompositeRenderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -1149,7 +1399,7 @@ impl CompositeRenderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -1364,11 +1614,56 @@ impl CompositeRenderer {
         let capture_planes_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("map composite plane capture"),
             entries: &[
-                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let capture_planes_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1389,15 +1684,40 @@ impl CompositeRenderer {
                 module: &capture_planes_shader,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 8, step_mode: wgpu::VertexStepMode::Vertex, attributes: &[wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 }] })],
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 8,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 0,
+                        shader_location: 0,
+                    }],
+                })],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &capture_planes_shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: WORLD_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL }), Some(crate::renderer::IDS_TARGET), Some(crate::renderer::POSITION_TARGET), Some(crate::renderer::NORMAL_TARGET)],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: WORLD_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(crate::renderer::IDS_TARGET),
+                    Some(crate::renderer::POSITION_TARGET),
+                    Some(crate::renderer::NORMAL_TARGET),
+                ],
             }),
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, strip_index_format: None, front_face: wgpu::FrontFace::Ccw, cull_mode: None, unclipped_depth: false, polygon_mode: wgpu::PolygonMode::Fill, conservative: false },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
@@ -1673,9 +1993,106 @@ impl CompositeRenderer {
         }
     }
 
+    /// Resample colour and the three G-buffer planes into one cached texture.
+    fn capture_planes(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        source: CaptureSource<'_>,
+        captured: &CompositeTexture,
+    ) {
+        let Some((ids, position, normal, _)) = captured.deferred_views() else {
+            return;
+        };
+        let size = captured.size;
+        write_capture_uniform(queue, &self.capture_uniform, size, source.rect);
+        let color = source.color.create_view(&wgpu::TextureViewDescriptor::default());
+        let source_ids = source.ids.create_view(&wgpu::TextureViewDescriptor::default());
+        let source_position = source
+            .position
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let source_normal = source.normal.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("map composite plane capture"),
+            layout: &self.capture_planes_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.capture_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&color),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&source_ids),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&source_position),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&source_normal),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("map composite plane capture"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: captured.view(),
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: ids,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(crate::gbuffer::IDS_CLEAR),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: position,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: normal,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                }),
+            ],
+            depth_stencil_attachment: None,
+            multiview_mask: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.capture_planes_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_vertex_buffer(0, self.quad.slice(..));
+        pass.draw(0..4, 0..1);
+    }
+
     /// Write the source depth rectangle into a captured entry's float plane.
-    /// The colour and G-buffer planes have already been copied by
-    /// [`CompositeCache::capture`]; this pass exists solely because WebGPU
+    /// The colour and G-buffer planes were resampled by [`Self::capture_planes`];
+    /// this pass exists solely because WebGPU
     /// does not permit a direct `Depth24Plus` to `R32Float` texture copy.
     fn capture_depth(
         &mut self,
@@ -1689,18 +2106,7 @@ impl CompositeRenderer {
             return;
         };
         let size = captured.size;
-        let values = [
-            size.width as f32,
-            size.height as f32,
-            source.rect.x as f32,
-            source.rect.y as f32,
-            source.rect.width as f32,
-            source.rect.height as f32,
-            0.0,
-            0.0,
-        ];
-        let bytes: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
-        queue.write_buffer(&self.capture_uniform, 0, &bytes);
+        write_capture_uniform(queue, &self.capture_uniform, size, source.rect);
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("map composite depth capture"),
             layout: &self.capture_depth_layout,
@@ -1742,6 +2148,30 @@ impl CompositeRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_capture_pipelines_construct_when_a_renderable_adapter_is_available() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()
+        else {
+            return;
+        };
+        if !adapter
+            .get_texture_format_features(crate::gbuffer::POSITION_FORMAT)
+            .allowed_usages
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        {
+            return;
+        }
+        let Ok((device, _)) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_limits: crate::gbuffer::required_limits(),
+            ..Default::default()
+        })) else {
+            return;
+        };
+        let _ = CompositeRenderer::new(&device);
+    }
 
     #[test]
     fn lod_zero_cannot_become_a_composite_key() {
@@ -1873,5 +2303,79 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bounds, blocks(0, 1, 0, 1));
+    }
+
+    #[test]
+    fn invalidating_a_block_cancels_its_pending_and_in_flight_lods_only() {
+        let mut queue = CompositeWorkQueue::new(8, 2).unwrap();
+        let map = blocks(0, 9, 0, 9);
+        queue.refresh(
+            blocks(2, 3, 2, 2),
+            map,
+            BlockLod::Lod1,
+            ImmutableRevision(9),
+            |_| false,
+        );
+        let dispatched = queue.take_for_frame();
+        assert_eq!(dispatched.len(), 2);
+        let changed = dispatched[0].key.block;
+        assert!(queue.invalidate_block(changed) >= 1);
+        assert!(
+            !queue.in_flight.contains(&dispatched[0].key),
+            "a late result for a changed block must no longer own a cache slot"
+        );
+        assert!(queue.in_flight.iter().all(|key| key.block != changed));
+        assert!(queue.pending.keys().all(|key| key.block != changed));
+    }
+
+    #[test]
+    fn cache_eviction_keeps_the_viewport_margin_and_discards_the_lru_tail() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()
+        else {
+            return;
+        };
+        let Ok((device, queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        else {
+            return;
+        };
+        let limits = CompositeCacheLimits::new(32, 0).unwrap();
+        let mut cache = CompositeCache::with_limits(limits);
+        let size = CompositeSize::new(2, 2).unwrap();
+        let key = |x| CompositeKey {
+            block: MapBlock { x, y: 0 },
+            tier: CompositeTier::Lod1,
+            revision: ImmutableRevision(0),
+        };
+        for x in 0..3 {
+            cache.insert(
+                &device,
+                &queue,
+                key(x),
+                CompositePixels::new(size, vec![x as u8; 16]).unwrap(),
+            );
+        }
+        // Make block zero newer than block one.  Block two is visible and so
+        // protected even though it is the oldest entry after these insertions.
+        cache.get(key(0));
+        let evicted = cache.evict_lru_outside_viewport(Some(blocks(2, 2, 0, 0)));
+        assert_eq!(evicted.entries, 1);
+        assert!(cache.get(key(0)).is_some());
+        assert!(
+            cache.get(key(1)).is_none(),
+            "the oldest non-visible entry is the LRU tail"
+        );
+        assert!(cache.get(key(2)).is_some(), "the visible block is protected");
+        assert_eq!(evicted.retained_gpu_bytes, 32);
+    }
+
+    #[test]
+    fn viewport_margin_is_hysteresis_not_an_eager_eviction_target() {
+        let bounds = blocks(10, 11, 20, 21);
+        assert!(bounds.expanded_by(1).contains(MapBlock { x: 9, y: 19 }));
+        assert!(bounds.expanded_by(1).contains(MapBlock { x: 12, y: 22 }));
+        assert!(!bounds.expanded_by(1).contains(MapBlock { x: 8, y: 20 }));
     }
 }

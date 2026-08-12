@@ -105,7 +105,25 @@ last-mile optimisation.
    bounded GPU-memory policy with an LRU tail outside the viewport hysteresis
    margin.
 6. Add fixed-camera screenshot tests around each LOD threshold and regression
-   tests that compare map picking and dynamic-object placement with LOD 0.
+    tests that compare map picking and dynamic-object placement with LOD 0.
+
+### Work 5 limits
+
+`CompositeCache` exposes block- and tier-scoped invalidation for map/static
+mutation, plus matching cancellation for queued or in-flight work so a late
+capture cannot restore stale pixels.  The app invalidates the affected visible
+blocks when static atlas content or the cutaway changes; a world-output-format
+change clears the cache because a texture cannot cross formats.  Atlas growth
+also cancels the bounded prefetch queue, since that queue has no per-graphic
+dependency index yet.
+
+The shipped GPU cache tail is capped at 128 MiB.  A completed deferred
+composite retains colour plus its deferred planes (eight RGBA-sized planes in
+the current implementation).  On every frame the cache evicts least-recently
+used entries outside a one-map-block viewport margin.  Visible and margin
+entries are protected, so a slow, small pan can temporarily exceed the tail
+budget rather than churn its just-left blocks; the maintenance result reports
+the protected overage for future diagnostics.
 
 ### Done when
 

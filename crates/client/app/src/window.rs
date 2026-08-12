@@ -20,6 +20,7 @@ use openshard_client_render::atlas::{
 use openshard_client_render::blit::{self, Blit};
 use openshard_client_render::camera::{Camera, TileBounds};
 use openshard_client_render::composite::{CompositeCache, CompositeRenderer};
+use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::gbuffer::Gbuffer;
 use openshard_client_render::gump::GumpRenderer;
 use openshard_client_render::hue::HueRamp;
@@ -469,6 +470,16 @@ pub(crate) struct Screen {
     /// The one-quad renderer paired with [`Self::composites`].  It is built at
     /// window creation, not lazily when a block enters the camera.
     pub(crate) composite_pass: CompositeRenderer,
+    /// Immutable inputs last accepted by the composite cache.  Atlas additions
+    /// and cutaway changes invalidate only the current affected blocks; the
+    /// cache's own LRU then retains unrelated map blocks for a later pan back.
+    pub(crate) composite_atlas_revision: u64,
+    pub(crate) composite_cutaway: Cutaway,
+    /// The world target format used for cached colour pixels.  This is normally
+    /// [`blit::WORLD_FORMAT`], but keeping the value makes a future format
+    /// reconfiguration an explicit cache-invalidating event instead of a
+    /// silent cross-format texture reuse.
+    pub(crate) composite_output_format: wgpu::TextureFormat,
     /// The pass that draws what stands on the ground.
     pub(crate) statics: SpriteRenderer,
     /// Server-owned ground items. Kept separate from immutable map rows so a
@@ -1000,6 +1011,9 @@ impl App {
             renderer,
             composites,
             composite_pass,
+            composite_atlas_revision: atlases.statics.revision(),
+            composite_cutaway: Cutaway::OPEN,
+            composite_output_format: blit::WORLD_FORMAT,
             statics,
             items_pass,
             world,
