@@ -153,6 +153,30 @@ the server authorizes.
 6. Keep a manual release benchmark recording bake duration, load duration, and
    artifact size for a real install.
 
+### Pre-v4 facet 0 baseline
+
+Measured on 2026-08-12 against a 7168×4096 post-ML Britannia install, release
+build, with the bake isolated in a cgroup using `MemoryMax=2G` and
+`MemorySwapMax=0`:
+
+- bake: 96.3 seconds, about 1 GiB peak memory;
+- graph: 28,672 regions, 140,456 nodes, 2,104,020 directed edges;
+- artifact: 265,082,856 bytes;
+- debug shard cold load: 2.13 seconds for the graph, 765 MiB peak for the whole
+  shard through readiness.
+
+The superseded exact-row-run partition took 603.7 seconds and produced
+1,355,438 nodes plus a 513,896,076-byte artifact. Its median region held only
+seven cells and 92.3% of regions were one tile wide or tall: it effectively
+emitted topology around trees and coastline corners. The bounded 32×32 regions
+are the measured fix; obstacles inside a region remain authoritative terrain
+but do not emit graph nodes.
+
+Format v4 replaces the artifact's per-tile `RegionId` table with a 1-bit
+walkability map and writes nodes, region membership, and adjacency compactly.
+Re-run this benchmark before publishing its new size and cold-load figures;
+the source tree intentionally carries no client map installation to bake here.
+
 ## Implementation order
 
 1. Define binary format, stamp, reader/writer, and movement-crate tests.

@@ -5,7 +5,7 @@
 //! walls and water create portals, an open field does not manufacture any.
 
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 use std::time::Instant;
 
 use openshard_protocol::direction::Direction;
@@ -24,10 +24,17 @@ pub struct NavigationGraph {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) regions: Vec<Region>,
-    pub(crate) at: Vec<Option<RegionId>>,
+    /// One bit per tile. Region ids are a regular 32×32 grid and are computed.
+    pub(crate) walkable: Vec<u8>,
     pub(crate) nodes: Vec<Node>,
-    pub(crate) region_nodes: Vec<Vec<NodeId>>,
-    pub(crate) edges: Vec<Vec<Edge>>,
+    pub(crate) region_offsets: Vec<u32>,
+    pub(crate) region_nodes: Vec<u32>,
+    pub(crate) edge_offsets: Vec<u32>,
+    pub(crate) edge_targets: Vec<u32>,
+    pub(crate) edge_costs: Vec<u16>,
+    // Kept only while `build` is assembling the graph, then dropped.
+    pub(crate) build_region_nodes: Vec<Vec<NodeId>>,
+    pub(crate) build_edges: Vec<Vec<Edge>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +65,6 @@ pub(crate) struct NodeId(pub(crate) usize);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Node {
     pub(crate) point: Point,
-    pub(crate) region: RegionId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,10 +116,15 @@ impl NavigationGraph {
             width,
             height,
             regions: Vec::new(),
-            at: vec![None; cells],
+            walkable: vec![0; cells.div_ceil(8)],
             nodes: Vec::new(),
+            region_offsets: Vec::new(),
             region_nodes: Vec::new(),
-            edges: Vec::new(),
+            edge_offsets: Vec::new(),
+            edge_targets: Vec::new(),
+            edge_costs: Vec::new(),
+            build_region_nodes: Vec::new(),
+            build_edges: Vec::new(),
         };
         graph.partition(&points);
         eprintln!(
@@ -128,7 +139,7 @@ impl NavigationGraph {
             graph.nodes.len()
         );
         graph.intra_edges(terrain);
-        for edges in &mut graph.edges {
+        for edges in &mut graph.build_edges {
             edges.sort_unstable_by_key(|edge| (edge.to, edge.cost));
             edges.dedup_by_key(|edge| edge.to);
         }
@@ -136,8 +147,9 @@ impl NavigationGraph {
             "navigation graph +{:.3}s: ready ({} nodes, {} edges)",
             started.elapsed().as_secs_f64(),
             graph.nodes.len(),
-            graph.edges.iter().map(Vec::len).sum::<usize>()
+            graph.build_edges.iter().map(Vec::len).sum::<usize>()
         );
+        graph.compact();
         Some(graph)
     }
 
@@ -149,11 +161,7 @@ impl NavigationGraph {
     /// Counts useful to an offline builder and its progress report.
     #[must_use]
     pub fn counts(&self) -> (usize, usize, usize) {
-        (
-            self.regions.len(),
-            self.nodes.len(),
-            self.edges.iter().map(Vec::len).sum(),
-        )
+        (self.regions.len(), self.nodes.len(), self.edge_targets.len())
     }
 
     fn index(&self, x: u16, y: u16) -> usize {
@@ -161,15 +169,34 @@ impl NavigationGraph {
     }
 
     fn region_at(&self, point: Point) -> Option<RegionId> {
-        (u32::from(point.x) < self.width && u32::from(point.y) < self.height)
-            .then(|| self.at[self.index(point.x, point.y)])
-            .flatten()
+        (u32::from(point.x) < self.width
+            && u32::from(point.y) < self.height
+            && self.is_walkable(point.x, point.y))
+        .then(|| {
+            RegionId(
+                usize::from(point.y) / REGION_SIZE as usize * self.regions_across()
+                    + usize::from(point.x) / REGION_SIZE as usize,
+            )
+        })
+    }
+
+    fn regions_across(&self) -> usize {
+        (self.width as usize).div_ceil(REGION_SIZE as usize)
+    }
+
+    fn is_walkable(&self, x: u16, y: u16) -> bool {
+        let index = self.index(x, y);
+        self.walkable[index / 8] & (1 << (index % 8)) != 0
+    }
+
+    fn set_walkable(&mut self, x: u16, y: u16) {
+        let index = self.index(x, y);
+        self.walkable[index / 8] |= 1 << (index % 8);
     }
 
     fn partition(&mut self, points: &[Option<Point>]) {
         for top in (0..self.height).step_by(REGION_SIZE as usize) {
             for left in (0..self.width).step_by(REGION_SIZE as usize) {
-                let id = RegionId(self.regions.len());
                 let width = REGION_SIZE.min(self.width - left) as u16;
                 let height = REGION_SIZE.min(self.height - top) as u16;
                 self.regions.push(Region {
@@ -178,12 +205,12 @@ impl NavigationGraph {
                     width,
                     height,
                 });
-                self.region_nodes.push(Vec::new());
+                self.build_region_nodes.push(Vec::new());
                 for y in top as u16..top as u16 + height {
                     for x in left as u16..left as u16 + width {
                         let index = self.index(x, y);
                         if points[index].is_some() {
-                            self.at[index] = Some(id);
+                            self.set_walkable(x, y);
                         }
                     }
                 }
@@ -294,35 +321,82 @@ impl NavigationGraph {
 
     fn add_node(&mut self, region: RegionId, point: Point) -> NodeId {
         let id = NodeId(self.nodes.len());
-        self.nodes.push(Node { point, region });
-        self.edges.push(Vec::new());
-        self.region_nodes[region.0].push(id);
+        self.nodes.push(Node { point });
+        self.build_edges.push(Vec::new());
+        self.build_region_nodes[region.0].push(id);
         id
     }
 
     fn add_edge(&mut self, from: NodeId, to: NodeId, cost: u32) {
-        self.edges[from.0].push(Edge { to, cost });
+        self.build_edges[from.0].push(Edge { to, cost });
     }
 
     fn intra_edges(&mut self, terrain: &dyn Terrain) {
         for region in 0..self.regions.len() {
-            let nodes = self.region_nodes[region].clone();
+            let nodes = self.build_region_nodes[region].clone();
             let region = self.regions[region];
             let local = InRegion { terrain, region };
-            let budget = usize::from(region.width) * usize::from(region.height);
             for &from in &nodes {
+                let costs = region_costs(&local, region, self.nodes[from.0].point);
                 for &to in &nodes {
-                    if from != to {
-                        let Some(route) =
-                            find_path(&local, self.nodes[from.0].point, self.nodes[to.0].point, budget)
-                        else {
-                            continue;
-                        };
-                        self.add_edge(from, to, route.len() as u32);
+                    if from == to {
+                        continue;
+                    }
+                    let point = self.nodes[to.0].point;
+                    let x = usize::from(point.x - region.left);
+                    let y = usize::from(point.y - region.top);
+                    if let Some(cost) = costs[y * usize::from(region.width) + x] {
+                        self.add_edge(from, to, cost);
                     }
                 }
             }
         }
+    }
+
+    fn compact(&mut self) {
+        self.region_offsets.push(0);
+        for nodes in &self.build_region_nodes {
+            self.region_nodes.extend(nodes.iter().map(|id| id.0 as u32));
+            self.region_offsets.push(self.region_nodes.len() as u32);
+        }
+        self.edge_offsets.push(0);
+        for edges in &self.build_edges {
+            self.edge_targets
+                .extend(edges.iter().map(|edge| edge.to.0 as u32));
+            self.edge_costs.extend(
+                edges
+                    .iter()
+                    .map(|edge| u16::try_from(edge.cost).expect("a 32×32 region route fits in u16")),
+            );
+            self.edge_offsets.push(self.edge_targets.len() as u32);
+        }
+        self.build_region_nodes = Vec::new();
+        self.build_edges = Vec::new();
+    }
+
+    fn node_region(&self, node: NodeId) -> RegionId {
+        self.region_at(self.nodes[node.0].point)
+            .expect("every node is walkable and inside the map")
+    }
+
+    fn nodes_in_region(&self, region: RegionId) -> impl Iterator<Item = NodeId> + '_ {
+        let start = self.region_offsets[region.0] as usize;
+        let end = self.region_offsets[region.0 + 1] as usize;
+        self.region_nodes[start..end]
+            .iter()
+            .map(|&id| NodeId(id as usize))
+    }
+
+    fn edges_from(&self, node: NodeId) -> impl Iterator<Item = Edge> + '_ {
+        let start = self.edge_offsets[node.0] as usize;
+        let end = self.edge_offsets[node.0 + 1] as usize;
+        self.edge_targets[start..end]
+            .iter()
+            .zip(&self.edge_costs[start..end])
+            .map(|(&to, &cost)| Edge {
+                to: NodeId(to as usize),
+                cost: u32::from(cost),
+            })
     }
 
     fn abstract_path(
@@ -371,7 +445,7 @@ impl NavigationGraph {
                 }
                 continue;
             }
-            for edge in &self.edges[here] {
+            for edge in self.edges_from(NodeId(here)) {
                 if !forbidden[edge.to.0] {
                     relax(edge.to.0, edge.cost, self.nodes[edge.to.0].point);
                 }
@@ -404,9 +478,7 @@ impl NavigationGraph {
         let region = self.regions[region_id.0];
         let local = InRegion { terrain, region };
         let budget = usize::from(region.width) * usize::from(region.height);
-        self.region_nodes[region_id.0]
-            .iter()
-            .copied()
+        self.nodes_in_region(region_id)
             .filter(|node| !forbidden[node.0])
             .filter_map(|node| {
                 let (from, to) = match toward_endpoint {
@@ -433,7 +505,8 @@ impl NavigationGraph {
             .expect("the query was checked before refinement");
         for &node in nodes {
             let next = self.nodes[node.0];
-            let segment = match next.region == region {
+            let next_region = self.node_region(node);
+            let segment = match next_region == region {
                 true => region_route(terrain, self.regions[region.0], at, next.point, budget),
                 false => cross_portal(terrain, at, next.point),
             };
@@ -444,7 +517,7 @@ impl NavigationGraph {
                 return Err(node);
             };
             at = next_at;
-            region = next.region;
+            region = next_region;
         }
         let last = *nodes
             .last()
@@ -458,12 +531,42 @@ impl NavigationGraph {
 
     fn forbid_portal(&self, node: NodeId, forbidden: &mut [bool]) {
         forbidden[node.0] = true;
-        for edge in &self.edges[node.0] {
+        for edge in self.edges_from(node) {
             if edge.cost == 1 {
                 forbidden[edge.to.0] = true;
             }
         }
     }
+}
+
+/// Exact uniform-cost routes from one point to every tile in one small region.
+/// One traversal replaces the old one-A*-per-node-pair construction while
+/// retaining directed movement and height resolution through `step_allowed`.
+fn region_costs(terrain: &dyn Terrain, region: Region, from: Point) -> Vec<Option<u32>> {
+    let width = usize::from(region.width);
+    let cells = width * usize::from(region.height);
+    let index = |point: Point| usize::from(point.y - region.top) * width + usize::from(point.x - region.left);
+    let mut costs = vec![None; cells];
+    let mut open = VecDeque::new();
+    costs[index(from)] = Some(0);
+    open.push_back(from);
+    while let Some(point) = open.pop_front() {
+        let cost = costs[index(point)].expect("queued points have a cost");
+        for direction in Direction::ALL {
+            let Some(next) = step_allowed(terrain, point, direction) else {
+                continue;
+            };
+            if !region.contains(next) {
+                continue;
+            }
+            let at = index(next);
+            if costs[at].is_none() {
+                costs[at] = Some(cost + 1);
+                open.push_back(next);
+            }
+        }
+    }
+    costs
 }
 
 fn distance(from: Point, to: Point) -> u32 {

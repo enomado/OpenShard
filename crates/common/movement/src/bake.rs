@@ -9,10 +9,10 @@ use std::time::UNIX_EPOCH;
 use openshard_protocol::world::{Facet, Point};
 
 use crate::NavigationGraph;
-use crate::navigation::{Edge, Node, NodeId, Region, RegionId};
+use crate::navigation::{Node, Region};
 
 const MAGIC: &[u8; 8] = b"OSNAV\0\r\n";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 4;
 /// Increment whenever graph construction or static movement semantics change.
 pub const ROUTING_VERSION: u32 = 3;
 const MAX_COLLECTION: usize = 100_000_000;
@@ -246,37 +246,38 @@ fn encode(mut w: impl Write, g: &NavigationGraph, stamp: &Stamp) -> io::Result<(
         w.write_all(&input.modified_ns.to_le_bytes())?;
     }
     put_u64(&mut w, g.regions.len() as u64)?;
-    put_u64(&mut w, g.at.len() as u64)?;
+    put_u64(&mut w, g.walkable.len() as u64)?;
     put_u64(&mut w, g.nodes.len() as u64)?;
+    put_u64(&mut w, g.region_offsets.len() as u64)?;
     put_u64(&mut w, g.region_nodes.len() as u64)?;
-    put_u64(&mut w, g.edges.len() as u64)?;
+    put_u64(&mut w, g.edge_offsets.len() as u64)?;
+    put_u64(&mut w, g.edge_targets.len() as u64)?;
     for r in &g.regions {
         put_u16(&mut w, r.left)?;
         put_u16(&mut w, r.top)?;
         put_u16(&mut w, r.width)?;
         put_u16(&mut w, r.height)?;
     }
-    for id in &g.at {
-        put_u64(&mut w, id.map_or(u64::MAX, |id| id.0 as u64))?;
-    }
+    w.write_all(&g.walkable)?;
     for n in &g.nodes {
         put_u16(&mut w, n.point.x)?;
         put_u16(&mut w, n.point.y)?;
-        w.write_all(&[n.point.z as u8, 0, 0, 0])?;
-        put_u64(&mut w, n.region.0 as u64)?;
+        w.write_all(&[n.point.z as u8])?;
     }
-    for ids in &g.region_nodes {
-        put_u64(&mut w, ids.len() as u64)?;
-        for id in ids {
-            put_u64(&mut w, id.0 as u64)?;
-        }
+    for &offset in &g.region_offsets {
+        put_u32(&mut w, offset)?;
     }
-    for edges in &g.edges {
-        put_u64(&mut w, edges.len() as u64)?;
-        for e in edges {
-            put_u64(&mut w, e.to.0 as u64)?;
-            put_u32(&mut w, e.cost)?;
-        }
+    for &node in &g.region_nodes {
+        put_u32(&mut w, node)?;
+    }
+    for &offset in &g.edge_offsets {
+        put_u32(&mut w, offset)?;
+    }
+    for &target in &g.edge_targets {
+        put_u32(&mut w, target)?;
+    }
+    for &cost in &g.edge_costs {
+        put_u16(&mut w, cost)?;
     }
     Ok(())
 }
@@ -316,6 +317,9 @@ fn decode(path: &Path, bytes: &[u8], expected: &Stamp) -> Result<NavigationGraph
         ));
     }
     let count = r.count()?;
+    if count > r.remaining() / 28 {
+        return Err(corrupt(path, "input count exceeds the payload"));
+    }
     let mut inputs = Vec::with_capacity(count);
     for _ in 0..count {
         let len = r.u32()? as usize;
@@ -338,16 +342,20 @@ fn decode(path: &Path, bytes: &[u8], expected: &Stamp) -> Result<NavigationGraph
         return Err(stale(path, "client-file metadata changed"));
     }
     let nr = r.count()?;
-    let na = r.count()?;
+    let nw = r.count()?;
     let nn = r.count()?;
+    let nro = r.count()?;
     let nrn = r.count()?;
+    let neo = r.count()?;
     let ne = r.count()?;
     let minimum = nr
         .checked_mul(8)
-        .and_then(|n| n.checked_add(na.checked_mul(8)?))
-        .and_then(|n| n.checked_add(nn.checked_mul(16)?))
-        .and_then(|n| n.checked_add(nrn.checked_mul(8)?))
-        .and_then(|n| n.checked_add(ne.checked_mul(8)?))
+        .and_then(|n| n.checked_add(nw))
+        .and_then(|n| n.checked_add(nn.checked_mul(5)?))
+        .and_then(|n| n.checked_add(nro.checked_mul(4)?))
+        .and_then(|n| n.checked_add(nrn.checked_mul(4)?))
+        .and_then(|n| n.checked_add(neo.checked_mul(4)?))
+        .and_then(|n| n.checked_add(ne.checked_mul(6)?))
         .ok_or_else(|| corrupt(path, "collection sizes overflow"))?;
     if minimum > r.remaining() {
         return Err(corrupt(path, "collection sizes exceed the payload"));
@@ -355,7 +363,9 @@ fn decode(path: &Path, bytes: &[u8], expected: &Stamp) -> Result<NavigationGraph
     let cells = (width as usize)
         .checked_mul(height as usize)
         .ok_or_else(|| corrupt(path, "dimension overflow"))?;
-    if na != cells || nrn != nr || ne != nn {
+    let regions_across = (width as usize).div_ceil(32);
+    let expected_regions = regions_across * (height as usize).div_ceil(32);
+    if nr != expected_regions || nw != cells.div_ceil(8) || nro != nr + 1 || neo != nn + 1 {
         return Err(corrupt(path, "inconsistent collection lengths"));
     }
     let mut regions = Vec::with_capacity(nr);
@@ -367,69 +377,78 @@ fn decode(path: &Path, bytes: &[u8], expected: &Stamp) -> Result<NavigationGraph
             height: r.u16()?,
         });
     }
-    let mut at = Vec::with_capacity(na);
-    for _ in 0..na {
-        let v = r.u64()?;
-        at.push(if v == u64::MAX {
-            None
-        } else {
-            Some(RegionId(index(path, v, nr, "region")?))
-        });
+    let walkable = r.take(nw)?.to_vec();
+    if cells % 8 != 0 && walkable.last().is_some_and(|last| last >> (cells % 8) != 0) {
+        return Err(corrupt(path, "walkability bitset has nonzero padding"));
     }
     let mut nodes = Vec::with_capacity(nn);
     for _ in 0..nn {
         let x = r.u16()?;
         let y = r.u16()?;
-        let z = r.take(4)?[0] as i8;
-        let region = RegionId(index(path, r.u64()?, nr, "node region")?);
+        let z = r.take(1)?[0] as i8;
+        if u32::from(x) >= width || u32::from(y) >= height {
+            return Err(corrupt(path, "node is outside the map"));
+        }
+        let tile = usize::from(y) * width as usize + usize::from(x);
+        if walkable[tile / 8] & (1 << (tile % 8)) == 0 {
+            return Err(corrupt(path, "node is not on a walkable tile"));
+        }
         nodes.push(Node {
             point: Point::new(x, y, z),
-            region,
         });
     }
-    let mut region_nodes = Vec::with_capacity(nrn);
-    for _ in 0..nrn {
-        let n = r.count()?;
-        r.require_items(n, 8)?;
-        let mut ids = Vec::with_capacity(n);
-        for _ in 0..n {
-            ids.push(NodeId(index(path, r.u64()?, nn, "node")?));
-        }
-        region_nodes.push(ids);
-    }
-    let mut edges = Vec::with_capacity(ne);
+    let region_offsets = take_u32s(&mut r, nro)?;
+    let region_nodes = take_u32s(&mut r, nrn)?;
+    let edge_offsets = take_u32s(&mut r, neo)?;
+    let edge_targets = take_u32s(&mut r, ne)?;
+    let mut edge_costs = Vec::with_capacity(ne);
     for _ in 0..ne {
-        let n = r.count()?;
-        r.require_items(n, 12)?;
-        let mut list = Vec::with_capacity(n);
-        for _ in 0..n {
-            list.push(Edge {
-                to: NodeId(index(path, r.u64()?, nn, "edge target")?),
-                cost: r.u32()?,
-            });
-        }
-        edges.push(list);
+        edge_costs.push(r.u16()?);
     }
     if r.at != bytes.len() {
         return Err(corrupt(path, "trailing payload bytes"));
     }
     for (i, region) in regions.iter().enumerate() {
-        if region.width == 0
-            || region.height == 0
-            || u32::from(region.left) + u32::from(region.width) > width
-            || u32::from(region.top) + u32::from(region.height) > height
+        let left = (i % regions_across) * 32;
+        let top = (i / regions_across) * 32;
+        if region.left != left as u16
+            || region.top != top as u16
+            || region.width != (width as usize - left).min(32) as u16
+            || region.height != (height as usize - top).min(32) as u16
         {
             return Err(corrupt(path, format!("region {i} is outside the map")));
+        }
+    }
+    valid_offsets(path, &region_offsets, nrn, "region")?;
+    valid_offsets(path, &edge_offsets, ne, "edge")?;
+    if region_nodes.iter().any(|&node| node as usize >= nn)
+        || edge_targets.iter().any(|&node| node as usize >= nn)
+        || edge_costs.iter().any(|&cost| cost > 1023)
+    {
+        return Err(corrupt(path, "node index is out of range"));
+    }
+    for region in 0..nr {
+        for &node in &region_nodes[region_offsets[region] as usize..region_offsets[region + 1] as usize] {
+            let point = nodes[node as usize].point;
+            let actual = usize::from(point.y) / 32 * regions_across + usize::from(point.x) / 32;
+            if actual != region {
+                return Err(corrupt(path, "region membership does not match node coordinates"));
+            }
         }
     }
     Ok(NavigationGraph {
         width,
         height,
         regions,
-        at,
+        walkable,
         nodes,
+        region_offsets,
         region_nodes,
-        edges,
+        edge_offsets,
+        edge_targets,
+        edge_costs,
+        build_region_nodes: Vec::new(),
+        build_edges: Vec::new(),
     })
 }
 
@@ -493,12 +512,26 @@ impl<'a> Reader<'a> {
         }
     }
 }
-fn index(path: &Path, n: u64, len: usize, what: &str) -> Result<usize, Error> {
-    let n = usize::try_from(n).map_err(|_| corrupt(path, format!("invalid {what} index")))?;
-    if n < len {
-        Ok(n)
+fn take_u32s(r: &mut Reader<'_>, count: usize) -> Result<Vec<u32>, Error> {
+    r.require_items(count, 4)?;
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        values.push(r.u32()?);
+    }
+    Ok(values)
+}
+
+fn valid_offsets(path: &Path, offsets: &[u32], items: usize, name: &str) -> Result<(), Error> {
+    if offsets.first() != Some(&0)
+        || offsets.last().copied() != Some(items as u32)
+        || offsets.windows(2).any(|pair| pair[0] > pair[1])
+    {
+        Err(corrupt(
+            path,
+            format!("{name} offsets are not monotonic and bounded"),
+        ))
     } else {
-        Err(corrupt(path, format!("{what} index {n} is out of range")))
+        Ok(())
     }
 }
 fn put_u16(w: &mut impl Write, n: u16) -> io::Result<()> {
@@ -569,24 +602,25 @@ mod tests {
     #[test]
     fn round_trip_and_route_parity() {
         let mut blocked = BTreeSet::new();
-        for y in 0..16 {
-            if y != 11 {
-                blocked.insert((12, y));
+        for y in 0..64 {
+            if y != 40 {
+                blocked.insert((48, y));
             }
         }
         let terrain = Grid {
-            width: 24,
-            height: 16,
+            width: 96,
+            height: 64,
             blocked,
         };
-        let graph = NavigationGraph::build(&terrain, 24, 16).unwrap();
+        let graph = NavigationGraph::build(&terrain, 96, 64).unwrap();
+        assert!(graph.counts().1 > 0, "the payload must exercise graph nodes");
         let path = temp("round.bin");
         let s = stamp();
         save(&path, &graph, &s).unwrap();
         let loaded = load(&path, &s).unwrap();
         assert_eq!(loaded, graph);
         let from = Point::new(2, 2, 0);
-        let to = Point::new(21, 2, 0);
+        let to = Point::new(93, 2, 0);
         assert_eq!(
             find_long_path(&terrain, &terrain, &graph, from, to, 100),
             find_long_path(&terrain, &terrain, &loaded, from, to, 100),
