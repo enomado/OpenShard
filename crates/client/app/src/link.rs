@@ -86,8 +86,6 @@ pub enum Update {
     },
     /// A locally accepted walk, before the server acknowledges it.
     Prediction(Body),
-    /// A local window was closed; the world owner applies this locally.
-    CloseWindow(CloseTarget),
     /// The server asked one mobile to play a one-shot body animation.
     Animation(Animation),
     /// The connection ended, and why. Nothing further will arrive.
@@ -155,17 +153,6 @@ pub enum Command {
     SkillLock { skill: RawSkillId, lock: SkillLock },
     /// A skill's use button was pressed.
     UseSkill(RawSkillId),
-    /// A container, paperdoll or dialog was closed on this end.
-    ///
-    /// Nothing goes out on the wire for this either — a close is a fact the
-    /// window already acted on, the same as every other variant here that
-    /// answers a button press rather than a keystroke — but this thread's own
-    /// [`WorldView`] has to hear it too. [`snapshot`] clones that view whole,
-    /// and clones it again on the next packet that changes anything at all,
-    /// which for a paperdoll is as soon as some nearby mobile takes a step: a
-    /// close only the window's own copy knows about is undone the moment that
-    /// snapshot lands, and the window the player just shut reopens itself.
-    CloseWindow(CloseTarget),
 }
 
 /// Which of a locally-closed window's state [`Command::CloseWindow`] drops
@@ -237,12 +224,6 @@ impl Link {
     /// Use an object — the double-click.
     pub fn use_object(&self, serial: Serial) {
         let _ = self.commands.send(Command::Use(serial));
-    }
-
-    /// Tell the shard thread a window closed, so its own view forgets it too.
-    /// See [`Command::CloseWindow`].
-    pub fn close_window(&self, target: CloseTarget) {
-        let _ = self.commands.send(Command::CloseWindow(target));
     }
 
     /// Ask for a stance. See [`Command::WarMode`].
@@ -534,14 +515,6 @@ async fn play<D: Dial, F: Fn(Update) + Send>(
                         reply.switches,
                         reply.text_entries,
                     ),
-                    // Nothing crosses the wire for a close — see
-                    // `Command::CloseWindow` — so this thread's own view is
-                    // the whole of what there is to do, and there are no
-                    // bytes to send after it.
-                    Command::CloseWindow(_target) => {
-                        report(Update::CloseWindow(_target));
-                        continue;
-                    }
                 };
                 if let Err(error) = socket.send(&bytes).await {
                     return error.to_string();

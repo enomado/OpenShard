@@ -693,15 +693,11 @@ impl App {
                 // is for; the overlay is what keeps this end from drawing the
                 // stale, still-open entry in the meantime.
                 self.windows.locally_closed.insert(subject);
-                if let Some(link) = self.world.link.as_ref() {
-                    link.close_window(link::CloseTarget::Container(serial));
-                }
+                self.apply_close_window(link::CloseTarget::Container(serial));
             }
             WindowSubject::Paperdoll(serial) => {
                 self.windows.locally_closed.insert(subject);
-                if let Some(link) = self.world.link.as_ref() {
-                    link.close_window(link::CloseTarget::Paperdoll(serial));
-                }
+                self.apply_close_window(link::CloseTarget::Paperdoll(serial));
             }
             // Nothing in the view to tell and so nothing to overlay: the
             // skills stay where they are, the way a paperdoll's equipment
@@ -754,7 +750,7 @@ impl App {
             // the shard thread's own `WorldView` — which every future
             // snapshot is cloned whole from — that this window is done; see
             // `link::Command::CloseWindow`.
-            link.close_window(link::CloseTarget::Gump(gump_id));
+            self.apply_close_window(link::CloseTarget::Gump(gump_id));
         }
         if self.world.view.is_some() {
             self.windows.locally_closed.insert(WindowSubject::Dialog(gump_id));

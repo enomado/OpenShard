@@ -43,7 +43,6 @@ impl ApplicationHandler<link::Update> for App {
             link::Update::World { view, body } => self.entered(*view, body, None),
             link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),
             link::Update::Prediction(body) => self.apply_prediction(body),
-            link::Update::CloseWindow(target) => self.apply_close_window(target),
             link::Update::Animation(animation) => {
                 self.world.crowd.play(
                     Some(animation.serial),
