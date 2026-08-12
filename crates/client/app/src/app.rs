@@ -255,7 +255,7 @@ impl App {
                 i32::from(knot.from.y),
                 &self.resources.map,
             )
-            .and_then(|(x, y)| self.resources.map.land(x, y))
+            .and_then(|tile| self.resources.map.land(tile.x, tile.y))
             .map_or(self.world.player.at.z, |cell| cell.z)
         });
         let replay = replay::Replay::new(script, ground);

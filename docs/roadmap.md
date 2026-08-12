@@ -2668,13 +2668,13 @@ riding along with this one.
   closing if `Order` itself ever takes `TileDepth`/`PriorityZ` fields — not
   attempted here, since that reaches every caller of `Order` across the render
   pipeline, not just the HUD.
-- **`(u16, u16)` is the client's ad-hoc `Tile`, in ten remaining places.** The
-  same reuse as `PickedTile`'s coordinate half, and the reason it deserves its
-  own line is that the tuple has spread past one struct:
-  `app::steer::{Steering::goal, plan}`, `app::lib::{Follow::at,
-  selected_tile, in_bounds, tile_info}`, `app::main::tile`, `app::dst`'s
-  `walls`, and `net::walk::send`'s `ground: impl Fn(Point, u16, u16) ->
-  Option<i8>`.
+- ~~**`(u16, u16)` is the client's ad-hoc `Tile`, in ten remaining places.**~~
+  Fixed: the tuple is `openshard_movement::Tile` now in
+  `app::steer::{Steering::goal, go_to, plan}`, `Opening::at`/the command-line
+  parser, `App::{in_bounds, tile_info, route_shown, hud}`, `app::dst`'s test
+  walls, and `net::walk::Walk::step`'s height callback (`Fn(Point, Tile)`).
+  `Point` still names tile-plus-height, and the new `.x`/`.y` reads sit at the
+  existing seams: `Map`/`MapTerrain` APIs, `Point::new`, and HUD presentation.
 
   `app::clutter` was the sharpest of them and is **fixed**: it *imported*
   `Tile` on line 41, used it in six trait methods, and then unpacked the `Tile`

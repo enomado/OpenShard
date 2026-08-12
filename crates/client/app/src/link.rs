@@ -451,8 +451,8 @@ async fn play<D: Dial>(
                         // cannot desync from a server that disagrees; it can only draw
                         // the wrong deck for one step, corrected by the next `0x20`.
                         let terrain = openshard_movement::MapTerrain::new(map, tiles);
-                        match walk.step(facing, |from, x, y| {
-                            i8::try_from(terrain.predict_step(from, x, y)).ok()
+                        match walk.step(facing, |from, tile| {
+                            i8::try_from(terrain.predict_step(from, tile.x, tile.y)).ok()
                         }) {
                             Ok(bytes) => {
                                 // The body moves *now*, on this end's own
@@ -629,8 +629,7 @@ mod tests {
         // fed packets to the view would walk on the server and stand still on
         // the screen.
         let (mut view, mut walk) = entered();
-        walk.step(Facing::walking(Direction::North), |_, _, _| None)
-            .unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
 
         let ack = ServerPacket::WalkAck(WalkAck {
             sequence: StepSequence(0),
@@ -647,8 +646,7 @@ mod tests {
         // And the other direction: a 0x21 is the server disagreeing, and the
         // view has no arm for it — only `Walk` knows the step it undoes.
         let (mut view, mut walk) = entered();
-        walk.step(Facing::walking(Direction::North), |_, _, _| None)
-            .unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
 
         let reject = ServerPacket::WalkReject(WalkReject {
             sequence: StepSequence(0),
@@ -679,8 +677,7 @@ mod tests {
     #[test]
     fn a_step_is_predicted_before_the_server_has_answered() {
         let (view, mut walk) = entered();
-        walk.step(Facing::walking(Direction::North), |_, _, _| None)
-            .unwrap();
+        walk.step(Facing::walking(Direction::North), |_, _| None).unwrap();
 
         let Update::World {
             view: published,

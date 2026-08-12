@@ -179,8 +179,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_movement::{
-    Around, Detour, Heading, Lean, Leeway, RUN_HOLD, Step, Terrain, WALK_HOLD, find_path, find_path_toward,
-    step_allowed,
+    Around, Detour, Heading, Lean, Leeway, RUN_HOLD, Step, Terrain, Tile, WALK_HOLD, find_path,
+    find_path_toward, step_allowed,
 };
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
@@ -379,7 +379,7 @@ pub struct Steering {
     /// Absent means absent: nobody has clicked, or the body has arrived. Not a
     /// "no destination yet" — a body standing where it was told to stand has
     /// genuinely nowhere left to go.
-    goal: Option<(u16, u16)>,
+    goal: Option<Tile>,
     /// The route planned to [`Steering::goal`], most-recent-plan first.
     ///
     /// Consumed one direction per step; emptied on a refusal and on every
@@ -570,7 +570,7 @@ impl Steering {
     /// is current when a step actually comes due.
     pub fn go_to(
         &mut self,
-        tile: (u16, u16),
+        tile: Tile,
         from: Point,
         now: Instant,
         facing: Direction,
@@ -702,7 +702,7 @@ impl Steering {
     }
 
     /// The tile being walked to, for the marker the HUD draws on it.
-    pub const fn goal(&self) -> Option<(u16, u16)> {
+    pub const fn goal(&self) -> Option<Tile> {
         self.goal
     }
 
@@ -769,7 +769,7 @@ impl Steering {
         // is the only place a search runs — `go_to` never calls one — so a plan
         // costs at most once per step, never once per mouse-move.
         if let Some(tile) = self.goal {
-            if (from.x, from.y) == tile {
+            if Tile::new(from.x, from.y) == tile {
                 // Arrived — the ordinary way this ends.
                 self.goal = None;
                 self.route.clear();
@@ -1130,8 +1130,8 @@ impl Steering {
 /// destination's own patience is what ends the order. A plan with nothing in
 /// either half says the same for the one case that is not a refusal — `from`
 /// already standing on `tile`, a body that has arrived.
-pub fn plan(ground: Ground<'_>, from: Point, tile: (u16, u16)) -> Option<Plan> {
-    let goal = Point::new(tile.0, tile.1, from.z);
+pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
+    let goal = Point::new(tile.x, tile.y, from.z);
     if let Some(open) = find_path(ground.real, from, goal, PLAN_BUDGET) {
         return Some(Plan {
             open,
@@ -1401,7 +1401,7 @@ mod tests {
         // Three tiles east, at the same row.
         assert_eq!(
             steering.go_to(
-                (103, 100),
+                Tile::new(103, 100),
                 here(),
                 start,
                 Direction::East,
@@ -1447,7 +1447,7 @@ mod tests {
         let mut steering = Steering::default();
         assert_eq!(
             steering.go_to(
-                (105, 105),
+                Tile::new(105, 105),
                 here(),
                 start,
                 Direction::SouthEast,
@@ -1463,12 +1463,12 @@ mod tests {
     /// which is exactly where the old `direction_toward` step would have gone
     /// and stalled.
     struct Wall {
-        blocked: (u16, u16),
+        blocked: Tile,
     }
 
     impl openshard_movement::Terrain for Wall {
         fn can_step(&self, from: Point, to: Point) -> Option<Point> {
-            match (to.x, to.y) == self.blocked {
+            match Tile::new(to.x, to.y) == self.blocked {
                 true => None,
                 false => OpenWorld.can_step(from, to),
             }
@@ -1479,13 +1479,21 @@ mod tests {
     fn a_click_to_walk_destination_routes_around_a_wall_in_its_way() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        let wall = Wall { blocked: (101, 100) };
+        let wall = Wall {
+            blocked: Tile::new(101, 100),
+        };
 
         // Straight east into the blocked tile, then three more east. The old
         // greedy step would ask for East every time, walk into (101, 100) and
         // stall on it; the plan detours around it instead.
         let first = steering
-            .go_to((104, 100), here(), start, Direction::East, Ground::plain(&wall))
+            .go_to(
+                Tile::new(104, 100),
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&wall),
+            )
             .expect("a route around the wall exists");
         assert_ne!(
             first.direction,
@@ -1547,12 +1555,20 @@ mod tests {
         let mut steering = Steering::default();
         // Four tiles east, and the clicked tile itself is the blocked one, so
         // no search finds a route to it however it looks.
-        let wall = Wall { blocked: (104, 100) };
+        let wall = Wall {
+            blocked: Tile::new(104, 100),
+        };
 
         let mut pos = here();
         let mut now = start;
         assert_eq!(
-            steering.go_to((104, 100), pos, now, Direction::East, Ground::plain(&wall)),
+            steering.go_to(
+                Tile::new(104, 100),
+                pos,
+                now,
+                Direction::East,
+                Ground::plain(&wall)
+            ),
             Some(Facing::walking(Direction::East)),
             "as close as the ground allows is still somewhere worth walking"
         );
@@ -1585,7 +1601,11 @@ mod tests {
                 None,
                 "beat {step} against the wall must send nothing"
             );
-            assert_eq!(steering.goal(), Some((104, 100)), "and still hold the order");
+            assert_eq!(
+                steering.goal(),
+                Some(Tile::new(104, 100)),
+                "and still hold the order"
+            );
         }
         assert_eq!(
             steering.due(
@@ -1606,14 +1626,26 @@ mod tests {
     fn a_destination_with_nowhere_closer_to_stand_sends_nothing_at_all() {
         let start = Instant::now();
         let mut steering = Steering::default();
-        let wall = Wall { blocked: (101, 100) };
+        let wall = Wall {
+            blocked: Tile::new(101, 100),
+        };
 
         assert_eq!(
-            steering.go_to((101, 100), here(), start, Direction::East, Ground::plain(&wall)),
+            steering.go_to(
+                Tile::new(101, 100),
+                here(),
+                start,
+                Direction::East,
+                Ground::plain(&wall)
+            ),
             None,
             "the body is already against it; a step would only be refused"
         );
-        assert_eq!(steering.goal(), Some((101, 100)), "the order stands for now");
+        assert_eq!(
+            steering.goal(),
+            Some(Tile::new(101, 100)),
+            "the order stands for now"
+        );
         for step in 1..u64::from(STUCK_STEPS) {
             assert_eq!(
                 steering.due(
@@ -1651,11 +1683,11 @@ mod tests {
     }
 
     /// The one gap in [`Doorwall`]'s line, three tiles east of the body.
-    const DOORWAY: (u16, u16) = (103, 100);
+    const DOORWAY: Tile = Tile::new(103, 100);
 
     impl openshard_movement::Terrain for Doorwall {
         fn can_step(&self, from: Point, to: Point) -> Option<Point> {
-            let barred = to.x == DOORWAY.0 && ((to.x, to.y) != DOORWAY || self.shut);
+            let barred = to.x == DOORWAY.x && (Tile::new(to.x, to.y) != DOORWAY || self.shut);
             match barred {
                 true => None,
                 false => OpenWorld.can_step(from, to),
@@ -1664,7 +1696,7 @@ mod tests {
     }
 
     /// Two tiles past the doorway: a destination only reachable through it.
-    const BEYOND: (u16, u16) = (105, 100);
+    const BEYOND: Tile = Tile::new(105, 100);
 
     /// With the door open there is nothing to cut: the world as it stands
     /// answers, and its answer is the whole plan.
@@ -1688,7 +1720,7 @@ mod tests {
         let shut = Doorwall { shut: true };
         let open = Doorwall { shut: false };
         assert!(
-            find_path(&shut, here(), Point::new(BEYOND.0, BEYOND.1, 0), PLAN_BUDGET).is_none(),
+            find_path(&shut, here(), Point::new(BEYOND.x, BEYOND.y, 0), PLAN_BUDGET).is_none(),
             "the premise: as the world stands there is no way through at all"
         );
         let plan = plan(
@@ -1718,14 +1750,16 @@ mod tests {
     /// crate stood on the straight line.
     #[test]
     fn a_thing_in_the_way_with_a_route_round_it_is_not_barred() {
-        let wall = Wall { blocked: (101, 100) };
+        let wall = Wall {
+            blocked: Tile::new(101, 100),
+        };
         let plan = plan(
             Ground {
                 real: &wall,
                 through_doors: &OpenWorld,
             },
             here(),
-            (104, 100),
+            Tile::new(104, 100),
         )
         .expect("there is a way round a single tile");
         assert!(
@@ -1870,7 +1904,7 @@ mod tests {
 
         steering
             .go_to(
-                (110, 100),
+                Tile::new(110, 100),
                 here(),
                 start,
                 Direction::East,
@@ -1880,7 +1914,7 @@ mod tests {
         for tick in 1..20 {
             assert_eq!(
                 steering.go_to(
-                    (110, 100 + tick as u16),
+                    Tile::new(110, 100 + tick as u16),
                     here(),
                     at(start, tick * 10),
                     Direction::East,
@@ -1919,7 +1953,7 @@ mod tests {
 
         steering
             .go_to(
-                (110, 100),
+                Tile::new(110, 100),
                 here(),
                 start,
                 Direction::East,
@@ -1931,7 +1965,7 @@ mod tests {
 
         for tick in 1..20 {
             steering.go_to(
-                (110, 100 + tick as u16),
+                Tile::new(110, 100 + tick as u16),
                 here(),
                 at(start, tick * 10),
                 Direction::East,
@@ -1954,7 +1988,7 @@ mod tests {
 
         steering
             .go_to(
-                (200, 100),
+                Tile::new(200, 100),
                 here(),
                 start,
                 Direction::East,
@@ -1997,7 +2031,7 @@ mod tests {
         let mut steering = Steering::default();
         steering
             .go_to(
-                (100, 130),
+                Tile::new(100, 130),
                 here(),
                 start,
                 Direction::South,
@@ -2017,7 +2051,7 @@ mod tests {
                 "row {y}"
             );
         }
-        assert_eq!(steering.goal(), Some((100, 130)));
+        assert_eq!(steering.goal(), Some(Tile::new(100, 130)));
     }
 
     /// Taking hold of the arrows is how a player says they no longer want to go
@@ -2030,7 +2064,7 @@ mod tests {
 
         steering
             .go_to(
-                (200, 100),
+                Tile::new(200, 100),
                 here(),
                 start,
                 Direction::East,
@@ -2344,7 +2378,9 @@ mod tests {
         let mut steering = Steering::default();
         // A wall exactly where the body would step if this were a walk: what
         // pins that no step is even considered.
-        let wall = Wall { blocked: (101, 100) };
+        let wall = Wall {
+            blocked: Tile::new(101, 100),
+        };
 
         assert_eq!(
             steering.steer(
@@ -2590,7 +2626,7 @@ mod tests {
             )
             .unwrap();
         steering.go_to(
-            (200, 200),
+            Tile::new(200, 200),
             here(),
             start,
             Direction::South,
@@ -2770,7 +2806,9 @@ mod tests {
         // eighth, and this scene is about the quarter turn.
         steering.set_leeway(Leeway::Quarter);
         // Directly in the heading's path; both cardinal sidesteps are open.
-        let wall = Wall { blocked: (101, 100) };
+        let wall = Wall {
+            blocked: Tile::new(101, 100),
+        };
 
         let detoured = steering
             .steer(
@@ -2807,7 +2845,9 @@ mod tests {
         steering.set_leeway(Leeway::Quarter);
         // North-east is blocked; north and east, the cardinals it splits
         // into, are both open — the detour must take one of them.
-        let corner = Wall { blocked: (101, 99) };
+        let corner = Wall {
+            blocked: Tile::new(101, 99),
+        };
 
         let detoured = steering
             .steer(
@@ -2852,7 +2892,9 @@ mod tests {
         let mut steering = Steering::default();
         // Directly in the heading's path, with both sidesteps wide open — the
         // scene `Leeway::Quarter` answers with a sidestep.
-        let wall = Wall { blocked: (101, 100) };
+        let wall = Wall {
+            blocked: Tile::new(101, 100),
+        };
 
         assert_eq!(
             steering.steer(
@@ -2916,7 +2958,9 @@ mod tests {
         // The south-east tile is open ground. Due east is the wall's last
         // tile, so a step south-east clips the corner where it ends —
         // refused on the wire, and `Wall` alone cannot tell.
-        let corner = Wall { blocked: (101, 100) };
+        let corner = Wall {
+            blocked: Tile::new(101, 100),
+        };
         assert!(
             corner
                 .can_step(here(), step_from(here(), Direction::SouthEast).unwrap())
@@ -3013,16 +3057,16 @@ mod tests {
 
         for &direction in &Direction::ALL {
             let (dx, dy) = direction.step();
-            let ahead = (
+            let ahead = Tile::new(
                 (i32::from(here().x) + dx) as u16,
                 (i32::from(here().y) + dy) as u16,
             );
             struct AheadBlocked {
-                ahead: (u16, u16),
+                ahead: Tile,
             }
             impl openshard_movement::Terrain for AheadBlocked {
                 fn can_step(&self, from: Point, to: Point) -> Option<Point> {
-                    match (to.x, to.y) == self.ahead {
+                    match Tile::new(to.x, to.y) == self.ahead {
                         true => None,
                         false => OpenWorld.can_step(from, to),
                     }

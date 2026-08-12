@@ -17,7 +17,7 @@ use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::depth;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::{light, occlusion};
-use openshard_movement::Terrain;
+use openshard_movement::{Terrain, Tile};
 use openshard_protocol::direction::Direction;
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::wire::{Graphic, Hue};
@@ -34,17 +34,19 @@ impl App {
     /// Common code for the two lookups in [`App::pick_tile`]: `unproject` hands
     /// back a signed pair that may be off the map in any direction, and a
     /// negative one is not expressible as the `u16` [`Map::land`] wants.
-    pub(crate) fn in_bounds(x: i32, y: i32, map: &Map) -> Option<(u16, u16)> {
+    pub(crate) fn in_bounds(x: i32, y: i32, map: &Map) -> Option<Tile> {
         if x < 0 || y < 0 || x as u32 >= map.width() || y as u32 >= map.height() {
             return None;
         }
-        Some((x as u16, y as u16))
+        Some(Tile::new(x as u16, y as u16))
     }
 
     /// Everything the Tile panel shows about one tile, read straight from the
     /// map. Shared by the live hover and a click's frozen selection, so the two
     /// can never disagree about what a tile contains.
-    pub(crate) fn tile_info(&self, x: u16, y: u16) -> shell::PickedTile {
+    pub(crate) fn tile_info(&self, tile: Tile) -> shell::PickedTile {
+        let x = tile.x;
+        let y = tile.y;
         let land = self.resources.map.land(x, y);
         let statics = self
             .resources
@@ -154,7 +156,7 @@ impl App {
             .map(|z| {
                 let fits = openshard_movement::Terrain::can_fit(
                     &cluttered,
-                    openshard_movement::Tile::new(x, y),
+                    tile,
                     z,
                     openshard_movement::PLAYER_HEIGHT,
                 );
@@ -167,7 +169,7 @@ impl App {
         levels.sort_unstable();
         levels.dedup();
         shell::PickedTile {
-            at: openshard_movement::Tile::new(x, y),
+            at: tile,
             land: land.map(|cell| Graphic(cell.tile)),
             land_z: shell::Height(land.map_or(0, |cell| cell.z)),
             stand_z: shell::Height(stand_z),
@@ -207,8 +209,8 @@ impl App {
                 }
                 let x = i32::from(centre.at.x) + dx;
                 let y = i32::from(centre.at.y) + dy;
-                if let Some((x, y)) = Self::in_bounds(x, y, &self.resources.map) {
-                    ring.push(self.tile_info(x, y));
+                if let Some(tile) = Self::in_bounds(x, y, &self.resources.map) {
+                    ring.push(self.tile_info(tile));
                 }
             }
         }
@@ -240,14 +242,14 @@ impl App {
         let world_px = camera.pick(cursor);
         let near = i32::from(self.world.player.at.z);
         let (mut x, mut y) = camera::unproject(world_px, self.world.player.at.z);
-        if let Some((ux, uy)) = Self::in_bounds(x, y, &self.resources.map) {
+        if let Some(tile) = Self::in_bounds(x, y, &self.resources.map) {
             let terrain = terrain(&self.resources);
-            let z = terrain.predict_z(ux, uy, near);
+            let z = terrain.predict_z(tile.x, tile.y, near);
             let z = z.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
             (x, y) = camera::unproject(world_px, z);
         }
-        let (x, y) = Self::in_bounds(x, y, &self.resources.map)?;
-        Some(self.tile_info(x, y))
+        let tile = Self::in_bounds(x, y, &self.resources.map)?;
+        Some(self.tile_info(tile))
     }
 
     /// [`App::selected`] turned into what the panel actually shows — built
@@ -258,10 +260,10 @@ impl App {
     /// still is.
     pub(crate) fn resolve_selection(&self, identity: SelectedIdentity) -> shell::Selection {
         match identity {
-            SelectedIdentity::Tile { x, y } => shell::Selection::Tile(self.tile_info(x, y)),
+            SelectedIdentity::Tile { x, y } => shell::Selection::Tile(self.tile_info(Tile::new(x, y))),
             SelectedIdentity::Static(picked) => shell::Selection::Static {
                 static_: picked,
-                tile: self.tile_info(picked.at.x, picked.at.y),
+                tile: self.tile_info(Tile::new(picked.at.x, picked.at.y)),
                 prism: self
                     .resources
                     .surfaces
@@ -288,7 +290,7 @@ impl App {
                             at: mobile.at,
                             order,
                         };
-                        (picked, self.tile_info(mobile.at.x, mobile.at.y))
+                        (picked, self.tile_info(Tile::new(mobile.at.x, mobile.at.y)))
                     }),
             ),
             SelectedIdentity::Item(serial) => shell::Selection::Item(
@@ -309,7 +311,7 @@ impl App {
                             at: item.at,
                             priority_z,
                         };
-                        (picked, self.tile_info(item.at.x, item.at.y))
+                        (picked, self.tile_info(Tile::new(item.at.x, item.at.y)))
                     }),
             ),
         }
@@ -456,7 +458,7 @@ impl App {
             // while somebody has that overlay open to read the answer against.
             None => {
                 let tile = hover.filter(|_| self.graphics.show_terrain)?;
-                (tile.at.x, tile.at.y)
+                tile.at
             }
         };
         let plan = steer::plan(ground, self.world.player.at, goal)?;
@@ -692,7 +694,7 @@ impl App {
                 .selected
                 .map(|identity| self.resolve_selection(identity)),
             health_bars: self.health_bars(camera, drawn_mobiles),
-            goal: self.steer.goal().map(|(x, y)| self.tile_info(x, y)),
+            goal: self.steer.goal().map(|tile| self.tile_info(tile)),
         }
     }
 

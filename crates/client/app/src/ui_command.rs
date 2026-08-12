@@ -167,7 +167,7 @@ impl App {
         };
         let facing = if self.input.ctrl_held {
             self.steer.go_to(
-                (tile.at.x, tile.at.y),
+                tile.at,
                 self.world.player.at,
                 Instant::now(),
                 self.world.player.facing,

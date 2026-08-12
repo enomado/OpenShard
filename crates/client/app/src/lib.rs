@@ -153,7 +153,7 @@ use openshard_client_render::occlusion;
 use openshard_client_render::paperdoll;
 use openshard_client_render::sprite::SpriteQuad;
 use openshard_client_render::text::{self, GumpLabel};
-use openshard_movement::Leeway;
+use openshard_movement::{Leeway, Tile};
 use openshard_protocol::direction::Direction;
 #[cfg(test)]
 use openshard_protocol::serial::Serial;
@@ -192,7 +192,7 @@ pub(crate) const START: Point = Point::new(1495, 1629, 0);
 pub struct Opening {
     /// The tile to open the camera on, if not [`START`]. See the field's use in
     /// [`run`] for what it does when there is a shard.
-    pub at: Option<(u16, u16)>,
+    pub at: Option<Tile>,
     /// Whether the occlusion grid is drawn as solids from the first frame —
     /// `docs/lighting.md` step 23.0, F5 in the window, and the checkbox in the
     /// dev panel.
@@ -628,11 +628,12 @@ pub fn run<D: Dial + Send + 'static>(
     // and puts a body in front of the thing being looked at. It moves the camera
     // and nothing else: logged in, the shard still says where the character is
     // and the eye returns to them the moment anything relocks it (Home).
-    let (start_x, start_y) = at.unwrap_or((START.x, START.y));
+    let start_tile = at.unwrap_or(Tile::new(START.x, START.y));
     let start = Point::new(
-        start_x,
-        start_y,
-        map.land(start_x, start_y).map_or(START.z, |cell| cell.z),
+        start_tile.x,
+        start_tile.y,
+        map.land(start_tile.x, start_tile.y)
+            .map_or(START.z, |cell| cell.z),
     );
 
     // The connection, if this run was asked for one. Started before the window

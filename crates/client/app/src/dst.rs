@@ -70,7 +70,7 @@ use openshard_client_render::chart;
 use openshard_client_render::control::Control;
 use openshard_client_render::follow::Rig;
 use openshard_client_render::mobiles::{self, Mobile};
-use openshard_movement::{OpenWorld, RUN_HOLD, Terrain, WALK_HOLD, Walk as Handled, Walker};
+use openshard_movement::{OpenWorld, RUN_HOLD, Terrain, Tile, WALK_HOLD, Walk as Handled, Walker};
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::mobile::Notoriety;
 use openshard_protocol::packet::decode_packet;
@@ -337,12 +337,12 @@ impl Rng {
 /// worth pinning anyway.
 struct Field {
     /// Tiles no step may land on. Empty is an open field.
-    walls: Vec<(u16, u16)>,
+    walls: Vec<Tile>,
 }
 
 impl Terrain for Field {
     fn can_step(&self, from: Point, to: Point) -> Option<Point> {
-        match self.walls.contains(&(to.x, to.y)) {
+        match self.walls.contains(&Tile::new(to.x, to.y)) {
             true => None,
             false => OpenWorld.can_step(from, to),
         }
@@ -421,7 +421,7 @@ struct Sim {
 impl Sim {
     /// A client standing at [`START`], facing `facing`, connected to a shard
     /// that agrees.
-    fn new(facing: Direction, net: Net, seed: u64, walls: Vec<(u16, u16)>) -> Self {
+    fn new(facing: Direction, net: Net, seed: u64, walls: Vec<Tile>) -> Self {
         // The reference camera and no ease: every assertion in this file wants
         // a divergence to be the walk's, and both of those are a filter that
         // would answer for it.
@@ -435,7 +435,7 @@ impl Sim {
     /// is the walk's and not a filter's. A rig is a parameter for the dump that
     /// looks at what a filter does to this walk — the same argument the bench
     /// makes offline, on the body the client actually draws.
-    fn flying(rig: Rig, ease: Ease, facing: Direction, net: Net, seed: u64, walls: Vec<(u16, u16)>) -> Self {
+    fn flying(rig: Rig, ease: Ease, facing: Direction, net: Net, seed: u64, walls: Vec<Tile>) -> Self {
         let facing = Facing::walking(facing);
         let mut crowd = Crowd::default();
         crowd.set_ease(ease);
@@ -676,13 +676,13 @@ impl Sim {
     /// because the *order* they impose is real.
     fn send(&mut self, facing: Facing) {
         let before = self.walk.predicted().position;
-        // No map, so no height: `|_, _, _| None` is what a caller without one
+        // No map, so no height: `|_, _| None` is what a caller without one
         // passes, and the flat prediction is the honest answer.
         //
         // `link.rs` logs a refusal and sends nothing, and so does this: a step
         // past the cap on unanswered ones is a shard that has gone quiet, and the
         // body waits where it is.
-        let bytes = match self.walk.step(facing, |_, _, _| None) {
+        let bytes = match self.walk.step(facing, |_, _| None) {
             Ok(bytes) => bytes,
             Err(refusal) => {
                 self.not_sent.push((self.now, refusal));
@@ -1141,7 +1141,7 @@ fn a_refusal_puts_the_body_back_without_walking_it_back() {
         jitter: Duration::ZERO,
         wake_jitter: Duration::ZERO,
     };
-    let mut sim = Sim::new(Direction::East, net, 11, vec![(1004, 1000)]);
+    let mut sim = Sim::new(Direction::East, net, 11, vec![Tile::new(1004, 1000)]);
     sim.run(&script, until);
 
     assert!(sim.refused > 0, "the wall is on the way");
@@ -1299,7 +1299,7 @@ fn the_reference_rig_puts_the_eye_on_the_body_every_frame() {
     // A wall three tiles along: the shard refuses, and the body is put back on
     // a tile it never walked to. The eye goes with it — it is the reference
     // camera, and relaying a rollback whole is exactly what it does.
-    let mut refused = Sim::new(Direction::East, real, 11, vec![(1004, 1000)]);
+    let mut refused = Sim::new(Direction::East, real, 11, vec![Tile::new(1004, 1000)]);
     refused.run(&ten_steps_east(), Duration::from_millis(4_000));
     assert!(refused.refused > 0, "the wall is on the way");
     eye_is_the_body(&refused);
@@ -1527,7 +1527,7 @@ fn the_answers_a_rollback_left_on_the_wire_do_not_end_the_session() {
         wake_jitter: Duration::ZERO,
     };
     for seed in 0..6 {
-        let mut sim = Sim::new(Direction::East, net, seed, vec![(1003, 1000)]);
+        let mut sim = Sim::new(Direction::East, net, seed, vec![Tile::new(1003, 1000)]);
         sim.run(&script, until);
 
         assert!(sim.refused > 0, "seed {seed}: the wall is on the way");

@@ -22,6 +22,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use openshard_client_net::session::{Pick, Plan};
 use openshard_client_net::transport::Tcp;
+use openshard_movement::Tile;
 use openshard_protocol::identity::{RawAccountName, RawPlaintextPassword};
 
 /// Where a shard is, when one is asked for and no address is given.
@@ -76,7 +77,7 @@ struct Cli {
     /// the viewer looks; logged in it only moves the eye, and the first thing
     /// that relocks the camera on the character (Home) undoes it.
     #[arg(long, value_name = "X,Y", value_parser = tile)]
-    at: Option<(u16, u16)>,
+    at: Option<Tile>,
 
     /// Draw the lighting's occlusion grid as solids from the first frame.
     ///
@@ -93,7 +94,7 @@ struct Cli {
 /// A `Result` because this is outside the process — the same rule the wire's
 /// bytes follow — and the message is what a person sees, so it names the form
 /// rather than the parser's own complaint.
-fn tile(text: &str) -> Result<(u16, u16), String> {
+fn tile(text: &str) -> Result<Tile, String> {
     let (x, y) = text
         .split_once(',')
         .ok_or_else(|| format!("expected a tile as X,Y, got {text:?}"))?;
@@ -102,7 +103,7 @@ fn tile(text: &str) -> Result<(u16, u16), String> {
             .parse::<u16>()
             .map_err(|error| format!("{axis} of {text:?}: {error}"))
     };
-    Ok((read(x, "the x")?, read(y, "the y")?))
+    Ok(Tile::new(read(x, "the x")?, read(y, "the y")?))
 }
 
 /// The login this run was asked to make, if it was asked for one.
