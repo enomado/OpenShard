@@ -297,15 +297,15 @@ pub fn needed_animations(mobiles: &[Mobile], equip_conv: &EquipConv) -> Vec<(Gra
 /// a walking body (`Filter(order, includeBackpack: false, ...)` in
 /// `PaperdollOrder.BuildInWorld`).
 ///
-/// Returns owned items rather than layers: every caller wants the graphic and
-/// the hue, and the list is a garment or two long.
-fn drawn_layers(mobile: &Mobile) -> Vec<EquipmentLayer> {
+/// Borrows the matching worn layers in their draw order. The order table owns
+/// its short list of slots, but the renderer does not need a second allocation
+/// to copy each matching `EquipmentLayer` out of the mobile.
+fn drawn_layers<'a>(mobile: &'a Mobile) -> impl Iterator<Item = &'a EquipmentLayer> + 'a {
     let alt_torso =
         openshard_uofiles::anim::is_female(mobile.body) || openshard_uofiles::anim::is_gargoyle(mobile.body);
     crate::paperdoll::world_order(&mobile.equipment, alt_torso, mobile.facing)
         .into_iter()
-        .filter_map(|layer| mobile.equipment.iter().copied().find(|item| item.layer == layer))
-        .collect()
+        .filter_map(move |layer| mobile.equipment.iter().find(|item| item.layer == layer))
 }
 
 /// What one worn layer draws with, and what hue — or `None` for a layer that
@@ -333,7 +333,7 @@ fn drawn_layers(mobile: &Mobile) -> Vec<EquipmentLayer> {
 /// every part of this — which layers exist and which graphic each one is under.
 /// A layer packed and not drawn is waste; a layer drawn and not packed is a
 /// hole.
-fn worn_graphic(mobile: &Mobile, layer: EquipmentLayer, equip_conv: &EquipConv) -> Option<(Graphic, Hue)> {
+fn worn_graphic(mobile: &Mobile, layer: &EquipmentLayer, equip_conv: &EquipConv) -> Option<(Graphic, Hue)> {
     if layer.graphic == AnimId(0) {
         return None;
     }
@@ -655,7 +655,6 @@ pub fn pick_iter<'a>(
         // The body first, then what it wears: any one of them is the creature.
         let body = openshard_uofiles::anim::animation_body(mobile.body);
         let worn = drawn_layers(mobile)
-            .into_iter()
             .filter_map(|layer| worn_graphic(mobile, layer, equip_conv).map(|(graphic, _)| graphic));
         let mut touched = None;
         for graphic in std::iter::once(body).chain(worn) {
