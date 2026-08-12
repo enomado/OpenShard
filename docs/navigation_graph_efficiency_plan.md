@@ -15,8 +15,8 @@ retain their existing behaviour.
 - [x] Phase 2: component-aware logical entrances with deterministic grouping.
 - [x] Phase 4: query-local live-transition cache, shared client planning, and
   opt-in path diagnostics.
-- [ ] Phase 3: second hierarchy level. No level 2 is added until a benchmark
-  demonstrates a material p95 improvement for end-to-end route planning.
+- [ ] Phase 3: second hierarchy level. The available synthetic open-world
+  probe does not justify level 2; the facet-0 route set remains outstanding.
 - [ ] Real-install verification: facet-0 bake/load measurements require the
   client data files and the dedicated 2 GiB cgroup environment.
 
@@ -30,6 +30,11 @@ there. Workspace clippy with warnings denied remains blocked by the
 pre-existing `clippy::precedence` warning in unrelated
 `client-render/src/sprite.rs`. The client-app library test target also passed on
 this run: 179 tests passed and two diagnostic tests were ignored.
+The repeatable `coarse_bench` probe also passed: on a 1024x1024 open world,
+25 coarse searches (including endpoint insertion and live refinement) measured
+0.974 ms p95 and 0.981 ms worst, with 1052 steps; graph construction took
+385.7 ms. The flat comparison returned 1021 steps in 0.803 ms. This is not a
+facet-0 benchmark and is insufficient evidence for a second hierarchy level.
 
 ## Backlog
 
@@ -51,6 +56,9 @@ this run: 179 tests passed and two diagnostic tests were ignored.
   justified.** The implementation deliberately remains single-level. Measure
   the route set listed in Phase 3, including endpoint insertion and live
   refinement, and add level 2 only if the measured p95 improvement is material.
+  The available 1024x1024 open-world probe is below 1 ms p95 and does not
+  exercise the required forest, shore, mountain, unreachable-water, or
+  narrow-entrance cases.
 - ✅ **HUD route conversion now reuses the plan replay.** Resolved on
   2026-08-13: the plan stores immutable landing points produced by its separate
   real and doors-open query caches, and the HUD consumes those points. A
@@ -60,7 +68,8 @@ this run: 179 tests passed and two diagnostic tests were ignored.
   and keeps it over mobile-only updates. Verify that every production change
   capable of affecting `Cluttered::can_step` is represented by that item-set
   comparison, then measure whether keeping the cache across each remaining
-  update is safe.
+  update is safe. This overlaps the cache-invalidation review above and should
+  be resolved as one task.
 - 🚩 **The render attachment tests need a capable adapter or a portable test
   target.** On the current downlevel adapter, the two `attachment` integration
   tests fail while creating the pre-existing `position` `Rgba32Float` render

@@ -17,6 +17,13 @@ const WIDTH: u16 = 1024;
 const HEIGHT: u16 = 1024;
 const FROM: Point = Point::new(1, 1, 0);
 const TO: Point = Point::new(WIDTH - 2, HEIGHT - 2, 0);
+const SAMPLES: usize = 25;
+
+fn percentile(samples: &mut [std::time::Duration], percentile: usize) -> std::time::Duration {
+    samples.sort_unstable();
+    let index = (samples.len() * percentile).div_ceil(100).saturating_sub(1);
+    samples[index]
+}
 
 fn main() {
     let built_at = Instant::now();
@@ -29,14 +36,21 @@ fn main() {
         .expect("open ground has a flat route");
     let flat_elapsed = flat_at.elapsed();
 
-    let coarse_at = Instant::now();
-    let coarse = find_long_path(&OpenWorld, &OpenWorld, &router, FROM, TO, 600)
-        .expect("the coarse corridor has bounded exact hops");
-    let coarse_elapsed = coarse_at.elapsed();
+    let mut coarse_samples = Vec::with_capacity(SAMPLES);
+    let mut coarse_steps = None;
+    for _ in 0..SAMPLES {
+        let coarse_at = Instant::now();
+        let coarse = find_long_path(&OpenWorld, &OpenWorld, &router, FROM, TO, 600)
+            .expect("the coarse corridor has bounded exact hops");
+        coarse_steps = Some(coarse.len());
+        coarse_samples.push(coarse_at.elapsed());
+    }
+    let coarse_p95 = percentile(&mut coarse_samples, 95);
+    let coarse_worst = coarse_samples.last().copied().expect("samples are non-empty");
 
     println!(
-        "{WIDTH}x{HEIGHT}: build {built:?}; flat {} steps in {flat_elapsed:?}; coarse {} steps in {coarse_elapsed:?}",
+        "{WIDTH}x{HEIGHT}: build {built:?}; flat {} steps in {flat_elapsed:?}; coarse {} steps, p95 {coarse_p95:?}, worst {coarse_worst:?} ({SAMPLES} samples)",
         flat.len(),
-        coarse.len(),
+        coarse_steps.expect("samples are non-empty"),
     );
 }
