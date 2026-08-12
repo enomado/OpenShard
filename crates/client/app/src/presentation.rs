@@ -584,7 +584,7 @@ impl App {
         let repacked = ready_atlases(
             &mut self.resources,
             &mut self.graphics,
-            &self.world,
+            &mut self.world,
             &mut self.repacks,
             window,
             want,

@@ -130,6 +130,7 @@ fn draw(
     .expect("a screen of textures fits");
 
     let tuning = Tuning::DEFAULT;
+    let mut fades = openshard_client_render::cutaway::Fades::default();
     let inputs = frame::Inputs {
         map: &map,
         items,
@@ -152,6 +153,8 @@ fn draw(
         view: View::Lit,
         dead: false,
         player_rect: None,
+        player_mask: None,
+        fades: &mut fades,
     };
 
     let frame::Frame {

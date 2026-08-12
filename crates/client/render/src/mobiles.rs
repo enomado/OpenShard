@@ -724,6 +724,126 @@ pub fn screen_rect(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Optio
     Some(placement.rect)
 }
 
+/// The player's actually drawn body pixels in view coordinates.
+///
+/// A cutaway wall is not selected by two atlas rectangles merely touching: a
+/// wall's diagonal band and a body's silhouette both have large transparent
+/// corners.  Keeping this small, CPU-side mask beside the body placement lets
+/// [`crate::statics`] reject those false candidates before it spends a private
+/// G-buffer draw.  Equipment is deliberately absent: a wall hides the body
+/// the player controls, while paperdoll layers are visual decoration that can
+/// extend far beyond it.
+#[derive(Clone, Debug)]
+pub struct OpaqueMask {
+    rect: Rect,
+    width: u16,
+    pixels: Vec<bool>,
+}
+
+impl OpaqueMask {
+    /// The body frame's bounds, retained for the foliage policy.  Foliage is
+    /// intentionally a separate, generous canopy rule; see
+    /// [`crate::cutaway::hides_foliage_over`].
+    #[must_use]
+    pub const fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Whether this body's and `other`'s *drawn* texels share a viewport
+    /// pixel. `other_opaque` receives a texel in `other`'s unmirrored source
+    /// image, so the static atlas remains the one authority on its alpha.
+    pub fn overlaps_opaque(&self, other: Rect, mut other_opaque: impl FnMut(u16, u16) -> bool) -> bool {
+        let left = self.rect.x.max(other.x);
+        let top = self.rect.y.max(other.y);
+        let right = (self.rect.x + self.rect.width).min(other.x + other.width);
+        let bottom = (self.rect.y + self.rect.height).min(other.y + other.height);
+        if left >= right || top >= bottom {
+            return false;
+        }
+
+        // Raster fragments are at pixel centres. These bounds enumerate just
+        // the centres within both quads, including a walking body's fractional
+        // placement without rounding its rectangle to a different sprite.
+        let first_x = (left - 0.5).ceil() as i32;
+        let first_y = (top - 0.5).ceil() as i32;
+        let last_x = (right - 0.5).ceil() as i32;
+        let last_y = (bottom - 0.5).ceil() as i32;
+        for y in first_y..last_y {
+            let Some(body_y) = texel_at(self.rect.y, self.rect.height, y) else {
+                continue;
+            };
+            for x in first_x..last_x {
+                let Some(body_x) = texel_at(self.rect.x, self.rect.width, x) else {
+                    continue;
+                };
+                let body = usize::from(body_y) * usize::from(self.width) + usize::from(body_x);
+                if !self.pixels[body] {
+                    continue;
+                }
+                let (Some(other_x), Some(other_y)) = (
+                    texel_at(other.x, other.width, x),
+                    texel_at(other.y, other.height, y),
+                ) else {
+                    continue;
+                };
+                if other_opaque(other_x, other_y) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// A rectangular all-opaque mask for a caller's synthetic fixture.
+    #[cfg(test)]
+    pub(crate) fn solid(rect: Rect) -> Self {
+        let width = rect.width as u16;
+        let height = rect.height as u16;
+        Self {
+            rect,
+            width,
+            pixels: vec![true; usize::from(width) * usize::from(height)],
+        }
+    }
+}
+
+/// Build the [`OpaqueMask`] for the body frame [`screen_rect`] would place.
+///
+/// `None` means the body has no packed frame, the same answer the mobile draw
+/// pass and the old rectangle-only candidate path gave.
+#[must_use]
+pub fn opaque_mask(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<OpaqueMask> {
+    let placement = place(
+        mobile,
+        openshard_uofiles::anim::animation_body(mobile.body),
+        camera,
+        atlas,
+    )?;
+    let width = placement.rect.width as u16;
+    let height = placement.rect.height as u16;
+    let mut pixels = Vec::with_capacity(usize::from(width) * usize::from(height));
+    for y in 0..height {
+        for x in 0..width {
+            let source_x = match placement.mirrored {
+                true => width - 1 - x,
+                false => x,
+            };
+            pixels.push(atlas.opaque_at(placement.key, source_x, y));
+        }
+    }
+    Some(OpaqueMask {
+        rect: placement.rect,
+        width,
+        pixels,
+    })
+}
+
+/// The source texel whose square contains viewport pixel `pixel`'s centre.
+fn texel_at(origin: f32, extent: f32, pixel: i32) -> Option<u16> {
+    let texel = ((pixel as f32 + 0.5) - origin).floor() as i32;
+    (texel >= 0 && texel < extent as i32).then_some(texel as u16)
+}
+
 pub fn head_anchor(mobile: &Mobile, camera: &Camera, atlas: &AnimAtlas) -> Option<ViewPixel> {
     let placement = place(
         mobile,
@@ -816,6 +936,48 @@ mod tests {
         )
         .expect("the frame is packed")
         .rect
+    }
+
+    /// The cutaway mask is made from the frame's actual alpha, not from its
+    /// enclosing rectangle. This is the body half of C3's static/body test.
+    #[test]
+    fn a_body_mask_keeps_the_frames_transparent_pixels_empty() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let image = Image::new(
+            4,
+            6,
+            (0..24)
+                .map(|index| match index % 4 < 2 {
+                    true => Color16::TRANSPARENT,
+                    false => Color16(0x7C00),
+                })
+                .collect(),
+        );
+        let atlas = AnimAtlas::pack([(
+            FrameKey::new(AnimationKey::new(Graphic(400), 4, 0), 0),
+            AnimFrame {
+                center_x: 2,
+                center_y: 0,
+                image,
+            },
+        )])
+        .expect("one body frame fits");
+        let mask = opaque_mask(&body_at(100, Direction::SouthEast), &camera, &atlas).expect("packed body");
+        let rect = mask.rect();
+        let left = Rect { width: 1.0, ..rect };
+        let right = Rect {
+            x: rect.x + 3.0,
+            width: 1.0,
+            ..rect
+        };
+        assert!(
+            !mask.overlaps_opaque(left, |_, _| true),
+            "the empty half of the body frame became a cutaway mask"
+        );
+        assert!(
+            mask.overlaps_opaque(right, |_, _| true),
+            "the drawn half of the body frame was missing from the cutaway mask"
+        );
     }
 
     /// A frame with a hole in it: the left half transparent, the right half

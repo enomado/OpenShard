@@ -243,6 +243,7 @@ fn assemble_and_draw(
     needed.extend(items::needed_graphics(items, animations));
     let static_atlas = StaticAtlas::build(art, needed).expect("the scene's own statics fit");
 
+    let mut fades = openshard_client_render::cutaway::Fades::default();
     let inputs = frame::Inputs {
         map,
         items,
@@ -269,6 +270,8 @@ fn assemble_and_draw(
         view: View::Lit,
         dead: false,
         player_rect: None,
+        player_mask: None,
+        fades: &mut fades,
     };
 
     let summary = inputs.summary();

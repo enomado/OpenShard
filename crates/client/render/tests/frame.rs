@@ -5043,6 +5043,7 @@ fn britains_statics_cover_part_of_a_frame_that_is_still_whole() {
         &Cutaway::OPEN,
         &openshard_client_render::occlusion::Occlusion::EMPTY,
         None,
+        None,
     )
     .quads;
     assert!(
@@ -5136,6 +5137,7 @@ fn dump_a_frame_of_britain() {
         &static_atlas,
         &Cutaway::OPEN,
         &openshard_client_render::occlusion::Occlusion::EMPTY,
+        None,
         None,
     )
     .quads;

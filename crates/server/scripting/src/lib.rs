@@ -44,7 +44,35 @@ pub use engine::DenoEngine;
 /// A plain `u32` on purpose. The scripting layer has no opinion about how the
 /// world stores entities — it speaks the same identity the protocol does, and
 /// the glue that owns both maps one to the other.
-pub type Serial = u32;
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug, Default, serde::Serialize)]
+pub struct Serial(u32);
+
+impl Serial {
+    /// The raw value sent to or received from the script runtime.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for Serial {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Serial> for u32 {
+    fn from(value: Serial) -> Self {
+        value.0
+    }
+}
+
+impl std::borrow::Borrow<u32> for Serial {
+    fn borrow(&self) -> &u32 {
+        &self.0
+    }
+}
 
 /// Something the world says happened, handed to a script.
 ///

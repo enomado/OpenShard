@@ -69,6 +69,17 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let adapter =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+    // `Gbuffer` needs this exact floating-point render target. A downlevel
+    // adapter that cannot create it is not a GPU this parity gate can exercise;
+    // report that by returning `None`, like the other frame suites, instead of
+    // failing later inside `Gbuffer::new`.
+    if !adapter
+        .get_texture_format_features(openshard_client_render::gbuffer::POSITION_FORMAT)
+        .allowed_usages
+        .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+    {
+        return None;
+    }
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         required_limits: openshard_client_render::gbuffer::required_limits(),
         ..Default::default()

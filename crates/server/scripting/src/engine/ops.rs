@@ -26,7 +26,7 @@ fn op_position(state: &mut OpState, serial: u32) -> Option<[i32; 3]> {
 #[op2(fast)]
 fn op_move(state: &mut OpState, serial: u32, direction: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::Move {
-        serial,
+        serial: Serial::from(serial),
         direction: direction as u8,
     });
 }
@@ -238,7 +238,7 @@ fn op_spawn_mobile(state: &mut OpState, #[serde] spec: MobileSpec) {
 #[op2(fast)]
 fn op_damage(state: &mut OpState, serial: u32, amount: u32, damage_type: u32, by: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::Damage {
-        serial,
+        serial: Serial::from(serial),
         amount: amount.min(u32::from(u16::MAX)) as u16,
         damage_type: damage_type.min(u32::from(u8::MAX)) as u8,
         by,
@@ -249,7 +249,7 @@ fn op_damage(state: &mut OpState, serial: u32, amount: u32, damage_type: u32, by
 #[op2(fast)]
 fn op_heal(state: &mut OpState, serial: u32, amount: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::Heal {
-        serial,
+        serial: Serial::from(serial),
         amount: amount.min(u32::from(u16::MAX)) as u16,
     });
 }
@@ -284,7 +284,7 @@ struct CastSpec {
 #[op2]
 fn op_cast_spell(state: &mut OpState, #[serde] spec: CastSpec) {
     state.borrow_mut::<Host>().outbox.push(Command::CastSpell {
-        serial: spec.serial,
+        serial: Serial::from(spec.serial),
         spell: spec.spell,
         target: spec.target,
         mana: spec.mana,
@@ -300,7 +300,7 @@ fn op_cast_spell(state: &mut OpState, #[serde] spec: CastSpec) {
 #[op2(fast)]
 fn op_set_skill(state: &mut OpState, serial: u32, skill: u32, value: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::SetSkill {
-        serial,
+        serial: Serial::from(serial),
         skill: skill as u8,
         value: value.min(u32::from(u16::MAX)) as u16,
     });
@@ -311,7 +311,7 @@ fn op_set_skill(state: &mut OpState, serial: u32, skill: u32, value: u32) {
 fn op_set_weapon(state: &mut OpState, serial: u32, speed: u32, min: u32, max: u32) {
     let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
     state.borrow_mut::<Host>().outbox.push(Command::SetWeapon {
-        serial,
+        serial: Serial::from(serial),
         speed: clamp(speed),
         min: clamp(min),
         max: clamp(max),
@@ -322,7 +322,7 @@ fn op_set_weapon(state: &mut OpState, serial: u32, speed: u32, min: u32, max: u3
 #[op2(fast)]
 fn op_set_poison(state: &mut OpState, serial: u32, level: u32, charges: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::SetPoison {
-        serial,
+        serial: Serial::from(serial),
         level: PoisonLevel::new(level.min(u32::from(u8::MAX)) as u8),
         charges: charges.min(u32::from(u16::MAX)) as u16,
     });
@@ -333,7 +333,7 @@ fn op_set_poison(state: &mut OpState, serial: u32, level: u32, charges: u32) {
 fn op_set_stats(state: &mut OpState, serial: u32, strength: u32, dexterity: u32, intelligence: u32) {
     let clamp = |v: u32| v.min(u32::from(u16::MAX)) as u16;
     state.borrow_mut::<Host>().outbox.push(Command::SetStats {
-        serial,
+        serial: Serial::from(serial),
         strength: clamp(strength),
         dexterity: clamp(dexterity),
         intelligence: clamp(intelligence),
@@ -346,7 +346,7 @@ fn op_set_stats(state: &mut OpState, serial: u32, strength: u32, dexterity: u32,
 #[op2(fast)]
 fn op_use_skill(state: &mut OpState, serial: u32, skill: u32, min_skill: i32, max_skill: i32) {
     state.borrow_mut::<Host>().outbox.push(Command::UseSkill {
-        serial,
+        serial: Serial::from(serial),
         skill: skill as u8,
         min_skill,
         max_skill,
@@ -357,7 +357,7 @@ fn op_use_skill(state: &mut OpState, serial: u32, skill: u32, min_skill: i32, ma
 #[op2(fast)]
 fn op_say(state: &mut OpState, serial: u32, #[string] text: String, hue: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::Speak {
-        serial,
+        serial: Serial::from(serial),
         hue: hue.min(u32::from(u16::MAX)) as u16,
         text,
     });
@@ -370,7 +370,9 @@ fn op_control(state: &mut OpState, serial: u32) {
     state
         .borrow_mut::<Host>()
         .outbox
-        .push(Command::Control { serial });
+        .push(Command::Control {
+            serial: Serial::from(serial),
+        });
 }
 
 /// Show a gump (a dialog window) to a mobile's client:
@@ -394,7 +396,7 @@ struct GumpSpec {
 #[op2]
 fn op_gump(state: &mut OpState, #[serde] spec: GumpSpec) {
     state.borrow_mut::<Host>().outbox.push(Command::ShowGump {
-        serial: spec.serial,
+        serial: Serial::from(spec.serial),
         gump_id: spec.gump_id,
         x: spec.x,
         y: spec.y,
@@ -604,7 +606,10 @@ fn op_bind_quest_giver(state: &mut OpState, serial: u32, #[serde] keys: Vec<Stri
     state
         .borrow_mut::<Host>()
         .outbox
-        .push(Command::BindQuestGiver { serial, keys });
+        .push(Command::BindQuestGiver {
+            serial: Serial::from(serial),
+            keys,
+        });
 }
 
 /// Make an NPC escortable: `op_make_escortable(serial, "Britain")`. An empty
@@ -615,7 +620,10 @@ fn op_make_escortable(state: &mut OpState, serial: u32, #[string] destination: S
     state
         .borrow_mut::<Host>()
         .outbox
-        .push(Command::MakeEscortable { serial, destination });
+        .push(Command::MakeEscortable {
+            serial: Serial::from(serial),
+            destination,
+        });
 }
 
 /// Close an open gump on a player's client: `op_close_gump(serial, gumpId)`.
@@ -626,7 +634,10 @@ fn op_close_gump(state: &mut OpState, serial: u32, gump_id: u32) {
     state
         .borrow_mut::<Host>()
         .outbox
-        .push(Command::CloseGump { serial, gump_id });
+        .push(Command::CloseGump {
+            serial: Serial::from(serial),
+            gump_id,
+        });
 }
 
 /// Send a player a private system line: `op_message(serial, text)`. The server
@@ -637,7 +648,10 @@ fn op_message(state: &mut OpState, serial: u32, #[string] text: String) {
     state
         .borrow_mut::<Host>()
         .outbox
-        .push(Command::Message { serial, text });
+        .push(Command::Message {
+            serial: Serial::from(serial),
+            text,
+        });
 }
 
 /// Play a sound for one player: `op_play_sound(serial, sound)` — feedback on
@@ -645,7 +659,7 @@ fn op_message(state: &mut OpState, serial: u32, #[string] text: String) {
 #[op2(fast)]
 fn op_play_sound(state: &mut OpState, serial: u32, sound: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::PlaySound {
-        serial,
+        serial: Serial::from(serial),
         sound: sound.min(u32::from(u16::MAX)) as u16,
     });
 }
@@ -668,7 +682,7 @@ struct GiveSpec {
 #[op2]
 fn op_give_item(state: &mut OpState, #[serde] spec: GiveSpec) {
     state.borrow_mut::<Host>().outbox.push(Command::GiveItem {
-        serial: spec.serial,
+        serial: Serial::from(spec.serial),
         graphic: spec.graphic,
         hue: spec.hue,
         amount: spec.amount,
@@ -681,7 +695,7 @@ fn op_give_item(state: &mut OpState, #[serde] spec: GiveSpec) {
 #[op2(fast)]
 fn op_take_item(state: &mut OpState, serial: u32, graphic: u32, amount: u32) {
     state.borrow_mut::<Host>().outbox.push(Command::TakeItem {
-        serial,
+        serial: Serial::from(serial),
         graphic: graphic.min(u32::from(u16::MAX)) as u16,
         amount: amount.min(u32::from(u16::MAX)) as u16,
     });

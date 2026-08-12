@@ -158,6 +158,7 @@ struct VertexOut {
     // sprite's rectangle ends. Without the rectangle, `art_edge` would ask a
     // stranger's alpha and answer about the atlas's packing.
     @location(10) @interpolate(flat) region: vec4<f32>,
+    @location(11) @interpolate(flat) opacity: f32,
 };
 
 // Virtual pixels one unit of height lifts a sprite up the screen —
@@ -412,7 +413,9 @@ fn vs_main(
     // here samples the far edge of the region at a vertex.
     out.uv = region.xy + corner * region.zw;
     out.region = region;
-    out.hue = hue;
+    out.hue = hue & 0xffffu;
+    let encoded_opacity = (hue >> 16u) & 0xffu;
+    out.opacity = select(1.0, f32(encoded_opacity) / 255.0, encoded_opacity != 0u);
     out.place = place;
     out.pixel_y = pixel.y;
     out.bottom_y = origin.y + size.y;
@@ -463,7 +466,7 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     }
 
     var out: FragmentOut;
-    out.color = vec4<f32>(rgb, 1.0);
+    out.color = vec4<f32>(rgb, in.opacity);
 
     // The tile, the height and the kind, taken apart the way
     // `crate::place::Place::packed` put them together. A discarded fragment

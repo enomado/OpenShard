@@ -71,7 +71,7 @@ pub(crate) struct FrameGeometry {
 pub(crate) fn assemble_geometry(
     resources: &resources::Resources,
     graphics: &mut graphics::GraphicsSettings,
-    world: &world::WorldState,
+    world: &mut world::WorldState,
     picking: &picking::Picking,
     window: &Screen,
     camera: Camera,
@@ -114,14 +114,16 @@ pub(crate) fn assemble_geometry(
     let hued = graphics.highlight_style.hues().then_some(lit_item).flatten();
     let ringed = graphics.highlight_style.rings().then_some(lit_item).flatten();
 
-    // Where the player's own picture will land, asked before the statics
-    // are collected rather than after: `frame::assemble` places a tree's
-    // canopy against this rectangle, so a leaf that would be drawn over
-    // the body is cut instead of hung over it — see
-    // `cutaway::hides_foliage_over`. `None` only for the one frame the
-    // atlas has not yet grown a frame for this body and group, same as
-    // `mobiles::head_anchor`'s own gap.
-    let player_rect = mobiles::screen_rect(&world.presentation.player, &camera, &window.atlases.mobiles);
+    // The body mask is made before statics are collected. Architecture needs
+    // its actual silhouette, not merely the wide rectangle that contains a
+    // dragon or the empty corners of a walking frame; foliage intentionally
+    // keeps the rectangle as its separate canopy policy. `None` only when the
+    // atlas has not yet grown a frame for this body and group, the same gap
+    // `mobiles::head_anchor` has.
+    let player_mask = mobiles::opaque_mask(&world.presentation.player, &camera, &window.atlases.mobiles);
+    let player_rect = player_mask
+        .as_ref()
+        .map(openshard_client_render::mobiles::OpaqueMask::rect);
 
     // **One assembly, and the client is a caller of it like any other** —
     // `docs/parity.md`, decision D1. This sequence used to be written out by
@@ -196,6 +198,8 @@ pub(crate) fn assemble_geometry(
             .as_ref()
             .is_some_and(|view| view.player.dead),
         player_rect,
+        player_mask: player_mask.as_ref(),
+        fades: &mut world.presentation.cutaway_fades,
     };
     // **What the frame was asked for**, kept beside the pictures the dump
     // below writes. A picture on its own cannot be reproduced: two frames

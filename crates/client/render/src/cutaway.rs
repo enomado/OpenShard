@@ -41,6 +41,10 @@
 //! policy for one tree's several graphics; the pass here is the rendering
 //! primitive those policies use, not an excuse to conflate them.
 
+use std::collections::BTreeMap;
+
+use openshard_protocol::wire::Graphic;
+use openshard_protocol::world::Point;
 use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::{StaticTile, TileData, TileFlags};
 
@@ -62,6 +66,59 @@ pub const CHARACTER_HEIGHT: i32 = 16;
 /// stays a product-facing constant rather than becoming a field on every
 /// ordinary [`crate::sprite::SpriteQuad`].
 pub const TRANSLUCENT_ALPHA: f32 = 0.4;
+
+/// The reference client's `CalculateAlpha` step, in its byte-alpha domain.
+pub const ALPHA_STEP: u8 = 25;
+/// [`TRANSLUCENT_ALPHA`] in that same domain, rounded to the nearest byte.
+pub const TRANSLUCENT_ALPHA_U8: u8 = (TRANSLUCENT_ALPHA * 255.0).round() as u8;
+
+/// The stable world identity of an object whose opacity is changing.
+///
+/// Map statics and server items can share a tile and a graphic, so the producer
+/// remains part of the key. A static animation deliberately keeps its placed
+/// graphic here, rather than whichever frame the atlas is showing.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct FadeKey {
+    at: (u16, u16, i8),
+    graphic: u16,
+    item: bool,
+}
+
+impl FadeKey {
+    pub const fn static_(at: Point, graphic: Graphic) -> Self {
+        Self { at: (at.x, at.y, at.z), graphic: graphic.0, item: false }
+    }
+
+    pub const fn item(at: Point, graphic: Graphic) -> Self {
+        Self { at: (at.x, at.y, at.z), graphic: graphic.0, item: true }
+    }
+}
+
+/// Persistent per-object cutaway opacity.
+#[derive(Default, Debug)]
+pub struct Fades(BTreeMap<FadeKey, u8>);
+
+impl Fades {
+    /// Advance one reference-style 25-point step toward `target`.
+    ///
+    /// Fully opaque objects need no retained state, while a zero-alpha hidden
+    /// object remains remembered at zero so that returning it starts a fade-in
+    /// rather than popping straight back to opaque.
+    pub fn advance(&mut self, key: FadeKey, target: u8) -> u8 {
+        let alpha = self.0.get(&key).copied().unwrap_or(u8::MAX);
+        let next = if alpha < target {
+            alpha.saturating_add(ALPHA_STEP).min(target)
+        } else {
+            alpha.saturating_sub(ALPHA_STEP).max(target)
+        };
+        if next == u8::MAX {
+            self.0.remove(&key);
+        } else {
+            self.0.insert(key, next);
+        }
+        next
+    }
+}
 
 /// The height nothing is drawn above, whatever the cutaway decides.
 ///

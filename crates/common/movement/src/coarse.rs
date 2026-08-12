@@ -269,6 +269,21 @@ impl CoarseRouter {
         })
     }
 
+    /// Whether a query stays in one cluster or crosses just one cluster border.
+    ///
+    /// There is no abstract-search win at this scale. More importantly, a
+    /// single-cluster map has no transitions at all, while an ordinary local A*
+    /// still has a perfectly good answer.
+    fn is_local_query(&self, from: Point, to: Point) -> Option<bool> {
+        let from = self.cluster_at(from)?;
+        let to = self.cluster_at(to)?;
+        let from_x = from.0 % self.clusters_wide as usize;
+        let from_y = from.0 / self.clusters_wide as usize;
+        let to_x = to.0 % self.clusters_wide as usize;
+        let to_y = to.0 / self.clusters_wide as usize;
+        Some(from_x.abs_diff(to_x) <= 1 && from_y.abs_diff(to_y) <= 1)
+    }
+
     fn point_at(terrain: &dyn Terrain, x: u16, y: u16) -> Point {
         let tile = Tile::new(x, y);
         let near = terrain.ground_z(tile).unwrap_or(0);
@@ -603,6 +618,10 @@ pub fn find_long_path(
     hop_budget: usize,
 ) -> Option<Vec<Direction>> {
     const LIVE_REROUTES: usize = 8;
+    if router.is_local_query(from, to)? {
+        return find_path(terrain, from, to, hop_budget);
+    }
+
     let mut forbidden = vec![false; router.nodes.len()];
     for _ in 0..=LIVE_REROUTES {
         let path = router.abstract_path(guide, from, to, &forbidden)?;
@@ -699,6 +718,22 @@ mod tests {
             .collect();
         assert!(points.contains(&(31, 0)) && points.contains(&(32, 0)));
         assert!(points.contains(&(31, 31)) && points.contains(&(32, 31)));
+    }
+
+    #[test]
+    fn a_single_cluster_query_needs_no_transitions() {
+        let terrain = Grid::open(32, 32);
+        let router = CoarseRouter::build(&terrain, 32, 32).expect("a valid facet");
+        let from = Point::new(1, 1, 0);
+        let to = Point::new(30, 30, 0);
+        assert!(
+            router.nodes.is_empty(),
+            "a facet with no border has no graph nodes"
+        );
+
+        let route = find_long_path(&terrain, &terrain, &router, from, to, 100)
+            .expect("a local query is answered by ordinary A*");
+        assert_eq!(end(from, &route), to);
     }
 
     #[test]

@@ -227,6 +227,14 @@ pub struct Inputs<'a> {
     /// offline placeholder, a tool building a place rather than following a
     /// character.
     pub player_rect: Option<crate::geometry::Rect>,
+    /// The player's non-transparent body texels at the same placement as
+    /// [`player_rect`](Self::player_rect). Architectural cutaway candidates
+    /// need a true pixel overlap with this mask; foliage deliberately keeps its
+    /// separate rectangle policy.
+    pub player_mask: Option<&'a crate::mobiles::OpaqueMask>,
+    /// The long-lived opacity of cutaway candidates, owned by the presentation
+    /// rather than reconstructed from a single frame.
+    pub fades: &'a mut crate::cutaway::Fades,
 }
 
 impl Inputs<'_> {
@@ -349,6 +357,13 @@ impl Inputs<'_> {
         line("view", self.view.name().to_owned());
         line("dead", format!("{}", self.dead));
         line("player_rect", format!("{:?}", self.player_rect));
+        line(
+            "player_mask",
+            match self.player_mask {
+                Some(_) => "body silhouette".to_owned(),
+                None => "none".to_owned(),
+            },
+        );
         out
     }
 }
@@ -409,6 +424,8 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
         view,
         dead,
         player_rect,
+        player_mask,
+        fades,
     } = inputs;
 
     let mut lighting = match sky {
@@ -470,7 +487,7 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     // Reaching the same picture by handing this function fewer items would be a
     // different world, lit differently, and the summary would not say so.
     let mut geometry = match draw.statics {
-        true => crate::statics::collect(
+        true => crate::statics::collect_with_fades(
             map,
             camera,
             tiledata,
@@ -479,6 +496,8 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
             cutaway,
             met,
             player_rect,
+            player_mask,
+            fades,
         ),
         false => StaticGeometry::default(),
     };
@@ -486,8 +505,17 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
     // atlas: one draw call binds one texture, and what covers what is the depth
     // these carry rather than the order they are appended in.
     if draw.items {
-        geometry.absorb(crate::items::collect(
-            items, camera, tiledata, animations, statics, cutaway, highlight, met,
+        geometry.absorb(crate::items::collect_with_fades(
+            items,
+            camera,
+            tiledata,
+            animations,
+            statics,
+            cutaway,
+            highlight,
+            met,
+            player_mask,
+            fades,
         ));
     }
 

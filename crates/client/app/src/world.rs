@@ -65,6 +65,8 @@ pub struct PresentationWorld {
     pub player: Mobile,
     /// The guarded cutaway tile. It may deliberately lag a doomed prediction.
     pub cutaway_at: Point,
+    /// Persistent opacity for world objects moving into or out of cutaway.
+    pub cutaway_fades: openshard_client_render::cutaway::Fades,
     /// Render mobiles beside the identity their animation clocks use.
     pub others: Vec<(Who, Mobile)>,
     /// Ground-item render data and the parallel wire serials used for picks.

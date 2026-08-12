@@ -842,6 +842,7 @@ fn main() {
     // The land atlas is empty under `_GROUND=0`, so there is no branch here for
     // it: a ground pass over an atlas holding nothing paints nothing, and it
     // still clears the targets exactly as the live one does.
+    let mut fades = openshard_client_render::cutaway::Fades::default();
     let inputs = openshard_client_render::frame::Inputs {
         map: &synthetic,
         items: &items,
@@ -905,6 +906,8 @@ fn main() {
         // character standing in it.
         dead: false,
         player_rect: None,
+        player_mask: None,
+        fades: &mut fades,
     };
     // **What this frame was asked for**, printed and written beside the picture.
     // The client's F12 dump writes the same block from the same function, so two

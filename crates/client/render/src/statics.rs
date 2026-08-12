@@ -241,6 +241,14 @@ impl StaticGeometry {
                 quad
             }));
         self.cutaway_boxes.extend(other.cutaway_boxes);
+        // Unlike the opaque pass, the private cutaway layer is later
+        // alpha-composited, so its row order is observable.  Each collector
+        // has already made its own stable back-to-front order, but map statics
+        // and server items can interleave.  Keep equal-depth rows in collector
+        // order — map first, then the server item that the ordinary pass also
+        // draws afterwards — while restoring one order across both sources.
+        self.cutaway_quads
+            .sort_by(|back, front| front.depth.total_cmp(&back.depth));
     }
 }
 
@@ -259,6 +267,27 @@ pub fn collect(
     cutaway: &Cutaway,
     occlusion: &crate::occlusion::Occlusion,
     player_rect: Option<Rect>,
+    player_mask: Option<&crate::mobiles::OpaqueMask>,
+) -> StaticGeometry {
+    collect_with_fades(
+        map, camera, tiledata, animations, atlas, cutaway, occlusion, player_rect, player_mask,
+        &mut crate::cutaway::Fades::default(),
+    )
+}
+
+/// [`collect`] with opacity state retained across frames by the caller.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_with_fades(
+    map: &Map,
+    camera: &Camera,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &StaticAtlas,
+    cutaway: &Cutaway,
+    occlusion: &crate::occlusion::Occlusion,
+    player_rect: Option<Rect>,
+    player_mask: Option<&crate::mobiles::OpaqueMask>,
+    fades: &mut crate::cutaway::Fades,
 ) -> StaticGeometry {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
@@ -295,6 +324,10 @@ pub fn collect(
                 return;
             };
             if on_screen(camera, placed.at, &placed.sprite) {
+                let alpha = fades.advance(crate::cutaway::FadeKey::static_(at, item.tile), 0);
+                if alpha == 0 {
+                    return;
+                }
                 let key = crate::occlusion::Owner::new(at.z, item.tile);
                 let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, item.tile);
                 let volumes = push_volumes(
@@ -307,7 +340,7 @@ pub fn collect(
                 );
                 cutaway_quads.push((
                     placed.order,
-                    quad_of(at, &placed, base, u32::from(item.hue.0), owner, volumes),
+                    quad_of(at, &placed, base, u32::from(item.hue.0), owner, volumes).with_opacity(alpha),
                 ));
             }
             return;
@@ -315,12 +348,21 @@ pub fn collect(
         if !on_screen(camera, placed.at, &placed.sprite) {
             return;
         }
-        // Screen overlap only chooses the candidate. The private layer still
-        // tests against the opaque depth after mobiles, so a static behind the
-        // body contributes nothing; a wall actually in front is blended later.
-        // The shader keeps the sprite's own alpha test, so empty corners of a
-        // wall's rectangular atlas allocation remain empty.
-        if player_rect.is_some_and(|player| player.intersects(&placed_rect(&placed))) {
+        // The rectangle is only a cheap outer bound. A cutaway row needs one
+        // pixel where both the wall and the player's body are actually opaque;
+        // otherwise the empty corners of a diagonal wall or silhouette would
+        // make an unrelated wall translucent. The private layer still tests
+        // against opaque depth after mobiles, so a wall behind the body writes
+        // nothing while one in front blends later.
+        let target = if player_mask.is_some_and(|body| {
+            body.overlaps_opaque(placed_rect(&placed), |x, y| atlas.opaque_at(placed.showing, x, y))
+        }) {
+            crate::cutaway::TRANSLUCENT_ALPHA_U8
+        } else {
+            u8::MAX
+        };
+        let alpha = fades.advance(crate::cutaway::FadeKey::static_(at, item.tile), target);
+        if alpha != u8::MAX {
             let key = crate::occlusion::Owner::new(at.z, item.tile);
             let owner = occlusion.owner_at(i32::from(at.x), i32::from(at.y), at.z, item.tile);
             let volumes = push_volumes(
@@ -333,7 +375,7 @@ pub fn collect(
             );
             cutaway_quads.push((
                 placed.order,
-                quad_of(at, &placed, base, u32::from(item.hue.0), owner, volumes),
+                quad_of(at, &placed, base, u32::from(item.hue.0), owner, volumes).with_opacity(alpha),
             ));
             return;
         }
@@ -580,15 +622,15 @@ pub(crate) fn place(
     })
 }
 
-/// Place a static the frame's cutaway would ordinarily remove.
+/// Place a world sprite the frame's cutaway would ordinarily remove.
 ///
-/// The opaque collector must continue to exclude these rows: they do not write
-/// a depth or G-buffer answer, and a hidden roof must not begin to occlude light
-/// merely because it is now faintly visible. The late cutaway pass consumes the
-/// returned placement after bodies are drawn and blends it over that already
-/// settled picture instead.
+/// The opaque collectors for map statics and server items must continue to
+/// exclude these rows: they do not write a depth or G-buffer answer, and a
+/// hidden roof must not begin to occlude light merely because it is now faintly
+/// visible. The late cutaway pass consumes the returned placement after bodies
+/// are drawn and blends it over that already settled picture instead.
 #[allow(clippy::too_many_arguments)]
-fn place_cutaway(
+pub(crate) fn place_cutaway(
     at: Point,
     graphic: Graphic,
     camera: &Camera,
@@ -622,7 +664,7 @@ fn place_cutaway(
 ///
 /// The CPU uses it only to shortlist cutaway candidates. The alpha test and
 /// depth comparison remain GPU decisions in the pass that actually blends.
-fn placed_rect(placed: &Placed) -> Rect {
+pub(crate) fn placed_rect(placed: &Placed) -> Rect {
     Rect {
         x: placed.at.x,
         y: placed.at.y,
@@ -989,6 +1031,7 @@ mod tests {
             width: 20.0,
             height: 32.0,
         };
+        let player_mask = crate::mobiles::OpaqueMask::solid(player);
 
         let ordinary = collect(
             &map,
@@ -998,6 +1041,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
             None,
         );
         assert_eq!(ordinary.quads.len(), 1, "the fixture did not draw its wall");
@@ -1012,6 +1056,7 @@ mod tests {
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
             Some(player),
+            Some(&player_mask),
         );
         assert!(cutaway.quads.is_empty(), "the wall was still in the opaque pass");
         assert_eq!(
@@ -1036,6 +1081,7 @@ mod tests {
             },
             &crate::occlusion::Occlusion::EMPTY,
             None,
+            None,
         );
         assert!(above.quads.is_empty(), "the cut static reached the opaque pass");
         assert_eq!(
@@ -1059,6 +1105,55 @@ mod tests {
             }
         }
         StaticAtlas::pack([(graphic, Image::new(width, height, pixels))]).expect("one sprite fits")
+    }
+
+    /// Rectangles only bound the candidate search. A wall's atlas allocation
+    /// can overlap the body while every texel in that overlap is transparent;
+    /// C3 must leave that wall on the opaque path rather than fading it for air.
+    #[test]
+    fn a_transparent_static_corner_does_not_trigger_cutaway() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0007);
+        let atlas = holed(graphic, 44, 88);
+        let animations = StaticAnimations::default();
+        let tiledata = TileData::empty();
+        let at = Point::new(100, 100, 0);
+        let mut map = field();
+        map.place_static(StaticItem {
+            tile: graphic,
+            x: at.x,
+            y: at.y,
+            z: at.z,
+            hue: Hue(0),
+        });
+        let screen_at = stand_on(&camera, at, &atlas.sprite(graphic).expect("packed wall"));
+        let empty_corner = Rect {
+            x: screen_at.x + 2.0,
+            y: screen_at.y + 32.0,
+            width: 12.0,
+            height: 32.0,
+        };
+        let mask = crate::mobiles::OpaqueMask::solid(empty_corner);
+        let geometry = collect(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway::OPEN,
+            &crate::occlusion::Occlusion::EMPTY,
+            Some(empty_corner),
+            Some(&mask),
+        );
+        assert_eq!(
+            geometry.quads.len(),
+            1,
+            "transparent pixels moved a wall out of opaque world"
+        );
+        assert!(
+            geometry.cutaway_quads.is_empty(),
+            "transparent corners became cutaway candidates"
+        );
     }
 
     /// The viewport pixel a point in the drawn image sits at — the inverse of
@@ -1301,6 +1396,7 @@ mod tests {
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
             None,
+            None,
         )
         .quads;
         assert_eq!(drawn.len(), 1);
@@ -1441,6 +1537,7 @@ mod tests {
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
             None,
+            None,
         )
         .quads
         .len();
@@ -1455,6 +1552,7 @@ mod tests {
                 &atlas,
                 &Cutaway::OPEN,
                 &crate::occlusion::Occlusion::EMPTY,
+                None,
                 None,
             )
             .quads
@@ -1536,6 +1634,7 @@ mod tests {
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
             None,
+            None,
         )
         .quads
         .len();
@@ -1559,6 +1658,7 @@ mod tests {
             &atlas,
             &indoors,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
             None,
         )
         .quads
@@ -1606,6 +1706,7 @@ mod tests {
             &atlas,
             &Cutaway::OPEN,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
             None,
         )
         .quads;

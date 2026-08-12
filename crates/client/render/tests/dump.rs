@@ -160,6 +160,7 @@ fn draw_britain(
         .expect("a screen of statics fits");
 
     let tuning = Tuning::DEFAULT;
+    let mut fades = openshard_client_render::cutaway::Fades::default();
     let inputs = frame::Inputs {
         map: &map,
         items: &[],
@@ -187,6 +188,8 @@ fn draw_britain(
         view: View::Lit,
         dead: false,
         player_rect: None,
+        player_mask: None,
+        fades: &mut fades,
     };
     // The summary is the other half of a dump — see `Inputs::summary`. Asked for
     // here so that a change that breaks it breaks a test rather than a person's

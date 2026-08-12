@@ -35,8 +35,8 @@ uses premultiplied source-over blending.
 | C0: candidate and late alpha pass | done | Overlapping architectural sprites are put in a separate, back-to-front list and blend over the mobile without changing main depth or G-buffer. |
 | C1: independently lit layer | done | A cutaway sprite has its own position/normal/owner and is deferred-lit before compositing; the player behind it cannot supply its lighting data. |
 | C2: one source of opacity | done | The product-facing alpha is supplied once to both the CPU/test contract and GPU; no Rust/WGSL magic-number pair remains. |
-| C3: exact selection policy | pending | The coarse screen-rectangle shortlist is replaced or bounded by a documented body mask/radius policy; foliage has its own policy, not an accidental reuse. |
-| C4: dynamic-world policy | pending | Dropped server items are deliberately either included in the translucent layer or declared hard-cut, with a test. |
+| C3: exact selection policy | done | Architecture needs an overlapping opaque body/static texel; foliage deliberately uses its own screen-rectangle canopy rule. |
+| C4: dynamic-world policy | done | Dropped server items use the same exact opaque-pixel candidate rule and independently lit translucent layer as map architecture. |
 | C5: transition parity | pending | The reference-style temporal per-object alpha ramp is persistent across frames, including its removal semantics. |
 
 ## C1 implementation record
@@ -57,17 +57,58 @@ Completed 2026-08-12:
    path.  A cutaway is a visual layer, never a new pick/outline target.
 6. Prove it in GPU tests: source-over composition and no mutation of the main
    G-buffer.  The test is capability-gated because the current local adapter
-   cannot render to the project's `Rgba32Float` position attachment.  The
-   night/light-fixture differential remains a C3 follow-up test once exact
-   candidate selection has its policy.
+   cannot render to the project's `Rgba32Float` position attachment. C3's
+   candidate decision is covered on the CPU, so it does not depend on that
+   adapter capability.
+
+## C3 implementation record
+
+Completed 2026-08-12:
+
+1. The player's packed body frame is copied into a small CPU opacity mask at
+   its actual (including fractional walking) screen placement. Equipment is
+   intentionally not part of the mask: the policy protects the controllable
+   body, not every paperdoll decoration that happens to extend from it.
+2. An ordinary architectural static reaches the late layer only when a pixel
+   centre lies inside both sprites and both source texels are opaque. The two
+   rectangles remain the bounded scan, not the decision. This keeps empty
+   corners in a diagonal wall or body silhouette from making an unrelated wall
+   translucent.
+3. A static hidden by the storey/roof cut still reaches the late layer without
+   this overlap check: that is the architectural cutaway's existing rule, and
+   C3 narrows only otherwise-opaque occluders.
+4. Foliage remains a separate product rule: any overlap of the player's body
+   rectangle and a foliage sprite's screen rectangle hard-hides that canopy.
+   It is intentionally generous and remains a hard-cut approximation until C5
+   adds the reference-style persistent union/fade state. It does not reuse the
+   architectural body-mask policy by accident.
+5. CPU tests cover both a real opaque overlap moving a wall to the cutaway
+   layer and a rectangle overlap confined to transparent static texels leaving
+   it opaque.
 
 ## Current hand-off
 
-Start at C3: the implementation deliberately retains the existing
-screen-rectangle shortlist.  Choose and document the product policy for a
-body mask/radius and foliage; only then narrow the candidate generator and
-add the associated light-fixture regression case.  Dynamic dropped items stay
-hard-cut until C4 chooses their policy.
+Start at C5: map architecture and dropped server items now share the bounded
+opaque-pixel policy and late independently lit layer; foliage retains its
+separate hard-cut canopy rule. The remaining work is the reference-style,
+persistent per-object transition ramp.
+
+## C4 implementation record
+
+Completed 2026-08-12:
+
+1. Server ground items are dynamic world geometry, not a visual exception: an
+   item with at least one opaque texel over the player's body enters the private
+   cutaway G-buffer. A cutaway-hidden item does so too, while the absolute draw
+   ceiling remains an absolute reject.
+2. Their volumes and owner IDs travel with the private rows; joining map and
+   server rows repairs private volume offsets and restores one stable
+   back-to-front order before alpha composition.
+3. The ordinary item path, including its selection identity and highlight,
+   remains unchanged. Only the visual row moves to the late layer.
+4. A CPU regression test proves a dropped opaque item overlapping the body
+   leaves the opaque list for the late layer, while the no-body case remains
+   opaque.
 
 ## Risks kept explicit
 
@@ -79,5 +120,5 @@ hard-cut until C4 chooses their policy.
 - Deferred lighting contains more than a colour multiply (normals, own-solid
   shadow rules, flames, sun).  A special flat cutaway shader would drift from
   it; C1 reuses the deferred blit's logic.
-- Dynamic items have no chosen product policy yet.  They remain excluded until
-  C4 makes that decision explicit.
+- Server items share the architecture candidate rule; any future producer must
+  choose explicitly whether it joins that layer or remains a hard cut.

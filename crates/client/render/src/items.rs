@@ -30,7 +30,7 @@ use crate::camera::{Camera, RealPixel};
 use crate::cutaway::Cutaway;
 use crate::depth;
 use crate::sprite::SpriteQuad;
-use crate::statics::{Placed, on_screen, quad_of};
+use crate::statics::{Placed, on_screen, place_cutaway, placed_rect, quad_of};
 
 /// One thing lying on the ground, as the client has been told about it.
 ///
@@ -116,10 +116,18 @@ pub fn needed_graphics(items: &[GroundItem], animations: &StaticAnimations) -> B
 ///
 /// `occlusion` is this frame's own grid, already built — see
 /// [`crate::statics::collect`], which takes it for the same reason and states it.
+///
+/// `player_mask` makes a server item subject to the same exact opaque-texel
+/// candidate rule as map architecture.  A dropped blocking prop is still a
+/// part of the world in front of the player, rather than an arbitrary exception
+/// merely because the shard sent it after the map file.  Once selected, it is
+/// rendered into the private late layer with its own G-buffer data; picking and
+/// the opaque world's identity remain on their ordinary path.
 // Eight, and every one of them is a different source this frame reads: the list,
-// the camera, two tables, the atlas, the cutaway, the pick, the grid. There is no
+// the camera, two tables, the atlas, the cutaway, the pick, the grid and the
+// player's body. There is no
 // pair among them that belongs in one struct — [`crate::statics::collect`] takes
-// the same seven off the map instead of off a list — so a grouping here would be
+// the same inputs off the map instead of off a list — so a grouping here would be
 // a bag named after the argument count rather than after anything.
 #[allow(clippy::too_many_arguments)]
 pub fn collect(
@@ -131,10 +139,33 @@ pub fn collect(
     cutaway: &Cutaway,
     highlight: Option<ItemIndex>,
     occlusion: &crate::occlusion::Occlusion,
+    player_mask: Option<&crate::mobiles::OpaqueMask>,
+) -> crate::statics::StaticGeometry {
+    collect_with_fades(
+        items, camera, tiledata, animations, atlas, cutaway, highlight, occlusion, player_mask,
+        &mut crate::cutaway::Fades::default(),
+    )
+}
+
+/// [`collect`] with opacity state retained across frames by the caller.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_with_fades(
+    items: &[GroundItem],
+    camera: &Camera,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &StaticAtlas,
+    cutaway: &Cutaway,
+    highlight: Option<ItemIndex>,
+    occlusion: &crate::occlusion::Occlusion,
+    player_mask: Option<&crate::mobiles::OpaqueMask>,
+    fades: &mut crate::cutaway::Fades,
 ) -> crate::statics::StaticGeometry {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
     let mut quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
+    let mut cutaway_quads: Vec<(depth::Order, SpriteQuad)> = Vec::new();
+    let mut cutaway_boxes = Vec::new();
     // Always empty since `docs/lighting_rebuild.md` phase 6d — see
     // `crate::statics::collect`'s own comment at the same two locals.
     let mesh_vertices = Vec::new();
@@ -142,12 +173,44 @@ pub fn collect(
     let mut boxes = Vec::new();
 
     for (index, item) in items.iter().enumerate() {
-        let Some(placed) = place(item, camera, tiledata, animations, atlas, cutaway) else {
-            continue;
+        let (placed, target) = match place(item, camera, tiledata, animations, atlas, cutaway) {
+            Some(placed) => {
+                if !on_screen(camera, placed.at, &placed.sprite) {
+                    continue;
+                }
+                let overlaps_body = player_mask.is_some_and(|body| {
+                    body.overlaps_opaque(placed_rect(&placed), |x, y| atlas.opaque_at(placed.showing, x, y))
+                });
+                (placed, if overlaps_body { crate::cutaway::TRANSLUCENT_ALPHA_U8 } else { u8::MAX })
+            }
+            None => {
+                // A server decoration on the storey the cutaway removed gets
+                // the same late, independently lit treatment as map
+                // architecture.  `place_cutaway` still rejects the absolute
+                // draw ceiling, so this is not a route to resurrect distant
+                // scenery that the frame deliberately omitted.
+                let Some(placed) = place_cutaway(
+                    item.at,
+                    item.graphic,
+                    camera,
+                    tiledata,
+                    animations,
+                    atlas,
+                    cutaway,
+                ) else {
+                    continue;
+                };
+                if !on_screen(camera, placed.at, &placed.sprite) {
+                    continue;
+                }
+                (placed, 0)
+            }
         };
-        if !on_screen(camera, placed.at, &placed.sprite) {
+        let alpha = fades.advance(crate::cutaway::FadeKey::item(item.at, item.graphic), target);
+        if alpha == 0 {
             continue;
         }
+        let late = alpha != u8::MAX;
         let order = placed.order;
         // The highlight replaces the item's own hue rather than combining with
         // it: one wire hue reaches the shader, and the reference does the same
@@ -168,15 +231,21 @@ pub fn collect(
         // static's — phase 6, and an item on the ground is a static that came
         // from the server's list rather than the map's.
         let volumes = crate::statics::push_volumes(
-            &mut boxes,
+            match late {
+                true => &mut cutaway_boxes,
+                false => &mut boxes,
+            },
             item.at,
             tiledata.static_tile(item.graphic.0),
             &crate::occlusion::shape_of(Some(atlas), item.graphic),
             key,
             occlusion,
         );
-        let quad = quad_of(item.at, &placed, base, hue, owner, volumes);
-        quads.push((order, quad));
+        let quad = quad_of(item.at, &placed, base, hue, owner, volumes).with_opacity(alpha);
+        match late {
+            true => cutaway_quads.push((order, quad)),
+            false => quads.push((order, quad)),
+        }
     }
 
     // Back to front, and a *stable* sort on the order alone: two items on one
@@ -185,13 +254,13 @@ pub fn collect(
     // per-tile list holds them in. The depth test is `LessEqual`, so the later
     // one wins the tie; see `renderer::depth_state`.
     quads.sort_by_key(|(order, _)| *order);
+    // The late layer is alpha-composited, so preserve its stable
+    // back-to-front order just as the map-static collector does.
+    cutaway_quads.sort_by_key(|(order, _)| *order);
     crate::statics::StaticGeometry {
         quads: quads.into_iter().map(|(_, quad)| quad).collect(),
-        // Ground items do not take part in the player's visual cutaway yet:
-        // the map's architecture is what can stand between the camera and the
-        // body, while an item is separately selectable and highlighted.
-        cutaway_quads: Vec::new(),
-        cutaway_boxes: Vec::new(),
+        cutaway_quads: cutaway_quads.into_iter().map(|(_, quad)| quad).collect(),
+        cutaway_boxes,
         mesh_vertices,
         mesh_rows,
         boxes,
@@ -384,6 +453,7 @@ mod tests {
             &Cutaway::OPEN,
             None,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         );
         assert_eq!(quads.quads.len(), 1);
         let sprite = atlas.sprite(graphic).expect("packed");
@@ -418,6 +488,7 @@ mod tests {
             &Cutaway::OPEN,
             None,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         );
         let table = collect(
             &[at(10)],
@@ -428,6 +499,7 @@ mod tests {
             &Cutaway::OPEN,
             None,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         );
         assert_eq!(
             table.quads[0].rect.y,
@@ -457,6 +529,7 @@ mod tests {
             &Cutaway::OPEN,
             None,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         );
         assert!(quads.quads.is_empty());
     }
@@ -485,6 +558,7 @@ mod tests {
             &Cutaway::OPEN,
             None,
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         );
         assert_eq!(quads.quads.len(), 2);
         assert!(
@@ -619,6 +693,7 @@ mod tests {
             &Cutaway::OPEN,
             Some(ItemIndex::new(1)),
             &crate::occlusion::Occlusion::EMPTY,
+            None,
         );
         assert_eq!(quads.quads.len(), 2);
         // The pass sorts back to front, so the nearer one — index 1, a tile
@@ -629,6 +704,96 @@ mod tests {
             "the pointed-at item"
         );
         assert_eq!(quads.quads[0].hue, 0x03B2, "and nothing else changed colour");
+    }
+
+    /// A server item can be the thing covering the controlled body just as a
+    /// map wall can. It takes the late layer only where actual opaque texels
+    /// overlap; otherwise it keeps the normal opaque/pickable route.
+    #[test]
+    fn a_dropped_item_over_the_player_becomes_a_cutaway_row() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0EED);
+        let atlas = atlas(graphic, 44, 88);
+        let tiledata = TileData::empty();
+        let item = GroundItem {
+            at: Point::new(100, 100, 0),
+            graphic,
+            hue: Hue::NONE,
+        };
+        let screen_at = stand_on(&camera, item.at, &atlas.sprite(graphic).expect("packed item"));
+        let body = crate::geometry::Rect {
+            x: screen_at.x + 12.0,
+            y: screen_at.y + 32.0,
+            width: 20.0,
+            height: 32.0,
+        };
+        let body_mask = crate::mobiles::OpaqueMask::solid(body);
+
+        let opaque = collect(
+            std::slice::from_ref(&item),
+            &camera,
+            &tiledata,
+            &StaticAnimations::default(),
+            &atlas,
+            &Cutaway::OPEN,
+            None,
+            &crate::occlusion::Occlusion::EMPTY,
+            None,
+        );
+        assert_eq!(opaque.quads.len(), 1, "the fixture did not draw its item");
+        assert!(opaque.cutaway_quads.is_empty(), "no body means no late item");
+
+        let cutaway = collect(
+            std::slice::from_ref(&item),
+            &camera,
+            &tiledata,
+            &StaticAnimations::default(),
+            &atlas,
+            &Cutaway::OPEN,
+            None,
+            &crate::occlusion::Occlusion::EMPTY,
+            Some(&body_mask),
+        );
+        assert!(cutaway.quads.is_empty(), "the item stayed in opaque world");
+        assert_eq!(cutaway.cutaway_quads.len(), 1, "the item missed the late layer");
+        assert_eq!(cutaway.cutaway_quads[0].rect, opaque.quads[0].rect);
+        assert_eq!(cutaway.cutaway_quads[0].depth, opaque.quads[0].depth);
+    }
+
+    /// The ordinary roof/storey predicate must not make server decorations
+    /// vanish outright: the late layer owns that visual transition for both
+    /// map statics and dynamic items.
+    #[test]
+    fn a_dropped_item_hidden_by_the_storey_cut_becomes_a_cutaway_row() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let graphic = Graphic(0x0EED);
+        let atlas = atlas(graphic, 44, 88);
+        let item = GroundItem {
+            at: Point::new(100, 100, 0),
+            graphic,
+            hue: Hue::NONE,
+        };
+        let cutaway = collect(
+            std::slice::from_ref(&item),
+            &camera,
+            &TileData::empty(),
+            &StaticAnimations::default(),
+            &atlas,
+            &Cutaway {
+                max_z: 0,
+                ..Cutaway::OPEN
+            },
+            None,
+            &crate::occlusion::Occlusion::EMPTY,
+            None,
+        );
+
+        assert!(cutaway.quads.is_empty(), "the hidden item reached opaque world");
+        assert_eq!(
+            cutaway.cutaway_quads.len(),
+            1,
+            "the storey cut made a dropped item vanish"
+        );
     }
 
     /// Nothing under the cursor is a legitimate answer and the common one: most

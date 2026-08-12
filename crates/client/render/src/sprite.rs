@@ -145,6 +145,17 @@ impl SpriteQuad {
         }
     }
 
+    /// Encode a late-layer opacity without widening the instance layout.
+    ///
+    /// Wire hues use their low sixteen bits; the static shader masks those
+    /// before its ramp lookup. The next byte carries opacity. A zero byte is
+    /// kept as the backwards-compatible spelling of fully opaque, so every
+    /// existing opaque producer remains unchanged.
+    pub fn with_opacity(mut self, opacity: u8) -> Self {
+        self.hue = (self.hue & 0xffff) | (u32::from(opacity) << 16);
+        self
+    }
+
     /// Append this quad to an instance buffer.
     pub fn write(&self, out: &mut Vec<u8>) {
         for value in [

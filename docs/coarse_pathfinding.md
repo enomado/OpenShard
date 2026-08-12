@@ -1,4 +1,9 @@
-# Coarse (self-written HPA*-style) routing, built on our own `find_path`
+# Superseded: coarse HPA*-style routing
+
+This was the first long-distance routing experiment. It is superseded by the
+automatic, topology-derived navigation graph in
+[`navigation_graph.md`](navigation_graph.md): the replacement has no fixed
+square-cluster decomposition and no multi-level hierarchy.
 
 ## Landed — static HPA*-style guide, with live refinement
 

@@ -126,6 +126,7 @@ fn world_pass_census(scene: &scene::Scene, atlas: &openshard_client_render::atla
         &scene.cutaway,
         None,
         &lighting.occlusion,
+        None,
     );
 
     let mut census = Census::default();

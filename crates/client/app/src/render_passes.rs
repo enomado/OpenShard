@@ -619,7 +619,7 @@ pub(crate) fn encode_world_passes(
                     rect: viewport,
                 },
                 &geometry.lighting,
-                openshard_client_render::cutaway::TRANSLUCENT_ALPHA,
+                1.0,
             );
             profile::end(window.gpu.as_ref(), encoder, timed);
         }
