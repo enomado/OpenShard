@@ -1538,7 +1538,7 @@ mod tests {
     fn a_body_stepping_north_stays_in_front_of_the_tile_it_is_leaving() {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let (north, _) = openshard_uofiles::anim::facing(Direction::North);
-        let atlas = atlas(400, north.raw(), 40, 60, (12, -3));
+        let atlas = atlas(400, north.index(), 40, 60, (12, -3));
         let base = depth::base_for(100, 100);
         // The ground it is walking off, sorted the way `ground::collect` sorts
         // it: the tile's own depth, and the client's land priority.

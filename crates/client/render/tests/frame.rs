@@ -7259,7 +7259,7 @@ fn shadow_wanted(sample: &openshard_client_render::light::Sample, lighting: &Lig
         if !reach.within {
             continue;
         }
-        let share = reach.distance / lighting.lights[reach.light.raw()].radius.max(0.001);
+        let share = reach.distance / lighting.lights[reach.light.position()].radius.max(0.001);
         if nearest.is_none_or(|(seen, _)| share < seen) {
             nearest = Some((share, reach.through));
         }

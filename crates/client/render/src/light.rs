@@ -2323,11 +2323,11 @@ impl std::fmt::Display for Stopper {
 pub struct LightIdx(usize);
 
 impl LightIdx {
-    /// The position in [`Lighting::lights`] this index names.
+    /// Its position in [`Lighting::lights`].
     ///
     /// The sun deliberately uses the one-past-the-end value, so callers that
     /// use this to index `lights` must do so only for an ordinary flame reach.
-    pub const fn raw(self) -> usize {
+    pub const fn position(self) -> usize {
         self.0
     }
 }
@@ -2453,7 +2453,12 @@ impl std::fmt::Display for Sample {
             self.multiplier[2],
         )?;
         for reach in &self.reaches {
-            write!(f, "  light {}: {:.2} tiles", reach.light.raw(), reach.distance)?;
+            write!(
+                f,
+                "  light {}: {:.2} tiles",
+                reach.light.position(),
+                reach.distance
+            )?;
             // In the order the questions are asked: is it near enough, is
             // anything in between, and how much of the flame this surface was
             // turned towards in the end — see [`Reach::delivered`], which is the
