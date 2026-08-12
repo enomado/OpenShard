@@ -21,7 +21,7 @@ use std::fmt;
 
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::Graphic;
-use openshard_uofiles::anim::{Anim, AnimError, AnimFrame};
+use openshard_uofiles::anim::{Anim, AnimError, AnimFrame, AnimationFrameIndex};
 use openshard_uofiles::art::{Art, ArtError, LAND_TILE_SIZE, land_row};
 use openshard_uofiles::color::Rgb8;
 use openshard_uofiles::font::{AsciiFonts, FONT_COUNT};
@@ -1223,12 +1223,12 @@ pub struct FrameKey {
     /// The animation this picture belongs to.
     pub animation: AnimationKey,
     /// Which frame of that animation.
-    pub frame: u16,
+    pub frame: AnimationFrameIndex,
 }
 
 impl FrameKey {
     #[must_use]
-    pub const fn new(animation: AnimationKey, frame: u16) -> Self {
+    pub const fn new(animation: AnimationKey, frame: AnimationFrameIndex) -> Self {
         Self { animation, frame }
     }
 }
@@ -1357,7 +1357,7 @@ impl AnimAtlas {
                 if frame.image.width() == 0 || frame.image.height() == 0 {
                     continue;
                 }
-                images.push((FrameKey::new(animation, index as u16), frame));
+                images.push((FrameKey::new(animation, AnimationFrameIndex(index as u16)), frame));
             }
         }
         self.insert(images)?;
@@ -1508,8 +1508,8 @@ impl AnimAtlas {
     /// constant, and asking the atlas rather than remembering it is what keeps
     /// "frame 7 of a 6-frame walk" from being expressible.
     pub fn frame_count(&self, animation: AnimationKey) -> u16 {
-        let first = FrameKey::new(animation, 0);
-        let last = FrameKey::new(animation, u16::MAX);
+        let first = FrameKey::new(animation, AnimationFrameIndex(0));
+        let last = FrameKey::new(animation, AnimationFrameIndex(u16::MAX));
         self.frames.range(first..=last).count() as u16
     }
 }

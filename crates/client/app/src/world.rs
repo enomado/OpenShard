@@ -231,7 +231,7 @@ mod tests {
                 body: openshard_protocol::wire::Graphic(400),
                 group: BodyKind::of(openshard_protocol::wire::Graphic(400)).standing(),
                 facing: Direction::SouthEast,
-                frame: 0,
+                frame: openshard_uofiles::anim::AnimationFrameIndex(0),
                 from: None,
                 hue: Hue::NONE,
                 drawn: Gaze::on(at),

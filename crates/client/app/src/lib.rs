@@ -713,7 +713,7 @@ pub fn run<D: Dial + Send + 'static>(
                     body: Graphic(400),
                     group: openshard_uofiles::anim::BodyKind::of(Graphic(400)).standing(),
                     facing: Direction::SouthEast,
-                    frame: 0,
+                    frame: openshard_uofiles::anim::AnimationFrameIndex(0),
                     from: None,
                     hue: Hue::NONE,
                     drawn: Gaze::on(start),

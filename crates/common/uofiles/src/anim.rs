@@ -100,9 +100,33 @@ impl AnimationGroup {
     }
 }
 
+// Keep assertions against protocol fixtures readable; construction and all
+// production APIs still require the named type.
+impl PartialEq<u8> for AnimationGroup {
+    fn eq(&self, other: &u8) -> bool {
+        self.0 == *other
+    }
+}
+
 impl fmt::Display for AnimationGroup {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+/// The zero-based picture within one animation group.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct AnimationFrameIndex(pub u16);
+
+impl AnimationFrameIndex {
+    #[must_use]
+    pub const fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> u16 {
+        self.0
     }
 }
 

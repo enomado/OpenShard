@@ -145,7 +145,7 @@ impl App {
                 mobile.group,
                 direction,
             ));
-            mobile.frame = crowd.frame_for(*who, frame_count);
+            mobile.frame = openshard_uofiles::anim::AnimationFrameIndex(crowd.frame_for(*who, frame_count));
             if let Some(at) = crowd.drawn_for(*who) {
                 mobile.drawn = at;
             }

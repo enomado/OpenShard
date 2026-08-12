@@ -48,7 +48,7 @@ use openshard_protocol::serial::Serial;
 use openshard_protocol::speech::Font;
 use openshard_protocol::wire::{Graphic, Hue};
 use openshard_protocol::world::Point;
-use openshard_uofiles::anim::{AnimationGroup, BodyKind};
+use openshard_uofiles::anim::{AnimationFrameIndex, AnimationGroup, BodyKind};
 use openshard_uofiles::tiledata::TileData;
 
 /// The wire's list, as [`Mobile::equipment`] wants it.
@@ -577,7 +577,7 @@ impl Crowd {
             body,
             group: tracked.group,
             facing: facing.direction,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: stepped_off,
             hue,
             drawn: tracked.drawn,
@@ -664,7 +664,7 @@ impl Crowd {
             body,
             group: tracked.group,
             facing: facing.direction,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             // A body put somewhere is standing on the tile it was put on: the
             // step's `from` was just dropped above, so there is no crossing left
             // for the order to be between.

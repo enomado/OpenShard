@@ -39,7 +39,7 @@
 use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::{Graphic, Hue, Layer};
 use openshard_protocol::world::Point;
-use openshard_uofiles::anim::AnimationGroup;
+use openshard_uofiles::anim::{AnimationFrameIndex, AnimationGroup};
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::tiledata::AnimId;
 
@@ -81,7 +81,7 @@ pub struct Mobile {
     /// two different places.
     pub facing: Direction,
     /// Which frame of that animation.
-    pub frame: u16,
+    pub frame: AnimationFrameIndex,
     /// The tile it is stepping *off*, while a step is in flight — `None` for a
     /// body standing still.
     ///
@@ -869,7 +869,10 @@ mod tests {
     /// A frame packed at a known size, for placing.
     fn atlas(body: u16, direction: u8, width: u16, height: u16, center: (i16, i16)) -> AnimAtlas {
         AnimAtlas::pack([(
-            FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), direction), 0),
+            FrameKey::new(
+                AnimationKey::new(Graphic(body), AnimationGroup(4), direction),
+                AnimationFrameIndex(0),
+            ),
             AnimFrame {
                 center_x: center.0,
                 center_y: center.1,
@@ -909,7 +912,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(x, 100, 0)),
@@ -955,7 +958,10 @@ mod tests {
                 .collect(),
         );
         let atlas = AnimAtlas::pack([(
-            FrameKey::new(AnimationKey::new(Graphic(400), AnimationGroup(4), 0), 0),
+            FrameKey::new(
+                AnimationKey::new(Graphic(400), AnimationGroup(4), 0),
+                AnimationFrameIndex(0),
+            ),
             AnimFrame {
                 center_x: 2,
                 center_y: 0,
@@ -995,7 +1001,10 @@ mod tests {
             }
         }
         AnimAtlas::pack([(
-            FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), direction), 0),
+            FrameKey::new(
+                AnimationKey::new(Graphic(body), AnimationGroup(4), direction),
+                AnimationFrameIndex(0),
+            ),
             AnimFrame {
                 center_x: 12,
                 center_y: -3,
@@ -1079,7 +1088,10 @@ mod tests {
         let mut atlas = holed(400, 0, 40, 60);
         atlas
             .pack_more([(
-                FrameKey::new(AnimationKey::new(Graphic(7005), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(7005), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1142,7 +1154,10 @@ mod tests {
         let mut atlas = atlas(400, 0, 40, 60, (12, -3));
         atlas
             .pack_more([(
-                FrameKey::new(AnimationKey::new(Graphic(7005), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(7005), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1225,7 +1240,7 @@ mod tests {
                 body: Graphic(400),
                 group: AnimationGroup(4),
                 facing: Direction::SouthEast,
-                frame: 0,
+                frame: AnimationFrameIndex(0),
                 from: None,
                 hue: Hue::NONE,
                 drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1259,7 +1274,7 @@ mod tests {
                     body: Graphic(400),
                     group: AnimationGroup(4),
                     facing,
-                    frame: 0,
+                    frame: AnimationFrameIndex(0),
                     from: None,
                     hue: Hue::NONE,
                     drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1301,7 +1316,7 @@ mod tests {
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
             // One past the only frame packed.
-            frame: 1,
+            frame: AnimationFrameIndex(1),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1322,7 +1337,10 @@ mod tests {
         // decision about the frame rather than about the body.
         assert_eq!(
             collect(
-                &[Mobile { frame: 0, ..missing }],
+                &[Mobile {
+                    frame: AnimationFrameIndex(0),
+                    ..missing
+                }],
                 &camera,
                 &atlas,
                 &Cutaway::OPEN,
@@ -1358,7 +1376,7 @@ mod tests {
             body: Graphic(402),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1409,7 +1427,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1439,7 +1457,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 1,
+            frame: AnimationFrameIndex(1),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1464,7 +1482,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(101, 100, 0)),
@@ -1530,7 +1548,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::North,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: Some(Point::new(100, 100, 0)),
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 99, 0)).back_towards(Gaze::on(Point::new(100, 100, 0)), 0.5),
@@ -1579,7 +1597,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(0, 0, 0)),
@@ -1611,7 +1629,10 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(body), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1629,7 +1650,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1655,7 +1676,10 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(body), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1671,7 +1695,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1716,7 +1740,10 @@ mod tests {
         // would have a frame to draw and the test would see it.
         let atlas = AnimAtlas::pack([
             (
-                FrameKey::new(AnimationKey::new(Graphic(400), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(400), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1724,7 +1751,10 @@ mod tests {
                 },
             ),
             (
-                FrameKey::new(AnimationKey::new(Graphic(0), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(0), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 4,
                     center_y: -1,
@@ -1738,7 +1768,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1771,7 +1801,10 @@ mod tests {
         // the atlas is packed under — `anim::animation_body`.
         let atlas = AnimAtlas::pack([
             (
-                FrameKey::new(AnimationKey::new(Graphic(0x0190), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(0x0190), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 20,
                     center_y: -2,
@@ -1779,7 +1812,10 @@ mod tests {
                 },
             ),
             (
-                FrameKey::new(AnimationKey::new(Graphic(7005), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(7005), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 20,
                     center_y: -2,
@@ -1833,7 +1869,10 @@ mod tests {
         let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
         let frame = |body: u16| {
             (
-                FrameKey::new(AnimationKey::new(Graphic(body), AnimationGroup(4), 0), 0),
+                FrameKey::new(
+                    AnimationKey::new(Graphic(body), AnimationGroup(4), 0),
+                    AnimationFrameIndex(0),
+                ),
                 AnimFrame {
                     center_x: 12,
                     center_y: -3,
@@ -1849,7 +1888,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
@@ -1875,7 +1914,7 @@ mod tests {
             body: Graphic(400),
             group: AnimationGroup(4),
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),

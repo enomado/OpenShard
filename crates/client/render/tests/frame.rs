@@ -47,7 +47,7 @@ use openshard_client_render::statics;
 use openshard_protocol::direction::Direction;
 use openshard_protocol::wire::Graphic;
 use openshard_protocol::world::Point;
-use openshard_uofiles::anim::{Anim, AnimFrame};
+use openshard_uofiles::anim::{Anim, AnimFrame, AnimationFrameIndex, AnimationGroup};
 use openshard_uofiles::art::{Art, LAND_TILE_SIZE, land_row};
 use openshard_uofiles::color::{Color16, Rgb8};
 use openshard_uofiles::equipconv::EquipConv;
@@ -2839,8 +2839,14 @@ fn a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going() {
             vec![Color16(0b0_00000_11111_00000); usize::from(SIZE) * usize::from(SIZE)],
         ),
     };
-    let atlas = AnimAtlas::pack([(FrameKey::new(AnimationKey::new(Graphic(BODY), 4, 0), 0), frame)])
-        .expect("one frame fits");
+    let atlas = AnimAtlas::pack([(
+        FrameKey::new(
+            AnimationKey::new(Graphic(BODY), AnimationGroup(4), 0),
+            AnimationFrameIndex(0),
+        ),
+        frame,
+    )])
+    .expect("one frame fits");
 
     let land = LandAtlas::pack([]).expect("nothing always fits");
     let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
@@ -2856,13 +2862,13 @@ fn a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going() {
         let mobile = Mobile {
             at: to,
             body: Graphic(BODY),
-            group: 4,
+            group: AnimationGroup(4),
             // `SouthEast` is the one facing stored unmirrored at direction
             // `0` (`anim::facing`), which keeps the anchor at `center_x`
             // rather than `width - center_x` — this test's own arithmetic
             // for `middle_x` assumes the unmirrored case.
             facing: Direction::SouthEast,
-            frame: 0,
+            frame: AnimationFrameIndex(0),
             from: Some(from),
             hue: openshard_protocol::wire::Hue::NONE,
             drawn,
@@ -4628,8 +4634,14 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
         center_y: 0,
         image: Image::new(2, 1, vec![red, green]),
     };
-    let atlas = AnimAtlas::pack([(FrameKey::new(AnimationKey::new(Graphic(BODY), 4, 1), 0), frame)])
-        .expect("one frame fits");
+    let atlas = AnimAtlas::pack([(
+        FrameKey::new(
+            AnimationKey::new(Graphic(BODY), AnimationGroup(4), 1),
+            AnimationFrameIndex(0),
+        ),
+        frame,
+    )])
+    .expect("one frame fits");
 
     // Ground under it, at the same tile: the mobile has to win, and the ground
     // is what makes that a claim rather than a drawing on an empty frame.
@@ -4669,9 +4681,9 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
             &[Mobile {
                 at: centre,
                 body: Graphic(BODY),
-                group: 4,
+                group: AnimationGroup(4),
                 facing,
-                frame: 0,
+                frame: AnimationFrameIndex(0),
                 from: None,
                 hue: openshard_protocol::wire::Hue::NONE,
                 drawn: openshard_client_render::follow::Gaze::on(centre),
@@ -5163,9 +5175,9 @@ fn dump_a_frame_of_britain() {
             Mobile {
                 at: ground,
                 body: Graphic(400),
-                group: 4,
+                group: AnimationGroup(4),
                 facing: *facing,
-                frame: 0,
+                frame: AnimationFrameIndex(0),
                 // Standing, so there is no second tile to sort between.
                 from: None,
                 hue: openshard_protocol::wire::Hue::NONE,
