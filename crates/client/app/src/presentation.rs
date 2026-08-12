@@ -53,8 +53,8 @@ impl App {
     ///
     /// The group is refreshed from the crowd here and not in
     /// [`App::advance_to_clocks`] alone, because this list is what *packs* the
-    /// atlas as well as what draws from it — see [`App::wanted_in`]. `self.world.player`
-    /// and `self.world.others` hold the group as of the last packet, and
+    /// atlas as well as what draws from it — see [`App::wanted_in`]. `self.world.presentation.player`
+    /// and `self.world.presentation.others` hold the group as of the last packet, and
     /// [`Crowd::advance`] changes it without one: a body that walked into view
     /// and then stopped is drawn standing while the packet-time list still says
     /// walking. Pack one group and draw another and [`mobiles::place`] finds no
@@ -62,10 +62,10 @@ impl App {
     /// stands still, there being no further packet to correct the list with.
     pub(crate) fn drawn_mobiles(&self) -> Vec<(Who, Mobile)> {
         Self::everyone_drawn(
-            &self.world.crowd,
+            &self.world.presentation.crowd,
             self.world.me(),
-            &self.world.player,
-            &self.world.others,
+            &self.world.presentation.player,
+            &self.world.presentation.others,
         )
     }
 
@@ -155,7 +155,7 @@ impl App {
     /// the pick still names the same creature to the passes below.
     pub(crate) fn drawn_now(&self, atlas: &AnimAtlas) -> Vec<(Who, Mobile)> {
         let mut drawn = self.drawn_mobiles();
-        Self::advance_to_clocks(&self.world.crowd, atlas, &mut drawn);
+        Self::advance_to_clocks(&self.world.presentation.crowd, atlas, &mut drawn);
         drawn
     }
 
@@ -228,17 +228,17 @@ impl App {
             let viewport = shell.viewport();
             self.control.resize(viewport.width, viewport.height);
         }
-        self.world.crowd.advance(elapsed);
+        self.world.presentation.crowd.advance(elapsed);
         // The statics that move on their own, on the same span as everybody
         // else. Its own clock inside — a fire's cycle has nothing to do with a
         // walk's — and one *sample*, which is the whole rule: two clocks read
         // from two `Instant::now()`s a few hundred microseconds apart would put
         // a torch and the body that walks past it on two different instants.
-        self.world.tile_animations.advance(elapsed);
+        self.world.presentation.tile_animations.advance(elapsed);
         // And the flames, off the same span: a fire's animation frame and the
         // brightness of the pool it casts are two clocks describing one fire,
         // and they are advanced together or they describe two.
-        self.world.flame_clock += elapsed;
+        self.world.presentation.flame_clock += elapsed;
         self.last_advance = started;
         // Whatever scenario is being walked delivers its knots for the span that
         // just passed, before the eye is asked where the body is: a step that
@@ -280,7 +280,7 @@ impl App {
         // not walked indoors, and the client's rule is about where the body is.
         // See `openshard_client_render::cutaway`.
         //
-        // `self.world.cutaway_at`, not `self.world.player.at`: the latter is this end's
+        // `self.world.presentation.cutaway_at`, not `self.world.presentation.player.at`: the latter is this end's
         // own unconfirmed prediction, which for one frame can be a tile a
         // held direction was refused on — see the field's own doc.
         //
@@ -290,7 +290,7 @@ impl App {
         let cutaway = Cutaway::at(
             &self.resources.map,
             &self.resources.tiledata,
-            self.world.cutaway_at,
+            self.world.presentation.cutaway_at,
             true,
         );
         // The ground tile under the cursor, and its ring — asked here beside
@@ -358,10 +358,10 @@ impl App {
         let on_item = match owns_pointer && on_mobile.is_none() {
             true => self.window.as_ref().and_then(|window| {
                 items::pick(
-                    &self.world.items,
+                    &self.world.presentation.items,
                     &camera,
                     &self.resources.tiledata,
-                    &self.world.tile_animations,
+                    &self.world.presentation.tile_animations,
                     &window.atlases.statics,
                     &cutaway,
                     cursor,
@@ -387,7 +387,7 @@ impl App {
                     &self.resources.map,
                     &camera,
                     &self.resources.tiledata,
-                    &self.world.tile_animations,
+                    &self.world.presentation.tile_animations,
                     &window.atlases.statics,
                     &cutaway,
                     cursor,
@@ -430,6 +430,7 @@ impl App {
             .and_then(SelectedIdentity::as_item)
             .and_then(|serial| {
                 self.world
+                    .presentation
                     .item_serials
                     .iter()
                     .position(|candidate| *candidate == serial)
@@ -480,7 +481,9 @@ impl App {
                 .and_then(|drawn| drawn.get(index.raw()))
                 .map(|(who, _)| *who)
         });
-        self.picking.on_item = facts.on_item.map(|index| self.world.item_serials[index.raw()]);
+        self.picking.on_item = facts
+            .on_item
+            .map(|index| self.world.presentation.item_serials[index.raw()]);
         let FrameFacts {
             watched,
             cutaway,
@@ -559,10 +562,14 @@ impl App {
         // Three time-varying halves of a mobile, filled in per frame rather
         // than per packet: the crowd is the only thing that knows what a
         // clock — and a group — has done since the `0x77` landed, and
-        // `self.world.player`/`self.world.others` were built when it did. Against the atlas
+        // `self.world.presentation.player`/`self.world.presentation.others` were built when it did. Against the atlas
         // as it stands *after* this frame's growth, which is the one the
         // picture below is drawn from.
-        Self::advance_to_clocks(&self.world.crowd, &window.atlases.mobiles, &mut drawn);
+        Self::advance_to_clocks(
+            &self.world.presentation.crowd,
+            &window.atlases.mobiles,
+            &mut drawn,
+        );
         // Whoever the crowd is still holding a line for, hung above whichever
         // of `drawn`'s mobiles their serial belongs to. Read out here, before
         // `who` is dropped below: a label with no mobile to anchor to has
@@ -571,7 +578,7 @@ impl App {
         let speech: Vec<(ViewPixel, String, Font, Hue)> = drawn
             .iter()
             .filter_map(|(who, mobile)| {
-                let (text, font, hue) = self.world.crowd.speaking(*who)?;
+                let (text, font, hue) = self.world.presentation.crowd.speaking(*who)?;
                 let anchor = mobiles::head_anchor(mobile, &camera, &window.atlases.mobiles)?;
                 Some((anchor, text.to_string(), font, hue))
             })

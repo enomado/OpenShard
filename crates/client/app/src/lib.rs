@@ -676,35 +676,37 @@ pub fn run<D: Dial + Send + 'static>(
                 at: start,
                 facing: Facing::walking(Direction::SouthEast),
             },
-            tile_animations: StaticAnimations::build(&animdata, &tiledata),
-            flame_clock: std::time::Duration::ZERO,
-            // 400 is the male human body. Its group and frame come from the
-            // crowd on the first redraw, which is also what decides that a
-            // placeholder nobody is walking stands.
-            player: Mobile {
-                at: start,
-                body: Graphic(400),
-                group: openshard_uofiles::anim::BodyKind::of(Graphic(400)).standing(),
-                facing: Direction::SouthEast,
-                frame: 0,
-                from: None,
-                hue: Hue::NONE,
-                drawn: Gaze::on(start),
-                equipment: Vec::new().into(),
+            presentation: world::PresentationWorld {
+                tile_animations: StaticAnimations::build(&animdata, &tiledata),
+                flame_clock: std::time::Duration::ZERO,
+                // 400 is the male human body. Its group and frame come from the
+                // crowd on the first redraw, which is also what decides that a
+                // placeholder nobody is walking stands.
+                player: Mobile {
+                    at: start,
+                    body: Graphic(400),
+                    group: openshard_uofiles::anim::BodyKind::of(Graphic(400)).standing(),
+                    facing: Direction::SouthEast,
+                    frame: 0,
+                    from: None,
+                    hue: Hue::NONE,
+                    drawn: Gaze::on(start),
+                    equipment: Vec::new().into(),
+                },
+                cutaway_at: start,
+                others: Vec::new(),
+                items: Vec::new(),
+                item_serials: Vec::new(),
+                clutter: clutter::Clutter::default(),
+                crowd: {
+                    // The body's ease, which is not the camera's — see `STARTUP_EASE`.
+                    let mut crowd = Crowd::default();
+                    crowd.set_ease(STARTUP_EASE);
+                    crowd
+                },
             },
-            cutaway_at: start,
-            others: Vec::new(),
-            items: Vec::new(),
-            item_serials: Vec::new(),
-            clutter: clutter::Clutter::default(),
             connection: String::from("offline"),
             link,
-            crowd: {
-                // The body's ease, which is not the camera's — see `STARTUP_EASE`.
-                let mut crowd = Crowd::default();
-                crowd.set_ease(STARTUP_EASE);
-                crowd
-            },
         },
         updates,
         resources: resources::Resources {

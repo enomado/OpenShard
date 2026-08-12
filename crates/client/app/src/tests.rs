@@ -227,7 +227,7 @@ fn a_cursor_on_a_screen_bearing_asks_for_that_direction() {
 /// the last packet named.
 ///
 /// The two used to be different lists. `App::wanted_in` asked
-/// `needed_animations` about `self.world.player`/`self.world.others`, built at the last
+/// `needed_animations` about `self.world.presentation.player`/`self.world.presentation.others`, built at the last
 /// `see`, while `mobiles::collect` drew the group `Crowd::group_for` gives —
 /// and `Crowd::advance` moves a body from walking to standing with no packet
 /// in between. So a body that stopped was drawn from a standing frame the
@@ -247,7 +247,7 @@ fn the_group_packed_is_the_group_the_crowd_is_playing() {
         Hue::NONE,
         false,
     );
-    // The snapshot the app would store in `self.world.player`: walking, because a
+    // The snapshot the app would store in `self.world.presentation.player`: walking, because a
     // step had just landed when the packet was folded.
     let stepped = crowd.see(
         None,

@@ -319,9 +319,9 @@ pub(crate) fn ready_atlases(
             &wanted_in(
                 &resources.map,
                 [want],
-                &world.items,
+                &world.presentation.items,
                 &drawn.iter().map(|(_, mobile)| mobile.clone()).collect::<Vec<_>>(),
-                &world.tile_animations,
+                &world.presentation.tile_animations,
                 &resources.equip_conv,
             ),
         ) {
@@ -930,9 +930,9 @@ impl App {
         wanted_in(
             &self.resources.map,
             bands,
-            &self.world.items,
+            &self.world.presentation.items,
             &drawn,
-            &self.world.tile_animations,
+            &self.world.presentation.tile_animations,
             &self.resources.equip_conv,
         )
     }

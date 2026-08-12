@@ -118,7 +118,7 @@ pub(crate) fn assemble_geometry(
     // `cutaway::hides_foliage_over`. `None` only for the one frame the
     // atlas has not yet grown a frame for this body and group, same as
     // `mobiles::head_anchor`'s own gap.
-    let player_rect = mobiles::screen_rect(&world.player, &camera, &window.atlases.mobiles);
+    let player_rect = mobiles::screen_rect(&world.presentation.player, &camera, &window.atlases.mobiles);
 
     // **One assembly, and the client is a caller of it like any other** —
     // `docs/parity.md`, decision D1. This sequence used to be written out by
@@ -130,10 +130,10 @@ pub(crate) fn assemble_geometry(
     // rather than pieced together from two call sites.
     let inputs = frame::Inputs {
         map: &resources.map,
-        items: &world.items,
+        items: &world.presentation.items,
         camera: &camera,
         tiledata: &resources.tiledata,
-        animations: &world.tile_animations,
+        animations: &world.presentation.tile_animations,
         cutaway,
         land: &window.atlases.land,
         texmaps: &window.atlases.texmaps,
@@ -156,12 +156,12 @@ pub(crate) fn assemble_geometry(
         // sprite is *actually* drawn this instant, past `at`'s tile, so the
         // pool glides with the walk instead of jumping once a step.
         carried: graphics.lantern.then_some((
-            world.player.at,
-            mobiles::walked_offset(&world.player),
-            world.player.facing,
+            world.presentation.player.at,
+            mobiles::walked_offset(&world.presentation.player),
+            world.presentation.player.facing,
         )),
         tuning,
-        flame_time: world.flame_clock.as_secs_f32(),
+        flame_time: world.presentation.flame_clock.as_secs_f32(),
         // The blocks of the occlusion grid built for earlier frames. A
         // camera that has moved a tile wants the same five hundred and fifty
         // blocks it wanted last frame bar a handful — see `occlusion::bake`,
@@ -224,7 +224,7 @@ pub(crate) fn assemble_geometry(
     let select_quads = statics::selected(
         &camera,
         &resources.tiledata,
-        &world.tile_animations,
+        &world.presentation.tile_animations,
         &window.atlases.statics,
         cutaway,
         picking.selected.and_then(SelectedIdentity::as_static),
@@ -232,10 +232,10 @@ pub(crate) fn assemble_geometry(
     // The same quads as the picture's, so the ring lands on the sprite
     // rather than beside it — see `items::outlined`.
     let outline_quads = items::outlined(
-        &world.items,
+        &world.presentation.items,
         &camera,
         &resources.tiledata,
-        &world.tile_animations,
+        &world.presentation.tile_animations,
         &window.atlases.statics,
         cutaway,
         ringed,
@@ -246,10 +246,10 @@ pub(crate) fn assemble_geometry(
     // into different masks: this is what a click named, not what the
     // cursor is over.
     let held_item_outline = items::outlined(
-        &world.items,
+        &world.presentation.items,
         &camera,
         &resources.tiledata,
-        &world.tile_animations,
+        &world.presentation.tile_animations,
         &window.atlases.statics,
         cutaway,
         held_item,
@@ -325,13 +325,13 @@ pub(crate) struct FrameFacts {
     /// `App::draw_from` reads it back into `self.picking` regardless of the
     /// highlight mode: what a click selects is not a question about lighting.
     pub(crate) on_mobile: Option<openshard_client_render::mobiles::MobileIndex>,
-    /// The item the cursor is over, indexing `self.world.items` — the
+    /// The item the cursor is over, indexing `self.world.presentation.items` — the
     /// unfiltered form of [`Pick::item`], for the same reason.
     pub(crate) on_item: Option<openshard_client_render::items::ItemIndex>,
     /// What a click is holding, turned back into an index into
     /// `drawn_mobiles`.
     pub(crate) held_mobile: Option<openshard_client_render::mobiles::MobileIndex>,
     /// What a click is holding, turned back into an index into
-    /// `self.world.item_serials`.
+    /// `self.world.presentation.item_serials`.
     pub(crate) held_item: Option<openshard_client_render::items::ItemIndex>,
 }

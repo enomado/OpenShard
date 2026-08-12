@@ -32,80 +32,12 @@ pub struct WorldState {
     /// than sharing or mutating this record from another thread.
     pub authoritative: AuthoritativeWorld,
     /// The local answer to where our own body should be before the shard has
-    /// confirmed it. Presentation projects this into [`WorldState::player`];
-    /// it never changes [`AuthoritativeWorld::view`].
+    /// confirmed it. Presentation projects this into its `player`; it never
+    /// changes [`AuthoritativeWorld::view`].
     pub prediction: PredictionState,
-    /// The statics that move on their own — fires, torches, water wheels — and
-    /// how far into their cycles they are.
-    ///
-    /// One of the clocks this app owns, and it is advanced from the same sampled
-    /// instant as the crowd and the eye. Its own module argues why it is a system
-    /// rather than a flag on a quad: see [`StaticAnimations`].
-    pub tile_animations: StaticAnimations,
-    /// How long the flames have been burning, in the same span every other clock
-    /// in the frame is advanced by.
-    ///
-    /// Its own accumulator rather than an `Instant`, for the reason
-    /// [`StaticAnimations`] has one: `openshard-client-render` reads no clock,
-    /// so the time arrives as a number, and a number sampled once per frame is
-    /// what keeps a torch's flicker on the same instant as the body walking
-    /// past it.
-    pub flame_clock: Duration,
-    /// This client's own presentation body.
-    ///
-    /// Connected, its position and facing are projected from
-    /// [`WorldState::prediction`], while its body, hue and equipment are the
-    /// shard's authoritative words. Offline it is a placeholder standing
-    /// wherever the camera looks, which is enough to hold the animation reader,
-    /// the frame atlas and the placement against a real install.
-    pub player: Mobile,
-    /// The tile roof-cutaway is computed from — see `App::draw`'s use of it with
-    /// [`openshard_client_render::cutaway::Cutaway`].
-    ///
-    /// Deliberately not always `player.at`: that is this end's own optimistic
-    /// *prediction*, published the instant a step is sent and corrected only
-    /// a round trip later (see `link::Body`), and `Steering::detour`
-    /// (`steer.rs`) means a held direction pinned against an obstacle asks
-    /// for the very tile it is going to be refused on, every hold, for as
-    /// long as it is held. Feeding that straight to `Cutaway::at` flips which
-    /// roof is drawn hidden for exactly the frame between sending the doomed
-    /// step and the `0x21` undoing it — a real defect this field exists to
-    /// close, not the deliberate lag-compensation `player.at` is for the
-    /// body's own drawn position. This only ever advances to a tile the
-    /// client's own static map agrees is reachable from the last one it
-    /// held, so a refusal is never drawn from; a correction snaps it the same
-    /// way it snaps `player.at`.
-    pub cutaway_at: Point,
-    /// Everyone else on screen, as `0x77` and `0x78` last described them, each
-    /// beside the serial the crowd's clocks are keyed by.
-    ///
-    /// Empty offline, and rebuilt whole from the [`WorldView`] on every update:
-    /// the view is the record of what arrived and this is a projection of it,
-    /// so there is nothing here to keep in step by hand.
-    pub others: Vec<(Who, Mobile)>,
-    /// Everything lying on the ground, as `0x1A` and `0x1D` last left it.
-    ///
-    /// A projection of the view like [`WorldState::others`], and drawn through
-    /// the same atlas and the same pass as the map's own statics: an item's
-    /// picture is a static's picture. Two lists rather than one because the
-    /// map's furniture never moves and these come and go with every packet.
-    pub items: Vec<GroundItem>,
-    /// What each of those items is called on the wire, at the same index.
-    ///
-    /// The renderer drops the serial — it draws pictures and owns no model of
-    /// the world — and a click has to put it back, because "use this" is a
-    /// serial and nothing else. Built in the same pass as [`WorldState::items`]
-    /// and never separately: two loops over one map is how the lists drift, and
-    /// a drifted index sends the shard a double-click on whatever was next.
-    pub item_serials: Vec<Serial>,
-    /// Which of those items a step cannot go through, indexed by tile.
-    ///
-    /// A third projection of the view beside [`WorldState::items`] and
-    /// [`WorldState::others`], rebuilt with them: the map's own files hold no
-    /// barrel, so without this every terrain check here looks straight through
-    /// one and the shard refuses the step this end thought was open. See
-    /// `clutter.rs`.
-    pub clutter: clutter::Clutter,
+    /// The renderer-facing projection rebuilt from authoritative state and
+    /// prediction before a frame is drawn.
+    pub presentation: PresentationWorld,
     /// What the connection is doing, for the status strip.
     pub connection: String,
     /// The shard, if this run logged in to one.
@@ -114,12 +46,28 @@ pub struct WorldState {
     /// is a `0x02` when there is somebody to send it to, and a camera move when
     /// there is not.
     pub link: Option<link::Link>,
-    /// What everyone on screen was doing a moment ago: which animation each is
-    /// playing, and how far into it.
-    ///
-    /// The layer above [`WorldView`] that ages what it sees — see `crowd.rs`.
-    /// Real time and not the world tick: there is no world here to tick, and a
-    /// real client's body animation is a wall-clock timer too.
+}
+
+/// Render-facing data rebuilt from the authoritative view and local prediction.
+/// This is the only `WorldState` section a frame reads.
+pub struct PresentationWorld {
+    /// Static animation state and its flame clock, advanced with the frame.
+    pub tile_animations: StaticAnimations,
+    pub flame_clock: Duration,
+    /// The player's rendered body. Its position and facing are projected from
+    /// [`PredictionState`]; body, hue and equipment come from the shard.
+    pub player: Mobile,
+    /// The guarded cutaway tile. It may deliberately lag a doomed prediction.
+    pub cutaway_at: Point,
+    /// Render mobiles beside the identity their animation clocks use.
+    pub others: Vec<(Who, Mobile)>,
+    /// Ground-item render data and the parallel wire serials used for picks.
+    pub items: Vec<GroundItem>,
+    pub item_serials: Vec<Serial>,
+    /// The corresponding transient obstacles used by local movement.
+    pub clutter: clutter::Clutter,
+    /// Animation and glide history, which belongs to presentation rather than
+    /// authoritative state.
     pub crowd: Crowd,
 }
 
@@ -173,9 +121,10 @@ impl WorldState {
     /// Where the body is drawn this instant, wherever the glide has it —
     /// [`crate::App::follow_player`]'s reason for calling this every frame.
     pub fn drawn_player(&self) -> Gaze {
-        self.crowd
+        self.presentation
+            .crowd
             .drawn_for(self.me())
-            .unwrap_or_else(|| Gaze::on(self.player.at))
+            .unwrap_or_else(|| Gaze::on(self.presentation.player.at))
     }
 }
 
@@ -208,7 +157,10 @@ pub(crate) fn cluttered<'a>(
     world: &'a WorldState,
     resources: &'a resources::Resources,
 ) -> clutter::Cluttered<'a, openshard_movement::MapTerrain<&'a Map, &'a TileData>> {
-    world.clutter.over(&resources.map, &resources.tiledata)
+    world
+        .presentation
+        .clutter
+        .over(&resources.map, &resources.tiledata)
 }
 
 /// The same, read as though every shut door on it stood open: what a route
@@ -219,6 +171,7 @@ pub(crate) fn cluttered_with_doors_open<'a>(
     resources: &'a resources::Resources,
 ) -> clutter::Cluttered<'a, openshard_movement::MapTerrain<&'a Map, &'a TileData>> {
     world
+        .presentation
         .clutter
         .over_with_doors_open(&resources.map, &resources.tiledata)
 }

@@ -61,20 +61,23 @@ impl App {
         // ground its pace implied.
         let turn = matches!(
             openshard_movement::intend(
-                self.world.player.at,
-                Facing::walking(self.world.player.facing),
+                self.world.presentation.player.at,
+                Facing::walking(self.world.presentation.player.facing),
                 facing
             ),
             openshard_movement::Intent::Turned { .. }
         );
         let (x, y) = match turn {
-            true => (self.world.player.at.x, self.world.player.at.y),
+            true => (
+                self.world.presentation.player.at.x,
+                self.world.presentation.player.at.y,
+            ),
             false => {
                 let (dx, dy) = facing.direction.step();
-                let x =
-                    (i32::from(self.world.player.at.x) + dx).clamp(0, self.resources.map.width() as i32 - 1);
-                let y =
-                    (i32::from(self.world.player.at.y) + dy).clamp(0, self.resources.map.height() as i32 - 1);
+                let x = (i32::from(self.world.presentation.player.at.x) + dx)
+                    .clamp(0, self.resources.map.width() as i32 - 1);
+                let y = (i32::from(self.world.presentation.player.at.y) + dy)
+                    .clamp(0, self.resources.map.height() as i32 - 1);
                 (x as u16, y as u16)
             }
         };
@@ -89,8 +92,8 @@ impl App {
         // `link.rs`'s online `Command::Step`, which wants the identical answer
         // once a server is involved.
         let terrain = terrain(&self.resources);
-        let ground =
-            i8::try_from(terrain.predict_step(self.world.player.at, x, y)).unwrap_or(self.world.player.at.z);
+        let ground = i8::try_from(terrain.predict_step(self.world.presentation.player.at, x, y))
+            .unwrap_or(self.world.presentation.player.at.z);
         // The crowd's clock first, before the step is folded in, and for the
         // same reason `App::user_event` does it for a step off the wire: a step
         // is timestamped with `Crowd`'s own `now`, and this is called from
@@ -101,6 +104,7 @@ impl App {
         // defect the online half was already fixed for.
         let now = Instant::now();
         self.world
+            .presentation
             .crowd
             .advance(now.saturating_duration_since(self.last_advance));
         self.last_advance = now;
@@ -111,26 +115,27 @@ impl App {
         // sent this placeholder a `0x78` — so whatever it was already wearing
         // is carried across by hand, the way `WorldView` carries it across a
         // `0x77`/`0x20` that names none either.
-        let equipment = std::mem::take(&mut self.world.player.equipment);
-        self.world.player = self.world.crowd.see(
+        let equipment = std::mem::take(&mut self.world.presentation.player.equipment);
+        self.world.presentation.player = self.world.presentation.crowd.see(
             None,
             Point::new(x, y, ground),
-            self.world.player.body,
+            self.world.presentation.player.body,
             facing,
-            self.world.player.hue,
+            self.world.presentation.player.hue,
             // At peace, and not a placeholder for an unknown: this is the
             // offline viewer's body, and there is no shard to have put it in a
             // stance. See `App::walk`'s own docs.
             false,
         );
-        self.world.player.equipment = equipment;
-        self.world
-            .prediction
-            .set(self.world.player.at, Facing::walking(self.world.player.facing));
+        self.world.presentation.player.equipment = equipment;
+        self.world.prediction.set(
+            self.world.presentation.player.at,
+            Facing::walking(self.world.presentation.player.facing),
+        );
         // Offline there is no shard to refuse a step, so nothing here is
         // speculative the way an online prediction is — trusted outright,
         // same as a correction is.
-        self.world.cutaway_at = self.world.player.at;
+        self.world.presentation.cutaway_at = self.world.presentation.player.at;
         // Offline the body is what the camera is locked to, exactly as the
         // server's is when there is a server. Unlocked, walking still walks and
         // the body may leave the screen — walking and looking are different
@@ -171,17 +176,17 @@ impl App {
         let facing = if self.input.ctrl_held {
             self.steer.go_to(
                 tile.at,
-                self.world.player.at,
+                self.world.presentation.player.at,
                 Instant::now(),
-                self.world.player.facing,
+                self.world.presentation.player.facing,
                 ground,
             )
         } else {
             self.steer.steer(
                 self.ask_to_cursor(*self.control.camera()),
-                self.world.player.at,
+                self.world.presentation.player.at,
                 Instant::now(),
-                self.world.player.facing,
+                self.world.presentation.player.facing,
                 ground,
             )
         };
@@ -239,7 +244,10 @@ impl App {
         let cursor = self.control.cursor();
         // The body's *drawn* pixel, height and all: what a player aims relative
         // to is the sprite they can see, not the tile beneath it.
-        ask_between(camera::project(self.world.player.at), camera.pick(cursor))
+        ask_between(
+            camera::project(self.world.presentation.player.at),
+            camera.pick(cursor),
+        )
     }
 
     /// Double-click whatever the cursor is over: ask the shard to use it.
@@ -279,7 +287,7 @@ impl App {
         let cutaway = Cutaway::at(
             &self.resources.map,
             &self.resources.tiledata,
-            self.world.cutaway_at,
+            self.world.presentation.cutaway_at,
             true,
         );
         // A creature under the cursor takes the click, and no item is used: it
@@ -308,17 +316,17 @@ impl App {
             return;
         }
         let Some(index) = items::pick(
-            &self.world.items,
+            &self.world.presentation.items,
             &camera,
             &self.resources.tiledata,
-            &self.world.tile_animations,
+            &self.world.presentation.tile_animations,
             &window.atlases.statics,
             &cutaway,
             self.control.cursor(),
         ) else {
             return;
         };
-        let serial = self.world.item_serials[index.raw()];
+        let serial = self.world.presentation.item_serials[index.raw()];
         match self.world.link.as_ref() {
             Some(link) => link.use_object(serial),
             None => tracing::info!(serial = serial.raw(), "nothing used: no shard is connected"),

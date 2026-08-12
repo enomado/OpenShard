@@ -26,6 +26,7 @@ impl App {
     pub(crate) fn on_update(&mut self, update: link::Update) -> bool {
         let now = Instant::now();
         self.world
+            .presentation
             .crowd
             .advance(now.saturating_duration_since(self.last_advance));
         self.last_advance = now;
@@ -34,7 +35,7 @@ impl App {
             link::Update::Mutation { packet, body } => self.apply_mutation(&packet, body),
             link::Update::Prediction(body) => self.apply_prediction(body),
             link::Update::Animation(animation) => {
-                self.world.crowd.play(
+                self.world.presentation.crowd.play(
                     Some(animation.serial),
                     animation.action,
                     animation.frame_count,
@@ -51,7 +52,7 @@ impl App {
             }
         }
         let soon = now + crate::GLIDE_INTERVAL;
-        if self.world.crowd.anyone_gliding() && self.next_tick > soon {
+        if self.world.presentation.crowd.anyone_gliding() && self.next_tick > soon {
             self.next_tick = soon;
         }
         true
@@ -84,10 +85,11 @@ impl App {
     /// Apply prediction without changing authoritative server state.
     pub(crate) fn apply_prediction(&mut self, body: link::Body) {
         self.world.prediction.apply(body);
-        self.world.player.at = self.world.prediction.at;
-        self.world.player.facing = self.world.prediction.facing.direction;
-        self.world.player.drawn = self
+        self.world.presentation.player.at = self.world.prediction.at;
+        self.world.presentation.player.facing = self.world.prediction.facing.direction;
+        self.world.presentation.player.drawn = self
             .world
+            .presentation
             .crowd
             .drawn_for(self.world.me())
             .unwrap_or_else(|| openshard_client_render::follow::Gaze::on(body.predicted.position));
@@ -133,7 +135,7 @@ impl App {
         // Ours is the one body whose pace is not guessed at: we send its steps.
         // Said every update rather than once, because the serial is the shard's
         // to name and nothing here is told when it does.
-        self.world.crowd.commanding(me);
+        self.world.presentation.crowd.commanding(me);
         // A rollback is also the one thing that makes `steer.rs`'s idea of which
         // way this body was last sent a lie — it is a step ahead of the shard on
         // purpose, and a refusal is the shard saying that step never happened.
@@ -143,8 +145,8 @@ impl App {
         if body.corrected {
             self.steer.corrected(body.predicted.facing.direction);
         }
-        self.world.player = match body.corrected {
-            true => self.world.crowd.snap(
+        self.world.presentation.player = match body.corrected {
+            true => self.world.presentation.crowd.snap(
                 me,
                 self.world.prediction.at,
                 view.player.body,
@@ -154,7 +156,7 @@ impl App {
                 // set — D9's `!InWarMode || IsDead`.
                 view.player.war && !view.player.dead,
             ),
-            false => self.world.crowd.see(
+            false => self.world.presentation.crowd.see(
                 me,
                 self.world.prediction.at,
                 view.player.body,
@@ -167,7 +169,8 @@ impl App {
                 view.player.war && !view.player.dead,
             ),
         };
-        self.world.player.equipment = crowd::worn(&view.player.equipment, &self.resources.tiledata).into();
+        self.world.presentation.player.equipment =
+            crowd::worn(&view.player.equipment, &self.resources.tiledata).into();
         // Sorted by serial for the same reason, and for one more: two items on
         // one tile at one height are drawn in the order they arrive here, so an
         // order that changed every frame would flicker.
@@ -178,21 +181,22 @@ impl App {
         // folded in is part of that.
         let mut items: Vec<_> = view.items.iter().collect();
         items.sort_unstable_by_key(|(serial, _)| serial.raw());
-        self.world.items.clear();
-        self.world.item_serials.clear();
+        self.world.presentation.items.clear();
+        self.world.presentation.item_serials.clear();
         for (serial, item) in items {
-            self.world.items.push(GroundItem {
+            self.world.presentation.items.push(GroundItem {
                 at: item.position,
                 graphic: item.graphic,
                 hue: item.hue,
             });
-            self.world.item_serials.push(*serial);
+            self.world.presentation.item_serials.push(*serial);
         }
         // The same list read for a second question — not what to draw, but what
         // a step cannot go through. Rebuilt here rather than per decision: one
         // click plans a route over hundreds of tiles, and each of them would
         // otherwise rescan everything on screen. See `clutter.rs`.
-        self.world.clutter = clutter::Clutter::of(&self.world.items, &self.resources.tiledata);
+        self.world.presentation.clutter =
+            clutter::Clutter::of(&self.world.presentation.items, &self.resources.tiledata);
         // `cutaway_at` follows the same prediction `player.at` does, with one
         // guard: it only ever advances to a tile the client's own static map
         // agrees is reachable from the one it already held. A correction is
@@ -200,13 +204,13 @@ impl App {
         // is; an optimistic step is only trusted here when it is not one
         // `Steering::detour` is going to have offered into a wall this end
         // can already see — see the field's own doc for why.
-        self.world.cutaway_at = match body.corrected {
+        self.world.presentation.cutaway_at = match body.corrected {
             true => self.world.prediction.at,
             false => {
                 let terrain = cluttered(&self.world, &self.resources);
-                match terrain.can_step(self.world.cutaway_at, self.world.prediction.at) {
+                match terrain.can_step(self.world.presentation.cutaway_at, self.world.prediction.at) {
                     Some(_) => self.world.prediction.at,
-                    None => self.world.cutaway_at,
+                    None => self.world.presentation.cutaway_at,
                 }
             }
         };
@@ -214,7 +218,7 @@ impl App {
         // in a different order every frame is a rebuild every frame.
         let mut others: Vec<_> = view.mobiles.iter().collect();
         others.sort_unstable_by_key(|(serial, _)| serial.raw());
-        self.world.others = others
+        self.world.presentation.others = others
             .into_iter()
             .map(|(serial, mobile)| {
                 let who = Some(*serial);
@@ -224,7 +228,7 @@ impl App {
                 // A ghost is drawn no sword regardless: nothing on the wire
                 // says a stranger died, but their body id does — see
                 // `is_ghost` — the same D9 gate the player's own body gets.
-                let mut drawn = self.world.crowd.see(
+                let mut drawn = self.world.presentation.crowd.see(
                     who,
                     mobile.position,
                     mobile.body,
@@ -240,7 +244,7 @@ impl App {
         // goes with them. Our own body is kept by its serial like anyone else's;
         // the placeholder's `None` is gone the moment a shard names us, which is
         // right — it was never a mobile.
-        self.world.crowd.retain(|who| {
+        self.world.presentation.crowd.retain(|who| {
             who.is_some_and(|serial| serial == view.player.serial || view.mobiles.contains_key(&serial))
         });
         self.world.connection = format!("in world as 0x{:08X}", view.player.serial.raw());
@@ -254,9 +258,12 @@ impl App {
             let already_heard = previous_latest.as_ref() == Some(latest);
             if !already_heard {
                 if let Some(serial) = latest.serial {
-                    self.world
-                        .crowd
-                        .hear(Some(serial), latest.text.clone(), latest.font, latest.hue);
+                    self.world.presentation.crowd.hear(
+                        Some(serial),
+                        latest.text.clone(),
+                        latest.font,
+                        latest.hue,
+                    );
                 }
             }
         }
@@ -288,8 +295,8 @@ impl App {
     /// through lags by whatever the difference was — which varies frame to
     /// frame, and varying lag is what an eye reads as a stutter.
     pub(crate) fn follow_player(&mut self, elapsed: std::time::Duration) {
-        self.world.player.drawn = self.world.drawn_player();
-        let gaze = mobiles::gaze(&self.world.player);
+        self.world.presentation.player.drawn = self.world.drawn_player();
+        let gaze = mobiles::gaze(&self.world.presentation.player);
         self.control.follow_body(gaze, elapsed);
         // What the eye was asked for, what the screen was given, and what the
         // filter had before the quantiser — the three the bench records, from

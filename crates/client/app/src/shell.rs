@@ -819,7 +819,7 @@ fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, de
                 None => ui.label("no serial"),
             };
             ui.separator();
-            let at = world.player.at;
+            let at = world.presentation.player.at;
             ui.label(format!("{}, {}, {}", at.x, at.y, at.z));
             ui.separator();
             // What the frame cost to *build*, and not how long it took: paced by
@@ -1377,7 +1377,7 @@ fn tile_tab(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Requ
     ui.horizontal(|ui| {
         ui.label("draw (F4)");
         for (cut, name) in [
-            (Cut::BelowFeet(world.player.at.z), "above your feet"),
+            (Cut::BelowFeet(world.presentation.player.at.z), "above your feet"),
             (Cut::Nothing, "everything"),
         ] {
             let picked = std::mem::discriminant(&hud.solid_cut) == std::mem::discriminant(&cut);
@@ -1776,7 +1776,7 @@ fn rig_panel(ui: &mut egui::Ui, hud: &Hud, world: &WorldState, request: &mut Req
     ui.separator();
     ui.horizontal(|ui| {
         ui.label("body ease");
-        let world_ease = world.crowd.ease();
+        let world_ease = world.presentation.crowd.ease();
         let mut ease = world_ease;
         ui.add(egui::Slider::new(&mut ease.tau, 0.0..=0.5).suffix(" s"));
         if ease != world_ease {

@@ -181,9 +181,9 @@ impl ApplicationHandler<()> for App {
                             let cluttered = cluttered(&self.world, &self.resources);
                             self.steer.press(
                                 direction,
-                                self.world.player.at,
+                                self.world.presentation.player.at,
                                 Instant::now(),
-                                self.world.player.facing,
+                                self.world.presentation.player.facing,
                                 steer::Ground {
                                     real: &cluttered,
                                     through_doors: &opened,
@@ -672,10 +672,12 @@ impl ApplicationHandler<()> for App {
                 real: &cluttered,
                 through_doors: &opened,
             };
-            let Some(facing) = self
-                .steer
-                .due(now, self.world.player.at, self.world.player.facing, ground)
-            else {
+            let Some(facing) = self.steer.due(
+                now,
+                self.world.presentation.player.at,
+                self.world.presentation.player.facing,
+                ground,
+            ) else {
                 break;
             };
             moved |= self.walk(facing);

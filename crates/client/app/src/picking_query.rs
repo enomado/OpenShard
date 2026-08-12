@@ -75,6 +75,7 @@ impl App {
         // actually drawing over a mobile on screen.
         let items = self
             .world
+            .presentation
             .items
             .iter()
             .filter(|item| item.at.x == x && item.at.y == y)
@@ -112,7 +113,7 @@ impl App {
         // "which surface, coming from here" the walk itself uses, asked from the
         // body's own height so a floor overhead does not win over the street.
         let terrain = terrain(&self.resources);
-        let stand = terrain.predict_z(x, y, i32::from(self.world.player.at.z));
+        let stand = terrain.predict_z(x, y, i32::from(self.world.presentation.player.at.z));
         // Clamped rather than unwrapped: a `z` outside `i8` is a corrupt
         // block, and a diamond at the wrong height beats a panic in a HUD.
         let stand_z = stand.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8;
@@ -240,8 +241,8 @@ impl App {
     pub(crate) fn pick_tile(&self, camera: Camera) -> Option<shell::PickedTile> {
         let cursor = self.control.cursor();
         let world_px = camera.pick(cursor);
-        let near = i32::from(self.world.player.at.z);
-        let (mut x, mut y) = camera::unproject(world_px, self.world.player.at.z);
+        let near = i32::from(self.world.presentation.player.at.z);
+        let (mut x, mut y) = camera::unproject(world_px, self.world.presentation.player.at.z);
         if let Some(tile) = Self::in_bounds(x, y, &self.resources.map) {
             let terrain = terrain(&self.resources);
             let z = terrain.predict_z(tile.x, tile.y, near);
@@ -300,11 +301,12 @@ impl App {
             ),
             SelectedIdentity::Item(serial) => shell::Selection::Item(
                 self.world
+                    .presentation
                     .item_serials
                     .iter()
                     .position(|held| *held == serial)
                     .map(|index| {
-                        let item = self.world.items[index];
+                        let item = self.world.presentation.items[index];
                         let priority_z = shell::PriorityZ(depth::static_priority_z(
                             item.at.z,
                             self.resources.tiledata.static_tile(item.graphic.0),
@@ -334,7 +336,7 @@ impl App {
 
         match self.graphics.solids_everything {
             true => Cut::Nothing,
-            false => Cut::BelowFeet(self.world.player.at.z),
+            false => Cut::BelowFeet(self.world.presentation.player.at.z),
         }
     }
 
@@ -388,7 +390,7 @@ impl App {
         use openshard_movement::{PLAYER_HEIGHT, Tile};
 
         let terrain = cluttered(&self.world, &self.resources);
-        let near = i32::from(self.world.player.at.z);
+        let near = i32::from(self.world.presentation.player.at.z);
         let mut open = Vec::new();
         let mut blocked = Vec::new();
         // The same clamp the ground pass uses, so the wash covers exactly the
@@ -466,7 +468,7 @@ impl App {
                 tile.at
             }
         };
-        let plan = steer::plan(ground, self.world.player.at, goal)?;
+        let plan = steer::plan(ground, self.world.presentation.player.at, goal)?;
         // Directions walked out into the tiles they land on. `step_allowed`
         // because it is what corrects a step's `z` to the surface it lands on,
         // which is the height the line is drawn at — and over each half's own
@@ -491,8 +493,8 @@ impl App {
         // line and not a dot. The barred half carries on from wherever the open
         // one stopped — the body's tile when nothing at all is walkable, which
         // is a body standing at the shut door.
-        let mut open = vec![self.world.player.at];
-        open.extend(walk_out(&cluttered, self.world.player.at, plan.open));
+        let mut open = vec![self.world.presentation.player.at];
+        open.extend(walk_out(&cluttered, self.world.presentation.player.at, plan.open));
         let from = *open.last().unwrap();
         let mut barred = walk_out(&opened, from, plan.barred);
         if !barred.is_empty() {
@@ -527,7 +529,7 @@ impl App {
         // either side of it were flown by the same camera, and what the scope
         // measures is the eye against the body it was given.
         if let Some(ease) = request.ease {
-            self.world.crowd.set_ease(ease);
+            self.world.presentation.crowd.set_ease(ease);
         }
         if let Some(draw) = request.draw {
             self.graphics.drawing = draw;
@@ -684,7 +686,7 @@ impl App {
             occluders: self.graphics.show_occluders.then(|| {
                 occlusion::collect(
                     &self.resources.map,
-                    &self.world.items,
+                    &self.world.presentation.items,
                     light::lit_tiles(&camera, &self.tuning()),
                     &self.resources.tiledata,
                     cutaway,

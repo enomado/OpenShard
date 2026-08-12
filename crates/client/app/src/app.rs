@@ -174,8 +174,9 @@ impl App {
     /// a relock mid-step would otherwise land up to half a tile from the sprite
     /// and be corrected on the frame after.
     pub(crate) fn relock(&mut self) {
-        self.world.player.drawn = self.world.drawn_player();
-        self.control.relock(mobiles::gaze(&self.world.player));
+        self.world.presentation.player.drawn = self.world.drawn_player();
+        self.control
+            .relock(mobiles::gaze(&self.world.presentation.player));
     }
 
     /// Where our own body is drawn this instant, off the crowd's clock.
@@ -232,7 +233,9 @@ impl App {
     /// The fallback timer's interval. See [`App::pacing`] for when it is the one
     /// that decides.
     pub(crate) fn redraw_interval(&self) -> std::time::Duration {
-        let moving = self.world.crowd.anyone_gliding() || self.control.settling() || self.replay.is_some();
+        let moving = self.world.presentation.crowd.anyone_gliding()
+            || self.control.settling()
+            || self.replay.is_some();
         if moving { GLIDE_INTERVAL } else { FRAME_DELAY }
     }
 
@@ -252,43 +255,51 @@ impl App {
         };
         // The height the script's own `z = 0` means here. Read once, from the
         // tile it starts on — see `Replay`'s docs on why not per tile.
-        let ground = script.knots().first().map_or(self.world.player.at.z, |knot| {
-            Self::in_bounds(
-                i32::from(knot.from.x),
-                i32::from(knot.from.y),
-                &self.resources.map,
-            )
-            .and_then(|tile| self.resources.map.land(tile.x, tile.y))
-            .map_or(self.world.player.at.z, |cell| cell.z)
-        });
+        let ground = script
+            .knots()
+            .first()
+            .map_or(self.world.presentation.player.at.z, |knot| {
+                Self::in_bounds(
+                    i32::from(knot.from.x),
+                    i32::from(knot.from.y),
+                    &self.resources.map,
+                )
+                .and_then(|tile| self.resources.map.land(tile.x, tile.y))
+                .map_or(self.world.presentation.player.at.z, |cell| cell.z)
+            });
         let replay = replay::Replay::new(script, ground);
         if let Some(start) = replay.start() {
             // Put down rather than walked, and the camera cut to it: a body
             // that strolled to the start of a scenario would be measured on the
             // way there, and an eye that eased across a facet is a second
             // motion on top of the one being looked at.
-            let (body, hue) = (self.world.player.body, self.world.player.hue);
-            let equipment = std::mem::take(&mut self.world.player.equipment);
+            let (body, hue) = (
+                self.world.presentation.player.body,
+                self.world.presentation.player.hue,
+            );
+            let equipment = std::mem::take(&mut self.world.presentation.player.equipment);
             let war = self
                 .world
                 .authoritative
                 .view
                 .as_ref()
                 .is_some_and(|view| view.player.war);
-            self.world.player = self.world.crowd.snap(
+            self.world.presentation.player = self.world.presentation.crowd.snap(
                 self.world.me(),
                 start,
                 body,
-                Facing::walking(self.world.player.facing),
+                Facing::walking(self.world.presentation.player.facing),
                 hue,
                 war,
             );
-            self.world.player.equipment = equipment;
-            self.world
-                .prediction
-                .set(self.world.player.at, Facing::walking(self.world.player.facing));
-            self.world.cutaway_at = self.world.player.at;
-            self.control.relock(mobiles::gaze(&self.world.player));
+            self.world.presentation.player.equipment = equipment;
+            self.world.prediction.set(
+                self.world.presentation.player.at,
+                Facing::walking(self.world.presentation.player.facing),
+            );
+            self.world.presentation.cutaway_at = self.world.presentation.player.at;
+            self.control
+                .relock(mobiles::gaze(&self.world.presentation.player));
         }
         // The frames either side of a start are two different runs, and a metric
         // over both is a number about nothing.
@@ -307,8 +318,11 @@ impl App {
         let moves = replay.advance(elapsed);
         let finished = replay.finished();
         for step in moves {
-            let (body, hue) = (self.world.player.body, self.world.player.hue);
-            let equipment = std::mem::take(&mut self.world.player.equipment);
+            let (body, hue) = (
+                self.world.presentation.player.body,
+                self.world.presentation.player.hue,
+            );
+            let equipment = std::mem::take(&mut self.world.presentation.player.equipment);
             // The stance the session is actually in: a replay walks this body
             // through a recorded route, and what it is wearing or holding is
             // not part of the recording — so a scenario replayed while at war
@@ -319,19 +333,25 @@ impl App {
                 .view
                 .as_ref()
                 .is_some_and(|view| view.player.war);
-            self.world.player = match step.glided {
-                true => self
-                    .world
-                    .crowd
-                    .see(self.world.me(), step.to, body, step.facing, hue, war),
-                false => self
-                    .world
-                    .crowd
-                    .snap(self.world.me(), step.to, body, step.facing, hue, war),
+            self.world.presentation.player = match step.glided {
+                true => {
+                    self.world
+                        .presentation
+                        .crowd
+                        .see(self.world.me(), step.to, body, step.facing, hue, war)
+                }
+                false => {
+                    self.world
+                        .presentation
+                        .crowd
+                        .snap(self.world.me(), step.to, body, step.facing, hue, war)
+                }
             };
-            self.world.player.equipment = equipment;
-            self.world.prediction.set(self.world.player.at, step.facing);
-            self.world.cutaway_at = self.world.player.at;
+            self.world.presentation.player.equipment = equipment;
+            self.world
+                .prediction
+                .set(self.world.presentation.player.at, step.facing);
+            self.world.presentation.cutaway_at = self.world.presentation.player.at;
         }
         if finished {
             self.replay = None;
