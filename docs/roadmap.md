@@ -2686,15 +2686,11 @@ riding along with this one.
   helper was added, because `Tile::new(p.x, p.y)` is already the idiom
   `movement::path` and `movement::terrain` use, and a second spelling of it
   would be the thing to avoid.
-- **`App::hud` takes two `Option<usize>` indices into different lists,
-  positionally.** `lit_item` and `lit_mobile` (lib.rs:3375–3376, called at
-  4201) index the item list and the mobile list; swapping the two arguments
-  compiles and produces a highlight on the wrong object, which is exactly the
-  failure the HUD fields exist to diagnose. The repo already made this argument
-  against itself: `Wanted`'s doc comment (lib.rs:780) says a land graphic and a
-  static graphic "are different index spaces, which is a mistake a positional
-  argument list would accept in silence" — and then takes the mistake three
-  thousand lines later.
+- ~~**`App::hud` takes two `Option<usize>` indices into different lists,
+  positionally.**~~ Fixed: `ItemIndex` and `MobileIndex` travel separately
+  through the picked-frame facts and `assemble_geometry`; `App::hud` now takes
+  the named `Pick` snapshot rather than either positional index. Swapping an
+  item and a mobile no longer compiles.
 - ~~**`render::mobiles::Mobile::body` / `app::crowd::Tracked::body` were
   `u16`.**~~ Fixed: both are `Graphic` now, and the `Graphic` → `u16` → `Graphic`
   round trip through `crowd::Crowd::see`/`snap` is gone — `app` carries
