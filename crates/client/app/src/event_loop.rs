@@ -19,11 +19,11 @@ use crate::app::App;
 use crate::picking::SelectedIdentity;
 use crate::presentation::frame_dump_root;
 use crate::world::{cluttered, cluttered_with_doors_open};
-use crate::{DOUBLE_CLICK, PAGE_PIXELS, desk, keys, link, shell, steer};
+use crate::{DOUBLE_CLICK, PAGE_PIXELS, desk, keys, shell, steer};
 
-impl ApplicationHandler<link::Update> for App {
-    /// The shard thread had something to say.
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, update: link::Update) {
+impl ApplicationHandler<()> for App {
+    /// The shard thread staged one or more updates for us.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
         // The crowd's clock first, and before the packet is folded in. A step is
         // timestamped with `Crowd`'s own `now` — that is what the *next* step's
         // crossing is measured against (`crowd::glide_time`) — and this handler
@@ -34,11 +34,17 @@ impl ApplicationHandler<link::Update> for App {
         // the crossing *length*: the walk oracle in `dst.rs` caught a tile after
         // a turn taking 416ms instead of 400, which is a body a frame behind
         // itself and then yanked forward.
-        if !self.on_update(update) {
-            return;
+        let mut changed = false;
+        for update in self.updates.take() {
+            if !self.on_update(update) {
+                return;
+            }
+            changed = true;
         }
-        if let Some(window) = self.window.as_ref() {
-            window.window.request_redraw();
+        if changed {
+            if let Some(window) = self.window.as_ref() {
+                window.window.request_redraw();
+            }
         }
     }
 

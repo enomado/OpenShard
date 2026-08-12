@@ -2604,7 +2604,7 @@ fn a_walking_billboard_is_lit_where_it_is_drawn_not_where_it_is_going() {
             from: Some(from),
             hue: openshard_protocol::wire::Hue::NONE,
             drawn,
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         };
         let quads = mobiles::collect(
             &[mobile],
@@ -4407,7 +4407,7 @@ fn a_mobile_is_drawn_over_the_ground_and_mirrors_with_its_facing() {
                 from: None,
                 hue: openshard_protocol::wire::Hue::NONE,
                 drawn: openshard_client_render::follow::Gaze::on(centre),
-                equipment: Vec::new(),
+                equipment: Vec::new().into(),
             }],
             &camera,
             &atlas,
@@ -4890,7 +4890,7 @@ fn dump_a_frame_of_britain() {
                 hue: openshard_protocol::wire::Hue::NONE,
                 // Standing where the server put them: nothing here is walking.
                 drawn: openshard_client_render::follow::Gaze::on(ground),
-                equipment: Vec::new(),
+                equipment: Vec::new().into(),
             }
         })
         .collect();

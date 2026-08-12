@@ -277,6 +277,31 @@ fn the_group_packed_is_the_group_the_crowd_is_playing() {
     );
 }
 
+/// A frame changes only a body's clocks and drawn position. Its equipment is
+/// authoritative presentation data until the next server update, so rebuilding
+/// the frame list must retain that immutable allocation rather than copying it.
+#[test]
+fn a_frame_snapshot_reuses_a_mobiles_equipment() {
+    let mut crowd = Crowd::default();
+    let mut player = crowd.see(
+        None,
+        Point::new(10, 10, 0),
+        Graphic(400),
+        Facing::walking(Direction::SouthEast),
+        Hue::NONE,
+        false,
+    );
+    player.equipment = vec![openshard_client_render::mobiles::EquipmentLayer {
+        graphic: openshard_uofiles::tiledata::AnimId(7005),
+        hue: Hue::NONE,
+        layer: openshard_protocol::wire::Layer::TUNIC,
+    }]
+    .into();
+
+    let snapshot = App::everyone_drawn(&crowd, None, &player, &[]);
+    assert!(std::rc::Rc::ptr_eq(&player.equipment, &snapshot[0].1.equipment));
+}
+
 /// And off the bearing, the lean says which side — which is the thing the
 /// eight sectors throw away and the only thing that can settle a corner
 /// with two open ways round it. Straight down the screen is south-east;

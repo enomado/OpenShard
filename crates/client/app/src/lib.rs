@@ -572,8 +572,10 @@ pub fn run<D: Dial + Send + 'static>(
         map.height()
     );
 
-    // With user events, because the shard thread wakes the loop with them.
-    let event_loop = match EventLoop::<link::Update>::with_user_event().build() {
+    // User events are wake-ups only. The shard thread puts updates in the
+    // staged mailbox below, so a busy platform loop cannot accumulate a second
+    // user event for every now-stale frame prediction.
+    let event_loop = match EventLoop::<()>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(error) => {
             eprintln!("no window system: {error}");
@@ -644,8 +646,10 @@ pub fn run<D: Dial + Send + 'static>(
     let map = Arc::new(map);
     let tiledata = Arc::new(tiledata);
     let update_proxy = event_loop.create_proxy();
+    let updates = link::Updates::new();
     let link = shard.map(|(dial, plan)| {
         eprintln!("logging in as {}", plan.account.0);
+        let reports = updates.clone();
         link::connect(
             dial,
             plan,
@@ -653,7 +657,9 @@ pub fn run<D: Dial + Send + 'static>(
             Arc::clone(&map),
             Arc::clone(&tiledata),
             move |update| {
-                let _ = update_proxy.send_event(update);
+                if reports.publish(update) {
+                    let _ = update_proxy.send_event(());
+                }
             },
         )
     });
@@ -676,7 +682,7 @@ pub fn run<D: Dial + Send + 'static>(
                 from: None,
                 hue: Hue::NONE,
                 drawn: Gaze::on(start),
-                equipment: Vec::new(),
+                equipment: Vec::new().into(),
             },
             cutaway_at: start,
             others: Vec::new(),
@@ -694,6 +700,7 @@ pub fn run<D: Dial + Send + 'static>(
                 crowd
             },
         },
+        updates,
         resources: resources::Resources {
             map,
             art,

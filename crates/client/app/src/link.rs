@@ -17,7 +17,8 @@
 //! a packet, and a packet must not wait for the window to be uncovered. So the
 //! socket gets a current-thread runtime of its own and the two exchange values.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Condvar, Mutex};
 
 use openshard_client_net::connection::Event;
 use openshard_client_net::session::Plan;
@@ -93,6 +94,138 @@ pub enum Update {
     /// The window stays open on one of these: a client that vanished when a
     /// shard restarted would take the reason with it.
     Lost(String),
+}
+
+const MAX_ORDERED_UPDATES: usize = 256;
+const COMMAND_CAPACITY: usize = 16;
+
+/// Updates crossing from the shard thread to the application thread.
+///
+/// A network mutation is a fact in a sequence and is never merged with another
+/// one. A prediction, by contrast, is only the newest answer to "where should
+/// the next frame draw our body?"; while the application is busy, keeping each
+/// older answer turns a delayed redraw into a visible catch-up animation. The
+/// mailbox therefore retains mutation order, while coalescing consecutive
+/// predictions within their own stage.
+///
+/// The producer asks the platform loop to wake only when this mailbox changes
+/// from idle to non-idle. The loop drains it as one staged batch, rather than
+/// carrying one platform user event per packet or frame update.
+#[derive(Clone)]
+pub struct Updates {
+    mailbox: Arc<UpdateMailbox>,
+}
+
+struct UpdateMailbox {
+    pending: Mutex<PendingUpdates>,
+    /// Wakes the shard thread once the application has made room for another
+    /// ordered update.
+    space: Condvar,
+    capacity: usize,
+}
+
+#[derive(Default)]
+struct PendingUpdates {
+    /// Whether a platform wake-up is already in flight for this batch.
+    notified: bool,
+    /// Every update whose order must be retained, across all mutation stages.
+    ordered: usize,
+    stages: VecDeque<UpdateStage>,
+}
+
+enum UpdateStage {
+    /// Facts whose order is part of their meaning.
+    Ordered(VecDeque<Update>),
+    /// A latest-value frame update between two mutation boundaries.
+    Prediction(Body),
+}
+
+impl Updates {
+    /// Start an empty staged mailbox.
+    pub fn new() -> Self {
+        Self::with_capacity(MAX_ORDERED_UPDATES)
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            mailbox: Arc::new(UpdateMailbox {
+                pending: Mutex::new(PendingUpdates::default()),
+                space: Condvar::new(),
+                capacity,
+            }),
+        }
+    }
+
+    /// Publish an update and say whether the caller must wake the application
+    /// loop. The caller owns the actual platform wake-up, so this module stays
+    /// independent of `winit`.
+    pub fn publish(&self, update: Update) -> bool {
+        let mut pending = self
+            .mailbox
+            .pending
+            .lock()
+            .expect("the update mailbox is not poisoned");
+        match update {
+            Update::Prediction(body) => match pending.stages.back_mut() {
+                Some(UpdateStage::Prediction(previous)) => *previous = body,
+                _ => pending.stages.push_back(UpdateStage::Prediction(body)),
+            },
+            update => {
+                // Mutations cannot be merged or dropped. Stopping the socket
+                // reader here applies backpressure all the way to TCP instead
+                // of allowing an unfocused or GPU-blocked window to consume
+                // unbounded memory while it falls behind.
+                while pending.ordered == self.mailbox.capacity {
+                    pending = self
+                        .mailbox
+                        .space
+                        .wait(pending)
+                        .expect("the update mailbox is not poisoned");
+                }
+                pending.ordered += 1;
+                match pending.stages.back_mut() {
+                    Some(UpdateStage::Ordered(updates)) => updates.push_back(update),
+                    _ => pending
+                        .stages
+                        .push_back(UpdateStage::Ordered(VecDeque::from([update]))),
+                }
+            }
+        }
+        if pending.notified {
+            false
+        } else {
+            pending.notified = true;
+            true
+        }
+    }
+
+    /// Take every update staged before this call, in its original semantic
+    /// order. Clearing `notified` while holding the lock closes the race with a
+    /// producer that arrives between this drain and the next platform wait.
+    pub fn take(&self) -> Vec<Update> {
+        let mut pending = self
+            .mailbox
+            .pending
+            .lock()
+            .expect("the update mailbox is not poisoned");
+        pending.notified = false;
+        pending.ordered = 0;
+        let stages = std::mem::take(&mut pending.stages);
+        self.mailbox.space.notify_all();
+        stages
+            .into_iter()
+            .flat_map(|stage| match stage {
+                UpdateStage::Ordered(updates) => updates,
+                UpdateStage::Prediction(body) => VecDeque::from([Update::Prediction(body)]),
+            })
+            .collect()
+    }
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// What the window asks the shard thread to send.
@@ -198,82 +331,97 @@ pub struct GumpReply {
 /// loop when the window goes away.
 #[derive(Debug)]
 pub struct Link {
-    commands: tokio::sync::mpsc::UnboundedSender<Command>,
+    commands: tokio::sync::mpsc::Sender<Command>,
 }
 
 impl Link {
+    /// Queue one command without making the window event loop wait for a slow
+    /// socket. The walking controller already rate-limits steps and the other
+    /// commands are button presses, so reaching this bound means the shard task
+    /// cannot currently make progress; keeping an unbounded backlog would only
+    /// replay stale input later. The server remains authoritative either way.
+    fn send(&self, command: Command) {
+        match self.commands.try_send(command) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!("shard command queue is full; dropping stale input");
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+        }
+    }
+
     /// Ask the shard for one step. Unanswered until an `Update` says otherwise.
     ///
     /// A closed channel is ignored rather than reported: it means the shard
     /// thread has already ended, and it has already said why. The same holds
     /// for everything below.
     pub fn step(&self, facing: Facing) {
-        let _ = self.commands.send(Command::Step(facing));
+        self.send(Command::Step(facing));
     }
 
     /// Say a line out loud.
     pub fn say(&self, text: String) {
-        let _ = self.commands.send(Command::Say(text));
+        self.send(Command::Say(text));
     }
 
     /// Answer an open dialog.
     pub fn answer_gump(&self, reply: GumpReply) {
-        let _ = self.commands.send(Command::AnswerGump(reply));
+        self.send(Command::AnswerGump(reply));
     }
 
     /// Use an object — the double-click.
     pub fn use_object(&self, serial: Serial) {
-        let _ = self.commands.send(Command::Use(serial));
+        self.send(Command::Use(serial));
     }
 
     /// Ask for a stance. See [`Command::WarMode`].
     pub fn war_mode(&self, war: bool) {
-        let _ = self.commands.send(Command::WarMode(war));
+        self.send(Command::WarMode(war));
     }
 
     /// Aim at a mobile. See [`Command::Attack`].
     pub fn attack(&self, mobile: Serial) {
-        let _ = self.commands.send(Command::Attack(mobile));
+        self.send(Command::Attack(mobile));
     }
 
     /// Announce that the player is leaving.
     pub fn log_out(&self) {
-        let _ = self.commands.send(Command::LogOut);
+        self.send(Command::LogOut);
     }
 
     /// Ask for a mobile's status bar.
     pub fn status(&self, mobile: Serial) {
-        let _ = self.commands.send(Command::Status(mobile));
+        self.send(Command::Status(mobile));
     }
 
     /// Ask for a mobile's skill list.
     pub fn skills(&self, mobile: Serial) {
-        let _ = self.commands.send(Command::Skills(mobile));
+        self.send(Command::Skills(mobile));
     }
 
     /// Ask for our own quest log.
     pub fn quest_log(&self) {
-        let _ = self.commands.send(Command::QuestLog);
+        self.send(Command::QuestLog);
     }
 
     /// Ask for our own guild menu.
     pub fn guild_menu(&self) {
-        let _ = self.commands.send(Command::GuildMenu);
+        self.send(Command::GuildMenu);
     }
 
     /// Ask about a mobile's virtues.
     pub fn virtue(&self, mobile: Serial) {
-        let _ = self.commands.send(Command::Virtue(mobile));
+        self.send(Command::Virtue(mobile));
     }
 
     /// Ask to set a skill's lock. See [`Command::SkillLock`].
     pub fn set_skill_lock(&self, skill: RawSkillId, lock: SkillLock) {
-        let _ = self.commands.send(Command::SkillLock { skill, lock });
+        self.send(Command::SkillLock { skill, lock });
     }
 
     /// Ask to use a skill — its own button, not the lock arrow.
     pub fn use_skill(&self, skill: RawSkillId) {
-        let _ = self.commands.send(Command::UseSkill(skill));
+        self.send(Command::UseSkill(skill));
     }
 }
 
@@ -303,7 +451,7 @@ where
     D: Dial + Send + 'static,
     F: Fn(Update) + Send + 'static,
 {
-    let (sender, commands) = tokio::sync::mpsc::unbounded_channel();
+    let (sender, commands) = tokio::sync::mpsc::channel(COMMAND_CAPACITY);
     std::thread::Builder::new()
         .name("shard".to_owned())
         .spawn(move || run(dial, plan, version, &map, &tiles, &report, commands))
@@ -323,7 +471,7 @@ fn run<D: Dial, F: Fn(Update) + Send>(
     map: &Map,
     tiles: &TileData,
     report: &F,
-    commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
+    commands: tokio::sync::mpsc::Receiver<Command>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
@@ -346,7 +494,7 @@ async fn play<D: Dial, F: Fn(Update) + Send>(
     map: &Map,
     tiles: &TileData,
     report: &F,
-    mut commands: tokio::sync::mpsc::UnboundedReceiver<Command>,
+    mut commands: tokio::sync::mpsc::Receiver<Command>,
 ) -> String {
     let (mut socket, view) = match enter_world_with(dial, plan, version).await {
         Ok(entered) => entered,
@@ -362,7 +510,8 @@ async fn play<D: Dial, F: Fn(Update) + Send>(
     loop {
         tokio::select! {
             // Cancel-safe on both arms: `read` loses no bytes when the other
-            // branch wins, and an unbounded receiver loses no messages.
+            // branch wins. The bounded command receiver applies backpressure
+            // at the window boundary instead of growing without limit.
             event = socket.next_event() => {
                 let packet = match event {
                     Ok(Some(Event::Packet(packet))) => packet,
@@ -598,6 +747,93 @@ mod tests {
         let view = WorldView::entered(start);
         let walk = Walk::new(view.player.position, view.player.facing);
         (view, walk)
+    }
+
+    fn prediction(x: u16) -> Update {
+        Update::Prediction(Body {
+            predicted: openshard_client_net::walk::Predicted {
+                position: Point::new(x, 100, 0),
+                facing: Facing::walking(Direction::East),
+            },
+            corrected: false,
+        })
+    }
+
+    #[test]
+    fn a_busy_frame_keeps_only_its_newest_prediction() {
+        let updates = Updates::new();
+        assert!(
+            updates.publish(prediction(101)),
+            "the idle mailbox needs one wake-up"
+        );
+        assert!(
+            !updates.publish(prediction(102)),
+            "the wake-up already covers this frame"
+        );
+
+        let staged = updates.take();
+        let [Update::Prediction(body)] = staged.as_slice() else {
+            panic!("one latest prediction should remain");
+        };
+        assert_eq!(body.predicted.position, Point::new(102, 100, 0));
+        assert!(
+            updates.publish(prediction(103)),
+            "a drained mailbox needs a new wake-up"
+        );
+    }
+
+    #[test]
+    fn mutations_stay_ordered_on_both_sides_of_a_prediction() {
+        let updates = Updates::new();
+        updates.publish(Update::Lost("before".to_owned()));
+        updates.publish(prediction(101));
+        updates.publish(Update::Lost("after".to_owned()));
+
+        let staged = updates.take();
+        assert!(matches!(&staged[0], Update::Lost(reason) if reason == "before"));
+        assert!(
+            matches!(&staged[1], Update::Prediction(body) if body.predicted.position == Point::new(101, 100, 0))
+        );
+        assert!(matches!(&staged[2], Update::Lost(reason) if reason == "after"));
+    }
+
+    #[test]
+    fn ordered_delivery_waits_for_the_application_instead_of_growing() {
+        let updates = Updates::with_capacity(1);
+        updates.publish(Update::Lost("first".to_owned()));
+        let producer = updates.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sent.send(producer.publish(Update::Lost("second".to_owned())))
+                .expect("the test is listening");
+        });
+
+        assert!(
+            received
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err(),
+            "the second ordered update must wait for capacity"
+        );
+        assert!(matches!(&updates.take()[0], Update::Lost(reason) if reason == "first"));
+        assert!(
+            received.recv_timeout(std::time::Duration::from_secs(1)).is_ok(),
+            "draining must release the shard thread"
+        );
+        worker.join().expect("the shard-side publisher exits");
+    }
+
+    #[test]
+    fn command_delivery_has_a_fixed_bound() {
+        let (commands, mut received) = tokio::sync::mpsc::channel(1);
+        let link = Link { commands };
+        link.log_out();
+        link.log_out();
+
+        assert!(matches!(received.try_recv(), Ok(Command::LogOut)));
+        assert!(
+            received.try_recv().is_err(),
+            "the second command was not queued without limit"
+        );
     }
 
     #[test]

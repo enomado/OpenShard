@@ -42,6 +42,8 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::equipconv::EquipConv;
 use openshard_uofiles::tiledata::AnimId;
 
+use std::rc::Rc;
+
 use crate::atlas::{AnimAtlas, FrameKey};
 use crate::camera::{Camera, RealPixel, ViewPixel, ViewPoint, WorldPoint};
 use crate::cutaway::Cutaway;
@@ -110,7 +112,11 @@ pub struct Mobile {
     /// reference), because that is what a worn item draws with *by default*.
     /// [`collect`] only asks [`EquipConv`] whether this mobile's body wants a
     /// *different* picture for it.
-    pub equipment: Vec<EquipmentLayer>,
+    /// Immutable while a render-mobile value is used. Frame snapshots clone
+    /// this handle rather than allocating and copying every worn layer again.
+    /// The client is single-threaded, so `Rc` expresses the intended ownership
+    /// without imposing atomic reference-count traffic on every frame.
+    pub equipment: Rc<[EquipmentLayer]>,
 }
 
 /// A position in the frame's mobile list.
@@ -798,7 +804,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(x, 100, 0)),
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         }
     }
 
@@ -941,7 +947,7 @@ mod tests {
             )])
             .expect("both frames fit");
         let mobile = Mobile {
-            equipment: vec![worn_on_torso(AnimId(7005), Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(7005), Hue::NONE)].into(),
             ..body_at(100, Direction::SouthEast)
         };
         let at = placed(&mobile, &camera, &atlas);
@@ -1011,7 +1017,7 @@ mod tests {
         // Their own hues, so the assertion is "replaced" and not "set".
         let dressed = |x: u16| Mobile {
             hue: Hue(0x03B2),
-            equipment: vec![worn_on_torso(AnimId(7005), Hue(0x0455))],
+            equipment: vec![worn_on_torso(AnimId(7005), Hue(0x0455))].into(),
             ..body_at(x, Direction::SouthEast)
         };
         let quads = collect(
@@ -1087,7 +1093,7 @@ mod tests {
                 from: None,
                 hue: Hue::NONE,
                 drawn: Gaze::on(Point::new(100, 100, 0)),
-                equipment: Vec::new(),
+                equipment: Vec::new().into(),
             }],
             &camera,
             &atlas,
@@ -1121,7 +1127,7 @@ mod tests {
                     from: None,
                     hue: Hue::NONE,
                     drawn: Gaze::on(Point::new(100, 100, 0)),
-                    equipment: Vec::new(),
+                    equipment: Vec::new().into(),
                 }],
                 &camera,
                 &atlas,
@@ -1163,7 +1169,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         };
         assert!(
             collect(
@@ -1220,7 +1226,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&ghost), &no_equip()),
@@ -1271,7 +1277,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         };
         let quads = collect(
             std::slice::from_ref(&mobile),
@@ -1301,7 +1307,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         };
         assert!(head_anchor(&missing, &camera, &atlas).is_none());
     }
@@ -1326,7 +1332,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(101, 100, 0)),
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         };
         let standing = collect(
             std::slice::from_ref(&on_its_tile),
@@ -1392,7 +1398,7 @@ mod tests {
             from: Some(Point::new(100, 100, 0)),
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 99, 0)).back_towards(Gaze::on(Point::new(100, 100, 0)), 0.5),
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         };
         let quads = collect(
             std::slice::from_ref(&walking_north),
@@ -1441,7 +1447,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(0, 0, 0)),
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         };
         // East and South share a picture, so they are one animation to read.
         let wanted = needed_animations(
@@ -1490,7 +1496,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)].into(),
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &equip_conv, None);
         assert_eq!(quads.len(), 2, "the body and its one worn item");
@@ -1548,7 +1554,8 @@ mod tests {
                     hue: cloak,
                     layer: Layer::CLOAK,
                 },
-            ],
+            ]
+            .into(),
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(quads.len(), 3, "the body and its two garments");
@@ -1613,7 +1620,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![worn_on_torso(AnimId(0), Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(0), Hue::NONE)].into(),
         };
         assert_eq!(
             needed_animations(std::slice::from_ref(&mobile), &no_equip()),
@@ -1678,7 +1685,8 @@ mod tests {
                     hue: Hue::NONE,
                     layer: Layer::HAIR,
                 },
-            ],
+            ]
+            .into(),
             ..body_at(100, Direction::SouthEast)
         };
 
@@ -1735,7 +1743,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)].into(),
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(
@@ -1761,7 +1769,7 @@ mod tests {
             from: None,
             hue: Hue::NONE,
             drawn: Gaze::on(Point::new(100, 100, 0)),
-            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)],
+            equipment: vec![worn_on_torso(AnimId(7017), Hue::NONE)].into(),
         };
         let quads = collect(&[mobile], &camera, &atlas, &Cutaway::OPEN, &no_equip(), None);
         assert_eq!(

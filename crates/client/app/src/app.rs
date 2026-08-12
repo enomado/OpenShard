@@ -40,6 +40,9 @@ pub(crate) struct App {
     /// What the shard, or its absence, has said the world looks like — see
     /// [`world::WorldState`].
     pub(crate) world: world::WorldState,
+    /// The shard thread's staged delivery into this event-loop-owned model.
+    /// Mutations are drained in order; superseded frame predictions are not.
+    pub(crate) updates: crate::link::Updates,
     /// The camera, who is allowed to move it, and what a drag has not yet spent.
     ///
     /// All of it arithmetic, and all of it in `client/render` where it can be

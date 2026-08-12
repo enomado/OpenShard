@@ -71,7 +71,8 @@ impl App {
 
     /// [`App::drawn_mobiles`] over the four fields it reads, so a test can build
     /// the list the atlases are grown from without a window, a device or a
-    /// shard.
+    /// shard. The snapshot clones each mobile's cheap immutable equipment
+    /// handle; its time-varying fields are then advanced below.
     pub(crate) fn everyone_drawn(
         crowd: &Crowd,
         me: Who,

@@ -165,7 +165,7 @@ impl App {
                 view.player.war && !view.player.dead,
             ),
         };
-        self.world.player.equipment = crowd::worn(&view.player.equipment, &self.resources.tiledata);
+        self.world.player.equipment = crowd::worn(&view.player.equipment, &self.resources.tiledata).into();
         // Sorted by serial for the same reason, and for one more: two items on
         // one tile at one height are drawn in the order they arrive here, so an
         // order that changed every frame would flicker.
@@ -230,7 +230,7 @@ impl App {
                     mobile.hue,
                     mobile.war() && !is_ghost(mobile.body),
                 );
-                drawn.equipment = crowd::worn(&mobile.equipment, &self.resources.tiledata);
+                drawn.equipment = crowd::worn(&mobile.equipment, &self.resources.tiledata).into();
                 (who, drawn)
             })
             .collect();

@@ -582,7 +582,7 @@ impl Crowd {
             drawn: tracked.drawn,
             // `Crowd` ages a position and a clock; equipment has neither —
             // it is the caller's to set, straight from the view.
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         }
     }
 
@@ -670,7 +670,7 @@ impl Crowd {
             from: None,
             hue,
             drawn: tracked.drawn,
-            equipment: Vec::new(),
+            equipment: Vec::new().into(),
         }
     }
 
