@@ -5,7 +5,7 @@
 //! It never asks for an adapter and never presents: a surface belongs to the
 //! application, and a test has no surface at all.
 
-use crate::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
+use crate::atlas::{LandAtlas, StaticAtlas, StaticAtlasPage, StaticAtlasPages, TexmapAtlas};
 
 use crate::camera::{Projection, TILE_HEIGHT, TILE_WIDTH, Z_STEP};
 use crate::ground::GroundQuad;
@@ -126,7 +126,14 @@ pub fn depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // Composite capture copies an already rendered map-only depth block and
+        // later samples that exact per-pixel ordering while writing it into the
+        // current frame.  Keeping this on the common depth allocation avoids a
+        // second, lossy depth representation for LOD.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
 }
@@ -675,12 +682,10 @@ pub struct SpriteRenderer {
     /// must not get wrong — that the silhouette lands exactly where the picture
     /// did — is guaranteed by sharing them.
     mask_pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
     /// The cutaway has an independent volume binding for the same reason it
     /// has independent rows: both draws are recorded before one submission, so
     /// updating the opaque buffer for its private layer would change the
     /// earlier draw's fragment geometry too.
-    cutaway_bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     quad: wgpu::Buffer,
     instances: wgpu::Buffer,
@@ -707,9 +712,9 @@ pub struct SpriteRenderer {
     /// [`SpriteRenderer::render_mask`].
     mask_rings: wgpu::Buffer,
     mask_capacity: u64,
-    /// The atlas texture, kept so that it can be grown into rather than
-    /// replaced. See [`SpriteRenderer::upload_rows`].
-    atlas_texture: wgpu::Texture,
+    /// Page-local textures and bindings. A legacy renderer contains exactly
+    /// one page; a static renderer has at most `MAX_STATIC_ATLAS_PAGES`.
+    pages: Vec<SpriteAtlasPage>,
     /// What a fragment whose ray met no box is answered with — the fringe
     /// switch, [`crate::impostor::Fringe`], written into this pass's own uniform
     /// block every frame.
@@ -736,9 +741,19 @@ pub struct SpriteRenderer {
     /// Everything [`SpriteRenderer::new`] built the bind group out of, kept for
     /// exactly the one reason above.
     layout: wgpu::BindGroupLayout,
-    atlas_view: wgpu::TextureView,
     ramp_view: wgpu::TextureView,
     sampler: wgpu::Sampler,
+}
+
+/// One texture page and the two bindings that differ only in their volume
+/// buffer. Keeping the bind groups bounded by the atlas page limit works on
+/// WebGL2 without relying on texture-array support or its layer limits.
+#[derive(Debug)]
+struct SpriteAtlasPage {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    cutaway_bind_group: wgpu::BindGroup,
 }
 
 /// A buffer for `boxes` of [`crate::impostor::Volume`].
@@ -793,6 +808,43 @@ fn static_bind_group(
             },
         ],
     })
+}
+
+/// Draw contiguous page runs without changing the CPU's depth order.
+///
+/// Sorting into one batch per page would change equal-depth tie order across
+/// pages. The depth buffer cannot repair that because equal depths deliberately
+/// retain map-file order, so a page change emits another draw only at the point
+/// the ordered row stream changes source texture.
+fn draw_page_runs(
+    pass: &mut wgpu::RenderPass<'_>,
+    pages: &[SpriteAtlasPage],
+    quads: &[SpriteQuad],
+    drawn: u32,
+    cutaway: bool,
+) {
+    let drawn = usize::min(drawn as usize, quads.len());
+    let mut first = 0;
+    while first < drawn {
+        let page = quads[first].static_atlas_page();
+        let mut end = first + 1;
+        while end < drawn && quads[end].static_atlas_page() == page {
+            end += 1;
+        }
+        let page = pages
+            .get(usize::from(page.0))
+            .expect("sprite references a static atlas page the renderer does not own");
+        pass.set_bind_group(
+            0,
+            match cutaway {
+                true => &page.cutaway_bind_group,
+                false => &page.bind_group,
+            },
+            &[],
+        );
+        pass.draw(0..4, first as u32..end as u32);
+        first = end;
+    }
 }
 
 impl SpriteRenderer {
@@ -1301,12 +1353,17 @@ impl SpriteRenderer {
         let mask_instances = new_static_instance_buffer(device, mask_capacity);
         let mask_rings = new_ring_buffer(device, mask_capacity);
 
+        let pages = vec![SpriteAtlasPage {
+            texture: atlas_texture,
+            view,
+            bind_group,
+            cutaway_bind_group,
+        }];
+
         Self {
             pipeline,
             cutaway_pipeline,
             mask_pipeline,
-            bind_group,
-            cutaway_bind_group,
             uniforms,
             quad,
             instances,
@@ -1317,7 +1374,7 @@ impl SpriteRenderer {
             mask_instances,
             mask_rings,
             mask_capacity,
-            atlas_texture,
+            pages,
             // The shipped answer until a caller says otherwise, and the client
             // says otherwise on every frame — F2 owns this switch, the same way
             // F11 owns `crate::debug::View`. `Fringe::from_env` is read there,
@@ -1330,9 +1387,87 @@ impl SpriteRenderer {
             cutaway_volumes,
             cutaway_volume_capacity: 1,
             layout,
-            atlas_view: view,
             ramp_view,
             sampler,
+        }
+    }
+
+    /// Build the bounded page-batch static renderer.
+    ///
+    /// This deliberately does not use a texture array: WebGL2's guaranteed
+    /// array-layer limits are lower and less useful than the explicit eight
+    /// page policy. Each page has one bind group, while rows retain their
+    /// source order and the renderer only changes a binding at page runs.
+    pub fn new_static_pages(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        atlas: &StaticAtlasPages,
+        hue_ramp: &HueRamp,
+    ) -> Self {
+        let first = atlas
+            .page(StaticAtlasPage(0))
+            .expect("a paged static atlas always has a first page");
+        let mut renderer = Self::new(device, queue, format, first.pixels(), hue_ramp);
+        for index in 1..atlas.page_count() {
+            let page = atlas
+                .page(StaticAtlasPage(index as u8))
+                .expect("page_count only reports present pages");
+            renderer
+                .pages
+                .push(renderer.new_page(device, queue, page.pixels()));
+        }
+        renderer
+    }
+
+    /// Allocate bindings for static pages that appeared after this renderer was
+    /// created. Existing pages are immutable, so only the new tail needs a
+    /// texture; subsequent dirty-row uploads fill its active page.
+    pub fn sync_static_pages(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        atlas: &StaticAtlasPages,
+    ) {
+        for index in self.pages.len()..atlas.page_count() {
+            let page = atlas
+                .page(StaticAtlasPage(index as u8))
+                .expect("page_count only reports present pages");
+            self.pages.push(self.new_page(device, queue, page.pixels()));
+        }
+    }
+
+    fn new_page(&self, device: &wgpu::Device, queue: &wgpu::Queue, pixels: &[u8]) -> SpriteAtlasPage {
+        let texture = upload(
+            device,
+            queue,
+            "static atlas page",
+            SPRITE_ATLAS_SIDE,
+            SPRITE_ATLAS_SIDE,
+            pixels,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        SpriteAtlasPage {
+            bind_group: static_bind_group(
+                device,
+                &self.layout,
+                &self.uniforms,
+                &view,
+                &self.sampler,
+                &self.ramp_view,
+                &self.volumes,
+            ),
+            cutaway_bind_group: static_bind_group(
+                device,
+                &self.layout,
+                &self.uniforms,
+                &view,
+                &self.sampler,
+                &self.ramp_view,
+                &self.cutaway_volumes,
+            ),
+            texture,
+            view,
         }
     }
 
@@ -1346,7 +1481,22 @@ impl SpriteRenderer {
     /// caller's, and taking the band is what makes it hard to get wrong — a
     /// range only exists because something was written.
     pub fn upload_rows(&self, queue: &wgpu::Queue, pixels: &[u8], rows: std::ops::Range<u32>) {
-        write_rows(queue, &self.atlas_texture, pixels, rows);
+        self.upload_page_rows(queue, StaticAtlasPage(0), pixels, rows);
+    }
+
+    /// Send changed rows to one static atlas page already bound by this pass.
+    pub fn upload_page_rows(
+        &self,
+        queue: &wgpu::Queue,
+        page: StaticAtlasPage,
+        pixels: &[u8],
+        rows: std::ops::Range<u32>,
+    ) {
+        let page = self
+            .pages
+            .get(usize::from(page.0))
+            .expect("static atlas page was uploaded without a renderer page");
+        write_rows(queue, &page.texture, pixels, rows);
     }
 
     /// This pass's own instance buffer, as `blit.wgsl` needs it: bound a
@@ -1402,6 +1552,26 @@ impl SpriteRenderer {
         boxes: &[crate::impostor::Volume],
         drawn: Option<u32>,
     ) {
+        self.render_with_id_bits(device, queue, encoder, target, quads, boxes, drawn, 0);
+    }
+
+    /// Draw static rows whose G-buffer ids carry caller-selected reserved bits.
+    ///
+    /// `IDS_DYNAMIC_ITEM` routes server items to their own current-frame
+    /// storage buffer; immutable map rows retain zero and can be replaced by a
+    /// cached deferred composite without acquiring a transient id.
+    #[expect(clippy::too_many_arguments, reason = "a frame's own list per argument")]
+    pub fn render_with_id_bits(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: Target<'_>,
+        quads: &[SpriteQuad],
+        boxes: &[crate::impostor::Volume],
+        drawn: Option<u32>,
+        id_bits: u32,
+    ) {
         let mut uniform_bytes = Vec::with_capacity(STATIC_UNIFORM_BYTES as usize);
         let projection = target.projection;
         for value in [
@@ -1414,7 +1584,7 @@ impl SpriteRenderer {
             self.fringe as u32 as f32,
             projection.origin.x,
             projection.origin.y,
-            0.0,
+            id_bits as f32,
             0.0,
         ] {
             uniform_bytes.extend_from_slice(&value.to_le_bytes());
@@ -1446,15 +1616,17 @@ impl SpriteRenderer {
         if boxes.len() as u64 > self.volume_capacity {
             self.volume_capacity = (boxes.len() as u64).next_power_of_two();
             self.volumes = new_volume_buffer(device, self.volume_capacity);
-            self.bind_group = static_bind_group(
-                device,
-                &self.layout,
-                &self.uniforms,
-                &self.atlas_view,
-                &self.sampler,
-                &self.ramp_view,
-                &self.volumes,
-            );
+            for page in &mut self.pages {
+                page.bind_group = static_bind_group(
+                    device,
+                    &self.layout,
+                    &self.uniforms,
+                    &page.view,
+                    &self.sampler,
+                    &self.ramp_view,
+                    &self.volumes,
+                );
+            }
         }
         self.volume_bytes.clear();
         self.volume_bytes
@@ -1522,10 +1694,15 @@ impl SpriteRenderer {
         });
 
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
-        pass.draw(0..4, 0..drawn.unwrap_or(quads.len() as u32));
+        draw_page_runs(
+            &mut pass,
+            &self.pages,
+            quads,
+            drawn.unwrap_or(quads.len() as u32),
+            false,
+        );
     }
 
     /// Draw cutaway architecture into its private G-buffer.
@@ -1586,15 +1763,17 @@ impl SpriteRenderer {
         if boxes.len() as u64 > self.cutaway_volume_capacity {
             self.cutaway_volume_capacity = (boxes.len() as u64).next_power_of_two();
             self.cutaway_volumes = new_volume_buffer(device, self.cutaway_volume_capacity);
-            self.cutaway_bind_group = static_bind_group(
-                device,
-                &self.layout,
-                &self.uniforms,
-                &self.atlas_view,
-                &self.sampler,
-                &self.ramp_view,
-                &self.cutaway_volumes,
-            );
+            for page in &mut self.pages {
+                page.cutaway_bind_group = static_bind_group(
+                    device,
+                    &self.layout,
+                    &self.uniforms,
+                    &page.view,
+                    &self.sampler,
+                    &self.ramp_view,
+                    &self.cutaway_volumes,
+                );
+            }
         }
         let mut volume_bytes = Vec::with_capacity(boxes.len() * crate::impostor::Volume::STRIDE as usize);
         for volume in boxes {
@@ -1657,10 +1836,9 @@ impl SpriteRenderer {
             occlusion_query_set: None,
         });
         pass.set_pipeline(&self.cutaway_pipeline);
-        pass.set_bind_group(0, &self.cutaway_bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, self.cutaway_instances.slice(..));
-        pass.draw(0..4, 0..drawn);
+        draw_page_runs(&mut pass, &self.pages, quads, drawn, true);
     }
 
     /// The cutaway row buffer, addressed by its private deferred-lighting blit.
@@ -1750,6 +1928,7 @@ impl SpriteRenderer {
         }
         let mut instance_bytes = Vec::with_capacity(instances * SpriteQuad::STRIDE as usize);
         let mut ring_bytes = Vec::with_capacity(instances * 4);
+        let mut mask_quads = Vec::with_capacity(instances);
         for (index, group) in groups.iter().enumerate() {
             // Zero is "nothing here" in the mask, so the first group is 1 —
             // `silhouette.wgsl` reads this number and does not add to it.
@@ -1757,6 +1936,7 @@ impl SpriteRenderer {
             for quad in *group {
                 quad.write(&mut instance_bytes);
                 ring_bytes.extend_from_slice(&ring.to_le_bytes());
+                mask_quads.push(*quad);
             }
         }
         if !instance_bytes.is_empty() {
@@ -1796,11 +1976,10 @@ impl SpriteRenderer {
         }
 
         pass.set_pipeline(&self.mask_pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad.slice(..));
         pass.set_vertex_buffer(1, self.mask_instances.slice(..));
         pass.set_vertex_buffer(2, self.mask_rings.slice(..));
-        pass.draw(0..4, 0..instances as u32);
+        draw_page_runs(&mut pass, &self.pages, &mask_quads, instances as u32, false);
     }
 }
 

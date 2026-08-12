@@ -8,9 +8,12 @@
 
 use openshard_client_render::camera::Camera;
 use openshard_client_render::cutaway::Cutaway;
+use std::collections::BTreeSet;
+
+use openshard_client_render::composite::MapBlock;
 use openshard_client_render::frame::{self, Impostor};
 use openshard_client_render::mobiles::Mobile;
-use openshard_client_render::sprite::{SpriteQuad, split_corners};
+use openshard_client_render::sprite::{InstanceRows, SpriteQuad, split_corners};
 use openshard_client_render::{ground, items, light, mobiles, statics};
 
 use crate::crowd::Who;
@@ -30,9 +33,13 @@ pub(crate) struct FrameGeometry {
     pub(crate) lighting: light::Lighting,
     /// The land, back to front.
     pub(crate) quads: Vec<ground::GroundQuad>,
-    /// The map's furniture and the server's items, split so a corner static's
-    /// two faces carry their own id — see `sprite::split_corners`.
-    pub(crate) static_instances: openshard_client_render::sprite::InstanceRows,
+    /// Immutable map furniture, split so a corner static's two faces carry
+    /// their own id — see `sprite::split_corners`.  A ready block composite may
+    /// replace rows from this list only.
+    pub(crate) map_static_instances: openshard_client_render::sprite::InstanceRows,
+    /// Server-owned items, kept out of map composites and drawn with a fresh
+    /// current-frame instance buffer after cached map blocks.
+    pub(crate) item_instances: openshard_client_render::sprite::InstanceRows,
     /// Architecture that overlaps the player's picture, held aside from the
     /// opaque rows so its private deferred layer can be composited after the
     /// opaque world is lit.
@@ -60,6 +67,31 @@ pub(crate) struct FrameGeometry {
     /// gives — kept beside the pictures for the F12 dump. `None` unless a
     /// dump is armed.
     pub(crate) asked_for: Option<String>,
+}
+
+impl FrameGeometry {
+    /// LOD 0 land excluding blocks that a ready deferred cache entry owns.
+    /// The source map still assembled these quads for picking and for a cache
+    /// miss; this is only the final draw list.
+    pub(crate) fn detail_ground(&self, cached: &BTreeSet<MapBlock>) -> Vec<ground::GroundQuad> {
+        self.quads
+            .iter()
+            .copied()
+            .filter(|quad| !cached.contains(&MapBlock::containing_tile(quad.place.x, quad.place.y)))
+            .collect()
+    }
+
+    /// Map-static rows excluding ready blocks.  Re-splitting after filtering is
+    /// required because a corner's twin is a current frame row id; cached map
+    /// pixels deliberately never retain one.
+    pub(crate) fn detail_map_statics(&self, cached: &BTreeSet<MapBlock>) -> InstanceRows {
+        let rows = self.map_static_instances.rows[..self.map_static_instances.drawn as usize]
+            .iter()
+            .copied()
+            .filter(|quad| !cached.contains(&MapBlock::containing_tile(quad.place.x, quad.place.y)))
+            .collect();
+        split_corners(rows)
+    }
 }
 
 /// Everything the world's pictures are built from, out of `frame::assemble`
@@ -210,20 +242,25 @@ pub(crate) fn assemble_geometry(
     // arguments were readable until now only by reading this function. Only
     // when a dump is armed — `summary` walks every field and allocates.
     let asked_for = graphics.frame_dump.as_ref().map(|_| inputs.summary());
-    let (assembled, assembly_costs) = frame::assemble_profiled(inputs);
-    let frame::Frame {
+    let (assembled, assembly_costs) = frame::assemble_split_profiled(inputs);
+    let frame::SplitFrame {
         lighting,
         ground: quads,
-        statics:
-            statics::StaticGeometry {
-                quads: static_quads,
-                cutaway_quads,
-                cutaway_boxes,
-                mesh_vertices,
-                mesh_rows,
-                boxes,
-            },
+        mut map_statics,
+        items: mut item_geometry,
     } = assembled;
+    // The opaque lists stay split, but the private cutaway target has one
+    // depth/G-buffer and therefore needs both producers in the same call.
+    let item_instances = split_corners(std::mem::take(&mut item_geometry.quads));
+    map_statics.absorb_cutaway(item_geometry);
+    let statics::StaticGeometry {
+        quads: map_static_quads,
+        cutaway_quads,
+        cutaway_boxes,
+        mesh_vertices,
+        mesh_rows,
+        boxes,
+    } = map_statics;
     let mesh = statics::StaticMesh {
         mesh_vertices,
         mesh_rows,
@@ -269,7 +306,7 @@ pub(crate) fn assemble_geometry(
     );
     // A corner static's two faces get their own id past this point — see
     // `docs/gbuffer.md` step 4 and `sprite::split_corners`'s own doc.
-    let static_instances = split_corners(static_quads);
+    let map_static_instances = split_corners(map_static_quads);
     let cutaway_instances = split_corners(cutaway_quads);
     // The same two effects for a creature, off the same style switch and
     // the same one-pick-a-frame rule: `lit_mobile` and `lit_item` are never
@@ -307,7 +344,8 @@ pub(crate) fn assemble_geometry(
         assembly_costs,
         lighting,
         quads,
-        static_instances,
+        map_static_instances,
+        item_instances,
         cutaway_instances,
         cutaway_boxes,
         mesh,

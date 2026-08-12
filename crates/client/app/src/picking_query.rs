@@ -557,7 +557,9 @@ impl App {
             bounds,
             &self.resources.tiledata,
             cutaway,
-            self.window.as_ref().map(|window| &window.atlases.statics),
+            self.window
+                .as_ref()
+                .map(|window| &window.atlases.statics as &dyn openshard_client_render::atlas::StaticArt),
         );
         let bounds = occlusion.bounds();
         let mut surfaces = Vec::new();

@@ -777,6 +777,31 @@ pub struct PagedSprite {
     pub sprite: Sprite,
 }
 
+/// The static-art facts every world consumer needs, independent of whether
+/// the pixels live in one atlas or a bounded family of pages.
+///
+/// `StaticAtlas` remains the baseline implementation and always reports page
+/// zero.  `StaticAtlasPages` adds the page identity a renderer needs while
+/// leaving picking, occlusion and placement keyed by the original graphic.
+pub trait StaticArt: fmt::Debug {
+    /// The page-local sprite to draw for `graphic`.
+    fn paged_sprite(&self, graphic: Graphic) -> Option<PagedSprite>;
+    /// Whether an image texel is opaque.
+    fn opaque_at(&self, graphic: Graphic, x: u16, y: u16) -> bool;
+    /// The measured hole in a graphic, if any.
+    fn hole(&self, graphic: Graphic) -> Option<crate::facing::Hole>;
+    /// The measured prism in a graphic, if any.
+    fn prism(&self, graphic: Graphic) -> Option<crate::facing::Prism>;
+    /// The measured footprint in a graphic, if any.
+    fn footprint(&self, graphic: Graphic) -> Option<crate::facing::Footprint>;
+    /// The revision consumers cache their shape facts under.
+    fn revision(&self) -> u64;
+    /// Largest sprite dimensions across the source.
+    fn max_sprite_size(&self) -> (u16, u16);
+    /// Total packed graphics across all pages.
+    fn len(&self) -> usize;
+}
+
 /// Maximum retained static pages in the first paged path.
 ///
 /// Each page is a 2048×2048 RGBA8 texture (16 MiB), so eight pages retain at
@@ -1333,10 +1358,9 @@ pub struct DirtyStaticAtlasPage {
 /// a fresh page. No visible graphic is evicted or decoded a second time merely
 /// because an older page filled.
 ///
-/// This is deliberately a CPU atlas and lookup API only. The existing renderer
-/// still consumes [`StaticAtlas`] for its one texture. Work 4 will consume the
-/// `StaticAtlasPage` on [`PagedSprite`] to choose a texture-array layer or a
-/// bounded page batch without changing this allocation policy.
+/// The production static renderer consumes [`StaticAtlasPage`] on
+/// [`PagedSprite`] as a bounded page-batch binding. [`StaticAtlas`] remains a
+/// one-page baseline for tests and embeddings that do not need paging.
 pub struct StaticAtlasPages {
     pages: Vec<StaticAtlas>,
     page_of: BTreeMap<Graphic, StaticAtlasPage>,
@@ -1611,6 +1635,77 @@ impl StaticAtlasPages {
             .get(&graphic)
             .and_then(|page| self.page(*page))
             .and_then(|page| page.footprint(graphic))
+    }
+}
+
+impl StaticArt for StaticAtlas {
+    fn paged_sprite(&self, graphic: Graphic) -> Option<PagedSprite> {
+        self.sprite(graphic).map(|sprite| PagedSprite {
+            page: StaticAtlasPage(0),
+            sprite,
+        })
+    }
+
+    fn opaque_at(&self, graphic: Graphic, x: u16, y: u16) -> bool {
+        Self::opaque_at(self, graphic, x, y)
+    }
+
+    fn hole(&self, graphic: Graphic) -> Option<crate::facing::Hole> {
+        Self::hole(self, graphic)
+    }
+
+    fn prism(&self, graphic: Graphic) -> Option<crate::facing::Prism> {
+        Self::prism(self, graphic)
+    }
+
+    fn footprint(&self, graphic: Graphic) -> Option<crate::facing::Footprint> {
+        Self::footprint(self, graphic)
+    }
+
+    fn revision(&self) -> u64 {
+        Self::revision(self)
+    }
+
+    fn max_sprite_size(&self) -> (u16, u16) {
+        Self::max_sprite_size(self)
+    }
+
+    fn len(&self) -> usize {
+        Self::len(self)
+    }
+}
+
+impl StaticArt for StaticAtlasPages {
+    fn paged_sprite(&self, graphic: Graphic) -> Option<PagedSprite> {
+        self.sprite(graphic)
+    }
+
+    fn opaque_at(&self, graphic: Graphic, x: u16, y: u16) -> bool {
+        Self::opaque_at(self, graphic, x, y)
+    }
+
+    fn hole(&self, graphic: Graphic) -> Option<crate::facing::Hole> {
+        Self::hole(self, graphic)
+    }
+
+    fn prism(&self, graphic: Graphic) -> Option<crate::facing::Prism> {
+        Self::prism(self, graphic)
+    }
+
+    fn footprint(&self, graphic: Graphic) -> Option<crate::facing::Footprint> {
+        Self::footprint(self, graphic)
+    }
+
+    fn revision(&self) -> u64 {
+        Self::revision(self)
+    }
+
+    fn max_sprite_size(&self) -> (u16, u16) {
+        Self::max_sprite_size(self)
+    }
+
+    fn len(&self) -> usize {
+        Self::len(self)
     }
 }
 

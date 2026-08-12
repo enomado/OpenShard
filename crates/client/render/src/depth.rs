@@ -91,6 +91,14 @@ pub fn base_for(x: i32, y: i32) -> i32 {
     x + y
 }
 
+/// The value added to a depth encoded around `from` when it is restored into a
+/// frame centred on `to`.  Cached map composites retain their source depth;
+/// rebasing it here keeps their pixels in the same ordering as live items and
+/// mobiles after the eye has moved.
+pub fn rebase_adjust(from: i32, to: i32) -> f32 {
+    (to - from) as f32 / (2.0 * HALF_RANGE)
+}
+
 /// Where a land tile sorts.
 ///
 /// `Chunk.AddGameObject`, the `Land` arm: a stretched tile takes its average

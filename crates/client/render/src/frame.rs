@@ -37,7 +37,7 @@ use openshard_uofiles::tiledata::TileData;
 use std::time::{Duration, Instant};
 
 use crate::animate::StaticAnimations;
-use crate::atlas::{LandAtlas, StaticAtlas, TexmapAtlas};
+use crate::atlas::{LandAtlas, StaticArt, TexmapAtlas};
 use crate::camera::Camera;
 use crate::cutaway::Cutaway;
 use crate::debug::View;
@@ -161,7 +161,7 @@ pub struct Inputs<'a> {
     /// because they go through one pass. It is also where an occluder's *facing*
     /// comes from, which is why a frame drawn from one atlas and lit from
     /// another would be two different sets of walls.
-    pub statics: &'a StaticAtlas,
+    pub statics: &'a dyn StaticArt,
     /// The sky, already flattened or not by whoever knows whether the field is
     /// wanted.
     ///
@@ -387,6 +387,28 @@ pub struct Frame {
     pub statics: StaticGeometry,
 }
 
+/// The same frame before immutable map statics and server-owned items are
+/// joined for the shared sprite pass.
+///
+/// The ordinary [`Frame`] deliberately preserves the historical joined shape:
+/// most callers draw one static pass and do not need to know where a row came
+/// from.  A block-composite renderer does need that distinction, however.  It
+/// may replace only map rows; a row sent by the server must remain a live
+/// producer with a current-frame id, depth and selection mask.  Keeping the
+/// split at the assembly boundary means that policy cannot be reconstructed
+/// later from two visually identical `SpriteQuad`s.
+#[derive(Debug)]
+pub struct SplitFrame {
+    /// Lighting for the complete current world.
+    pub lighting: Lighting,
+    /// Immutable map land, before a composite consumer elects to omit blocks.
+    pub ground: Vec<GroundQuad>,
+    /// Immutable map statics only.
+    pub map_statics: StaticGeometry,
+    /// Server-owned ground items only.
+    pub items: StaticGeometry,
+}
+
 /// CPU cost of the three map walks [`assemble_profiled`] makes.
 ///
 /// This is diagnostic data rather than part of the picture: the ordinary
@@ -434,6 +456,31 @@ pub fn assemble(inputs: Inputs<'_>) -> Frame {
 /// existing phases only. Most callers should use [`assemble`]; the client uses
 /// this when it needs a jank log that can tell which collection phase grew.
 pub fn assemble_profiled(inputs: Inputs<'_>) -> (Frame, AssemblyCosts) {
+    let (split, costs) = assemble_split_profiled(inputs);
+    let SplitFrame {
+        lighting,
+        ground,
+        mut map_statics,
+        items,
+    } = split;
+    map_statics.absorb(items);
+    (
+        Frame {
+            lighting,
+            ground,
+            statics: map_statics,
+        },
+        costs,
+    )
+}
+
+/// Assemble a frame without joining immutable map statics to dynamic items.
+///
+/// [`assemble_profiled`] remains the compatibility entry point for consumers
+/// that have one static pass.  The client far-LOD path calls this form so it
+/// can replace *only* map geometry with deferred block composites before it
+/// draws server items and mobiles.
+pub fn assemble_split_profiled(inputs: Inputs<'_>) -> (SplitFrame, AssemblyCosts) {
     let Inputs {
         map,
         items,
@@ -523,7 +570,7 @@ pub fn assemble_profiled(inputs: Inputs<'_>) -> (Frame, AssemblyCosts) {
     // Reaching the same picture by handing this function fewer items would be a
     // different world, lit differently, and the summary would not say so.
     let statics_started = Instant::now();
-    let (mut geometry, static_costs) = match draw.statics {
+    let (map_statics, static_costs) = match draw.statics {
         true => crate::statics::collect_with_fades_profiled(
             map,
             camera,
@@ -542,8 +589,8 @@ pub fn assemble_profiled(inputs: Inputs<'_>) -> (Frame, AssemblyCosts) {
     // atlas: one draw call binds one texture, and what covers what is the depth
     // these carry rather than the order they are appended in.
     let items_started = Instant::now();
-    if draw.items {
-        geometry.absorb(crate::items::collect_with_fades(
+    let items = if draw.items {
+        crate::items::collect_with_fades(
             items,
             camera,
             tiledata,
@@ -554,16 +601,19 @@ pub fn assemble_profiled(inputs: Inputs<'_>) -> (Frame, AssemblyCosts) {
             met,
             player_mask,
             fades,
-        ));
-    }
+        )
+    } else {
+        StaticGeometry::default()
+    };
     let items_cost = items_started.elapsed();
 
     let statics_cost = statics_started.elapsed();
     (
-        Frame {
+        SplitFrame {
             lighting,
             ground,
-            statics: geometry,
+            map_statics,
+            items,
         },
         AssemblyCosts {
             lighting: lighting_cost,

@@ -59,11 +59,13 @@ while dirty uploads are reported as `(page, rows)`. Thus filling a page neither
 evicts nor re-reads graphics still visible on older pages.
 
 The first path retains at most eight pages: 8 × 2048 × 2048 × 4 = 128 MiB of
-static texture pixels. The renderer integration remains deliberately deferred:
-Work 4 may use a texture array when the adapter permits it or bounded per-page
-batches otherwise, but consumes the same page id. Until its image, selection,
-and g-buffer coverage exists, the production renderer remains on the current
-one-page `StaticAtlas` baseline.
+static texture pixels. Work 4 uses bounded per-page bind groups/batches rather
+than a texture array, so it stays within WebGL2 texture-array limits. Instances
+retain their source order and change binding only at page runs, preserving
+equal-depth ordering; the legacy one-page `StaticAtlas` renderer remains
+available as the baseline. Work 5 keeps that legacy renderer covered while a
+two-page fixture now verifies page-one image sampling, G-buffer identity, and
+CPU pick/selection rows.
 
 ### Done when
 

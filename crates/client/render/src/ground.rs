@@ -156,9 +156,27 @@ pub fn collect(
     texmaps: &TexmapAtlas,
     cutaway: &Cutaway,
 ) -> Vec<GroundQuad> {
+    collect_in(map, camera, camera.visible_tiles(), atlas, texmaps, cutaway)
+}
+
+/// The ground quads on one caller-selected tile rectangle.
+///
+/// The detailed renderer uses [`Camera::visible_tiles`] through [`collect`].
+/// Cached map-block composition uses this narrower form so an 8×8 block can be
+/// built without walking every tile currently visible to the camera.  The
+/// rectangles have the same inclusive, map-clamped semantics as the camera's
+/// own bounds; only their source differs.
+pub fn collect_in(
+    map: &Map,
+    camera: &Camera,
+    bounds: TileBounds,
+    atlas: &LandAtlas,
+    texmaps: &TexmapAtlas,
+    cutaway: &Cutaway,
+) -> Vec<GroundQuad> {
     let (eye_x, eye_y) = camera.eye_tile();
     let base = depth::base_for(eye_x, eye_y);
-    let Some((xs, ys)) = camera.visible_tiles().clamp_to(map.width(), map.height()) else {
+    let Some((xs, ys)) = bounds.clamp_to(map.width(), map.height()) else {
         return Vec::new();
     };
     let mut quads = Vec::new();

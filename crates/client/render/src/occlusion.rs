@@ -2739,7 +2739,7 @@ pub fn collect(
     bounds: TileBounds,
     tiledata: &TileData,
     cutaway: &Cutaway,
-    atlas: Option<&crate::atlas::StaticAtlas>,
+    atlas: Option<&dyn crate::atlas::StaticArt>,
 ) -> Occlusion {
     let mut occlusion = Builder::new(bounds);
 
@@ -2783,7 +2783,7 @@ fn place(
     grid: &mut Builder,
     map: &Map,
     tiledata: &TileData,
-    atlas: Option<&crate::atlas::StaticAtlas>,
+    atlas: Option<&dyn crate::atlas::StaticArt>,
     x: u16,
     y: u16,
     z: i8,
@@ -2817,11 +2817,11 @@ fn place(
 /// `pub` since `docs/lighting_rebuild.md` phase 6c: the impostor asks the same
 /// question of the same atlas, because a fragment's own shape is what
 /// [`boxes_of`] needs and this is where the art's answer to it lives.
-pub fn shape_of(atlas: Option<&crate::atlas::StaticAtlas>, graphic: Graphic) -> Shape {
+pub fn shape_of(atlas: Option<&dyn crate::atlas::StaticArt>, graphic: Graphic) -> Shape {
     Shape {
         facing: atlas
-            .and_then(|atlas| atlas.sprite(graphic))
-            .and_then(|sprite| sprite.facing),
+            .and_then(|atlas| atlas.paged_sprite(graphic))
+            .and_then(|sprite| sprite.sprite.facing),
         hole: atlas.and_then(|atlas| atlas.hole(graphic)),
         prism: atlas.and_then(|atlas| atlas.prism(graphic)),
         blocks: crate::facing::Blocks::EMPTY,
@@ -2844,7 +2844,7 @@ fn put_items(
     map: &Map,
     items: &[GroundItem],
     tiledata: &TileData,
-    atlas: Option<&crate::atlas::StaticAtlas>,
+    atlas: Option<&dyn crate::atlas::StaticArt>,
 ) {
     for item in items {
         place(

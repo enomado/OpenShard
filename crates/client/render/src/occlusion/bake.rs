@@ -54,6 +54,8 @@ use openshard_uofiles::map::{BLOCK_SIZE, Map};
 use openshard_uofiles::tiledata::TileData;
 
 use super::{Builder, Link, Occlusion, SKY_OPEN, Solid};
+use crate::atlas::StaticArt;
+#[cfg(test)]
 use crate::atlas::StaticAtlas;
 use crate::camera::TileBounds;
 use crate::cutaway::Cutaway;
@@ -113,7 +115,7 @@ impl Baked {
     /// The builder used is over the block's eight-by-eight rectangle and nothing
     /// wider, so its row-major index *is* the cell index, which is what makes the
     /// read-out below a copy rather than an arithmetic.
-    fn of(map: &Map, tiledata: &TileData, atlas: Option<&StaticAtlas>, block_x: u32, block_y: u32) -> Self {
+    fn of(map: &Map, tiledata: &TileData, atlas: Option<&dyn StaticArt>, block_x: u32, block_y: u32) -> Self {
         let (origin_x, origin_y) = origin(block_x, block_y);
         let mut grid = Builder::new(TileBounds {
             min_x: origin_x,
@@ -262,8 +264,8 @@ impl Builder {
 struct Stamp(Option<u64>);
 
 impl Stamp {
-    fn of(atlas: Option<&StaticAtlas>) -> Self {
-        Self(atlas.map(StaticAtlas::revision))
+    fn of(atlas: Option<&dyn StaticArt>) -> Self {
+        Self(atlas.map(StaticArt::revision))
     }
 }
 
@@ -327,7 +329,7 @@ impl Bake {
     }
 
     /// Start a frame: let go of everything if the art has moved under us.
-    fn begin(&mut self, atlas: Option<&StaticAtlas>) {
+    fn begin(&mut self, atlas: Option<&dyn StaticArt>) {
         let stamp = Stamp::of(atlas);
         if stamp != self.stamp {
             self.blocks.clear();
@@ -341,7 +343,7 @@ impl Bake {
         &mut self,
         map: &Map,
         tiledata: &TileData,
-        atlas: Option<&StaticAtlas>,
+        atlas: Option<&dyn StaticArt>,
         block_x: u32,
         block_y: u32,
     ) -> &Baked {
@@ -401,7 +403,7 @@ pub fn collect(
     bounds: TileBounds,
     tiledata: &TileData,
     cutaway: &Cutaway,
-    atlas: Option<&StaticAtlas>,
+    atlas: Option<&dyn StaticArt>,
 ) -> Occlusion {
     collect_ring(
         bake,
@@ -428,7 +430,7 @@ pub fn collect(
 /// anyway: the day a graphic's box can reach past its tile, this is the one
 /// place that reads the widest one, before the first block is baked, and
 /// nothing above it has to change.
-fn ring_radius(_atlas: Option<&StaticAtlas>) -> u32 {
+fn ring_radius(_atlas: Option<&dyn StaticArt>) -> u32 {
     0
 }
 
@@ -444,7 +446,7 @@ fn collect_ring(
     bounds: TileBounds,
     tiledata: &TileData,
     cutaway: &Cutaway,
-    atlas: Option<&StaticAtlas>,
+    atlas: Option<&dyn StaticArt>,
     radius: u32,
 ) -> Occlusion {
     bake.begin(atlas);

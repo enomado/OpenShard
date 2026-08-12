@@ -155,8 +155,25 @@ impl SpriteQuad {
         // Zero in the sideband means the historical opaque spelling. Keeping
         // it for 255 also preserves the ordinary hue word for CPU readers
         // and for every producer that is not in the late layer.
-        self.hue = (self.hue & 0xffff) | (u32::from(opacity != u8::MAX) * u32::from(opacity) << 16);
+        self.hue = (self.hue & 0xff00_ffff) | (u32::from(opacity != u8::MAX) * u32::from(opacity) << 16);
         self
+    }
+
+    /// Mark this static as sampling `page` of a bounded atlas family.
+    ///
+    /// The shader already ignores hue's high byte: the lower sixteen bits are
+    /// the wire hue and the next byte is the cutaway opacity sideband. Keeping
+    /// the page here avoids widening the 64-byte instance contract shared with
+    /// the G-buffer storage readback.
+    pub fn with_static_atlas_page(mut self, page: crate::atlas::StaticAtlasPage) -> Self {
+        self.hue = (self.hue & 0x00ff_ffff) | (u32::from(page.0) << 24);
+        self
+    }
+
+    /// Which static-atlas page this row samples; legacy and non-static rows
+    /// remain on page zero.
+    pub fn static_atlas_page(&self) -> crate::atlas::StaticAtlasPage {
+        crate::atlas::StaticAtlasPage((self.hue >> 24) as u8)
     }
 
     /// Append this quad to an instance buffer.
@@ -358,5 +375,35 @@ mod tests {
         // without moving the sprite anywhere visible.
         let back = SpriteQuad::mirrored(flipped);
         assert_eq!((back.u, back.du), (region.u, region.du));
+    }
+
+    #[test]
+    fn static_page_and_cutaway_opacity_share_the_hue_sideband_without_clobbering_each_other() {
+        let quad = SpriteQuad {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+            region: Region {
+                u: 0.0,
+                v: 0.0,
+                du: 1.0,
+                dv: 1.0,
+            },
+            depth: 0.0,
+            hue: 0x55aa,
+            place: crate::place::Place::NOWHERE,
+            twin: 0,
+            owner: 0,
+            volumes: crate::impostor::Range::default(),
+        }
+        .with_static_atlas_page(crate::atlas::StaticAtlasPage(3))
+        .with_opacity(127);
+
+        assert_eq!(quad.static_atlas_page(), crate::atlas::StaticAtlasPage(3));
+        assert_eq!(quad.hue & 0xffff, 0x55aa, "the wire hue remains intact");
+        assert_eq!((quad.hue >> 16) & 0xff, 127, "the opacity remains intact");
     }
 }

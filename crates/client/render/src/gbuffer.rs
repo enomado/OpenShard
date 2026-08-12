@@ -183,6 +183,16 @@ pub const IDS_ID_SHIFT: u32 = 6;
 /// [`ids_id`] can see where the row stops and the edges begin.
 pub const IDS_ID_MASK: u32 = 0x00FF_FFFF;
 
+/// A static-row id belongs to the server-item instance buffer rather than the
+/// immutable-map buffer.  The two buffers are deliberately distinct: cached
+/// map composites never carry a frame-local row, while items must.
+pub const IDS_DYNAMIC_ITEM: u32 = 0x0040_0000;
+
+/// A cached map composite owns this pixel.  Its position and normal are still
+/// ordinary G-buffer facts, but lighting and selection resolve its tile from
+/// that position instead of indexing a transient instance buffer.
+pub const IDS_COMPOSITE_MAP: u32 = 0x0080_0000;
+
 /// **The two edges a magnified frame draws** — `docs/silhouettes.md`, and
 /// `place_format.wesl`'s `IDS_EDGE_ART` / `IDS_EDGE_BOX`, which is where the
 /// argument for the layout lives.

@@ -345,6 +345,7 @@ fn a_real_frames_view_normal_draws_the_bookcases_lid_inside_that_slab() {
             world: &world_view,
             gbuffer: &gbuffer_views,
             face_instances: drawn.statics.instances_buffer(),
+            item_instances: drawn.statics.instances_buffer(),
             mobile_instances: &dummy_mobiles,
             mesh_instances: drawn.mesh.rows_buffer(),
             ground_instances: drawn.ground.instances_buffer(),

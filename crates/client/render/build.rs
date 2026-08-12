@@ -32,7 +32,17 @@ fn main() {
     // `include_str!(concat!(env!("OUT_DIR"), ...))` counterpart lives beside
     // its own `create_shader_module` — `renderer.rs` for the three below.
     let wesl = wesl::Wesl::new("src/shaders");
-    for name in ["ground", "statics", "mesh_face", "select", "blit"] {
+    for name in [
+        "ground",
+        "statics",
+        "mesh_face",
+        "select",
+        "blit",
+        "composite",
+        "composite_deferred",
+        "composite_capture_depth",
+        "composite_capture_planes",
+    ] {
         wesl.build_artifact(&format!("package::{name}").parse().unwrap(), name);
     }
 

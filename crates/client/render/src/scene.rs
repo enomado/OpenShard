@@ -235,7 +235,9 @@ impl Scene {
             // `examples/boxes.rs` does exactly that for its own flame radius.
             &light::Tuning::DEFAULT,
             time,
-            self.art.as_ref(),
+            self.art
+                .as_ref()
+                .map(|atlas| atlas as &dyn crate::atlas::StaticArt),
             // No bake. A scene is asked for its lighting once and its map is a
             // few blocks, so a cache would only be a second thing to be wrong —
             // and it is the *uncached* grid these tests are the oracle for.

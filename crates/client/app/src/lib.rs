@@ -904,6 +904,10 @@ pub fn run<D: Dial + Send + 'static>(
         route_cache: None,
         terrain_cache: None,
         occluder_cache: None,
+        composite_work: openshard_client_render::composite::CompositeWorkQueue::default(),
+        composite_lod: openshard_client_render::lod::BlockLodSelector::new(
+            openshard_client_render::lod::LodThresholds::DEFAULT,
+        ),
         input: input::Input {
             aiming: false,
             ctrl_held: false,

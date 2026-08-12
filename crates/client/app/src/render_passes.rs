@@ -6,8 +6,16 @@
 //! answer here to be recorded.
 
 use openshard_client_render::blit::{self, ViewportRect};
-use openshard_client_render::camera::Camera;
+use std::collections::{BTreeMap, BTreeSet};
+
+use openshard_client_render::camera::{Camera, TILE_WIDTH};
+use openshard_client_render::composite::{
+    CaptureSource, CompositeQuad, CompositeWork, CompositeWorkQueue, ImmutableRevision, MapBlock,
+    MapBlockBounds,
+};
+use openshard_client_render::geometry::Rect;
 use openshard_client_render::gump::{self as gump_art};
+use openshard_client_render::lod::BlockLod;
 use openshard_client_render::outline::{self, Ring};
 use openshard_client_render::renderer::Target;
 use openshard_client_render::select::{self, Selection};
@@ -20,6 +28,43 @@ use crate::picking::{self, SelectedIdentity};
 use crate::window::Screen;
 use crate::windows::{Drawn, WindowSubject};
 use crate::{crowd, graphics, profile, resources, shell, windows, world};
+
+/// The zero-height diamond occupied by one 8×8 map block.  The first tile's
+/// centre is its top vertex plus half a tile; the block's four extrema are
+/// therefore a stable 352-pixel square in virtual target space.
+fn block_rect(camera: Camera, block: MapBlock, overhang: f32) -> Rect {
+    let (x, y) = block.first_tile();
+    let top = camera.to_screen(openshard_protocol::world::Point::new(x, y, 0));
+    let footprint = (openshard_uofiles::map::BLOCK_SIZE as i32 * TILE_WIDTH) as f32;
+    let side = footprint + overhang * 2.0;
+    Rect {
+        x: top.x as f32 - side / 2.0,
+        y: top.y as f32 - TILE_WIDTH as f32 / 2.0 - overhang,
+        width: side,
+        height: side,
+    }
+}
+
+/// A whole source rectangle suitable for an immutable GPU capture.  Partially
+/// visible blocks stay detailed until a frame exposes their complete footprint;
+/// this avoids caching a clipped image at a viewport edge.
+fn capture_rect(rect: Rect, width: u32, height: u32) -> Option<ViewportRect> {
+    if rect.x < 0.0
+        || rect.y < 0.0
+        || rect.x.fract() != 0.0
+        || rect.y.fract() != 0.0
+        || rect.x + rect.width > width as f32
+        || rect.y + rect.height > height as f32
+    {
+        return None;
+    }
+    Some(ViewportRect {
+        x: rect.x as u32,
+        y: rect.y as u32,
+        width: rect.width as u32,
+        height: rect.height as u32,
+    })
+}
 
 /// The shard's dialogs, in the client's own art, packed and drawn — a
 /// container, a paperdoll, the skill sheet, all three through one machinery.
@@ -329,6 +374,11 @@ pub(crate) fn encode_world_passes(
     text_quads: &[SpriteQuad],
     render_width: u32,
     render_height: u32,
+    composite_lod: BlockLod,
+    composite_revision: ImmutableRevision,
+    composite_visible: Option<MapBlockBounds>,
+    composite_jobs: &[CompositeWork],
+    composite_work: &mut CompositeWorkQueue,
 ) {
     // Ground first, because it clears; statics after, into what it left.
     // Which covers which is decided by the depth they share, not by this
@@ -339,24 +389,121 @@ pub(crate) fn encode_world_passes(
     // of a frame's cost no clock on this thread can see. See [`profile`] for
     // why that is so and why the bracket is a pair of calls rather than a
     // scope guard. Nothing when the adapter has no timestamp queries.
+    let (static_width, static_height) = window.atlases.statics.max_sprite_size();
+    let composite_overhang = f32::from(static_width.max(static_height));
+    let ready: Vec<(
+        MapBlock,
+        Rect,
+        &openshard_client_render::composite::CompositeTexture,
+    )> = (geometry.cutaway_instances.drawn == 0)
+        .then_some(composite_visible)
+        .flatten()
+        .into_iter()
+        .flat_map(MapBlockBounds::blocks)
+        .filter_map(|block| {
+            let texture =
+                window
+                    .composites
+                    .selected_or_more_detailed(block, composite_lod, composite_revision)?;
+            if !texture.has_deferred() {
+                return None;
+            }
+            Some((block, block_rect(camera, block, composite_overhang), texture))
+        })
+        .collect();
+    let cached_blocks: BTreeSet<_> = ready.iter().map(|(block, _, _)| *block).collect();
+    let ground = geometry.detail_ground(&cached_blocks);
+    let map_statics = geometry.detail_map_statics(&cached_blocks);
     let timed = profile::begin(window.gpu.as_ref(), "ground", encoder);
     window
         .renderer
-        .render(&window.device, &window.queue, encoder, target, &geometry.quads);
+        .render(&window.device, &window.queue, encoder, target, &ground);
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    // A cached block is restored before any live sprite pass.  Its depth and
+    // G-buffer facts therefore interleave with unready map rows, server items
+    // and mobiles exactly as the detailed world did.
+    let mut composite_groups: BTreeMap<i32, Vec<CompositeQuad<'_>>> = BTreeMap::new();
+    for (_, rect, texture) in &ready {
+        composite_groups
+            .entry(texture.depth_base())
+            .or_default()
+            .push(CompositeQuad { texture, rect: *rect });
+    }
+    let (eye_x, eye_y) = camera.eye_tile();
+    let current_depth_base = openshard_client_render::depth::base_for(eye_x, eye_y);
+    let timed = profile::begin(window.gpu.as_ref(), "map composites", encoder);
+    for (source_base, blocks) in composite_groups.iter() {
+        window.composite_pass.render_deferred(
+            &window.device,
+            &window.queue,
+            encoder,
+            target,
+            openshard_client_render::depth::rebase_adjust(*source_base, current_depth_base),
+            blocks,
+        );
+    }
     profile::end(window.gpu.as_ref(), encoder, timed);
     // Handed over every frame rather than on the key, because the key does
     // not have the window: `graphics.fringe` is the switch and the pass is where
     // it is read, and a state pushed once at start-up would leave F2 silent.
     window.statics.set_fringe(graphics.fringe);
+    window.items_pass.set_fringe(graphics.fringe);
     let timed = profile::begin(window.gpu.as_ref(), "statics", encoder);
     window.statics.render(
         &window.device,
         &window.queue,
         encoder,
         target,
-        &geometry.static_instances.rows,
+        &map_statics.rows,
         &geometry.mesh.boxes,
-        Some(geometry.static_instances.drawn),
+        Some(map_statics.drawn),
+    );
+    profile::end(window.gpu.as_ref(), encoder, timed);
+    // Completing a queued job copies exactly the attachment state before live
+    // server items and mobiles are added.  A miss remains LOD 0 this frame;
+    // the copy is consumed only by a later frame, never synchronously rebuilt.
+    for work in composite_jobs {
+        let Some(rect) = capture_rect(
+            block_rect(camera, work.key.block, composite_overhang),
+            target.width,
+            target.height,
+        ) else {
+            composite_work.finished(work.key);
+            continue;
+        };
+        let source = CaptureSource {
+            color: &window.world,
+            ids: window.gbuffer.ids(),
+            position: window.gbuffer.position(),
+            normal: window.gbuffer.normal(),
+            depth: target.depth,
+            depth_base: current_depth_base,
+            rect,
+        };
+        let _ = composite_work.finish_capture(
+            &window.device,
+            &window.queue,
+            encoder,
+            &mut window.composite_pass,
+            &mut window.composites,
+            work.key,
+            source,
+        );
+    }
+    // Server items intentionally run after immutable map statics.  The shared
+    // depth buffer preserves their historical interleaving, while keeping this
+    // buffer free of map rows is what lets a cached map composite keep a stable
+    // G-buffer identity without making a dynamic item point at a stale row.
+    let timed = profile::begin(window.gpu.as_ref(), "items", encoder);
+    window.items_pass.render_with_id_bits(
+        &window.device,
+        &window.queue,
+        encoder,
+        target,
+        &geometry.item_instances.rows,
+        &[],
+        Some(geometry.item_instances.drawn),
+        openshard_client_render::gbuffer::IDS_DYNAMIC_ITEM,
     );
     profile::end(window.gpu.as_ref(), encoder, timed);
     // Right after statics, into the same static's own pixels its
@@ -573,6 +720,7 @@ pub(crate) fn encode_world_passes(
                 world: world_view,
                 gbuffer: gbuffer_views,
                 face_instances: window.statics.instances_buffer(),
+                item_instances: window.items_pass.instances_buffer(),
                 mobile_instances: window.mobile_pass.instances_buffer(),
                 mesh_instances: window.mesh_pass.rows_buffer(),
                 ground_instances: window.renderer.instances_buffer(),
@@ -593,6 +741,7 @@ pub(crate) fn encode_world_passes(
                     world: cutaway_world_view,
                     gbuffer: cutaway_gbuffer_views,
                     face_instances: window.statics.cutaway_instances_buffer(),
+                    item_instances: window.items_pass.instances_buffer(),
                     mobile_instances: window.mobile_pass.instances_buffer(),
                     mesh_instances: window.mesh_pass.rows_buffer(),
                     ground_instances: window.renderer.instances_buffer(),

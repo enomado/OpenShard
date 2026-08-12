@@ -58,6 +58,11 @@ const IDS_STANCE_SHIFT: u32 = 2u;
 const IDS_STANCE_MASK: u32 = 15u;
 const IDS_ID_SHIFT: u32 = 6u;
 const IDS_ID_MASK: u32 = 0xFFFFFFu;
+// The two high id bits are routes, not row-number bits.  They retain the
+// compact normal kind/stance encoding while separating current server items
+// and cached immutable-map pixels from the map-static instance buffer.
+const IDS_DYNAMIC_ITEM: u32 = 0x00400000u;
+const IDS_COMPOSITE_MAP: u32 = 0x00800000u;
 
 // **The two edges a magnified frame draws, and they are drawn at two different
 // resolutions** — in the two bits the id's own ceiling gave up for them.

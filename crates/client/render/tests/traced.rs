@@ -629,6 +629,7 @@ fn render(device: &wgpu::Device, queue: &wgpu::Queue, shot: Shot<'_>) -> Rendere
             world: &world_view,
             gbuffer: &gbuffer_views,
             face_instances: &dummy_instances,
+            item_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
             mesh_instances: mesh_pass.rows_buffer(),
             ground_instances: ground_pass.instances_buffer(),

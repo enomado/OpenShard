@@ -280,6 +280,7 @@ fn shadow_plane(device: &wgpu::Device, queue: &wgpu::Queue, drawn: &Drawn) -> Ve
             world: &world_view,
             gbuffer: &gbuffer_views,
             face_instances: drawn.statics.instances_buffer(),
+            item_instances: drawn.statics.instances_buffer(),
             mobile_instances: &dummy_mobiles,
             mesh_instances: drawn.mesh.rows_buffer(),
             ground_instances: drawn.ground.instances_buffer(),

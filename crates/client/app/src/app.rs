@@ -22,8 +22,10 @@ use std::time::{Duration, Instant};
 use openshard_client_render::animation::FRAME_DELAY;
 use openshard_client_render::bench::{Scope, Script};
 use openshard_client_render::camera::{Camera, TileBounds};
+use openshard_client_render::composite::CompositeWorkQueue;
 use openshard_client_render::control::Control;
 use openshard_client_render::cutaway::Cutaway;
+use openshard_client_render::lod::BlockLodSelector;
 use openshard_client_render::mobiles;
 use openshard_movement::Tile;
 use openshard_protocol::direction::Facing;
@@ -92,6 +94,12 @@ pub(crate) struct App {
     pub(crate) terrain_cache: Option<TerrainCache>,
     /// The HUD's separate occlusion grid for an unchanged world/camera view.
     pub(crate) occluder_cache: Option<OccluderCache>,
+    /// Bounded requests for immutable map-block composites.  It is updated
+    /// from the camera snapshot; a future idle producer takes jobs from it,
+    /// never from the camera frame itself.
+    pub(crate) composite_work: CompositeWorkQueue,
+    /// The persistent hysteresis state for the map-block representation.
+    pub(crate) composite_lod: BlockLodSelector,
     /// What the window system and the mouse have last said — see
     /// [`input::Input`].
     pub(crate) input: input::Input,

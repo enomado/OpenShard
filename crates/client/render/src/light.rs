@@ -943,7 +943,7 @@ pub fn collect(
     ambient: Ambient,
     tuning: &Tuning,
     time: f32,
-    atlas: Option<&crate::atlas::StaticAtlas>,
+    atlas: Option<&dyn crate::atlas::StaticArt>,
     bake: Option<&mut crate::occlusion::bake::Bake>,
 ) -> Lighting {
     let bounds = lit_tiles(camera, tuning);

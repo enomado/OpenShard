@@ -1199,6 +1199,7 @@ fn main() {
             world: &world_view,
             gbuffer: &gbuffer_views,
             face_instances: items_pass.instances_buffer(),
+            item_instances: items_pass.instances_buffer(),
             mobile_instances: &dummy_instances,
             mesh_instances: mesh_pass.rows_buffer(),
             ground_instances: ground_pass.instances_buffer(),

@@ -15,10 +15,11 @@ use std::sync::Arc;
 
 use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::{
-    AnimAtlas, AnimationKey, AtlasError, LandAtlas, StaticAtlas, TexmapAtlas, TtfAtlas,
+    AnimAtlas, AnimationKey, AtlasError, LandAtlas, StaticAtlas, StaticAtlasPages, TexmapAtlas, TtfAtlas,
 };
 use openshard_client_render::blit::{self, Blit};
 use openshard_client_render::camera::{Camera, TileBounds};
+use openshard_client_render::composite::{CompositeCache, CompositeRenderer};
 use openshard_client_render::gbuffer::Gbuffer;
 use openshard_client_render::gump::GumpRenderer;
 use openshard_client_render::hue::HueRamp;
@@ -97,7 +98,9 @@ impl fmt::Display for StartupError {
 pub(crate) struct Atlases {
     pub(crate) land: LandAtlas,
     pub(crate) texmaps: TexmapAtlas,
-    pub(crate) statics: StaticAtlas,
+    /// Bounded immutable pages. `StaticAtlas` remains available to tests and
+    /// embedders that deliberately select the one-page baseline.
+    pub(crate) statics: StaticAtlasPages,
     pub(crate) mobiles: AnimAtlas,
 }
 
@@ -163,7 +166,7 @@ impl Atlases {
             // The table is cloned into the atlas rather than borrowed: an atlas
             // outlives the frame it was built in and packs more art on every
             // scroll, so it has to keep what it reads a graphic's surface out of.
-            statics: StaticAtlas::build_from(art, wanted.statics.iter().copied(), surfaces.cloned())?,
+            statics: StaticAtlasPages::build_from(art, wanted.statics.iter().copied(), surfaces.cloned())?,
             mobiles: AnimAtlas::build(anim, wanted.animations.iter().copied())?,
         })
     }
@@ -211,15 +214,24 @@ impl Atlases {
     /// camera crossed a tile — where this used to be three pipelines and 48MB.
     pub(crate) fn upload(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         ground: &GroundRenderer,
-        statics: &SpriteRenderer,
+        statics: &mut SpriteRenderer,
+        items: &mut SpriteRenderer,
         mobiles: &SpriteRenderer,
     ) -> u64 {
         let mut uploaded = ground.upload_changes(queue, &mut self.land, &mut self.texmaps);
-        if let Some(rows) = self.statics.take_dirty() {
-            uploaded += u64::from(rows.end - rows.start) * u64::from(StaticAtlas::side()) * 4;
-            statics.upload_rows(queue, self.statics.pixels(), rows);
+        statics.sync_static_pages(device, queue, &self.statics);
+        items.sync_static_pages(device, queue, &self.statics);
+        for dirty in self.statics.take_dirty() {
+            uploaded += u64::from(dirty.rows.end - dirty.rows.start) * u64::from(StaticAtlas::side()) * 4;
+            let page = self
+                .statics
+                .page(dirty.page)
+                .expect("dirty page belongs to this static atlas family");
+            statics.upload_page_rows(queue, dirty.page, page.pixels(), dirty.rows.clone());
+            items.upload_page_rows(queue, dirty.page, page.pixels(), dirty.rows);
         }
         if let Some(rows) = self.mobiles.take_dirty() {
             uploaded += u64::from(rows.end - rows.start) * u64::from(AnimAtlas::side()) * 4;
@@ -345,9 +357,11 @@ pub(crate) fn ready_atlases(
         // band is empty when nothing grew — and it is one fewer path
         // where an atlas and its texture can disagree.
         work.uploaded_bytes += window.atlases.upload(
+            &window.device,
             &window.queue,
             &window.renderer,
-            &window.statics,
+            &mut window.statics,
+            &mut window.items_pass,
             &window.mobile_pass,
         );
         match grown {
@@ -355,7 +369,7 @@ pub(crate) fn ready_atlases(
                 graphics.covered = Some(want);
                 false
             }
-            Err((atlas, AtlasError::Full { .. })) => {
+            Err((atlas, AtlasError::Full { .. } | AtlasError::PageLimit { .. })) => {
                 work.overflow = Some(AtlasOverflow {
                     atlas,
                     packed_graphics: match atlas {
@@ -412,7 +426,16 @@ pub(crate) fn ready_atlases(
                 // very hitch its overflow record identifies.
                 work.uploaded_bytes += (atlases.land.pixels().len()
                     + atlases.texmaps.pixels().len()
-                    + atlases.statics.pixels().len()
+                    + (0..atlases.statics.page_count())
+                        .map(|index| {
+                            atlases
+                                .statics
+                                .page(openshard_client_render::atlas::StaticAtlasPage(index as u8))
+                                .expect("page_count only reports present pages")
+                                .pixels()
+                                .len()
+                        })
+                        .sum::<usize>()
                     + atlases.mobiles.pixels().len()) as u64;
                 window.install_atlases(atlases, &resources.hue_ramp);
                 graphics.covered = Some(want);
@@ -438,8 +461,19 @@ pub(crate) struct Screen {
     pub(crate) queue: wgpu::Queue,
     pub(crate) config: wgpu::SurfaceConfiguration,
     pub(crate) renderer: GroundRenderer,
+    /// Immutable map-block textures completed by the bounded composite queue.
+    /// Work 4 decides where their colour-only pass interleaves with depth and
+    /// dynamic objects; keeping the cache here makes producer completion a
+    /// device-owned operation without putting it in a camera frame.
+    pub(crate) composites: CompositeCache,
+    /// The one-quad renderer paired with [`Self::composites`].  It is built at
+    /// window creation, not lazily when a block enters the camera.
+    pub(crate) composite_pass: CompositeRenderer,
     /// The pass that draws what stands on the ground.
     pub(crate) statics: SpriteRenderer,
+    /// Server-owned ground items. Kept separate from immutable map rows so a
+    /// cached block never needs a frame-local instance id.
+    pub(crate) items_pass: SpriteRenderer,
     /// What the world is drawn into, at 1:1 and at the camera's render size —
     /// which is the viewport only at zoom 1. [`Screen::blit`] puts it on the
     /// surface.
@@ -612,11 +646,18 @@ impl Screen {
             &atlases.land,
             &atlases.texmaps,
         );
-        self.statics = SpriteRenderer::new(
+        self.statics = SpriteRenderer::new_static_pages(
             &self.device,
             &self.queue,
             blit::WORLD_FORMAT,
-            atlases.statics.pixels(),
+            &atlases.statics,
+            hue_ramp,
+        );
+        self.items_pass = SpriteRenderer::new_static_pages(
+            &self.device,
+            &self.queue,
+            blit::WORLD_FORMAT,
+            &atlases.statics,
             hue_ramp,
         );
         self.mobile_pass = SpriteRenderer::new(
@@ -803,11 +844,20 @@ impl App {
             &atlases.land,
             &atlases.texmaps,
         );
-        let statics = SpriteRenderer::new(
+        let composites = CompositeCache::default();
+        let composite_pass = CompositeRenderer::new(&device);
+        let statics = SpriteRenderer::new_static_pages(
             &device,
             &queue,
             blit::WORLD_FORMAT,
-            atlases.statics.pixels(),
+            &atlases.statics,
+            &self.resources.hue_ramp,
+        );
+        let items_pass = SpriteRenderer::new_static_pages(
+            &device,
+            &queue,
+            blit::WORLD_FORMAT,
+            &atlases.statics,
             &self.resources.hue_ramp,
         );
         let mobile_pass = SpriteRenderer::new(
@@ -948,7 +998,10 @@ impl App {
             queue,
             config,
             renderer,
+            composites,
+            composite_pass,
             statics,
+            items_pass,
             world,
             cutaway_world,
             blit,

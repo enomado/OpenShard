@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use openshard_client_render::animate::StaticAnimations;
 use openshard_client_render::atlas::{
-    AnimAtlas, AnimationKey, FrameKey, LandAtlas, StaticAtlas, TexmapAtlas,
+    AnimAtlas, AnimationKey, FrameKey, LandAtlas, StaticAtlas, StaticAtlasPage, StaticAtlasPages, TexmapAtlas,
 };
 use openshard_client_render::blit::{Blit, ViewportRect};
 use openshard_client_render::camera::ViewPoint;
@@ -356,6 +356,7 @@ fn render_both_with_cutaway(
         world,
         gbuffer,
         face_instances,
+        item_instances: face_instances,
         mobile_instances: people.instances_buffer(),
         mesh_instances: &mesh_instances,
         ground_instances: renderer.instances_buffer(),
@@ -936,6 +937,7 @@ fn the_blit_at_zoom_one_is_the_world_image_texel_for_texel() {
             // buffer, but the ground quads drawn above are real, so their id
             // has to resolve through the real buffer and not a dummy.
             face_instances: &dummy_instances,
+            item_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
             ground_instances: ground_pass.instances_buffer(),
@@ -1132,6 +1134,7 @@ fn a_light_brightens_its_own_pool_and_the_ambient_darkens_the_rest() {
             // Ground only, and the ground quads drawn above are real, so
             // their id has to resolve through the real buffer.
             face_instances: &dummy_instances,
+            item_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
             ground_instances: ground_pass.instances_buffer(),
@@ -1368,6 +1371,7 @@ fn a_wall_stops_the_light_behind_it() {
                 // Ground only, and the ground quads drawn above are real, so
                 // their id has to resolve through the real buffer.
                 face_instances: &dummy_instances,
+                item_instances: &dummy_instances,
                 mobile_instances: &dummy_instances,
                 mesh_instances: &dummy_mesh_instances,
                 ground_instances: ground_pass.instances_buffer(),
@@ -1554,6 +1558,7 @@ fn the_world_passes_are_built_for_the_world_texture_not_the_surface() {
             world: &world_view,
             gbuffer: &gbuffer_views,
             face_instances: sprites.instances_buffer(),
+            item_instances: sprites.instances_buffer(),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
             ground_instances: &dummy_ground_instances,
@@ -5349,6 +5354,117 @@ fn a_sprite_added_after_the_pass_was_built_is_drawn_from_the_rows_uploaded() {
     assert_eq!(drawn, usize::from(width) * usize::from(height));
 }
 
+/// A static page is a source texture, not a different kind of sprite: page one
+/// has to paint its own pixels and stamp the ordinary static row into the
+/// G-buffer.  Keeping both assertions together catches the tempting partial
+/// implementation where page-batched colour draws but its G-buffer run is
+/// accidentally left on page zero.
+#[test]
+fn a_second_static_atlas_page_draws_its_picture_and_gbuffer_row() {
+    let Some((device, queue)) = gpu() else {
+        return;
+    };
+    const FIRST: Graphic = Graphic(1);
+    const SECOND: Graphic = Graphic(2);
+    let first = Color16(0b0_11111_00000_00000);
+    let second = Color16(0b0_00000_11111_00000);
+    // Two full-width shelves that cannot share a page. This is deliberately a
+    // geometry boundary rather than an item-count shortcut, because shelf
+    // packing is the real condition that allocates a texture page.
+    let image = |color| Image::new(2048, 1025, vec![color; 2048 * 1025]);
+    let atlas = StaticAtlasPages::pack_with_limit([(FIRST, image(first)), (SECOND, image(second))], 2)
+        .expect("two static pages fit the policy");
+    assert_eq!(
+        atlas.page_count(),
+        2,
+        "the fixture has to exercise more than one page"
+    );
+    let sprite = atlas.sprite(SECOND).expect("the second picture was packed");
+    assert_eq!(
+        sprite.page,
+        StaticAtlasPage(1),
+        "the test sprite must not be on the legacy page"
+    );
+
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let hue_ramp = HueRamp::build(&Hues::parse(&[0u8; 708]).expect("one empty group"));
+    let mut statics = SpriteRenderer::new_static_pages(&device, &queue, format, &atlas, &hue_ramp);
+    let quads = [SpriteQuad {
+        rect: Rect {
+            x: 10.0,
+            y: 12.0,
+            width: 24.0,
+            height: 18.0,
+        },
+        region: sprite.sprite.region,
+        depth: 0.5,
+        hue: 0,
+        place: Place::of_static(Point::new(7, 9, 0)),
+        twin: 0,
+        owner: 0,
+        volumes: Range::default(),
+    }
+    .with_static_atlas_page(sprite.page)];
+
+    let (width, height) = (128u32, 128u32);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("paged static frame"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth = renderer::depth_texture(&device, width, height);
+    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let gbuffer = openshard_client_render::gbuffer::Gbuffer::new(&device, width, height);
+    let gbuffer_views = gbuffer.views();
+    let land = LandAtlas::pack([]).expect("nothing always fits");
+    let texmaps = TexmapAtlas::pack([]).expect("nothing always fits");
+    let mut ground = GroundRenderer::new(&device, &queue, format, &land, &texmaps);
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let target_view = Target::whole(&view, &depth_view, &gbuffer_views, width, height);
+    ground.render(&device, &queue, &mut encoder, target_view, &[]);
+    statics.render(&device, &queue, &mut encoder, target_view, &quads, &[], None);
+    queue.submit([encoder.finish()]);
+
+    let frame = read_back(&device, &queue, &target);
+    let ids = read_back(&device, &queue, gbuffer.ids());
+    let Rgb8 {
+        red: r,
+        green: g,
+        blue: b,
+    } = second.rgb8();
+    for y in 12..30 {
+        for x in 10..34 {
+            assert_eq!(
+                frame.pixel(x, y),
+                [r, g, b, u8::MAX],
+                "({x}, {y}) did not sample page one"
+            );
+            let id = u32::from_le_bytes(ids.pixel(x, y));
+            assert_eq!(
+                gbuffer::ids_kind(id),
+                Some(Kind::Static),
+                "({x}, {y}) lacks the static G-buffer kind"
+            );
+            assert_eq!(gbuffer::ids_id(id), 0, "({x}, {y}) names the wrong static row");
+        }
+    }
+    assert_eq!(
+        gbuffer::ids_kind(u32::from_le_bytes(ids.pixel(0, 0))),
+        Some(Kind::Nothing)
+    );
+}
+
 /// Draw `quads` into a world image, ring the ones in `outlined`, blit the lot
 /// onto a surface and read the surface back.
 ///
@@ -5435,6 +5551,7 @@ fn render_outlined(
             world: &world_view,
             gbuffer: &gbuffer_views,
             face_instances: sprites.instances_buffer(),
+            item_instances: sprites.instances_buffer(),
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
             // Empty, like the ground pass drawn above — a real buffer of no
@@ -6226,6 +6343,7 @@ fn parity_frame(
             world: &world_view,
             gbuffer: &gbuffer_views,
             face_instances: face_instances.as_ref().unwrap_or(&dummy_instances),
+            item_instances: &dummy_instances,
             // No mobile pixels in this fixture: the dummy stands in for it.
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,

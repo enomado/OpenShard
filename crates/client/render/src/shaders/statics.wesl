@@ -55,7 +55,10 @@ struct Viewport {
     // The virtual-pixel point that lands in the middle of the target.
     origin: vec2<f32>,
     // Uniform blocks are sized in multiples of 16 bytes.
-    _tail: vec2<f32>,
+    // Reserved G-buffer id bits.  Map rows use zero; server items use the
+    // dynamic-item bit so deferred readers address their separate buffer.
+    id_bits: f32,
+    _tail: f32,
 };
 
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -424,7 +427,7 @@ fn vs_main(
     // `View.DrawStatic`'s `x -= (width >> 1) - 22`. Half a pixel out on an
     // odd-width sprite, exactly as it is there.
     out.middle_x = origin.x + size.x * 0.5;
-    out.id = instance_index;
+    out.id = instance_index | u32(viewport.id_bits);
     out.twin = twin;
     out.volumes = volumes;
     return out;

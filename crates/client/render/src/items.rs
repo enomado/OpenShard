@@ -25,6 +25,8 @@ use openshard_protocol::world::Point;
 use openshard_uofiles::tiledata::TileData;
 
 use crate::animate::StaticAnimations;
+use crate::atlas::StaticArt;
+#[cfg(test)]
 use crate::atlas::StaticAtlas;
 use crate::camera::{Camera, RealPixel};
 use crate::cutaway::Cutaway;
@@ -136,7 +138,7 @@ pub fn collect(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     highlight: Option<ItemIndex>,
     occlusion: &crate::occlusion::Occlusion,
@@ -163,7 +165,7 @@ pub fn collect_with_fades(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     highlight: Option<ItemIndex>,
     occlusion: &crate::occlusion::Occlusion,
@@ -304,7 +306,7 @@ pub fn outlined(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     highlight: Option<ItemIndex>,
 ) -> Vec<SpriteQuad> {
@@ -347,7 +349,7 @@ fn place(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
 ) -> Option<Placed> {
     // A dropped item is never a tree: foliage stands in the map's own
@@ -390,7 +392,7 @@ pub fn pick(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     cursor: RealPixel,
 ) -> Option<ItemIndex> {

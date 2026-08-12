@@ -71,6 +71,9 @@ pub struct Frame<'a> {
     /// `docs/gbuffer.md` decision 2. [`dummy_instances`] when a caller has
     /// none this frame.
     pub face_instances: &'a wgpu::Buffer,
+    /// Server-item rows.  Their ids carry `IDS_DYNAMIC_ITEM`, so immutable map
+    /// rows and cached composites never accidentally address this buffer.
+    pub item_instances: &'a wgpu::Buffer,
     /// The same, for the mobiles pass — a separate buffer because mobiles are
     /// a separate `SpriteRenderer` with its own instance list, not a second
     /// user of the statics one.
@@ -317,12 +320,22 @@ impl Blit {
                     },
                     count: None,
                 },
-                // The statics and mobiles passes' own instance data, each
+                // The map statics, server items and mobiles passes' own instance data, each
                 // bound a second time as storage — decision 2's `instances[id]`.
                 // Read-only: this pass never writes a fragment's own instance
                 // back, only looks one up. `docs/gbuffer.md` step 3.
                 wgpu::BindGroupLayoutEntry {
                     binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 17,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -613,6 +626,7 @@ impl Blit {
             world,
             gbuffer,
             face_instances,
+            item_instances,
             mobile_instances,
             mesh_instances,
             ground_instances,
@@ -713,6 +727,10 @@ impl Blit {
                 wgpu::BindGroupEntry {
                     binding: 16,
                     resource: self.order.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 17,
+                    resource: item_instances.as_entire_binding(),
                 },
             ],
         });

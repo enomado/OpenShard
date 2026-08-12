@@ -790,6 +790,7 @@ fn drawn(
             world: &world_view,
             gbuffer: &views,
             face_instances: face_instances.as_ref().unwrap_or(&dummy_instances),
+            item_instances: &dummy_instances,
             mobile_instances: &dummy_instances,
             mesh_instances: &dummy_mesh_instances,
             ground_instances: ground_instances.as_ref().unwrap_or(&dummy_ground_instances),

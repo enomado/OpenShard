@@ -24,7 +24,9 @@ use openshard_uofiles::map::Map;
 use openshard_uofiles::tiledata::TileData;
 
 use crate::animate::StaticAnimations;
-use crate::atlas::{Sprite, StaticAtlas};
+#[cfg(test)]
+use crate::atlas::StaticAtlas;
+use crate::atlas::{Sprite, StaticArt, StaticAtlasPage};
 use crate::camera::{self, Camera, RealPixel, TILE_HEIGHT, TileBounds, ViewPoint, WorldPixel};
 use crate::cutaway::{self, Cutaway};
 use crate::depth;
@@ -209,6 +211,26 @@ pub struct StaticMesh {
 }
 
 impl StaticGeometry {
+    /// Move only a second producer's private cutaway layer into this one.
+    ///
+    /// The opaque rows intentionally remain separate in the client: immutable
+    /// map rows can be replaced by a block composite while server items still
+    /// need current-frame ids.  Cutaway rows share one private G-buffer,
+    /// however, so they must be joined before the one cutaway render call.
+    pub fn absorb_cutaway(&mut self, mut other: Self) {
+        let cutaway_boxes = self.cutaway_boxes.len() as u32;
+        self.cutaway_quads
+            .extend(other.cutaway_quads.drain(..).map(|mut quad| {
+                if quad.volumes.count != 0 {
+                    quad.volumes.offset += cutaway_boxes;
+                }
+                quad
+            }));
+        self.cutaway_boxes.append(&mut other.cutaway_boxes);
+        self.cutaway_quads
+            .sort_by(|back, front| front.depth.total_cmp(&back.depth));
+    }
+
     /// Append another frame's-worth of statics to this one, as one set.
     ///
     /// The map's furniture and the server's dropped items are two [`collect`]s
@@ -275,15 +297,50 @@ pub fn collect(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     occlusion: &crate::occlusion::Occlusion,
     player_rect: Option<Rect>,
     player_mask: Option<&crate::mobiles::OpaqueMask>,
 ) -> StaticGeometry {
-    collect_with_fades(
+    collect_in(
         map,
         camera,
+        camera.visible_tiles(),
+        tiledata,
+        animations,
+        atlas,
+        cutaway,
+        occlusion,
+        player_rect,
+        player_mask,
+    )
+}
+
+/// Map-static geometry on one caller-selected tile rectangle.
+///
+/// This is the immutable-map counterpart to [`crate::ground::collect_in`].
+/// A block-composite producer gives it exactly one map block, while the LOD 0
+/// renderer continues to use [`collect`] and its camera-visible rectangle.
+/// Server items have their separate [`crate::items`] collector and cannot enter
+/// this result.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_in(
+    map: &Map,
+    camera: &Camera,
+    bounds: TileBounds,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &dyn StaticArt,
+    cutaway: &Cutaway,
+    occlusion: &crate::occlusion::Occlusion,
+    player_rect: Option<Rect>,
+    player_mask: Option<&crate::mobiles::OpaqueMask>,
+) -> StaticGeometry {
+    collect_in_with_fades(
+        map,
+        camera,
+        bounds,
         tiledata,
         animations,
         atlas,
@@ -302,16 +359,47 @@ pub fn collect_with_fades(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     occlusion: &crate::occlusion::Occlusion,
     player_rect: Option<Rect>,
     player_mask: Option<&crate::mobiles::OpaqueMask>,
     fades: &mut crate::cutaway::Fades,
 ) -> StaticGeometry {
-    collect_with_fades_profiled(
+    collect_in_with_fades(
         map,
         camera,
+        camera.visible_tiles(),
+        tiledata,
+        animations,
+        atlas,
+        cutaway,
+        occlusion,
+        player_rect,
+        player_mask,
+        fades,
+    )
+}
+
+/// [`collect_in`] retaining the caller's cutaway fade state.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_in_with_fades(
+    map: &Map,
+    camera: &Camera,
+    bounds: TileBounds,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &dyn StaticArt,
+    cutaway: &Cutaway,
+    occlusion: &crate::occlusion::Occlusion,
+    player_rect: Option<Rect>,
+    player_mask: Option<&crate::mobiles::OpaqueMask>,
+    fades: &mut crate::cutaway::Fades,
+) -> StaticGeometry {
+    collect_in_with_fades_profiled(
+        map,
+        camera,
+        bounds,
         tiledata,
         animations,
         atlas,
@@ -332,7 +420,37 @@ pub(crate) fn collect_with_fades_profiled(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
+    cutaway: &Cutaway,
+    occlusion: &crate::occlusion::Occlusion,
+    player_rect: Option<Rect>,
+    player_mask: Option<&crate::mobiles::OpaqueMask>,
+    fades: &mut crate::cutaway::Fades,
+) -> (StaticGeometry, CollectCosts) {
+    collect_in_with_fades_profiled(
+        map,
+        camera,
+        camera.visible_tiles(),
+        tiledata,
+        animations,
+        atlas,
+        cutaway,
+        occlusion,
+        player_rect,
+        player_mask,
+        fades,
+    )
+}
+
+/// [`collect_in_with_fades`], with map-static costs kept for the jank log.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_in_with_fades_profiled(
+    map: &Map,
+    camera: &Camera,
+    bounds: TileBounds,
+    tiledata: &TileData,
+    animations: &StaticAnimations,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     occlusion: &crate::occlusion::Occlusion,
     player_rect: Option<Rect>,
@@ -358,7 +476,7 @@ pub(crate) fn collect_with_fades_profiled(
     let mut boxes = Vec::new();
 
     let walk_started = Instant::now();
-    for_each_static_in(map, camera.visible_tiles(), |item| {
+    for_each_static_in(map, bounds, |item| {
         let at = Point::new(item.x, item.y, item.z);
         let is_foliage = tiledata.static_tile(item.tile.0).flags.is_foliage();
         let Some(placed) = place(
@@ -642,6 +760,8 @@ pub(crate) struct Placed {
     pub(crate) at: ViewPoint,
     /// The atlas entry for the frame it is showing.
     pub(crate) sprite: Sprite,
+    /// Atlas page that holds `sprite.region`; page zero is the legacy atlas.
+    pub(crate) page: StaticAtlasPage,
     /// That frame's graphic, which is what the atlas is keyed by — not the
     /// placed one, which for an animated static is only the cycle's start.
     pub(crate) showing: Graphic,
@@ -664,7 +784,7 @@ pub(crate) fn place(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     _player_rect: Option<Rect>,
 ) -> Option<Placed> {
@@ -673,7 +793,8 @@ pub(crate) fn place(
         return None;
     }
     let showing = animations.showing(graphic);
-    let sprite = atlas.sprite(showing)?;
+    let packed = atlas.paged_sprite(showing)?;
+    let sprite = packed.sprite;
     let screen_at = stand_on(camera, at, &sprite);
     // Foliage is classified by the collector, where all graphics of one
     // canopy can share a fade key. Placement itself must remain available for
@@ -687,6 +808,7 @@ pub(crate) fn place(
         // four pixels a unit, which is the same lift the ground gets.
         at: screen_at,
         sprite,
+        page: packed.page,
         showing,
         // A floor's pixels are spread across its tile, a wall's run along the one
         // edge it stands on, and anything else claims the tile's middle. The
@@ -711,7 +833,7 @@ pub(crate) fn place_cutaway(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
 ) -> Option<Placed> {
     let tile = tiledata.static_tile(graphic.0);
@@ -721,7 +843,8 @@ pub(crate) fn place_cutaway(
         return None;
     }
     let showing = animations.showing(graphic);
-    let sprite = atlas.sprite(showing)?;
+    let packed = atlas.paged_sprite(showing)?;
+    let sprite = packed.sprite;
     let screen_at = stand_on(camera, at, &sprite);
     Some(Placed {
         order: depth::Order {
@@ -730,6 +853,7 @@ pub(crate) fn place_cutaway(
         },
         at: screen_at,
         sprite,
+        page: packed.page,
         showing,
         stance: crate::place::Stance::of(tile, sprite.facing),
     })
@@ -788,6 +912,7 @@ pub(crate) fn quad_of(
         owner: u32::from(owner.raw()),
         volumes,
     }
+    .with_static_atlas_page(placed.page)
 }
 
 /// Which static of the map the cursor is over, or `None` for none.
@@ -814,7 +939,7 @@ pub fn pick(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     cursor: RealPixel,
 ) -> Option<PickedStatic> {
@@ -858,7 +983,7 @@ pub fn pick(
 /// through both ends of the signed height range. The small extra tile is for
 /// rounding in [`camera::unproject`], so this may inspect a few more statics but
 /// can never reject one whose pixels contain the cursor.
-fn pick_bounds(camera: &Camera, atlas: &StaticAtlas, cursor: RealPixel) -> TileBounds {
+fn pick_bounds(camera: &Camera, atlas: &dyn StaticArt, cursor: RealPixel) -> TileBounds {
     let cursor = camera.pick(cursor);
     let (width, height) = atlas.max_sprite_size();
     let half_width = (i32::from(width) + 1) / 2;
@@ -912,7 +1037,7 @@ pub fn selected(
     camera: &Camera,
     tiledata: &TileData,
     animations: &StaticAnimations,
-    atlas: &StaticAtlas,
+    atlas: &dyn StaticArt,
     cutaway: &Cutaway,
     selection: Option<PickedStatic>,
 ) -> Vec<SpriteQuad> {
@@ -987,6 +1112,8 @@ pub(crate) fn for_each_static_in(
 
 #[cfg(test)]
 mod tests {
+    use crate::atlas::StaticAtlasPages;
+
     use openshard_protocol::wire::Hue;
     use openshard_uofiles::color::Color16;
     use openshard_uofiles::image::Image;
@@ -1543,6 +1670,66 @@ mod tests {
         assert!(
             selected(&camera, &tiledata, &animations, &atlas, &Cutaway::OPEN, None).is_empty(),
             "nothing selected is an empty list, not a quad nobody asked for",
+        );
+    }
+
+    /// Picking and its silhouette are CPU paths, but they still have to carry
+    /// the page identity the renderer binds.  This fixture forces the selected
+    /// wall onto page one, so a legacy-only lookup cannot accidentally keep
+    /// passing through page zero.
+    #[test]
+    fn a_page_one_static_is_picked_and_selected_from_its_own_atlas_page() {
+        let camera = Camera::new(Point::new(100, 100, 0), 800, 600);
+        let filler = Graphic(0x0100);
+        let boundary = Graphic(0x0101);
+        let graphic = Graphic(0x0102);
+        let tall = |color| Image::new(2048, 1025, vec![color; 2048 * 1025]);
+        let mut atlas = StaticAtlasPages::pack_with_limit([(filler, tall(Color16(0x001F)))], 2)
+            .expect("the first page fits");
+        atlas
+            .pack_more([
+                (boundary, tall(Color16(0x03E0))),
+                (graphic, Image::new(44, 60, vec![Color16(0x7C00); 44 * 60])),
+            ])
+            .expect("the selected wall starts page one");
+        assert_eq!(atlas.page_count(), 2, "the fixture must cross a page boundary");
+        let sprite = atlas.sprite(graphic).expect("the selected wall was packed");
+        assert_eq!(
+            sprite.page,
+            StaticAtlasPage(1),
+            "the selected wall is not on page one"
+        );
+
+        let tiledata = TileData::empty();
+        let animations = StaticAnimations::default();
+        let at = Point::new(100, 100, 0);
+        let mut map = field();
+        map.place_static(StaticItem {
+            tile: graphic,
+            x: at.x,
+            y: at.y,
+            z: at.z,
+            hue: Hue(0),
+        });
+        let screen_at = stand_on(&camera, at, &sprite.sprite);
+        let cursor = cursor_over(&camera, screen_at, 22.0, 30.0);
+        let picked = pick(
+            &map,
+            &camera,
+            &tiledata,
+            &animations,
+            &atlas,
+            &Cutaway::OPEN,
+            cursor,
+        );
+        assert_eq!(picked, Some(PickedStatic { at, graphic }));
+
+        let mask = selected(&camera, &tiledata, &animations, &atlas, &Cutaway::OPEN, picked);
+        assert_eq!(mask.len(), 1, "the page-one selection has one silhouette quad");
+        assert_eq!(mask[0].static_atlas_page(), StaticAtlasPage(1));
+        assert_eq!(
+            mask[0].region, sprite.sprite.region,
+            "the selection samples the page-one region"
         );
     }
 

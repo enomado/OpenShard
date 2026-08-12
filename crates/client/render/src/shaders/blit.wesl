@@ -14,6 +14,7 @@
 import package::place_format::{
     KIND_NOTHING, KIND_LAND, KIND_STATIC,
     ids_kind, ids_stance, ids_id, ids_edges, IDS_EDGE_ART, IDS_EDGE_BOX,
+    IDS_DYNAMIC_ITEM, IDS_COMPOSITE_MAP,
     STANCE_MESH_FACE, STANCE_FLAT, STANCE_FACE_NORTH,
     STANCE_FACE_EAST, STANCE_FACE_SOUTH, STANCE_FACE_WEST,
 };
@@ -349,6 +350,7 @@ struct GroundInstance {
 };
 
 @group(0) @binding(12) var<storage, read> ground_instances: array<GroundInstance>;
+@group(0) @binding(17) var<storage, read> item_instances: array<FaceInstance>;
 
 // **`OWNER_NONE` stood here**, and it went with `own_solid` — the last thing in
 // this pass that compared an *owner* at all. What a fragment is a point of is a
@@ -1822,7 +1824,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // mobile and for a static this frame's grid holds nothing for. Only a mesh
     // face overrides it below, out of its own row.
     var mine = unpack_solid(place.w);
-    if kind == KIND_LAND {
+    if (id & IDS_COMPOSITE_MAP) != 0u {
+        // Cached map pixels retain an exact world point, but no frame-local
+        // row.  Position is the source of truth for their tile on every later
+        // camera frame.
+        tile = floor(at.xy);
+    } else if kind == KIND_LAND {
         tile = vec2<f32>(
             f32(ground_instances[id].place0 & 0xFFFFu),
             f32(ground_instances[id].place0 >> 16u),
@@ -1844,7 +1851,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     } else {
         var row_place: vec2<u32>;
         if kind == KIND_STATIC {
-            row_place = face_instances[id].place;
+            let row = id & ~(IDS_DYNAMIC_ITEM | IDS_COMPOSITE_MAP);
+            row_place = select(face_instances[row].place, item_instances[row].place, (id & IDS_DYNAMIC_ITEM) != 0u);
         } else {
             row_place = mobile_instances[id].place;
         }

@@ -22,11 +22,13 @@ use std::time::Instant;
 use openshard_client_render::atlas::{AnimAtlas, AnimationKey};
 use openshard_client_render::blit::{self, Blit, ViewportRect};
 use openshard_client_render::camera::{Camera, ViewPixel};
+use openshard_client_render::composite::{ImmutableRevision, MapBlockBounds};
 use openshard_client_render::cutaway::Cutaway;
 use openshard_client_render::debug::View;
 use openshard_client_render::gbuffer::Gbuffer;
 use openshard_client_render::gump::GumpPixel;
 use openshard_client_render::items::{self};
+use openshard_client_render::lod::BlockLod;
 use openshard_client_render::mobiles::{self, Mobile};
 use openshard_client_render::outline::{self};
 use openshard_client_render::renderer::{self, Target};
@@ -575,6 +577,45 @@ impl App {
         // reads the whole of `self`, and the window is part of it.
         let want = light::lit_tiles(&camera, &tuning);
         let wanted = self.wanted_since(camera, &tuning, self.graphics.covered);
+        // Only schedule immutable map-block work here.  `refresh` merely
+        // reprioritises bounded requests; it does not build or upload pixels,
+        // so a newly exposed far-zoom block continues through the detailed
+        // representation until an idle producer has completed its composite.
+        // The completed image enters `Screen::composites` through this queue;
+        // Work 4 owns drawing that ready texture in the depth-aware world pass.
+        let map_width = self.resources.map.width() as u32;
+        let map_height = self.resources.map.height() as u32;
+        let map_tiles = openshard_client_render::camera::TileBounds {
+            min_x: 0,
+            max_x: map_width.saturating_sub(1) as i32,
+            min_y: 0,
+            max_y: map_height.saturating_sub(1) as i32,
+        };
+        let composite_visible = MapBlockBounds::from_tiles(camera.visible_tiles(), map_width, map_height);
+        let composite_lod = self.composite_lod.update_camera(&camera);
+        // A static-atlas page is immutable once sealed, but the family revision
+        // changes whenever new art/shape facts become available.  Cache keys
+        // carry that revision so a newly packed sprite cannot be stretched
+        // through an old block capture.
+        let composite_revision = self
+            .window
+            .as_ref()
+            .map(|window| ImmutableRevision(window.atlases.statics.revision()))
+            .unwrap_or_default();
+        if let (Some(visible), Some(map)) = (
+            composite_visible,
+            MapBlockBounds::from_tiles(map_tiles, map_width, map_height),
+        ) {
+            let composites = self.window.as_ref().map(|window| &window.composites);
+            self.composite_work
+                .refresh(visible, map, composite_lod, composite_revision, |key| {
+                    composites.is_some_and(|cache| cache.get(key).is_some())
+                });
+        }
+        let composite_jobs = match composite_lod {
+            BlockLod::Lod0 => Vec::new(),
+            _ => self.composite_work.take_for_frame(),
+        };
         let mut drawn = self.drawn_mobiles();
         // Likewise: the cut the solids view is drawn under reads the player, and
         // the pass that uses it runs inside the window's borrow.
@@ -885,6 +926,11 @@ impl App {
             &text_quads,
             render_width,
             render_height,
+            composite_lod,
+            composite_revision,
+            composite_visible,
+            &composite_jobs,
+            &mut self.composite_work,
         );
         // The shard's dialogs, in the client's own art, over the finished
         // picture and under egui's.
@@ -1122,6 +1168,7 @@ impl App {
                     world: &world_view,
                     gbuffer: &gbuffer_views,
                     face_instances: window.statics.instances_buffer(),
+                    item_instances: window.items_pass.instances_buffer(),
                     mobile_instances: window.mobile_pass.instances_buffer(),
                     mesh_instances: window.mesh_pass.rows_buffer(),
                     ground_instances: window.renderer.instances_buffer(),
