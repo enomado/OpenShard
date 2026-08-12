@@ -49,6 +49,7 @@
 //! defence that works is server-side: see [`WalkPace`].
 
 pub mod bake;
+mod cache;
 mod detour;
 mod navigation;
 mod pace;
@@ -58,11 +59,13 @@ mod sequence;
 mod terrain;
 mod walk;
 
+pub use cache::{CachedTerrain, TransitionCacheStats};
 pub use detour::{Around, Detour, Leeway, Step};
 pub use navigation::{NavigationGraph, find_long_path};
 pub use openshard_uofiles::map::LandTile;
 pub use pace::{Pace, RUN_HOLD, RUN_INTERVAL, WALK_BUFFER, WALK_HOLD, WALK_INTERVAL, WalkPace};
 pub use path::{find_path, find_path_toward};
+pub(crate) use path::{find_path_toward_until, find_path_until};
 pub use sequence::{OutOfSequence, StepCounter, WalkSequence};
 pub use terrain::{MAX_STEP_UP, MapTerrain, PLAYER_HEIGHT};
 pub use walk::{

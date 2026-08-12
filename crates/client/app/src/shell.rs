@@ -92,6 +92,8 @@ pub struct Request {
     /// change at a time would put a frame between the ticks with a picture nobody
     /// asked for.
     pub draw: Option<openshard_client_render::frame::Draw>,
+    /// Switch the architectural cutaway on or off.
+    pub cutaway_disabled: Option<bool>,
     /// Switch the occluder wireframe on or off, on the frame the box was ticked.
     ///
     /// Sent on the change and not every frame, like the terrain overlay, and for
@@ -504,7 +506,7 @@ fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, de
                 Tab::Frames => frames_panel(ui, hud),
                 Tab::World => world_panel(ui, hud, world, &mut request),
                 Tab::Tile => tile_tab(ui, hud, world, &mut request),
-                Tab::Light => light_panel(ui, &mut desk.light),
+                Tab::Light => light_panel(ui, hud, &mut desk.light, &mut request),
                 Tab::Chat => chat_panel(ui, &mut desk.chat),
             });
     });
@@ -543,7 +545,7 @@ fn layout(root: &mut egui::Ui, hud: &Hud, camera: Camera, world: &WorldState, de
 /// lies. What is *not* here is a switch for night, the sun, the lantern or the
 /// sky field: those are F10, F8, F7 and F6 and have been since before this tab,
 /// and two ways to spell one state is how the two come to disagree.
-fn light_panel(ui: &mut egui::Ui, light: &mut crate::desk::Light) {
+fn light_panel(ui: &mut egui::Ui, hud: &Hud, light: &mut crate::desk::Light, request: &mut Request) {
     let most = light::Tuning::MOST;
     // What the numbers mean where they mean something in the world's own units,
     // rather than as a bare factor: a person turning "reach" up is asking how
@@ -667,6 +669,22 @@ fn light_panel(ui: &mut egui::Ui, light: &mut crate::desk::Light) {
     });
 
     ui.separator();
+    ui.label("World visibility");
+    let mut cutaway_disabled = hud.cutaway_disabled;
+    if ui
+        .checkbox(&mut cutaway_disabled, "disable architectural cutaway")
+        .changed()
+    {
+        request.cutaway_disabled = Some(cutaway_disabled);
+    }
+    ui.label(
+        egui::RichText::new(
+            "Diagnostic: keeps walls, bridges and roofs opaque while testing the cutaway transparency bug.",
+        )
+        .small()
+        .weak(),
+    );
+
     // The way back. Every number above is remembered across launches, which is
     // what makes this necessary rather than tidy: a client left at somebody's
     // experiment reopens as that experiment, and "what does this look like

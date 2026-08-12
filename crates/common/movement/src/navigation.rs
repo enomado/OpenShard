@@ -6,12 +6,15 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, VecDeque};
-use std::time::Instant;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 
-use crate::{Terrain, Tile, find_path, find_path_toward, step_allowed};
+use crate::{Terrain, Tile, find_path_toward_until, find_path_until, step_allowed};
+
+const MAX_LONG_PATH_TIME: Duration = Duration::from_millis(50);
 
 const WIDE_PORTAL: usize = 6;
 /// A region stays well inside the normal 600-cell refinement budget, while the
@@ -518,15 +521,12 @@ impl NavigationGraph {
 
     fn abstract_path(
         &self,
-        terrain: &dyn Terrain,
         from: Point,
         to: Point,
         forbidden: &[bool],
+        source: &[(NodeId, u32)],
+        target: &[(NodeId, u32)],
     ) -> Option<Vec<NodeId>> {
-        let from_region = self.region_at(from)?;
-        let to_region = self.region_at(to)?;
-        let source = self.local_costs(terrain, from_region, from, forbidden, false);
-        let target = self.local_costs(terrain, to_region, to, forbidden, true);
         if source.is_empty() || target.is_empty() {
             return None;
         }
@@ -535,8 +535,10 @@ impl NavigationGraph {
         let mut cost = vec![u32::MAX; goal + 1];
         let mut parent = vec![None; goal + 1];
         let mut target_cost = vec![None; self.nodes.len()];
-        for (node, cost) in target {
-            target_cost[node.0] = Some(cost);
+        for &(node, cost) in target {
+            if !forbidden[node.0] {
+                target_cost[node.0] = Some(cost);
+            }
         }
         let mut open = BinaryHeap::new();
         cost[start] = 0;
@@ -557,8 +559,10 @@ impl NavigationGraph {
                 }
             };
             if here == start {
-                for &(node, edge_cost) in &source {
-                    relax(node.0, edge_cost, self.nodes[node.0].point);
+                for &(node, edge_cost) in source {
+                    if !forbidden[node.0] {
+                        relax(node.0, edge_cost, self.nodes[node.0].point);
+                    }
                 }
                 continue;
             }
@@ -591,6 +595,7 @@ impl NavigationGraph {
         endpoint: Point,
         forbidden: &[bool],
         toward_endpoint: bool,
+        deadline: Instant,
     ) -> Vec<(NodeId, u32)> {
         let region = self.regions[region_id.0];
         let local = InRegion { terrain, region };
@@ -598,11 +603,14 @@ impl NavigationGraph {
         self.nodes_in_region(region_id)
             .filter(|node| !forbidden[node.0])
             .filter_map(|node| {
+                if Instant::now() >= deadline {
+                    return None;
+                }
                 let (from, to) = match toward_endpoint {
                     true => (self.nodes[node.0].point, endpoint),
                     false => (endpoint, self.nodes[node.0].point),
                 };
-                find_path(&local, from, to, budget).map(|route| (node, route.len() as u32))
+                find_path_until(&local, from, to, budget, deadline).map(|route| (node, route.len() as u32))
             })
             .collect()
     }
@@ -614,6 +622,7 @@ impl NavigationGraph {
         to: Point,
         nodes: &[NodeId],
         budget: usize,
+        deadline: Instant,
     ) -> Result<Vec<Direction>, NodeId> {
         let mut route = Vec::new();
         let mut at = from;
@@ -621,10 +630,13 @@ impl NavigationGraph {
             .region_at(from)
             .expect("the query was checked before refinement");
         for &node in nodes {
+            if Instant::now() >= deadline {
+                return Err(node);
+            }
             let next = self.nodes[node.0];
             let next_region = self.node_region(node);
             let segment = match next_region == region {
-                true => region_route(terrain, self.regions[region.0], at, next.point, budget),
+                true => region_route(terrain, self.regions[region.0], at, next.point, budget, deadline),
                 false => cross_portal(terrain, at, next.point),
             };
             let Some(segment) = segment else {
@@ -639,7 +651,10 @@ impl NavigationGraph {
         let last = *nodes
             .last()
             .expect("different regions always need graph transitions");
-        let Some(segment) = region_route(terrain, self.regions[region.0], at, to, budget) else {
+        if Instant::now() >= deadline {
+            return Err(last);
+        }
+        let Some(segment) = region_route(terrain, self.regions[region.0], at, to, budget, deadline) else {
             return Err(last);
         };
         append(terrain, at, &segment, &mut route).ok_or(last)?;
@@ -702,22 +717,92 @@ pub fn find_long_path(
     to: Point,
     budget: usize,
 ) -> Option<Vec<Direction>> {
+    let started = Instant::now();
+    let mut result = find_long_path_inner(guide, terrain, graph, from, to, budget);
+    let elapsed = started.elapsed();
+    // The inner loops observe the same deadline, but an individual live A*
+    // call can finish just after it.  Do not hand an interactive caller a
+    // late route; the next terrain/frame snapshot may try again.
+    if elapsed >= MAX_LONG_PATH_TIME {
+        result = None;
+    }
+    let exit = match (&result, elapsed >= MAX_LONG_PATH_TIME) {
+        (Some(_), _) => "route",
+        (None, true) => "deadline",
+        (None, false) => "unreachable_or_live_refinement",
+    };
+    debug_long_path(from, to, budget, elapsed, result.as_ref().map(Vec::len), exit);
+    result
+}
+
+fn find_long_path_inner(
+    guide: &dyn Terrain,
+    terrain: &dyn Terrain,
+    graph: &NavigationGraph,
+    from: Point,
+    to: Point,
+    budget: usize,
+) -> Option<Vec<Direction>> {
     const LIVE_REROUTES: usize = 8;
+    let deadline = Instant::now() + MAX_LONG_PATH_TIME;
     let from_region = graph.region_at(from)?;
     let to_region = graph.region_at(to)?;
     if from_region == to_region {
-        return region_route(terrain, graph.regions[from_region.0], from, to, budget);
+        return region_route(terrain, graph.regions[from_region.0], from, to, budget, deadline);
     }
     let mut forbidden = vec![false; graph.nodes.len()];
+    // Refinement can forbid several portals and retry the abstract route, but
+    // the endpoint-to-portal searches do not change between those retries.
+    // Compute them once instead of repeating the whole portal fan-out.
+    let no_forbidden = vec![false; graph.nodes.len()];
+    let source = graph.local_costs(guide, from_region, from, &no_forbidden, false, deadline);
+    let target = graph.local_costs(guide, to_region, to, &no_forbidden, true, deadline);
+    if Instant::now() >= deadline {
+        return None;
+    }
     for _ in 0..=LIVE_REROUTES {
-        let path = graph.abstract_path(guide, from, to, &forbidden)?;
-        match graph.refine(terrain, from, to, &path, budget) {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        let path = graph.abstract_path(from, to, &forbidden, &source, &target)?;
+        match graph.refine(terrain, from, to, &path, budget, deadline) {
             Ok(route) => return Some(route),
             Err(node) if !forbidden[node.0] => graph.forbid_portal(node, &mut forbidden),
             Err(_) => return None,
         }
     }
     None
+}
+
+fn debug_long_path(
+    from: Point,
+    to: Point,
+    budget: usize,
+    elapsed: std::time::Duration,
+    route_len: Option<usize>,
+    exit: &str,
+) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var_os("OPENSHARD_PATH_DEBUG").is_some()) {
+        return;
+    }
+    let threshold = std::env::var("OPENSHARD_PATH_DEBUG_MS")
+        .ok()
+        .and_then(|value| value.parse::<u128>().ok())
+        .unwrap_or(10);
+    if elapsed.as_millis() < threshold {
+        return;
+    }
+    eprintln!(
+        "path-debug kind=find_long_path from=({}, {}, {}) to=({}, {}, {}) budget={budget} elapsed_ms={:.3} exit={exit} route_steps={route_len:?}",
+        from.x,
+        from.y,
+        from.z,
+        to.x,
+        to.y,
+        to.z,
+        elapsed.as_secs_f64() * 1_000.0,
+    );
 }
 
 fn cross_portal(terrain: &dyn Terrain, from: Point, to: Point) -> Option<Vec<Direction>> {
@@ -739,19 +824,23 @@ fn region_route(
     from: Point,
     to: Point,
     budget: usize,
+    deadline: Instant,
 ) -> Option<Vec<Direction>> {
     let local = InRegion { terrain, region };
     let hop = u16::try_from((budget / 2).max(1)).unwrap_or(u16::MAX);
     let mut route = Vec::new();
     let mut at = from;
     while distance(at, to) > u32::from(hop) {
+        if Instant::now() >= deadline {
+            return None;
+        }
         // Aim at the real destination and keep the closest result when the
         // bounded search runs out. A synthetic point exactly `hop` tiles away
         // can itself be a tree, which must not make a whole forest unroutable.
-        let segment = find_path_toward(&local, at, to, budget)?;
+        let segment = find_path_toward_until(&local, at, to, budget, deadline)?;
         at = append(terrain, at, &segment, &mut route)?;
     }
-    let segment = find_path(&local, at, to, budget)?;
+    let segment = find_path_until(&local, at, to, budget, deadline)?;
     append(terrain, at, &segment, &mut route)?;
     Some(route)
 }
@@ -773,6 +862,8 @@ fn append(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+
+    use crate::find_path;
 
     use proptest::prelude::*;
 

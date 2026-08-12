@@ -283,12 +283,16 @@ impl App {
         // The same cutaway the frame was drawn with, computed the same way: a
         // barrel hidden under a roof this client is not drawing is not something
         // the player can have pointed at.
-        let cutaway = Cutaway::at(
-            &self.resources.map,
-            &self.resources.tiledata,
-            self.world.presentation.cutaway_at,
-            true,
-        );
+        let cutaway = if self.graphics.cutaway_disabled {
+            Cutaway::OPEN
+        } else {
+            Cutaway::at(
+                &self.resources.map,
+                &self.resources.tiledata,
+                self.world.presentation.cutaway_at,
+                true,
+            )
+        };
         // A creature under the cursor takes the click, and no item is used: it
         // is what the highlight is telling the player they are pointing at, and
         // using the barrel *behind* the shopkeeper is the one answer that is

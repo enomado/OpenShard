@@ -10,12 +10,12 @@ use crate::frames::{Frame, JANK_BUDGET};
 use crate::profile::Pass;
 use crate::window::AtlasWork;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-static LOG: OnceLock<Mutex<File>> = OnceLock::new();
+static LOG: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
 
 /// CPU phases within [`crate::presentation::App::draw_from`] that are useful
 /// when the single [`Frame::scene`] total says the world is slow.
@@ -53,7 +53,7 @@ pub fn start_log(path: &Path) -> io::Result<()> {
     // A client app owns one event loop and its caller initializes this once.
     // Treat a second request in the same process as an ordinary no-op rather
     // than replacing a log another thread might be writing.
-    let _ = LOG.set(Mutex::new(file));
+    let _ = LOG.set(Mutex::new(BufWriter::new(file)));
     Ok(())
 }
 
@@ -102,7 +102,11 @@ pub fn record(frame: Frame, cpu: CpuPasses, atlas: AtlasWork, gpu_passes: &[Pass
                 frame.repacked,
                 atlas.uploaded_bytes,
             );
-            let _ = log.flush();
+            // Do not flush from the render thread.  A jank record is itself
+            // diagnostic output; waiting for the filesystem here can turn one
+            // slow frame into a much longer stall, especially when several
+            // janks arrive in succession.  BufWriter flushes its full chunks
+            // as needed and the final buffer is flushed when the process exits.
         }
     }
     tracing::warn!(

@@ -171,7 +171,7 @@ pub struct Blit {
     /// hole**: the primitive's own `HOLED` bit is what makes the shader read this
     /// at all, so a frame with no window in it neither lays these bytes out nor
     /// sends them, which is every frame of a real map until step 16 lands.
-    apertures: wgpu::Buffer,
+    apertures: wgpu::Texture,
     /// The broad phase, as the shader traverses it: the tree's nodes, depth
     /// first, the root first. See
     /// [`Occlusion::node_bytes`](crate::occlusion::Occlusion::node_bytes) and
@@ -294,17 +294,17 @@ impl Blit {
                     count: None,
                 },
                 // And the hole in each of those solids, indexed by the same
-                // number. A list beside the primitives rather than four more
-                // fields of one: `Occlusion::aperture_bytes` argues why, and the
-                // short form is that the primitives are what the walk reads in a
-                // loop and a hole is what almost nothing has.
+                // number. This is an exact, unfilterable texture because the
+                // device's fragment storage-buffer limit is eight; keeping this
+                // four-float record as a texel saves one storage binding without
+                // quantising the aperture.
                 wgpu::BindGroupLayoutEntry {
                     binding: 7,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -558,7 +558,7 @@ impl Blit {
             // hole beside it is the same one primitive's, unread — nothing
             // carries the `HOLED` bit that would make the shader look.
             primitives: primitive_buffer(device, 1),
-            apertures: aperture_buffer(device, 1),
+            apertures: aperture_texture(device, 1),
             // One node and one word of permutation: the empty tree, whose root
             // escapes to zero, so a traversal over it ends before its first
             // node. See `Occlusion::node_bytes`.
@@ -688,7 +688,11 @@ impl Blit {
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,
-                    resource: self.apertures.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(
+                        &self
+                            .apertures
+                            .create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 8,
@@ -957,13 +961,56 @@ fn primitive_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
 /// index this buffer does not reach would be a hole read off the end of the
 /// list. Sized whether or not the frame has a hole in it, since the bind group
 /// needs a resource either way and only the *write* is conditional.
-fn aperture_buffer(device: &wgpu::Device, count: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+fn aperture_texture(device: &wgpu::Device, count: usize) -> wgpu::Texture {
+    let (width, height) = aperture_extent(count, device.limits().max_texture_dimension_2d);
+    device.create_texture(&wgpu::TextureDescriptor {
         label: Some("apertures"),
-        size: (count.max(1) * crate::occlusion::APERTURE_BYTES) as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
     })
+}
+
+/// The two-dimensional extent which holds `count` aperture records.
+///
+/// A [`SolidId`](crate::occlusion::SolidId) is still the record's linear index;
+/// the shader folds it into this texture's rows.  Keeping a row no wider than
+/// the device's limit matters on maps whose visible occluder list is wider than
+/// an older GPU's maximum 2D texture dimension.
+fn aperture_extent(count: usize, max_dimension: u32) -> (u32, u32) {
+    let width = (count.max(1) as u64).min(u64::from(max_dimension)) as u32;
+    let height = (count.max(1) as u64).div_ceil(u64::from(width)) as u32;
+    assert!(
+        height <= max_dimension,
+        "{} aperture records exceed this device's {} by {} texture capacity",
+        count,
+        max_dimension,
+        max_dimension
+    );
+    (width, height)
+}
+
+#[cfg(test)]
+mod aperture_texture_tests {
+    use super::aperture_extent;
+
+    #[test]
+    fn folds_a_list_past_the_device_row_limit_into_the_next_row() {
+        assert_eq!(aperture_extent(10_018, 8_192), (8_192, 2));
+    }
+
+    #[test]
+    fn keeps_a_small_list_on_one_row() {
+        assert_eq!(aperture_extent(7, 8_192), (7, 1));
+    }
 }
 
 /// Room for `bytes` of the broad phase — [`Blit::nodes`] and [`Blit::order`].
@@ -1089,7 +1136,7 @@ impl Blit {
         // would be read off the end of it.
         if (self.primitives.size() as usize) < primitives.len() {
             self.primitives = primitive_buffer(device, lighting.occlusion.solid_count());
-            self.apertures = aperture_buffer(device, lighting.occlusion.solid_count());
+            self.apertures = aperture_texture(device, lighting.occlusion.solid_count());
         }
         // The references are their own height: equal to the solids' until
         // something is shared, and *not* assumed equal, because the day the two
@@ -1132,7 +1179,38 @@ impl Blit {
         // where it is set — so a frame with no window in it leaves whatever these
         // bytes held and nothing looks at them.
         if lighting.occlusion.any_aperture() {
-            queue.write_buffer(&self.apertures, 0, &lighting.occlusion.aperture_bytes());
+            let bytes = lighting.occlusion.aperture_bytes();
+            let record_bytes = crate::occlusion::APERTURE_BYTES;
+            let row_bytes = self.apertures.width() as usize * record_bytes;
+            // Upload by row: the final row is usually short, and writing it as
+            // a full row would require inventing padding that the CPU-side
+            // aperture list deliberately does not contain.
+            for (row, bytes) in bytes.chunks(row_bytes).enumerate() {
+                let width = (bytes.len() / record_bytes) as u32;
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.apertures,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: row as u32,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(width * record_bytes as u32),
+                        rows_per_image: Some(1),
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
         }
     }
 

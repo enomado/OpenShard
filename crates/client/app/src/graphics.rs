@@ -46,6 +46,9 @@ impl HighlightStyle {
 /// What this run draws and how, as a person's own choices rather than a fact
 /// about the world — see the module docs.
 pub struct GraphicsSettings {
+    /// Whether the architectural cutaway is disabled. This is a diagnostic
+    /// switch for comparing the transparency bug with the normal view.
+    pub cutaway_disabled: bool,
     /// Whether the world is drawn as if it were night: dark ambient, and the
     /// fires on the map lighting what is around them. Toggled with F10.
     ///

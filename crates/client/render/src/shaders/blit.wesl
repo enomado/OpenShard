@@ -136,7 +136,7 @@ struct Aperture {
     top: f32,
 };
 
-@group(0) @binding(7) var<storage, read> apertures: array<Aperture>;
+@group(0) @binding(7) var apertures: texture_2d<f32>;
 // And the references between the cells and the solids, one texel each and folded
 // the same way: (id & 255, id >> 8, id >> 16, unused). A cell counts through a
 // run of these and each one names a solid — decision 38's ownership, which is
@@ -600,9 +600,9 @@ fn along_the_run(edges: u32, px: f32, py: f32) -> f32 {
 // product, so that a point halfway into the hole across *and* halfway up read as
 // one corner's own softening rather than as a quarter of a hole. With no band on
 // either span the `min` is a conjunction and says so. `light::hole`.
-fn hole(cut: Aperture, along: f32, z: f32) -> f32 {
-    let across = along >= cut.near && along <= cut.far;
-    let up = z >= cut.bottom && z <= cut.top;
+fn hole(cut: vec4<f32>, along: f32, z: f32) -> f32 {
+    let across = along >= cut.x && along <= cut.y;
+    let up = z >= cut.z && z <= cut.w;
     return select(0.0, 1.0, across && up);
 }
 
@@ -627,7 +627,9 @@ fn pierced(stands: Primitive, id: u32, cross: vec3<f32>) -> f32 {
         return 1.0;
     }
     let along = along_the_run(stands.flags & EDGE_MASK, cross.x, cross.y);
-    return 1.0 - hole(apertures[id], along, cross.z);
+    let width = textureDimensions(apertures).x;
+    let aperture_at = vec2<i32>(i32(id % width), i32(id / width));
+    return 1.0 - hole(textureLoad(apertures, aperture_at, 0), along, cross.z);
 }
 
 // Which of a cell's sides are **the same wall the lit end is part of**, and

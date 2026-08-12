@@ -179,8 +179,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use openshard_movement::{
-    Around, Detour, Heading, Lean, Leeway, NavigationGraph, RUN_HOLD, Step, Terrain, Tile, WALK_HOLD,
-    find_long_path, find_path, find_path_toward, step_allowed,
+    Around, CachedTerrain, Detour, Heading, Lean, Leeway, NavigationGraph, RUN_HOLD, Step, Terrain, Tile,
+    WALK_HOLD, find_long_path, find_path, find_path_toward, step_allowed,
 };
 use openshard_protocol::direction::{Direction, Facing};
 use openshard_protocol::world::Point;
@@ -196,6 +196,11 @@ use crate::keys::Held;
 /// one of those, `STUCK_STEPS` times over and again on every re-click. A budget
 /// sized for "ample" and not "generous" is what keeps that bounded.
 pub const PLAN_BUDGET: usize = 600;
+
+/// A coarse graph is counterproductive for a short failed search: joining an
+/// endpoint to every portal in adjacent regions costs more than the local
+/// answer, especially around a house with several doors.
+const COARSE_MIN_DISTANCE: u32 = 8;
 
 /// How long the step that follows a turn waits: ClassicUO's
 /// `Constants.TURN_DELAY`, charged in `PlayerMobile.Walk` as
@@ -323,13 +328,21 @@ impl Ground<'_> {
     /// divide a long answer into the same exact, live-aware hops. `terrain` is
     /// chosen by the caller: real ground for a player's open half, or the
     /// existing doors-open reading for the route that is later cut at a leaf.
-    fn path(&self, terrain: &dyn Terrain, from: Point, to: Point) -> Option<Vec<Direction>> {
-        find_path(terrain, from, to, PLAN_BUDGET).or_else(|| {
-            self.coarse.and_then(|coarse| {
-                // Graph and endpoint joins are both the bare map. Live terrain
-                // only approves or rejects the resulting exact steps.
-                find_long_path(self.guide, terrain, coarse, from, to, PLAN_BUDGET)
-            })
+    fn path(&self, terrain: &CachedTerrain<'_>, from: Point, to: Point) -> Option<Vec<Direction>> {
+        let local = find_path(terrain, from, to, PLAN_BUDGET);
+        if local.is_some() {
+            return local;
+        }
+        let distance = i32::from(from.x)
+            .abs_diff(i32::from(to.x))
+            .max(i32::from(from.y).abs_diff(i32::from(to.y)));
+        if distance <= COARSE_MIN_DISTANCE {
+            return None;
+        }
+        self.coarse.and_then(|coarse| {
+            // Graph and endpoint joins are both the bare map. Live terrain
+            // only approves or rejects the resulting exact steps.
+            find_long_path(self.guide, terrain, coarse, from, to, PLAN_BUDGET)
         })
     }
 }
@@ -357,6 +370,7 @@ impl<'a> Ground<'a> {
 ///
 /// Both are steps from the body's own tile, in the order they would be walked:
 /// [`Plan::barred`] carries on from where [`Plan::open`] stops.
+#[derive(Clone, Debug)]
 pub struct Plan {
     /// The part of the way the world as it stands allows. What the walk takes,
     /// and what a picture of the route draws as passable.
@@ -368,6 +382,21 @@ pub struct Plan {
     /// the shard would refuse. It is a *reason*, and the thing to draw so a
     /// player can see where the way stopped and why.
     pub barred: Vec<Direction>,
+}
+
+#[derive(Clone, Debug)]
+struct CachedPlan {
+    from: Point,
+    goal: Tile,
+    plan: Option<Plan>,
+    /// A preview has already performed this frame's query.  The next walk may
+    /// consume it once, but successful plans are never retained across live
+    /// terrain changes.
+    preview: bool,
+    /// A failed coarse search is expensive and cannot become more successful
+    /// without a terrain update. Keep it from being retried every frame until
+    /// the app explicitly invalidates the cache.
+    suppress_retry: bool,
 }
 
 /// How many steps in a row may leave the body exactly where it was before a walk
@@ -417,6 +446,10 @@ pub struct Steering {
     /// nothing is sent at all and the destination's patience is what ends the
     /// order; see [`Steering::take`].
     route: VecDeque<Direction>,
+    /// The last complete plan is shared by movement and the route preview.
+    /// Both consumers ask the same question for the same world snapshot; do
+    /// not make the expensive real/doors-open searches twice.
+    cached_plan: Option<CachedPlan>,
     /// The earliest the next step may leave: the deadline of the step in flight.
     ///
     /// The rate floor, and the queue rule's whole mechanism. Armed by every step
@@ -577,6 +610,45 @@ impl Steering {
     /// there is no state to reset when it changes.
     pub fn set_turning(&mut self, turning: Turning) {
         self.turning = turning;
+    }
+
+    /// Drop the plan that was made against an older terrain snapshot.
+    pub(crate) fn clear_plan_cache(&mut self) {
+        self.cached_plan = None;
+    }
+
+    /// Start a new render frame. The movement step and the HUD may share one
+    /// plan during that frame. A remembered coarse failure is kept separately
+    /// so an impossible expensive query is not retried every frame.
+    pub(crate) fn begin_frame(&mut self) {
+        if !self
+            .cached_plan
+            .as_ref()
+            .is_some_and(|cached| cached.suppress_retry)
+        {
+            self.clear_plan_cache();
+        }
+    }
+
+    /// Get the plan shared by the walk and its HUD preview for this frame.
+    /// `begin_frame` has already dropped any successful plan from the previous
+    /// frame, so a matching plan may have been produced by movement earlier in
+    /// the current frame even though it is no longer marked as a preview.
+    pub(crate) fn plan_for(&mut self, ground: Ground<'_>, from: Point, goal: Tile) -> Option<Plan> {
+        if let Some(cached) = self.cached_plan.as_ref() {
+            if cached.from == from && cached.goal == goal {
+                return cached.plan.clone();
+            }
+        }
+        let planned = plan(ground, from, goal);
+        self.cached_plan = Some(CachedPlan {
+            from,
+            goal,
+            preview: true,
+            suppress_retry: planned.is_none() && ground.coarse.is_some(),
+            plan: planned.clone(),
+        });
+        planned
     }
 
     /// Walk to `tile`, from wherever the body is standing now, or as close to it
@@ -802,10 +874,35 @@ impl Steering {
                 // what is in the way, or as close as the ground gets — so an
                 // empty route after it means one thing only: there is nowhere
                 // left to walk from here. That is the branch below.
-                self.route = plan(ground, from, tile)
-                    .map(|plan| plan.open)
-                    .unwrap_or_default()
-                    .into();
+                // The route preview may already have asked the same question
+                // during this frame.  Consume that plan once rather than
+                // searching live terrain a second time.  A plan built by a
+                // previous walk is not reusable: a door can have opened since
+                // then. Failed coarse searches remain held until invalidation.
+                let preview = self.cached_plan.as_ref().and_then(|cached| {
+                    (cached.from == from && cached.goal == tile && (cached.preview || cached.suppress_retry))
+                        .then(|| cached.plan.clone())
+                });
+                let planned = match preview {
+                    Some(plan) => {
+                        if self.cached_plan.as_ref().is_some_and(|cached| cached.preview) {
+                            self.clear_plan_cache();
+                        }
+                        plan
+                    }
+                    None => {
+                        let planned = plan(ground, from, tile);
+                        self.cached_plan = Some(CachedPlan {
+                            from,
+                            goal: tile,
+                            preview: false,
+                            suppress_retry: planned.is_none() && ground.coarse.is_some(),
+                            plan: planned.clone(),
+                        });
+                        planned
+                    }
+                };
+                self.route = planned.map(|plan| plan.open).unwrap_or_default().into();
             }
         }
 
@@ -1155,23 +1252,43 @@ impl Steering {
 /// either half says the same for the one case that is not a refusal — `from`
 /// already standing on `tile`, a body that has arrived.
 pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
+    let started = Instant::now();
     let goal = Point::new(tile.x, tile.y, from.z);
-    if let Some(open) = ground.path(ground.real, from, goal) {
-        return Some(Plan {
+    // Each half gets its own cache.  The real and doors-open readings are
+    // different terrain snapshots, so sharing even a successful transition
+    // between them could walk through a door that is still shut.
+    let real = CachedTerrain::new(ground.real);
+    if let Some(open) = ground.path(&real, from, goal) {
+        let result = Some(Plan {
             open,
             barred: Vec::new(),
         });
+        debug_plan_cache(from, goal, started.elapsed(), &real, None, result.as_ref());
+        return result;
     }
-    let Some(through) = ground.path(ground.through_doors, from, goal) else {
+    let doors_open = CachedTerrain::new(ground.through_doors);
+    let Some(through) = ground.path(&doors_open, from, goal) else {
         // Not even with the doors open, so there is nothing to say about the
         // far side of anything: no route through this destination's own tile is
         // known, and drawing one would be inventing it. What is left is how
         // close the world as it stands can get, which is a walk and not a guess.
-        let open = find_path_toward(ground.real, from, goal, PLAN_BUDGET)?;
-        return Some(Plan {
+        let Some(open) = find_path_toward(&real, from, goal, PLAN_BUDGET) else {
+            debug_plan_cache(from, goal, started.elapsed(), &real, Some(&doors_open), None);
+            return None;
+        };
+        let result = Some(Plan {
             open,
             barred: Vec::new(),
         });
+        debug_plan_cache(
+            from,
+            goal,
+            started.elapsed(),
+            &real,
+            Some(&doors_open),
+            result.as_ref(),
+        );
+        return result;
     };
     let mut open = Vec::new();
     let mut barred = Vec::new();
@@ -1181,7 +1298,7 @@ pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
     // half of what refuses a step and the walk this is a claim about obeys both.
     let mut at = Some(from);
     for direction in through {
-        match at.and_then(|point| step_allowed(ground.real, point, direction)) {
+        match at.and_then(|point| step_allowed(&real, point, direction)) {
             Some(next) => {
                 at = Some(next);
                 open.push(direction);
@@ -1192,7 +1309,57 @@ pub fn plan(ground: Ground<'_>, from: Point, tile: Tile) -> Option<Plan> {
             }
         }
     }
-    Some(Plan { open, barred })
+    let result = Some(Plan { open, barred });
+    debug_plan_cache(
+        from,
+        goal,
+        started.elapsed(),
+        &real,
+        Some(&doors_open),
+        result.as_ref(),
+    );
+    result
+}
+
+/// Emit one compact summary for the two query-local terrain snapshots.  This
+/// remains opt-in: these paths run on the render thread and per-transition
+/// logging would both obscure the useful numbers and distort them.
+fn debug_plan_cache(
+    from: Point,
+    goal: Point,
+    elapsed: Duration,
+    real: &CachedTerrain<'_>,
+    doors_open: Option<&CachedTerrain<'_>>,
+    result: Option<&Plan>,
+) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var_os("OPENSHARD_PATH_DEBUG").is_some()) {
+        return;
+    }
+    let real = real.stats();
+    let doors_open = doors_open.map(CachedTerrain::stats).unwrap_or_default();
+    let (open_steps, barred_steps) = result
+        .map(|plan| (plan.open.len(), plan.barred.len()))
+        .unwrap_or((0, 0));
+    eprintln!(
+        "path-debug kind=plan from=({}, {}, {}) to=({}, {}, {}) elapsed_ms={:.3} result={} open_steps={open_steps} barred_steps={barred_steps} real_calls={} real_hits={} real_misses={} real_entries={} doors_calls={} doors_hits={} doors_misses={} doors_entries={}",
+        from.x,
+        from.y,
+        from.z,
+        goal.x,
+        goal.y,
+        goal.z,
+        elapsed.as_secs_f64() * 1_000.0,
+        result.is_some(),
+        real.hits + real.misses,
+        real.hits,
+        real.misses,
+        real.entries,
+        doors_open.hits + doors_open.misses,
+        doors_open.hits,
+        doors_open.misses,
+        doors_open.entries,
+    );
 }
 
 /// Temporary: `OPENSHARD_DETOUR_DEBUG=1` prints every ask that met something

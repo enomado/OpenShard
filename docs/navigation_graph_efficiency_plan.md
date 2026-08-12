@@ -9,6 +9,55 @@ The graph remains only a static guide. Every actual step is still refined and
 authorized by live bounded pathfinding, so doors and other dynamic obstructions
 retain their existing behaviour.
 
+## Implementation status
+
+- [x] Phase 1: compact graph representation and validated format v4.
+- [x] Phase 2: component-aware logical entrances with deterministic grouping.
+- [x] Phase 4: query-local live-transition cache, shared client planning, and
+  opt-in path diagnostics.
+- [ ] Phase 3: second hierarchy level. No level 2 is added until a benchmark
+  demonstrates a material p95 improvement for end-to-end route planning.
+- [ ] Real-install verification: facet-0 bake/load measurements require the
+  client data files and the dedicated 2 GiB cgroup environment.
+
+Validation completed so far: movement tests, client-app tests, workspace check,
+formatting, and diff validation pass. The full workspace test run is currently
+blocked by two existing client-render attachment tests on the available
+downlevel adapter: `Rgba32Float` cannot be used as a render attachment there.
+Workspace clippy with warnings denied remains blocked by the pre-existing
+`clippy::precedence` warning in unrelated `client-render/src/sprite.rs`.
+
+## Backlog
+
+- 🚩 **Real-install facet-0 measurements are still outstanding.** The current
+  workspace has no verified run of the post-ML `7168x4096` bake/load procedure
+  inside the dedicated `MemoryMax=2G`, `MemorySwapMax=0` cgroup. The baseline
+  numbers above remain the comparison point, but artifact size, peak memory,
+  cold-load time, readiness behaviour, and the no-build startup property must
+  be re-recorded after the compact graph and component grouping landed.
+- 🚩 **Phase 3 needs an end-to-end p95 benchmark before a second hierarchy is
+  justified.** The implementation deliberately remains single-level. Measure
+  the route set listed in Phase 3, including endpoint insertion and live
+  refinement, and add level 2 only if the measured p95 improvement is material.
+- 🚩 **HUD route conversion is not yet part of the same transition-cache
+  instance.** Movement and HUD now share the plan produced earlier in the same
+  frame, but `picking_query::route_shown` converts the returned directions with
+  fresh `step_allowed` calls. Share the cached replay (or return a replayable
+  plan object) before claiming complete cache coverage for the HUD path;
+  preserve separate real and doors-open snapshots while doing so.
+- 🚩 **Runtime invalidation needs an integration measurement.** The client
+  currently invalidates the plan cache when the authoritative item set changes
+  and keeps it over mobile-only updates. Verify that every production change
+  capable of affecting `Cluttered::can_step` is represented by that item-set
+  comparison, then measure whether keeping the cache across each remaining
+  update is safe.
+- 🚩 **The render attachment tests need a capable adapter or a portable test
+  target.** On the current downlevel adapter, the two `attachment` integration
+  tests fail while creating the pre-existing `position` `Rgba32Float` render
+  target. Keep this separate from navigation validation and make the render
+  harness explicit about its required adapter features before calling the
+  workspace suite green.
+
 ## Baseline
 
 Measured on 2026-08-12 against post-ML Britannia, facet 0 (`7168x4096`), using
@@ -255,6 +304,84 @@ endpoint insertion and refinement, while keeping:
 - bake below 2 minutes on the benchmark machine;
 - bake peak below 1.5 GiB;
 - identical route results between built and loaded graphs.
+
+## Phase 4: runtime transition cache for live refinement
+
+### Goal
+
+Keep the static graph as a long-distance guide, but stop repeating the same
+runtime neighbour queries while endpoint costs, portal alternatives, and route
+refinement inspect a live 32x32 region. No individual path query may exceed the
+50 ms interactive-walk limit.
+
+### Current cost
+
+`MapTerrain::can_step` reads the in-memory map and tiledata on every attempted
+step. It recomputes land heights, scans statics, checks tile flags, and then
+`Cluttered` checks dynamic items. A diagonal `step_allowed` also checks both
+cardinal flanks. This is not disk I/O, but it is repeated work.
+
+The static `NavigationGraph` does not cache these live transitions: its portal
+and intra-region data describe the bare map, while doors and placed objects
+must remain authoritative at runtime. Endpoint-to-portal A* therefore repeats
+many of the same `can_step` calls for each portal candidate.
+
+### Query-local cache
+
+Introduce a terrain wrapper owned by one route query/frame. Cache the complete
+answer for:
+
+```text
+(from.x, from.y, from.z, direction) -> Some(landing) | None
+```
+
+Use separate cache instances for:
+
+- real terrain, with doors and placed objects as they stand;
+- doors-open terrain, used only to identify a route that reaches a closed door.
+
+The wrapper delegates all non-movement `Terrain` methods. `step_allowed` and
+the diagonal flank checks go through the cached `can_step` answer. The cache is
+read-only after an entry is created and is discarded after the query/frame;
+terrain snapshots are never mixed.
+
+### Consumers
+
+Route all of these through the same cache instance:
+
+1. ordinary bounded A*;
+2. local endpoint-to-portal costs;
+3. abstract-route refinement;
+4. route replay/append validation for the same plan;
+5. HUD route conversion when it belongs to the same frame plan.
+
+Do not cache across a terrain update until runtime invalidation is explicitly
+designed. A changed door, item, or mobile must not reuse an old `Some` result.
+
+### Instrumentation
+
+Record per plan and per terrain half:
+
+- `can_step` calls before the wrapper;
+- cache hits and misses;
+- unique transition entries;
+- A* nodes explored;
+- total query time and the hard-deadline exit reason.
+
+Keep logging opt-in through `OPENSHARD_PATH_DEBUG`; never log each transition
+in normal operation.
+
+### Tests and acceptance
+
+1. Cached and uncached routes have identical directions and reachability.
+2. Closed-door, opened-door, diagonal-corner, slope, and multi-floor cases
+   retain their existing answers.
+3. Real and doors-open caches cannot return each other's answers.
+4. Repeated portal searches demonstrate cache hits for the same transitions.
+5. The problematic three-door-house query stays below 50 ms, with no single
+   A* or long-path query exceeding the hard deadline.
+6. Movement and client tests, randomized static-map parity, formatting, and
+   release checks all pass.
 
 ## Adaptive or semantic regions
 

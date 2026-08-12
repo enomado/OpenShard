@@ -495,7 +495,7 @@ impl App {
             guide: &guide,
             coarse: self.resources.coarse.as_ref(),
         };
-        let route = steer::plan(ground, from, goal).map(|plan| {
+        let route = self.steer.plan_for(ground, from, goal).map(|plan| {
             // Directions walked out into the tiles they land on. `step_allowed`
             // because it is what corrects a step's `z` to the surface it lands on,
             // which is the height the line is drawn at — and over each half's own
@@ -617,6 +617,9 @@ impl App {
         if let Some(draw) = request.draw {
             self.graphics.drawing = draw;
         }
+        if let Some(disabled) = request.cutaway_disabled {
+            self.graphics.cutaway_disabled = disabled;
+        }
         if let Some(show) = request.show_terrain {
             self.graphics.show_terrain = show;
         }
@@ -727,6 +730,7 @@ impl App {
                 (replay.name(), replay.at().as_secs_f32() / length)
             }),
             draw: self.graphics.drawing,
+            cutaway_disabled: self.graphics.cutaway_disabled,
             show_terrain: self.graphics.show_terrain,
             // The tile is lit when nothing else took the highlight. Under
             // `Items` nothing ever does, which is the mode's whole content; the

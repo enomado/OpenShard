@@ -811,6 +811,7 @@ pub fn run<D: Dial + Send + 'static>(
             skill_groups,
         },
         graphics: graphics::GraphicsSettings {
+            cutaway_disabled: std::env::var_os("OPENSHARD_DISABLE_CUTAWAY").is_some(),
             // Daylight until asked otherwise: the lighting pass is then
             // exactly the copy the blit has always been.
             night: false,

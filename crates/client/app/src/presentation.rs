@@ -182,6 +182,9 @@ impl App {
         if !self.world.render_ready {
             return;
         }
+        // Movement is advanced before the HUD is assembled below. Clear the
+        // frame-local plan here so both consumers share at most one search.
+        self.steer.begin_frame();
         let started = Instant::now();
         // The frame boundary the flamegraph is cut on, put at the same place
         // `started` is sampled so that a frame in `puffin_viewer` and a frame in
@@ -298,12 +301,16 @@ impl App {
         // Here, in the snapshot, and not beside the passes that draw from it:
         // the item pick below needs it, and the pick has to be answered before
         // the HUD is built — see the next paragraph.
-        let cutaway = Cutaway::at(
-            &self.resources.map,
-            &self.resources.tiledata,
-            self.world.presentation.cutaway_at,
-            true,
-        );
+        let cutaway = if self.graphics.cutaway_disabled {
+            Cutaway::OPEN
+        } else {
+            Cutaway::at(
+                &self.resources.map,
+                &self.resources.tiledata,
+                self.world.presentation.cutaway_at,
+                true,
+            )
+        };
         // The ground tile under the cursor, and its ring — asked here beside
         // the picks below rather than a second time when the HUD is built:
         // this used to be `App::hud`'s own call to `Self::pick_tile`, a second
@@ -592,7 +599,12 @@ impl App {
             max_y: map_height.saturating_sub(1) as i32,
         };
         let composite_visible = MapBlockBounds::from_tiles(camera.visible_tiles(), map_width, map_height);
-        let composite_lod = self.composite_lod.update_camera(&camera);
+        // Composite LOD is temporarily disabled while validating the ordinary
+        // detailed renderer.  Keep the selector and queue intact so the
+        // experiment is reversible, but do not schedule or draw cached map
+        // blocks: every visible map tile must come from the LOD 0 path.
+        let _selected_composite_lod = self.composite_lod.update_camera(&camera);
+        let composite_lod = BlockLod::Lod0;
         // A static-atlas page is immutable once sealed, but the family revision
         // changes whenever new art/shape facts become available.  Cache keys
         // carry that revision so a newly packed sprite cannot be stretched

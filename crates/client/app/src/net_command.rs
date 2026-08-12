@@ -149,12 +149,24 @@ impl App {
     /// patched: the view is the record of what arrived, and anything kept in
     /// step with it by hand would be a second record that could disagree.
     pub(crate) fn entered(&mut self, view: WorldView, body: link::Body, previous_latest: Option<Heard>) {
-        // The route HUD is a picture of this exact world snapshot.  A new
-        // view can move an obstacle without moving the player or its goal, so
-        // its cached answer must not outlive the terrain it was planned over.
-        self.route_cache = None;
-        self.terrain_cache = None;
-        self.occluder_cache = None;
+        // Movement updates arrive while the player is standing still too.  The
+        // route HUD depends on the item layer, not on every packet in the view;
+        // invalidating it unconditionally made the same expensive plan run on
+        // every update (and therefore effectively every frame) at a house.
+        // Keep the cache across player/mobile-only updates, but discard the
+        // terrain-derived pictures when an item was added, removed, or moved.
+        let terrain_changed = self
+            .world
+            .authoritative
+            .view
+            .as_ref()
+            .is_none_or(|old| old.items != view.items);
+        if terrain_changed {
+            self.steer.clear_plan_cache();
+            self.route_cache = None;
+            self.terrain_cache = None;
+            self.occluder_cache = None;
+        }
         self.world.prediction.apply(body);
         // The facet is chosen at startup and `0x1B` names only its size, so a
         // shard serving a different one draws this client the wrong ground with

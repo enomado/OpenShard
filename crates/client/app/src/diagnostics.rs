@@ -162,6 +162,7 @@ pub struct Hud {
     pub selected: Option<Selection>,
     pub health_bars: Vec<HealthBar>,
     pub draw: openshard_client_render::frame::Draw,
+    pub cutaway_disabled: bool,
     pub show_terrain: bool,
     pub terrain: Option<Arc<TerrainOverlay>>,
     pub route: Option<Arc<Route>>,

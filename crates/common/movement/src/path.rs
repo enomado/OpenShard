@@ -21,11 +21,15 @@
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use openshard_protocol::direction::Direction;
 use openshard_protocol::world::Point;
 
 use crate::walk::{Terrain, Tile, step_allowed};
+
+const MAX_SEARCH_TIME: Duration = Duration::from_millis(50);
 
 /// One entry on the open list, ordered so [`BinaryHeap`] with [`Reverse`] pops
 /// the cheapest-and-straightest first. See the note where this is pushed for
@@ -61,7 +65,9 @@ struct OpenEntry {
 /// question instead.
 #[must_use]
 pub fn find_path(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Option<Vec<Direction>> {
-    let search = search(terrain, from, to, budget);
+    let started = Instant::now();
+    let search = search(terrain, from, to, budget, started + MAX_SEARCH_TIME);
+    debug_slow("find_path", from, to, budget, started.elapsed(), &search);
     search.arrived.then_some(search.route)
 }
 
@@ -91,7 +97,9 @@ pub fn find_path_toward(
     to: Point,
     budget: usize,
 ) -> Option<Vec<Direction>> {
-    let search = search(terrain, from, to, budget);
+    let started = Instant::now();
+    let search = search(terrain, from, to, budget, started + MAX_SEARCH_TIME);
+    debug_slow("find_path_toward", from, to, budget, started.elapsed(), &search);
     (search.arrived || !search.route.is_empty()).then_some(search.route)
 }
 
@@ -104,6 +112,19 @@ struct Search {
     /// start: with `arrived`, that is a body already standing on the goal, and
     /// without it, a body with nowhere closer to go.
     route: Vec<Direction>,
+    /// Number of tiles removed from the open list and finalised.
+    explored: usize,
+    /// Why the search stopped.  This is diagnostic only; callers keep the
+    /// established `Option<Vec<Direction>>` contract.
+    exit: SearchExit,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SearchExit {
+    Goal,
+    Exhausted,
+    Budget,
+    Deadline,
 }
 
 /// A* over the terrain, once, with both answers kept: the goal's own route, and
@@ -114,13 +135,37 @@ struct Search {
 /// keeping the best one seen is a comparison per pop. What it buys is that
 /// "there is no way" and "here is how far the way goes" come out of *one*
 /// search over one terrain, and cannot disagree about which tiles were reachable.
-fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Search {
+pub(crate) fn find_path_until(
+    terrain: &dyn Terrain,
+    from: Point,
+    to: Point,
+    budget: usize,
+    deadline: Instant,
+) -> Option<Vec<Direction>> {
+    let search = search(terrain, from, to, budget, deadline);
+    search.arrived.then_some(search.route)
+}
+
+pub(crate) fn find_path_toward_until(
+    terrain: &dyn Terrain,
+    from: Point,
+    to: Point,
+    budget: usize,
+    deadline: Instant,
+) -> Option<Vec<Direction>> {
+    let search = search(terrain, from, to, budget, deadline);
+    (search.arrived || !search.route.is_empty()).then_some(search.route)
+}
+
+fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize, deadline: Instant) -> Search {
     let goal = Tile::new(to.x, to.y);
     let start = Tile::new(from.x, from.y);
     if start == goal {
         return Search {
             arrived: true,
             route: Vec::new(),
+            explored: 0,
+            exit: SearchExit::Goal,
         };
     }
 
@@ -160,17 +205,24 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Searc
     // closer, it is only walking. Among equally close tiles the cheaper route
     // wins, which is the same "do not wander" preference the tie-break above is.
     let mut closest = (h0, 0, start);
-
+    let mut exit = SearchExit::Exhausted;
     while let Some(Reverse(OpenEntry { h, x: cx, y: cy, .. })) = open.pop() {
+        if Instant::now() >= deadline {
+            exit = SearchExit::Deadline;
+            break;
+        }
         let tile = Tile::new(cx, cy);
         // Skip a tile already finalised by a cheaper pop.
         if !closed.insert(tile) {
             continue;
         }
+        let explored = closed.len();
         if tile == goal {
             return Search {
                 arrived: true,
                 route: reconstruct(&came_from, start, goal),
+                explored,
+                exit: SearchExit::Goal,
             };
         }
         let current = point_at[&tile];
@@ -181,6 +233,7 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Searc
             closest = (h, here_cost, tile);
         }
         if closed.len() > budget {
+            exit = SearchExit::Budget;
             break;
         }
         for dir in Direction::ALL {
@@ -219,7 +272,47 @@ fn search(terrain: &dyn Terrain, from: Point, to: Point, budget: usize) -> Searc
             true => Vec::new(),
             false => reconstruct(&came_from, start, closest.2),
         },
+        explored: closed.len(),
+        exit,
     }
+}
+
+/// Optional slow-query diagnostics.  Pathfinding is used from the render
+/// thread, so diagnostics are opt-in and only print after the query is over;
+/// they never add per-node logging to a search.
+fn debug_slow(
+    kind: &str,
+    from: Point,
+    to: Point,
+    budget: usize,
+    elapsed: std::time::Duration,
+    search: &Search,
+) {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var_os("OPENSHARD_PATH_DEBUG").is_some()) {
+        return;
+    }
+    let threshold = std::env::var("OPENSHARD_PATH_DEBUG_MS")
+        .ok()
+        .and_then(|value| value.parse::<u128>().ok())
+        .unwrap_or(10);
+    if elapsed.as_millis() < threshold {
+        return;
+    }
+    eprintln!(
+        "path-debug kind={kind} from=({}, {}, {}) to=({}, {}, {}) budget={budget} elapsed_ms={:.3} explored={} exit={:?} arrived={} route_steps={}",
+        from.x,
+        from.y,
+        from.z,
+        to.x,
+        to.y,
+        to.z,
+        elapsed.as_secs_f64() * 1_000.0,
+        search.explored,
+        search.exit,
+        search.arrived,
+        search.route.len(),
+    );
 }
 
 /// Walk the parent chain from the goal back to the start, collecting the steps in
